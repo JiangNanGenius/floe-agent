@@ -2,6 +2,7 @@
 package com.floe.android
 
 import android.content.Context
+import com.floe.android.bridge.PrivacyConfirmationNative
 import com.floe.android.bridge.ProviderCatalogNative
 import com.floe.android.bridge.RuntimeCoreNative
 import com.floe.android.bridge.RuntimeNativeException
@@ -85,6 +86,37 @@ internal interface RuntimeNativeApi {
 
 internal interface RuntimeBridgeExchange {
     fun exchange(request: String): String
+}
+
+/**
+ * Privileged privacy-confirmation ingress seam (R2-A). The production
+ * implementation calls [PrivacyConfirmationNative.issue] exactly once per
+ * explicit user confirmation; component tests substitute a recording double
+ * so the owner-proof/epoch gate is testable without JNI. The owner token is
+ * passed to this boundary ONLY; it never enters the return value, a log or
+ * any stored state.
+ */
+internal fun interface PrivacyConfirmationIngress {
+    fun issue(
+        ownerEpoch: Long,
+        ownerToken: String,
+        operation: String,
+        previewDigest: String,
+        invocationID: String,
+        action: String,
+    ): String?
+}
+
+private object SystemPrivacyConfirmationIngress : PrivacyConfirmationIngress {
+    override fun issue(
+        ownerEpoch: Long,
+        ownerToken: String,
+        operation: String,
+        previewDigest: String,
+        invocationID: String,
+        action: String,
+    ): String? = PrivacyConfirmationNative.issue(
+        ownerEpoch, ownerToken, operation, previewDigest, invocationID, action)
 }
 
 /**
@@ -182,6 +214,13 @@ class RuntimeBootstrapCoordinator internal constructor(
      * provider catalog then truthfully answers `catalogNotInjected`).
      */
     private val catalogFreezer: RuntimeProviderCatalogFreezer? = null,
+    /**
+     * Privileged privacy-confirmation ingress. Production supplies the JNI
+     * call; component tests substitute a double. The owner token only ever
+     * crosses this boundary.
+     */
+    private val privacyIngress: PrivacyConfirmationIngress =
+        SystemPrivacyConfirmationIngress,
     private val capabilityState: MutableStateFlow<RuntimeBootstrapCapability> =
         MutableStateFlow(RuntimeBootstrapCapability.Idle),
     private val admissionState: MutableStateFlow<RuntimeDomainAdmission> =
@@ -189,6 +228,48 @@ class RuntimeBootstrapCoordinator internal constructor(
 ) {
     val capability: StateFlow<RuntimeBootstrapCapability> = capabilityState
     val domainAdmission: StateFlow<RuntimeDomainAdmission> = admissionState
+
+    /**
+     * Mint ONE privileged privacy-clear capability for the LIVE accepted
+     * Root generation. Called ONLY from an explicit confirmation tap, OFF the
+     * main thread. [expectedNativeEpoch] is the ACTUAL accepted RuntimeBootstrap
+     * epoch the App captured with the summary preview (never a UI counter and
+     * never a fabricated 0): the accepted epoch + owner token are read
+     * ATOMICALLY under [stateLock] and the mint is refused when the expected
+     * epoch does not match, a stop was requested or the owner proof is known
+     * invalid. The JNI call itself runs outside the lock; the native ingress
+     * re-validates the full owner proof and the exact
+     * operation/digest/invocation/action binding before minting the opaque
+     * `pc:v1:` capability. The owner token is never stored, logged or
+     * returned. Null means the App must surface an honest
+     * confirmation-unavailable refusal; nothing was authorized and nothing is
+     * submitted.
+     */
+    fun issuePrivacyConfirmation(
+        expectedNativeEpoch: Long,
+        operation: String,
+        previewDigest: String,
+        invocationID: String,
+        action: String,
+    ): String? {
+        val epoch: Long
+        val token: String
+        synchronized(stateLock) {
+            if (stopRequested || ownerProofInvalid) return null
+            val accepted = acceptedEpoch ?: return null
+            if (accepted != expectedNativeEpoch) return null
+            epoch = accepted
+            token = acceptedToken ?: return null
+        }
+        return try {
+            privacyIngress.issue(
+                epoch, token, operation, previewDigest, invocationID, action)
+        } catch (t: Throwable) {
+            // Typed numeric statuses and defensive nulls collapse to one
+            // honest App answer: confirmation unavailable, no capability.
+            null
+        }
+    }
 
     private val started = AtomicBoolean(false)
     private val epochCounter = AtomicLong(0)

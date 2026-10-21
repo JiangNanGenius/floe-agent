@@ -15,8 +15,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -36,6 +39,7 @@ import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeSearchField
 import com.floe.android.design.FloeSectionRow
 import com.floe.android.design.FloeSegmented
+import com.floe.android.design.FloeSelectionSlot
 import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeIcons
@@ -45,6 +49,16 @@ import com.floe.android.design.FloeStatusLine
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
 import com.floe.android.design.IconGlyph
+
+/**
+ * Honest bulk-delete failure classes: [Refused] proves the write did not
+ * land; [Unconfirmed] must never be rendered as "nothing was changed".
+ */
+private sealed interface BulkDeleteFailure {
+    data class Refused(val code: String) : BulkDeleteFailure
+    data class Unconfirmed(val code: String) : BulkDeleteFailure
+    data class Local(val code: String) : BulkDeleteFailure
+}
 
 /**
  * G02 Settings pages: native-style scoped editors for the surfaces the G01
@@ -548,8 +562,47 @@ object SettingsHostPages {
     fun MemoryPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val memory = state.memory
-        var addOpen by remember { mutableStateOf(false) }
         var search by remember { mutableStateOf("") }
+        var selectionMode by remember { mutableStateOf(false) }
+        var selectedIDs by remember { mutableStateOf<Set<String>>(emptySet()) }
+        // The explicit intent is frozen at confirmation opening: its batch
+        // identity, ids and digests cannot be recomputed while the dialog
+        // is up or after an uncertain terminal.
+        var bulkIntent by remember {
+            mutableStateOf<SettingsHostController.MemoryBulkDeleteIntent?>(null)
+        }
+        var bulkRetryIntent by remember {
+            mutableStateOf<SettingsHostController.MemoryBulkDeleteIntent?>(null)
+        }
+        var bulkFailure by remember { mutableStateOf<BulkDeleteFailure?>(null) }
+        // The controller-owned identity of the CURRENT bulk interaction.
+        // Any new selection, edited selection or cancel issues a new token,
+        // so a late terminal of an older write never publishes into this UI.
+        var bulkInteraction by remember {
+            mutableStateOf<SettingsHostController.MemoryBulkInteraction?>(null)
+        }
+        val newBulkInteraction: () -> SettingsHostController.MemoryBulkInteraction = {
+            settings.beginMemoryBulkInteraction().also { bulkInteraction = it }
+        }
+        val entries = if (memory.searchActive) {
+            memory.searchItems.mapNotNull { it.current }
+        } else {
+            memory.entries
+        }
+        val editor = state.memoryEditor
+        // Only the typed terminal of THIS editor generation is rendered;
+        // the controller drops results for a dismissed/replaced editor.
+        val editorMutation = state.memoryEditorMutation
+            ?.takeIf { it.generation == editor?.generation }
+        // Leaving the page owns no editor read or add dialog: a late
+        // `memory.get`/`memory.add` must not reopen/close UI after
+        // navigation, and the next visit starts from a closed dialog.
+        DisposableEffect(Unit) {
+            onDispose {
+                settings.closeMemoryEditor()
+                settings.dismissAddMemory()
+            }
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -563,6 +616,14 @@ object SettingsHostPages {
                         value = search,
                         onValueChange = { next ->
                             search = next
+                            selectionMode = false
+                            selectedIDs = emptySet()
+                            bulkFailure = null
+                            bulkRetryIntent = null
+                            // Changing the visible set is a NEW interaction:
+                            // a write dispatched from the previous selection
+                            // must not clear this one when it settles.
+                            newBulkInteraction()
                             if (next.isBlank()) settings.clearMemorySearch()
                             else settings.searchMemory(next)
                         },
@@ -570,21 +631,61 @@ object SettingsHostPages {
                     )
                 }
             }
-            val entries = if (memory.searchActive) {
-                memory.searchItems.mapNotNull { it.current }
-            } else {
-                memory.entries
-            }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_memories)) {
                 if (entries.isEmpty()) {
                     FloeSectionRow(title = {
-                        StatusLine(stringResource(R.string.settings_memory_empty))
+                        StatusLine(
+                            stringResource(
+                                if (memory.searchActive) {
+                                    R.string.settings_memory_search_empty
+                                } else {
+                                    R.string.settings_memory_empty
+                                },
+                            ),
+                        )
                     })
                 }
                 entries.forEach { entry ->
-                    var editOpen by remember(entry.id) { mutableStateOf(false) }
+                    val selected = entry.id in selectedIDs
+                    // Explicit composable type: the selection slot only
+                    // exists in multi-select mode and keeps its own 48dp
+                    // hit target independent of the row tap.
+                    val selectionMarker:
+                        (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? =
+                        if (selectionMode) {
+                            {
+                                FloeSelectionSlot(
+                                    checked = selected,
+                                    onCheckedChange = {
+                                        selectedIDs = if (selected) {
+                                            selectedIDs - entry.id
+                                        } else {
+                                            selectedIDs + entry.id
+                                        }
+                                        newBulkInteraction()
+                                    },
+                                    description = entry.content,
+                                )
+                            }
+                        } else {
+                            null
+                        }
                     FloeSectionRow(
-                        onClick = { editOpen = true },
+                        onClick = {
+                            if (selectionMode) {
+                                selectedIDs = if (selected) {
+                                    selectedIDs - entry.id
+                                } else {
+                                    selectedIDs + entry.id
+                                }
+                                newBulkInteraction()
+                            } else {
+                                // ONE owned editor: a failed/superseded
+                                // `memory.get` never opens, and a newer tap
+                                // fences a late reply for the previous row.
+                                settings.openMemoryEditor(entry.id)
+                            }
+                        },
                         description = entry.content,
                         title = {
                             Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
@@ -601,28 +702,241 @@ object SettingsHostPages {
                                 )
                             }
                         },
+                        trailing = selectionMarker,
                     )
-                    if (editOpen) {
+                }
+                if (state.memoryEditorLoading) {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_memory_opening))
+                    })
+                }
+                state.memoryEditorError?.let {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_memory_open_failed))
+                    })
+                }
+                editor?.let { snapshot ->
+                    // Typed terminal of THIS generation only. The controller
+                    // never publishes a save/delete result for a dismissed or
+                    // replaced editor, so a late A can neither close nor show
+                    // its error on a newer B (including an ABA re-open).
+                    val outcome = editorMutation?.outcome
+                    val operation = editorMutation?.operation
+                    val staleRefusal =
+                        outcome is SettingsHostController.MemoryMutationOutcome.Refused &&
+                            outcome.code == "staleRevision"
+                    key(snapshot.generation) {
                         MemoryEntryDialog(
-                            entry = entry,
+                            entry = snapshot.entry,
+                            errorRes = when (outcome) {
+                                is SettingsHostController.MemoryMutationOutcome.Refused ->
+                                    if (staleRefusal) {
+                                        if (operation ==
+                                            SettingsHostController.MemoryEditorOperation.Delete
+                                        ) {
+                                            R.string.settings_memory_delete_stale
+                                        } else {
+                                            R.string.settings_memory_edit_stale
+                                        }
+                                    } else if (operation ==
+                                        SettingsHostController.MemoryEditorOperation.Delete
+                                    ) {
+                                        R.string.settings_memory_delete_failed
+                                    } else {
+                                        R.string.settings_memory_save_failed
+                                    }
+                                is SettingsHostController.MemoryMutationOutcome.Unconfirmed ->
+                                    if (operation ==
+                                        SettingsHostController.MemoryEditorOperation.Delete
+                                    ) {
+                                        R.string.settings_memory_delete_uncertain
+                                    } else {
+                                        R.string.settings_memory_edit_uncertain
+                                    }
+                                else -> null
+                            },
+                            onReload = if (staleRefusal) {
+                                {
+                                    settings.closeMemoryEditor()
+                                    settings.openMemoryEditor(snapshot.entry.id)
+                                }
+                            } else {
+                                null
+                            },
                             onSave = { content, pinned ->
-                                settings.updateMemory(entry.id, entry.revision, content, null, pinned) {
-                                    editOpen = false
+                                settings.saveMemoryEditor(snapshot, content, pinned)
+                            },
+                            onDelete = { settings.deleteMemoryEditor(snapshot) },
+                            onDismiss = { settings.closeMemoryEditor() },
+                        )
+                    }
+                }
+                bulkFailure?.let { failure ->
+                    val message = when (failure) {
+                        is BulkDeleteFailure.Unconfirmed ->
+                            R.string.settings_memory_bulk_delete_uncertain
+                        is BulkDeleteFailure.Refused ->
+                            if (failure.code == "staleRevision") {
+                                R.string.settings_memory_bulk_delete_changed
+                            } else {
+                                R.string.settings_memory_bulk_delete_refused
+                            }
+                        is BulkDeleteFailure.Local ->
+                            R.string.settings_memory_bulk_delete_selection_changed
+                    }
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(message))
+                    })
+                    bulkRetryIntent?.let { intent ->
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_retry),
+                            onClick = {
+                                bulkFailure = null
+                                // Retry belongs to the SAME UI interaction
+                                // (and the same batch identity): a terminal
+                                // is still published only while this token
+                                // remains current.
+                                val interaction = bulkInteraction
+                                    ?: newBulkInteraction()
+                                settings.bulkDeleteMemory(intent, interaction) { result ->
+                                    when (result) {
+                                        SettingsHostController.MemoryMutationOutcome.Applied -> {
+                                            selectionMode = false
+                                            selectedIDs = emptySet()
+                                            bulkRetryIntent = null
+                                            bulkFailure = null
+                                        }
+                                        is SettingsHostController.MemoryMutationOutcome.Refused -> {
+                                            bulkFailure = BulkDeleteFailure.Refused(result.code)
+                                            if (result.code == "staleRevision") {
+                                                bulkRetryIntent = null
+                                            }
+                                        }
+                                        is SettingsHostController.MemoryMutationOutcome.Unconfirmed -> {
+                                            bulkFailure =
+                                                BulkDeleteFailure.Unconfirmed(result.code)
+                                        }
+                                    }
                                 }
                             },
-                            onDelete = {
-                                settings.deleteMemory(entry.id, entry.revision) { editOpen = false }
-                            },
-                            onDismiss = { editOpen = false },
                         )
+                    }
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_memory_refresh),
+                        onClick = {
+                            bulkFailure = null
+                            bulkRetryIntent = null
+                            // A manual refresh is a new interaction; it must
+                            // not be rewritten by an older in-flight terminal.
+                            newBulkInteraction()
+                            settings.refreshMemory()
+                        },
+                    )
+                }
+                if (memory.searchActive) {
+                    if (memory.searchChangedCount > 0) {
+                        FloeSectionRow(title = {
+                            StatusLine(
+                                stringResource(
+                                    R.string.settings_memory_search_changed,
+                                    memory.searchChangedCount,
+                                ),
+                            )
+                        })
+                    }
+                    if (memory.searchHasMore) {
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_memory_load_more),
+                            enabled = !memory.searchLoadingMore,
+                            onClick = { settings.loadMoreMemorySearch() },
+                        )
+                    }
+                } else {
+                    if (memory.nextCursor != null) {
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_memory_load_more),
+                            enabled = !memory.loadingMore,
+                            onClick = { settings.loadMoreMemory() },
+                        )
+                    }
+                    if (entries.isNotEmpty()) {
+                        if (selectionMode) {
+                            val selectedVisible = entries.count { it.id in selectedIDs }
+                            FloeActionRow(
+                                label = stringResource(
+                                    R.string.settings_memory_delete_selected,
+                                    selectedVisible,
+                                ),
+                                enabled = selectedVisible > 0,
+                                onClick = {
+                                    // Freeze the confirmed set HERE from the
+                                    // rows the user actually sees. A selected
+                                    // row that vanished in the background
+                                    // invalidates the whole intent (never a
+                                    // silently narrowed batch).
+                                    val selectedEntries = entries.filter {
+                                        it.id in selectedIDs
+                                    }
+                                    if (selectedEntries.size != selectedIDs.size) {
+                                        bulkFailure =
+                                            BulkDeleteFailure.Local("selectionChanged")
+                                    } else {
+                                        when (val prepared =
+                                            settings.prepareMemoryBulkDelete(
+                                                selectedEntries.map {
+                                                    it.id to it.revision
+                                                },
+                                            )) {
+                                            is SettingsHostController.MemoryBulkDeletePreparation.Ready -> {
+                                                bulkFailure = null
+                                                bulkRetryIntent = null
+                                                bulkIntent = prepared.intent
+                                            }
+                                            is SettingsHostController.MemoryBulkDeletePreparation.Invalid -> {
+                                                bulkFailure =
+                                                    BulkDeleteFailure.Local(prepared.code)
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                            FloeActionRow(
+                                label = stringResource(R.string.settings_memory_cancel_selection),
+                                onClick = {
+                                    selectionMode = false
+                                    selectedIDs = emptySet()
+                                    bulkFailure = null
+                                    bulkRetryIntent = null
+                                    // Cancelling the selection supersedes any
+                                    // write that was dispatched from it.
+                                    newBulkInteraction()
+                                },
+                            )
+                        } else {
+                            FloeActionRow(
+                                label = stringResource(R.string.settings_memory_select),
+                                onClick = {
+                                    selectionMode = true
+                                    selectedIDs = emptySet()
+                                    bulkFailure = null
+                                    bulkRetryIntent = null
+                                    newBulkInteraction()
+                                },
+                            )
+                        }
                     }
                 }
                 FloeActionRow(
                     label = stringResource(R.string.settings_memory_add),
-                    onClick = { addOpen = true },
+                    onClick = { settings.openAddMemory() },
                 )
             }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_memory_candidates)) {
+                if (memory.candidatesSweepApplied) {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_candidates_sweep_applied))
+                    })
+                }
                 if (memory.candidates.isEmpty()) {
                     FloeSectionRow(title = {
                         StatusLine(stringResource(R.string.settings_candidates_empty))
@@ -648,7 +962,21 @@ object SettingsHostPages {
                                     settings.resolveCandidate(candidate.id, candidate.revision, true) {}
                                 },
                             )
+                            FloeCapsuleAction(
+                                label = stringResource(R.string.settings_candidate_reject),
+                                tint = Floe.colors.destructive,
+                                onClick = {
+                                    settings.resolveCandidate(candidate.id, candidate.revision, false) {}
+                                },
+                            )
                         },
+                    )
+                }
+                if (memory.candidatesNextCursor != null) {
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_candidates_load_more),
+                        enabled = !memory.candidatesLoadingMore,
+                        onClick = { settings.loadMoreCandidates() },
                     )
                 }
                 FloeActionRow(
@@ -776,18 +1104,84 @@ object SettingsHostPages {
             }
             SettingsStatus(state.memoryStatus, onRetry = { settings.refreshMemory() })
         }
-        if (addOpen) {
-            AddMemoryDialog(
-                onAdd = { content ->
-                    settings.addMemory(content, "user") { addOpen = false }
+        if (state.memoryAdd.open) {
+            // The dialog generation owns its draft: a cancel/new dialog
+            // re-keys it even if both state changes land in one frame.
+            key(state.memoryAdd.generation) {
+                AddMemoryDialog(
+                    inFlight = state.memoryAdd.inFlight,
+                    failureRes = when (state.memoryAdd.failure) {
+                        is SettingsHostController.MemoryMutationOutcome.Unconfirmed ->
+                            R.string.settings_memory_add_uncertain
+                        is SettingsHostController.MemoryMutationOutcome.Refused ->
+                            R.string.settings_memory_add_failed
+                        else -> null
+                    },
+                    onAdd = { content -> settings.submitAddMemory(content, "user") },
+                    onDismiss = { settings.dismissAddMemory() },
+                )
+            }
+        }
+        bulkIntent?.let { intent ->
+            // The dialog renders the FROZEN intent only: background list
+            // refreshes cannot change the count or the confirmed targets.
+            FloeConfirmDialog(
+                title = stringResource(R.string.settings_memory_bulk_delete_title),
+                message = stringResource(
+                    R.string.settings_memory_bulk_delete_message,
+                    intent.entries.size,
+                ),
+                confirmLabel = stringResource(R.string.settings_delete),
+                dismissLabel = stringResource(R.string.cancel),
+                onConfirm = {
+                    val frozen = intent
+                    bulkIntent = null
+                    // Confirm dispatches under the CURRENT interaction token;
+                    // starting a new selection afterwards supersedes it.
+                    val interaction = bulkInteraction
+                        ?: newBulkInteraction()
+                    settings.bulkDeleteMemory(frozen, interaction) { result ->
+                        when (result) {
+                            SettingsHostController.MemoryMutationOutcome.Applied -> {
+                                selectionMode = false
+                                selectedIDs = emptySet()
+                                bulkRetryIntent = null
+                                bulkFailure = null
+                            }
+                            is SettingsHostController.MemoryMutationOutcome.Refused -> {
+                                // A typed refusal proves nothing landed. A
+                                // stale digest needs a refresh before a new
+                                // intent; other refusals may retry the SAME
+                                // batch identity.
+                                bulkFailure = BulkDeleteFailure.Refused(result.code)
+                                bulkRetryIntent =
+                                    if (result.code == "staleRevision") null else frozen
+                            }
+                            is SettingsHostController.MemoryMutationOutcome.Unconfirmed -> {
+                                // Transport/ack truth is unknown: never claim
+                                // "nothing was changed"; keep the exact batch
+                                // identity for a same-write retry.
+                                bulkFailure =
+                                    BulkDeleteFailure.Unconfirmed(result.code)
+                                bulkRetryIntent = frozen
+                            }
+                        }
+                    }
                 },
-                onDismiss = { addOpen = false },
+                onDismiss = { bulkIntent = null },
             )
         }
     }
 
     @Composable
-    private fun AddMemoryDialog(onAdd: (String) -> Unit, onDismiss: () -> Unit) {
+    private fun AddMemoryDialog(
+        inFlight: Boolean,
+        failureRes: Int?,
+        onAdd: (String) -> Unit,
+        onDismiss: () -> Unit,
+    ) {
+        // The draft lives with THIS dialog generation: a typed failure keeps
+        // the dialog (and its text) open; a cancel/new dialog resets it.
         var content by remember { mutableStateOf("") }
         androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
             Column(
@@ -808,11 +1202,17 @@ object SettingsHostPages {
                     singleLine = false,
                     maxLines = 6,
                 )
+                failureRes?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    StatusLine(stringResource(message))
+                }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FloeCapsuleAction(
                         label = stringResource(R.string.settings_save),
-                        enabled = content.isNotBlank(),
+                        // One in-flight add at a time; a refusal/unconfirmed
+                        // result keeps the draft for review or retry.
+                        enabled = content.isNotBlank() && !inFlight,
                         onClick = { onAdd(content) },
                     )
                     FloeCapsuleAction(
@@ -827,12 +1227,21 @@ object SettingsHostPages {
     @Composable
     private fun MemoryEntryDialog(
         entry: SettingsHostController.MemoryEntryProjection,
+        errorRes: Int?,
+        onReload: (() -> Unit)?,
         onSave: (String, Boolean) -> Unit,
         onDelete: () -> Unit,
         onDismiss: () -> Unit,
     ) {
-        var content by remember(entry.id) { mutableStateOf(entry.content) }
-        var pinned by remember(entry.id) { mutableStateOf(entry.isPinned) }
+        // The snapshot is frozen for this editor's lifetime (the caller
+        // re-keys the dialog per open generation); a background list
+        // refresh can never rewrite this draft or its base digest.
+        var content by remember(entry.id, entry.revision) {
+            mutableStateOf(entry.content)
+        }
+        var pinned by remember(entry.id, entry.revision) {
+            mutableStateOf(entry.isPinned)
+        }
         var confirmDelete by remember { mutableStateOf(false) }
         if (confirmDelete) {
             FloeConfirmDialog(
@@ -840,7 +1249,12 @@ object SettingsHostPages {
                 message = stringResource(R.string.settings_memory_delete_message),
                 confirmLabel = stringResource(R.string.settings_delete),
                 dismissLabel = stringResource(R.string.cancel),
-                onConfirm = onDelete,
+                onConfirm = {
+                    // Close the confirmation first so a typed delete failure
+                    // is visible on the editor instead of behind this alert.
+                    confirmDelete = false
+                    onDelete()
+                },
                 onDismiss = { confirmDelete = false },
             )
             return
@@ -878,6 +1292,20 @@ object SettingsHostPages {
                         description = stringResource(R.string.settings_memory_pin),
                     )
                 }
+                errorRes?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    StatusLine(stringResource(message))
+                }
+                onReload?.let { reload ->
+                    // This composable is inside a Dialog, not a SectionScope,
+                    // so use a capsule action rather than FloeActionRow.
+                    Row(Modifier.padding(top = 4.dp)) {
+                        FloeCapsuleAction(
+                            label = stringResource(R.string.settings_memory_reload),
+                            onClick = reload,
+                        )
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     FloeCapsuleAction(
@@ -904,8 +1332,58 @@ object SettingsHostPages {
     fun PersonalizationPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val surface = state.personalization
-        var draft by remember(surface.kind, surface.content) { mutableStateOf(surface.content) }
+        val loading = surface.contentLoading || state.personalizationStatus.loading
+        // A draft owns its text AND the active-slot token it was written on.
+        // It is never re-keyed by a background content change: only an
+        // explicit kind switch or a clean (not dirty) base change adopts.
+        var draftKind by remember { mutableStateOf(surface.kind) }
+        var draft by remember { mutableStateOf(surface.content) }
+        var baseContent by remember { mutableStateOf(surface.content) }
+        var baseRevisionToken by remember { mutableStateOf(surface.revisionToken) }
+        var draftDirty by remember { mutableStateOf(false) }
+        var baseMoved by remember { mutableStateOf(false) }
+        var saving by remember { mutableStateOf(false) }
+        // The save terminal is UI-owned by the submission that dispatched
+        // it: a late result for an older kind/view may clear only its own
+        // flag, never the newer view's saving state or dirty draft.
+        var savingGeneration by remember { mutableStateOf(0L) }
         var confirmRollback by remember { mutableStateOf<Int?>(null) }
+        LaunchedEffect(
+            surface.kind,
+            surface.content,
+            surface.revisionToken,
+            surface.contentLoading,
+        ) {
+            if (draftKind != surface.kind) {
+                // Explicit kind switch: the old kind's draft/token must
+                // never be saved into the new document. The old save keeps
+                // running service-side; its UI terminal is superseded here.
+                savingGeneration += 1
+                saving = false
+                draftKind = surface.kind
+                draft = surface.content
+                baseContent = surface.content
+                baseRevisionToken = surface.revisionToken
+                draftDirty = false
+                baseMoved = false
+            } else if (!surface.contentLoading &&
+                (surface.content != baseContent ||
+                    surface.revisionToken != baseRevisionToken)
+            ) {
+                if (draftDirty) {
+                    // Refresh/active-handle read landed under an unsaved
+                    // draft: keep the user's text and its ORIGINAL base
+                    // token. The new content is not adopted and the CAS is
+                    // never silently upgraded.
+                    baseMoved = true
+                } else {
+                    draft = surface.content
+                    baseContent = surface.content
+                    baseRevisionToken = surface.revisionToken
+                    baseMoved = false
+                }
+            }
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -949,6 +1427,27 @@ object SettingsHostPages {
                 })
             }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_personalization_content)) {
+                if (surface.contentLoading) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FloeActivityIndicator()
+                        Spacer(Modifier.height(0.dp))
+                        StatusLine(
+                            stringResource(R.string.settings_personalization_content_loading))
+                    }
+                }
+                if (surface.contentLoadFailed) {
+                    FloeSectionRow(title = {
+                        StatusLine(
+                            stringResource(R.string.settings_personalization_content_failed))
+                    })
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_retry),
+                        onClick = { settings.refreshPersonalization(surface.kind) },
+                    )
+                }
                 androidx.compose.foundation.layout.Box(
                     Modifier
                         .fillMaxWidth()
@@ -958,7 +1457,15 @@ object SettingsHostPages {
                     FloePlainFormField(
                         label = stringResource(R.string.settings_personalization_placeholder),
                         value = draft,
-                        onValueChange = { draft = it },
+                        onValueChange = {
+                            draft = it
+                            draftDirty = true
+                        },
+                        // Editing stays closed until the COMPLETE active
+                        // document is owned: an unfinished chunk read must
+                        // never accept text and then replace it.
+                        enabled = !loading && !surface.contentLoadFailed && !saving &&
+                            draftKind == surface.kind,
                         singleLine = false,
                         minLines = 5,
                         maxLines = 12,
@@ -970,8 +1477,29 @@ object SettingsHostPages {
                 ) {
                     FloeCapsuleAction(
                         label = stringResource(R.string.settings_save),
+                        enabled = !loading && !surface.contentLoadFailed && !saving &&
+                            draftKind == surface.kind &&
+                            baseRevisionToken.isNotBlank(),
                         onClick = {
-                            settings.savePersonalization(surface.kind, draft) {}
+                            val text = draft
+                            val request = savingGeneration + 1
+                            savingGeneration = request
+                            saving = true
+                            settings.savePersonalization(
+                                draftKind,
+                                text,
+                                baseRevisionToken,
+                            ) { error ->
+                                // Only the submission that still owns this
+                                // view may publish its terminal; a late
+                                // result must not clear a newer save.
+                                if (savingGeneration == request) {
+                                    saving = false
+                                    if (error == null && draft == text) {
+                                        draftDirty = false
+                                    }
+                                }
+                            }
                         },
                     )
                     FloeCapsuleAction(
@@ -1001,10 +1529,57 @@ object SettingsHostPages {
                         StatusLine(stringResource(R.string.settings_personalization_generating))
                     }
                 }
+                val baseConflict = baseMoved || surface.saveError == "staleRevision"
+                if (baseConflict) {
+                    // The active slot moved while this draft was unsaved.
+                    // Keep the user's text and the OLD token (the writer
+                    // will refuse rather than overwrite); reload is an
+                    // explicit discard of this draft.
+                    FloeSectionRow(title = {
+                        StatusLine(
+                            stringResource(R.string.settings_personalization_stale))
+                    })
+                    FloeActionRow(
+                        label = stringResource(R.string.settings_personalization_reload),
+                        onClick = {
+                            draft = surface.content
+                            baseContent = surface.content
+                            baseRevisionToken = surface.revisionToken
+                            draftDirty = false
+                            baseMoved = false
+                            settings.refreshPersonalization(surface.kind)
+                        },
+                    )
+                } else {
+                    surface.saveError?.let {
+                        // The typed code stays in diagnostics; the draft
+                        // remains in the field so the user can retry.
+                        FloeSectionRow(title = {
+                            StatusLine(
+                                stringResource(R.string.settings_personalization_save_failed))
+                        })
+                    }
+                }
                 surface.generateError?.let { error ->
                     FloeSectionRow(title = {
                         StatusLine(stringResource(R.string.settings_action_failed, error))
                     })
+                }
+                // Explicit terminal outcome: the generated text may have been
+                // stored as a DRAFT because the active version/source moved.
+                val generateOutcome = when (surface.lastGenerateOutcome) {
+                    "active" -> R.string.settings_personalization_generate_active
+                    "storedAsDraft" -> when (surface.lastGenerateDraftReason) {
+                        "sourceChanged" ->
+                            R.string.settings_personalization_generate_draft_source
+                        "both" -> R.string.settings_personalization_generate_draft_both
+                        else ->
+                            R.string.settings_personalization_generate_draft_active
+                    }
+                    else -> null
+                }
+                generateOutcome?.let { message ->
+                    FloeSectionRow(title = { StatusLine(stringResource(message)) })
                 }
             }
             FloeSettingsSectionCard(
@@ -1189,6 +1764,36 @@ object SettingsHostPages {
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
+            FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_dimension)) {
+                FloeSectionRow(title = {
+                    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        FloeSegmented(
+                            options = listOf(
+                                stringResource(R.string.settings_usage_dimension_total),
+                                stringResource(R.string.settings_usage_dimension_conversation),
+                                stringResource(R.string.settings_usage_dimension_model),
+                                stringResource(R.string.settings_usage_dimension_provider),
+                            ),
+                            selectedIndex = when (usage.dimension) {
+                                "conversation" -> 1
+                                "model" -> 2
+                                "provider" -> 3
+                                else -> 0
+                            },
+                            onSelect = { index ->
+                                settings.refreshUsage(
+                                    when (index) {
+                                        1 -> "conversation"
+                                        2 -> "model"
+                                        3 -> "provider"
+                                        else -> "total"
+                                    },
+                                )
+                            },
+                        )
+                    }
+                })
+            }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_totals)) {
                 val totals = usage.totals
                 if (totals == null) {
@@ -1203,9 +1808,42 @@ object SettingsHostPages {
                         totals.outputTokens.toString(),
                     )
                     FloeValueRow(
+                        stringResource(R.string.settings_usage_total),
+                        totals.totalTokens.toString(),
+                    )
+                    FloeValueRow(
                         stringResource(R.string.settings_usage_runs),
                         totals.runs.toString(),
                     )
+                    // Nullable metrics are shown ONLY when the store really
+                    // reported them: null is "not reported", never zero.
+                    totals.cacheReadTokens?.let {
+                        FloeValueRow(stringResource(R.string.settings_usage_cache_read), it.toString())
+                    }
+                    totals.cacheWriteTokens?.let {
+                        FloeValueRow(stringResource(R.string.settings_usage_cache_write), it.toString())
+                    }
+                    totals.reasoningTokens?.let {
+                        FloeValueRow(stringResource(R.string.settings_usage_reasoning), it.toString())
+                    }
+                    totals.averageTokensPerSecond?.let {
+                        FloeValueRow(
+                            stringResource(R.string.settings_usage_avg_tps),
+                            decimal(it),
+                        )
+                    }
+                    totals.averageTimeToFirstTokenMs?.let {
+                        FloeValueRow(
+                            stringResource(R.string.settings_usage_avg_ttft),
+                            decimal(it),
+                        )
+                    }
+                    totals.averageDurationMs?.let {
+                        FloeValueRow(
+                            stringResource(R.string.settings_usage_avg_duration),
+                            decimal(it),
+                        )
+                    }
                 }
             }
             if (usage.byDay.isNotEmpty()) {
@@ -1215,16 +1853,27 @@ object SettingsHostPages {
                     }
                 }
             }
-            if (usage.rows.isNotEmpty()) {
+            if (usage.rows.isNotEmpty() || usage.nextCursor != null) {
                 FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_breakdown)) {
                     usage.rows.forEach { row ->
                         FloeValueRow(row.label, "${row.inputTokens} / ${row.outputTokens}")
+                    }
+                    if (usage.nextCursor != null) {
+                        FloeActionRow(
+                            label = stringResource(R.string.settings_usage_load_more),
+                            enabled = !usage.loadingMore,
+                            onClick = { settings.loadMoreUsage() },
+                        )
                     }
                 }
             }
             SettingsStatus(state.usageStatus, onRetry = { settings.refreshUsage() })
         }
     }
+
+    /** One concise decimal for reported averages (never an invented zero). */
+    private fun decimal(value: Double): String =
+        java.lang.String.format(java.util.Locale.US, "%.1f", value)
 
     // ---------------------------------------------------------------- privacy
 
@@ -1233,7 +1882,14 @@ object SettingsHostPages {
         val state by settings.state.collectAsState()
         val privacy = state.privacy
         val summary = privacy.summary
-        var confirmAction by remember { mutableStateOf<SettingsHostController.PrivacyClearAction?>(null) }
+        val clearStatus = state.privacyClear
+        // The immutable preview captured at the FIRST tap. Recomposition,
+        // refreshes and Root changes never rewrite it; a stale preview is
+        // refused by the controller at confirm time with a typed code.
+        var confirmPreview by remember {
+            mutableStateOf<SettingsHostController.PrivacyClearPreview?>(null)
+        }
+        val busy = clearStatus?.inFlight == true
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1261,17 +1917,20 @@ object SettingsHostPages {
                             stringResource(R.string.settings_privacy_remaining),
                             remaining.conversationCount.toString(),
                         )
-                    } else {
-                        // remaining == null ONLY with remainingFailure + partial.
+                    } else if (summary.remainingFailure != null) {
+                        // remaining == null ONLY with a typed remainingFailure
+                        // from an ACTUAL history-clear report (partial).
                         FloeSectionRow(title = {
                             StatusLine(
                                 stringResource(
                                     R.string.settings_privacy_recount_unavailable,
-                                    summary.remainingFailure ?: "unknown",
+                                    summary.remainingFailure,
                                 ),
                             )
                         })
                     }
+                    // No report has settled yet: nothing to show — never a
+                    // fabricated "recount unavailable".
                 }
             }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_model_config)) {
@@ -1284,6 +1943,22 @@ object SettingsHostPages {
                         stringResource(R.string.settings_privacy_models),
                         summary.modelCount.toString(),
                     )
+                    val modelRemaining = summary.modelRemaining
+                    if (modelRemaining != null) {
+                        FloeValueRow(
+                            stringResource(R.string.settings_privacy_remaining),
+                            modelRemaining.providerCount.toString(),
+                        )
+                    } else if (summary.modelRemainingFailure != null) {
+                        FloeSectionRow(title = {
+                            StatusLine(
+                                stringResource(
+                                    R.string.settings_privacy_recount_unavailable,
+                                    summary.modelRemainingFailure,
+                                ),
+                            )
+                        })
+                    }
                     summary.preferencesFailure?.let { failure ->
                         FloeSectionRow(title = {
                             StatusLine(
@@ -1342,26 +2017,52 @@ object SettingsHostPages {
             FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_actions)) {
                 FloeActionRow(
                     label = stringResource(R.string.settings_privacy_clear_history),
+                    enabled = !busy,
                     onClick = {
-                        // First tap previews; the confirmation dialog mints the
-                        // trusted token only from THIS tap on the CURRENT epoch.
-                        confirmAction = SettingsHostController.PrivacyClearAction.HISTORY
+                        // First tap freezes the immutable preview for THIS
+                        // tap on the CURRENT root/projection only.
+                        confirmPreview = settings.createPrivacyClearPreview(
+                            SettingsHostController.PrivacyClearAction.HISTORY)
                     },
                 )
                 FloeActionRow(
                     label = stringResource(R.string.settings_privacy_clear_model_config),
+                    enabled = !busy,
                     onClick = {
-                        confirmAction = SettingsHostController.PrivacyClearAction.MODEL_CONFIGURATION
+                        confirmPreview = settings.createPrivacyClearPreview(
+                            SettingsHostController.PrivacyClearAction.MODEL_CONFIGURATION)
                     },
                 )
+                if (busy) {
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.settings_privacy_clearing))
+                    })
+                }
+                clearStatus?.error?.let { code ->
+                    FloeSectionRow(title = {
+                        StatusLine(
+                            when (code) {
+                                "inFlight" ->
+                                    stringResource(R.string.settings_privacy_clear_busy)
+                                "previewStale", "previewUnavailable", "rootChanged" ->
+                                    stringResource(R.string.settings_privacy_preview_changed)
+                                "reportUnavailable" ->
+                                    stringResource(R.string.settings_privacy_report_unavailable)
+                                "confirmationUnavailable", "rootUnavailable", "unavailable" ->
+                                    stringResource(R.string.settings_privacy_confirm_unavailable)
+                                else ->
+                                    stringResource(R.string.settings_privacy_clear_failed, code)
+                            },
+                        )
+                    })
+                }
             }
             SettingsStatus(state.privacyStatus, onRetry = { settings.refreshPrivacySummary() })
         }
-        confirmAction?.let { action ->
-            val tappedEpoch = settings.privacyPreviewEpoch
+        confirmPreview?.let { preview ->
             FloeConfirmDialog(
                 title = stringResource(
-                    if (action == SettingsHostController.PrivacyClearAction.HISTORY) {
+                    if (preview.action == SettingsHostController.PrivacyClearAction.HISTORY) {
                         R.string.settings_privacy_clear_history
                     } else {
                         R.string.settings_privacy_clear_model_config
@@ -1371,18 +2072,21 @@ object SettingsHostPages {
                 confirmLabel = stringResource(R.string.settings_delete),
                 dismissLabel = stringResource(R.string.cancel),
                 onConfirm = {
-                    val token = settings.mintClearConfirmation(action, tappedEpoch)
-                    if (token != null) {
-                        when (action) {
+                    val current = confirmPreview
+                    confirmPreview = null
+                    if (current != null) {
+                        // Failures surface through the owned privacyClear
+                        // status below; the typed outcome also reaches the
+                        // caller for tests and diagnostics.
+                        when (current.action) {
                             SettingsHostController.PrivacyClearAction.HISTORY ->
-                                settings.clearPrivacyHistory(token) {}
+                                settings.clearPrivacyHistory(current) {}
                             SettingsHostController.PrivacyClearAction.MODEL_CONFIGURATION ->
-                                settings.clearPrivacyModelConfiguration(token) {}
+                                settings.clearPrivacyModelConfiguration(current) {}
                         }
                     }
-                    confirmAction = null
                 },
-                onDismiss = { confirmAction = null },
+                onDismiss = { confirmPreview = null },
             )
         }
     }

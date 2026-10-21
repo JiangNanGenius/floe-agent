@@ -49,6 +49,40 @@ class ConversationHistoryHolder(
      * identity, so a list refresh cannot redirect it to another task. */
     val pendingDeletionId: MutableState<String?> = mutableStateOf(null)
 
+    data class RenameDraft(val conversationId: String, val title: String, val requestToken: Long, val inFlight: Boolean = false, val failed: Boolean = false)
+    private var renameSequence = 0L
+    val pendingRename: MutableState<RenameDraft?> = mutableStateOf(null)
+
+    fun requestRename(item: ConversationListItemUi) {
+        if (pendingRename.value?.inFlight == true) return
+        pendingRename.value = RenameDraft(item.id, item.title, ++renameSequence)
+    }
+
+    fun updateRenameTitle(title: String) {
+        val draft = pendingRename.value ?: return
+        // The original native rename applies its 120-grapheme normalization;
+        // Kotlin UTF-16 truncation here would split emoji or CJK extensions.
+        if (!draft.inFlight) pendingRename.value = draft.copy(title = title, failed = false)
+    }
+
+    fun cancelRename() { pendingRename.value = null }
+
+    fun confirmRename(): Boolean {
+        val draft = pendingRename.value ?: return false
+        if (draft.inFlight || draft.title.isBlank()) return false
+        pendingRename.value = draft.copy(inFlight = true, failed = false)
+        if (host.renameConversation(draft.conversationId, draft.title.trim(), draft.requestToken)) return true
+        pendingRename.value?.takeIf { it.requestToken == draft.requestToken }
+            ?.let { pendingRename.value = it.copy(inFlight = false, failed = true) }
+        return false
+    }
+
+    fun applyRenameOutcome(conversationId: String, requestToken: Long, accepted: Boolean) {
+        val draft = pendingRename.value ?: return
+        if (draft.conversationId != conversationId || draft.requestToken != requestToken || !draft.inFlight) return
+        pendingRename.value = if (accepted) null else draft.copy(inFlight = false, failed = true)
+    }
+
     /** ⇄ filter (tasks vs archive slice of the management surface). The
      * @set:JvmName avoids the property accessor clashing with the explicit
      * setManagementFilter() action (baseline "platform declaration clash"). */
@@ -306,6 +340,7 @@ class ConversationHistoryHolder(
     /** The surface left the screen: drop transient selection/confirm state;
      * durable rows are untouched. */
     fun closeManagement() {
+        pendingRename.value = null
         confirmation.value = null
         pendingDeletionId.value = null
         bulkReceipt.value = null

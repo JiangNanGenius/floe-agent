@@ -323,4 +323,9 @@
     <string name="intelligence_read_full">读取完整详情</string>
     <string name="menu_compact_now">压缩当前对话</string>
     <string name="menu_compacting">正在压缩…</string>
+
+    <string name="history_rename_title">重命名任务</string>
+    <string name="history_rename_name">名称</string>
+    <string name="history_rename_save">保存</string>
+    <string name="history_rename_failed">无法重命名此任务，请重试。</string>
 </resources>

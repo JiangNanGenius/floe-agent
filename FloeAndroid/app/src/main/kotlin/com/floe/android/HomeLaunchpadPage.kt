@@ -95,6 +95,10 @@ fun HomeLaunchpadPage(
         rowsState
     }
     val draftProcessing = draftRows.any { it.isProcessing }
+    val draftImportFailed = if (rootWorkspace == null) false else {
+        val failed by rootWorkspace.draftImportFailed.collectAsState()
+        failed
+    }
     val draftApproval = if (rootWorkspace == null) {
         null
     } else {
@@ -259,6 +263,13 @@ fun HomeLaunchpadPage(
             onRetry = { id -> rootWorkspace?.retryDraftAttachment(id) },
             onCancel = { id -> rootWorkspace?.removeDraftAttachment(id) },
         )
+        if (draftImportFailed) {
+            FloeText(
+                stringResource(R.string.home_attachment_import_failed),
+                style = Floe.typography.metadata,
+                color = colors.pending,
+            )
+        }
         FloeComposer(
             value = field,
             onValueChange = { next ->

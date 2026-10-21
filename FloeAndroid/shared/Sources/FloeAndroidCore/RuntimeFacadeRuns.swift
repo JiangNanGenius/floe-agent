@@ -812,6 +812,39 @@ public actor FacadeRunDomain {
 
     func liveService(_ runID: UUID) -> ConversationRunService? { liveServices[runID] }
 
+    // MARK: - Actual in-memory approval grant ownership (privacy adapter)
+
+    /// Bounded snapshot of the ACTUAL in-memory approval grants across every
+    /// live run service THIS domain owns. There is no second grant store:
+    /// the runtimes' arrays are the only truth. Repeated uses of one reusable
+    /// grant appear several times per runtime; the ownership combiner
+    /// collapses them to ONE canonical record per id (the frozen
+    /// ApprovalGrantStore semantics) and fails typed when one id carries
+    /// conflicting metadata, so counts and canonical streams are never
+    /// inflated and conflicting owners are never silently chosen.
+    func approvalGrantsSnapshot() async throws -> [ApprovalGrant] {
+        var owners: [(ownerID: String, grants: [ApprovalGrant])] = []
+        owners.reserveCapacity(liveServices.count)
+        for (runID, service) in liveServices {
+            owners.append((ownerID: runID.uuidString,
+                           grants: await service.approvalGrantsSnapshot()))
+        }
+        return try PrivacyRuntimeGrantOwnership.combine(owners: owners)
+    }
+
+    /// Revokes EVERY occurrence of one grant id across this domain's live
+    /// runtimes (a reused grant can sit in one runtime several times). Runs
+    /// that finished between the privacy snapshot and this revocation no
+    /// longer own the grant — the state is already gone, which the port
+    /// reports as a plain miss. Returns total occurrences removed.
+    func revokeApprovalGrant(id: UUID) async -> Int {
+        var removed = 0
+        for (_, service) in liveServices {
+            removed += await service.revokeApprovalGrant(id: id)
+        }
+        return removed
+    }
+
     // MARK: - Temporary lane (RB5 successor) explicit owned-run dispatch
     // (narrow additive surface; ordinary wire behavior is untouched)
 
@@ -4173,5 +4206,60 @@ extension FacadeRunDomain {
             return false
         }
         return true
+    }
+}
+
+// MARK: - Runtime grant ownership combiner (privacy in-memory grant layer)
+
+/// Combines per-run in-memory approval grant snapshots into the ONE
+/// canonical in-memory grant layer the privacy domain digests and clears.
+///
+/// Frozen identity semantics (one grant per id, matching the original
+/// ApprovalGrantStore):
+///   * repeated occurrences of one id INSIDE one owner are the normal
+///     reusable-grant execution fact (`resolveToolCall` appends the same
+///     grant again per approved step); they must be byte-identical and
+///     collapse to a single canonical record — counts and canonical digest
+///     streams are never inflated by reuse;
+///   * one id appearing in SEVERAL owners with identical metadata is still
+///     one canonical grant (e.g. a parent/child replaying the same approved
+///     authority);
+///   * one id with CONFLICTING metadata anywhere is never silently resolved:
+///     the combine fails typed so the privacy capture refuses rather than
+///     choosing an owner arbitrarily.
+enum PrivacyRuntimeGrantOwnership {
+    static func combine(
+        owners: [(ownerID: String, grants: [ApprovalGrant])]
+    ) throws -> [ApprovalGrant] {
+        var canonical: [UUID: ApprovalGrant] = [:]
+        for (ownerID, grants) in owners {
+            var seenInOwner: [UUID: ApprovalGrant] = [:]
+            for grant in grants {
+                if let first = seenInOwner[grant.id] {
+                    guard first == grant else {
+                        throw PrivacyDomainError.persistenceUnavailable(
+                            "grantIdentityCorrupt")
+                    }
+                    continue
+                }
+                seenInOwner[grant.id] = grant
+                if let existing = canonical[grant.id] {
+                    guard existing == grant else {
+                        throw PrivacyDomainError.persistenceUnavailable(
+                            "grantOwnershipConflict")
+                    }
+                    continue
+                }
+                canonical[grant.id] = grant
+            }
+            _ = ownerID // owner identity scopes the corrupt/conflict source
+        }
+        // Deterministic order matching the original ApprovalGrantStore:
+        // decidedAt, tie-broken by id for cross-owner stability.
+        return canonical.values.sorted {
+            $0.decidedAt == $1.decidedAt
+                ? $0.id.uuidString < $1.id.uuidString
+                : $0.decidedAt < $1.decidedAt
+        }
     }
 }

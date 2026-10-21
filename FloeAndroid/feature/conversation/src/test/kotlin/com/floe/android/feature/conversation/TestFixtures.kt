@@ -49,7 +49,7 @@ class RecordingHost : ConversationUiCallbacks {
         return newTaskAccepted
     }
 
-    override fun startRun(request: RunLaunchRequest): Boolean {
+    override fun startRun(request: RunLaunchRequest, onOutcome: ((Boolean, String?) -> Unit)?): Boolean {
         record("startRun", request)
         return startRunAccepted
     }
@@ -202,6 +202,10 @@ class RecordingHost : ConversationUiCallbacks {
 
     override fun deleteConversation(conversationId: String): Boolean {
         record("deleteConversation", conversationId); return true
+    }
+
+    override fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean {
+        record("renameConversation", conversationId, title, requestToken); return true
     }
 
     override fun requestContentSearch(query: String, epoch: Long): Boolean {

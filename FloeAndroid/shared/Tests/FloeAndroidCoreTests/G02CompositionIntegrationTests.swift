@@ -238,7 +238,7 @@ final class G02CompositionIntegrationTests: XCTestCase {
 
     // MARK: - 2. Ordinary handlers bound; temp/privacy fail closed
 
-    func testEveryOrdinaryMatrixCommandHasHandlerAndTempPrivacyStayUnbound() async throws {
+    func testEveryOrdinaryMatrixCommandHasHandlerAndTempPrivacyBound() async throws {
         try await bootInstalledGeneration()
         let installed = try XCTUnwrap(
             G02RuntimeComposition.shared.installedComposition)
@@ -251,10 +251,11 @@ final class G02CompositionIntegrationTests: XCTestCase {
             BridgeV3.effectPumpHandlerKey,
             BridgeV3.runEventPumpHandlerKey,
         ]
-        // TEMPORARY is now the REAL integrated extension (this round's
-        // outcome): its frozen family must be ACTUALLY bound by the
-        // production attach, not advertised by a stub. PRIVACY stays
-        // not-yet-integrated and must remain unregistered entirely.
+        // TEMPORARY and PRIVACY are both REAL integrated extensions (R2
+        // outcome): each frozen family must be ACTUALLY bound by the
+        // production attach, not advertised by a stub. The substantive
+        // owner/capability/trust refusal assertions of the privacy backend
+        // live in the privacy cohort (61 focused tests).
         for key in Set(G02Readiness.expectedHandlerKeys(for: .temporaryDomain)) {
             XCTAssertTrue(installed.registry.processor(for: key) != nil,
                           "temporary key \(key) must be bound by the real extension")
@@ -262,16 +263,16 @@ final class G02CompositionIntegrationTests: XCTestCase {
                             "temporary key \(key) must be advertised")
             XCTAssertTrue(bound.contains(key))
         }
+        for key in G02Readiness.expectedHandlerKeys(for: .settingsPrivacy) {
+            XCTAssertTrue(installed.registry.processor(for: key) != nil,
+                          "privacy key \(key) must be bound by the real extension")
+            XCTAssertNotNil(RuntimeCommandBinder.shared.handler(for: key),
+                            "privacy key \(key) must be advertised")
+            XCTAssertTrue(bound.contains(key))
+        }
         let optionalKeys =
             Set(G02Readiness.expectedHandlerKeys(for: .temporaryDomain))
                 .union(G02Readiness.expectedHandlerKeys(for: .settingsPrivacy))
-        for key in G02Readiness.expectedHandlerKeys(for: .settingsPrivacy) {
-            XCTAssertFalse(installed.registry.processor(for: key) != nil,
-                           "privacy key \(key) must stay unregistered")
-            XCTAssertNil(RuntimeCommandBinder.shared.handler(for: key),
-                         "privacy key \(key) must stay unadvertised")
-            XCTAssertFalse(bound.contains(key))
-        }
         for rule in BridgeV3.commandRules where !rule.isRunEventPoll {
             let key = BridgeV3.handlerKey(scope: rule.scope, command: rule.command)
             if optionalKeys.contains(key) { continue }
@@ -380,9 +381,9 @@ final class G02CompositionIntegrationTests: XCTestCase {
         XCTAssertTrue(drained)
     }
 
-    // MARK: - 6. Temp/privacy honestly blocked; seam proven (lifetime only)
+    // MARK: - 6. Temp/privacy honestly ready ONLY via the real extension
 
-    func testTemporaryAndPrivacyStayBlockedUntilRealExtensionBinds() async throws {
+    func testTemporaryAndPrivacyBoundByRealExtensionIntegration() async throws {
         try await bootInstalledGeneration()
         let installed = try XCTUnwrap(
             G02RuntimeComposition.shared.installedComposition)
@@ -390,9 +391,9 @@ final class G02CompositionIntegrationTests: XCTestCase {
         let report = G02Readiness.report(
             epoch: installed.epoch, boundKeys: boundKeys,
             installed: installed, transportQualified: false)
-        // The temporary extension is REAL and integrated now: ready ONLY
-        // because its actual frozen keys are bound by the production
-        // attach (never by optimism). Privacy stays honestly blocked.
+        // Both extensions are REAL and integrated now: ready ONLY because
+        // their actual frozen keys are bound by the production attach
+        // (never by optimism).
         let temporary = try XCTUnwrap(report.first { $0.domain == .temporaryDomain })
         XCTAssertEqual(temporary.state, .ready)
         XCTAssertEqual(Set(temporary.handlerKeys),
@@ -400,9 +401,11 @@ final class G02CompositionIntegrationTests: XCTestCase {
         XCTAssertTrue(G02RuntimeComposition.shared
             .isExtensionAttached(G02DomainExtensionKey.temporary))
         let privacy = try XCTUnwrap(report.first { $0.domain == .settingsPrivacy })
-        XCTAssertEqual(privacy.state, .blocked)
-        XCTAssertEqual(privacy.missingDependencies,
-                       ["privacyExtensionNotIntegrated"])
+        XCTAssertEqual(privacy.state, .ready)
+        XCTAssertEqual(privacy.handlerKeys,
+                       G02Readiness.expectedHandlerKeys(for: .settingsPrivacy))
+        XCTAssertTrue(G02RuntimeComposition.shared
+            .isExtensionAttached(G02DomainExtensionKey.privacy))
 
         // The seam: a synthetic extension registered in the pre-bootstrap
         // window occupies the SAME id and attaches INSIDE the owned
@@ -443,6 +446,13 @@ final class G02CompositionIntegrationTests: XCTestCase {
         for key in temporary2.handlerKeys {
             XCTAssertTrue(bound2.contains(key))
         }
+        // Privacy re-attaches through the same production bootstrap: the
+        // synthetic temporary seam can never affect its frozen family.
+        let privacy2 = try XCTUnwrap(report2.first {
+            $0.domain == .settingsPrivacy })
+        XCTAssertEqual(privacy2.state, .ready)
+        XCTAssertEqual(Set(privacy2.handlerKeys),
+                       Set(G02Readiness.expectedHandlerKeys(for: .settingsPrivacy)))
     }
 
     // MARK: - 7. Truthful readiness readback (actual intersection, leak-free)
@@ -464,13 +474,11 @@ final class G02CompositionIntegrationTests: XCTestCase {
                 XCTAssertEqual(entry.state, .blocked)
                 XCTAssertEqual(entry.missingDependencies,
                                ["transportQualified", "tlsQualified"])
-            case .temporaryDomain:
-                // The real extension is integrated this round: ready ONLY
-                // via the actual bound frozen family (verified below by the
-                // bound-key intersection invariant).
+            case .temporaryDomain, .settingsPrivacy:
+                // Both optional extensions are integrated this round:
+                // ready ONLY via the actual bound frozen family (verified
+                // below by the bound-key intersection invariant).
                 XCTAssertEqual(entry.state, .ready)
-            case .settingsPrivacy:
-                XCTAssertEqual(entry.state, .blocked)
             case .providerConfigurationDomain, .conversationDomain, .runDomain,
                  .skillsMcpDiscovery, .hostAttachmentStaging,
                  .settingsDefaults, .settingsMemory, .settingsPersonalization,

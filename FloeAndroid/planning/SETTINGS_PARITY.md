@@ -1,5 +1,16 @@
 # Settings parity acceptance matrix (iOS → Android)
 
+> Current-stage note (2026-10-21, G02-R2): the implementation-state counts below
+> describe the 2026-10-19 snapshot, not the published Alpha3. Alpha3's actual App
+> settings list exposes eight categories: General, Model & Provider, Skills &
+> Connectors, Memories & Personalization, Usage, Privacy, Web Search, and
+> Diagnostics & About. Its wide list/detail layout and representative provider
+> editor modal were exercised in R1. This does not mark every category body or
+> operation accepted. Preserve the dated row evidence below; use current source,
+> the operation ledger and the [current plan](../../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan)
+> for the 17-operation R2 scope. Presentation intent and feature-stage ownership
+> remain applicable; old `N`/`P`/three-row counts are not current implementation facts.
+
 Status: 2026-10-19, documentation only. This matrix is an acceptance and coverage ledger, not a build, device, runtime or release qualification.
 
 It accounts for every `SettingsSection` case in the current iOS source and records the current Android state against the actual iOS presentation modifiers. It deliberately does **not** claim that all categories are implemented or aligned: the Android app currently exposes three category rows, one of which is still a placeholder.

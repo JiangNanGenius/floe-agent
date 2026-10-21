@@ -301,11 +301,6 @@ class ProviderHostController internal constructor(
         lastProviderPageValue = value
         val counts = host.conversations.modelCountsByProvider()
         lastModelCounts = counts
-        if (counts.isEmpty()) {
-            // The models page may not have landed yet; the collector
-            // republishes the real counts as soon as it does.
-            host.conversations.refreshModels()
-        }
         val rows = ProviderWire.decodeProviderRows(value, counts)
         updateDestination { state ->
             state.copy(
@@ -320,6 +315,14 @@ class ProviderHostController internal constructor(
                     errorMessage = if (rows == null) loadFailureCopy() else null,
                 ),
             )
+        }
+        if (counts.isEmpty()) {
+            // The models page may not have landed yet. Request it AFTER the
+            // destination carries these rows: the sweep (and its editing
+            // admission) is bound to the CURRENT provider set, so starting
+            // it against the previous empty list would cache an empty sweep
+            // for the wrong target set.
+            host.conversations.refreshModels()
         }
         // The provider side of the model join just changed: republish the
         // composer projection AFTER the destination carries the new rows
@@ -593,6 +596,23 @@ class ProviderHostController internal constructor(
             )
         }
         val row = findProviderRow(providerID) ?: return null
+        // A saved profile is only edited from a COMPLETE real model read.
+        // Seeding from a partial/empty cache would let a Keep save persist an
+        // erased model set; refuse honestly and let the user retry once the
+        // model projection lands.
+        if (!host.conversations.modelsProjectionReadyForEditing()) {
+            // The tap must explain why nothing opened; the message clears on
+            // the next real list/count publication.
+            updateDestination { state ->
+                state.copy(list = state.list.copy(errorMessage = runCatching {
+                    host.appContext.getString(
+                        com.floe.android.R.string.providers_open_waiting_models)
+                }.getOrElse {
+                    "Models are still loading. Try again in a moment."
+                }))
+            }
+            return null
+        }
         val snapshot = snapshotForExistingProvider(providerID, role) ?: return null
         val catalog = destinationState.value.catalog
         return ProviderEditorSeedUi(
@@ -890,6 +910,12 @@ class ProviderHostController internal constructor(
                         ?: existingRevision?.resourceID?.removePrefix("provider.")
                     onSaveSucceeded(identity)
                     refreshProviders()
+                    // The committed provider/model rows are the new truth:
+                    // re-read the REAL models page so the list counts, the
+                    // composer picker and a reopened editor see the saved
+                    // set (a same-id edit does not change the provider
+                    // signature, so no other collector triggers this).
+                    host.conversations.refreshModels()
                     providerID?.let { id ->
                         flowHolder.currentEditorIdentity()?.takeIf { current ->
                             current.isCurrentFor(identity)

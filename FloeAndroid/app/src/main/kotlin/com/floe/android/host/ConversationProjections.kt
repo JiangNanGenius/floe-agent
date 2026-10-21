@@ -39,6 +39,8 @@ import com.floe.android.feature.conversation.PlanSectionRowUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunEventKindUi
 import com.floe.android.feature.conversation.RunEventUi
+import com.floe.android.feature.conversation.ToolEventProjectionUi
+import com.floe.android.feature.conversation.ToolArtifactUi
 import com.floe.android.feature.conversation.RunLaunchRequest
 import com.floe.android.feature.conversation.RunRowUi
 import com.floe.android.feature.conversation.RunningInputModeUi
@@ -499,7 +501,8 @@ class ThreadProjectionBuilder internal constructor(
         }
         // Durable event record (bounded, typed).
         val list = runEvents.getOrPut(frame.runID) { mutableListOf() }
-        if (list.size < 512) {
+        run {
+            if (list.size >= 512) list.removeAt(0)
             list.add(
                 RunEventUi(
                     id = "${frame.runID}:${frame.sequence}",
@@ -530,6 +533,8 @@ class ThreadProjectionBuilder internal constructor(
                     message = payload?.string("message"),
                     assistantText = payload?.string("text"),
                     reasoningExcerpt = payload?.string("text") ?: payload?.string("excerpt"),
+                    stopReason = payload?.string("stopReason"),
+                    tool = ConversationWire.decodeToolEvent(kind, payload),
                 ),
             )
         }
@@ -767,10 +772,29 @@ class ThreadProjectionBuilder internal constructor(
         val rows = ArrayList<TimelineRowUi>()
         val messages = (userMessages.values + assistantMessages.values)
             .sortedBy { it.timeLabel }
+        val projectedEventRuns = mutableSetOf<String>()
+        fun appendRecordedActivity(runId: String?) {
+            if (runId == null || !projectedEventRuns.add(runId)) return
+            val events = runEvents[runId].orEmpty().sortedBy { it.sequence }
+            val tools = events.filter {
+                it.tool != null && it.kind in setOf(
+                    RunEventKindUi.TOOL_REQUEST, RunEventKindUi.TOOL_RESULT,
+                    RunEventKindUi.APPROVAL, RunEventKindUi.AUTO_APPROVED,
+                )
+            }
+            if (tools.isNotEmpty()) {
+                rows.add(TimelineRowUi.StepGroup("$runId:recorded-tools", tools, runId == selectedRunId))
+            }
+            events.filter {
+                (it.kind == RunEventKindUi.ERROR || it.kind == RunEventKindUi.NOTICE) &&
+                    !it.message.isNullOrBlank()
+            }.forEach { rows.add(TimelineRowUi.Event(it)) }
+        }
         for (message in messages) {
             when (message.role) {
                 MessageRoleUi.USER -> rows.add(TimelineRowUi.UserMessage(message))
                 MessageRoleUi.ASSISTANT, MessageRoleUi.GOAL_CONTINUATION -> {
+                    appendRecordedActivity(message.runId)
                     rows.add(
                         TimelineRowUi.AssistantMessage(
                             rowId = "a:${message.id}",
@@ -783,6 +807,7 @@ class ThreadProjectionBuilder internal constructor(
                 else -> Unit
             }
         }
+        runEvents.keys.forEach(::appendRecordedActivity)
         val assistantTail = assistantTailText()
         val reasoningTail = reasoningTailText()
         if (assistantTail.isNotEmpty()) {
@@ -825,7 +850,7 @@ class ThreadProjectionBuilder internal constructor(
             approvalMode = policyApprovalMode,
             usage = null,
             contextUsage = null,
-            compactionStatus = null,
+            compactionStatus = compactionStatus,
             canContinue = retryable,
             continuationTitle = if (retryable) "Continue" else null,
             continuationDetail = actionError,
@@ -883,6 +908,42 @@ class ThreadProjectionBuilder internal constructor(
 /** Strict-tolerant decoders for the conversation/run owner wire pages. */
 internal object ConversationWire {
     private val wireTime = SimpleDateFormat("HH:mm", Locale.US)
+
+    /** ORIGINAL persisted event members from ConversationRunService. Output
+     * is the recorded, redacted summary, never a manufactured success string.
+     * Artifact metadata alone confers no preview/file or tool authority.
+     */
+    fun decodeToolEvent(kind: String, payload: JsonObject?): ToolEventProjectionUi? {
+        if (kind !in setOf("toolRequest", "toolResult", "approval", "autoApproved")) return null
+        val value = payload ?: return null
+        val callId = value.string("id") ?: value.string("callID") ?: return null
+        val name = value.string("tool") ?: return null
+        val status = value.string("status") ?: value.string("outcome") ?: return null
+        val artifacts = value.string("artifactRefsJSON")?.let { raw ->
+            runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw) as? JsonArray }.getOrNull()
+        }.orEmpty().mapNotNull { element ->
+            val artifact = element as? JsonObject ?: return@mapNotNull null
+            val id = artifact.string("id") ?: return@mapNotNull null
+            val mime = artifact.string("mimeType") ?: return@mapNotNull null
+            val bytes = artifact.long("byteCount")?.takeIf { it in 0..Int.MAX_VALUE.toLong() }
+                ?: return@mapNotNull null
+            val path = artifact.string("relativePath") ?: return@mapNotNull null
+            val digest = artifact.string("sha256") ?: return@mapNotNull null
+            ToolArtifactUi(id, mime, bytes.toInt(), path, digest, hostVerified = false)
+        }
+        return ToolEventProjectionUi(
+            callId = callId,
+            toolName = name,
+            statusRaw = status,
+            inputSummary = value.string("input"),
+            resultSummary = value.string("summary"),
+            approvalSummary = value.string("outcome"),
+            durationSeconds = value.string("durationMs")?.toDoubleOrNull()
+                ?.takeIf { it.isFinite() && it >= 0 }?.div(1000.0),
+            artifacts = artifacts,
+            harnessSuppressed = value.bool("harnessSuppressed") ?: false,
+        )
+    }
 
     class SessionReply(
         val title: String,
@@ -1827,6 +1888,8 @@ internal object ConversationWire {
                     message = payload?.string("message"),
                     assistantText = payload?.string("text"),
                     reasoningExcerpt = payload?.string("text"),
+                    stopReason = payload?.string("stopReason"),
+                    tool = decodeToolEvent(kind, payload),
                 ),
             )
         }

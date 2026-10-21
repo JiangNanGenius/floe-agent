@@ -54,8 +54,8 @@ android {
         applicationId = "com.floe.agent"
         minSdk = 28
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.1.0-alpha.3"
+        versionCode = 4
+        versionName = "0.1.0-alpha.4"
         ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

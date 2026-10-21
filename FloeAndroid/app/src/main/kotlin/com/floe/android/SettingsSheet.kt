@@ -75,6 +75,7 @@ import com.floe.android.feature.providers.FloeProviderSettingsDestination
 import com.floe.android.host.RuntimeHost
 import com.floe.android.host.SettingsHostPages
 import com.floe.android.host.WebSearchSettingsPage
+import com.floe.android.host.GitHubCredentialEditor
 import io.github.robinpcrd.cupertino.section.SectionItem
 
 /**
@@ -584,6 +585,7 @@ private fun SkillsSettingsPage(runtimeHost: RuntimeHost?) {
             holder = runtimeHost.integrations.flowHolder,
             modifier = Modifier.fillMaxSize(),
         )
+        GitHubCredentialEditor(runtimeHost.gitCredentials)
     }
 }
 

@@ -101,11 +101,25 @@ class FloeApplication : Application() {
         this.runtimeCoordinator = runtimeCoordinator
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.
+        // The privacy-clear confirmation issuer stays with the coordinator
+        // that owns the live accepted epoch + owner token; the host only
+        // exposes the typed request, so the token never reaches UI/wire.
         runtimeHost = RuntimeHost.create(
             context = this,
             gatewayCapability = capability,
             bootstrapCapability = runtimeState,
-        )
+        ).also { host ->
+            host.privacyConfirmationIssuer = { expectedEpoch, operation,
+                                               digest, invocation, action ->
+                runtimeCoordinator.issuePrivacyConfirmation(
+                    expectedNativeEpoch = expectedEpoch,
+                    operation = operation,
+                    previewDigest = digest,
+                    invocationID = invocation,
+                    action = action,
+                )
+            }
+        }
         hostScope.launch(Dispatchers.Default) { observeBootstrap(runtimeState) }
     }
 

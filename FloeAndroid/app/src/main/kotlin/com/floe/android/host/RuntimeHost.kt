@@ -56,6 +56,7 @@ class RuntimeHost internal constructor(
     val providers = ProviderHostController(this)
     val conversations = ConversationHostController(this)
     val integrations = IntegrationsHostController(this)
+    val gitCredentials = GitHubCredentialHostController(this)
     val settings = SettingsHostController(this)
     val webSearch = WebSearchHostController(this)
     val attachments = AttachmentImportController(this)
@@ -97,6 +98,28 @@ class RuntimeHost internal constructor(
 
     fun nativeRootEpoch(): Long? = nativeRootEpochReader()
 
+    /**
+     * Privileged privacy-clear confirmation issuer injected by the
+     * Application owner. The implementation resolves the live coordinator's
+     * ACCEPTED epoch + owner token and the native ingress; the owner token
+     * never enters this class's state, a log or the wire. [expectedNativeEpoch]
+     * is the exact accepted Root epoch the App bound to the immutable user
+     * preview — a stale/foreign epoch is refused by the owner, never minted.
+     * Must be invoked off the main thread.
+     */
+    internal var privacyConfirmationIssuer:
+        ((expectedNativeEpoch: Long, operation: String, previewDigest: String,
+          invocationID: String, action: String) -> String?)? = null
+
+    fun issuePrivacyConfirmation(
+        expectedNativeEpoch: Long,
+        operation: String,
+        previewDigest: String,
+        invocationID: String,
+        action: String,
+    ): String? = privacyConfirmationIssuer?.invoke(
+        expectedNativeEpoch, operation, previewDigest, invocationID, action)
+
     /** Called once by the Application owner, off-main. */
     fun start() {
         if (!started.compareAndSet(false, true)) return
@@ -104,6 +127,8 @@ class RuntimeHost internal constructor(
         providers.start()
         conversations.start()
         integrations.start()
+        gitCredentials.start()
+        attachments.start()
         settings.start()
         webSearch.start()
         home.start()
@@ -119,6 +144,8 @@ class RuntimeHost internal constructor(
         providers.stop()
         conversations.stop()
         integrations.stop()
+        gitCredentials.stop()
+        attachments.stop()
         settings.stop()
         webSearch.stop()
         home.stop()
@@ -457,7 +484,17 @@ sealed interface HostOperationOutcome {
         val detail: Map<String, String> = emptyMap(),
     ) : HostOperationOutcome
     data class Rejected(val code: String, val reason: String) : HostOperationOutcome
-    data class Failed(val code: String, val reason: String) : HostOperationOutcome
+    data class Failed(
+        val code: String,
+        val reason: String,
+        /**
+         * Bounded structural detail the native terminal carried (e.g. the
+         * domain `wire` code). Diagnostic-only; ordinary UI keeps showing
+         * the settlement class and uses this solely to map a typed,
+         * user-actionable privacy-clear failure.
+         */
+        val detail: Map<String, String> = emptyMap(),
+    ) : HostOperationOutcome
     data object Cancelled : HostOperationOutcome
     data object Superseded : HostOperationOutcome
 }
@@ -465,7 +502,7 @@ sealed interface HostOperationOutcome {
 private fun HostEffectTerminal.toOperationOutcome(): HostOperationOutcome = when (this) {
     is HostEffectTerminal.Completed -> HostOperationOutcome.Completed(value, detail)
     is HostEffectTerminal.Rejected -> HostOperationOutcome.Rejected(code, reason)
-    is HostEffectTerminal.Failed -> HostOperationOutcome.Failed(code, reason)
+    is HostEffectTerminal.Failed -> HostOperationOutcome.Failed(code, reason, detail)
     is HostEffectTerminal.Cancelled -> HostOperationOutcome.Cancelled
     is HostEffectTerminal.Closed -> HostOperationOutcome.Completed(null, detail)
     is HostEffectTerminal.Replaced -> HostOperationOutcome.Superseded

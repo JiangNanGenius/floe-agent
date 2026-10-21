@@ -325,4 +325,9 @@
     <string name="intelligence_read_full">Read full details</string>
     <string name="menu_compact_now">Compact conversation</string>
     <string name="menu_compacting">Compacting…</string>
+
+    <string name="history_rename_title">Rename task</string>
+    <string name="history_rename_name">Name</string>
+    <string name="history_rename_save">Save</string>
+    <string name="history_rename_failed">Couldn’t rename this task. Try again.</string>
 </resources>

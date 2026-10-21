@@ -1188,6 +1188,29 @@ public actor FloeAgentRuntime {
         try await writeCheckpoint()
     }
 
+    // MARK: - In-memory approval grant visibility (privacy clear adapter)
+
+    /// Bounded snapshot of THIS run's current in-memory approval grants
+    /// (reusable-authorization state; restored from checkpoint, appended on
+    /// approval). The array can repeat one grant UUID across tool steps
+    /// (a reused grant is appended again); callers combine snapshots across
+    /// runs by ID. Checkpoint semantics are unchanged: the same array is
+    /// persisted by the next checkpoint write.
+    public func approvalGrantsSnapshot() -> [ApprovalGrant] {
+        grants
+    }
+
+    /// Revokes EVERY occurrence of one grant id in this run (a reused grant
+    /// may appear several times). Returns how many occurrences were removed.
+    /// The next checkpoint persists the reduced array, so a revoked grant
+    /// can never reappear through resume.
+    @discardableResult
+    public func revokeApprovalGrant(id: UUID) -> Int {
+        let before = grants.count
+        grants.removeAll { $0.id == id }
+        return before - grants.count
+    }
+
     /// checkpointed → preparing. Replays messages; dedups tool calls via
     /// idempotency keys.
     public func resume(from checkpoint: AgentCheckpoint) async throws {

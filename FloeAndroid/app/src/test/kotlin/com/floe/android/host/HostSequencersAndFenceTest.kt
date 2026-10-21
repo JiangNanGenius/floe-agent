@@ -84,7 +84,7 @@ class HostSequencersAndFenceTest {
     }
 
     @Test
-    fun privacyConfirmationRequiresExactEpochTap() = runBlocking {
+    fun privacyPreviewBindsCurrentRootAndDigest() = runBlocking {
         val exchange = object : HostBridgeExchange {
             override fun exchange(request: String): String {
                 val correlation = correlationOf(request)
@@ -99,33 +99,41 @@ class HostSequencersAndFenceTest {
             }
         }
         val host = testHost(exchange)
+        host.nativeRootEpochReader = { 7L }
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
-        host.onDomainAvailability("settings.privacy", true, emptyList())
+        host.onDomainAvailability("settingsPrivacy", true, emptyList())
         host.settings.refreshPrivacySummary()
         kotlinx.coroutines.delay(200)
         val summary = host.settings.state.value.privacy.summary
         assertTrue(summary != null)
         assertEquals(2L, summary!!.conversationCount)
         assertEquals("sha256:hist", summary.historyRevision)
-        // Consent: the token mints ONLY for a tap on the CURRENT preview
-        // epoch; a stale/wrong-epoch tap gets nothing.
-        val epoch = host.settings.privacyPreviewEpoch
-        assertNull(host.settings.mintClearConfirmation(
-            SettingsHostController.PrivacyClearAction.HISTORY, epoch + 99))
-        val token = host.settings.mintClearConfirmation(
-            SettingsHostController.PrivacyClearAction.HISTORY, epoch)
-        assertEquals("sha256:hist", token)
+        // Consent path (R2-A): the immutable preview binds the CURRENT root
+        // epoch + projection generation + the exact digest; it is created
+        // only from a tap on the live projection, never from the digest
+        // alone and never across a root change.
+        val preview = host.settings.createPrivacyClearPreview(
+            SettingsHostController.PrivacyClearAction.HISTORY)
+        assertTrue(preview != null)
+        assertEquals("sha256:hist", preview!!.digest)
+        assertEquals(7L, preview.sourceNativeEpoch)
+        assertEquals(host.settings.state.value.privacy.previewGeneration,
+            preview.previewGeneration)
     }
 
     @Test
-    fun privacyNullRemainingRequiresTypedFailureAndPartial() = runBlocking {
+    fun plainSummaryNeverLooksPartialAndReportTruthComesFromClearOnly() = runBlocking {
         val exchange = object : HostBridgeExchange {
             override fun exchange(request: String): String {
                 val correlation = correlationOf(request)
                 return when {
                     request.contains("\"operation\":\"effect.poll\"") -> {
                         val receipt = receiptOf(request)
-                        val summaryValue = """{"history":{"conversationCount":2,"runCount":3,"persistedGrantCount":1,"inMemoryGrantCount":0,"revision":"sha256:hist"},"modelConfiguration":{"providerCount":1,"modelCount":2,"secretReferenceCount":1,"preferencesSyncRevision":4,"revision":"sha256:mcfg"},"remainingFailure":"unstableGrantSnapshot","partial":true}"""
+                        // A MISBEHAVING producer echoes clear-report fields on
+                        // the plain summary; the App must ignore them (the
+                        // previous decoder marked every fresh summary
+                        // partial — the R2-A false-partial repair).
+                        val summaryValue = """{"history":{"conversationCount":2,"runCount":3,"persistedGrantCount":1,"inMemoryGrantCount":0,"revision":"sha256:hist"},"modelConfiguration":{"providerCount":1,"modelCount":2,"secretReferenceCount":1,"preferencesSyncRevision":4,"revision":"sha256:mcfg"},"remainingFailure":"unstableGrantSnapshot","partial":true,"failures":[{"itemID":"x","phase":"drain","reason":"fake"}]}"""
                         """{"version":3,"requestID":"$correlation","ok":true,"schema":"floe.effect-cursor/3","correlationID":"$correlation","cursor":{"operationReceiptID":"$receipt","sequence":1},"effects":[{"sequence":1,"kind":"accepted","page":$summaryValue}],"hasMore":false,"resyncRequired":false}"""
                     }
                     else -> """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"op:v1:prv"}"""
@@ -133,15 +141,21 @@ class HostSequencersAndFenceTest {
             }
         }
         val host = testHost(exchange)
+        host.nativeRootEpochReader = { 7L }
         host.onBootstrapCapability(com.floe.android.RuntimeBootstrapCapability.OwnedStoreReady)
-        host.onDomainAvailability("settings.privacy", true, emptyList())
+        host.onDomainAvailability("settingsPrivacy", true, emptyList())
         host.settings.refreshPrivacySummary()
         kotlinx.coroutines.delay(200)
-        val summary = host.settings.state.value.privacy.summary
-        // remaining is null with the typed failure surfaced — never zeros.
-        assertTrue(summary != null && summary.remaining == null)
-        assertEquals("unstableGrantSnapshot", summary!!.remainingFailure)
-        assertTrue(summary.partial)
+        val state = host.settings.state.value.privacy
+        val summary = state.summary
+        assertTrue(summary != null)
+        assertTrue(!summary!!.partial)
+        assertNull(summary.remainingFailure)
+        assertTrue(summary.remaining == null)
+        assertTrue(state.historyFailures.isEmpty())
+        assertTrue(state.reportPage == null)
+        // No fabricated recount state either: the pre-clear surface simply
+        // carries no remaining knowledge.
     }
 
 

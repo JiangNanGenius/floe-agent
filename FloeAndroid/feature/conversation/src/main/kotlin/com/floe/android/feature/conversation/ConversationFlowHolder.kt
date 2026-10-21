@@ -76,6 +76,7 @@ class ConversationFlowHolder(
     private val host: ConversationUiCallbacks,
     conversationId: String,
     initialDraft: ComposerDraftSeedUi? = null,
+    initialSessionEpoch: Long = 0L,
 ) {
     private var conversationIdInternal: String = conversationId
 
@@ -83,7 +84,7 @@ class ConversationFlowHolder(
     val conversationId: String get() = conversationIdInternal
 
     /** Current session identity; epoch bumps on every rebind. */
-    var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, 0L)
+    var session: ConversationSessionToken = ConversationSessionToken(conversationIdInternal, initialSessionEpoch)
         private set
 
     /**

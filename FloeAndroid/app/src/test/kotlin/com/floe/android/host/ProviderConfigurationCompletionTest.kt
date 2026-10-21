@@ -158,6 +158,7 @@ class ProviderConfigurationCompletionTest {
     }
 
     private class FakeDraftProbe(
+        private val pending: Boolean = false,
         private val payload: String = """{"status":"connected","modelCount":2,"discoveredModels":[{"id":"44444444-4444-4444-4444-444444444444","providerID":"11111111-1111-1111-1111-111111111111","remoteModelID":"draft-model-0","displayName":"Draft Model 0","limits":{"contextTokens":8192,"maxOutputTokens":2048},"capabilities":5},{"id":"55555555-5555-5555-5555-555555555555","providerID":"11111111-1111-1111-1111-111111111111","remoteModelID":"draft-model-1","displayName":"Draft Model 1","limits":{"contextTokens":8192,"maxOutputTokens":2048},"capabilities":5}]}""",
     ) : HostDraftProbe {
         val submitCalls = AtomicInteger(0)
@@ -178,7 +179,9 @@ class ProviderConfigurationCompletionTest {
         }
 
         override fun poll(handle: String, routeToken: String): String =
-            if (handles.containsKey(handle)) "S$payload" else "R-117"
+            if (handles.containsKey(handle)) {
+                if (pending) "P" else "S$payload"
+            } else "R-117"
 
         override fun cancel(handle: String, routeToken: String) {
             cancelCalls.incrementAndGet()
@@ -222,6 +225,9 @@ class ProviderConfigurationCompletionTest {
             host.providers.destination.value.list.conversationProviders
                 .any { it.providerId == PROVIDER_ID }
         }
+        // The editor seeds only from a COMPLETE model read; a saved profile
+        // must never reopen from a partial/empty cache.
+        waitUntil { host.conversations.modelsProjectionReadyForEditing() }
     }
 
     private fun editorIdentity(editorId: String = "$PROVIDER_ID-conversation-1") =
@@ -388,7 +394,7 @@ class ProviderConfigurationCompletionTest {
     fun editorCloseAndCancelOwnTheDraftProbeCancellation() = runBlocking {
         val exchange = Exchange()
         val host = host(exchange)
-        val seam = FakeDraftProbe()
+        val seam = FakeDraftProbe(pending = true)
         host.providers.draftProbe = seam
         load(host)
         val identity = editorIdentity("new-conversation-1")

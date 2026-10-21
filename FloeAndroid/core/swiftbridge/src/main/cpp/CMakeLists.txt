@@ -23,7 +23,13 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # draft candidate + ephemeral key with its own live editor route; native
 # dispatches through the ORIGINAL adapter and persists nothing. Additive TU
 # only; all prior wrappers unchanged.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp)
+#
+# PRIVACY-CONFIRMATION (2026-10-21): floe_privacy_jni.cpp appended the same
+# way — the privileged one-operation capability ingress for the two privacy
+# clears (root/epoch/operation/action/digest/invocation bound). Not a V3
+# command and never model-reachable. Additive TU only; all prior wrappers
+# unchanged.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

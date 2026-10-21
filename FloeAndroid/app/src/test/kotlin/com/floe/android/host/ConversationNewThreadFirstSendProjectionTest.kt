@@ -56,6 +56,20 @@ import org.junit.Test
  */
 class ConversationNewThreadFirstSendProjectionTest {
 
+    @Test fun replacementHolderHasAUniqueSessionAndRejectsTheOldAttachmentOwner() = runBlocking {
+        val host = host(ScriptedExchange())
+        try {
+            val first = host.conversations.holderFor(conversationId, isTemporary = false, incarnationId = null)
+            val old = first.session
+            host.conversations.releaseHolder(conversationId)
+            val replacement = host.conversations.holderFor(conversationId, isTemporary = false, incarnationId = null)
+            assertTrue(old.sessionEpoch != replacement.session.sessionEpoch)
+            assertFalse(host.conversations.attachmentSessionIsCurrent(old))
+            assertTrue(host.conversations.attachmentSessionIsCurrent(replacement.session))
+            assertEquals(replacement.session, host.conversations.entryFor(conversationId)!!.builder.build().session)
+        } finally { host.stop() }
+    }
+
     private val conversationId = "11111111-1111-4111-8111-111111111111"
     private val providerId = "8E19AA7E-C0F2-4532-8A49-0CE3AC782C68"
     private val modelId = "B2F1A0C4-1111-4222-8333-444455556666"

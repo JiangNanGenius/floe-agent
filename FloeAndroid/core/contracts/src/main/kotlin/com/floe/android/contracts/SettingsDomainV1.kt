@@ -35,6 +35,9 @@ object SettingsDomainV1 {
     const val MAXIMUM_HANDLE_CHARACTERS = 256
     const val MAXIMUM_RECEIPT_CHARACTERS = 256
     const val MAXIMUM_FACT_IDENTITY_CHARACTERS = 160
+    /** Opaque trusted-native one-operation confirmation capability spelling. */
+    private const val PRIVACY_CONFIRMATION_PREFIX = "pc:v1:"
+    private const val PRIVACY_CONFIRMATION_LOGICAL_BYTES = 38
 
     val LABELS = listOf("settings.defaults", "memory", "personalization", "usage", "privacy")
 
@@ -155,7 +158,13 @@ object SettingsDomainV1 {
         }
         return try {
             when (command) {
-                "config.defaults.get", "privacy.summary.get" -> validateEmpty(payload)
+                "config.defaults.get" -> validateEmpty(payload)
+                // Additive optional failure-report request (MAIN_PRIVACY_
+                // REPORT_STREAMING_DECISION_20261019): absent/empty keeps
+                // the frozen summary request; `{report:{handle,cursor,
+                // maxItems}}` reads an already-issued same-root page. No
+                // command/label/scope/matrix entry is added.
+                "privacy.summary.get" -> validatePrivacySummary(payload)
                 "config.defaults.save" -> validateDefaultsSave(payload)
                 "memory.list" -> validateMemoryList(payload)
                 "memory.get" -> validateMemoryGet(payload)
@@ -681,8 +690,45 @@ object SettingsDomainV1 {
 
     private fun validatePrivacyClear(payload: Map<String, Any?>?) {
         val reader = reader(payload, setOf("confirmToken"), "unknownPrivacyField")
-        digestValue(reader.take("confirmToken"), "confirmToken")
+        val token = stringValue(reader.take("confirmToken"), "confirmToken", 80)
+        // Historical digest spelling OR the opaque trusted-native
+        // one-operation capability. Shape acceptance proves no consent; the
+        // native facade consumes the capability and refuses a bare digest.
+        val isDigest = token.startsWith("sha256:") && token.length == 71 &&
+            token.substring(7).all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        val isCapability = token.startsWith(PRIVACY_CONFIRMATION_PREFIX) &&
+            token.length == PRIVACY_CONFIRMATION_LOGICAL_BYTES &&
+            token.substring(PRIVACY_CONFIRMATION_PREFIX.length)
+                .all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+        if (!isDigest && !isCapability) fail("invalidPayloadField:confirmToken")
         reader.finish()
+    }
+
+    /** Additive optional report page request for privacy.summary.get. */
+    @Suppress("UNCHECKED_CAST")
+    private fun validatePrivacySummary(payload: Map<String, Any?>?) {
+        if (payload == null || payload.isEmpty()) return
+        if (payload.keys != setOf("report")) fail("unknownPrivacyField")
+        val report = objectValue(payload["report"], "report")
+        val handle = stringValue(report["handle"], "handle", 256)
+        if (handle.isEmpty()) fail("invalidPayloadField:handle")
+        optionalStringValue(report["cursor"], "cursor", 256)
+        if (report.containsKey("maxItems")) {
+            optionalInt(report["maxItems"], true, "maxItems", 1..128)
+        }
+        val allowed = setOf("handle", "cursor", "maxItems")
+        if (report.keys.any { it !in allowed }) fail("unknownPrivacyReportField")
+    }
+
+    /** Optional-but-typed string helper (null/absent are distinct). */
+    private fun optionalStringValue(
+        value: Any?,
+        field: String,
+        maxCharacters: Int,
+    ): String? {
+        if (value == null) return null
+        val text = stringValue(value, field, maxCharacters)
+        return text
     }
 
     // ---------------------------------------------------------------- enums

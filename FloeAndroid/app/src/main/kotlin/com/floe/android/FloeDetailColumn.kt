@@ -50,6 +50,7 @@ fun FloeDetailColumn(
     onOpenSettingsSection: (String) -> Unit,
     modifier: Modifier = Modifier,
     runtimeHost: RuntimeHost? = null,
+    onConversationHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit = { _, _ -> },
 ) {
     Box(modifier.fillMaxSize()) {
         when (selection) {
@@ -96,6 +97,7 @@ fun FloeDetailColumn(
                 onOpenDrawer = onOpenDrawer,
                 compact = compact,
                 runtimeHost = runtimeHost,
+                onHolderBound = onConversationHolderBound,
             )
         }
     }
@@ -116,6 +118,7 @@ private fun ConversationDestination(
     onOpenDrawer: () -> Unit,
     compact: Boolean,
     runtimeHost: RuntimeHost?,
+    onHolderBound: (String, com.floe.android.feature.conversation.ConversationFlowHolder) -> Unit,
 ) {
     val temporary = runtimeHost?.conversations?.activeTemporarySession()
         ?.takeIf { it.conversationId == conversationId }
@@ -141,6 +144,15 @@ private fun ConversationDestination(
     // rotation reuse the same holder and never restart the load.
     androidx.compose.runtime.LaunchedEffect(holder.session) {
         runtimeHost.conversations.loadThread(holder.session)
+    }
+    // Report the EXACT holder instance this surface bound so the shell can
+    // prove visible ownership for the privacy-clear invalidation (a
+    // re-created same-id holder is a different instance and must never be
+    // retired by a stale signal). The registry itself stays unobservable:
+    // re-resolving through holderFor would silently re-create a deleted id
+    // as an empty thread.
+    androidx.compose.runtime.LaunchedEffect(holder) {
+        onHolderBound(conversationId, holder)
     }
     FloeConversationPaneHost(
         holder = holder,

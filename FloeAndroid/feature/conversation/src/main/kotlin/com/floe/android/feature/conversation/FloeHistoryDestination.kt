@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,6 +59,11 @@ import com.floe.android.design.FloeSearchField
 import com.floe.android.design.FloeSelectionSlot
 import com.floe.android.design.FloeSegmented
 import com.floe.android.design.FloeText
+import com.floe.android.design.FloePageSheet
+import com.floe.android.design.FloeSheetPlacement
+import com.floe.android.design.FloeSettingsSectionCard
+import com.floe.android.design.FloeFormTextField
+import com.floe.android.design.FloeCapsuleAction
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.design.IconGlyph
@@ -199,6 +205,7 @@ fun FloeConversationHistoryDestination(
                             onArchive = { holder.archiveConversation(item.id) },
                             onRestore = { holder.restoreConversation(item.id) },
                             onRequestDelete = { holder.requestSingleDeletion(item.id) },
+                            onRename = { holder.requestRename(item) },
                             onSelectMultiple = {
                                 holder.setEditMode(true)
                                 holder.toggleSelect(item.id)
@@ -226,6 +233,44 @@ fun FloeConversationHistoryDestination(
         }
         state?.bulkProgress?.let { progress ->
             BulkBusyOverlay(holder, progress)
+        }
+    }
+
+    holder.pendingRename.value?.let { draft ->
+        val wide = LocalConfiguration.current.screenWidthDp >= 700
+        FloePageSheet(
+            visible = true,
+            onDismiss = { holder.cancelRename() },
+            widthFraction = if (wide) 0.6f else 1f,
+            heightFraction = if (wide) 0.5f else 0.8f,
+            placement = if (wide) FloeSheetPlacement.CENTER else FloeSheetPlacement.BOTTOM,
+        ) {
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                FloeText(stringResource(R.string.history_rename_title), style = Floe.typography.section)
+                FloeSettingsSectionCard(title = null) {
+                    FloeFormTextField(
+                        label = stringResource(R.string.history_rename_name),
+                        value = draft.title,
+                        onValueChange = holder::updateRenameTitle,
+                        enabled = !draft.inFlight,
+                    )
+                }
+                if (draft.failed) {
+                    FloeText(stringResource(R.string.history_rename_failed), color = Floe.colors.pending)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.history_rename_save),
+                        enabled = !draft.inFlight && draft.title.isNotBlank(),
+                        onClick = { holder.confirmRename() },
+                    )
+                    FloeCapsuleAction(
+                        label = stringResource(R.string.action_cancel),
+                        onClick = { holder.cancelRename() },
+                    )
+                    if (draft.inFlight) FloeActivityIndicator()
+                }
+            }
         }
     }
 
@@ -355,6 +400,7 @@ private fun HistoryRow(
     onArchive: () -> Unit,
     onRestore: () -> Unit,
     onRequestDelete: () -> Unit,
+    onRename: () -> Unit,
     onSelectMultiple: () -> Unit,
 ) {
     val colors = Floe.colors
@@ -404,6 +450,11 @@ private fun HistoryRow(
                     contentAlignment = Alignment.Center,
                 ) { IconGlyph(FloeIcons.ChevronUpDown, colors.secondaryLabel, 16.dp) }
                 FloeChipMenu(expanded = menuExpanded, onDismiss = { menuExpanded = false }) {
+                    CupertinoMenuEntry(
+                        title = stringResource(R.string.history_rename_title),
+                        selected = false,
+                        onClick = { menuExpanded = false; onRename() },
+                    )
                     when (mode) {
                         HistoryDestinationMode.ARCHIVE -> {
                             CupertinoMenuEntry(

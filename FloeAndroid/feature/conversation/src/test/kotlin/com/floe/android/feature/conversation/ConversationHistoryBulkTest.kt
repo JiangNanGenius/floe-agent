@@ -14,6 +14,39 @@ import org.junit.Test
 
 class ConversationHistoryBulkTest {
 
+    @Test fun lateSameIdRenameCannotCloseAReplacementEditor() {
+        val (h, host) = holder()
+        val item = h.state.value!!.items.first()
+        h.requestRename(item)
+        h.updateRenameTitle("First new name")
+        assertTrue(h.confirmRename())
+        val oldToken = host.lastArgs("renameConversation")!![2] as Long
+        h.cancelRename()
+        h.requestRename(item)
+        h.updateRenameTitle("Second new name")
+        assertTrue(h.confirmRename())
+        val newToken = host.lastArgs("renameConversation")!![2] as Long
+        assertTrue(oldToken != newToken)
+        h.applyRenameOutcome(item.id, oldToken, true)
+        assertEquals(newToken, h.pendingRename.value!!.requestToken)
+        assertTrue(h.pendingRename.value!!.inFlight)
+        h.applyRenameOutcome(item.id, newToken, true)
+        assertNull(h.pendingRename.value)
+    }
+
+    @Test fun failedRenameKeepsTheActualDraftForExplicitRetry() {
+        val (h, host) = holder()
+        val item = h.state.value!!.items.first()
+        h.requestRename(item)
+        h.updateRenameTitle("中文 🖊️ draft")
+        assertTrue(h.confirmRename())
+        val token = host.lastArgs("renameConversation")!![2] as Long
+        h.applyRenameOutcome(item.id, token, false)
+        assertEquals("中文 🖊️ draft", h.pendingRename.value!!.title)
+        assertTrue(h.pendingRename.value!!.failed)
+        assertTrue(!h.pendingRename.value!!.inFlight)
+    }
+
     private fun holder(host: RecordingHost = RecordingHost()): Pair<ConversationHistoryHolder, RecordingHost> {
         val h = ConversationHistoryHolder(host)
         h.applyHostState(historyState())

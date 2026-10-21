@@ -235,6 +235,16 @@ class IntegrationsHostController internal constructor(
     internal var secureIngress: HostSecureIngressSubmitter = NativeHostSecureIngressSubmitter
 
     internal fun start() {
+        updateDestination {
+            it.copy(connectors = it.connectors.copy(services = listOf(
+                com.floe.android.feature.integrations.ConnectorDestinationRowUi(
+                    destinationId = "github",
+                    title = actionString(R.string.git_credentials_title),
+                    subtitle = actionString(R.string.git_credentials_caption),
+                    availability = com.floe.android.feature.integrations.ConnectorAvailabilityUi.Available,
+                ),
+            )))
+        }
         if (admitted()) {
             refreshSkills()
             refreshMcpServers()
@@ -1630,9 +1640,11 @@ class IntegrationsHostController internal constructor(
     }
 
     override fun openConnectorDestination(destinationId: String): Boolean {
-        // Connector destinations are presentation routes inside the
-        // integrations surface; the holder owns the pane stack.
-        return admitted()
+        if (!admitted()) return false
+        return when (destinationId) {
+            "github" -> host.gitCredentials.openEditor()
+            else -> false
+        }
     }
 
     /**

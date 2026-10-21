@@ -536,6 +536,12 @@ public enum AndroidRuntimeBootstrap {
         // and non-gating, and `registerExtension` naturally refuses once a
         // generation is installing or live (idempotent per process).
         G02TemporaryDomainRegistration.registerIfNeeded()
+        // G02 privacy package (R2 successor): the REAL optional-domain
+        // extension is registered in the same idle window and attaches
+        // inside the owned install. It never gates the ordinary base; a
+        // failed attach leaves only the three frozen privacy keys
+        // unregistered (fail-closed), never a fake ready state.
+        G02PrivacyDomainRegistration.registerIfNeeded()
         // G02: construct the real domain service graph over THIS
         // generation's owned cluster and bind every G02 command handler
         // before the bootstrap terminal settles. Failure leaves the

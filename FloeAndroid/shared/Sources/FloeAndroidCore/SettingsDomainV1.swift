@@ -233,8 +233,17 @@ public enum SettingsDomainV1 {
 
         do {
             switch command {
-            case "config.defaults.get", "privacy.summary.get":
+            case "config.defaults.get":
                 try validateEmpty(payload: payload)
+
+            // Additive optional failure-report request (MAIN_PRIVACY_REPORT_
+            // STREAMING_DECISION_20261019). An absent/empty payload keeps the
+            // frozen summary request byte-identical; `{report:{handle,
+            // cursor,maxItems}}` is the ONLY accepted alternative and reads
+            // an already-issued same-root report page. No new command,
+            // label, scope or matrix entry is introduced.
+            case "privacy.summary.get":
+                try validatePrivacySummary(payload)
 
             case "config.defaults.save":
                 try validateDefaultsSave(payload)
@@ -900,8 +909,58 @@ public enum SettingsDomainV1 {
     private static func validatePrivacyClear(_ payload: JSONValue?) throws {
         var reader = try reader(payload, required: ["confirmToken"],
                                 unknownReason: "unknownPrivacyField")
-        _ = try digestValue(reader.take("confirmToken") ?? .null, "confirmToken")
+        let token = try stringValue(reader.take("confirmToken") ?? .null,
+                                    "confirmToken", maxCharacters: 80)
+        // Two accepted HISTORICAL spellings, one authority. The frozen
+        // contract spells the value as the preview digest the host echoed;
+        // Main's trusted-host decision additionally requires an opaque
+        // one-operation capability minted after the real confirmation tap
+        // (pc:v1:<32 hex>). Shape acceptance proves NOTHING: the facade
+        // consumes the capability from the privileged native store and
+        // refuses a bare digest, a model-authored token or a foreign one
+        // BEFORE any effect.
+        let isDigest = token.hasPrefix("sha256:")
+            && token.count == 71
+            && token.dropFirst(7).allSatisfy { $0.isHexDigit }
+        let isCapability = token.hasPrefix(PrivacyConfirmationLimits.tokenPrefix)
+            && token.count == PrivacyConfirmationLimits.tokenLogicalBytes
+            && token.dropFirst(PrivacyConfirmationLimits.tokenPrefix.count)
+                .allSatisfy { $0.isHexDigit }
+        guard isDigest || isCapability else {
+            throw ValidationFailure.invalid("invalidPayloadField:confirmToken")
+        }
         try reader.finish(unknownReason: "unknownPrivacyField")
+    }
+
+    /// Additive optional report-paging request for `privacy.summary.get`.
+    /// Strict closed grammar: `report` is the ONLY top-level key; `handle`
+    /// is required; `cursor` is an opaque bounded string; `maxItems` is an
+    /// INTEGER 1...128 (Bool/fractional/unknown keys are typed refusals).
+    /// The handle is NOT authority: the native report store validates it
+    /// against the exact root/epoch/process and answers typed notFound for
+    /// foreign/expired values.
+    private static func validatePrivacySummary(_ payload: JSONValue?) throws {
+        guard let payload else { return }
+        guard case .object(let object) = payload else {
+            throw ValidationFailure.invalid("invalidPayload")
+        }
+        if object.isEmpty { return }
+        var reader = Reader(object: object)
+        guard let reportValue = reader.take("report") else {
+            throw ValidationFailure.invalid("missingPayloadField:report")
+        }
+        try reader.finish(unknownReason: "unknownPrivacyField")
+        guard case .object(let reportObject) = reportValue else {
+            throw ValidationFailure.invalid("invalidPayloadField:report")
+        }
+        var reportReader = Reader(object: reportObject)
+        _ = try stringValue(reportReader.take("handle") ?? .null,
+                            "handle", maxCharacters: 256)
+        _ = try optionalStringValue(reportReader.take("cursor"), "cursor",
+                                    maxCharacters: 256)
+        _ = try optionalIntValue(reportReader.take("maxItems"), "maxItems",
+                                 range: PrivacyReportLimits.minimumPageItems...PrivacyReportLimits.maximumPageItems)
+        try reportReader.finish(unknownReason: "unknownPrivacyReportField")
     }
 
     private static func isNull(_ value: JSONValue) -> Bool {
@@ -976,6 +1035,39 @@ public enum SettingsDomainV1 {
         public static func token(domain: String, records: [[Field]]) -> String {
             let digest = SHA256.hash(data: stream(domain: domain, records: records))
             return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+        }
+
+        /// Additive streaming sink for the SAME canonical stream (Main
+        /// privacy streaming decision 2026-10-19). It lets a bounded
+        /// keyset traversal append one record at a time without materializing
+        /// a sorted row array; `finalize()` emits byte-identical output to
+        /// `token(domain:records:)` for the same ordered records
+        /// (`StreamingEquivalence` tests pin this on golden-shaped cases).
+        /// No encoding rule is duplicated: `record(_:)` is the one encoder.
+        public struct IncrementalToken: @unchecked Sendable {
+            private var hasher = SHA256()
+            private var finished = false
+
+            public init(domain: String) {
+                var prefix = Data(domain.utf8)
+                prefix.append(0x00)
+                hasher.update(data: prefix)
+            }
+
+            public mutating func append(_ fields: [Field]) {
+                hasher.update(data: CanonicalDigest.record(fields))
+            }
+
+            /// Appends the single zero-field terminator and returns the
+            /// `sha256:<hex>` token. Calling twice returns an empty string:
+            /// a finishing step is never repeated silently.
+            public mutating func finalize() -> String {
+                guard !finished else { return "" }
+                finished = true
+                hasher.update(data: CanonicalDigest.record([]))
+                let digest = hasher.finalize()
+                return "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+            }
         }
 
         /// Fixed-order single-row digest (one record + terminator).

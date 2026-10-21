@@ -109,6 +109,33 @@ class ConversationHostController internal constructor(
      */
     val keptPromotion = MutableStateFlow<KeptPromotion?>(null)
 
+    /**
+     * The EXACT UI-invalidation signal of a durable conversation
+     * authoritatively deleted by a privacy history clear. Published ONLY
+     * after the typed `notFound` under the SAME root and the EXACT holder
+     * entry generation; the release itself (map + pumps) is host resource
+     * ownership and happens regardless of UI. The shell — sole route
+     * authority — consumes it to retire and genuinely navigate away ONLY
+     * the STILL-VISIBLE, exactly-owned durable surface (same id + the exact
+     * signaled holder instance + root re-check off-main + visible-origin
+     * re-validation after the await). A stale signal never touches a
+     * re-opened/rebound same-id holder, a temporary/Notes/survivor surface,
+     * or any surface after a root change.
+     */
+    val privacyClearedConversation =
+        MutableStateFlow<PrivacyClearedConversationSignal?>(null)
+
+    // UI binding only: prevents deletions of off-screen cached holders from
+    // overwriting the one visible-holder signal in this conflated flow.
+    private val privacyVisibleHolder = java.util.concurrent.atomic.AtomicReference<
+        com.floe.android.feature.conversation.ConversationFlowHolder?>(null)
+
+    internal fun bindPrivacyVisibleHolder(
+        holder: com.floe.android.feature.conversation.ConversationFlowHolder?,
+    ) {
+        privacyVisibleHolder.set(holder)
+    }
+
     /** Inspector presentation requests (host → shell). */
     val inspectorRequest = MutableStateFlow<Pair<InspectorRouteUi, String>?>(null)
 
@@ -195,6 +222,23 @@ class ConversationHostController internal constructor(
     private var lastProviderListSignature: String? = null
     private var modelsReadOnce = false
     private var modelsReadAttempted = false
+    @Volatile
+    private var modelCacheGeneration = 0L
+
+    /**
+     * Identity of the LAST COMPLETE model sweep. The provider editor may seed
+     * a destructive draft only from rows that still belong to this exact
+     * sweep: a newer attempt (in flight or failed) supersedes it, and a
+     * different native root or provider row set makes the cached rows the
+     * wrong seed. The composer keeps its own last-real projection separately
+     * (`modelProjection`), so a failed refresh never blanks a usable picker.
+     */
+    @Volatile
+    private var modelCacheSweepGeneration = -1L
+    @Volatile
+    private var modelCacheRootEpoch: Long? = null
+    @Volatile
+    private var modelCacheProviderIds: Set<String> = emptySet()
 
     /** Active temporary session (conversationId + incarnation), if any. */
     private val activeTemporary = ConcurrentHashMap<String, TemporarySessionRef>()
@@ -292,6 +336,13 @@ class ConversationHostController internal constructor(
         val models: List<ModelOptionUi> = emptyList(),
         val needsProvider: Boolean = false,
         val loaded: Boolean = false,
+        /**
+         * Monotonic identity of the cached full-row set. A replacement can
+         * leave the composer option list byte-identical (for example a
+         * disabled/hidden row edit) while still changing the provider row
+         * counts, so the provider surface joins on this explicit signal.
+         */
+        val cacheGeneration: Long = 0,
     )
 
     /**
@@ -340,19 +391,25 @@ class ConversationHostController internal constructor(
      * single-flight release) exactly as the previous global chain did.
      */
     private fun startModelSweep(generation: Long, rootEpoch: Long?) {
+        val targets = modelSweepTargets()
+        if (targets.isEmpty()) {
+            // No provider rows yet: publish the honest empty join (the
+            // previous global read delivered an empty page here as well).
+            finishModelSweep(generation, rootEpoch, targets, ArrayList())
+            return
+        }
+        accumulateModelSweep(generation, rootEpoch, targets, 0, ArrayList())
+    }
+
+    /** Every KNOWN provider id (conversation, image and video — disabled
+     * rows included) covered by a full-row sweep, in stable order. */
+    private fun modelSweepTargets(): List<String> {
         val providerIds = LinkedHashSet<String>()
         host.providers.destination.value.list.let { lists ->
             (lists.conversationProviders + lists.imageProviders + lists.videoProviders)
                 .forEach { providerIds.add(it.providerId.uppercase()) }
         }
-        val targets = providerIds.sorted()
-        if (targets.isEmpty()) {
-            // No provider rows yet: publish the honest empty join (the
-            // previous global read delivered an empty page here as well).
-            finishModelSweep(generation, rootEpoch, ArrayList())
-            return
-        }
-        accumulateModelSweep(generation, rootEpoch, targets, 0, ArrayList())
+        return providerIds.sorted()
     }
 
     private fun accumulateModelSweep(
@@ -367,7 +424,7 @@ class ConversationHostController internal constructor(
             return
         }
         if (index >= targets.size) {
-            finishModelSweep(generation, rootEpoch, accumulated)
+            finishModelSweep(generation, rootEpoch, targets, accumulated)
             return
         }
         if (accumulated.size >= maxModelRows) {
@@ -455,6 +512,7 @@ class ConversationHostController internal constructor(
     private fun finishModelSweep(
         generation: Long,
         rootEpoch: Long?,
+        targets: List<String>,
         accumulated: ArrayList<JsonElement>,
     ) {
         if (!modelsSweepCurrent(generation, rootEpoch)) {
@@ -469,6 +527,10 @@ class ConversationHostController internal constructor(
         }
         cachedModelRows = decoded
         modelsReadOnce = true
+        modelCacheGeneration += 1
+        modelCacheSweepGeneration = generation
+        modelCacheRootEpoch = rootEpoch
+        modelCacheProviderIds = targets.toSet()
         publishModelProjection()
         host.trackOperation(
             HostCommandRequest(
@@ -564,6 +626,7 @@ class ConversationHostController internal constructor(
             // way instead of pretending the composer can send).
             needsProvider = modelsReadAttempted && !usable,
             loaded = modelsReadOnce,
+            cacheGeneration = modelCacheGeneration,
         )
         modelProjection.value = projection
         // Republish every live thread so its composer sees the real options.
@@ -581,6 +644,26 @@ class ConversationHostController internal constructor(
 
     /** Re-joins the cached model rows with the CURRENT provider projection. */
     internal fun republishModelProjection() = publishModelProjection()
+
+    /**
+     * True only when the cached full-row set belongs to the LATEST COMPLETE
+     * sweep for the CURRENT native root and provider row set. A last-good
+     * cache is deliberately NOT enough: after "read A → save profile B →
+     * the next sweep fails", the old A rows still look loaded, but seeding a
+     * provider editor from them and saving that draft would legitimately
+     * erase B's models. The composer keeps using the last-real projection
+     * (separate state); only this destructive-draft admission refuses until a
+     * later successful sweep replaces the cache.
+     */
+    internal fun modelsProjectionReadyForEditing(): Boolean {
+        if (!modelsReadOnce) return false
+        if (modelRefreshInFlight.get() || modelRefreshPending.get()) return false
+        // A newer attempt — still running, failed, or merely requested —
+        // has already superseded the cached rows.
+        if (modelCacheSweepGeneration != modelsRefreshGeneration.get()) return false
+        if (host.nativeRootEpoch() != modelCacheRootEpoch) return false
+        return modelCacheProviderIds == modelSweepTargets().toSet()
+    }
 
     /** All real model rows of one provider (including disabled/hidden ones). */
     internal fun modelRowsForProvider(providerId: String): List<ProviderWire.ModelRow> =
@@ -629,11 +712,13 @@ class ConversationHostController internal constructor(
             this,
             conversationId,
             initialDraft,
+            initialSessionEpoch = epoch,
         )
         if (temporaryNativeRootEpoch >= 0L) {
             holder.temporaryNativeRootEpoch = temporaryNativeRootEpoch
         }
         val builder = ThreadProjectionBuilder(conversationId).also {
+            it.session = holder.session
             val projection = currentModels()
             it.applyModels(projection.models, projection.needsProvider)
             // A RAM-only temporary session is a REAL conversation identity:
@@ -665,13 +750,22 @@ class ConversationHostController internal constructor(
         // native callback can never publish into another owner's surface.
         invalidatePlanGoalDetails(conversationId)
         holders.remove(conversationId)?.let { entry ->
-            eventPumps.values.filter { it.runID in entry.builder.runIds() }
-                .forEach { it.close() }
-            entry.builder.runIds().forEach { runID ->
-                liveSnapshotRefreshes.remove(runID)
-                runStreamGenerations.remove(streamKey(conversationId, runID))
-                runDurableWatermarks.remove(streamKey(conversationId, runID))
-            }
+            retireHolderResources(conversationId, entry)
+        }
+    }
+
+    private fun retireHolderResources(
+        conversationId: String,
+        entry: ConversationFlowHolderEntry,
+    ) {
+        val retiredSession = entry.holder.session
+        host.scope.launch(host.ioDispatcher) { host.attachments.drainSession(retiredSession) }
+        eventPumps.values.filter { it.runID in entry.builder.runIds() }
+            .forEach { it.close() }
+        entry.builder.runIds().forEach { runID ->
+            liveSnapshotRefreshes.remove(runID)
+            runStreamGenerations.remove(streamKey(conversationId, runID))
+            runDurableWatermarks.remove(streamKey(conversationId, runID))
         }
     }
 
@@ -2826,6 +2920,7 @@ class ConversationHostController internal constructor(
 
     override fun requestAttachmentImport(session: ConversationSessionToken): Boolean {
         if (!host.readiness.value.attachmentStagingAdmitted) return false
+        if (!attachmentSessionIsCurrent(session)) return false
         host.attachments.requestPicker(session)
         return true
     }
@@ -2851,7 +2946,8 @@ class ConversationHostController internal constructor(
         session: ConversationSessionToken,
         request: AttachmentOpenRequest,
     ): Boolean {
-        if (!conversationAdmitted()) return false
+        if (!conversationAdmitted() || !attachmentSessionIsCurrent(session) ||
+            request.conversationId != session.conversationId) return false
         host.attachments.open(request)
         return true
     }
@@ -2861,8 +2957,10 @@ class ConversationHostController internal constructor(
         staged: StagedAttachmentUi,
     ) {
         val entry = holders[session.conversationId] ?: return
+        if (!attachmentSessionIsCurrent(session)) return
         entry.builder.stageAttachment(staged)
-        entry.holder.applyAttachmentOutcome(staged.id, AttachmentImportUi.Ready)
+        entry.holder.stagedAttachments.value =
+            entry.holder.stagedAttachments.value.filterNot { it.id == staged.id } + staged
         entry.holder.applyHostSnapshot(entry.builder.build())
     }
 
@@ -2871,7 +2969,26 @@ class ConversationHostController internal constructor(
         attachmentId: String,
         import: AttachmentImportUi,
     ) {
+        if (!attachmentSessionIsCurrent(session)) return
         holders[session.conversationId]?.holder?.applyAttachmentOutcome(attachmentId, import)
+    }
+
+    internal fun attachmentSessionIsCurrent(session: ConversationSessionToken): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        return entry.holder.session == session && !entry.holder.retired && !entry.builder.isTemporary
+    }
+
+    internal fun onAttachmentRemoved(session: ConversationSessionToken, attachmentId: String) {
+        if (!attachmentSessionIsCurrent(session)) return
+        val entry = holders[session.conversationId] ?: return
+        entry.builder.unstageAttachment(attachmentId)
+        entry.holder.stagedAttachments.value = entry.holder.stagedAttachments.value.filterNot { it.id == attachmentId }
+    }
+
+    internal fun onAttachmentImportFailed(session: ConversationSessionToken, reason: String) {
+        if (attachmentSessionIsCurrent(session)) holders[session.conversationId]?.let {
+            surfaceError(it, host.attachments.failureMessage(reason))
+        }
     }
 
     // --------------------------------------------------------- plan / goal UI
@@ -3024,6 +3141,7 @@ class ConversationHostController internal constructor(
     ): Boolean {
         if (!conversationAdmitted()) return false
         val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.retired || entry.holder.session != session) return false
         if (entry.builder.isTemporary) return false // honest: temp compacts nothing
         val payload = modelId?.takeIf { it.isNotBlank() }?.let {
             JsonObject(mapOf("modelID" to JsonPrimitive(it)))
@@ -3256,10 +3374,14 @@ class ConversationHostController internal constructor(
     ): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.retired || entry.holder.session != session) return false
+        val child = entry.holder.snapshot.value?.childRuns?.firstOrNull { it.id == childRunId }
+            ?: return false
+        if (child.parentRunId.isBlank()) return false
         host.trackOperation(
             HostCommandRequest(
                 command = "child.entries",
-                scope = HostScope.TaskExecution(session.conversationId, childRunId),
+                scope = HostScope.TaskExecution(session.conversationId, child.parentRunId),
                 stateful = false,
                 correlationID = client().correlationID("cchild"),
                 payload = JsonObject(
@@ -3271,7 +3393,9 @@ class ConversationHostController internal constructor(
                 ),
             ),
         ) { outcome ->
-            if (outcome is HostOperationOutcome.Completed && outcome.value != null) {
+            if (outcome is HostOperationOutcome.Completed && outcome.value != null &&
+                holders[session.conversationId] === entry &&
+                !entry.holder.retired && entry.holder.session == session) {
                 val detail = ConversationWire.decodeChildDetail(childRunId, outcome.value)
                 entry.builder.childDetails[childRunId] = detail
                 entry.holder.applyHostSnapshot(entry.builder.build())
@@ -3732,6 +3856,93 @@ class ConversationHostController internal constructor(
             }.map { it.holder.session.conversationId }.toSet()
         }
 
+    /**
+     * R2-A privacy history-clear consumer refresh (Main direction
+     * 2026-10-21): after a SAME-root completed clear — INCLUDING a partial
+     * one — re-read the REAL history list and reconcile the retained
+     * per-conversation holders against the same root. Holder survival is
+     * decided ONLY by an authoritative per-row `conversation.get` under the
+     * current root and the EXACT holder-entry identity (the entry's
+     * globally-unique [ConversationFlowHolderEntry.sessionEpoch]); a row
+     * that answers the typed `notFound` refusal is released through the
+     * existing [releaseHolder] lifecycle so its closed pumps can never
+     * resurrect cleared history. Absence from the first history page is NOT
+     * proof of deletion — survivors, unrelated state and any newer
+     * holder/root are preserved, and RAM-only temporary sessions (never in
+     * the durable store) are never existence-checked at all.
+     *
+     * The identity token is the ENTRY's unique session epoch, NOT
+     * `holder.session.sessionEpoch`: a fresh holder always starts its UI
+     * session epoch at 0, so after a release + re-open the new holder would
+     * collide with the old capture (ABA) and a late `notFound` could release
+     * the WRONG holder. The entry epoch is minted once from the global
+     * counter and never reused, so it names exactly one holder instance.
+     */
+    internal fun refreshAfterPrivacyHistoryClear() {
+        if (!conversationAdmitted()) return
+        val rootEpoch = host.nativeRootEpoch()
+        refreshHistory()
+        if (rootEpoch == null) return
+        val retained = holders.entries.map { entry ->
+            Triple(entry.key, entry.value.sessionEpoch, entry.value.isTemporary)
+        }
+        for ((conversationId, entryEpoch, isTemporary) in retained) {
+            if (isTemporary) continue
+            checkHolderSurvivalAfterPrivacyClear(conversationId, entryEpoch, rootEpoch)
+        }
+    }
+
+    /**
+     * ONE authoritative existence read for a retained holder. Only the typed
+     * `notFound` refusal under the SAME root and the SAME holder-entry
+     * generation releases the surface; every other outcome (including a
+     * newer root, a replaced/reopened holder or a fenced session) keeps it.
+     */
+    private fun checkHolderSurvivalAfterPrivacyClear(
+        conversationId: String,
+        entryEpoch: Long,
+        rootEpoch: Long,
+    ) {
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cget-prv"),
+            ),
+        ) { outcome ->
+            if (outcome is HostOperationOutcome.Rejected &&
+                outcome.code == "notFound" &&
+                host.nativeRootEpoch() == rootEpoch &&
+                holders[conversationId]?.sessionEpoch == entryEpoch
+            ) {
+                // Atomic expected-entry retirement: an ABA replacement
+                // cannot slip between the identity check and map removal.
+                var released: ConversationFlowHolderEntry? = null
+                holders.computeIfPresent(conversationId) { _, entry ->
+                    if (entry.sessionEpoch != entryEpoch || entry.isTemporary) {
+                        entry
+                    } else {
+                        invalidatePlanGoalDetails(conversationId)
+                        retireHolderResources(conversationId, entry)
+                        released = entry
+                        null
+                    }
+                }
+                released?.let { entry ->
+                    if (privacyVisibleHolder.get() === entry.holder) {
+                        privacyClearedConversation.value = PrivacyClearedConversationSignal(
+                            conversationId = conversationId,
+                            entryEpoch = entryEpoch,
+                            rootEpoch = rootEpoch,
+                            holder = entry.holder,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     override fun createConversation(): Boolean {
         var started = false
         createConversationForLaunch(
@@ -3873,6 +4084,17 @@ class ConversationHostController internal constructor(
             payload = null,
             correlationPrefix = "cdel",
         )
+        return true
+    }
+
+    override fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean {
+        if (!conversationAdmitted() || title.isBlank()) return false
+        mutateConversation(
+            conversationId = conversationId,
+            command = "conversation.rename",
+            payload = JsonObject(mapOf("title" to JsonPrimitive(title))),
+            correlationPrefix = "crename",
+        ) { accepted, _ -> historyHolder.applyRenameOutcome(conversationId, requestToken, accepted) }
         return true
     }
 
@@ -4058,6 +4280,23 @@ class ConversationHostController internal constructor(
 data class KeptPromotion(
     val originRef: TemporarySessionRef,
     val durableConversationId: String,
+)
+
+/**
+ * The exact-identity payload of a privacy-cleared durable conversation (see
+ * [ConversationHostController.privacyClearedConversation]). [entryEpoch] is
+ * the holder ENTRY's globally-unique session epoch (never the UI session
+ * epoch, which restarts at 0 for every fresh holder); [holder] is the exact
+ * released instance so the shell can prove visible ownership by identity
+ * (a re-created same-id holder is a different instance and is never
+ * invalidated by a stale signal). [rootEpoch] is the ACTUAL native epoch
+ * the authoritative `notFound` was verified under.
+ */
+data class PrivacyClearedConversationSignal(
+    val conversationId: String,
+    val entryEpoch: Long,
+    val rootEpoch: Long,
+    val holder: com.floe.android.feature.conversation.ConversationFlowHolder,
 )
 
 /** Holder + projection bookkeeping for one conversation surface. */

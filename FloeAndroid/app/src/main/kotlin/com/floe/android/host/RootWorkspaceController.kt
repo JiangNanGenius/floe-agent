@@ -99,6 +99,8 @@ class RootWorkspaceController internal constructor(
      * empty). Survives rotation because this owner lives on the host. */
     private val draftAttachmentsState = MutableStateFlow<List<StagedAttachmentUi>>(emptyList())
     val draftAttachments: StateFlow<List<StagedAttachmentUi>> = draftAttachmentsState
+    private val draftImportFailedState = MutableStateFlow(false)
+    val draftImportFailed: StateFlow<Boolean> = draftImportFailedState
 
     private fun publishDraftLocked() {
         draftAttachmentsState.value = draft.rows.values.toList()
@@ -120,6 +122,7 @@ class RootWorkspaceController internal constructor(
      * the surface states it honestly) when staging is not admitted or the
      * pick could not start. A temporary session never reaches this path. */
     fun requestHomeAttachments(): Boolean {
+        draftImportFailedState.value = false
         val (nonce, generation) = currentDraftOwner()
         return host.attachments.requestDraftPicker(nonce, generation)
     }
@@ -129,8 +132,23 @@ class RootWorkspaceController internal constructor(
     internal fun onDraftAttachmentStaged(nonce: String, staged: StagedAttachmentUi) {
         synchronized(attachmentLock) {
             if (draft.nonce != nonce) return // a replacement Home owns the surface
+            draftImportFailedState.value = false
             draft.rows[staged.id] = staged
             publishDraftLocked()
+        }
+    }
+
+    internal fun onDraftAttachmentRemoved(nonce: String, stagingId: String) {
+        synchronized(attachmentLock) {
+            if (draft.nonce != nonce) return
+            draft.rows.remove(stagingId)
+            publishDraftLocked()
+        }
+    }
+
+    internal fun onDraftAttachmentFailed(nonce: String) {
+        synchronized(attachmentLock) {
+            if (draft.nonce == nonce) draftImportFailedState.value = true
         }
     }
 
@@ -251,6 +269,7 @@ class RootWorkspaceController internal constructor(
     internal fun onHomeReplaced(homeGeneration: Long) {
         val outgoing = synchronized(attachmentLock) {
             val previous = draft
+            draftImportFailedState.value = false
             draft = DraftOwnership(
                 nonce = newNonce(),
                 homeGeneration = homeGeneration,
@@ -304,6 +323,7 @@ class RootWorkspaceController internal constructor(
      * cleanup of any not-yet-drained staging through the existing lease). */
     internal fun stop() {
         synchronized(attachmentLock) {
+            draftImportFailedState.value = false
             draft = DraftOwnership(newNonce(), 0L, LinkedHashMap(), emptyList())
             draftAttachmentsState.value = emptyList()
         }

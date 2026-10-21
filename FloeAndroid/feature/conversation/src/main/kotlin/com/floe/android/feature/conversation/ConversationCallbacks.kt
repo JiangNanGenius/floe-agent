@@ -509,6 +509,9 @@ interface ConversationUiCallbacks {
     fun restoreConversation(conversationId: String): Boolean
     fun deleteConversation(conversationId: String): Boolean
 
+    /** Existing native conversation.rename CAS; no optimistic title change. */
+    fun renameConversation(conversationId: String, title: String, requestToken: Long): Boolean = false
+
     /** ⇄ matchingConversationSnippets(query): the durable FTS authority runs
      * the search (incl. CJK); [epoch] echoes into [HistoryListUiState.searchEpoch]
      * so stale pages cannot land. */

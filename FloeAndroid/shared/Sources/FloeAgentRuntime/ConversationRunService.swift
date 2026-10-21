@@ -571,6 +571,17 @@ public actor ConversationRunService {
         await runtime.cancel()
     }
 
+    /// Bounded snapshot of this run's in-memory approval grants (privacy
+    /// clear adapter over the ACTUAL runtime state — never a second store).
+    public func approvalGrantsSnapshot() async -> [ApprovalGrant] {
+        await runtime.approvalGrantsSnapshot()
+    }
+
+    /// Revokes every occurrence of one grant id in this run's runtime.
+    public func revokeApprovalGrant(id: UUID) async -> Int {
+        await runtime.revokeApprovalGrant(id: id)
+    }
+
     public func persistRecoveryPoint() async {
         await persistRecoveryPointReliably(boundary: "externalRecoveryPoint")
     }

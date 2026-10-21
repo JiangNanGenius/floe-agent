@@ -132,11 +132,27 @@ private fun FloeShellContent(
         mutableStateOf(restoredShellSelection(selectionKey, liveTemporaryIdAtRestore))
     }
 
+    /** The EXACT (conversation id, holder instance) the visible detail
+     * surface currently binds, reported by the conversation destination
+     * itself. Written only on holder binding, cleared on every visible-
+     * selection commit. Lets the shell prove still-visible holder ownership
+     * for the privacy-clear invalidation WITHOUT making the host registry
+     * observable (a re-resolve through `holderFor` would silently re-create
+     * a deleted id as an empty thread). */
+    var visibleConversationBinding:
+        Pair<String, com.floe.android.feature.conversation.ConversationFlowHolder>? by remember {
+            mutableStateOf(null)
+        }
+
     /** The one visible-selection write for every commit path: the live
      * surface always updates; the persisted key follows ONLY for durable/
      * ordinary targets, so a live temporary id never reaches saved state. */
     fun commitVisibleSelection(next: SidebarSelection) {
         selection = next
+        // The exact holder binding belongs to the PREVIOUS visible surface;
+        // the conversation destination re-reports after composing the next.
+        visibleConversationBinding = null
+        runtimeHost?.conversations?.bindPrivacyVisibleHolder(null)
         val liveTemporaryId =
             runtimeHost?.conversations?.activeTemporarySession()?.conversationId
         if (!isLiveTemporarySelection(next, liveTemporaryId)) {
@@ -231,6 +247,62 @@ private fun FloeShellContent(
                         commitVisibleSelection(
                             SidebarSelection.Conversation(promotion.durableConversationId),
                         )
+                    }
+                }
+            }
+        }
+        LaunchedEffect(runtimeHost) {
+            // ONE serial consumer for the privacy-clear UI invalidation.
+            // The host publishes an EXACT signal only after an authoritative
+            // same-root conversation.get notFound; the shell — sole route
+            // authority — retires and genuinely navigates away ONLY the
+            // still-visible, exactly-owned durable surface. Every other
+            // origin (moved away, Notes/survivor, the live temporary, a
+            // re-opened/rebound same-id holder, or a root change during the
+            // off-main await) drops the signal; the host release has already
+            // fenced the deleted holder's pumps regardless.
+            runtimeHost.conversations.privacyClearedConversation.collect { signal ->
+                if (signal != null) {
+                    runtimeHost.conversations.privacyClearedConversation.value = null
+                    fun appliesNow(): Boolean = privacyClearedConversationAppliesToVisibleOrigin(
+                        visible = selection,
+                        boundConversationId = visibleConversationBinding?.first,
+                        boundHolder = visibleConversationBinding?.second,
+                        origin = signal,
+                        liveTemporaryConversationId =
+                            runtimeHost.conversations.activeTemporarySession()?.conversationId,
+                    )
+                    if (appliesNow()) {
+                        // Native ownership re-check OFF the main thread.
+                        val rootNow = kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO) {
+                            runtimeHost.nativeRootEpoch()
+                        }
+                        // The visible origin is RE-VALIDATED after the await.
+                        if (rootNow == signal.rootEpoch && appliesNow()) {
+                            // Genuine transition to the existing New Task
+                            // route through the existing home lifecycle; the
+                            // deleted visible holder is retired through the
+                            // existing UI-owner path exactly when the
+                            // admitted route commits.
+                            runtimeHost.home.applyHostNavigation(
+                                target =
+                                    SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK),
+                                // This scoped deletion signal must never end a
+                                // replacement temporary session. Refuse stale
+                                // origins instead of using the generic temp fence.
+                                waitForAdmission = {
+                                    appliesNow() && runtimeHost.conversations
+                                        .activeTemporarySession() == null
+                                },
+                                commit = { next ->
+                                    signal.holder.retireForNavigation()
+                                    commitVisibleSelection(next)
+                                    drawerOpen = false
+                                    inspectorRoute = null
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -400,6 +472,10 @@ private fun FloeShellContent(
                         settingsVisible = true
                     },
                     runtimeHost = runtimeHost,
+                    onConversationHolderBound = { boundId, boundHolder ->
+                        visibleConversationBinding = boundId to boundHolder
+                        runtimeHost?.conversations?.bindPrivacyVisibleHolder(boundHolder)
+                    },
                 )
             }
         }
@@ -589,6 +665,29 @@ internal fun keptPromotionAppliesToVisibleOrigin(
 ): Boolean = visible is SidebarSelection.Conversation &&
     visible.conversationId == origin.conversationId &&
     visibleConversationEpoch == origin.sessionEpoch
+
+/**
+ * Whether a privacy-cleared conversation signal may invalidate the VISIBLE
+ * surface: ONLY while the visible selection is still that exact durable
+ * conversation AND the detail surface is bound to the EXACT signaled holder
+ * instance ([boundHolder] identity — a re-opened/rebound same-id holder is a
+ * different instance and is never retired/navigated by a stale signal) AND
+ * the visible surface is not the live RAM temporary one. The shell
+ * re-checks this after the off-main native-root await before committing the
+ * New Task transition; Notes/survivor surfaces never match because their
+ * visible selection is not this conversation.
+ */
+internal fun privacyClearedConversationAppliesToVisibleOrigin(
+    visible: SidebarSelection,
+    boundConversationId: String?,
+    boundHolder: com.floe.android.feature.conversation.ConversationFlowHolder?,
+    origin: com.floe.android.host.PrivacyClearedConversationSignal,
+    liveTemporaryConversationId: String?,
+): Boolean = visible is SidebarSelection.Conversation &&
+    visible.conversationId == origin.conversationId &&
+    visible.conversationId != liveTemporaryConversationId &&
+    boundConversationId == origin.conversationId &&
+    boundHolder != null && boundHolder === origin.holder
 
 internal fun encodeInspectorRoute(route: InspectorRoute): String =
     "${route.content.name}|${route.conversationId ?: ""}"
