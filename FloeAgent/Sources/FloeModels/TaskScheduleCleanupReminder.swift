@@ -45,11 +45,19 @@ public enum TaskScheduleCleanupStatus: String, Sendable, Codable, CaseIterable, 
 /// The bounded trigger that (re)starts monitoring for one schedule. Raw
 /// values are persisted in `setup_source`; never rename them. Failed or
 /// cancelled imports are NOT sources: handoff evidence only ever comes from
-/// the system actually receiving the file, or the user's own confirmation.
+/// the system actually receiving the file, the user's own confirmation, or
+/// a genuine SYSTEM firing of the "Run Scheduled Task" action against the
+/// still-live plan (`intentInvocation` observation — the action may be used by an
+/// automation even when the app never recorded an import/setup).
 public enum TaskScheduleSetupSource: String, Sendable, Codable, CaseIterable, Hashable {
     case importFlowOpened
     case handedOffToUser
     case userConfirmed
+    /// A real system automation fired the selected-schedule action for a
+    /// plan the durable store still finds eligible. Pure observation: it
+    /// (re)starts SILENT monitoring for that plan's own identity and never
+    /// grants permissions, launches, re-arms or changes lifecycle.
+    case intentInvocation
 }
 
 /// One durable, deduplicated monitoring/cleanup record per schedule.

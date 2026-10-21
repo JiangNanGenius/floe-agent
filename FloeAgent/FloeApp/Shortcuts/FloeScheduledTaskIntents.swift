@@ -19,8 +19,12 @@
 // When the action fires for a schedule the durable store can no longer
 // find, the deleted refusal is unchanged AND best-effort durable cleanup
 // evidence is recorded under the ORIGINAL stable UUID for the still-
-// lingering system automation. Reminders cannot start, arm or re-enable
-// anything.
+// lingering system automation. When it fires for a schedule the store CAN
+// still find, the production runner best-effort OBSERVES that genuine
+// system fire so an existing plan whose Shortcut was saved outside the
+// app (284 / manual) gains silent monitoring before the launch — a later
+// real terminal or delete can then open its cleanup reminder. Reminders
+// cannot start, arm or re-enable anything.
 
 #if canImport(AppIntents)
 import AppIntents
@@ -122,7 +126,9 @@ struct TaskScheduleEntityQuery: EntityQuery {
 
 /// Production route for the selected-schedule action: the same capability
 /// gate as the legacy Schedule action (Shortcuts AND Automation), then the
-/// shared external-automation readiness, then the coordinator's single
+/// shared external-automation readiness, then a BEST-EFFORT observation of
+/// this genuine system fire (silent monitoring only — see
+/// `FloeScheduledTaskInvocationObservation`), then the coordinator's single
 /// durable claim/launch/bind path. No second environment or scheduler.
 @MainActor
 enum FloeScheduledTaskRunner {
@@ -136,8 +142,47 @@ enum FloeScheduledTaskRunner {
         }
         try await environment.ensureReadyForExternalAutomation()
         try Task.checkCancellation()
+        // A real system firing of this action for a plan the durable store
+        // still finds is DIRECT evidence that its automation may remain —
+        // even when the app UI handoff was never recorded (284 / manually
+        // saved Shortcuts). One idempotent durable monitoring write, placed
+        // strictly after the existing gates and BEFORE the core launch, so
+        // this very round's imminent terminal is observable. It can never
+        // block, roll back, cancel or re-arm the launch: every failure is
+        // swallowed here and the coordinator below behaves exactly as
+        // before. Never wired to the DEBUG `debugRoute` fake-receipt tests,
+        // discovery/query, or the background coordinator's ordinary pass.
+        await FloeScheduledTaskInvocationObservation.observe(
+            store: TaskScheduleCleanupReminderStore(database: environment.database),
+            scheduleID: scheduleID,
+            at: Date())
+        try Task.checkCancellation()
         return try await environment.backgroundRunCoordinator
             .runSelectedSchedule(scheduleID: scheduleID)
+    }
+}
+
+/// The production runner's observation seam. It takes the durable store so
+/// hosted tests can inject their OWN temporary database and prove the
+/// swallow contract without any AppEnvironment, real defaults, system
+/// prompts or launches. DEBUG `debugRoute` fake receipts bypass the runner
+/// entirely, so the existing hosted failure-copy tests keep their zero side
+/// effects.
+@MainActor
+enum FloeScheduledTaskInvocationObservation {
+    /// Optional observation: `try?` is the whole point — a cleanup-evidence
+    /// failure may NEVER change the core launch it precedes. No schedule
+    /// row, occurrence or claim is written here; the durable store decides
+    /// eligibility from its own read-only inspection and stays idempotent
+    /// (an existing monitoring epoch is never reset, no open reminder is
+    /// hidden, no resolved marker is re-nagged without a genuinely live
+    /// current round).
+    static func observe(
+        store: TaskScheduleCleanupReminderStore,
+        scheduleID: UUID,
+        at date: Date
+    ) async {
+        try? await store.observeIntentInvocation(scheduleID: scheduleID, at: date)
     }
 }
 

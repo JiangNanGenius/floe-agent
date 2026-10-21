@@ -7,15 +7,13 @@ import FloeModels
 /// and the schedule store's writers (delete / one-shot terminal / re-arm,
 /// inside the SAME writer for atomicity).
 ///
-/// One row per schedule (unique `schedule_id`) with four honest event
+/// One row per schedule (unique `schedule_id`) with five honest event
 /// classes:
 ///   • `recordSetup` — an ACTUAL Shortcut handoff or explicit user
-///     confirmation (re)starts silent monitoring. This is the only creation
-///     path without direct stale-fire evidence, so a plan that was never
-///     configured through Shortcuts gets no row and therefore no reminder
-///     on delete. A fresh handoff starts a fresh round even after an
-///     earlier resolved marker — the user's dismissal belonged to the
-///     previous lifecycle, it does not suppress all future lifecycle.
+///     confirmation (re)starts silent monitoring. A fresh handoff starts
+///     a fresh round even after an earlier resolved marker — the user's
+///     dismissal belonged to the previous lifecycle, it does not suppress
+///     all future lifecycle.
 ///   • `rearm` — a re-enabled plan starts a fresh live lifecycle. Its
 ///     existing monitoring/open evidence follows it back into silence and
 ///     the row's `setup_at` becomes the CURRENT MONITORING EPOCH: a
@@ -39,10 +37,27 @@ import FloeModels
 ///     It never reopens a `dismissed` row — the chosen minimal semantics:
 ///     repeated fires of the SAME stale automation must not re-nag a
 ///     silenced event, only advance its invisible evidence timestamp.
+///   • `observeIntentInvocation` — a genuine SYSTEM firing of the "Run
+///     Scheduled Task" action reached the production runner for a plan the
+///     durable store still finds. Direct evidence the automation exists even
+///     when the app UI handoff was NEVER recorded (existing 284 / manually
+///     saved Shortcuts), so the eligible plan gains SILENT monitoring and a
+///     later real delete/terminal can open its cleanup. Idempotence is the
+///     contract: an existing `monitoring` epoch is never reset (a repeated
+///     firing while a once round is still running must not push the epoch
+///     past the round's own start), an `open` row is never hidden, and a
+///     `dismissed`/`removed` row is untouched unless the CURRENT lifecycle
+///     is genuinely live again (an enabled firing, or a still-running
+///     already-started once round), which starts a fresh monitoring epoch
+///     exactly like an explicit new handoff. A disabled firing with no live
+///     running occurrence, a missing plan and an already-consumed
+///     round record NOTHING — a historical `last_started_at` never buys a
+///     false cleanup.
 ///
 /// None of these writes touch `task_schedules` or
 /// `task_schedule_occurrences`: recording can never restart, re-arm or
-/// bypass the claim/due/CAS fence.
+/// bypass the claim/due/CAS fence. Observation INSPECTS both tables
+/// read-only inside its own transaction — reads grant no lifecycle power.
 enum TaskScheduleCleanupReminderSQL {
     static func recordSetup(
         _ db: Database,
@@ -173,6 +188,99 @@ enum TaskScheduleCleanupReminderSQL {
         }
     }
 
+    /// Genuine system firing of the "Run Scheduled Task" action observed by
+    /// the production runner BEFORE the core launch. One transaction: a
+    /// READ-ONLY inspection of the plan's durable truth (never the picked
+    /// entity's title — the name-substitution fence stands), then at most
+    /// one idempotent monitoring write.
+    ///
+    /// Eligibility (everything else is a silent refusal, zero writes):
+    ///   • missing plan → nothing (the deleted case belongs to
+    ///     `recordStaleTrigger` alone);
+    ///   • enabled plan → monitoring at the CURRENT instant, so the round
+    ///     this very firing is about to start can reach its terminal
+    ///     (recurring plans simply stay silent: a recurring completion
+    ///     retires nothing; their later delete does);
+    ///   • disabled plan whose CADENCE is `once`, whose own launch left a
+    ///     `last_started_at`, AND which still has a live running
+    ///     occurrence → monitoring anchored at that PLAN's actual
+    ///     `last_started_at` string — never `Date.now`, so an imminent
+    ///     terminal of a legacy round that already started is not lost, and
+    ///     never a historical value of a finished round;
+    ///   • anything disabled/paused WITHOUT such a live occurrence (a
+    ///     reversible pause, an already-consumed once, a paused recurring)
+    ///     → refusal: no row, no epoch, no synthetic retirement.
+    ///
+    /// Existing-row rules: a `monitoring` row is NEVER touched (its epoch
+    /// stands — repeated firings cannot reset it, even while its once round
+    /// is still running); an `open` row is never hidden; a `dismissed` or
+    /// `removed` row returns to silent monitoring ONLY through one of the
+    /// two eligible live cases above, with exactly the epoch rule a fresh
+    /// handoff would use.
+    static func observeIntentInvocation(
+        _ db: Database,
+        scheduleID: UUID,
+        at date: Date
+    ) throws {
+        guard let plan = try Row.fetchOne(db, sql: """
+            SELECT s.title, s.cadence, s.is_enabled, s.last_started_at,
+                EXISTS (
+                    SELECT 1 FROM task_schedule_occurrences o
+                    WHERE o.schedule_id = s.id
+                      AND o.state = 'running' AND o.started_at IS NOT NULL
+                ) AS has_live_occurrence
+            FROM task_schedules s WHERE s.id = ?
+            """, arguments: [scheduleID.uuidString]) else { return }
+        let title: String = plan["title"]
+        let cadence: String = plan["cadence"]
+        let isEnabled: Bool = plan["is_enabled"]
+        let lastStartedRaw: String? = plan["last_started_at"]
+        let hasLiveOccurrence: Bool = plan["has_live_occurrence"]
+
+        let setupAt: String
+        if isEnabled {
+            // Live plan: monitoring starts before this run begins. A later
+            // launch writes a `last_started_at` at or after this instant,
+            // so the current round's terminal satisfies the epoch fence;
+            // any historical launch stays provably older.
+            setupAt = PersistenceCodec.encode(date)
+        } else if cadence == TaskScheduleCadence.once.rawValue,
+                  let started = lastStartedRaw, hasLiveOccurrence {
+            // A genuinely live, already-started once round (its launch
+            // disabled the plan): anchor the epoch at the plan's ACTUAL
+            // start string so the imminent terminal is not lost.
+            setupAt = started
+        } else {
+            // Disabled/paused with no live round, or a started recurring /
+            // never-started plan: honest refusal — cleanup evidence must
+            // never be manufactured from a pause or a historical run.
+            return
+        }
+
+        let now = PersistenceCodec.encode(date)
+        try db.execute(sql: """
+            INSERT INTO task_schedule_cleanup_reminders (
+                id, schedule_id, title, reason, status, setup_source, setup_at,
+                created_at, updated_at, last_seen_at
+            ) VALUES (?, ?, ?, NULL, 'monitoring', 'intentInvocation', ?, ?, ?, ?)
+            ON CONFLICT(schedule_id) DO UPDATE SET
+                title = excluded.title,
+                reason = NULL,
+                status = 'monitoring',
+                setup_source = excluded.setup_source,
+                setup_at = excluded.setup_at,
+                updated_at = excluded.updated_at,
+                last_seen_at = excluded.last_seen_at
+            WHERE status IN ('dismissed', 'removed')
+            """, arguments: [
+                TaskScheduleCleanupReminder.stableID(scheduleID: scheduleID).uuidString,
+                scheduleID.uuidString,
+                cleaned(title),
+                setupAt,
+                now, now, now
+            ])
+    }
+
     /// Crash / write-loss safety net. Every monitoring row whose plan has
     /// SINCE become retired opens here on the next load/foreground pass:
     /// permanently deleted (the captured title survives — no foreign key),
@@ -197,7 +305,7 @@ enum TaskScheduleCleanupReminderSQL {
                       AND NOT EXISTS (
                           SELECT 1 FROM task_schedule_occurrences o
                           WHERE o.schedule_id = s.id
-                            AND o.state IN ('pending', 'claimed', 'running')
+                            AND o.state = 'running' AND o.started_at IS NOT NULL
                       )
                 ) THEN 'onceConsumed' ELSE 'deleted' END,
                 updated_at = ?,
@@ -217,7 +325,7 @@ enum TaskScheduleCleanupReminderSQL {
                       AND NOT EXISTS (
                           SELECT 1 FROM task_schedule_occurrences o
                           WHERE o.schedule_id = s.id
-                            AND o.state IN ('pending', 'claimed', 'running')
+                            AND o.state = 'running' AND o.started_at IS NOT NULL
                       )
                 )
               )
@@ -318,6 +426,22 @@ public actor TaskScheduleCleanupReminderStore {
         try await database.writer { db in
             try TaskScheduleCleanupReminderSQL.recordStaleTrigger(
                 db, scheduleID: scheduleID, title: title, at: date)
+        }
+    }
+
+    /// Best-effort observation of a GENUINE system firing of the selected-
+    /// schedule action for a still-existing plan: (re)starts SILENT
+    /// monitoring for eligible live rounds only, idempotently — an existing
+    /// monitoring epoch is never reset, an open reminder is never hidden,
+    /// and a resolved row returns only when the CURRENT lifecycle is really
+    /// live again. Disabled/paused-without-a-live-round, missing plans and
+    /// already-consumed rounds record nothing. Throws only on real storage
+    /// failure, which callers must swallow: observation can never block,
+    /// roll back, cancel or re-arm the core launch it accompanies.
+    public func observeIntentInvocation(scheduleID: UUID, at date: Date) async throws {
+        try await database.writer { db in
+            try TaskScheduleCleanupReminderSQL.observeIntentInvocation(
+                db, scheduleID: scheduleID, at: date)
         }
     }
 

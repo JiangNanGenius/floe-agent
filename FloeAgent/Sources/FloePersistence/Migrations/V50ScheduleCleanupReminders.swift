@@ -4,13 +4,16 @@ import GRDB
 ///
 /// `task_schedule_cleanup_reminders` keeps exactly ONE row per schedule
 /// (unique `schedule_id`). A row is created ONLY by an actual Shortcut
-/// handoff/confirmation (silent `monitoring` status), by the "Run Scheduled
-/// Task" action firing for a missing schedule (`staleTrigger` evidence), or
-/// by the reconciliation of such evidence — never by an ordinary schedule
-/// delete. A silent monitoring row means "this plan may have a system
+/// handoff/confirmation (silent `monitoring` status), by a genuine "Run
+/// Scheduled Task" system firing observed for an eligible live plan
+/// (`intentInvocation` observation — silent `monitoring`), by that action
+/// firing for a missing schedule (`staleTrigger` evidence), or by the
+/// reconciliation of such evidence — never by an ordinary schedule delete.
+/// A silent monitoring row means "this plan may have a system
 /// automation": the permanent delete and the terminal retirement of a
 /// one-shot then open it as the user's cleanup to-do. Plans that never
-/// received a Shortcut handoff have NO row, so deleting them shows nothing.
+/// received a Shortcut handoff or an eligible system firing have NO row,
+/// so deleting them shows nothing.
 ///
 /// There is deliberately no foreign key to `task_schedules`: the row must
 /// survive the schedule deletion itself (with its captured title), and
@@ -41,7 +44,8 @@ enum V50ScheduleCleanupReminders {
                         'monitoring', 'open', 'dismissed', 'removed'
                     )),
                     setup_source TEXT CHECK (setup_source IS NULL OR setup_source IN (
-                        'importFlowOpened', 'handedOffToUser', 'userConfirmed'
+                        'importFlowOpened', 'handedOffToUser', 'userConfirmed',
+                        'intentInvocation'
                     )),
                     setup_at TEXT,
                     created_at TEXT NOT NULL,

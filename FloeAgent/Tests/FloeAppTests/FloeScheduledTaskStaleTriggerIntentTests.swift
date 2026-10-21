@@ -14,7 +14,11 @@
 //     the original was deleted is never touched by the stale fire;
 //   • the DEBUG host without an injected environment performs NO recording
 //     and NO environment access at all (zero side effects — existing
-//     hosted failure-copy tests are unaffected).
+//     hosted failure-copy tests are unaffected);
+//   • the production runner's observation seam swallows every durable
+//     failure (it can never block, roll back or cancel the core launch),
+//     and a DEBUG `debugRoute` fake receipt bypasses the runner — and its
+//     observation — entirely, leaving zero rows.
 //
 // Same DEBUG task-local seams as the existing intent tests: no launched
 // App, no real Shortcuts execution, compiled out of Release.
@@ -214,6 +218,56 @@ final class FloeScheduledTaskStaleTriggerIntentTests: XCTestCase {
         let open = try await store.openReminders()
         XCTAssertEqual(open.count, 1)
         XCTAssertEqual(open.first?.reason, .staleTrigger)
+    }
+
+    // MARK: - Production-path observation seam
+
+    @MainActor
+    func testObservationSeamSwallowsStorageFailureAndNeverBlocks() async throws {
+        // The seam takes an OWNED store only. An unmigrated temporary
+        // database makes the durable observation genuinely FAIL — reaching
+        // the end of this test proves the seam cannot throw, block or hang
+        // the core launch it precedes. No AppEnvironment, no real defaults,
+        // no system prompts and no launched run.
+        let database = try DatabaseManager.inMemory()
+        let store = TaskScheduleCleanupReminderStore(database: database)
+        let firedID = UUID()
+        await FloeScheduledTaskInvocationObservation.observe(
+            store: store, scheduleID: firedID, at: Date())
+        // The failed observation left no trace: after migrating the SAME
+        // database, nothing was ever recorded for that identity.
+        try await database.migrate()
+        let row = try await store.reminder(scheduleID: firedID)
+        XCTAssertNil(row)
+    }
+
+    @MainActor
+    func testFakeDebugRouteBypassesObservationEntirely() async throws {
+        let environment = try await makeEnvironment()
+        let store = TaskScheduleCleanupReminderStore(database: environment.database)
+        let record = try await save(environment, title: "Fake fired", cadence: .once)
+
+        var intent = RunScheduledTaskIntent()
+        intent.schedule = TaskScheduleEntity(id: record.id, title: "Fake fired")
+        // A fake-receipt DEBUG route (non-deleted, so the stale hook stays
+        // silent too): hosted tests that inject ONLY `debugRoute` never
+        // enter the production runner — no observation row may appear for
+        // an otherwise-eligible enabled plan.
+        let route: @MainActor (UUID) async throws ->
+            BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
+            throw BackgroundRunCoordinator.FloeSelectedScheduleFailure.scheduleDisabled
+        }
+        do {
+            _ = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+                try await intent.perform()
+            }
+            XCTFail("the typed refusal must propagate")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message,
+                           FloeL10n.l("shortcuts.schedule.run.error.schedule_disabled"))
+        }
+        let row = try await store.reminder(scheduleID: record.id)
+        XCTAssertNil(row, "un-injected DEBUG routes must perform no observation")
     }
 }
 #endif

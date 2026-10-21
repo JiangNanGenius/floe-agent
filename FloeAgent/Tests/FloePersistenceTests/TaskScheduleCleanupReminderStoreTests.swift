@@ -12,8 +12,15 @@ import Testing
 /// occurrence completion, never at a reversible pause; dedupe keeps ONE
 /// row per schedule; the load/foreground reconciliation recovers writes lost
 /// to a crash; a fresh handoff after an earlier resolved marker restarts
-/// monitoring; only direct stale-fire evidence may reopen a user-resolved
-/// row — and never a silenced one. Reminder writes can never enable,
+/// monitoring; a stale fire may reopen a user-removed row — never a
+/// silenced one. A GENUINE system fire of the "Run Scheduled Task" action
+/// for a still-existing eligible plan likewise starts silent monitoring
+/// (`observeIntentInvocation`) — idempotently: it never resets an existing
+/// monitoring epoch, never hides an open reminder, and records nothing for
+/// a missing plan, a reversible pause, or a long-consumed round; only a
+/// genuinely live current round (enabled fire, or a still-running already-
+/// started one-shot anchored at its ACTUAL start) may re-establish
+/// monitoring over an earlier resolved mark. Reminder writes can never enable,
 /// re-arm or launch a schedule. Re-arming an already-run one-shot returns
 /// its monitoring/open evidence to the SILENT current round and advances
 /// the monitoring epoch: a historical `last_started_at` can never consume a
@@ -740,6 +747,266 @@ struct TaskScheduleCleanupReminderStoreTests {
         #expect(live.isEnabled)
         // Historical launch evidence survives every re-arm and pause.
         #expect(live.lastStartedAt != nil)
+        _ = database
+    }
+
+    // MARK: - Genuine system-fire observation (legacy saved Shortcuts)
+
+    @Test("Legacy system fire: an enabled one-shot round is observed, its terminal then opens")
+    func invocationObservesLiveOnceRound() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Legacy once", cadence: .once)
+        // The app never recorded an import/share/confirm handoff: this was a
+        // 284/manual saved Shortcut, yet the SYSTEM genuinely fired.
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        let row = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(row.status == .monitoring)
+        #expect(row.reason == nil)
+        #expect(row.setupSource == .intentInvocation)
+        let expectedEpoch = try PersistenceCodec.decodeDate(PersistenceCodec.encode(base))
+        #expect(row.setupAt == expectedEpoch)
+        #expect(try await reminders.openReminders().isEmpty)
+
+        // The very round this fire starts reaches its terminal: cleanup opens.
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(5),
+            finishedAt: base.addingTimeInterval(30))
+        let open = try await reminders.openReminders()
+        #expect(open.count == 1)
+        #expect(open.first?.reason == .onceConsumed)
+        #expect(open.first?.title == "Legacy once")
+        _ = database
+    }
+
+    @Test("System fire repeats never reset the monitoring epoch; an open event is never hidden or re-nagged")
+    func repeatedInvocationPreservesMonitoringEpoch() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Legacy once", cadence: .once)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        let before = try #require(try await reminders.reminder(scheduleID: record.id))
+
+        // The round launches (the one-shot is now disabled) and is STILL
+        // running when the automation fires again.
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(10))
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(20))
+        let during = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(during.status == .monitoring)
+        #expect(during.setupAt == before.setupAt,
+                "a repeat during the running round must never push the epoch past the round's own start")
+
+        // The imminent terminal still opens correctly (epoch fence intact).
+        try await schedules.finishOccurrence(
+            id: TaskScheduleOccurrence.stableID(
+                scheduleID: record.id, dedupeKey: "calendar:1"),
+            state: .completed, summary: nil, errorText: nil,
+            at: base.addingTimeInterval(40))
+        let opened = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(opened.status == .open)
+        #expect(opened.reason == .onceConsumed)
+
+        // The lingering automation keeps firing for the long-finished round:
+        // the open event is not hidden and only dedupes via its own path —
+        // observation writes NOTHING to an open row.
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(50))
+        let after = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(after.status == .open)
+        #expect(after.setupAt == before.setupAt)
+        #expect(after.lastSeenAt == opened.lastSeenAt)
+        _ = database
+    }
+
+    @Test("System fire for an already-started legacy round anchors at the actual start, never at now")
+    func invocationAnchorsLiveRoundAtItsActualStart() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Late observer", cadence: .once)
+        // The round started and is running BEFORE any observation exists.
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(10))
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(25))
+        let row = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(row.status == .monitoring)
+        #expect(row.setupSource == .intentInvocation)
+        let expectedStart = try PersistenceCodec.decodeDate(
+            PersistenceCodec.encode(base.addingTimeInterval(10)))
+        #expect(row.setupAt == expectedStart)
+
+        // The imminent terminal is NOT lost: it opens.
+        try await schedules.finishOccurrence(
+            id: TaskScheduleOccurrence.stableID(
+                scheduleID: record.id, dedupeKey: "calendar:1"),
+            state: .completed, summary: nil, errorText: nil,
+            at: base.addingTimeInterval(30))
+        let open = try await reminders.openReminders()
+        #expect(open.count == 1)
+        #expect(open.first?.reason == .onceConsumed)
+        _ = database
+    }
+
+    @Test("A pending or claimed occurrence cannot make a paused historical once plan live")
+    func pendingOrClaimedHistoricalRoundIsNotObserved() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Paused retry", cadence: .once)
+        try await launch(
+            schedules, scheduleID: record.id, key: "historical",
+            startedAt: base.addingTimeInterval(-60),
+            finishedAt: base.addingTimeInterval(-30))
+        let pending = TaskScheduleOccurrence(
+            id: TaskScheduleOccurrence.stableID(scheduleID: record.id, dedupeKey: "new"),
+            scheduleID: record.id, scheduledFor: base, dedupeKey: "new")
+        _ = try await schedules.enqueueOccurrence(pending)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        #expect(try await reminders.reminder(scheduleID: record.id) == nil)
+        _ = try await schedules.claimOccurrence(id: pending.id, at: base)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        #expect(try await reminders.reminder(scheduleID: record.id) == nil)
+        _ = database
+    }
+
+    @Test("System fire for a missing, paused or long-consumed plan records nothing")
+    func ineligibleInvocationsRecordNothing() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+
+        // Missing plan (a deleted schedule): the stale-fire hook is the ONLY
+        // evidence path for deleted identities; observation creates nothing.
+        try await reminders.observeIntentInvocation(scheduleID: UUID(), at: base)
+
+        // A disabled recurring plan: a pause, never a retirement.
+        let daily = try await makeSchedule(schedules, title: "Paused daily", cadence: .daily)
+        try await schedules.setEnabled(id: daily.id, enabled: false, at: base)
+        try await reminders.observeIntentInvocation(scheduleID: daily.id, at: base)
+
+        // A disabled one-shot paused BEFORE its start (never started, no
+        // live instance): reversible pause — nothing may be manufactured.
+        let freshOnce = try await makeSchedule(schedules, title: "Paused once", cadence: .once)
+        try await schedules.setEnabled(id: freshOnce.id, enabled: false, at: base)
+        try await reminders.observeIntentInvocation(scheduleID: freshOnce.id, at: base)
+
+        // A one-shot whose round ended long ago: the historical
+        // `last_started_at` must not buy a false cleanup round.
+        let consumed = try await makeSchedule(schedules, title: "Consumed", cadence: .once)
+        try await launch(
+            schedules, scheduleID: consumed.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(10),
+            finishedAt: base.addingTimeInterval(20))
+        try await reminders.observeIntentInvocation(
+            scheduleID: consumed.id, at: base.addingTimeInterval(30))
+
+        for id in [daily.id, freshOnce.id, consumed.id] {
+            #expect(try await reminders.reminder(scheduleID: id) == nil)
+        }
+        #expect(try await reminders.openReminders().isEmpty)
+        _ = database
+    }
+
+    @Test("A dismissed consumed round is never re-nagged by the lingering automation's repeated fires")
+    func dismissedConsumedRoundIsNotRenagged() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Dismissed legacy", cadence: .once)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(10),
+            finishedAt: base.addingTimeInterval(20))
+        let open = try await reminders.openReminders()
+        #expect(open.count == 1)
+        try await reminders.dismiss(id: try #require(open.first).id)
+
+        // The automation keeps firing daily for the SAME finished round.
+        let before = try #require(try await reminders.reminder(scheduleID: record.id))
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(86_400))
+        let after = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(after.status == .dismissed)
+        #expect(after.updatedAt == before.updatedAt)
+        #expect(after.lastSeenAt == before.lastSeenAt)
+        #expect(try await reminders.openReminders().isEmpty)
+        _ = database
+    }
+
+    @Test("A genuinely enabled fire after an earlier resolved mark starts fresh monitoring at the current epoch")
+    func enabledInvocationReopensResolvedForNewLifecycle() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        let record = try await makeSchedule(schedules, title: "Round two", cadence: .once)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:1",
+            startedAt: base.addingTimeInterval(10),
+            finishedAt: base.addingTimeInterval(20))
+        let open = try await reminders.openReminders()
+        #expect(open.count == 1)
+        try await reminders.markRemoved(id: try #require(open.first).id)
+
+        // The user re-enables the plan for a NEW round; re-arm keeps the
+        // resolved mark intact (existing contract).
+        try await schedules.setEnabled(
+            id: record.id, enabled: true, at: base.addingTimeInterval(60))
+        let stillResolved = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(stillResolved.status == .removed)
+        #expect(stillResolved.reason == .onceConsumed)
+
+        // The system now genuinely fires for the ENABLED plan: like an
+        // explicit new handoff, this establishes a fresh monitoring epoch.
+        let fire = base.addingTimeInterval(90)
+        try await reminders.observeIntentInvocation(scheduleID: record.id, at: fire)
+        let row = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(row.status == .monitoring)
+        #expect(row.reason == nil)
+        #expect(row.setupSource == .intentInvocation)
+        let expectedEpoch = try PersistenceCodec.decodeDate(PersistenceCodec.encode(fire))
+        #expect(row.setupAt == expectedEpoch)
+
+        // A repeat inside the same new round preserves that fresh epoch.
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(95))
+        let stable = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(stable.setupAt == row.setupAt)
+
+        // The new round's terminal opens exactly one fresh reminder.
+        try await launch(
+            schedules, scheduleID: record.id, key: "calendar:2",
+            startedAt: base.addingTimeInterval(100),
+            finishedAt: base.addingTimeInterval(120))
+        let reopened = try await reminders.openReminders()
+        #expect(reopened.count == 1)
+        #expect(reopened.first?.reason == .onceConsumed)
+        _ = database
+    }
+
+    @Test("Observation never rewrites an existing monitoring row and enables nothing")
+    func observationRespectsExistingRowsAndLifecycle() async throws {
+        let (database, schedules, reminders) = try makeStores()
+        let base = Date()
+        // An explicit handoff already monitors this live plan.
+        let record = try await makeSchedule(schedules, title: "Digest", cadence: .daily)
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .userConfirmed, at: base)
+        // A later system fire for the same live, enabled plan must NOT
+        // rewrite the existing monitoring row: the explicit-handoff source
+        // and epoch stand untouched, and no lifecycle flag changes.
+        try await reminders.observeIntentInvocation(
+            scheduleID: record.id, at: base.addingTimeInterval(10))
+        let row = try #require(try await reminders.reminder(scheduleID: record.id))
+        #expect(row.status == .monitoring)
+        #expect(row.setupSource == .userConfirmed)
+        let originalEpoch = try PersistenceCodec.decodeDate(PersistenceCodec.encode(base))
+        #expect(row.setupAt == originalEpoch)
+        let live = try #require(try await schedules.schedule(id: record.id))
+        #expect(live.isEnabled)
         _ = database
     }
 }
