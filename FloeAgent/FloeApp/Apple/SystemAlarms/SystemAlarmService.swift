@@ -161,7 +161,7 @@ actor SystemAlarmService {
             kind: kind,
             intendedTimezone: intendedTimezone,
             intendedFireDate: intendedFireDate,
-            nativeScheduleDate: intendedFireDate,
+            nativeScheduleDate: repeatRule == .never ? intendedFireDate : nil,
             repeatRule: repeatRule,
             timerDuration: timerDuration,
             labelDigest: SystemAlarmIdentity.labelDigest(label),

@@ -754,6 +754,24 @@ struct SystemAlarmToolsTests {
         }
     }
 
+    @Test("Weekly alarms use device wall time and refuse foreign zones or seconds")
+    func weeklyTimezoneAndMinuteContract() throws {
+        let utc = try #require(TimeZone(identifier: "UTC"))
+        let shanghai = try #require(TimeZone(identifier: "Asia/Shanghai"))
+        let args = AppleAlarmScheduleTool.Arguments(kind: "alarm",
+            fireAt: "2030-01-07T09:30:00Z", timezone: "UTC", repeat: "1,3")
+        let plan = try AppleAlarmScheduleTool.plan(args, deviceTimeZone: utc)
+        #expect(plan.repeatRule == .weekly([1, 3]))
+        #expect(throws: (any Error).self) {
+            try AppleAlarmScheduleTool.plan(args, deviceTimeZone: shanghai)
+        }
+        #expect(throws: (any Error).self) {
+            try AppleAlarmScheduleTool.plan(.init(kind: "alarm",
+                fireAt: "2030-01-07T09:30:15Z", timezone: "UTC", repeat: "1"),
+                deviceTimeZone: utc)
+        }
+    }
+
     // MARK: - Presentation honesty (real stop, real pause/resume)
 
     @Test("Timer presentation carries the native countdown pause and paused resume controls")

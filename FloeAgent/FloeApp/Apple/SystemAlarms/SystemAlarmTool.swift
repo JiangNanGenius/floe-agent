@@ -38,11 +38,21 @@ enum SystemAlarmOutput {
         fields.append("kind=\(record.kind.rawValue)")
         fields.append("state=\(record.state.rawValue)")
         if let nativeState = record.nativeState { fields.append("nativeState=\(nativeState)") }
-        fields.append("tz=\(record.intendedTimezone)")
-        if let fire = record.intendedFireDate { fields.append("fire=\(iso(fire))") }
         switch record.repeatRule {
-        case .never: fields.append("repeat=never")
-        case .weekly(let days): fields.append("repeat=weekly:\(days.sorted().map(String.init).joined(separator: ","))")
+        case .never:
+            fields.append("tz=\(record.intendedTimezone)")
+            if let fire = record.intendedFireDate { fields.append("fire=\(iso(fire))") }
+            fields.append("repeat=never")
+        case .weekly(let days):
+            fields.append("tz=device")
+            if let fire = record.intendedFireDate {
+                let format = DateFormatter()
+                format.locale = Locale(identifier: "en_US_POSIX")
+                format.timeZone = TimeZone(identifier: record.intendedTimezone)
+                format.dateFormat = "HH:mm"
+                fields.append("wallTime=\(format.string(from: fire))")
+            }
+            fields.append("repeat=weekly:\(days.sorted().map(String.init).joined(separator: ","))")
         }
         if let duration = record.timerDuration {
             fields.append("duration=\(String(format: "%.0f", duration))s")
@@ -96,14 +106,17 @@ struct AppleAlarmScheduleTool: AgentTool {
     absolute ISO-8601 time with an explicit numeric offset (e.g. 2026-10-22T07:30:00+08:00) \
     interpreted in the IANA `timezone`; a repeating alarm (repeat=1..7, Monday=1) fires \
     weekly on those device-calendar weekdays, and its repeat timezone follows the \
-    device/system rules. durationSeconds is a positive whole-second countdown (max 24h). \
+    device/system rules. Weekly requests must use the current device timezone and zero \
+    seconds; their fireAt supplies the wall-clock time, not a deferred start date. \
+    They begin on the next matching weekday. Query apple.alarm.status for deviceTimezone. \
+    durationSeconds is a positive whole-second countdown (max 24h). \
     The alarm is owned by this task: only this conversation/run can list, query or cancel \
     it. Requires the app in the foreground for the first OS authorization. Authorization \
     denied/unavailable, a rejected request, a returned-but-unverified schedule, and an \
     unknown (crash) outcome are all distinct — a request result is never a scheduled alarm.
     """
     static let parametersJSON = #"""
-    {"type":"object","properties":{"kind":{"type":"string","enum":["alarm","timer"],"description":"alarm = wall-clock, timer = countdown."},"fireAt":{"type":"string","maxLength":40,"description":"Absolute ISO-8601 with explicit offset, interpreted in `timezone`."},"timezone":{"type":"string","maxLength":64,"description":"IANA timezone id (e.g. Asia/Shanghai)."},"durationSeconds":{"type":"integer","minimum":1,"maximum":86400,"description":"Positive countdown duration in whole seconds (max 24h)."},"repeat":{"type":"string","maxLength":20,"description":"never (default) or comma weekdays 1..7, Monday=1 (e.g. 1,3,5)."},"label":{"type":"string","maxLength":64,"description":"Concise user-facing label shown on the alert."}},"additionalProperties":false}
+    {"type":"object","properties":{"kind":{"type":"string","enum":["alarm","timer"],"description":"alarm = wall-clock, timer = countdown."},"fireAt":{"type":"string","maxLength":40,"description":"Absolute ISO-8601 with explicit offset. For weekly repeats only the HH:mm is used, starting at the next matching device weekday; not a deferred start date."},"timezone":{"type":"string","maxLength":64,"description":"IANA timezone id. Weekly repeats require the current deviceTimezone from apple.alarm.status."},"durationSeconds":{"type":"integer","minimum":1,"maximum":86400,"description":"Positive countdown duration in whole seconds (max 24h)."},"repeat":{"type":"string","maxLength":20,"description":"never (default) or comma weekdays 1..7, Monday=1 (e.g. 1,3,5)."},"label":{"type":"string","maxLength":64,"description":"Concise user-facing label shown on the alert."}},"additionalProperties":false}
     """#
     static let riskLabels: Set<RiskLabel> = [.changesAgentBehavior]
     static let isSideEffecting = true
@@ -196,7 +209,7 @@ struct AppleAlarmScheduleTool: AgentTool {
         var label: String
     }
 
-    static func plan(_ args: Arguments) throws -> Plan {
+    static func plan(_ args: Arguments, deviceTimeZone: TimeZone = .current) throws -> Plan {
         let rawKind = (args.kind ?? "alarm").trimmingCharacters(in: .whitespacesAndNewlines)
         guard let kind = SystemAlarmKind(rawValue: rawKind) else {
             throw FloeError.validationFailed("kind must be 'alarm' or 'timer'")
@@ -231,7 +244,19 @@ struct AppleAlarmScheduleTool: AgentTool {
                 throw FloeError.validationFailed("fireAt is required for an alarm")
             }
             let fireDate = try parseAbsoluteISO8601(fireAt, timezone: timezone)
-            // The intended instant must be in the future.
+            if case .weekly = repeatRule {
+                guard timezone.identifier == deviceTimeZone.identifier else {
+                    throw FloeError.validationFailed("weekly alarms follow the device timezone; use \(deviceTimeZone.identifier) or a fixed one-shot alarm")
+                }
+                var calendar = Calendar(identifier: .gregorian)
+                calendar.timeZone = deviceTimeZone
+                let parts = calendar.dateComponents([.second, .nanosecond], from: fireDate)
+                guard parts.second == 0, (parts.nanosecond ?? 0) < 1_000_000 else {
+                    throw FloeError.validationFailed("weekly alarms support whole minutes")
+                }
+            }
+            // For weekly alarms the date is a carrier for the documented
+            // wall-clock time; the system starts at its next matching day.
             guard fireDate > Date() else {
                 throw FloeError.validationFailed("fireAt must be a future time")
             }
@@ -459,7 +484,7 @@ struct AppleAlarmStatusTool: AgentTool {
             let refreshed = try await service.list(owner: owner).first { $0.id == alarmID } ?? record
             let status = verdict == .pendingVerification || verdict == .readbackError
                 ? "pendingVerification" : "ok"
-            var line = "status=\(status) capability=alarm \(SystemAlarmOutput.render(refreshed))"
+            var line = "status=\(status) capability=alarm deviceTimezone=\(TimeZone.current.identifier) \(SystemAlarmOutput.render(refreshed))"
             if let verdict { line += " reconcile=\(verdict.rawValue)" }
             return SystemAlarmOutput.make(line)
         }
@@ -467,7 +492,7 @@ struct AppleAlarmStatusTool: AgentTool {
         let outcomes = try await service.reconcile(owner: owner)
         let hasPending = outcomes.contains { $0.1 == .pendingVerification || $0.1 == .readbackError }
         var lines = [
-            "status=\(hasPending ? "pendingVerification" : "ok") capability=alarm kind=apple.alarm.status count=\(outcomes.count) ownerScope=thisTask"
+            "status=\(hasPending ? "pendingVerification" : "ok") capability=alarm kind=apple.alarm.status deviceTimezone=\(TimeZone.current.identifier) count=\(outcomes.count) ownerScope=thisTask"
         ]
         for (alarmID, outcome) in outcomes {
             lines.append("id=\(alarmID.uuidString) reconcile=\(outcome.rawValue)")
