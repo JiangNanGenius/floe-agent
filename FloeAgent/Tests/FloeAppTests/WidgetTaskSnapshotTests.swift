@@ -102,7 +102,7 @@ struct WidgetTaskSnapshotTests {
                 run(id, state: "cancelled", startedAt: 200)
             ]),
             conversationSource: FakeConversationSource(
-                conversations: [id: conversation(id, title: "Finished", updatedAt: 300)]
+                conversations: [id: conversation(id, title: "Finished", updatedAt: 300, ordinary: true)]
             )
         )
         let outcome = await producer.publish(now: now)
@@ -128,7 +128,7 @@ struct WidgetTaskSnapshotTests {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         let id = makeID(1)
-        let conversations = [id: conversation(id, title: "Task", updatedAt: 100)]
+        let conversations = [id: conversation(id, title: "Task", updatedAt: 100, ordinary: true)]
 
         let producer = WidgetSnapshotProducer(
             store: store,
@@ -157,7 +157,7 @@ struct WidgetTaskSnapshotTests {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         let id = makeID(1)
-        let conversations = [id: conversation(id, title: "Task", updatedAt: 100)]
+        let conversations = [id: conversation(id, title: "Task", updatedAt: 100, ordinary: true)]
         let good = WidgetSnapshotProducer(
             store: store,
             runSource: FakeRunSource(runs: [run(id, state: "running", startedAt: 100)]),
@@ -184,7 +184,7 @@ struct WidgetTaskSnapshotTests {
         let (store, root) = try makeStore()
         defer { try? FileManager.default.removeItem(at: root) }
         let id = makeID(1)
-        let conversations = [id: conversation(id, title: "Task", updatedAt: 100)]
+        let conversations = [id: conversation(id, title: "Task", updatedAt: 100, ordinary: true)]
         let runs = [run(id, state: "running", startedAt: 100)]
         let good = WidgetSnapshotProducer(
             store: store,
