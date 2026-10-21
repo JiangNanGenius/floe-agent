@@ -164,6 +164,66 @@ class ThreadProjectionBuilder internal constructor(
     /** Per-approval CAS revision version (`requestedAt` wire date). */
     private val approvalVersions = LinkedHashMap<String, String>()
 
+    /**
+     * Per-run ABA fence for the transient approval projection: the newest
+     * run sequence at which approval state for this run was observed from
+     * an authoritative carrier (a `run.snapshot` page or a durable approval
+     * record). A page older than this fence is a late pre-decision read:
+     * its approval member — present or absent — must neither clear a newer
+     * request nor resurrect a retired card. The value is the run's own
+     * append-only sequence (`SnapshotPage.durableWatermark` / the durable
+     * record's `sequence`); no wall clock and no invented state.
+     */
+    private val approvalFenceByRun = LinkedHashMap<String, Long>()
+    private val approvalAbsenceFenceByRun = LinkedHashMap<String, Long>()
+    private val approvalVersionByRunCall = LinkedHashMap<String, String>()
+    private val retiredApprovalVersions = LinkedHashSet<String>()
+    private fun approvalKey(runID: String, callID: String) = "$runID/$callID"
+
+    private fun pruneApprovalFences() {
+        while (retiredApprovalVersions.size > 4096) {
+            retiredApprovalVersions.remove(retiredApprovalVersions.first())
+        }
+        while (approvalFenceByRun.size > 512) {
+            val old = approvalFenceByRun.keys.firstOrNull {
+                it != selectedRunId && pendingApprovalsByRun[it].isNullOrEmpty()
+            } ?: break
+            approvalFenceByRun.remove(old)
+            approvalAbsenceFenceByRun.remove(old)
+            approvalVersionByRunCall.keys.removeAll { it.startsWith("$old/") }
+            retiredApprovalVersions.removeAll { it.startsWith("$old/") }
+        }
+    }
+
+    private fun approvalFence(runID: String): Long = approvalFenceByRun[runID] ?: 0L
+
+    private fun advanceApprovalFence(runID: String, observed: Long) {
+        if (observed > approvalFence(runID)) approvalFenceByRun[runID] = observed
+        pruneApprovalFences()
+    }
+
+    /**
+     * Retires every projected pending-approval card of ONE run because a
+     * fresh authoritative carrier proved the run has none. Display-only:
+     * this never claims allow/deny, execution or success — the grant
+     * authority stays with the native runtime. Other runs' cards and CAS
+     * versions are untouched; a version entry drops only when no other run
+     * still projects a card with the same call id.
+     */
+    private fun retirePendingApprovals(runID: String, watermark: Long) {
+        approvalAbsenceFenceByRun[runID] = maxOf(
+            approvalAbsenceFenceByRun[runID] ?: -1L, watermark)
+        val cards = pendingApprovalsByRun.remove(runID).orEmpty()
+        for (card in cards) {
+            val key = approvalKey(runID, card.approvalId)
+            approvalVersionByRunCall.remove(key)?.let { retiredApprovalVersions.add("$key/$it") }
+            val stillProjectedElsewhere = pendingApprovalsByRun.values.any { list ->
+                list.any { it.approvalId == card.approvalId }
+            }
+            if (!stillProjectedElsewhere) approvalVersions.remove(card.approvalId)
+        }
+    }
+
     /** Pending-input row CAS versions (`pendingInput.<uuid>` / updatedAt). */
     private val inputVersions = LinkedHashMap<String, String>()
 
@@ -293,15 +353,27 @@ class ThreadProjectionBuilder internal constructor(
             ?: RunRowUi(page.runID, page.durableState, null, ""))
             .copy(stateName = page.durableState)
         runRevisions[page.runID] = page.revision
-        page.pendingApproval?.let { approval ->
-            page.approvalRevision?.let { revision ->
-                approvalVersions[approval.callID] = revision.version
-            }
-            val existing = pendingApprovalsByRun[page.runID]
-                ?.firstOrNull { it.approvalId == approval.callID }
-            if (existing == null) {
-                pendingApprovalsByRun.getOrPut(page.runID) { mutableListOf() }
-                    .add(
+        val approval = page.pendingApproval
+        if (page.isTerminal && page.durableWatermark >= approvalFence(page.runID)) {
+            // A proven terminal run cannot accept a pending decision even
+            // after its live owner retired. This does not claim an allow.
+            retirePendingApprovals(page.runID, page.durableWatermark)
+            advanceApprovalFence(page.runID, page.durableWatermark)
+        } else if (approval != null) {
+            // A page older than the newest observed approval state for this
+            // run is a late pre-decision read: it must not resurrect a
+            // retired card nor roll back a newer request.
+            val key = approvalKey(page.runID, approval.callID)
+            val incomingVersion = page.approvalRevision?.version
+            val retired = incomingVersion != null && "$key/$incomingVersion" in retiredApprovalVersions
+            if (page.durableWatermark >= approvalFence(page.runID) &&
+                page.durableWatermark > (approvalAbsenceFenceByRun[page.runID] ?: -1L) && !retired
+            ) {
+                val cards = pendingApprovalsByRun.getOrPut(page.runID) { mutableListOf() }
+                val existing = cards.firstOrNull { it.approvalId == approval.callID }
+                val knownVersion = approvalVersions[approval.callID]
+                if (existing == null) {
+                    cards.add(
                         ApprovalCardUi(
                             approvalId = approval.callID,
                             runId = page.runID,
@@ -317,6 +389,33 @@ class ThreadProjectionBuilder internal constructor(
                             evidenceLines = emptyList(),
                         ),
                     )
+                } else if (incomingVersion != null && incomingVersion != knownVersion) {
+                    // A genuinely NEW request for the SAME call id (a new
+                    // `requestedAt` ⇒ a new CAS version): refresh the
+                    // request-bound fields; the run/card identity is kept.
+                    cards[cards.indexOf(existing)] = existing.copy(
+                        reason = approval.reason,
+                        requestedAtLabel = approval.requestedAt,
+                    )
+                }
+                incomingVersion?.let {
+                    approvalVersions[approval.callID] = it
+                    approvalVersionByRunCall[key] = it
+                }
+                advanceApprovalFence(page.runID, page.durableWatermark)
+            }
+        } else if (page.liveOwner) {
+            // The live owner reporting NO pending approval is authoritative
+            // absence: the native builder emits this member for every owned
+            // run and never budget-drops it (RuntimeFacadeRunEvents). Without
+            // a live owner the page writes an explicit null that means
+            // "unknowable", never "none" — that absence is NOT authoritative
+            // and must not clear anything. A page older than the fence is a
+            // pre-request read: it predates a later durable request and must
+            // not clear it either.
+            if (page.durableWatermark >= approvalFence(page.runID)) {
+                retirePendingApprovals(page.runID, page.durableWatermark)
+                advanceApprovalFence(page.runID, page.durableWatermark)
             }
         }
         for (input in page.pendingInputs) {
@@ -430,6 +529,10 @@ class ThreadProjectionBuilder internal constructor(
             }
             "terminal" -> {
                 val runID = frame.runID
+                if (frame.sequence >= approvalFence(runID)) {
+                    retirePendingApprovals(runID, frame.sequence)
+                    advanceApprovalFence(runID, frame.sequence)
+                }
                 val current = runRows[runID]
                 // The provider-completion close; the durable state transition
                 // (completed) arrives through `status`/the snapshot. Keep a
@@ -450,6 +553,10 @@ class ThreadProjectionBuilder internal constructor(
                         .copy(stateName = state)
                     runRevisions[frame.runID] =
                         Revision(ConversationWire.runResourceID(frame.runID), state)
+                    if (state in TERMINAL_STATES && frame.sequence >= approvalFence(frame.runID)) {
+                        retirePendingApprovals(frame.runID, frame.sequence)
+                        advanceApprovalFence(frame.runID, frame.sequence)
+                    }
                 }
             }
             "approval" -> {
@@ -458,12 +565,21 @@ class ThreadProjectionBuilder internal constructor(
                 // {tool,callID,outcome}. Presence of `outcome` is the exact
                 // discriminator (never an invented approvalResolved).
                 val callID = payload?.string("callID")
-                if (callID != null) {
+                if (callID != null && frame.sequence >= approvalFence(frame.runID) &&
+                    frame.sequence > (approvalAbsenceFenceByRun[frame.runID] ?: -1L)
+                ) {
                     if (payload.string("outcome") != null) {
-                        pendingApprovalsByRun[frame.runID]?.removeAll {
-                            it.approvalId == callID
+                        val key = approvalKey(frame.runID, callID)
+                        approvalVersionByRunCall.remove(key)?.let { retiredApprovalVersions.add("$key/$it") }
+                        pendingApprovalsByRun[frame.runID]?.removeAll { it.approvalId == callID }
+                        if (pendingApprovalsByRun.values.none { cards -> cards.any { it.approvalId == callID } }) {
+                            approvalVersions.remove(callID)
                         }
-                        approvalVersions.remove(callID)
+                        approvalAbsenceFenceByRun[frame.runID] = frame.sequence
+                        // Fence at the outcome record: a pre-outcome snapshot
+                        // page (or a replayed request) must never resurrect
+                        // the retired card.
+                        advanceApprovalFence(frame.runID, frame.sequence)
                     } else {
                         val card = ConversationWire.decodeApprovalCard(
                             conversationId, frame.runID, payload)
@@ -474,6 +590,10 @@ class ThreadProjectionBuilder internal constructor(
                             pendingApprovalsByRun.getOrPut(frame.runID) {
                                 mutableListOf()
                             }.add(card)
+                            // Fence at the request record: a snapshot page
+                            // fetched before this request landed is stale and
+                            // must not clear the just-projected card.
+                            advanceApprovalFence(frame.runID, frame.sequence)
                         }
                     }
                 }
@@ -1712,15 +1832,11 @@ internal object ConversationWire {
      *   the previous App invented both and native rejected the whole
      *   payload. Temporary launches travel the dedicated `temp.*` surface.
      */
-    fun runStartPayload(request: RunLaunchRequest): JsonObject {
+    fun runStartPayload(request: RunLaunchRequest, stagedHandles: List<String>): JsonObject {
         val members = mutableMapOf<String, JsonElement>(
             "goal" to JsonPrimitive(request.goalText),
             "mode" to JsonPrimitive(runLaunchMode(request.executionMode)),
-            "stagedAttachments" to JsonArray(
-                request.attachments.filter { it.isReady }.map {
-                    JsonPrimitive(it.id)
-                },
-            ),
+            "stagedAttachments" to JsonArray(stagedHandles.map { JsonPrimitive(it) }),
         )
         request.providerId?.let { members["providerID"] = JsonPrimitive(it) }
         request.modelId?.let { members["modelID"] = JsonPrimitive(it) }
@@ -1783,14 +1899,14 @@ internal object ConversationWire {
      * an `inputID` key is not part of this grammar (the previous App sent the
      * RUN id under it, which native rejected).
      */
-    fun runningInputPayload(request: RunningInputRequest): JsonObject {
+    fun runningInputPayload(request: RunningInputRequest, stagedHandles: List<String>): JsonObject {
         val members = mutableMapOf<String, JsonElement>(
             "content" to JsonPrimitive(request.content),
             "mode" to JsonPrimitive(RunningInputModeUi.QUEUE.swiftRaw),
         )
         request.modelId?.let { members["selectedModelID"] = JsonPrimitive(it) }
-        val handles = request.attachments.filter { it.isReady }.map { JsonPrimitive(it.id) }
-        if (handles.isNotEmpty()) members["stagedAttachments"] = JsonArray(handles)
+        if (stagedHandles.isNotEmpty()) members["stagedAttachments"] =
+            JsonArray(stagedHandles.map { JsonPrimitive(it) })
         return JsonObject(members)
     }
 

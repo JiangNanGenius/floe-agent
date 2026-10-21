@@ -268,6 +268,100 @@ final class RuntimeFacadeMCPTests: XCTestCase {
                      "bound account deleted")
     }
 
+    // MARK: R8 narrow no-secret create (validated .none + explicit Clear)
+
+    /// R8: the advertised Auth=None create path is real — a NEW identity with
+    /// validated authentication .none rides the explicit CLEAR intent with
+    /// NO secret bytes. The row commits durably and survives readback with
+    /// ZERO secret-store reads/writes/deletes and no account binding; the
+    /// frozen guards all hold unchanged around the narrow case.
+    func testNoneClearCreateCommitsWithoutSecretEffectsAndGuardsHold() async throws {
+        let harness = try await makeHarness("nonecreate")
+        defer { harness.http.stop() }
+        let id = UUID()
+        // enabled:false keeps this a pure unit check (no connect hop).
+        let create = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: id, endpoint: endpoint(harness),
+                                          auth: "none", enabled: false,
+                                          createIntent: true),
+                options: [.sortedKeys])),
+            secretIntent: "clear", envelopeRevision: nil)
+        XCTAssertEqual(create["state"] as? String, "committed")
+        XCTAssertEqual(create["secretIntent"] as? String, "clear")
+        XCTAssertNil(create["secretDisposition"],
+                     "a no-secret effect leaves no disposition")
+        XCTAssertNil(create["credentialCleanup"],
+                     "no account was bound, so nothing is cleaned up")
+        // Zero secret-store traffic and no account binding.
+        XCTAssertEqual(harness.gateway.counts().writes, 0,
+                       "no-secret create writes no secret")
+        XCTAssertEqual(harness.gateway.counts().deletes, 0,
+                       "no-secret create deletes no secret")
+        XCTAssertEqual(harness.gateway.counts().reads, 0,
+                       "no-secret create resolves no secret reference")
+        XCTAssertTrue(harness.gateway.storedReferences().isEmpty,
+                      "no account is ever bound for a none-auth create")
+        // Readback: the row is durably listed as none-auth with the honest
+        // credential status and a real current revision.
+        let list = try await harness.domain.list(cursor: nil)
+        let row = try XCTUnwrap((try XCTUnwrap(list["servers"] as? [[String: Any]])
+            .first { ($0["id"] as? String) == id.uuidString }))
+        XCTAssertEqual(row["authentication"] as? String, "none")
+        let credential = try XCTUnwrap(row["credential"] as? [String: Any])
+        XCTAssertEqual(credential["required"] as? Bool, false)
+        XCTAssertEqual(credential["state"] as? String, "noneConfigured")
+        let revisionValue = await harness.domain.currentRevision(serverID: id)
+        let revision = try XCTUnwrap(revisionValue)
+        // Durability proof: the created row now EXISTS — a follow-up Keep
+        // edit is a real edit (committed, still zero secret writes).
+        let keep = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: id, endpoint: endpoint(harness),
+                                          auth: "none", enabled: false),
+                options: [.sortedKeys])),
+            secretIntent: "keep", envelopeRevision: revision)
+        XCTAssertEqual(keep["state"] as? String, "committed")
+        XCTAssertEqual(harness.gateway.counts().writes, 0)
+        // Guard 1 (unchanged): a NEW identity still cannot ride Keep…
+        let keepNew = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: UUID(), endpoint: endpoint(harness),
+                                          auth: "none", enabled: false,
+                                          createIntent: true),
+                options: [.sortedKeys])),
+            secretIntent: "keep", envelopeRevision: nil)
+        XCTAssertEqual(keepNew["reason"] as? String, "mcpCreateNeedsSet")
+        // Guard 2 (unchanged): an authenticated NEW identity without the
+        // frozen Set lease is refused — no auth-bearing anonymous create.
+        let authClear = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: UUID(), endpoint: endpoint(harness),
+                                          auth: "bearerToken", enabled: false,
+                                          createIntent: true),
+                options: [.sortedKeys])),
+            secretIntent: "clear", envelopeRevision: nil)
+        XCTAssertEqual(authClear["reason"] as? String, "mcpCreateNeedsSet")
+        // The existing-row create-conflict gate is untouched.
+        let conflict = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: id, endpoint: endpoint(harness),
+                                          auth: "bearerToken", enabled: false,
+                                          createIntent: true),
+                options: [.sortedKeys])),
+            secretIntent: "clear", envelopeRevision: nil)
+        XCTAssertEqual(conflict["reason"] as? String, "mcpCreateConflict")
+        // Clear still refuses an auth-bearing candidate on an EXISTING row.
+        let existingAuthClear = await harness.domain.save(
+            candidateJSON: Data(try JSONSerialization.data(
+                withJSONObject: candidate(id: id, endpoint: endpoint(harness),
+                                          auth: "bearerToken", enabled: false),
+                options: [.sortedKeys])),
+            secretIntent: "clear", envelopeRevision: revision)
+        XCTAssertEqual(existingAuthClear["reason"] as? String,
+                       "mcpClearRequiresNoneAuth")
+    }
+
     // MARK: credential refusal BEFORE dispatch
 
     func testInvalidCredentialRefusesBeforeAnyRequest() async throws {

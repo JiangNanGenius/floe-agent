@@ -26,7 +26,7 @@ final class RuntimeFacadeConfigBindingTests: XCTestCase {
         _ = floeSecretGatewayRemove()
         SecretRequestMailbox.shared.resetForTesting()
         SecretSaveIntentVault.shared.resetForTesting()
-        databaseURL = FileManager.default.temporaryDirectory
+        databaseURL = androidTestFixtureDirectory
             .appendingPathComponent("floe-rb2-binding-\(UUID().uuidString).db")
         database = try DatabaseManager(path: databaseURL)
         try await database.migrate()
@@ -344,16 +344,21 @@ final class RuntimeFacadeConfigBindingTests: XCTestCase {
 
     // MARK: - Cursor grammar on list reads
 
-    func testCursorBeyondEndIsTypedRefusalNotSilentEmpty() async throws {
+    func testPayloadCursorBeyondEndAndMalformedRefuseWithoutPageZeroFallback() async throws {
         let router = makeRouter()
-        let response = await router.handle(command: "config.providers.list",
-                                           envelope: ["cursor": ["sequence": "9999"]])
-        let object = try decode(response)
-        XCTAssertEqual(object["errorCode"] as? String, "invalidEnvelope")
-        let negative = await router.handle(command: "config.providers.list",
-                                           envelope: ["cursor": ["sequence": "-1"]])
-        // Negative cursors are unreadable → the view treats them as absent
-        // (nil cursor), which is a normal page-0 read, never an error.
-        XCTAssertEqual(try decode(negative)["state"] as? String, "completed")
+        // V3 config continuations live in the payload; the old envelope
+        // cursor is reserved for run-event polling and is not this API.
+        let beyond = await router.handle(command: "config.providers.list",
+            envelope: ["payload": ["cursor": "9999"]])
+        XCTAssertEqual(try decode(beyond)["errorCode"] as? String, "invalidEnvelope")
+        let malformed: [Any] = ["-1", "00", 1]
+        for cursor in malformed {
+            let bad = await router.handle(command: "config.providers.list",
+                envelope: ["payload": ["cursor": cursor]])
+            XCTAssertEqual(try decode(bad)["errorCode"] as? String, "invalidEnvelope",
+                           "Malformed continuation must not silently read page zero")
+        }
+        let first = await router.handle(command: "config.providers.list", envelope: [:])
+        XCTAssertEqual(try decode(first)["state"] as? String, "completed")
     }
 }

@@ -667,23 +667,30 @@ class SettingsHostController internal constructor(
     }
 
     /**
-     * One-shot Settings/Privacy page-open recovery (mirrors DefaultsPage).
+     * Settings/Privacy page-entry read (mirrors DefaultsPage).
      *
-     * The host start is the normal first reader, but a page open must not
-     * depend on that single process-lifetime attempt: admission can race the
-     * first composition, and a lost terminal must be recoverable without a
-     * process restart. If the privacy domain is not admitted yet, re-read the
-     * REAL native readiness snapshot once and load when it becomes ready;
-     * otherwise settle a typed, retryable unavailable state — never leave the
-     * summary card silently "Loading…" forever.
+     * The host start is the normal first reader, but the Privacy counts are
+     * LIVE data: every actual page entry re-reads the authoritative
+     * `privacy.summary.get`, even when a summary already settled earlier in
+     * this process — startup-era counts (conversations/runs, and especially
+     * the runtime grant array appended by the live actor between visits)
+     * must never be presented as current. The settled projection stays on
+     * screen while the fresh read is pending; a newer readGeneration fences
+     * any older in-flight reply from winning.
+     *
+     * If the privacy domain is not admitted yet, re-read the REAL native
+     * readiness snapshot once and load when it becomes ready; otherwise
+     * settle a typed, retryable unavailable state — never leave the summary
+     * card silently "Loading…" forever.
      */
     fun ensurePrivacySummaryLoaded() {
-        // A page open is a RECOVERY for a surface with no settled data, not a
-        // blanket refresh-on-show: real counts already loaded for this
-        // process are left alone. A missing surface starts a newer read;
-        // readGeneration fences any older in-flight reply from winning.
-        // The explicit Retry action also remains available for typed errors.
-        if (stateFlow.value.privacy.summary != null) return
+        // Privacy counts are live: a page entry is a FRESH authoritative
+        // read, never skipped just because a summary settled earlier in
+        // this process. The settled projection is retained while the read
+        // is pending (refreshPrivacySummary only flips the status flag);
+        // its readGeneration and nativeRoot epoch fences keep any older
+        // in-flight reply from winning. The explicit Retry action also
+        // remains available for typed errors.
         if (admitted("settings.privacy")) {
             refreshPrivacySummary()
             return

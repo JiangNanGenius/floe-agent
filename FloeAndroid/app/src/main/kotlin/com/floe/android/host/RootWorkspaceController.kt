@@ -253,8 +253,8 @@ class RootWorkspaceController internal constructor(
         }
     }
 
-    /** The launch committed (prepared echo): the atomic store consumed the
-     * staged handles; the App-side record is released. */
+    /** The created holder accepted the draft handoff. Its session now owns
+     * the staged rows; only a later native prepared echo consumes the bytes. */
     internal fun clearHandedOff(nonce: String) {
         synchronized(attachmentLock) {
             if (draft.nonce == nonce) draft.handedOff = emptyList()

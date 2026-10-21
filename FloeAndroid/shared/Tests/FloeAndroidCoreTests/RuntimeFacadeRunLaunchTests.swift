@@ -262,6 +262,15 @@ final class RuntimeFacadeRunLaunchTests: XCTestCase {
         XCTAssertEqual(attachments.count, 1)
         XCTAssertEqual(attachments.first?.conversationID, conversationID)
         XCTAssertNotNil(attachments.first?.messageID)
+        let attachment = try XCTUnwrap(attachments.first)
+        let providerRequest = try XCTUnwrap(fixture.adapter.lastRequest)
+        XCTAssertTrue(providerRequest.messages.contains {
+            $0.role == "user" && $0.content.contains("[Attachment: \(attachment.displayName)]")
+        }, "the initial provider turn must see the committed attachment name")
+        let messages = try await fixture.conversationStore.messages(conversationID: conversationID)
+        let userMessage = try XCTUnwrap(messages.first { $0.id == attachment.messageID })
+        XCTAssertEqual(userMessage.content, "edit the staged file",
+                       "provider-only attachment context must not rewrite persisted user text")
     }
 
     func testStartTaskCreateIntentMintsAfterAtomicCommit() async throws {

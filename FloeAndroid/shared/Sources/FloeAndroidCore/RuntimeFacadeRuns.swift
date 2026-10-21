@@ -3919,7 +3919,16 @@ extension FacadeRunDomain {
     func launchTaskAttach(prepared: PreparedRun, service: ConversationRunService,
                           domain: FacadeRunDomain) {
         let runID = prepared.run.id
-        let goal = prepared.run.goal
+        // History excludes this already-committed user message. Carry its
+        // native-owned attachment names on the initial model turn as well,
+        // matching ConversationHistoryAssembler without rewriting user text
+        // or treating file metadata as permission authority.
+        let attachmentNames = prepared.userMessage.parts.compactMap { part -> String? in
+            guard part.kind == .file || part.kind == .image,
+                  let name = part.metadata["name"], !name.isEmpty else { return nil }
+            return "[Attachment: \(name)]"
+        }
+        let goal = ([prepared.run.goal] + attachmentNames).joined(separator: "\n")
         // The run's OWN bundle (never the durable singleton as fallback) is
         // frozen into the track; a vanished ownership means the launch was
         // already settled and nothing dispatches.

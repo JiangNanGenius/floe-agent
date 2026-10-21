@@ -1692,6 +1692,12 @@ class ConversationHostController internal constructor(
             settleLaunchFailure(entry, correlation, "model_unavailable")
             return
         }
+        val stagedHandles = host.attachments.launchHandles(
+            ConversationSessionToken(request.conversationId, request.sessionEpoch), request.attachments)
+        if (stagedHandles == null) {
+            settleLaunchFailure(entry, correlation, host.attachments.failureMessage("stage_refused"))
+            return
+        }
         // The frozen run.start terminal is an identifier-only `accepted`; the
         // minted conversation/run identities exist ONLY in the non-terminal
         // `prepared` effect emitted after the atomic launch commit. Consume
@@ -1730,7 +1736,7 @@ class ConversationHostController internal constructor(
                 stateful = true,
                 correlationID = client().correlationID("rstart"),
                 revision = revision,
-                payload = ConversationWire.runStartPayload(request),
+                payload = ConversationWire.runStartPayload(request, stagedHandles),
             ),
             onFrame = { frame ->
                 if (frame.kind == "prepared") {
@@ -1957,6 +1963,9 @@ class ConversationHostController internal constructor(
         if (request.mode == RunningInputModeUi.STEER) {
             return submitSteer(request, entry)
         }
+        val stagedHandles = host.attachments.launchHandles(
+            ConversationSessionToken(request.conversationId, request.sessionEpoch), request.attachments)
+            ?: return false
         withFreshConversationRevision(entry) { conversationRevision ->
             if (conversationRevision == null) {
                 surfaceError(entry, "revision_unavailable")
@@ -1970,7 +1979,7 @@ class ConversationHostController internal constructor(
                     stateful = true,
                     correlationID = client().correlationID("rqueue"),
                     revision = conversationRevision,
-                    payload = ConversationWire.runningInputPayload(request),
+                    payload = ConversationWire.runningInputPayload(request, stagedHandles),
                 ),
             ) { outcome ->
                 when (outcome) {
@@ -1978,6 +1987,9 @@ class ConversationHostController internal constructor(
                         // Queue accepted ≠ approval resolved ≠ run started; the
                         // durable row identity is the real receipt.
                         outcome.detail["inputID"]?.let {
+                            host.attachments.consumeSessionRows(
+                                ConversationSessionToken(request.conversationId, request.sessionEpoch),
+                                request.attachments.map { it.id })
                             entry.builder.clearActionError()
                             entry.holder.applyHostSnapshot(entry.builder.build())
                             entry.builder.selectedRunId?.let { runID ->
@@ -1995,6 +2007,9 @@ class ConversationHostController internal constructor(
     }
 
     private fun submitSteer(request: RunningInputRequest, entry: ConversationFlowHolderEntry): Boolean {
+        val stagedHandles = host.attachments.launchHandles(
+            ConversationSessionToken(request.conversationId, request.sessionEpoch), request.attachments)
+            ?: return false
         withFreshConversationRevision(entry) { conversationRevision ->
             if (conversationRevision == null) {
                 surfaceError(entry, "revision_unavailable")
@@ -2014,9 +2029,8 @@ class ConversationHostController internal constructor(
                             put("content", JsonPrimitive(request.content))
                             put("mode", JsonPrimitive(RunningInputModeUi.QUEUE.swiftRaw))
                             request.modelId?.let { put("selectedModelID", JsonPrimitive(it)) }
-                            val handles = request.attachments.filter { it.isReady }
-                                .map { JsonPrimitive(it.id) }
-                            if (handles.isNotEmpty()) put("stagedAttachments", JsonArray(handles))
+                            if (stagedHandles.isNotEmpty()) put("stagedAttachments",
+                                JsonArray(stagedHandles.map { JsonPrimitive(it) }))
                         },
                     ),
                 ),
@@ -2030,6 +2044,9 @@ class ConversationHostController internal constructor(
                     }
                     return@trackOperation
                 }
+                host.attachments.consumeSessionRows(
+                    ConversationSessionToken(request.conversationId, request.sessionEpoch),
+                    request.attachments.map { it.id })
                 // Step 2: promote the durable row through the run revision.
                 dispatchRunStateControl(
                     entry = entry,
@@ -3120,7 +3137,7 @@ class ConversationHostController internal constructor(
         sentText: String,
         sentAttachmentIds: List<String>,
     ) {
-        // Holder-invoked only from a matching applyLaunchPrepared echo.
+        host.attachments.consumeSessionRows(session, sentAttachmentIds)
     }
 
     /**
