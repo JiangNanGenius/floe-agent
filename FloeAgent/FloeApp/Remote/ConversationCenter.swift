@@ -3163,6 +3163,7 @@ final class ConversationCenter: ObservableObject {
                 // panel can open a child conversation's tool history/result
                 // and survive UI close / app relaunch.
                 childRunStore: SQLiteChildRunStore(database: environment.database),
+                checkpointStore: SQLiteChildRunStore(database: environment.database),
                 onChildStateChange: { [weak self] _ in
                     await MainActor.run {
                         // The durable store is the authority; republishing the
@@ -3603,6 +3604,31 @@ final class ConversationCenter: ObservableObject {
 
     private static func designConfirmationTimestamp(_ date: Date) -> String {
         ISO8601DateFormatter().string(from: date)
+    }
+
+    func canResumeInterruptedChild(conversationID: UUID) async -> Bool {
+        guard !isTemporaryConversation(conversationID) else { return false }
+        let owners = runServices.values.filter { $0.conversationID == conversationID }
+        guard owners.count == 1, let service = owners.first else { return false }
+        let snapshot = await service.snapshot()
+        return !snapshot.isTerminal && runServices[service.runID] === service
+    }
+
+    func resumeInterruptedChild(childID: UUID, conversationID: UUID) async throws -> SubagentOutcome {
+        guard !isTemporaryConversation(conversationID) else {
+            throw FloeError.validationFailed(String(localized: "Subagents cannot be restored in a temporary chat."))
+        }
+        let owners = runServices.values.filter { $0.conversationID == conversationID }
+        guard owners.count == 1, let service = owners.first,
+              !(await service.snapshot()).isTerminal,
+              let runner = await environment.subagentRunnerRegistry.runner(for: service.runID),
+              runServices[service.runID] === service else {
+            throw FloeError.validationFailed(String(localized: "Keep this task running before continuing its subagent."))
+        }
+        let outcome = await service.resumeInterruptedChild(childID,
+            resumeService: environment.childResumeService, runner: runner)
+        publishSession(conversationID)
+        return outcome
     }
 
     /// The single live run for a conversation, when one exists.

@@ -181,6 +181,14 @@ public actor SubagentRunnerRegistry {
         runners[runID] = nil
     }
 
+    /// The runner bound to one live parent run. The durable child resume
+    /// glue resolves the CURRENT run's runner through this getter, so a
+    /// resumed child always executes under the actual authorized parent run
+    /// that owns the runner — never an arbitrary or stale one.
+    public func runner(for runID: UUID) -> SubagentRunner? {
+        runners[runID]
+    }
+
     /// Runs the structured subagent loop for one delegated subtask.
     public func runSubagent(
         _ request: SubagentRequest,

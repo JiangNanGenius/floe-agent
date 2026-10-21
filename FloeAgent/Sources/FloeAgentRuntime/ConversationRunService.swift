@@ -623,6 +623,13 @@ public actor ConversationRunService {
         await runtime.steer(input, expectedRunID: expectedRunID)
     }
 
+    /// The service forwards only to its own real runtime; no DB run lookup or
+    /// reconstructed authority can launch this continuation.
+    public func resumeInterruptedChild(_ childID: UUID, resumeService: ChildResumeService,
+                                       runner: SubagentRunner) async -> SubagentOutcome {
+        await runtime.resumeInterruptedChild(childID, resumeService: resumeService, runner: runner)
+    }
+
     public func withdrawSteer(id: UUID) async -> Bool {
         await runtime.withdrawSteer(id: id)
     }
