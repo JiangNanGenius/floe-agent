@@ -714,7 +714,7 @@ targets:
       - path: Tests/FloeAppTests/OfficeWorkbookCellCreationTests.swift
       - path: Tests/FloeAppTests/OfficeNativeChartAppQualificationTests.swift
       - path: Tests/FloeAppTests/OfficeSymbolBulletTests.swift
-      - path: Tests/FloeAppTests/OfficeExplicitTargetTests.swift
+      - path: Tests/FloeAppTests/OfficeExplicitTargetAppTests.swift
       - path: Tests/FloeAppTests/SourceControlRootIdentityTests.swift
       - path: Tests/FloeAppTests/IDEMarkdownOutlineTests.swift
       - path: Tests/FloeAppTests/ComposerTests.swift
