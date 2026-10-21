@@ -62,6 +62,8 @@ private enum FloeSystemAlarmPresentation {
                 ?? attributes.presentation.alert.title
         case .alert:
             return attributes.presentation.alert.title
+        @unknown default:
+            return attributes.presentation.alert.title
         }
     }
 
@@ -95,6 +97,8 @@ private enum FloeSystemAlarmPresentation {
                 paused.totalCountdownDuration - paused.previouslyElapsedDuration)
         case .alert(let alert):
             return clockText(hour: alert.time.hour, minute: alert.time.minute)
+        @unknown default:
+            return ""
         }
     }
 }
@@ -148,6 +152,8 @@ struct FloeSystemAlarmLiveActivityView: View {
                     Label(FloeL10n.l("widget.alarm.stop"), systemImage: "stop.fill")
                 }
                 .buttonStyle(.borderedProminent)
+            @unknown default:
+                EmptyView()
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -201,6 +207,8 @@ private enum FloeSystemAlarmDynamicIslandBuilder {
                         Label(FloeL10n.l("widget.alarm.stop"), systemImage: "stop.fill")
                     }
                     .buttonStyle(.borderedProminent)
+                @unknown default:
+                    EmptyView()
                 }
             }
         } compactLeading: {
