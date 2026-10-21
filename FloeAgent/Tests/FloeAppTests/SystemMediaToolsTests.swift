@@ -193,7 +193,7 @@ struct SystemMediaToolsTests {
         var pages = 1
         while let next = cursor, next != "none", pages < 100 {
             let output = try await tool.execute(
-                .init(cursor: next, limit: 50),
+                .init(limit: 50, cursor: next),
                 context: context(conversation: conversation)
             )
             #expect(output.exitStatus == 0)
@@ -632,11 +632,12 @@ final class FakeMediaLibrary: SystemMediaLibraryProviding, @unchecked Sendable {
     var authorization: SystemMediaAccess { auth }
 
     func requestAuthorization(cancellation: CancellationToken) async throws -> SystemMediaAccess {
-        lock.lock()
-        _requestCount += 1
-        let next = _auth == .notDetermined ? SystemMediaAccess.authorized : _auth
-        _auth = next
-        lock.unlock()
+        let next = lock.withLock {
+            _requestCount += 1
+            let next = _auth == .notDetermined ? SystemMediaAccess.authorized : _auth
+            _auth = next
+            return next
+        }
         if cancellation.isCancelled { throw SystemMediaError.cancelled }
         return next
     }
@@ -647,11 +648,10 @@ final class FakeMediaLibrary: SystemMediaLibraryProviding, @unchecked Sendable {
         maxRows: Int,
         cancellation: CancellationToken
     ) async throws -> SystemMediaSearchScan {
-        lock.lock()
-        _searchCount += 1
-        let status = _auth
-        let all = _items
-        lock.unlock()
+        let (status, all) = lock.withLock {
+            _searchCount += 1
+            return (_auth, _items)
+        }
         if cancellation.isCancelled { throw SystemMediaError.cancelled }
         guard status == .authorized else {
             throw SystemMediaError.authorizationDenied
@@ -688,17 +688,13 @@ final class FakeMediaLibrary: SystemMediaLibraryProviding, @unchecked Sendable {
         cancellation: CancellationToken
     ) async throws -> [SystemMediaItem] {
         if cancellation.isCancelled { throw SystemMediaError.cancelled }
-        lock.lock()
-        let all = _items
-        lock.unlock()
+        let all = lock.withLock { _items }
         let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.persistentID, $0) })
         return persistentIDs.compactMap { byID[String($0)] }
     }
 
     func hasAnyItems() async -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return !_items.isEmpty
+        lock.withLock { !_items.isEmpty }
     }
 }
 

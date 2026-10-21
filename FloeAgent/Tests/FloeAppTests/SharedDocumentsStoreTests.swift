@@ -687,7 +687,7 @@ struct SharedDocumentsStoreEnumerationTests {
         let batch = try await store.changes(anchor: start, limit: 100)
         #expect(batch.changes.map(\.kind) == [.insert, .update, .delete])
         #expect(batch.more == false)
-        #expect(batch.nextAnchor > start)
+        #expect(try SQLiteSharedDocumentsStore.parseAnchor(batch.nextAnchor) > SQLiteSharedDocumentsStore.parseAnchor(start))
     }
 
     @Test("pruned journal expires anchors below the floor and rejects future anchors")
@@ -936,12 +936,12 @@ struct SharedDocumentsStoreClosureTests {
             stage: try await stageBytes(Data("b".utf8), store: store)
         )
         let anchor1 = try await store.currentAnchor()
-        #expect(anchor1 > anchor0)
+        #expect(try SQLiteSharedDocumentsStore.parseAnchor(anchor1) > SQLiteSharedDocumentsStore.parseAnchor(anchor0))
         let pruned = try await store.pruneChanges(olderThan: Date().addingTimeInterval(60))
         #expect(pruned >= 2)
         // The anchor NEVER moves backwards, even with zero live rows.
         let anchor2 = try await store.currentAnchor()
-        #expect(anchor2 >= anchor1)
+        #expect(try SQLiteSharedDocumentsStore.parseAnchor(anchor2) >= SQLiteSharedDocumentsStore.parseAnchor(anchor1))
         // A fresh enumerator at the head gets a truthful empty diff, not an
         // expiry and not a false clean that loses later changes.
         let head = try await store.changes(anchor: anchor2, limit: 10)
@@ -978,7 +978,8 @@ struct SharedDocumentsStoreClosureTests {
         let stuck = stagingRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: stuck, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(
-            at: stuck.appendingPathComponent("lock", isDirectory: true)
+            at: stuck.appendingPathComponent("lock", isDirectory: true),
+            withIntermediateDirectories: true
         )
         let report = try await store.recoverInterruptedOperations()
         #expect(report.reclaimedStages == 1)
