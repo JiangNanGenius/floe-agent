@@ -1,6 +1,12 @@
 name: Qualify Floe Native Office Host
 on:
   workflow_dispatch:
+    inputs:
+      publish_component:
+        description: Publish the exact built host as an immutable Office component release
+        required: false
+        type: boolean
+        default: false
   push:
     branches: ['codex/office-workflow-upgrade']
     paths: ['.github/workflows/office-native-host.yml']
@@ -47,6 +53,8 @@ jobs:
           python3 FloeAgent/scripts/tests/test_office_language_resources.py
           python3 FloeAgent/scripts/test_office_stage_diagnostics.py
           python3 FloeAgent/scripts/tests/test_office_render_recovery.py
+          python3 FloeAgent/scripts/test_office_host_bootstrap.py
+          python3 FloeAgent/scripts/test_office_component_recovery.py
       - name: Reuse complete qualified engine inputs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -215,3 +223,207 @@ jobs:
           name: office-native-host-unsigned
           path: ${{ runner.temp }}/OfficeNativeHost.zip
           compression-level: 0
+      - name: Recover the qualified dSYM for the exact built host
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.publish_component == true
+        run: |
+          set -euo pipefail
+          binary="$RUNNER_TEMP/office-native-host/products/Release-iphoneos/FloeOfficeNative.framework/FloeOfficeNative"
+          dsym="$RUNNER_TEMP/office-native-host/products/Release-iphoneos/FloeOfficeNative.framework.dSYM"
+          if [ ! -d "$dsym" ]; then
+            # Same bounded recovery used for the current device component: no
+            # recompile, no binary replacement, only DWARF for the exact bytes.
+            xcrun dsymutil -j 6 "$binary" -o "$dsym"
+          fi
+          xcrun dwarfdump --uuid "$binary"
+          xcrun dwarfdump --uuid "$dsym"
+      - name: Prepare immutable component release metadata
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.publish_component == true
+        run: |
+          set -euo pipefail
+          # The public directory carries only the host archive sidecar,
+          # descriptor and licensing. The qualified dSYM is written to a
+          # separate private directory and is never a public release asset.
+          python3 FloeAgent/scripts/pin_office_host_artifact.py \
+            --artifact-zip "$RUNNER_TEMP/OfficeNativeHost.zip" \
+            --component-release-dir "$RUNNER_TEMP/office-component-release" \
+            --private-symbols-dir "$RUNNER_TEMP/office-component-private-symbols" \
+            --symbols-dir "$RUNNER_TEMP/office-native-host/products/Release-iphoneos/FloeOfficeNative.framework.dSYM" \
+            --licenses-dir "FloeAgent/FloeApp/Resources/Licenses/OfficeEngine" \
+            --component-artifact-name office-native-host-unsigned
+          test ! -e "$RUNNER_TEMP/office-component-release/FloeOfficeNative.framework.dSYM.zip"
+          test -f "$RUNNER_TEMP/office-component-private-symbols/FloeOfficeNative.framework.dSYM.zip"
+          {
+            echo '### Office component private dSYM'
+            echo 'The qualified dSYM is a PRIVATE artifact, not a release asset.'
+            echo 'Export and retain it immediately; it expires with Actions artifact retention.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.publish_component == true
+        with:
+          name: office-native-component-release
+          path: ${{ runner.temp }}/office-component-release
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.publish_component == true
+        with:
+          name: office-native-component-private-symbols
+          path: ${{ runner.temp }}/office-component-private-symbols
+          compression-level: 0
+          # Private only: root must export/retain immediately. This is never a
+          # release asset and expires on the same short retention as a normal
+          # Actions artifact.
+          retention-days: 7
+  publish-component:
+    needs: native-host
+    if: success() && github.event_name == 'workflow_dispatch' && inputs.publish_component == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: office-native-host-unsigned
+          path: ${{ runner.temp }}/native-host
+      - uses: actions/download-artifact@v4
+        with:
+          name: office-native-component-release
+          path: ${{ runner.temp }}/component
+      - uses: actions/download-artifact@v4
+        with:
+          name: office-native-component-private-symbols
+          path: ${{ runner.temp }}/private-symbols
+      - name: Assemble and verify the immutable public component asset set
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, shutil
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          component = root / 'component'
+          target = root / 'release'
+          target.mkdir()
+          shutil.copyfile(root / 'native-host' / 'OfficeNativeHost.zip',
+                          target / 'OfficeNativeHost.zip')
+          # Only the public allowlist is assembled. The dSYM/pin-block stay out:
+          # the dSYM is private and the pin block is a primary pin edit.
+          for name in ('office-component.json', 'OfficeNativeHost.zip.sha256',
+                       'office-component-licenses.zip'):
+              shutil.copyfile(component / name, target / name)
+          shutil.copyfile(component / 'OFFICE_COMPONENT_RELEASE.md',
+                          root / 'release-notes.md')
+          descriptor = json.loads((target / 'office-component.json').read_text())
+          assert descriptor['tag'].startswith('office-native-host-'), descriptor['tag']
+          producer = descriptor['transport']['workflowCommit']
+          assert len(producer) == 40 and all(c in '0123456789abcdef' for c in producer), producer
+          print(descriptor['tag'])
+          print(producer)
+          PY
+          tag="$(python3 -c 'import json,os,pathlib;print(json.loads((pathlib.Path(os.environ["RUNNER_TEMP"])/"release/office-component.json").read_text())["tag"])')"
+          producer="$(python3 -c 'import json,os,pathlib;print(json.loads((pathlib.Path(os.environ["RUNNER_TEMP"])/"release/office-component.json").read_text())["transport"]["workflowCommit"])')"
+          # This route publishes the component it just built: the descriptor
+          # transport must be this workflow's immutable source. Publishing a
+          # locally retained older component uses the manual exact-component
+          # route with its own actual producer commit; never retarget that tag.
+          if [ "$producer" != "$GITHUB_SHA" ]; then
+            echo "The exact component bytes were produced by $producer, not $GITHUB_SHA." >&2
+            echo "Publish this run's own build here; use the manual route, with the exact" >&2
+            echo "producer commit as tag target, for a previously retained component." >&2
+            exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/release/FloeOfficeNative.framework.dSYM.zip"
+          test -f "$RUNNER_TEMP/private-symbols/FloeOfficeNative.framework.dSYM.zip"
+          python3 FloeAgent/scripts/office_component_recovery.py \
+            verify-release-directory "$RUNNER_TEMP/release" \
+            --private-symbols "$RUNNER_TEMP/private-symbols/FloeOfficeNative.framework.dSYM.zip" \
+            --lock FloeAgent/ThirdParty/Collabora/engine.lock.json
+          echo "COMPONENT_TAG=$tag" >> "$GITHUB_ENV"
+          echo "PRODUCER_SOURCE_COMMIT=$producer" >> "$GITHUB_ENV"
+      - name: Publish the immutable component release (never latest, never clobber)
+        run: |
+          set -euo pipefail
+          # An existing release or tag is an unknown/partial state for the
+          # primary to inspect. Never move, clobber or blind-retry it.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$COMPONENT_TAG" >/dev/null 2>&1; then
+            echo "component release $COMPONENT_TAG already exists; immutable releases are never moved" >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$COMPONENT_TAG" >/dev/null 2>&1; then
+            echo "tag $COMPONENT_TAG already exists without a verified release; inspect it, never move it" >&2
+            exit 1
+          fi
+          gh release create "$COMPONENT_TAG" \
+            "$RUNNER_TEMP/release/OfficeNativeHost.zip" \
+            "$RUNNER_TEMP/release/OfficeNativeHost.zip.sha256" \
+            "$RUNNER_TEMP/release/office-component.json" \
+            "$RUNNER_TEMP/release/office-component-licenses.zip" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$PRODUCER_SOURCE_COMMIT" \
+            --title "Floe Office native host component ${COMPONENT_TAG}" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
+            --draft \
+            --latest=false
+          # Verify the uploaded draft before exposing it. A partial upload
+          # leaves a draft for primary inspection; no blind re-upload/retry.
+          python3 - "$GITHUB_REPOSITORY" "$COMPONENT_TAG" <<'PY'
+          import json, subprocess, sys
+          repo, tag = sys.argv[1], sys.argv[2]
+          output = subprocess.run(
+              ['gh', 'api', f'repos/{repo}/releases/tags/{tag}'],
+              check=True, capture_output=True, text=True).stdout
+          release = json.loads(output)
+          if release.get('draft') is not True:
+              raise SystemExit('the uploaded component release is not a draft; refusing to continue')
+          names = sorted(asset.get('name') for asset in release.get('assets', []))
+          expected = ['OfficeNativeHost.zip', 'OfficeNativeHost.zip.sha256',
+                      'office-component-licenses.zip', 'office-component.json']
+          if names != expected:
+              raise SystemExit(f'uploaded draft asset set is {names}, expected {expected}')
+          PY
+          gh release edit "$COMPONENT_TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest=false
+      - name: Read back the published component from the canonical GitHub API
+        run: |
+          set -euo pipefail
+          READBACK="$RUNNER_TEMP/readback"
+          mkdir -p "$READBACK"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$COMPONENT_TAG" > "$READBACK/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$COMPONENT_TAG" > "$READBACK/tag-ref.json"
+          ref_type="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["object"]["type"])' "$READBACK/tag-ref.json")"
+          ref_sha="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["object"]["sha"])' "$READBACK/tag-ref.json")"
+          TAG_OBJECT_ARGS=()
+          if [ "$ref_type" = tag ]; then
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" > "$READBACK/tag-object.json"
+            TAG_OBJECT_ARGS=(--tag-object "$READBACK/tag-object.json")
+          elif [ "$ref_type" != commit ]; then
+            echo "unexpected tag ref object type: $ref_type" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$READBACK/latest.json"
+          # The App feed is public; fetch the live file so a component can
+          # never be reported successful while appearing as an App feed entry.
+          gh api "repos/$GITHUB_REPOSITORY/contents/feather.json" \
+            -H "Accept: application/vnd.github.raw" > "$READBACK/feed.json"
+          python3 FloeAgent/scripts/office_component_recovery.py \
+            verify-publication "$READBACK/release.json" \
+            --tag "$COMPONENT_TAG" \
+            --source-commit "$PRODUCER_SOURCE_COMMIT" \
+            --tag-ref "$READBACK/tag-ref.json" \
+            "${TAG_OBJECT_ARGS[@]+"${TAG_OBJECT_ARGS[@]}"}" \
+            --latest "$READBACK/latest.json" \
+            --feed "$READBACK/feed.json" \
+            --release-dir "$RUNNER_TEMP/release" \
+            --lock FloeAgent/ThirdParty/Collabora/engine.lock.json \
+            --private-symbols "$RUNNER_TEMP/private-symbols/FloeOfficeNative.framework.dSYM.zip"
+          {
+            echo "### Office component published: $COMPONENT_TAG"
+            echo "Public assets: OfficeNativeHost.zip, its .sha256, office-component.json, office-component-licenses.zip."
+            echo "The private dSYM was verified but is not a release asset."
+          } >> "$GITHUB_STEP_SUMMARY"

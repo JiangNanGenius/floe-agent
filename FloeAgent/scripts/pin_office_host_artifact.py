@@ -23,6 +23,14 @@ Usage:
       --artifact-zip ./host/OfficeNativeHost.zip --artifact-id <id> \
       --artifact-run-id <storage-run-id> --artifact-commit <storage-run-commit> --apply
 
+  # Prepare the immutable component-release metadata (never uploads, never
+  # rewrites engine.lock.json). The archive is referenced in place; the dSYM
+  # goes to a separate private directory and is never a public asset:
+  python3 FloeAgent/scripts/pin_office_host_artifact.py \
+      --artifact-zip ./host/OfficeNativeHost.zip \
+      --component-release-dir ./component --symbols-dir ./Symbols/FloeOfficeNative.framework.dSYM \
+      --private-symbols-dir ./component-private-symbols
+
 `--apply` refuses any artifact whose manifest was not built from the current
 host sources, whose embedding or scheme/forwarding/kit-callback lifecycle
 overlays differ or lack exact provenance (patch sha, engine commit, prepared
@@ -34,12 +42,25 @@ rebuilt artifact is recorded and records each verified overlay claim,
 including `kitCallbackOverlaySHA256`. Locks built before an overlay was
 tracked (no tracked section and no claim) keep working for backward
 compatibility.
+
+`--component-release-dir` is a separate, non-mutating producer step: it writes
+the PUBLIC descriptor, checksum sidecar, release notes, pin block and Office
+licensing asset for the immutable component release consumed by bootstrap after
+the Actions artifact expires.  The actual qualified dSYM is written only to the
+separate `--private-symbols-dir` as a private artifact for the root to export;
+its digest/size/UUID are recorded in the descriptor, but the symbols bytes and
+signing material must never become public release assets.  The producer step
+never uploads and never rewrites the lock.  The optional
+`qualifiedHostArtifact.componentRelease` block records the published
+descriptor/private-symbol hashes; without it bootstrap derives the same tag
+from the pinned archive SHA-256.
 """
 
 import argparse
 import hashlib
 import office_compiled_lifecycle as compiled_lifecycle
 import json
+import stat
 import sys
 import tempfile
 import zipfile
@@ -73,6 +94,8 @@ HOST_SOURCES = ROOT / "ThirdParty/Collabora/FloeOfficeNative"
 FRAMEWORK = "FloeOfficeNative.framework"
 REBUILD_WORKFLOW = ".github/workflows/office-native-host.yml"
 SOURCE_AHEAD_MARKER = "SOURCE AHEAD OF ARTIFACT"
+MAX_ARTIFACT_ENTRIES = 100000
+MAX_ARTIFACT_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
 
 QUALIFICATION_KEYS = ("hostCompilePassed", "hostLinkPassed", "swiftModuleImportPassed")
 
@@ -179,6 +202,259 @@ def browser_resource_claim(manifest: dict, contract, hashes: dict, module=None):
     if failures:
         return (["browser resources: " + failure for failure in failures], None)
     return [], module.canonical_block(block)
+
+
+def component_recovery_module():
+    try:
+        import office_component_recovery as module
+    except ModuleNotFoundError as failure:
+        raise ValueError(
+            "office_component_recovery.py must ship beside the Office pin scripts "
+            "to prepare a durable component release") from failure
+    return module
+
+
+def component_release_metadata(lock_path: Path, artifact_zip: Path, output: Path,
+                               symbols_dir: Path, licenses_dir: Path,
+                               private_symbols_dir: Path,
+                               repository: str, artifact_name: str) -> int:
+    """Prepare an immutable component release from one verified host artifact.
+
+    This never mutates ``engine.lock.json`` and never uploads anything.  It
+    checks the artifact against the current sources/lock exactly as ``--apply``
+    does, packages the Office licensing into the PUBLIC metadata directory and
+    the qualified dSYM into a SEPARATE private output directory.  The public
+    descriptor records only the private dSYM digest/size/UUID binding; the
+    symbols archive is never written into the public release directory or the
+    public upload allowlist.  The archive itself is referenced in place so a
+    120 MB component is not copied for metadata preparation.
+    """
+    lock_path = Path(lock_path)
+    lock = json.loads(lock_path.read_text())
+    pin = lock["qualifiedHostArtifact"]
+    artifact_zip = Path(artifact_zip)
+    if artifact_zip.name != "OfficeNativeHost.zip":
+        raise ValueError("the component archive must be named OfficeNativeHost.zip")
+    sources = source_hashes()
+    with tempfile.TemporaryDirectory() as folder:
+        manifest, root = read_artifact(artifact_zip, Path(folder))
+        hashes = artifact_hashes(root)
+    failures = []
+    expected_sources = {name: sources.get(name) for name in pin["hostSourceSHA256"]}
+    if manifest.get("hostSourceSHA256") != expected_sources:
+        failures.append("the artifact was built from different host sources")
+    if manifest.get("sourceCommit") != lock.get("commit"):
+        failures.append("the artifact was built from a different engine commit")
+    if manifest.get("overlaySHA256") != lock["embeddingOverlay"]["sha256"]:
+        failures.append("the artifact embedding overlay differs from the locked overlay")
+    claims = {"overlaySHA256": lock["embeddingOverlay"]["sha256"]}
+    for section, claim_key, block, label in LIFECYCLE_OVERLAYS:
+        overlay = lock.get(section)
+        if not overlay:
+            if manifest.get(block) is not None:
+                failures.append(f"the artifact carries an untracked {label}")
+            continue
+        failures.extend(lifecycle_provenance_failures(manifest, overlay, lock["commit"],
+                                                      block, label))
+        claims[claim_key] = overlay["sha256"]
+    compiled_claim = None
+    try:
+        compiled_claim = compiled_lifecycle.validate_manifest(
+            manifest, lock, "IOS", lock_path=lock_path)
+    except ValueError as error:
+        failures.append(str(error))
+    if compiled_claim is not None:
+        claims["embeddedLifecycleMemberSHA256"] = component_canonical_digest(compiled_claim)
+    elif pin.get("embeddedLifecycleMember") is not None:
+        failures.append("the pin claims a compiled lifecycle member without a tracked contract")
+    repair_claim = engine_repair_claim(lock_path)
+    if repair_claim is not None:
+        failures.extend(engine_repair_provenance_failures(manifest, repair_claim))
+        claims["engineRepairSHA256"] = component_canonical_digest(repair_claim)
+    elif pin.get("engineRepair") is not None:
+        failures.append("the pin claims an engine repair without a tracked contract")
+    for key in QUALIFICATION_KEYS:
+        if manifest.get(key) is not True:
+            failures.append(f"qualification flag {key} did not pass")
+    failures.extend(validate_capability_claims(manifest, label="artifact manifest"))
+    manifest_claims = manifest.get("capabilityQualification")
+    if not isinstance(manifest_claims, dict):
+        failures.append("the artifact manifest carries no capabilityQualification block")
+    else:
+        for flag in CAPABILITY_FLAGS:
+            if flag not in manifest_claims:
+                failures.append(f"the artifact manifest omits capability {flag}")
+            elif not isinstance(manifest_claims[flag], bool):
+                failures.append(f"the artifact manifest capability {flag} is not a boolean")
+    declared_resources = manifest.get("runtimeResourceSHA256", {})
+    if declared_resources and declared_resources != hashes["runtimeResourceSHA256"]:
+        failures.append("the artifact's runtime resources do not match its manifest")
+    browser_block = manifest.get("browserResources")
+    runtime_hashes = hashes.get("runtimeResourceSHA256") or {}
+    has_runtime_bundle = runtime_hashes.get("bundle.js") is not None
+    rebuilt_browser = None
+    if pin.get("browserResources") is not None and browser_block is None:
+        failures.append("the pin claims browser resources but the artifact carries no "
+                        "browser resource claim")
+    if browser_block is not None or has_runtime_bundle:
+        try:
+            module = browser_resources_module(required=True)
+            browser_contract = module.live_contract(
+                lock_path, engine_commit=lock.get("commit"))
+        except ValueError as failure:
+            print(f"pin: refusing to prepare the component: {failure}", file=sys.stderr)
+            return 2
+        browser_failures, rebuilt_browser = browser_resource_claim(
+            manifest, browser_contract, hashes, module=module)
+        failures.extend(browser_failures)
+        if browser_block is None and browser_contract is None:
+            actual_bundle = module.runtime_bundle_sha256(runtime_hashes)
+            if (actual_bundle is not None
+                    and actual_bundle != module.EXPECTED_ORIGINAL_BUNDLE_SHA256):
+                failures.append("the artifact carries a non-baseline browser bundle "
+                                "without a tracked browser patch contract")
+    if rebuilt_browser is not None:
+        claims["browserResourcesSHA256"] = component_canonical_digest(rebuilt_browser)
+    selected_filter = {}
+    if pin.get("filterOverlay"):
+        declared_overlay = manifest.get("filterOverlay")
+        if not isinstance(declared_overlay, dict):
+            failures.append("the artifact carries no filter overlay qualification")
+        else:
+            omitted = sorted(key for key in pin["filterOverlay"] if key not in declared_overlay)
+            if omitted:
+                failures.append("the artifact's filter overlay omits " + ", ".join(omitted))
+            else:
+                selected_filter = {key: declared_overlay[key] for key in pin["filterOverlay"]}
+                claims["filterOverlaySHA256"] = component_canonical_digest(selected_filter)
+    native_run = str(manifest.get("runID") or "")
+    native_commit = str(manifest.get("workflowCommit") or "")
+    if bool(native_run) != bool(native_commit):
+        failures.append("the artifact manifest carries a partial native cloud run identity")
+    if native_run and (not native_run.isdigit()
+                       or len(native_commit) != 40
+                       or any(char not in "0123456789abcdef" for char in native_commit)):
+        failures.append("the artifact manifest carries a malformed native cloud run identity")
+    storage = pin.get("localStorageArtifact")
+    if native_run:
+        transport = {
+            "runID": native_run,
+            "workflowCommit": native_commit,
+            "artifactName": artifact_name,
+            "nativeProducer": "actions-native-build",
+        }
+    else:
+        if not isinstance(storage, dict) or storage.get("nativeProducer") != LOCAL_PRODUCER:
+            failures.append("a locally produced artifact must already be pinned with its "
+                            "storage provenance before its component release is prepared")
+            transport = None
+        else:
+            storage_failures = storage_provenance_failures(pin)
+            if storage_failures:
+                failures.extend(storage_failures)
+            transport = {
+                "runID": str(storage["runID"]),
+                "workflowCommit": storage["workflowCommit"],
+                "artifactName": storage["artifactName"],
+                "nativeProducer": storage["nativeProducer"],
+            }
+    if failures:
+        print("pin: refusing to prepare this component release", file=sys.stderr)
+        for failure in failures:
+            print(f"  - {failure}", file=sys.stderr)
+        return 1
+    module = component_recovery_module()
+    output = Path(output)
+    private_output = Path(private_symbols_dir)
+    symbols = Path(symbols_dir)
+    licenses = Path(licenses_dir)
+    if symbols.name != module.SYMBOLS_ROOT:
+        raise ValueError("--symbols-dir must be the qualified FloeOfficeNative.framework.dSYM")
+    if licenses.name != module.LICENSES_ROOT:
+        raise ValueError("--licenses-dir must be the OfficeEngine licensing directory")
+    if output.exists() and (output.is_symlink() or not output.is_dir()
+                            or any(output.iterdir())):
+        raise ValueError("the component release output directory must be new or empty")
+    if private_output.exists() and (private_output.is_symlink()
+                                    or not private_output.is_dir()
+                                    or any(private_output.iterdir())):
+        raise ValueError("the private symbols output directory must be new or empty")
+    public_resolved = output.resolve()
+    private_resolved = private_output.resolve()
+    if (public_resolved == private_resolved
+            or private_resolved.is_relative_to(public_resolved)
+            or public_resolved.is_relative_to(private_resolved)):
+        raise ValueError("the private dSYM output must be a separate directory outside "
+                         "the public component release directory")
+    output.mkdir(parents=True, exist_ok=True)
+    private_output.mkdir(parents=True, exist_ok=True)
+    # The actual dSYM is inspected and packaged only into the private output.
+    # Its bytes never enter the public metadata directory.
+    symbols_archive = module.write_deterministic_zip(
+        symbols, private_output / module.SYMBOLS_ASSET, module.SYMBOLS_ROOT)
+    licenses_archive = module.write_deterministic_zip(
+        licenses, output / module.LICENSES_ASSET, module.LICENSES_ROOT)
+    symbols_block = module.inspect_symbol_archive(symbols_archive)
+    licenses_block = module.inspect_license_archive(licenses_archive)
+    descriptor = module.build_descriptor(
+        lock, manifest, hashes, artifact_zip, repository=repository, claims=claims,
+        transport=transport, symbols=symbols_block, symbols_archive=symbols_archive,
+        licenses=licenses_block)
+    descriptor_path = output / module.DESCRIPTOR_ASSET
+    descriptor_path.write_text(json.dumps(descriptor, indent=2, sort_keys=True) + "\n")
+    archive_sha = descriptor["archive"]["sha256"]
+    (output / module.HOST_SIDECAR).write_text(f"{archive_sha}  {module.HOST_ASSET}\n")
+    notes = module.write_release_notes(output, descriptor)
+    pin_block = {
+        "schema": module.SCHEMA,
+        "repository": descriptor["repository"],
+        "tag": descriptor["tag"],
+        "archiveSHA256": archive_sha,
+        "descriptorSHA256": module.digest(descriptor_path),
+        "symbolsSHA256": symbols_block["sha256"],
+    }
+    (output / "pin-block.json").write_text(
+        json.dumps(pin_block, indent=2, sort_keys=True) + "\n")
+    # Fail closed if any symbol-shaped file ever lands in the public metadata.
+    if module.private_material_failures(
+            [path.name for path in output.iterdir()], "the public component metadata"):
+        raise ValueError("the public component metadata directory contains private symbol "
+                         "material; the private dSYM must stay outside it")
+    private_metadata = {
+        "schema": "floe-office-private-symbols/v1",
+        "visibility": "private",
+        "tag": descriptor["tag"],
+        "asset": module.SYMBOLS_ASSET,
+        "sha256": symbols_block["sha256"],
+        "bytes": symbols_block["bytes"],
+        "executableUUID": symbols_block["executableUUID"],
+        "files": symbols_block["files"],
+        "note": ("Retain and export this private dSYM immediately. It is never a public "
+                 "release asset, App feed entry, or bootstrap download."),
+    }
+    (private_output / module.PRIVATE_SYMBOLS_METADATA).write_text(
+        json.dumps(private_metadata, indent=2, sort_keys=True) + "\n")
+    print("pin: prepared the immutable Office component release metadata")
+    print(f"  tag={descriptor['tag']}")
+    print(f"  archive={artifact_zip}")
+    print(f"  descriptor={descriptor_path}")
+    print(f"  public assets={', '.join(sorted(module.PUBLIC_ASSETS))}")
+    print(f"  private symbols={symbols_archive}")
+    print(f"  licenses={licenses_archive}")
+    print(f"  notes={notes}")
+    print("  private symbols must be exported immediately and never uploaded to the "
+          "component release")
+    print("  upload (primary only): gh release create "
+          f"{descriptor['tag']} {module.HOST_ASSET} {module.HOST_SIDECAR} "
+          f"{module.DESCRIPTOR_ASSET} {module.LICENSES_ASSET} "
+          "--target <actual-producer-commit> --notes-file OFFICE_COMPONENT_RELEASE.md "
+          "--latest=false")
+    return 0
+
+
+def component_canonical_digest(value) -> str:
+    module = component_recovery_module()
+    return module.canonical_digest(value)
 
 
 def storage_provenance_failures(pin: dict) -> list:
@@ -371,6 +647,26 @@ def check(lock_path: Path) -> int:
         for label, failure in rejected:
             print(f"pin: REJECTED {label} — {failure}")
         return 2
+    component = pin.get("componentRelease")
+    try:
+        module = component_recovery_module()
+    except ValueError as failure:
+        if component is not None:
+            print(f"pin: REJECTED component release — {failure}")
+            return 2
+        print("pin: component release helper is unavailable; the Actions artifact "
+              "remains the only transport for this copied harness")
+    else:
+        try:
+            module.expected_contract(
+                lock, pin, repository=(component or {}).get("repository"))
+        except ValueError as failure:
+            print(f"pin: REJECTED component release — {failure}")
+            return 2
+        if component is None:
+            print("pin: no immutable component release metadata is recorded; bootstrap "
+                  "derives the durable tag from this archive SHA-256 once the exact "
+                  "archive is published (the componentRelease block is optional)")
     status = capability_status(pin)
     for flag in status["unproven"]:
         print(f"pin: Office capability not proven for release: {flag}")
@@ -399,10 +695,26 @@ def read_artifact(artifact_zip: Path, workspace: Path) -> tuple[dict, Path]:
         names = archive.namelist()
         if not any(name.endswith("native-host.json") for name in names):
             raise ValueError("the artifact contains no native-host.json qualification manifest")
+        if len(names) > MAX_ARTIFACT_ENTRIES:
+            raise ValueError("the artifact contains too many entries")
+        total = 0
+        seen = set()
         for name in names:
             # Reject absolute paths, traversal and backslashes before writing
             # anything: an uploaded artifact must never escape the workspace.
             relative(name)
+            if name in seen:
+                raise ValueError("the artifact contains a duplicate entry")
+            seen.add(name)
+            info = archive.getinfo(name)
+            if info.flag_bits & 0x1:
+                raise ValueError("the artifact contains an encrypted entry")
+            total += info.file_size
+            if total > MAX_ARTIFACT_EXTRACT_BYTES:
+                raise ValueError("the artifact expands beyond its accepted size")
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode) or stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR):
+                raise ValueError("the artifact contains a link or special file")
         archive.extractall(workspace)
     manifest_path = next(workspace.rglob("native-host.json"))
     manifest = json.loads(manifest_path.read_text())
@@ -420,6 +732,8 @@ def artifact_hashes(root: Path) -> dict:
         raise ValueError(f"the artifact has no {FRAMEWORK}/FloeOfficeNative executable")
     auxiliary = {}
     for path in sorted(framework_root.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("the artifact framework contains an alias")
         if path.is_file() and path != executable:
             auxiliary[str(path.relative_to(framework_root))] = digest(path)
     # The build script records runtimeResourceSHA256 relative to the resources
@@ -430,6 +744,8 @@ def artifact_hashes(root: Path) -> dict:
     resources_root = root / "OfficeRuntimeResources"
     if resources_root.is_dir():
         for path in sorted(resources_root.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("the artifact resources contain an alias")
             if path.is_file():
                 resources[str(path.relative_to(resources_root))] = digest(path)
             elif path.is_dir():
@@ -516,8 +832,8 @@ def apply(lock_path: Path, artifact_zip: Path, note: str, artifact_id: int = Non
     has_runtime_bundle = runtime_hashes.get("bundle.js") is not None
     rebuilt_browser = None
     if pin.get("browserResources") is not None and browser_block is None:
-        failures.append("the pin claims browser resources but the artifact carries "
-                        "no browser resource claim")
+        failures.append("the pin claims browser resources but the artifact carries no "
+                        "browser resource claim")
     if browser_block is not None or has_runtime_bundle:
         try:
             module = browser_resources_module(required=True)
@@ -681,6 +997,22 @@ def main() -> int:
                              "transport identity; a cloud build keeps its own run")
     parser.add_argument("--artifact-commit", default=None,
                         help="workflow commit of the storage run named by --artifact-run-id")
+    parser.add_argument("--component-release-dir", default=None,
+                        help="Prepare an immutable component release metadata directory from "
+                             "--artifact-zip without modifying the lock or uploading anything")
+    parser.add_argument("--symbols-dir", default=None,
+                        help="Qualified FloeOfficeNative.framework.dSYM for a component release")
+    parser.add_argument("--private-symbols-dir", default=None,
+                        help="Separate private output directory for the dSYM artifact; "
+                             "must be outside --component-release-dir and is never uploaded "
+                             "to the public component release")
+    parser.add_argument("--licenses-dir",
+                        default=str(ROOT / "FloeApp/Resources/Licenses/OfficeEngine"),
+                        help="Office engine licensing directory packaged with a component")
+    parser.add_argument("--component-repository", default=None,
+                        help="GitHub repository that stores the component release")
+    parser.add_argument("--component-artifact-name", default=STORAGE_ARTIFACT_NAME,
+                        help="Actions artifact name recorded in a cloud component descriptor")
     parser.add_argument(
         "--note",
         default=("Rebuilt and re-qualified from the source in this revision "
@@ -691,6 +1023,23 @@ def main() -> int:
     args = parser.parse_args()
     lock_path = Path(args.lock)
     try:
+        if args.component_release_dir:
+            if not args.artifact_zip:
+                parser.error("--component-release-dir requires --artifact-zip")
+            if args.apply:
+                parser.error("--component-release-dir and --apply are separate operations")
+            if not args.symbols_dir:
+                parser.error("--component-release-dir requires --symbols-dir")
+            if not args.private_symbols_dir:
+                parser.error("--component-release-dir requires --private-symbols-dir "
+                             "(the private dSYM output must never be a public release asset)")
+            module = component_recovery_module()
+            return component_release_metadata(
+                lock_path, Path(args.artifact_zip), Path(args.component_release_dir),
+                Path(args.symbols_dir), Path(args.licenses_dir),
+                Path(args.private_symbols_dir),
+                args.component_repository or module.DEFAULT_REPOSITORY,
+                args.component_artifact_name)
         if args.apply:
             if not args.artifact_zip:
                 parser.error("--apply requires --artifact-zip")
