@@ -68,10 +68,13 @@ enum LinuxLifecycleToolSupport {
         switch error {
         case .capabilityUnsupported: return 125
         case .invalidConfiguration: return 2
-        case .busy, .runningShapeMismatch, .runningMemoryMismatch, .runningShapeUnknown, .activeInteractiveTerminal:
+        case .busy, .runningShapeMismatch, .runningMemoryMismatch, .runningShapeUnknown,
+             .activeInteractiveTerminal, .guestNotRunning:
             return 126
         case .notOwned: return 127
-        case .stopFailedQuarantined: return 137
+        case .stopFailedQuarantined, .softRestartOutcomeUnknown: return 137
+        case .softRestartStageFailed, .softRestartIdempotencyConflict,
+             .softRestartPersistenceFailed: return 1
         }
     }
 
@@ -85,6 +88,11 @@ enum LinuxLifecycleToolSupport {
         case .activeInteractiveTerminal: return "activeTerminal"
         case .notOwned: return "notOwned"
         case .stopFailedQuarantined: return "quarantined"
+        case .guestNotRunning: return "notRunning"
+        case .softRestartStageFailed: return "softRestartFailed"
+        case .softRestartOutcomeUnknown: return "softRestartUnknown"
+        case .softRestartIdempotencyConflict: return "idempotencyConflict"
+        case .softRestartPersistenceFailed: return "persistenceFailed"
         }
     }
 
@@ -241,9 +249,9 @@ public struct SoftRestartLinuxGuestLifecycleTool: AgentTool {
 
     public static let name = "environment.softRestartLinux"
     public static let toolDescription =
-        "Request a safe in-guest soft restart with a durable flush, preserving running services where possible. Requires a guest agent that implements ordered flush+durable restart; the current guest image has none, so this returns an explicit unsupported capability (never a false success) — use environment.hardRestartLinux when stopping the actual VM is acceptable. An optional shape may be requested by a future qualified guest."
+        "Soft-restart this environment's Linux guest: the running guest executes an ordered filesystem flush, records the operation receipt and powers ITSELF off; the exited disk is captured and a fresh instance reconnects at the preserved (or explicitly requested) shape. The reboot is verified by the actual guest exit, a rotated launch generation and the pre-reboot receipt read back from the persistent disk — never by an echo or a lost channel. Requires a running guest image with the ordered flush+poweroff capability (an explicit unsupported error otherwise). Open interactive terminals block it; managed services are terminated (count reported). An interrupted operation stays reconcilable: a retry converges against current state instead of blindly repeating. Use environment.hardRestartLinux when an unproven stop of the actual VM is acceptable."
     public static let parametersJSON = #"""
-    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2,3],"description":"Optional requested cores for a future qualified guest."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Optional requested guest RAM in MiB."}},"additionalProperties":false}
+    {"type":"object","properties":{"vcpus":{"type":"integer","enum":[1,2,3],"description":"Optional cores for the replacement. Omitted dimensions preserve the running guest's granted shape; 2 or 3 requires a verified image proving that core count."},"memoryMB":{"type":"integer","enum":[256,512,768,1024,1536,2048],"description":"Optional replacement RAM in MiB. Omitted dimensions preserve the running guest's granted tier."}},"additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [.writesFiles, .executesLocalCode]
     public static let isSideEffecting = true
@@ -265,10 +273,18 @@ public struct SoftRestartLinuxGuestLifecycleTool: AgentTool {
             )
         }
         let config = LinuxGuestLifecycleConfig(vcpus: args.vcpus, memoryMB: args.memoryMB)
+        // Trusted identity for the durable operation record: the run and the
+        // durable tool-call idempotency key are host-minted, never model-
+        // authored.
+        let operationKey = context.toolIdempotencyKey.isEmpty
+            ? context.toolCallID
+            : context.toolIdempotencyKey
         return await LinuxLifecycleToolSupport.run {
             try await lifecycle.softRestart(
                 environmentID: environmentID,
                 config: config,
+                ownerTaskID: context.runID.uuidString,
+                operationKey: operationKey,
                 cancellation: context.cancellation
             )
         }

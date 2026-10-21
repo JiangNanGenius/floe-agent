@@ -1016,6 +1016,30 @@ public protocol LinuxGuestControlling: Sendable {
         taskID: String?,
         shape: GuestResourceRequest?
     ) async throws -> Bool
+    /// Runs ONE bounded ordered stage command on the transaction-owned
+    /// guest's console channel. The transaction token is the authority: the
+    /// call is admitted WITHOUT re-acquiring the environment lifecycle lock
+    /// (so the ordered soft-restart sequence cannot deadlock on the lease it
+    /// holds), while every direct/external command is refused for the whole
+    /// transaction window. Backends without the seam refuse honestly.
+    func runForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        argv: [String],
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult
+    /// Submits the orderly guest poweroff (`<poweroffPath> -f`) on the
+    /// transaction-owned guest and reports which boundary was observed: the
+    /// actual instance leaving (`.poweredOff`), the guest answering
+    /// (`.refused`/`.completedWithoutPoweringOff`), or no boundary inside
+    /// the deadline (`.unconfirmed` — an unknown outcome, never a force
+    /// reset). Throws when the transaction no longer owns the environment.
+    func requestOrderlyPoweroffForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        poweroffPath: String,
+        deadline: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestSoftRestartPoweroffOutcome
     /// Host→guest port forwarding for a running guest.
     func forwardService(environmentID: String, forward: LinuxGuestServiceForward) async throws
     func removeServiceForward(environmentID: String, forward: LinuxGuestServiceForward) async
@@ -1128,6 +1152,33 @@ public extension LinuxGuestControlling {
     ) async throws -> Bool {
         try await startGuest(
             environmentID: transaction.environmentID, taskID: taskID, shape: shape
+        )
+    }
+
+    /// Default: no transaction-scoped command seam, so the ordered soft
+    /// restart refuses honestly instead of slipping a stage command past the
+    /// lease. The production TinyEMU service overrides this.
+    func runForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        argv: [String],
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        throw LinuxGuestError.invalidConfiguration(
+            "this Linux guest backend cannot run ordered commands under a lifecycle transaction"
+        )
+    }
+
+    /// Default: no orderly-poweroff observation seam. The production TinyEMU
+    /// service overrides this with the liveness-raced poweroff boundary.
+    func requestOrderlyPoweroffForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        poweroffPath: String,
+        deadline: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestSoftRestartPoweroffOutcome {
+        throw LinuxGuestError.invalidConfiguration(
+            "this Linux guest backend cannot observe an orderly guest poweroff"
         )
     }
 }
