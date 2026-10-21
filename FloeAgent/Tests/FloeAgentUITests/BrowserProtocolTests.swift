@@ -130,11 +130,12 @@ struct BrowserProtocolTests {
         try "<html><body>Preview</body></html>".write(to: root.appendingPathComponent("index.html"), atomically: true, encoding: .utf8)
         let browser = BrowserSessionCenter()
         browser.bind(to: UUID())
+        let owner = try #require(browser.conversationID)
         let preview = LocalPreviewCoordinator(browser: browser)
-        defer { _ = preview.stop() }
-        _ = try await preview.start(root: root, relativeRoot: nil, entry: nil)
+        defer { _ = preview.stop(owner: owner) }
+        _ = try await preview.start(root: root, relativeRoot: nil, entry: nil, owner: owner)
         #expect(browser.presentationRequest == nil)
-        _ = try await preview.reload()
+        _ = try await preview.reload(owner: owner)
         #expect(browser.presentationRequest == nil)
     }
 

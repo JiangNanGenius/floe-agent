@@ -1,4 +1,12 @@
-// FloeApp — wire-neutral visible-browser protocol.
+// FloeApp — wire-neutral task-scoped browser protocol.
+//
+// BrowserCommand carries the owning session's exact sessionID (and optional
+// tab/document identities); it deliberately has no owner field. The calling
+// task is selected from the runtime-issued ToolContext before a command is
+// built, so model-supplied JSON can never choose another task's browser.
+// The sessionID is also the per-owner lifecycle fence: recreation after an
+// explicit trusted reactivation mints a new sessionID, so any command or
+// completion from an older, released session/generation stays stale.
 
 #if canImport(SwiftUI) && canImport(WebKit)
 import Foundation

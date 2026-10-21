@@ -848,13 +848,21 @@ struct BrowserPageCapturePort: DesignPageCapturePort {
 
     func capturePage(conversationID: UUID, runID: UUID?) async throws -> (snapshotJSON: Data, screenshotPNG: Data?) {
         let center = environment.browserCenter
-        // Exact task binding: the same guard the browser tools enforce, so a
-        // capture can never read another task's session. Fail closed.
-        guard center.conversationID == conversationID else {
-            throw FloeError.validationFailed("This task's browser is not currently visible; page capture is bound to the originating task only")
+        // Exact task binding: capture only the requesting task's own session,
+        // which may be running while another task's panel is visible. There is
+        // deliberately no visible-browser fallback; fail closed when this task
+        // never opened a page.
+        guard let session = center.session(for: conversationID) else {
+            throw FloeError.validationFailed("This task's browser has no open page to capture")
         }
-        let command = BrowserCommand(sessionID: center.sessionID, action: .observe(cursor: nil))
-        let result = await center.execute(command)
+        // Attribute the capture to the actual admitted run. A stale run
+        // identity (an earlier, superseded run of the same task) is refused
+        // instead of silently attaching to the newest run.
+        if let runID, let recorded = center.recordedOwnerRun(for: conversationID), recorded != runID {
+            throw FloeError.validationFailed("Page capture run is not this task's active run")
+        }
+        let command = BrowserCommand(sessionID: session.sessionID, action: .observe(cursor: nil))
+        let result = await center.execute(command, in: conversationID)
         guard result.status == .ok, let page = result.page else {
             throw FloeError.validationFailed("Page capture failed: \(result.status.rawValue)")
         }
