@@ -994,10 +994,16 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             try? lockHandle.close()
             throw SharedDocumentsError.storageCorrupted("staged lock contested at create")
         }
-        guard let contentHandle = try? FileHandle(forWritingTo: contentURL) else {
+        let contentHandle: FileHandle
+        do {
+            // The content file does not exist yet. Create it exclusively
+            // while holding this stage's lease; never truncate or follow an
+            // unexpected existing leaf, and keep ownership of the descriptor.
+            contentHandle = try Self.createOwnedStageContentHandle(at: contentURL)
+        } catch {
             try? lockHandle.close()
             try? fileManager.removeItem(at: dir)
-            throw SharedDocumentsError.storageCorrupted("staged content not writable")
+            throw error
         }
         openStages[operationID] = OpenStage(
             directoryURL: dir,
@@ -1138,11 +1144,15 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                 // nothing (the renamed staged bytes stay an unreferenced
                 // orphan that recovery reclaims under the lease).
                 if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
-                guard let parent = try Self.fetchLiveRow(db, id: parentID) else {
-                    throw SharedDocumentsError.parentNotFound(parentID)
-                }
-                guard (parent["kind"] as String?) == SharedDocumentsItemKind.folder.rawValue else {
-                    throw SharedDocumentsError.parentNotAFolder(parentID)
+                // The stable root is a virtual folder, as in item(id:) and
+                // metadata moves. It intentionally has no SQLite item row.
+                if parentID != SharedDocumentsIdentity.rootItemID {
+                    guard let parent = try Self.fetchLiveRow(db, id: parentID) else {
+                        throw SharedDocumentsError.parentNotFound(parentID)
+                    }
+                    guard (parent["kind"] as String?) == SharedDocumentsItemKind.folder.rawValue else {
+                        throw SharedDocumentsError.parentNotAFolder(parentID)
+                    }
                 }
                 if try Self.nameCollisionExists(db, parentID: parentID, name: name, excluding: nil) {
                     throw SharedDocumentsError.nameCollision(name)
@@ -1837,6 +1847,29 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     private nonisolated func committedBlobURL(itemID: String, contentVersion: Int) -> URL {
         blobRoot.appendingPathComponent(itemID, isDirectory: true)
             .appendingPathComponent("v\(contentVersion)")
+    }
+
+    /// Opens only a newly created private regular leaf. The caller owns the
+    /// generated stage directory and holds its lease. Returning the actual
+    /// created descriptor avoids a create-then-reopen path race.
+    nonisolated static func createOwnedStageContentHandle(at url: URL) throws -> FileHandle {
+        #if canImport(Darwin) || canImport(Glibc)
+        let descriptor = open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            let code = errno
+            throw FloeFileIOError(
+                stage: .open,
+                posixErrno: code,
+                detail: "staged content could not be created exclusively",
+                domain: NSPOSIXErrorDomain,
+                code: Int(code)
+            )
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        #else
+        try Data().write(to: url, options: .withoutOverwriting)
+        return try FileHandle(forWritingTo: url)
+        #endif
     }
 
     private nonisolated func prepareCommittedBlobTarget(_ url: URL) throws {

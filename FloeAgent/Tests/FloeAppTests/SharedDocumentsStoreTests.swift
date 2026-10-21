@@ -184,6 +184,72 @@ struct SharedDocumentsSynchronizedFileIOTests {
     }
 }
 
+@Suite("SharedDocumentsStore stage creation and virtual root")
+struct SharedDocumentsStageCreationTests {
+    @Test("begin creates a new private content file and streams actual bytes through it")
+    func beginCreatesPrivateContentAndStreamsRealBytes() async throws {
+        let root = makeStoreRoot()
+        let store = try makeStore(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let operationID = try await store.beginContentStage()
+        let content = root.appendingPathComponent("store/staging/\(operationID.uuidString)/content")
+        let properties = try content.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        #expect(properties.isRegularFile == true && properties.isSymbolicLink == false)
+        #expect(try Data(contentsOf: content).isEmpty)
+        let attributes = try FileManager.default.attributesOfItem(atPath: content.path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let payload = Data("actual staged bytes".utf8)
+        try await store.writeContent(payload, operationID: operationID)
+        let stage = try await store.finishContentStage(operationID: operationID)
+        #expect(stage.byteCount == Int64(payload.count))
+        #expect(stage.sha256 == FloeDigest.sha256Hex(payload))
+        #expect(try Data(contentsOf: stage.stagedFileURL) == payload)
+        try await store.discardContentStage(operationID: operationID)
+        #expect(!FileManager.default.fileExists(atPath: content.deletingLastPathComponent().path))
+    }
+
+    @Test("exclusive content creation preserves an existing file and refuses a symlink without touching its target")
+    func exclusiveStageLeafDoesNotOverwriteOrFollowLinks() throws {
+        let root = makeStoreRoot()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let existing = root.appendingPathComponent("existing"), link = root.appendingPathComponent("link")
+        let original = Data("preserve existing bytes".utf8)
+        try original.write(to: existing)
+        #expect(throws: FloeFileIOError.self) { try SQLiteSharedDocumentsStore.createOwnedStageContentHandle(at: existing) }
+        #expect(try Data(contentsOf: existing) == original)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: existing)
+        #expect(throws: FloeFileIOError.self) { try SQLiteSharedDocumentsStore.createOwnedStageContentHandle(at: link) }
+        #expect(try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true)
+        #expect(try Data(contentsOf: existing) == original)
+    }
+
+    @Test("the virtual root accepts children across reopen while missing and non-folder parents still fail")
+    func virtualRootReopenAndParentChecks() async throws {
+        let root = makeStoreRoot()
+        let store = try makeStore(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let folder = try await store.commitCreate(parentID: SharedDocumentsIdentity.rootItemID,
+            name: "Folder", kind: .folder, stage: nil)
+        #expect(folder.parentID == SharedDocumentsIdentity.rootItemID)
+        let second = try makeStore(at: root)
+        defer { Task { try? await second.close() } }
+        #expect(try await second.item(id: SharedDocumentsIdentity.rootItemID) == SharedDocumentsIdentity.rootItem)
+        let listed = try await second.children(parentID: SharedDocumentsIdentity.rootItemID, cursorToken: nil, limit: 10)
+        #expect(listed.items.map(\.id) == [folder.id])
+        #expect(try await second.allLiveItems().allSatisfy { $0.id != SharedDocumentsIdentity.rootItemID })
+        let missing = UUID().uuidString
+        await #expect(throws: SharedDocumentsError.parentNotFound(missing)) {
+            try await second.commitCreate(parentID: missing, name: "Missing", kind: .folder, stage: nil)
+        }
+        let file = try await store.commitCreate(parentID: SharedDocumentsIdentity.rootItemID,
+            name: "file.txt", kind: .file, stage: stageBytes(Data("file".utf8), store: store))
+        await #expect(throws: SharedDocumentsError.parentNotAFolder(file.id)) {
+            try await second.commitCreate(parentID: file.id, name: "Invalid child", kind: .folder, stage: nil)
+        }
+    }
+}
+
 // MARK: - CRUD / identity / hierarchy
 
 @Suite("SharedDocumentsStore CRUD")
