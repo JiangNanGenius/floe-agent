@@ -225,11 +225,36 @@ struct OfficeNativeAutomaticExecutionTests {
         return source
     }
 
+    /// Bounded diagnostic payload for this exact native qualification. Kept
+    /// in Caches until the primary exports it; never hidden in the disposable
+    /// workspace. This also runs for throws and soft Testing expectations.
+    private func preserveExactSortEvidence(_ root: URL) throws {
+        let cache = try #require(FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first)
+        let destination = cache.appendingPathComponent("FloeQualification/OfficeNativeExactSort", isDirectory: true)
+            .appendingPathComponent(root.lastPathComponent, isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let names = ["native-budget.xlsx", "native-budget-sortable.xlsx", "native-budget-exact-sort.xlsx",
+                     "exact-sort-receipt.json", "exact-sort-saved-sheet.xml",
+                     "exact-sort-structural-cells.json", "exact-sort-snapshot-cells.json"]
+        for name in names {
+            let file = root.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            try #require(size <= 2 * 1_024 * 1_024, "unexpectedly large exact-sort evidence member")
+            try FileManager.default.copyItem(at: file, to: destination.appendingPathComponent(name))
+        }
+        print("OFFICE_EXACT_SORT_EVIDENCE " + destination.path)
+    }
+
     @Test("exact sort uses the real native engine and persists the requested numeric rectangle")
     @MainActor
     func exactSortUsesRealEngine() async throws {
         let root = try makeWorkspace()
         defer { try? FileManager.default.removeItem(at: root) }
+        defer {
+            do { try preserveExactSortEvidence(root) }
+            catch { Issue.record(error, "could not retain exact-sort qualification artifacts") }
+        }
         let (original, originalSHA) = try stageSource(root)
         let originalBytes = try Data(contentsOf: original)
         #expect(originalSHA == "d528d356a062065d0d626927ca78403f1ed492796810e73934db91f3362f40a7")
@@ -268,8 +293,24 @@ struct OfficeNativeAutomaticExecutionTests {
             relativeOutput: "native-budget-exact-sort.xlsx",
             requestID: "app-native-exact-sort", access: access(root))
         let output = root.appendingPathComponent(receipt.outputRelativePath)
+        try JSONEncoder().encode(receipt).write(to: root.appendingPathComponent("exact-sort-receipt.json"))
+        // Independent structure read: a self-closing B8/C8 must never absorb
+        // D8's value. Keep the original snapshot/outside-range assertion below.
+        let actualXML = try packageMember(output, target.member)
+        try actualXML.write(to: root.appendingPathComponent("exact-sort-saved-sheet.xml"))
+        let collector = OfficeNativeCellBoundaryCollector()
+        let parser = XMLParser(data: actualXML)
+        parser.shouldProcessNamespaces = true
+        parser.delegate = collector
+        try #require(parser.parse(), "saved exact-sort worksheet must parse as XML")
+        try JSONEncoder().encode(collector.cells).write(
+            to: root.appendingPathComponent("exact-sort-structural-cells.json"))
+        #expect(collector.cells["D8"]?["formula"] == "")
+        #expect(collector.cells["D8"]?["value"].flatMap(Double.init) == 1500,
+                "independent structural read of D8 outside C3:D7")
         let after = try OfficeOutputSnapshot.capture(url: output)
         let cells = try #require(after.cachedCellsBySheet[target.member])
+        try JSONEncoder().encode(cells).write(to: root.appendingPathComponent("exact-sort-snapshot-cells.json"))
         let expected: [[Double]] = [[600, 600], [200, 200], [150, 150], [15, 300], [12.5, 250]]
         for (offset, pair) in expected.enumerated() {
             for (column, value) in zip(["C", "D"], pair) {
@@ -481,6 +522,44 @@ struct OfficeNativeAutomaticExecutionTests {
     }
 }
 
+
+/// Test-only structural reader preserving each actual c-element boundary,
+/// including self-closing empty cells. No engine or production parser shim.
+private final class OfficeNativeCellBoundaryCollector: NSObject, XMLParserDelegate {
+    private(set) var cells: [String: [String: String]] = [:]
+    private var reference: String?
+    private var type = ""
+    private var value = ""
+    private var formula = ""
+    private var collecting: String?
+    private let sheetNS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+        guard namespaceURI == sheetNS else { return }
+        if elementName == "c" {
+            reference = attributes["r"]; type = attributes["t"] ?? "n"
+            value = ""; formula = ""; collecting = nil
+        } else if reference != nil, elementName == "v" || elementName == "f" {
+            collecting = elementName
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        if collecting == "v" { value += string }
+        if collecting == "f" { formula += string }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String,
+                namespaceURI: String?, qualifiedName: String?) {
+        guard namespaceURI == sheetNS else { return }
+        if elementName == "v" || elementName == "f" { collecting = nil }
+        if elementName == "c", let reference {
+            cells[reference] = ["type": type, "value": value, "formula": formula]
+            self.reference = nil
+        }
+    }
+}
 
 /// Independent read-back of the exact filter ref, rather than the workbook-
 /// wide `hasAutoFilter` flag (which could pass for a filter on another range).

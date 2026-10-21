@@ -57,6 +57,29 @@ struct OfficeFormulaVerificationTests {
 
     // MARK: - Evaluator behaviour
 
+    @Test("self-closing empty cells cannot absorb following numeric and formula cell identities")
+    func selfClosingCellsPreserveFollowingCellBoundaries() throws {
+        // Valid saved OOXML, matching Calc's compact empty-cell encoding.
+        // This is a reader regression package, not a fake native engine input.
+        let url = try workbook([(name: "Budget", data:
+            #"<row r="8"><c r="B8" s="0"/><c r="C8" s="0" t="n"/><c r="D8" s="0" t="n"><v>1500</v></c><c r="E8" s="0"/><c r="F8" s="0"><f>D8*2</f><v>3000</v></c></row>"#)])
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let snapshot = try OfficeOutputSnapshot.capture(url: url)
+        let cells = try #require(snapshot.cachedCellsBySheet["xl/worksheets/sheet1.xml"])
+        #expect(cells["D8"] == OfficeCachedCellValue(value: "1500", type: .number))
+        #expect(cells["F8"] == OfficeCachedCellValue(value: "3000", type: .number))
+        #expect(cells["B8"]?.type != .number)
+        #expect(cells["C8"]?.type != .number)
+        #expect(snapshot.formulaCells.count == 1)
+        let formula = try #require(snapshot.formulaCells.first)
+        #expect(formula.cell == "F8")
+        #expect(formula.formula == "D8*2")
+        #expect(snapshot.formulasByCell == ["F8": "D8*2"])
+        let report = OfficeFormulaVerifier.verify(snapshot: snapshot)
+        #expect(report.isClean)
+        #expect(report.verifiedCount == 1)
+    }
+
     @Test("compound comparisons choose the correct IF branch and reject stale saved results")
     func compoundComparisonsVerifySavedResults() throws {
         let cases = [

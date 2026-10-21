@@ -986,7 +986,7 @@ extension OfficeXMLScan {
                              maximumFormulas: Int = 4_000) -> ParsedFormulaCells {
         var result = ParsedFormulaCells()
         guard let regex = try? NSRegularExpression(
-            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"([^>]*)>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
+            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"([^>]*)(?<!/)>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
             return result
         }
         let range = NSRange(sheetXML.startIndex..<sheetXML.endIndex, in: sheetXML)
@@ -1021,7 +1021,7 @@ extension OfficeXMLScan {
                 }
                 let record = OfficeFormulaCellRecord(
                     member: member, sheet: sheet, cell: reference,
-                    formula: formulaText,
+                    formula: unescapeXMLAttribute(formulaText),
                     cachedValue: valueElement,
                     cachedType: cached.type,
                     errorCode: cached.type == .error ? cached.value : nil)

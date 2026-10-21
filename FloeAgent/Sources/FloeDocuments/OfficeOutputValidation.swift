@@ -833,7 +833,7 @@ enum OfficeXMLScan {
     static func formulas(in sheetXML: String) -> [String: String] {
         var result: [String: String] = [:]
         guard let regex = try? NSRegularExpression(
-            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"[^>]*>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
+            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"[^>]*(?<!/)>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
             return result
         }
         let range = NSRange(sheetXML.startIndex..<sheetXML.endIndex, in: sheetXML)
@@ -842,7 +842,7 @@ enum OfficeXMLScan {
                   let bodyRange = Range(match.range(at: 2), in: sheetXML) else { continue }
             let body = String(sheetXML[bodyRange])
             if let formula = all(pattern: "<f[^>]*>([^<]*)</f>", in: body).first {
-                result[String(sheetXML[cellRange]).uppercased()] = formula
+                result[String(sheetXML[cellRange]).uppercased()] = unescapeXMLAttribute(formula)
             }
         }
         return result
