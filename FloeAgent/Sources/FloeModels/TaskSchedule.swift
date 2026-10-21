@@ -285,6 +285,27 @@ public enum TaskSchedulePlanner {
         }
     }
 
+    /// The ONE execution target an explicit "run this schedule now" caller
+    /// (Shortcuts personal automation bound to one selected schedule)
+    /// addresses: the most recent due fire time, coalesced exactly like the
+    /// background pass, with its deterministic occurrence identity so any
+    /// number of duplicate callbacks address one logical instance. Returns
+    /// nil when the schedule has no time-based due occurrence (a future
+    /// one-shot, an interval that has not reached its first fire, or an
+    /// event-armed after-success cadence the clock can never materialize).
+    public static func selectedRunTarget(
+        record: TaskScheduleRecord,
+        now: Date
+    ) -> (fireTime: Date, dedupeKey: String, occurrenceID: UUID)? {
+        guard let fireTime = dueFireTimes(record: record, now: now).last else { return nil }
+        let key = dedupeKey(for: fireTime, record: record)
+        return (
+            fireTime,
+            key,
+            TaskScheduleOccurrence.stableID(scheduleID: record.id, dedupeKey: key)
+        )
+    }
+
     /// The next fire time strictly after `reference`, or nil for one-shot and
     /// after-success cadences.
     public static func nextFireTime(

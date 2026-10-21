@@ -253,6 +253,29 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// (claimed/running rows left by a dead process are marked interrupted; a
     /// never-launched one-shot is re-armed).
     private var didReconcileScheduleOccurrences = false
+    /// The single in-flight startup reconcile shared by concurrent first
+    /// callers. Without it, two callers passing the `didReconcile…` guard
+    /// before either `await` returns would each enqueue a physical
+    /// reconciliation, and the second one could interrupt an occurrence a
+    /// live executor claimed right after the first succeeded. Cleared on
+    /// failure so the next caller retries; readiness publishes only on
+    /// success.
+    private var scheduleOccurrenceReconcileTask: Task<Void, Error>?
+    /// One in-flight explicit selected-schedule launch attempt. The key is
+    /// the ACTUAL occurrence identity, never the schedule: simultaneous
+    /// callbacks for one logical instance await this attempt and share its
+    /// exact run, while two different due instances of the same schedule
+    /// never merge. The creating caller is the only owner that clears its
+    /// entry — identity-checked against `id` so a delayed clearer can never
+    /// delete a newer attempt — on BOTH success and failure. The entry
+    /// therefore lives only for the attempt: no finished receipt is cached,
+    /// and a transient storage/launch failure is retried by the next caller
+    /// instead of replaying the old error.
+    private struct SelectedScheduleAttempt {
+        let id: UUID
+        let task: Task<FloeSelectedScheduleRunReceipt, Error>
+    }
+    private var selectedScheduleAttempts: [UUID: SelectedScheduleAttempt] = [:]
     /// Schedules with a registered insurance reminder right now (diagnostic
     /// only; the system's pending set remains the authority).
     private var scheduleReminderScheduleIDs: Set<UUID> = []
@@ -3279,6 +3302,47 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         await runDueSchedules()
     }
 
+    /// One truthful startup reconciliation, shared by the background pass and
+    /// the explicit selected-schedule route. Concurrent first callers
+    /// coalesce onto ONE in-flight physical reconcile: every awaiter observes
+    /// the same success or failure, the task is cleared on failure so the
+    /// next call retries, and the readiness flag is set ONLY after the write
+    /// succeeds — no caller ever proceeds under false readiness, and a second
+    /// reconcile can never interrupt an occurrence claimed while the first
+    /// was in flight. The reconciliation itself is unchanged — stale
+    /// `claimed`/`running` rows from a dead process become `interrupted` and
+    /// are never restarted.
+    private func reconcileScheduleOccurrencesOnce(
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async throws {
+        if didReconcileScheduleOccurrences { return }
+        if let scheduleOccurrenceReconcileTask {
+            // Share the in-flight reconcile rather than starting a second
+            // physical pass over the same rows.
+            try await scheduleOccurrenceReconcileTask.value
+            return
+        }
+        // The assignment happens before the first await, so any caller that
+        // enters after this point awaits this same task (MainActor isolation
+        // serializes entry; the task is created unstructured so its store
+        // work is not tied to this actor's turn).
+        let task: Task<Void, Error> = Task {
+            _ = try await store.reconcileInterruptedOccurrences(at: now)
+        }
+        scheduleOccurrenceReconcileTask = task
+        do {
+            try await task.value
+            didReconcileScheduleOccurrences = true
+            scheduleOccurrenceReconcileTask = nil
+        } catch {
+            // Publish no readiness and release the failure so the next call
+            // performs a real retry.
+            scheduleOccurrenceReconcileTask = nil
+            throw error
+        }
+    }
+
     /// One schedule pass. Execution instances are claimed ATOMICALLY before a
     /// task is launched, so foreground/background/notification wakeups can
     /// never launch the same logical occurrence twice; a crash between claim
@@ -3291,9 +3355,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func runDueSchedules() async {
         let store = SQLiteTaskScheduleStore(database: environment.database)
         let now = Date()
-        if !didReconcileScheduleOccurrences {
-            didReconcileScheduleOccurrences = true
-            _ = try? await store.reconcileInterruptedOccurrences(at: now)
+        // Best-effort pass, but never launch while the startup state is
+        // ambiguous: a failed reconciliation means dead-process boundaries
+        // are unproven, so the whole pass defers to the next wake (the
+        // reconcile stays retryable because readiness publishes only on
+        // success).
+        do {
+            try await reconcileScheduleOccurrencesOnce(store: store, now: now)
+        } catch {
+            return
         }
         // Drain NON-calendar durable pending instances first. `runNow` creates
         // a `manual:<uuid>` instance and a successful upstream run creates an
@@ -3337,7 +3407,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             let occurrenceID = TaskScheduleOccurrence.stableID(scheduleID: schedule.id, dedupeKey: key)
             guard let occurrence = try? await store.occurrence(id: occurrenceID),
                   occurrence.state == .pending else { continue }
-            await executeScheduleOccurrence(
+            _ = await executeScheduleOccurrence(
                 occurrence, schedule: schedule, store: store, now: now)
         }
         // Insurance reminder set follows the same pass: one pending reminder
@@ -3390,9 +3460,82 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 await settle(.skipped, "The schedule no longer follows an upstream run")
                 continue
             }
-            await executeScheduleOccurrence(
+            _ = await executeScheduleOccurrence(
                 occurrence, schedule: schedule, store: store, now: now)
         }
+    }
+
+    /// Typed result of one atomic claim → revalidate → launch → bind attempt.
+    /// The background pass ignores the payload (its bookkeeping is the
+    /// durable ledger itself); an explicit caller (the selected-schedule
+    /// automation route) maps every case to an accurate outcome instead of
+    /// guessing from silence.
+    enum ScheduleOccurrenceLaunchResult: Sendable, Equatable {
+        /// A new task was launched and the occurrence is bound to it.
+        case launched(runID: UUID, conversationID: UUID)
+        /// The predetermined run was already committed (a retry after a crash
+        /// between commit and binding) and the occurrence now names it.
+        case boundToExisting(runID: UUID, conversationID: UUID)
+        /// The durable launch committed but the occurrence could not be
+        /// bound. A real bind-write error leaves the row `claimed` so a
+        /// retry rebinds the SAME run; a ledger that moved under us
+        /// (disabled/cancelled/reconciled) is left exactly as the mover
+        /// wrote it. The run continues as an ordinary run, unbound — and a
+        /// committed active launch is NEVER settled as a prelaunch failure.
+        case launchCommittedButUnbound(runID: UUID, conversationID: UUID)
+        /// Another executor claimed the instance before this attempt.
+        case claimMissed
+        /// The schedule was deleted between materialization and launch.
+        case scheduleDeleted
+        /// The schedule was disabled before the launch revalidation.
+        case scheduleDisabled
+        /// The frozen execution-environment binding no longer resolves.
+        case environmentUnavailable
+        /// The frozen (or default) model binding no longer resolves.
+        case modelUnavailable
+        /// The launch failed with no durable run; the text is the honest
+        /// occurrence error.
+        case launchFailed(String)
+        /// A durable store write/read failed; nothing was launched.
+        case storageFailed
+        /// A PRESENT frozen permission policy failed to decode. An absent
+        /// (nil) legacy policy keeps the settings default; an invalid one
+        /// must never degrade into fallback permissions.
+        case permissionUnavailable
+    }
+
+    /// Machine-readable refusal reasons of the explicit selected-schedule
+    /// route. The intent layer maps each case to concise bilingual copy; no
+    /// internal identifier reaches the user.
+    enum FloeSelectedScheduleFailure: Error, Equatable, Sendable {
+        case scheduleDeleted
+        case scheduleDisabled
+        case noDueOccurrence(eventDriven: Bool)
+        case concurrentlyClaimed
+        case environmentUnavailable
+        case modelUnavailable
+        case storageUnavailable
+        case launchFailed(String)
+        /// The returned run could not be proven to belong to the selected
+        /// schedule's occurrence (ledger mismatch and not the schedule's
+        /// predetermined identity). Never fabricate a reference.
+        case runReferenceMismatch
+        /// The schedule's stored permission policy is present but invalid;
+        /// nothing may launch under fallback permissions.
+        case permissionUnavailable
+    }
+
+    /// The exact run a selected-schedule execution produced (or the one the
+    /// due occurrence already owned). Typed for the App Intent layer, which
+    /// projects it through the same exact-run snapshot/ownership path as the
+    /// other run actions.
+    struct FloeSelectedScheduleRunReceipt: Sendable, Equatable {
+        var runID: UUID
+        var conversationID: UUID
+        /// True when THIS call launched the task; false when the returned
+        /// reference names a run an earlier claim/launch (or a duplicate
+        /// callback) already committed.
+        var freshlyLaunched: Bool
     }
 
     /// Atomic claim → revalidate → launch → bind. The launch identity is
@@ -3406,15 +3549,31 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         schedule: TaskScheduleRecord,
         store: SQLiteTaskScheduleStore,
         now: Date
-    ) async {
-        guard (try? await store.claimOccurrence(id: occurrence.id, at: now)) == true else { return }
+    ) async -> ScheduleOccurrenceLaunchResult {
+        // Claim BEFORE anything else: exactly one executor (a background
+        // pass, an explicit selected-schedule call, a duplicate automation
+        // callback) can move this instance out of `pending`, so the task can
+        // never launch twice for one logical occurrence.
+        do {
+            guard try await store.claimOccurrence(id: occurrence.id, at: now) else {
+                return .claimMissed
+            }
+        } catch {
+            return .storageFailed
+        }
         // Revalidate the FROZEN binding after the claim: a disabled schedule
         // must not launch.
-        guard let fresh = try? await store.schedule(id: schedule.id), fresh.isEnabled else {
+        let fresh: TaskScheduleRecord?
+        do {
+            fresh = try await store.schedule(id: schedule.id)
+        } catch {
+            return .storageFailed
+        }
+        guard let fresh, fresh.isEnabled else {
             try? await store.finishOccurrence(
                 id: occurrence.id, state: .cancelled, summary: nil,
                 errorText: "The schedule was disabled before this occurrence launched", at: Date())
-            return
+            return fresh == nil ? .scheduleDeleted : .scheduleDisabled
         }
         // The bound environment must really exist and not be deleting; it is
         // then passed to the launched task (never only checked here).
@@ -3426,7 +3585,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     errorText: "The bound execution environment is unavailable; nothing was launched.",
                     at: Date())
                 postSchedulePendingNotification(schedule: fresh, occurrence: occurrence)
-                return
+                return .environmentUnavailable
             }
         }
         let center = environment.conversationCenter
@@ -3448,11 +3607,22 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                     : "The model bound to this schedule is no longer available or is disabled; nothing was launched.",
                 at: Date())
             postSchedulePendingNotification(schedule: fresh, occurrence: occurrence)
-            return
+            return .modelUnavailable
         }
         var policy: DraftTaskPolicy?
-        if let json = fresh.permissionJSON,
-           let decoded = try? JSONDecoder().decode(DraftTaskPolicy.self, from: Data(json.utf8)) {
+        if let json = fresh.permissionJSON {
+            // An intentionally ABSENT legacy binding (nil) keeps the settings
+            // default; a PRESENT-but-invalid policy must refuse accurately
+            // instead of launching under silently degraded permissions.
+            guard let decoded = try? JSONDecoder().decode(
+                DraftTaskPolicy.self, from: Data(json.utf8)) else {
+                try? await store.finishOccurrence(
+                    id: occurrence.id, state: .failed, summary: nil,
+                    errorText: "The permission policy bound to this schedule is invalid; nothing was launched.",
+                    at: Date())
+                postSchedulePendingNotification(schedule: fresh, occurrence: occurrence)
+                return .permissionUnavailable
+            }
             policy = decoded
         }
         // Predetermined launch identity: a retry after a crash between commit
@@ -3461,12 +3631,48 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             scheduleID: fresh.id, dedupeKey: "conversation:\(occurrence.id.uuidString)")
         let runID = TaskScheduleOccurrence.stableID(
             scheduleID: fresh.id, dedupeKey: "run:\(occurrence.id.uuidString)")
-        if let existing = try? await environment.runStore.run(id: runID) {
-            let bound = (try? await store.markOccurrenceRunning(
-                id: occurrence.id, runID: runID,
-                conversationID: existing.conversationID, at: Date())) == true
-            if bound { try? await store.markStarted(id: fresh.id, at: Date()) }
-            return
+        // A trustworthy read decides between recovery and a fresh launch: on
+        // ambiguous storage this executor must NOT assume "no run" and launch
+        // a possible second copy of the predetermined identity.
+        let preexistingRun: RunRecord?
+        do {
+            preexistingRun = try await environment.runStore.run(id: runID)
+        } catch {
+            return .storageFailed
+        }
+        if let existing = preexistingRun {
+            // The predetermined run already exists (a retry after a crash
+            // between commit and binding). Bind it truthfully: only a real
+            // bind may report `boundToExisting`.
+            let bindOutcome: Bool
+            do {
+                bindOutcome = try await store.markOccurrenceRunning(
+                    id: occurrence.id, runID: runID,
+                    conversationID: existing.conversationID, at: Date())
+            } catch {
+                // Real bind-write error: the committed run is untouched and
+                // the occurrence stays `claimed` so a retry rebinds the SAME
+                // run — never settle a committed active launch as a prelaunch
+                // failure.
+                return .launchCommittedButUnbound(
+                    runID: runID, conversationID: existing.conversationID)
+            }
+            if bindOutcome {
+                try? await store.markStarted(id: fresh.id, at: Date())
+                // The run may have finished between the pre-bind read and
+                // this bind: the completion callback then saw no `run_id`
+                // and could not settle the row. Refresh the durable state
+                // after binding so that ordering converges too.
+                await settleBoundRunIfTerminalAfterBind(
+                    store: store, occurrenceID: occurrence.id, runID: runID,
+                    conversationID: existing.conversationID)
+                return .boundToExisting(runID: runID, conversationID: existing.conversationID)
+            }
+            // The ledger moved under us (disabled/cancelled/reconciled): the
+            // run is real but stays unbound; the mover's row is left exactly
+            // as written instead of being overwritten with a false failure.
+            return .launchCommittedButUnbound(
+                runID: runID, conversationID: existing.conversationID)
         }
         do {
             let started = try await center.startTask(
@@ -3482,39 +3688,530 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 executionEnvironmentID: fresh.environmentID,
                 startOrigin: .scheduledTask
             )
-            let bound = (try? await store.markOccurrenceRunning(
-                id: occurrence.id,
-                runID: started.run.runID,
-                conversationID: started.conversationID,
-                at: Date())) == true
-            guard bound else {
-                // Another executor moved this instance first (or the ledger
-                // changed under us): never claim a launch that was not
-                // recorded. The started task continues as an ordinary run.
-                try? await store.finishOccurrence(
-                    id: occurrence.id, state: .failed, summary: nil,
-                    errorText: "The occurrence was already claimed by another executor; the launch was not bound.",
+            // Bind the just-committed launch. A bind-write error and a ledger
+            // that moved under us are DIFFERENT states and must not share the
+            // historical "settle as failed with no run" fall-through: the
+            // durable run is already committed and active.
+            let bound: Bool
+            do {
+                bound = try await store.markOccurrenceRunning(
+                    id: occurrence.id,
+                    runID: started.run.runID,
+                    conversationID: started.conversationID,
                     at: Date())
-                return
+            } catch {
+                // Real bind-write error: leave the occurrence `claimed` so a
+                // retry rebinds this SAME run; the launched task continues as
+                // an ordinary run.
+                return .launchCommittedButUnbound(
+                    runID: started.run.runID, conversationID: started.conversationID)
+            }
+            guard bound else {
+                // The ledger moved under us (disabled/cancelled/reconciled
+                // between claim and bind): never claim a launch that was not
+                // recorded and never overwrite the mover's row with a false
+                // failure. The started task continues as an ordinary run.
+                return .launchCommittedButUnbound(
+                    runID: started.run.runID, conversationID: started.conversationID)
             }
             try? await store.markStarted(id: fresh.id, at: Date())
+            // Same post-bind convergence for a launch so fast that it
+            // reached a terminal state before the binding write.
+            await settleBoundRunIfTerminalAfterBind(
+                store: store, occurrenceID: occurrence.id,
+                runID: started.run.runID,
+                conversationID: started.conversationID)
+            return .launched(runID: started.run.runID, conversationID: started.conversationID)
         } catch {
             // A failure AFTER the durable launch committed leaves the
             // predetermined run behind: bind it instead of reporting a clean
-            // failure (the task may still be running). Only a failure with no
-            // durable run is reported as failed.
-            if let existing = try? await environment.runStore.run(id: runID) {
-                let bound = (try? await store.markOccurrenceRunning(
-                    id: occurrence.id, runID: runID,
-                    conversationID: existing.conversationID, at: Date())) == true
-                if bound {
-                    try? await store.markStarted(id: fresh.id, at: Date())
-                    return
-                }
+            // failure (the task may still be running). Only a failure with
+            // no durable run is reported as failed.
+            let committedRun: RunRecord?
+            do {
+                committedRun = try await environment.runStore.run(id: runID)
+            } catch {
+                // Ambiguous storage: never guess "no run", never settle a
+                // committed launch as a prelaunch failure.
+                return .storageFailed
             }
+            if let existing = committedRun {
+                // Same-run recovery: bind the predetermined run instead of
+                // reporting a clean failure (the task may still be running).
+                let bindOutcome: Bool
+                do {
+                    bindOutcome = try await store.markOccurrenceRunning(
+                        id: occurrence.id, runID: runID,
+                        conversationID: existing.conversationID, at: Date())
+                } catch {
+                    // Real bind-write error: leave the occurrence `claimed`
+                    // so a retry rebinds this SAME run; never settle the
+                    // committed active launch as a prelaunch failure.
+                    return .launchCommittedButUnbound(
+                        runID: runID, conversationID: existing.conversationID)
+                }
+                if bindOutcome {
+                    try? await store.markStarted(id: fresh.id, at: Date())
+                    await settleBoundRunIfTerminalAfterBind(
+                        store: store, occurrenceID: occurrence.id, runID: runID,
+                        conversationID: existing.conversationID)
+                    return .boundToExisting(runID: runID, conversationID: existing.conversationID)
+                }
+                // The ledger moved under us: the run is real but stays
+                // unbound; the mover's row is left exactly as written.
+                return .launchCommittedButUnbound(
+                    runID: runID, conversationID: existing.conversationID)
+            }
+            let message = String(error.localizedDescription.prefix(1_024))
             try? await store.finishOccurrence(
                 id: occurrence.id, state: .failed, summary: nil,
-                errorText: String(error.localizedDescription.prefix(1_024)), at: Date())
+                errorText: message, at: Date())
+            return .launchFailed(message)
+        }
+    }
+
+    /// Runs ONE explicitly selected schedule's actual due occurrence through
+    /// the SAME atomic claim → revalidate → launch → bind route the
+    /// background pass uses, and returns the exact run the occurrence owns.
+    /// No second scheduler, no unbound Start(prompt), no random manual
+    /// instance: duplicate/concurrent callbacks converge on the
+    /// predetermined run identity instead of double-launching, and every
+    /// refusal is typed (deleted/disabled/not-due/unavailable/
+    /// concurrently-claimed/storage/launch failure) instead of a silent nil.
+    /// Simultaneous callbacks for the SAME due occurrence coalesce onto one
+    /// bounded in-flight attempt (keyed by occurrence, never by schedule) and
+    /// return its exact run; the atomic SQLite claim still fences every other
+    /// coordinator and process. Ordinary passes, after-success arming and
+    /// Run-now semantics are untouched: this route never reads another
+    /// schedule's rows.
+    func runSelectedSchedule(
+        scheduleID: UUID
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let now = Date()
+        // The explicit route surfaces an honest storage failure instead of
+        // proceeding under a falsely-ready flag: the reconcile stays
+        // retryable because the flag is only set on success.
+        do {
+            try await reconcileScheduleOccurrencesOnce(store: store, now: now)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        let schedule: TaskScheduleRecord?
+        do {
+            schedule = try await store.schedule(id: scheduleID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        guard let schedule else { throw FloeSelectedScheduleFailure.scheduleDeleted }
+        // The planner's coalesced most-recent-due target; event-armed
+        // after-success schedules have no time-based occurrence.
+        guard let target = TaskSchedulePlanner.selectedRunTarget(record: schedule, now: now)
+        else {
+            throw FloeSelectedScheduleFailure.noDueOccurrence(
+                eventDriven: schedule.cadence == .afterSuccess)
+        }
+        // Simultaneous callbacks for this SAME logical occurrence share ONE
+        // in-flight launch attempt instead of one of them losing the durable
+        // claim race and reporting a false concurrency refusal. The attempt
+        // covers enqueue → claim → launch → bind and reuses the exact
+        // existing route; the atomic SQLite claim below remains the
+        // authority across coordinators/processes.
+        return try await coalescedSelectedScheduleAttempt(
+            schedule: schedule, target: target, store: store, now: now)
+    }
+
+    /// Joins the in-flight attempt for `target.occurrenceID`, or starts (and
+    /// owns) the single attempt every simultaneous caller awaits. The
+    /// attempt is an unstructured main-actor task, so one waiter's
+    /// cancellation never cancels the caller-owned launch: awaiting its
+    /// value does not propagate cancellation, and only the creating caller
+    /// removes the entry once the attempt actually finishes. A joiner never
+    /// deletes the entry (the identity check would refuse a newer attempt
+    /// anyway). Failures are evicted exactly like successes, keeping the
+    /// existing storage-fault retry semantics: the next call performs a real
+    /// retry instead of replaying a stale error.
+    private func coalescedSelectedScheduleAttempt(
+        schedule: TaskScheduleRecord,
+        target: (fireTime: Date, dedupeKey: String, occurrenceID: UUID),
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let occurrenceID = target.occurrenceID
+        if let inFlight = selectedScheduleAttempts[occurrenceID] {
+            var receipt = try await inFlight.task.value
+            // The run is shared, but THIS call joined another caller's
+            // attempt: it did not launch the task.
+            receipt.freshlyLaunched = false
+            return receipt
+        }
+        let attemptID = UUID()
+        let task = Task { @MainActor in
+            try await self.performSelectedScheduleAttempt(
+                schedule: schedule, target: target, store: store, now: now)
+        }
+        // Registration happens in the same main-actor turn as the emptiness
+        // check above (no suspension between them), so two callers can never
+        // both create an attempt for one occurrence.
+        selectedScheduleAttempts[occurrenceID] = SelectedScheduleAttempt(id: attemptID, task: task)
+        do {
+            let receipt = try await task.value
+            clearSelectedScheduleAttempt(occurrenceID: occurrenceID, attemptID: attemptID)
+            return receipt
+        } catch {
+            clearSelectedScheduleAttempt(occurrenceID: occurrenceID, attemptID: attemptID)
+            throw error
+        }
+    }
+
+    /// Identity-safe ownership of the in-flight table: a clearer only removes
+    /// the attempt it created, never a newer replacement.
+    private func clearSelectedScheduleAttempt(occurrenceID: UUID, attemptID: UUID) {
+        guard selectedScheduleAttempts[occurrenceID]?.id == attemptID else { return }
+        selectedScheduleAttempts[occurrenceID] = nil
+    }
+
+    /// The one mutable attempt behind a selected-schedule call: enqueue the
+    /// coalesced occurrence, recover/bind an already committed run, or run
+    /// the shared atomic claim → revalidate → launch → bind route. It is
+    /// never entered concurrently for the same occurrence inside one
+    /// coordinator; cross-coordinator safety remains the SQLite claim.
+    private func performSelectedScheduleAttempt(
+        schedule: TaskScheduleRecord,
+        target: (fireTime: Date, dedupeKey: String, occurrenceID: UUID),
+        store: SQLiteTaskScheduleStore,
+        now: Date
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        do {
+            _ = try await store.enqueueOccurrence(TaskScheduleOccurrence(
+                id: target.occurrenceID,
+                scheduleID: schedule.id,
+                scheduledFor: target.fireTime,
+                dedupeKey: target.dedupeKey))
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        let occurrence: TaskScheduleOccurrence
+        do {
+            guard let stored = try await store.occurrence(id: target.occurrenceID) else {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            occurrence = stored
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        // The occurrence already owns a committed run (an earlier callback, a
+        // pass, or a crash-retry binding): return that EXACT reference.
+        if let runID = occurrence.runID, let conversationID = occurrence.conversationID {
+            return try await verifiedReceipt(
+                store: store, scheduleID: schedule.id, occurrenceID: target.occurrenceID,
+                runID: runID, conversationID: conversationID, freshlyLaunched: false)
+        }
+        guard schedule.isEnabled else { throw FloeSelectedScheduleFailure.scheduleDisabled }
+        if occurrence.state == .claimed {
+            // A prior claim committed the predetermined durable run but its
+            // bind write failed transiently (or the process died between
+            // launch and bind): recover and rebind that SAME run. Never
+            // relaunch, and never reset another live claim — the rebind only
+            // wins from the still-claimed state, and a concurrent binder
+            // binds the identical predetermined identity.
+            let expectedRunID = TaskScheduleOccurrence.stableID(
+                scheduleID: schedule.id, dedupeKey: "run:\(occurrence.id.uuidString)")
+            let expectedConversationID = TaskScheduleOccurrence.stableID(
+                scheduleID: schedule.id, dedupeKey: "conversation:\(occurrence.id.uuidString)")
+            // A trustworthy read decides recovery from a live foreign claim:
+            // ambiguous storage must NOT masquerade as "no run" (which would
+            // fabricate a concurrency outcome).
+            let committedRun: RunRecord?
+            do {
+                committedRun = try await environment.runStore.run(id: expectedRunID)
+            } catch {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            guard let committedRun else {
+                // No committed run: the claim is owned by a live executor
+                // that has not committed anything yet.
+                throw FloeSelectedScheduleFailure.concurrentlyClaimed
+            }
+            guard committedRun.conversationID == expectedConversationID else {
+                // A run under the predetermined identity whose owner
+                // conversation does not match is corrupt: refuse the
+                // reference instead of exposing it.
+                throw FloeSelectedScheduleFailure.runReferenceMismatch
+            }
+            let bound: Bool
+            do {
+                bound = try await store.markOccurrenceRunning(
+                    id: occurrence.id, runID: expectedRunID,
+                    conversationID: expectedConversationID, at: Date())
+            } catch {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            if bound {
+                try? await store.markStarted(id: schedule.id, at: Date())
+                return try await verifiedReceipt(
+                    store: store, scheduleID: schedule.id, occurrenceID: occurrence.id,
+                    runID: expectedRunID, conversationID: expectedConversationID,
+                    freshlyLaunched: false)
+            }
+            // CAS miss: another writer moved the row between the read and the
+            // rebind. Converge on the run the winning writer bound, or refuse
+            // with the accurate settled/live state — never guess.
+            let moved: TaskScheduleOccurrence?
+            do {
+                moved = try await store.occurrence(id: occurrence.id)
+            } catch {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            if let moved, let runID = moved.runID, let conversationID = moved.conversationID {
+                return try await verifiedReceipt(
+                    store: store, scheduleID: schedule.id, occurrenceID: occurrence.id,
+                    runID: runID, conversationID: conversationID, freshlyLaunched: false)
+            }
+            if moved?.state == .claimed {
+                throw FloeSelectedScheduleFailure.concurrentlyClaimed
+            }
+            // Settled by another writer without a run: nothing here may
+            // launch or restart.
+            throw FloeSelectedScheduleFailure.noDueOccurrence(eventDriven: false)
+        }
+        guard occurrence.state == .pending else {
+            // Settled history without a run: nothing here may launch.
+            throw FloeSelectedScheduleFailure.noDueOccurrence(eventDriven: false)
+        }
+        switch await executeScheduleOccurrence(
+            occurrence, schedule: schedule, store: store, now: now) {
+        case .launched(let runID, let conversationID),
+             .launchCommittedButUnbound(let runID, let conversationID):
+            // launchCommittedButUnbound still names a REAL durable run that
+            // continues as an ordinary run; the reference is truthful.
+            return try await verifiedReceipt(
+                store: store, scheduleID: schedule.id, occurrenceID: target.occurrenceID,
+                runID: runID, conversationID: conversationID, freshlyLaunched: true)
+        case .boundToExisting(let runID, let conversationID):
+            return try await verifiedReceipt(
+                store: store, scheduleID: schedule.id, occurrenceID: target.occurrenceID,
+                runID: runID, conversationID: conversationID, freshlyLaunched: false)
+        case .claimMissed:
+            // Re-read once to converge on the run the winning claim bound; a
+            // read failure is storage truth, not concurrency.
+            let winner: TaskScheduleOccurrence?
+            do {
+                winner = try await store.occurrence(id: occurrence.id)
+            } catch {
+                throw FloeSelectedScheduleFailure.storageUnavailable
+            }
+            if let settled = winner,
+               let runID = settled.runID, let conversationID = settled.conversationID {
+                return try await verifiedReceipt(
+                    store: store, scheduleID: schedule.id, occurrenceID: target.occurrenceID,
+                    runID: runID, conversationID: conversationID, freshlyLaunched: false)
+            }
+            throw FloeSelectedScheduleFailure.concurrentlyClaimed
+        case .scheduleDeleted:
+            throw FloeSelectedScheduleFailure.scheduleDeleted
+        case .scheduleDisabled:
+            throw FloeSelectedScheduleFailure.scheduleDisabled
+        case .environmentUnavailable:
+            throw FloeSelectedScheduleFailure.environmentUnavailable
+        case .modelUnavailable:
+            throw FloeSelectedScheduleFailure.modelUnavailable
+        case .launchFailed(let message):
+            throw FloeSelectedScheduleFailure.launchFailed(message)
+        case .storageFailed:
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        case .permissionUnavailable:
+            throw FloeSelectedScheduleFailure.permissionUnavailable
+        }
+    }
+
+    /// Authoritative ownership proof for a selected-schedule receipt. A
+    /// durable tie must exist first — the occurrence ledger names
+    /// (scheduleID, runID, conversationID), or the reference equals the
+    /// schedule's predetermined stable launch identity derived from
+    /// (schedule, occurrence) — AND the actual persisted run must exist with
+    /// exactly this owner conversation. The arithmetic identity alone is not
+    /// proof (anyone can recompute it); a matching ledger naming a missing or
+    /// foreign run is corrupt. Anything else is refused rather than exposed
+    /// to Shortcuts; a storage read failure is reported as storage truth,
+    /// never as absence or mismatch.
+    private func verifiedReceipt(
+        store: SQLiteTaskScheduleStore,
+        scheduleID: UUID,
+        occurrenceID: UUID,
+        runID: UUID,
+        conversationID: UUID,
+        freshlyLaunched: Bool
+    ) async throws -> FloeSelectedScheduleRunReceipt {
+        let ledger: TaskScheduleOccurrence?
+        do {
+            ledger = try await store.occurrence(id: occurrenceID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        let ledgerProvesOwnership = ledger?.scheduleID == scheduleID
+            && ledger?.runID == runID
+            && ledger?.conversationID == conversationID
+        let predeterminedRunID = TaskScheduleOccurrence.stableID(
+            scheduleID: scheduleID, dedupeKey: "run:\(occurrenceID.uuidString)")
+        let predeterminedConversationID = TaskScheduleOccurrence.stableID(
+            scheduleID: scheduleID, dedupeKey: "conversation:\(occurrenceID.uuidString)")
+        let identityProvesOwnership = runID == predeterminedRunID
+            && conversationID == predeterminedConversationID
+        guard ledgerProvesOwnership || identityProvesOwnership else {
+            throw FloeSelectedScheduleFailure.runReferenceMismatch
+        }
+        // The decisive owner proof: the receipt must name a REAL persisted
+        // run whose conversation is exactly the claimed owner. A missing run
+        // is a corrupt reference; a foreign conversation is someone else's
+        // run. Read failure is storage truth, not "no run".
+        let durable: RunRecord?
+        do {
+            durable = try await environment.runStore.run(id: runID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        guard let durable, durable.conversationID == conversationID else {
+            throw FloeSelectedScheduleFailure.runReferenceMismatch
+        }
+        // A terminal run may have finished BEFORE its occurrence was bound —
+        // the bind write failed after the launch committed, or the run's
+        // completion callback raced the bind and could not find a `run_id`.
+        // The live completion bridge settles occurrences by `run_id`, so an
+        // unbound claim is invisible to it. Once this receipt proves the
+        // ledger now names that exact run, settle the occurrence through the
+        // SAME completion service instead of leaving a finished task recorded
+        // as `running` forever. Only an already-bound occurrence is eligible;
+        // an unbound claim must first be bound by the caller/retry, and a row
+        // settled by another owner is never overwritten (the store's own
+        // `claimed`/`running` guard applies).
+        if ledgerProvesOwnership {
+            _ = try await settleOccurrenceIfRunAlreadyTerminal(
+                store: store,
+                occurrenceID: occurrenceID,
+                runID: runID,
+                conversationID: conversationID,
+                durableRun: durable,
+                at: Date())
+        }
+        return FloeSelectedScheduleRunReceipt(
+            runID: runID, conversationID: conversationID, freshlyLaunched: freshlyLaunched)
+    }
+
+    /// The durable run states that are a SCHEDULE outcome. `checkpointed` and
+    /// `interrupted` are terminal for the run row but are deliberate park /
+    /// unknown states, not success, failure or cancellation: they must never
+    /// be rewritten into a fabricated occurrence outcome. `cancelled` is kept
+    /// for the existing cancellation vocabulary even though the current
+    /// runtime's explicit cancel parks as `checkpointed`.
+    private static func scheduleCompletionOutcome(
+        forDurableRunState state: String
+    ) -> (succeeded: Bool, cancelled: Bool)? {
+        switch state {
+        case "completed": return (true, false)
+        case "failed": return (false, false)
+        case "cancelled": return (false, true)
+        default: return nil
+        }
+    }
+
+    /// Settles the occurrence this receipt names when the durable run has
+    /// ALREADY reached a completion that the live bridge could not record
+    /// while the occurrence was unbound. Uses the existing
+    /// `recordRunCompletion` service, so the terminal vocabulary (including
+    /// the default failure/cancel text) and the idempotent `ON CONFLICT`
+    /// after-success arming are exactly the live bridge's. It never binds,
+    /// launches, resets a claim, or invents an outcome:
+    ///
+    /// - a still-live, `checkpointed` or `interrupted` run is left alone;
+    /// - an occurrence that does not name this run (unbound claim) is left
+    ///   alone — binding owns that transition;
+    /// - an occurrence another writer already settled is left alone;
+    /// - a completion write failure is surfaced as storage truth so a caller
+    ///   never sees a settlement claim that did not persist. The next retry
+    ///   re-reads the same terminal run and converges without a new launch.
+    ///
+    /// Dependents are enqueued idempotently by the completion service but are
+    /// NOT drained here: the explicit selected route must not launch unrelated
+    /// schedules; the ordinary due pass owns that execution.
+    @discardableResult
+    private func settleOccurrenceIfRunAlreadyTerminal(
+        store: SQLiteTaskScheduleStore,
+        occurrenceID: UUID,
+        runID: UUID,
+        conversationID: UUID,
+        durableRun: RunRecord,
+        at now: Date
+    ) async throws -> Bool {
+        guard durableRun.id == runID,
+              durableRun.conversationID == conversationID,
+              let outcome = Self.scheduleCompletionOutcome(
+                forDurableRunState: durableRun.state)
+        else { return false }
+        // Re-read the ledger immediately before the terminal write: only a
+        // bound, still-open occurrence may be settled. A concurrent writer
+        // that already settled it (or a cold-start reconcile that marked it
+        // interrupted) is preserved, not overwritten.
+        let ledger: TaskScheduleOccurrence?
+        do {
+            ledger = try await store.occurrence(id: occurrenceID)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        guard let ledger,
+              ledger.runID == runID,
+              ledger.conversationID == conversationID,
+              ledger.state == .running || ledger.state == .claimed
+        else { return false }
+        do {
+            _ = try await store.recordRunCompletion(
+                runID: runID,
+                succeeded: outcome.succeeded,
+                cancelled: outcome.cancelled,
+                summary: nil,
+                at: now)
+        } catch {
+            throw FloeSelectedScheduleFailure.storageUnavailable
+        }
+        FloeLogger(category: .app).info(
+            "scheduleOccurrenceSettledFromDurableRun run=\(runID.uuidString) state=\(durableRun.state) occurrence=\(occurrenceID.uuidString)"
+        )
+        return true
+    }
+
+    /// Post-bind convergence for the background/selected launch paths: read
+    /// the durable run AFTER the occurrence was bound, because a completion
+    /// that landed between the launch commit and the bind is invisible to
+    /// the live bridge (the occurrence had no `run_id` when it ran). This is
+    /// best-effort for the launch result: the launch itself is real and is
+    /// never downgraded by a bookkeeping read/write failure, while an
+    /// explicit receipt still re-reads and reports storage truth.
+    private func settleBoundRunIfTerminalAfterBind(
+        store: SQLiteTaskScheduleStore,
+        occurrenceID: UUID,
+        runID: UUID,
+        conversationID: UUID
+    ) async {
+        let run: RunRecord?
+        do {
+            run = try await environment.runStore.run(id: runID)
+        } catch {
+            FloeLogger(category: .app).error(
+                "scheduleBindSettlementReadDeferred run=\(runID.uuidString)")
+            return
+        }
+        guard let run, run.conversationID == conversationID else { return }
+        do {
+            _ = try await settleOccurrenceIfRunAlreadyTerminal(
+                store: store,
+                occurrenceID: occurrenceID,
+                runID: runID,
+                conversationID: conversationID,
+                durableRun: run,
+                at: Date())
+        } catch {
+            FloeLogger(category: .app).error(
+                "scheduleBindSettlementWriteDeferred run=\(runID.uuidString)")
         }
     }
 

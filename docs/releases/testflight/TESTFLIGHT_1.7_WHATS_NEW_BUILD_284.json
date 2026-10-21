@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "1.7.43（284）：快捷指令可选择已有定时计划，运行后接续查询、等待和结果动作。计划列表增加系统自动化设置入口，并修复重复触发与异常恢复。请重点测试系统时间触发、后台或锁屏后的结果回收；定时自动化需在快捷指令中设置并启用。",
+  "en-US": "1.7.43 (284): Select a saved schedule in Shortcuts and pass its run to status, wait and result actions. Added system automation setup and improved duplicate-trigger and recovery handling. Please test time triggers and results while the app is inactive or the device is locked. Set up and enable time automations in Shortcuts."
+}

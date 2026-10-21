@@ -414,5 +414,227 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         }
         _ = perform
     }
+
+    // MARK: - Run Scheduled Task (S4 selected-schedule route)
+
+    private let scheduleID = UUID(uuidString: "8F8F8F8F-0000-4000-8000-000000000004")!
+
+    @MainActor
+    func testRunScheduledTaskIntentReturnsTheReceiptsExactRun() async throws {
+        let world = World()
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: conversationID, state: "preparing",
+            goal: "Synthetic scheduled goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[conversationID] = ConversationRecord(
+            id: conversationID, title: "Synthetic scheduled task",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let service = makeService(world)
+        let receipt = BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt(
+            runID: runID, conversationID: conversationID, freshlyLaunched: true)
+        var captured: UUID?
+        let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { id in
+            captured = id
+            return receipt
+        }
+        var intent = RunScheduledTaskIntent()
+        intent.schedule = TaskScheduleEntity(id: scheduleID, title: "Daily report")
+
+        let result = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+            try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                try await intent.perform()
+            }
+        }
+        XCTAssertEqual(captured, scheduleID)
+        let returned = try XCTUnwrap(result.value)
+        XCTAssertEqual(returned.runID, runID.uuidString)
+        XCTAssertEqual(returned.conversationID, conversationID.uuidString)
+        XCTAssertEqual(returned.state, .running)
+    }
+
+    @MainActor
+    func testRunScheduledTaskIntentRejectsUnprovenReference() async throws {
+        // The receipt claims a conversation the durable run does not belong
+        // to: the shared ownership validation must refuse it (no broad
+        // scheduled-run allow).
+        let world = World()
+        world.runs[runID] = RunRecord(
+            id: runID, conversationID: otherConversationID, state: "preparing",
+            goal: "Synthetic scheduled goal",
+            startedAt: Date(timeIntervalSince1970: 1_700_000_000), endedAt: nil)
+        world.conversations[otherConversationID] = ConversationRecord(
+            id: otherConversationID, title: "Other conversation",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        let service = makeService(world)
+        let receipt = BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt(
+            runID: runID, conversationID: conversationID, freshlyLaunched: true)
+        let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
+            receipt
+        }
+        var intent = RunScheduledTaskIntent()
+        intent.schedule = TaskScheduleEntity(id: scheduleID, title: "Daily report")
+
+        do {
+            _ = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+                try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                    try await intent.perform()
+                }
+            }
+            XCTFail("a receipt that cannot prove the durable owner must be rejected")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.ownership"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
+    /// The selected-schedule receipt flows through the SAME production
+    /// exact-run validation: a notes or temporary workspace stays invisible
+    /// (`.unavailable`), never an answer, and never a broad scheduled-run
+    /// allow.
+    @MainActor
+    func testRunScheduledTaskIntentKeepsNotesAndTemporaryFences() async throws {
+        for purpose in [ConversationPurpose.notes, ConversationPurpose.temporary] {
+            let world = World()
+            world.runs[runID] = RunRecord(
+                id: runID, conversationID: conversationID, state: "completed",
+                goal: "Synthetic scheduled goal",
+                startedAt: Date(timeIntervalSince1970: 1_700_000_000),
+                endedAt: Date(timeIntervalSince1970: 1_700_000_100))
+            world.conversations[conversationID] = ConversationRecord(
+                id: conversationID, title: "Hidden workspace",
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+                updatedAt: Date(timeIntervalSince1970: 1_700_000_100),
+                purpose: purpose)
+            let service = makeService(world)
+            let receipt = BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt(
+                runID: runID, conversationID: conversationID, freshlyLaunched: true)
+            let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
+                receipt
+            }
+            var intent = RunScheduledTaskIntent()
+            intent.schedule = TaskScheduleEntity(id: scheduleID, title: "Daily report")
+
+            let result = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+                try await FloeShortcutRunIntentBridge.$debugService.withValue(service) {
+                    try await intent.perform()
+                }
+            }
+            XCTAssertEqual(try XCTUnwrap(result.value).state, .unavailable, "purpose \(purpose)")
+        }
+    }
+
+    @MainActor
+    func testRunScheduledTaskIntentMapsFailureCopy() async throws {
+        let cases: [(BackgroundRunCoordinator.FloeSelectedScheduleFailure, String)] = [
+            (.scheduleDeleted, "shortcuts.schedule.run.error.not_found"),
+            (.scheduleDisabled, "shortcuts.schedule.run.error.schedule_disabled"),
+            (.noDueOccurrence(eventDriven: false), "shortcuts.schedule.run.error.not_due"),
+            (.noDueOccurrence(eventDriven: true), "shortcuts.schedule.run.error.event_driven"),
+            (.concurrentlyClaimed, "shortcuts.schedule.run.error.claimed"),
+            (.environmentUnavailable, "shortcuts.schedule.run.error.environment"),
+            (.modelUnavailable, "shortcuts.schedule.run.error.model"),
+            (.storageUnavailable, "shortcuts.run.error.storage"),
+            (.launchFailed("detail stays internal"), "shortcuts.schedule.run.error.launch_failed"),
+            (.runReferenceMismatch, "shortcuts.schedule.run.error.reference_mismatch"),
+            (.permissionUnavailable, "shortcuts.schedule.run.error.permission"),
+        ]
+        for (failure, key) in cases {
+            let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
+                throw failure
+            }
+            var intent = RunScheduledTaskIntent()
+            intent.schedule = TaskScheduleEntity(id: scheduleID, title: "Daily report")
+            do {
+                _ = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+                    try await intent.perform()
+                }
+                XCTFail("failure \(failure) must throw")
+            } catch let error as FloeShortcutActionError {
+                XCTAssertEqual(error.message, FloeL10n.l(key), "copy for \(failure)")
+            } catch {
+                XCTFail("unexpected error \(error) for \(failure)")
+            }
+        }
+    }
+
+    @MainActor
+    func testRunScheduledTaskIntentRejectsMalformedScheduleBeforeRouting() async throws {
+        var called = false
+        let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
+            called = true
+            return BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt(
+                runID: self.runID, conversationID: self.conversationID, freshlyLaunched: true)
+        }
+        var entity = TaskScheduleEntity(id: scheduleID, title: "Daily report")
+        entity.id = "not-a-uuid"
+        var intent = RunScheduledTaskIntent()
+        intent.schedule = entity
+
+        do {
+            _ = try await RunScheduledTaskIntent.$debugRoute.withValue(route) {
+                try await intent.perform()
+            }
+            XCTFail("a malformed schedule identity must be rejected")
+        } catch let error as FloeShortcutActionError {
+            XCTAssertEqual(error.message, FloeL10n.l("shortcuts.run.error.invalid_id"))
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        XCTAssertFalse(called, "the route must never run for a malformed identity")
+    }
+
+    // MARK: TaskScheduleEntityQuery
+
+    @MainActor
+    func testScheduleEntityQueryRehydratesExplicitIDsOnly() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let enabled = TaskScheduleRecord(
+            title: "Daily", prompt: "p", cadence: .daily,
+            scheduledAt: Date().addingTimeInterval(-60))
+        let disabled = TaskScheduleRecord(
+            title: "Off", prompt: "p", cadence: .once,
+            scheduledAt: Date().addingTimeInterval(-60), isEnabled: false)
+        try await store.save(enabled)
+        try await store.save(disabled)
+        let query = TaskScheduleEntityQuery()
+        let values = try await TaskScheduleEntityQuery.$debugEnvironment.withValue(environment) {
+            try await query.entities(for: [
+                enabled.id.uuidString,
+                disabled.id.uuidString,
+                UUID().uuidString,   // not found: skipped
+                "not-a-uuid"         // malformed: skipped
+            ])
+        }
+        XCTAssertEqual(values.count, 2)
+        XCTAssertEqual(values[0].id, enabled.id.uuidString)
+        XCTAssertEqual(values[0].title, "Daily")
+        XCTAssertEqual(values[1].id, disabled.id.uuidString)
+    }
+
+    @MainActor
+    func testScheduleEntityQuerySuggestsEnabledSchedulesOnly() async throws {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let enabled = TaskScheduleRecord(
+            title: "On", prompt: "p", cadence: .daily,
+            scheduledAt: Date().addingTimeInterval(-60))
+        try await store.save(enabled)
+        try await store.save(TaskScheduleRecord(
+            title: "Off", prompt: "p", cadence: .once,
+            scheduledAt: Date().addingTimeInterval(-60), isEnabled: false))
+        let query = TaskScheduleEntityQuery()
+        let values = try await TaskScheduleEntityQuery.$debugEnvironment.withValue(environment) {
+            try await query.suggestedEntities()
+        }
+        XCTAssertEqual(values.map(\.title), ["On"])
+        // The stable ID stays an internal property; the display is title-only.
+        XCTAssertEqual(values[0].id, enabled.id.uuidString)
+    }
 }
 #endif

@@ -14,6 +14,7 @@ import FloeCore
 import FloeExecution
 import FloeModels
 import FloePersistence
+import GRDB
 @testable import FloeApp
 
 @Suite("FloeApp.BackgroundRunCoordinator")
@@ -706,6 +707,954 @@ struct LinuxPortForwardCenterTests {
     }
 }
 
+@Suite("FloeApp.SelectedScheduleRun")
+@MainActor
+struct SelectedScheduleRunTests {
+
+    private func makeEnvironment() async throws -> AppEnvironment {
+        let environment = AppEnvironment.preview()
+        try await environment.database.migrate()
+        // The production Shortcuts service factory joins durable readiness,
+        // which must observe the isolated graph as launched instead of
+        // re-running real bootstrap against shared roots.
+        environment.markIsolatedLaunchReadyForTesting()
+        return environment
+    }
+
+    /// Seeds one enabled provider+model and reloads the environment's center
+    /// so the production `providerAndModel(modelID:)` resolution path sees it.
+    private func seedModel(_ environment: AppEnvironment) async throws -> ModelProfile {
+        let configuration = ModelConfigurationStore(database: environment.database)
+        let provider = ProviderProfile(
+            kind: .openAI,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://selected-schedule.example/v1")!)
+        let model = ModelProfile(
+            providerID: provider.id,
+            remoteModelID: "selected-schedule-model",
+            displayName: "Selected Schedule Model",
+            limits: .init(contextTokens: 4_096, maxOutputTokens: 1_024),
+            capabilities: [.text, .tools])
+        try await configuration.saveProvider(provider)
+        try await configuration.saveModel(model)
+        await environment.conversationCenter.reload()
+        return model
+    }
+
+    private func dueOnceSchedule(
+        title: String = "Morning report",
+        modelID: UUID? = nil,
+        environmentID: String? = nil,
+        permissionJSON: String? = nil
+    ) -> TaskScheduleRecord {
+        TaskScheduleRecord(
+            title: title,
+            prompt: "Write the morning report",
+            workspaceID: nil,
+            cadence: .once,
+            scheduledAt: Date().addingTimeInterval(-60),
+            isEnabled: true,
+            modelID: modelID,
+            environmentID: environmentID,
+            permissionJSON: permissionJSON)
+    }
+
+    private func predeterminedIDs(
+        scheduleID: UUID, occurrenceID: UUID
+    ) -> (runID: UUID, conversationID: UUID) {
+        (
+            TaskScheduleOccurrence.stableID(
+                scheduleID: scheduleID, dedupeKey: "run:\(occurrenceID.uuidString)"),
+            TaskScheduleOccurrence.stableID(
+                scheduleID: scheduleID, dedupeKey: "conversation:\(occurrenceID.uuidString)")
+        )
+    }
+
+    @Test("A deleted schedule is refused accurately")
+    func deletedSchedule() async throws {
+        let environment = try await makeEnvironment()
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.scheduleDeleted) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: UUID())
+        }
+    }
+
+    @Test("A disabled schedule with no run is refused and never launches")
+    func disabledSchedule() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        var schedule = dueOnceSchedule(modelID: model.id)
+        schedule.isEnabled = false
+        try await store.save(schedule)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.scheduleDisabled) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        // Nothing was claimed or launched; the occurrence stays pending and
+        // no run exists.
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let occurrence = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(occurrence.state == .pending)
+        #expect(try await environment.runStore.nonTerminalRuns().isEmpty)
+    }
+
+    @Test("A future one-shot and an after-success schedule have no due occurrence")
+    func notDueCases() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let future = TaskScheduleRecord(
+            title: "Later", prompt: "p", cadence: .once,
+            scheduledAt: Date().addingTimeInterval(3_600))
+        try await store.save(future)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.noDueOccurrence(
+            eventDriven: false)) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: future.id)
+        }
+        let chained = TaskScheduleRecord(
+            title: "Chain", prompt: "p", cadence: .afterSuccess,
+            scheduledAt: Date(), upstreamRunID: UUID())
+        try await store.save(chained)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.noDueOccurrence(
+            eventDriven: true)) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: chained.id)
+        }
+    }
+
+    @Test("An unavailable bound environment fails the occurrence honestly without launching")
+    func invalidEnvironmentBinding() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id, environmentID: "missing-env")
+        try await store.save(schedule)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.environmentUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let occurrence = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(occurrence.state == .failed)
+        #expect(occurrence.errorText?.contains("environment") == true)
+        #expect(try await environment.runStore.nonTerminalRuns().isEmpty)
+    }
+
+    @Test("A missing default model and an explicitly deleted bound model both fail honestly")
+    func invalidModelBindings() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        // Unbound record, no default model configured at all.
+        let unbound = dueOnceSchedule()
+        try await store.save(unbound)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.modelUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: unbound.id)
+        }
+        // Explicit frozen binding that no longer resolves must NOT fall back.
+        let bound = dueOnceSchedule(modelID: UUID())
+        try await store.save(bound)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.modelUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: bound.id)
+        }
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: bound, now: Date()))
+        let occurrence = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(occurrence.state == .failed)
+        #expect(occurrence.errorText?.contains("model") == true)
+    }
+
+    @Test("An absent policy keeps the default, an invalid policy refuses accurately")
+    func permissionBindingValidation() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        // Legacy absent binding (nil) still launches under the default policy.
+        let legacy = dueOnceSchedule(title: "Legacy", modelID: model.id)
+        try await store.save(legacy)
+        let legacyReceipt = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: legacy.id)
+        #expect(legacyReceipt.freshlyLaunched)
+        // A PRESENT-but-invalid policy must not launch under fallback
+        // permissions.
+        let invalid = dueOnceSchedule(
+            title: "Broken policy", modelID: model.id,
+            permissionJSON: "{not-a-policy")
+        try await store.save(invalid)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.permissionUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: invalid.id)
+        }
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: invalid, now: Date()))
+        let occurrence = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(occurrence.state == .failed)
+        #expect(occurrence.errorText?.contains("permission") == true)
+        #expect(try await environment.runStore.run(id: legacyReceipt.runID) != nil)
+    }
+
+    @Test("A claimed occurrence whose committed run lost its bind recovers the same run; without a run it stays concurrently claimed")
+    func claimedOccurrenceRecoversCommittedRun() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        // Warmup: a successful call FIRST, so the coordinator's one startup
+        // reconciliation is already done. The injected state below then
+        // represents the real same-process branch (an executor claimed and
+        // committed AFTER startup); a pre-startup claimed row would be stale
+        // dead-process history and is covered separately.
+        let warmup = dueOnceSchedule(title: "Warmup", modelID: model.id)
+        try await store.save(warmup)
+        _ = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: warmup.id)
+
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let expected = predeterminedIDs(scheduleID: schedule.id, occurrenceID: target.occurrenceID)
+        // Simulate the transient post-commit window: the predetermined run
+        // is durably committed, the bind write failed, the occurrence is
+        // still claimed with no run reference.
+        try await environment.conversationStore.saveConversation(.init(
+            id: expected.conversationID, title: schedule.title,
+            createdAt: Date(), updatedAt: Date()))
+        try await environment.runStore.saveRun(.init(
+            id: expected.runID, conversationID: expected.conversationID,
+            state: "preparing", goal: schedule.prompt,
+            startedAt: Date(), endedAt: nil))
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+
+        let receipt = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        // The SAME predetermined run is rebound — never relaunched.
+        #expect(receipt.runID == expected.runID)
+        #expect(receipt.conversationID == expected.conversationID)
+        #expect(!receipt.freshlyLaunched)
+        let rebound = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(rebound.state == .running)
+        #expect(rebound.runID == expected.runID)
+
+        // Without a committed run, a claimed occurrence is a live foreign
+        // claim: it must be refused, not reset and not relaunched.
+        let other = dueOnceSchedule(title: "Other", modelID: model.id)
+        try await store.save(other)
+        let otherTarget = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: other, now: Date()))
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: otherTarget.occurrenceID, scheduleID: other.id,
+            scheduledFor: otherTarget.fireTime, dedupeKey: otherTarget.dedupeKey))
+        try await store.claimOccurrence(id: otherTarget.occurrenceID, at: Date())
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.concurrentlyClaimed) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: other.id)
+        }
+        // The foreign claim is untouched by the refusal.
+        let foreign = try #require(try await store.occurrence(id: otherTarget.occurrenceID))
+        #expect(foreign.state == .claimed)
+        #expect(foreign.runID == nil)
+    }
+
+    @Test("A stale claimed row present BEFORE the first call is reconciled as interrupted history and never restarted")
+    func firstCallReconcilesStaleClaimedHistoryWithoutRestartingIt() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        // Dead-process history: the occurrence was claimed but the process
+        // exited before any launch. Seeded BEFORE the coordinator's first
+        // call, so the startup reconciliation owns it.
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+
+        // The honest outcome: interrupted history, an explicit refusal —
+        // and NO restart, NO fabricated run.
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.noDueOccurrence(
+            eventDriven: false)) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let settled = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(settled.state == .interrupted)
+        #expect(settled.runID == nil)
+        #expect(try await environment.runStore.nonTerminalRuns().isEmpty)
+    }
+
+    @Test("A scheduled run answers Status/Text/Files through the production service and its fences stay closed")
+    func scheduledRunAnswersThroughProductionRunService() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let receipt = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+
+        // Settle the run as a real completed run with a proven final reply
+        // (production event order: assistant row, assistantText, terminal).
+        try await environment.runStore.saveRun(.init(
+            id: receipt.runID, conversationID: receipt.conversationID,
+            state: "completed", goal: schedule.prompt,
+            startedAt: Date(), endedAt: Date()))
+        let messageID = UUID()
+        try await environment.conversationStore.appendMessage(.init(
+            id: messageID, conversationID: receipt.conversationID, role: "assistant",
+            content: "Scheduled answer", createdAt: Date(), runID: receipt.runID))
+        _ = try await environment.runStore.appendEvent(
+            runID: receipt.runID, kind: .assistantText,
+            payloadJSON: "{\"text\":\"Scheduled answer\"}")
+        _ = try await environment.runStore.appendEvent(
+            runID: receipt.runID, kind: .terminal,
+            payloadJSON: "{\"stopReason\":\"endTurn\",\"finalMessageID\":\"\(messageID.uuidString)\"}")
+        _ = try await store.recordRunCompletion(
+            runID: receipt.runID, succeeded: true, cancelled: false,
+            summary: "done", at: Date())
+
+        // Status: the production exact-run factory accepts the scheduled
+        // run's precise identity.
+        let service = environment.floeShortcutRunService()
+        let status = try await service.status(runID: receipt.runID)
+        #expect(status.runID == receipt.runID)
+        #expect(status.conversationID == receipt.conversationID)
+        #expect(status.state == .completed)
+        #expect(status.isFullSuccess)
+
+        // Text: the proven final reply of THIS run is returned.
+        let text = try await service.textResult(runID: receipt.runID)
+        #expect(text.text == "Scheduled answer")
+        #expect(text.completeness == .complete)
+
+        // Files: the same run reference passes ownership validation; with no
+        // manifest rows the honest answer is a proven "no files".
+        let files = try await service.fileResult(
+            runID: receipt.runID, expectedConversationID: receipt.conversationID)
+        #expect(files.status.state == .completed)
+        #expect(files.files.isEmpty)
+
+        // The App-Intent projection validates ownership the same way the
+        // other actions do.
+        let entity = try await FloeShortcutRunIntentBridge.snapshot(
+            runID: receipt.runID,
+            expectedConversationID: receipt.conversationID,
+            environment: { environment })
+        #expect(entity.runID == receipt.runID.uuidString)
+        #expect(entity.state == .completed)
+
+        // Fences: a mismatched conversation is refused, never silently read.
+        await #expect(throws: FloeRunFilesError.ownership) {
+            _ = try await service.fileResult(
+                runID: receipt.runID, expectedConversationID: UUID())
+        }
+    }
+
+    @Test("A due schedule launches through the shared claim/bind path with its frozen binding and deterministic identity")
+    func launchesWithFrozenBinding() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let policy = DraftTaskPolicy(approvalMode: .automatic)
+        let schedule = dueOnceSchedule(
+            modelID: model.id,
+            permissionJSON: String(decoding: try JSONEncoder().encode(policy), as: UTF8.self))
+        try await store.save(schedule)
+
+        let receipt = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        let expected = predeterminedIDs(
+            scheduleID: schedule.id,
+            occurrenceID: TaskScheduleOccurrence.stableID(
+                scheduleID: schedule.id, dedupeKey: "once"))
+        #expect(receipt.runID == expected.runID)
+        #expect(receipt.conversationID == expected.conversationID)
+        #expect(receipt.freshlyLaunched)
+
+        // The occurrence ledger names the exact run (ownership proof), the
+        // durable run exists, and the one-shot schedule settled as started.
+        let occurrence = try #require(try await store.occurrence(id: TaskScheduleOccurrence.stableID(
+            scheduleID: schedule.id, dedupeKey: "once")))
+        #expect(occurrence.state == .running)
+        #expect(occurrence.runID == receipt.runID)
+        #expect(occurrence.conversationID == receipt.conversationID)
+        #expect(try await environment.runStore.run(id: receipt.runID) != nil)
+        #expect(try await environment.conversationStore
+            .conversation(id: receipt.conversationID) != nil)
+        let settled = try #require(try await store.schedule(id: schedule.id))
+        #expect(!settled.isEnabled)
+        #expect(settled.lastStartedAt != nil)
+    }
+
+    @Test("Duplicate and concurrent callbacks converge on the one committed run")
+    func duplicateAndConcurrentConvergence() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+
+        let first = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        // A duplicate callback returns the same reference without launching.
+        let second = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        #expect(second.runID == first.runID)
+        #expect(second.conversationID == first.conversationID)
+        #expect(!second.freshlyLaunched)
+
+        // Two overlapping callbacks also collapse to one run.
+        let daily = TaskScheduleRecord(
+            title: "Daily", prompt: "p", cadence: .daily,
+            scheduledAt: Date().addingTimeInterval(-120),
+            anchorTimezone: "UTC", modelID: model.id)
+        try await store.save(daily)
+        async let left = environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: daily.id)
+        async let right = environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: daily.id)
+        let (a, b) = try await (left, right)
+        #expect(a.runID == b.runID)
+        #expect(a.conversationID == b.conversationID)
+        // One occurrence row, one durable run — no duplicate launch.
+        #expect(try await store.occurrences(scheduleID: daily.id, limit: 10).count == 1)
+        #expect(try await environment.runStore.run(id: a.runID) != nil)
+    }
+
+    @Test("A completed occurrence keeps returning its exact run reference")
+    func completedOccurrenceReturnsSameReference() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let coordinator = environment.backgroundRunCoordinator
+        let first = try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        _ = try await store.recordRunCompletion(
+            runID: first.runID, succeeded: true, cancelled: false,
+            summary: "done", at: Date())
+        let again = try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        #expect(again.runID == first.runID)
+        #expect(again.conversationID == first.conversationID)
+        #expect(!again.freshlyLaunched)
+    }
+
+    @Test("The selected route never drains unrelated schedules or manual/upstream instances")
+    func doesNotDrainUnrelatedWork() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let selected = dueOnceSchedule(title: "Selected", modelID: model.id)
+        try await store.save(selected)
+        // Another due enabled schedule, a manual instance and an armed
+        // after-success instance must all survive untouched.
+        let other = dueOnceSchedule(title: "Other", modelID: model.id)
+        try await store.save(other)
+        let manual = try #require(try await store.runNow(id: selected.id, at: Date()))
+        let chained = TaskScheduleRecord(
+            title: "Chain", prompt: "p", cadence: .afterSuccess,
+            scheduledAt: Date(), upstreamRunID: UUID(), modelID: model.id)
+        try await store.save(chained)
+        let upstream = try #require(chained.upstreamRunID)
+        let armed = try #require(try await store.recordRunCompletion(
+            runID: upstream, succeeded: true, cancelled: false,
+            summary: "done", at: Date()).first)
+
+        _ = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: selected.id)
+
+        #expect(try await store.occurrences(scheduleID: other.id, limit: 10).isEmpty)
+        #expect(try await store.occurrence(id: manual.id)?.state == .pending)
+        #expect(try await store.occurrence(id: armed)?.state == .pending)
+    }
+
+    @Test("A storage failure surfaces as storageUnavailable, not a silent nil")
+    func storageFailureIsAccurate() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let schedule = dueOnceSchedule()
+        try await store.save(schedule)
+        try await environment.database.close()
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.storageUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+    }
+
+    // MARK: - Post-commit recovery (PRIMARY-REJECTED branch repair)
+
+    /// Installs a REAL scoped SQLite fault on the production occurrence
+    /// table: the claimed→running bind write aborts. This is genuine fault
+    /// injection at the store layer, not a stubbed coordinator seam.
+    private func installBindWriteFault(_ environment: AppEnvironment) async throws {
+        try await environment.database.writer { db in
+            try db.execute(sql: """
+                CREATE TRIGGER test_fault_block_occurrence_bind
+                BEFORE UPDATE ON task_schedule_occurrences
+                WHEN NEW.state = 'running'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected bind-write failure');
+                END
+                """)
+        }
+    }
+
+    private func removeBindWriteFault(_ environment: AppEnvironment) async throws {
+        try await environment.database.writer { db in
+            try db.execute(sql: "DROP TRIGGER IF EXISTS test_fault_block_occurrence_bind")
+        }
+    }
+
+    private func installReconcileWriteFault(_ environment: AppEnvironment) async throws {
+        try await environment.database.writer { db in
+            try db.execute(sql: """
+                CREATE TRIGGER test_fault_block_reconcile
+                BEFORE UPDATE ON task_schedule_occurrences
+                WHEN NEW.state = 'interrupted'
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected reconcile-write failure');
+                END
+                """)
+        }
+    }
+
+    private func removeReconcileWriteFault(_ environment: AppEnvironment) async throws {
+        try await environment.database.writer { db in
+            try db.execute(sql: "DROP TRIGGER IF EXISTS test_fault_block_reconcile")
+        }
+    }
+
+    /// Attaches a real GRDB statement trace to the production (in-memory)
+    /// SQLite connection. The probe counts the startup reconciliation's own
+    /// SELECT/JOIN, which runs once per physical pass even when it matches
+    /// no rows, and holds the first SELECT inside SQLite until released.
+    private func installStartupReconcileProbe(
+        _ environment: AppEnvironment
+    ) async throws -> StartupReconcileProbe {
+        let probe = StartupReconcileProbe()
+        try await environment.database.writer { db in
+            db.trace(options: .statement) { event in
+                guard case let .statement(statement) = event else { return }
+                probe.record(sql: statement.sql)
+            }
+        }
+        return probe
+    }
+
+    private func removeStartupReconcileProbe(
+        _ environment: AppEnvironment
+    ) async throws {
+        try await environment.database.writer { db in
+            // Documented detach form: an empty options set stops tracing.
+            db.trace(options: [])
+        }
+    }
+
+    private func captureSelectedRun(
+        _ operation: () async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt
+    ) async -> Result<BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt, Error> {
+        do {
+            return .success(try await operation())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    private func expectRefusal(
+        _ result: Result<BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt, Error>,
+        _ failure: BackgroundRunCoordinator.FloeSelectedScheduleFailure,
+        _ message: String
+    ) {
+        guard case .failure(let error) = result else {
+            Issue.record("expected refusal but the call succeeded — \(message)")
+            return
+        }
+        #expect(
+            error as? BackgroundRunCoordinator.FloeSelectedScheduleFailure == failure,
+            "\(message)")
+    }
+
+    @Test("Two simultaneous first calls coalesce onto ONE physical startup reconcile that both await")
+    func concurrentFirstCallsShareOneStartupReconcile() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        // A stale claimed row forces the startup reconcile to do real work
+        // (with no rows the reconcile short-circuits) and gives the two
+        // racing first callers something to coalesce on.
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+
+        let coordinator = environment.backgroundRunCoordinator
+        // The physical pass is proved on the REAL connection by counting the
+        // startup reconcile's SELECT itself. A row-based BEFORE UPDATE
+        // trigger cannot do this: the reconcile selects only claimed/running
+        // rows, so a second physical pass that starts after the first settled
+        // the only stale row matches zero rows and fires no UPDATE trigger.
+        // The first SELECT is also held open inside SQLite until the second
+        // caller has entered the same coordinator call — a deterministic
+        // overlap barrier, not a timing or sleep-based assumption.
+        let probe = try await installStartupReconcileProbe(environment)
+        defer { probe.releaseFirstSelect() }
+
+        async let left = captureSelectedRun {
+            try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let firstSelectObserved = await probe.waitForFirstSelect()
+        #expect(firstSelectObserved, "the startup reconcile SELECT never ran")
+        guard firstSelectObserved else {
+            // Swift awaits the unconsumed `left` child during scope exit
+            // before running `defer`; release the SQLite barrier here so a
+            // late SELECT can never hang that implicit await.
+            probe.releaseFirstSelect()
+            return
+        }
+
+        // The second caller starts only while the first physical reconcile is
+        // provably in flight, and it reaches its first suspension (the shared
+        // in-flight await) before the barrier is released.
+        let secondCallerStarted = SecondCallerGate()
+        async let right = captureSelectedRun { @MainActor in
+            secondCallerStarted.signal()
+            return try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        await secondCallerStarted.waitForSignal()
+        probe.releaseFirstSelect()
+
+        let (leftResult, rightResult) = await (left, right)
+        // Both callers awaited the SAME physical reconcile: both proceeded
+        // past it and refused identically on the interrupted history. A
+        // per-caller reconcile would have produced a second physical SELECT,
+        // and the old Bool-only helper's second pass could also have
+        // interrupted an occurrence claimed while the first was in flight.
+        expectRefusal(
+            leftResult, .noDueOccurrence(eventDriven: false), "left first call")
+        expectRefusal(
+            rightResult, .noDueOccurrence(eventDriven: false), "right first call")
+        // Direct proof of ONE physical reconcile for the coalesced pair: the
+        // startup SELECT ran exactly once even though only the first pass
+        // matched a row.
+        #expect(
+            probe.startupSelectCount == 1,
+            "the coalesced pair must perform exactly one physical startup reconcile")
+        // Instrumentation sensitivity: a fresh coordinator (its own
+        // one-time startup pass) runs the same SELECT over the now-settled
+        // history where ZERO claimed/running rows remain. The probe still
+        // counts it, which is exactly the row-blind case that made the old
+        // BEFORE UPDATE trigger unable to prove a second physical pass.
+        let freshCoordinator = BackgroundRunCoordinator(environment: environment)
+        let zeroRowCall = await captureSelectedRun {
+            try await freshCoordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        expectRefusal(zeroRowCall, .noDueOccurrence(eventDriven: false), "zero-row reconcile")
+        #expect(probe.startupSelectCount == 2, "a SELECT matching zero rows is still counted")
+        try await removeStartupReconcileProbe(environment)
+        // Cold-start semantics preserved: settled interrupted, never
+        // restarted, no run launched.
+        let settled = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(settled.state == .interrupted)
+        #expect(try await environment.runStore.nonTerminalRuns().isEmpty)
+    }
+
+    @Test("Two simultaneous first calls await the same FAILED startup reconcile and both observe storageUnavailable")
+    func concurrentFirstCallsShareOneReconcileFailure() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+        try await installReconcileWriteFault(environment)
+
+        let coordinator = environment.backgroundRunCoordinator
+        // Same real-connection SELECT instrumentation as the success case:
+        // the shared failed reconcile must be ONE physical pass (count 1),
+        // and the later retry must be a genuinely new physical pass (count 2).
+        let probe = try await installStartupReconcileProbe(environment)
+        defer { probe.releaseFirstSelect() }
+
+        async let left = captureSelectedRun {
+            try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let firstSelectObserved = await probe.waitForFirstSelect()
+        #expect(firstSelectObserved, "the startup reconcile SELECT never ran")
+        guard firstSelectObserved else {
+            // Swift awaits the unconsumed `left` child during scope exit
+            // before running `defer`; release the SQLite barrier here so a
+            // late SELECT can never hang that implicit await.
+            probe.releaseFirstSelect()
+            return
+        }
+        let secondCallerStarted = SecondCallerGate()
+        async let right = captureSelectedRun { @MainActor in
+            secondCallerStarted.signal()
+            return try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        await secondCallerStarted.waitForSignal()
+        probe.releaseFirstSelect()
+
+        let (leftResult, rightResult) = await (left, right)
+        // The failure belongs to the shared reconcile: BOTH callers observe
+        // storageUnavailable, and neither proceeds under false readiness.
+        expectRefusal(leftResult, .storageUnavailable, "left first call")
+        expectRefusal(rightResult, .storageUnavailable, "right first call")
+        // The startup SELECT ran exactly once: the failure was shared instead
+        // of being retried independently by each caller.
+        #expect(
+            probe.startupSelectCount == 1,
+            "both failing callers must share exactly one physical startup reconcile")
+        // The aborted reconcile rolled back: the row is untouched.
+        let untouched = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(untouched.state == .claimed)
+
+        // The in-flight failure was released: with the fault removed, the
+        // next call performs a real second physical reconcile (the SELECT is
+        // counted again) and refuses honestly — retryable, never hidden.
+        try await removeReconcileWriteFault(environment)
+        let retry = await captureSelectedRun {
+            try await coordinator.runSelectedSchedule(scheduleID: schedule.id)
+        }
+        expectRefusal(retry, .noDueOccurrence(eventDriven: false), "retry after fault removal")
+        #expect(probe.startupSelectCount == 2, "the retry must be a second physical reconcile")
+        try await removeStartupReconcileProbe(environment)
+        let settled = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(settled.state == .interrupted)
+    }
+
+    @Test("A real bind-write failure after a committed launch keeps the occurrence recoverable and the retry returns the exact same run")
+    func committedLaunchSurvivesTransientBindWriteFailure() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let expected = predeterminedIDs(scheduleID: schedule.id, occurrenceID: target.occurrenceID)
+
+        try await installBindWriteFault(environment)
+        let receipt = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        // The committed launch is named truthfully even though the bind write
+        // failed; the run really exists and continues.
+        #expect(receipt.runID == expected.runID)
+        #expect(receipt.conversationID == expected.conversationID)
+        #expect(receipt.freshlyLaunched)
+        // The occurrence is NOT falsely settled as a prelaunch failure: it
+        // stays claimed (recoverable) with no run reference yet.
+        let stranded = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(stranded.state == .claimed)
+        #expect(stranded.runID == nil)
+        // Exactly one durable run exists — the fault caused no second launch.
+        #expect(try await environment.runStore.nonTerminalRuns().count == 1)
+
+        try await removeBindWriteFault(environment)
+        // Retry recovers the SAME run + conversation; still exactly one run.
+        let recovered = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        #expect(recovered.runID == expected.runID)
+        #expect(recovered.conversationID == expected.conversationID)
+        #expect(!recovered.freshlyLaunched)
+        let rebound = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(rebound.state == .running)
+        #expect(rebound.runID == expected.runID)
+        #expect(rebound.conversationID == expected.conversationID)
+        #expect(try await store.occurrences(scheduleID: schedule.id, limit: 10).count == 1)
+        #expect(try await environment.runStore.nonTerminalRuns().count == 1)
+        #expect(try await environment.runStore.run(id: expected.runID) != nil)
+    }
+
+    @Test("A bind-write failure during claimed-row recovery is storage truth, and recovery succeeds once the fault is removed")
+    func claimedRecoveryBindWriteFailureSurfacesStorage() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        // Warmup completes the one startup reconciliation so the injected
+        // state below is the real same-process branch.
+        let warmup = dueOnceSchedule(title: "Warmup", modelID: model.id)
+        try await store.save(warmup)
+        _ = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: warmup.id)
+
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let expected = predeterminedIDs(scheduleID: schedule.id, occurrenceID: target.occurrenceID)
+        try await environment.conversationStore.saveConversation(.init(
+            id: expected.conversationID, title: schedule.title,
+            createdAt: Date(), updatedAt: Date()))
+        try await environment.runStore.saveRun(.init(
+            id: expected.runID, conversationID: expected.conversationID,
+            state: "preparing", goal: schedule.prompt,
+            startedAt: Date(), endedAt: nil))
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+
+        try await installBindWriteFault(environment)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.storageUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        // The claimed row is untouched by the failed write — not settled, not
+        // reset, not relaunched.
+        let untouched = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(untouched.state == .claimed)
+        #expect(untouched.runID == nil)
+        try await removeBindWriteFault(environment)
+
+        let recovered = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: schedule.id)
+        #expect(recovered.runID == expected.runID)
+        #expect(recovered.conversationID == expected.conversationID)
+        #expect(!recovered.freshlyLaunched)
+        let rebound = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(rebound.state == .running)
+        #expect(rebound.runID == expected.runID)
+    }
+
+    @Test("A failed startup reconciliation write surfaces as storage on the explicit route and stays retryable instead of being hidden")
+    func startupReconciliationFailureStaysRetryable() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        // A stale claimed row forces the startup reconciliation to perform a
+        // real write (with no rows the reconcile short-circuits).
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+
+        try await installReconcileWriteFault(environment)
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.storageUnavailable) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        // The aborted reconcile rolled back: the row is untouched, and the
+        // readiness flag was NOT set (no false readiness).
+        let untouched = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(untouched.state == .claimed)
+        try await removeReconcileWriteFault(environment)
+
+        // The retry truthfully performs the startup reconciliation: the stale
+        // row is settled interrupted (never restarted) and the call refuses
+        // honestly — proof the reconcile ran and was not permanently hidden.
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.noDueOccurrence(
+            eventDriven: false)) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let settled = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(settled.state == .interrupted)
+        #expect(try await environment.runStore.nonTerminalRuns().isEmpty)
+    }
+
+    @Test("A receipt naming no durable run is refused as a corrupt reference")
+    func receiptWithMissingDurableRunIsRefused() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let warmup = dueOnceSchedule(title: "Warmup", modelID: model.id)
+        try await store.save(warmup)
+        _ = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: warmup.id)
+
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let expected = predeterminedIDs(scheduleID: schedule.id, occurrenceID: target.occurrenceID)
+        // Corrupt ledger tie: the occurrence names a run that does not exist.
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+        _ = try await store.markOccurrenceRunning(
+            id: target.occurrenceID, runID: expected.runID,
+            conversationID: expected.conversationID, at: Date())
+
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.runReferenceMismatch) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        // The refusal does not mutate the corrupt row.
+        let corrupt = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(corrupt.state == .running)
+        #expect(corrupt.runID == expected.runID)
+    }
+
+    @Test("A receipt whose durable run belongs to a different conversation is refused as a corrupt reference")
+    func receiptWithForeignConversationRunIsRefused() async throws {
+        let environment = try await makeEnvironment()
+        let store = SQLiteTaskScheduleStore(database: environment.database)
+        let model = try await seedModel(environment)
+        let warmup = dueOnceSchedule(title: "Warmup", modelID: model.id)
+        try await store.save(warmup)
+        _ = try await environment.backgroundRunCoordinator
+            .runSelectedSchedule(scheduleID: warmup.id)
+
+        let schedule = dueOnceSchedule(modelID: model.id)
+        try await store.save(schedule)
+        let target = try #require(TaskSchedulePlanner.selectedRunTarget(
+            record: schedule, now: Date()))
+        let expected = predeterminedIDs(scheduleID: schedule.id, occurrenceID: target.occurrenceID)
+        try await store.enqueueOccurrence(TaskScheduleOccurrence(
+            id: target.occurrenceID, scheduleID: schedule.id,
+            scheduledFor: target.fireTime, dedupeKey: target.dedupeKey))
+        try await store.claimOccurrence(id: target.occurrenceID, at: Date())
+        _ = try await store.markOccurrenceRunning(
+            id: target.occurrenceID, runID: expected.runID,
+            conversationID: expected.conversationID, at: Date())
+        // The run exists but belongs to ANOTHER conversation: owner proof
+        // fails even though the ledger tie matches. The foreign conversation
+        // must be a REAL row first: `runs.conversation_id` is foreign-keyed in
+        // the production schema, and an impossible row would abort before the
+        // tested ownership check instead of exercising it.
+        let foreignConversationID = UUID()
+        try await environment.conversationStore.saveConversation(.init(
+            id: foreignConversationID, title: "Unrelated conversation",
+            createdAt: Date(), updatedAt: Date()))
+        try await environment.runStore.saveRun(.init(
+            id: expected.runID, conversationID: foreignConversationID,
+            state: "preparing", goal: schedule.prompt,
+            startedAt: Date(), endedAt: nil))
+
+        try await #expect(throws: BackgroundRunCoordinator.FloeSelectedScheduleFailure.runReferenceMismatch) {
+            _ = try await environment.backgroundRunCoordinator
+                .runSelectedSchedule(scheduleID: schedule.id)
+        }
+        let corrupt = try #require(try await store.occurrence(id: target.occurrenceID))
+        #expect(corrupt.state == .running)
+        #expect(corrupt.conversationID == expected.conversationID)
+    }
+}
+
 @Suite("FloeApp.BackgroundNotificationGate")
 @MainActor
 struct BackgroundNotificationGateTests {
@@ -754,6 +1703,120 @@ struct BackgroundNotificationGateTests {
         #expect(BackgroundRunCoordinator.notificationAuthorizationState(.provisional) == .provisional)
         #expect(BackgroundRunCoordinator.notificationAuthorizationState(.ephemeral) == .ephemeral)
         #expect(BackgroundRunCoordinator.notificationAuthorizationState(.notDetermined) == .notDetermined)
+    }
+}
+
+/// Test-only GRDB statement trace for the one physical startup reconcile.
+///
+/// `SQLiteTaskScheduleStore.reconcileInterruptedOccurrences` selects only
+/// `claimed`/`running` rows. A row-based BEFORE UPDATE trigger therefore
+/// cannot see a second physical pass that begins after the first settled the
+/// only stale row: its SELECT matches zero rows and no UPDATE fires. This
+/// probe counts the reconcile's own SELECT/JOIN statement on the real SQLite
+/// connection instead (regardless of matched rows), and holds the first
+/// execution inside SQLite until the test releases it, so the two racing
+/// callers genuinely overlap without a sleep-based assumption.
+private final class StartupReconcileProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var selectCount = 0
+    private var firstSelectContinuation: CheckedContinuation<Bool, Never>?
+    private var firstSelectObserved = false
+    private let firstSelectBarrier = DispatchSemaphore(value: 0)
+
+    /// Normalized signature of the production startup reconcile: the only
+    /// query that joins the schedule table onto occurrences with a
+    /// `claimed`/`running` filter. Whitespace is collapsed because the
+    /// production SQL is a multiline literal.
+    private static func isStartupReconcileSelect(_ sql: String) -> Bool {
+        let normalized = sql.split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
+        return normalized.hasPrefix(
+            "SELECT o.id AS occurrence_id, o.schedule_id AS schedule_id,")
+            && normalized.contains(
+                "FROM task_schedule_occurrences o JOIN task_schedules s ON s.id = o.schedule_id")
+            && normalized.contains("WHERE o.state IN ('claimed', 'running')")
+    }
+
+    func record(sql: String) {
+        guard Self.isStartupReconcileSelect(sql) else { return }
+        lock.lock()
+        selectCount += 1
+        let isFirst = selectCount == 1
+        let continuation: CheckedContinuation<Bool, Never>? =
+            isFirst ? firstSelectContinuation : nil
+        if isFirst {
+            firstSelectObserved = true
+            firstSelectContinuation = nil
+        }
+        lock.unlock()
+        continuation?.resume(returning: true)
+        if isFirst {
+            // This blocks the database's serial queue, never the caller's
+            // MainActor: the first reconcile cannot finish until the second
+            // caller has entered the same coordinator call.
+            firstSelectBarrier.wait()
+        }
+    }
+
+    /// Returns once the first startup SELECT has begun. The timeout only
+    /// prevents an arrangement failure from hanging the hosted suite; the
+    /// assertion is the counted SELECT, never the wait itself.
+    func waitForFirstSelect() async -> Bool {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if firstSelectObserved {
+                lock.unlock()
+                continuation.resume(returning: true)
+                return
+            }
+            firstSelectContinuation = continuation
+            lock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 20) { [self] in
+                lock.lock()
+                let pending = firstSelectContinuation
+                firstSelectContinuation = nil
+                lock.unlock()
+                pending?.resume(returning: false)
+            }
+        }
+    }
+
+    func releaseFirstSelect() {
+        firstSelectBarrier.signal()
+    }
+
+    var startupSelectCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return selectCount
+    }
+}
+
+/// MainActor hand-off for the second concurrent caller: it signals
+/// immediately before entering the coordinator. MainActor serialization runs
+/// that call until its first suspension (the shared in-flight await) before
+/// the resumed test job can proceed, so the test releases the SQLite barrier
+/// only after both callers are inside the shared entry.
+@MainActor
+private final class SecondCallerGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var signaled = false
+
+    func signal() {
+        if let continuation {
+            self.continuation = nil
+            continuation.resume()
+        } else {
+            signaled = true
+        }
+    }
+
+    func waitForSignal() async {
+        if signaled {
+            signaled = false
+            return
+        }
+        await withCheckedContinuation { continuation = $0 }
     }
 }
 

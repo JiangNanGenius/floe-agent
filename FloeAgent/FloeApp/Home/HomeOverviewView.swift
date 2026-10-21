@@ -22,6 +22,7 @@ struct HomeOverviewView: View {
     @State private var schedules: [TaskScheduleRecord] = []
     @State private var showingSchedule = false
     @State private var editingSchedule: TaskScheduleRecord?
+    @State private var automationSetupSchedule: TaskScheduleRecord?
     @State private var historySchedule: TaskScheduleRecord?
     @State private var historyOccurrences: [TaskScheduleOccurrence] = []
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
@@ -80,24 +81,38 @@ struct HomeOverviewView: View {
             if !schedules.isEmpty {
                 Section("home.home_overview_view.scheduled") {
                     ForEach(schedules) { schedule in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label(schedule.title, systemImage: "calendar.badge.clock")
-                                .foregroundStyle(schedule.isEnabled ? .primary : .secondary)
-                            if !schedule.isEnabled {
-                                Text(scheduleText(zh: "已停用", en: "Disabled"))
-                                    .font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .top, spacing: 6) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(schedule.title, systemImage: "calendar.badge.clock")
+                                    .foregroundStyle(schedule.isEnabled ? .primary : .secondary)
+                                if !schedule.isEnabled {
+                                    Text(scheduleText(zh: "已停用", en: "Disabled"))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let expected = schedule.nextExpectedAt {
+                                    Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let actual = schedule.lastStartedAt {
+                                    Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                if pendingOccurrenceScheduleIDs.contains(schedule.id) {
+                                    Text(scheduleText(zh: "待执行（等待应用运行）", en: "Pending (waiting for the app to run)"))
+                                        .font(.caption).foregroundStyle(FloeTheme.pending)
+                                }
                             }
-                            if let expected = schedule.nextExpectedAt {
-                                Text(FloeL10n.l("home.home_overview_view.estimated", expected.formatted(date: .abbreviated, time: .shortened)))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            if let actual = schedule.lastStartedAt {
-                                Text(FloeL10n.l("home.home_overview_view.last_actual", actual.formatted(date: .abbreviated, time: .shortened)))
-                                    .font(.caption).foregroundStyle(.secondary)
-                            }
-                            if pendingOccurrenceScheduleIDs.contains(schedule.id) {
-                                Text(scheduleText(zh: "待执行（等待应用运行）", en: "Pending (waiting for the app to run)"))
-                                    .font(.caption).foregroundStyle(FloeTheme.pending)
+                            Spacer(minLength: 4)
+                            if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
+                                Button {
+                                    automationSetupSchedule = schedule
+                                } label: {
+                                    Label(scheduleText(zh: "系统定时", en: "Automation"), systemImage: "clock.badge.checkmark")
+                                        .font(.subheadline)
+                                        .frame(minHeight: FloeTheme.minimumTarget)
+                                }
+                                .buttonStyle(.borderless)
+                                .fixedSize(horizontal: true, vertical: false)
                             }
                         }
                         .contextMenu {
@@ -124,6 +139,11 @@ struct HomeOverviewView: View {
                                         ? scheduleText(zh: "停用", en: "Disable")
                                         : scheduleText(zh: "启用", en: "Enable"),
                                     systemImage: schedule.isEnabled ? "pause.circle" : "play.circle")
+                            }
+                            if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
+                                Button {
+                                    automationSetupSchedule = schedule
+                                } label: { Label(scheduleText(zh: "系统定时", en: "Automation"), systemImage: "clock.badge.checkmark") }
                             }
                             Button {
                                 editingSchedule = schedule
@@ -246,6 +266,9 @@ struct HomeOverviewView: View {
                 await viewModel.environment.backgroundRunCoordinator.runDueSchedulesNow()
                 await load()
             }
+        }
+        .sheet(item: $automationSetupSchedule) { record in
+            TaskScheduleAutomationSetupView(schedule: record)
         }
         .sheet(item: $historySchedule) { schedule in
             NavigationStack {

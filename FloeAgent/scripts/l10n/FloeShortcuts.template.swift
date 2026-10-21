@@ -315,7 +315,7 @@ enum FloeShortcutCadence: String, AppEnum {
 
 /// Sends text to the agent for processing (e.g. summarization).
 struct SendToFloeIntent: AppIntent {
-    static var openAppWhenRun: Bool { true }
+    static let supportedModes: IntentModes = .foreground
     static var title: LocalizedStringResource { "shortcuts.intent.send_to_floe.title" }
     static var description: IntentDescription {
         IntentDescription("shortcuts.intent.send_to_floe.description")
@@ -342,7 +342,7 @@ struct SendToFloeIntent: AppIntent {
 
 /// Creates a new task in Floe Agent.
 struct CreateFloeTaskIntent: AppIntent {
-    static var openAppWhenRun: Bool { true }
+    static let supportedModes: IntentModes = .foreground
     static var title: LocalizedStringResource { "shortcuts.intent.create_task.title" }
     static var description: IntentDescription {
         IntentDescription("shortcuts.intent.create_task.description")
@@ -366,7 +366,7 @@ struct CreateFloeTaskIntent: AppIntent {
 /// etc.). The intent returns once the conversation/run has been persisted and
 /// provider execution has been scheduled.
 struct RunFloeTaskIntent: AppIntent {
-    static var openAppWhenRun: Bool { false }
+    static let supportedModes: IntentModes = .background
     static var title: LocalizedStringResource { "shortcuts.intent.run_task.title" }
     static var description: IntentDescription {
         IntentDescription("shortcuts.intent.run_task.description")
@@ -393,7 +393,7 @@ struct RunFloeTaskIntent: AppIntent {
 /// best-effort system facility, while users who need an exact trigger can put
 /// `RunFloeTaskIntent` directly in a Shortcuts personal automation.
 struct ScheduleFloeTaskIntent: AppIntent {
-    static var openAppWhenRun: Bool { false }
+    static let supportedModes: IntentModes = .background
     static var title: LocalizedStringResource { "shortcuts.intent.schedule_task.title" }
     static var description: IntentDescription {
         IntentDescription("shortcuts.intent.schedule_task.description")
@@ -476,6 +476,17 @@ struct FloeShortcuts: AppShortcutsProvider {
             ],
             shortTitle: "shortcuts.app_shortcut.schedule_automation",
             systemImageName: "calendar.badge.clock"
+        )
+        AppShortcut(
+            intent: RunScheduledTaskIntent(),
+            phrases: [
+                "运行 \(.applicationName) 定时任务",
+                "执行 \(.applicationName) 日程",
+                "Run a scheduled task with \(.applicationName)",
+                "Run \(.applicationName) schedule now"
+            ],
+            shortTitle: "shortcuts.app_shortcut.run_scheduled_task",
+            systemImageName: "calendar.badge.checkmark"
         )
     }
 }
