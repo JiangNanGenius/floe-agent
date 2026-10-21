@@ -364,6 +364,10 @@ final class OfficeFileSession: ObservableObject {
     /// The document-bound owner transaction installed by the Notes surface;
     /// it survives a same-session remount so the new generation inherits it.
     private var autosaveOwner: OfficeAutosaveOwner?
+    /// Fence snapshot taken at the last successful `preparePDFExport` return.
+    /// Read ONLY by the export refusal breadcrumbs so a later refusal can say
+    /// which prepare generation it compares against. Never gates anything.
+    private var lastExportPrepareFence: PassiveExitFence?
     /// True when this mounted editable session has a Notes autosave owner:
     /// explicit saves then run the serialized flush -> draft -> Notes CAS
     /// promotion transaction instead of only flushing the engine copy.
@@ -728,6 +732,8 @@ final class OfficeFileSession: ObservableObject {
             }
         }
         guard passiveExitFenceIsCurrent(fence), beginExternalRefresh(resigningFirstResponder: false) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence))
             throw OfficePDFExportScreenError.sourceChanged
         }
         defer { endExternalRefresh() }
@@ -759,6 +765,8 @@ final class OfficeFileSession: ObservableObject {
         try Task.checkCancellation()
         let quiescentAfter = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard passiveExitFenceIsCurrent(fence), quiescentAfter else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "afterCopy", fence: fence))
             throw OfficePDFExportScreenError.sourceChanged
         }
         let sheets: [OfficeRegionWorkbookSheet]
@@ -770,7 +778,13 @@ final class OfficeFileSession: ObservableObject {
             sheets = []
         }
         try Task.checkCancellation()
-        guard passiveExitFenceIsCurrent(fence) else { throw OfficePDFExportScreenError.sourceChanged }
+        guard passiveExitFenceIsCurrent(fence) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "afterSheets", fence: fence))
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        recordStage("export.prepare.ok", ["stage": "prepare"])
+        lastExportPrepareFence = fence
         let activeName = selectedPart.flatMap { index in sheets.first(where: { $0.index == index && $0.isVisible })?.name }
         return OfficePDFExportPreparation(
             sourceURL: copyURL, sourceSHA256: sha, fileExtension: ext,
@@ -801,6 +815,8 @@ final class OfficeFileSession: ObservableObject {
         try cancellation.throwIfCancelled()
         guard await source.isCurrent(), let controller,
               beginExternalRefresh(resigningFirstResponder: false) else {
+            recordStage("export.generate.refused",
+                        exportRefusalFacts(stage: "generate", guardAt: "begin", fence: lastExportPrepareFence))
             throw OfficePDFExportScreenError.sourceChanged
         }
         defer { endExternalRefresh() }
@@ -825,6 +841,8 @@ final class OfficeFileSession: ObservableObject {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             guard self.controller === controller, await source.isCurrent() else {
+                recordStage("export.generate.refused",
+                            exportRefusalFacts(stage: "generate", guardAt: "afterNativeExport", fence: lastExportPrepareFence))
                 throw OfficePDFExportScreenError.sourceChanged
             }
             let exportedName = source.displayName.isEmpty ? "Document.pdf" : source.displayName + ".pdf"
@@ -850,6 +868,8 @@ final class OfficeFileSession: ObservableObject {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             guard self.controller === controller, await source.isCurrent() else {
+                recordStage("export.generate.refused",
+                            exportRefusalFacts(stage: "generate", guardAt: "afterDelivery", fence: lastExportPrepareFence))
                 throw OfficePDFExportScreenError.sourceChanged
             }
             // The service child only carried the produced PDF; the leased
@@ -2625,6 +2645,34 @@ final class OfficeFileSession: ObservableObject {
         !released && !releaseRequested
             && openGeneration.isCurrent(fence.generation)
             && session?.workingURL.path == fence.workingCopyPath
+    }
+
+    /// Content-free fields separating the causes folded into the single
+    /// `OfficePDFExportScreenError.sourceChanged` message: a session held by a
+    /// transient operation (canAct false), a replaced mounted surface (fence
+    /// stale), or a byte/identity refusal observed through `isCurrent`.
+    /// Diagnostics only; never changes control flow, fences or copy.
+    func exportRefusalFacts(stage: String, guardAt: String,
+                                    fence: PassiveExitFence?) -> [String: String] {
+        var facts: [String: String] = [
+            "stage": stage,
+            "guard": guardAt,
+            "phase": String(describing: phase),
+            "canAct": canAct ? "true" : "false",
+            "operating": operating ? "true" : "false",
+            "released": released ? "true" : "false",
+            "releaseRequested": releaseRequested ? "true" : "false",
+            "readOnly": readOnly ? "true" : "false",
+        ]
+        if let fence {
+            facts["genFence"] = String(fence.generation)
+            facts["genNow"] = String(openGeneration.current)
+            facts["ctlSame"] = (controller.map { ObjectIdentifier($0) } == fence.controllerID) ? "true" : "false"
+            facts["pathSame"] = (session?.workingURL.path == fence.workingCopyPath) ? "true" : "false"
+        } else {
+            facts["fence"] = "none"
+        }
+        return facts
     }
 
     /// View removal never deletes an unsettled edit or pretends it was saved.
