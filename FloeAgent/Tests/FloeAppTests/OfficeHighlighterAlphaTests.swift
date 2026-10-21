@@ -147,6 +147,7 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await waitForPaint(native)
             var web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
             try await Task.sleep(for: .milliseconds(450))
+            receipt["openedZoom"] = try await providedDiagnosticZoom(web)
             _ = try await snapshot(web, root: root, name: "provided-opened")
             receipt["openedPaint"] = OfficeFileSession.hostRenderDiagnostics(native)
             if session.readOnly {
@@ -161,6 +162,7 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await waitForPaint(native)
             web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
             try await Task.sleep(for: .milliseconds(450))
+            receipt["editableZoom"] = try await providedDiagnosticZoom(web)
             _ = try await snapshot(web, root: root, name: "provided-editable")
             session.useInkPreferences(workspaceIdentity: root.path, documentKey: "provided.xlsx")
             session.inkPreferences.setPreset(.highlighter)
@@ -172,6 +174,43 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(450))
             _ = try await snapshot(web, root: root, name: "provided-highlighter-armed")
             receipt["armedPreview"] = try await currentPreviewState(web)
+            if environment["FLOE_OFFICE_PRIVATE_DRAW_DIAGNOSTIC"] == "1" {
+                let geometry = try await geometryProbe(web)
+                let rect = geometry.canvasRect
+                let fractions: [(Double, Double)] = [
+                    (0.25, 0.64), (0.65, 0.64), (0.65, 0.86),
+                    (0.25, 0.86), (0.25, 0.72)
+                ]
+                let points = fractions.map { point in [
+                    Double(rect.minX) + Double(rect.width) * point.0,
+                    Double(rect.minY) + Double(rect.height) * point.1
+                ] }
+                let dense = try densified(points)
+                receipt["diagnosticPointsCSS"] = points
+                _ = try await snapshot(web, root: root, name: "provided-grid-before-stroke")
+                receipt["diagnosticBegin"] = try await strokePhase(web, phase: "begin", points: dense)
+                do {
+                    _ = try await snapshot(web, root: root, name: "provided-grid-contact")
+                } catch {
+                    _ = try? await strokePhase(web, phase: "cleanup", points: dense)
+                    throw error
+                }
+                let lifted = try await strokePhase(web, phase: "lift", points: dense)
+                receipt["diagnosticLift"] = lifted
+                XCTAssertEqual(lifted["strokeDelta"] as? Int, 1)
+                XCTAssertEqual(lifted["activeAfter"] as? Bool, false)
+                _ = try await snapshot(web, root: root, name: "provided-grid-after-lift",
+                                       afterScreenUpdates: false)
+                try await Task.sleep(for: .milliseconds(750))
+                receipt["diagnosticSettledPreview"] = try await currentPreviewState(web)
+                _ = try await snapshot(web, root: root, name: "provided-grid-settled")
+                try await session.toggleDrawing()
+                let exported = try await session.exportDocument(format: "xlsx")
+                let copy = root.appendingPathComponent("provided-with-diagnostic-stroke.xlsx")
+                try fm.copyItem(at: exported, to: copy)
+                attach(copy, name: "provided-with-diagnostic-stroke")
+                receipt["diagnosticExportSHA256"] = try hash(copy)
+            }
             XCTAssertEqual(try hash(fixture), expected, "Diagnostic changed the supplied input copy")
             receipt["inputUnchanged"] = true
             receipt["status"] = "display captured; white-box outcome requires visual assessment"
@@ -181,6 +220,28 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
             await session.release()
             throw error
         }
+    }
+
+    private func providedDiagnosticZoom(_ web: WKWebView) async throws -> [String: Any] {
+        // The private workbook's ink extends beyond the initial portrait view.
+        // This is a real frontend zoom for diagnosis, not UIKit pinch proof.
+        let raw = try await web.evaluateJavaScript(#"""
+        (() => {
+            const map = window.app && window.app.map;
+            if (!map || typeof map.setZoom !== 'function')
+                return JSON.stringify({available:false});
+            const before = map.getZoom();
+            map.setZoom(6, {animate:false});
+            return JSON.stringify({available:true,before,after:map.getZoom()});
+        })()
+        """#)
+        let text = try XCTUnwrap(raw as? String)
+        let data = try XCTUnwrap(text.data(using: .utf8))
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(value["available"] as? Bool, true)
+        XCTAssertEqual((value["after"] as? NSNumber)?.intValue, 6)
+        try await Task.sleep(for: .milliseconds(900))
+        return value
     }
 
     private func run(_ format: AlphaFixtureFormat) async throws {
