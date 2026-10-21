@@ -62,32 +62,21 @@ private final class TemplateItem: NSObject, NSFileProviderItem {
     init(
         filename: String,
         parent: NSFileProviderItemIdentifier = .rootContainer,
-        type: UTType = .data
+        type: UTType = .data,
+        identifier: NSFileProviderItemIdentifier? = nil
     ) {
-        self.itemIdentifier = NSFileProviderItemIdentifier(UUID().uuidString)
+        self.itemIdentifier = identifier ?? NSFileProviderItemIdentifier(UUID().uuidString)
         self.parentItemIdentifier = parent
         self.filename = filename
         self.contentType = type
     }
 }
 
-private func templateVersions(_ item: SharedDocumentsItem) -> NSFileProviderItemVersion {
-    NSFileProviderItemVersion(
-        contentVersion: Data("c\(item.contentVersion)".utf8),
-        metadataVersion: Data("m\(item.metadataVersion)".utf8)
-    )
-}
-
-private struct ManualCancellation: SharedDocumentsOperationCancellation {
-    private let lock = NSLock()
-    private var value = false
-    mutating func set(_ newValue: Bool) {
-        lock.lock(); value = newValue; lock.unlock()
-    }
-    func isCancelled() -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return value
-    }
+private func templateVersions(_ item: SharedDocumentsItem) throws -> NSFileProviderItemVersion {
+    // Read the actual public protocol getter. The fixture never invents or
+    // repairs version components on behalf of the production provider.
+    let publicItem: any NSFileProviderItem = SharedDocumentsFileProviderItem(item: item)
+    return try #require(publicItem.itemVersion)
 }
 
 /// Records post-commit signal intents injected through the bridge seam.
@@ -109,9 +98,12 @@ private func makeBridge(
     materializationRoot: URL? = nil
 ) throws -> (SharedDocumentsFileProviderBridge, SQLiteSharedDocumentsStore) {
     let store = try SQLiteSharedDocumentsStore(root: root)
+    let signals: (@Sendable (SharedDocumentsSignalContainer) -> Void)?
+    if let recorder { signals = { recorder.record($0) } }
+    else { signals = nil }
     let bridge = SharedDocumentsFileProviderBridge(
         store: store,
-        signalProvider: recorder.map { recorder in { recorder.record($0) } },
+        signalProvider: signals,
         materializationRootProvider: { materializationRoot ?? FileManager.default.temporaryDirectory }
     )
     return (bridge, store)
@@ -133,7 +125,7 @@ struct FileProviderBridgeIdentityTests {
     }
 
     @Test("capabilities reflect implemented operations only")
-    func capabilitiesHonest() throws {
+    func capabilitiesHonest() async throws {
         let root = makeBridgeRoot()
         let (bridge, store) = try makeBridge(at: root)
         defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
@@ -323,8 +315,9 @@ struct FileProviderBridgeMutationTests {
         )
         let item = try #require(created.item)
         let stored = try await store.item(id: item.itemIdentifier.rawValue)
+        let initialVersion = try templateVersions(stored)
         let renamed = try await bridge.modify(
-            TemplateItem(filename: "renamed.txt", parent: .rootContainer),
+            TemplateItem(filename: "renamed.txt", parent: .rootContainer, identifier: item.itemIdentifier),
             baseVersion: templateVersions(stored),
             changedFields: [.filename],
             contents: nil,
@@ -333,8 +326,14 @@ struct FileProviderBridgeMutationTests {
             progress: nil
         )
         #expect(renamed.item?.filename == "renamed.txt")
+        let renamedItem = try #require(renamed.item)
+        let renamedVersion = try templateVersions(renamedItem.item)
+        #expect(renamedVersion.contentVersion == initialVersion.contentVersion)
+        #expect(renamedVersion.metadataVersion != initialVersion.metadataVersion)
+        #expect(renamedVersion.contentVersion == Data("c1".utf8))
+        #expect(renamedVersion.metadataVersion == Data("m2".utf8))
         let replaced = try await bridge.modify(
-            TemplateItem(filename: "renamed.txt", parent: .rootContainer),
+            TemplateItem(filename: "renamed.txt", parent: .rootContainer, identifier: item.itemIdentifier),
             baseVersion: templateVersions(try await store.item(id: item.itemIdentifier.rawValue)),
             changedFields: [.contents],
             contents: try makeSourceFile(Data("v2 content".utf8)),
@@ -343,8 +342,13 @@ struct FileProviderBridgeMutationTests {
             progress: nil
         )
         let final = try #require(replaced.item)
-        #expect(final.contentVersion == 2)
-        #expect(final.metadataVersion == 2)
+        #expect(final.item.contentVersion == 2)
+        #expect(final.item.metadataVersion == 2)
+        let finalVersion = try templateVersions(final.item)
+        #expect(finalVersion.contentVersion != renamedVersion.contentVersion)
+        #expect(finalVersion.contentVersion == Data("c2".utf8))
+        #expect(finalVersion.metadataVersion == renamedVersion.metadataVersion)
+        #expect(final.versionIdentifier == Data("c2.m2".utf8))
     }
 
     @Test("stale base version reconciles to the committed state")
@@ -361,13 +365,15 @@ struct FileProviderBridgeMutationTests {
             progress: nil
         )
         let item = try #require(created.item)
-        // Claim the disk held content version 9.
-        let staleBase = NSFileProviderItemVersion(
-            contentVersion: Data("c9".utf8),
-            metadataVersion: Data("m1".utf8)
-        )
+        // Retain the real previously published base, then let an actual
+        // store writer commit a newer content version before the bridge call.
+        let staleBase = try templateVersions(item.item)
+        let newerStage = try await store.stageContentFromURL(
+            makeSourceFile(Data("newer committed bytes".utf8)), cancellation: nil, progress: nil)
+        let newer = try await store.commitReplace(id: item.item.id, stage: newerStage, expected: item.item.versions)
+        #expect(newer.contentVersion == 2)
         let outcome = try await bridge.modify(
-            TemplateItem(filename: "stale.txt", parent: .rootContainer),
+            TemplateItem(filename: "stale.txt", parent: .rootContainer, identifier: item.itemIdentifier),
             baseVersion: staleBase,
             changedFields: [.filename],
             contents: nil,
@@ -377,10 +383,12 @@ struct FileProviderBridgeMutationTests {
         )
         #expect(outcome.item?.itemIdentifier == item.itemIdentifier)
         #expect(outcome.shouldFetchContent)
+        #expect(outcome.item?.item.contentVersion == newer.contentVersion)
+        #expect(try await store.item(id: item.item.id) == newer)
         // With failOnConflict the same mismatch is a collision error.
         await #expect(throws: SharedDocumentsBridgeError.self) {
             _ = try await bridge.modify(
-                TemplateItem(filename: "stale.txt", parent: .rootContainer),
+                TemplateItem(filename: "stale.txt", parent: .rootContainer, identifier: item.itemIdentifier),
                 baseVersion: staleBase,
                 changedFields: [.filename],
                 contents: nil,
@@ -417,8 +425,8 @@ struct FileProviderBridgeMutationTests {
         let unknown = try await bridge.delete(
             identifier: NSFileProviderItemIdentifier(UUID().uuidString),
             baseVersion: NSFileProviderItemVersion(
-                contentVersion: Data("c1".utf8),
-                metadataVersion: Data("m1".utf8)
+                contentVersion: Data("c1.m1".utf8),
+                metadataVersion: Data("c1.m1".utf8)
             ),
             options: [],
             cancellation: SharedDocumentsBridgeCancellation()
@@ -490,7 +498,7 @@ struct FileProviderBridgeMutationTests {
         let stored = try await store.item(id: item.itemIdentifier.rawValue)
         await #expect(throws: SharedDocumentsError.self) {
             _ = try await bridge.modify(
-                TemplateItem(filename: "notrash.txt", parent: .trashContainer),
+                TemplateItem(filename: "notrash.txt", parent: .trashContainer, identifier: item.itemIdentifier),
                 baseVersion: templateVersions(stored),
                 changedFields: [.parentItemIdentifier],
                 contents: nil,
@@ -521,20 +529,20 @@ struct FileProviderBridgeCancelAndEnumerationTests {
             progress: nil
         )
         let item = try #require(created.item)
-        var cancellation = ManualCancellation()
-        cancellation.set(true)
+        let cancellation = SharedDocumentsBridgeCancellation()
         let stored = try await store.item(id: item.itemIdentifier.rawValue)
         await #expect(throws: SharedDocumentsError.self) {
             _ = try await bridge.modify(
-                TemplateItem(filename: "cancel.me", parent: .rootContainer),
+                TemplateItem(filename: "cancel.me", parent: .rootContainer, identifier: item.itemIdentifier),
                 baseVersion: templateVersions(stored),
                 changedFields: [.contents],
                 contents: try makeSourceFile(Data(String(repeating: "x", count: 4_000_000).utf8)),
                 options: [],
                 cancellation: cancellation,
-                progress: nil
+                progress: { bytes in if bytes > 0 { cancellation.cancel() } }
             )
         }
+        #expect(cancellation.isCancelled())
         let after = try await store.item(id: item.itemIdentifier.rawValue)
         #expect(after.contentVersion == 1)
         let (url, _) = try await bridge.fetchContents(for: item.itemIdentifier, requestedVersion: nil)
@@ -649,6 +657,40 @@ struct FileProviderBridgeCancelAndEnumerationTests {
 
 @Suite("FileProvider bridge primary-review closure")
 struct FileProviderBridgeClosureTests {
+    @Test("public independent versions and canonical equal legacy tokens round-trip a complete CAS pair")
+    func publicVersionContract() async throws {
+        let root = makeBridgeRoot()
+        let (bridge, store) = try makeBridge(at: root)
+        defer { Task { try? await store.close(); try? FileManager.default.removeItem(at: root) } }
+        let created = try await bridge.create(basedOn: TemplateItem(filename: "versions.txt"),
+            fields: [.filename, .parentItemIdentifier, .contents], contents: makeSourceFile(Data("v".utf8)),
+            options: [], cancellation: SharedDocumentsBridgeCancellation(), progress: nil)
+        let item = try #require(created.item)
+        let published = try templateVersions(item.item)
+        #expect(published.contentVersion == Data("c1".utf8))
+        #expect(published.metadataVersion == Data("m1".utf8))
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(published) == .exact(item.item.versions))
+        let legacy = try #require(item.versionIdentifier)
+        #expect(legacy == Data("c1.m1".utf8))
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: legacy, metadataVersion: legacy)) == .exact(item.item.versions))
+        for (content, metadata) in [
+            ("c1", "garbage"), ("garbage", "m1"), ("c1.m1", "c1.m2"),
+            ("c1.m1", "m1"), ("c1", "c1.m1"), ("c01", "m1"),
+            ("c+1", "m1"), ("c-1", "m1"), ("c1suffix", "m1"),
+            ("c1", "m01"), ("c1", "m+1"), ("c1", "m-1"),
+            ("c99999999999999999999999999", "m1"), ("c1.m1suffix", "c1.m1suffix")
+        ] {
+            #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: Data(content.utf8), metadataVersion: Data(metadata.utf8))) == .malformed)
+        }
+        let special = NSFileProviderItemVersion.beforeFirstSyncComponent
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: special, metadataVersion: published.metadataVersion)) == .malformed)
+        #expect(SharedDocumentsFileProviderBridge.decodeBaseVersion(NSFileProviderItemVersion(contentVersion: published.contentVersion, metadataVersion: special)) == .malformed)
+        // Check over-limit input at the parser boundary, without constructing
+        // a framework object that itself forbids components above 128 bytes.
+        #expect(SharedDocumentsFileProviderBridge.decodeVersionComponent(Data(("c" + String(repeating: "1", count: 128) + ".m1").utf8)) == nil)
+        #expect(SharedDocumentsFileProviderBridge.decodeVersionComponent(Data([0xff, 0xfe])) == nil)
+    }
+
     @Test("malformed base versions fail closed for modify and delete")
     func malformedBaseFailsClosed() async throws {
         let root = makeBridgeRoot()
@@ -670,7 +712,7 @@ struct FileProviderBridgeClosureTests {
         )
         await #expect(throws: SharedDocumentsBridgeError.self) {
             _ = try await bridge.modify(
-                TemplateItem(filename: "guarded.txt", parent: .rootContainer),
+                TemplateItem(filename: "guarded.txt", parent: .rootContainer, identifier: item.itemIdentifier),
                 baseVersion: garbage,
                 changedFields: [.filename],
                 contents: nil,
@@ -706,11 +748,11 @@ struct FileProviderBridgeClosureTests {
         )
         let item = try #require(created.item)
         let beforeFirstSync = NSFileProviderItemVersion(
-            contentVersion: .beforeFirstSyncComponent,
-            metadataVersion: .beforeFirstSyncComponent
+            contentVersion: NSFileProviderItemVersion.beforeFirstSyncComponent,
+            metadataVersion: NSFileProviderItemVersion.beforeFirstSyncComponent
         )
         let outcome = try await bridge.modify(
-            TemplateItem(filename: "fresh.txt", parent: .rootContainer),
+            TemplateItem(filename: "fresh.txt", parent: .rootContainer, identifier: item.itemIdentifier),
             baseVersion: beforeFirstSync,
             changedFields: [.contents],
             contents: try makeSourceFile(Data("two".utf8)),
@@ -719,8 +761,8 @@ struct FileProviderBridgeClosureTests {
             progress: nil
         )
         let final = try #require(outcome.item)
-        #expect(final.contentVersion == 2)
-        #expect(final.metadataVersion == 1)
+        #expect(final.item.contentVersion == 2)
+        #expect(final.item.metadataVersion == 1)
     }
 
     @Test("combined rename+content modify commits once and signals affected containers")
@@ -759,7 +801,7 @@ struct FileProviderBridgeClosureTests {
         let recordCountBeforeModify = recorder.snapshot().count
         let stored = try await store.item(id: item.itemIdentifier.rawValue)
         let modified = try await bridge.modify(
-            TemplateItem(filename: "moved.txt", parent: folderBItem.itemIdentifier),
+            TemplateItem(filename: "moved.txt", parent: folderBItem.itemIdentifier, identifier: item.itemIdentifier),
             baseVersion: templateVersions(stored),
             changedFields: [.filename, .parentItemIdentifier, .contents],
             contents: try makeSourceFile(Data("v2".utf8)),
@@ -769,8 +811,8 @@ struct FileProviderBridgeClosureTests {
         )
         let final = try #require(modified.item)
         // ONE atomic commit: both versions bumped exactly once.
-        #expect(final.contentVersion == 2)
-        #expect(final.metadataVersion == 2)
+        #expect(final.item.contentVersion == 2)
+        #expect(final.item.metadataVersion == 2)
         #expect(final.filename == "moved.txt")
         #expect(final.parentItemIdentifier == folderBItem.itemIdentifier)
         // Old parent, new parent and working set were signalled.
@@ -819,7 +861,7 @@ struct FileProviderBridgeClosureTests {
         let keptItem = try #require(kept.item)
         let keptStored = try await store.item(id: keptItem.itemIdentifier.rawValue)
         _ = try await bridge.modify(
-            TemplateItem(filename: "final.txt", parent: .rootContainer),
+            TemplateItem(filename: "final.txt", parent: .rootContainer, identifier: keptItem.itemIdentifier),
             baseVersion: templateVersions(keptStored),
             changedFields: [.filename],
             contents: nil,

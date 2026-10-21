@@ -92,6 +92,16 @@ final class SharedDocumentsFileProviderItem: NSObject, NSFileProviderItem {
         Data("c\(item.contentVersion).m\(item.metadataVersion)".utf8)
     }
 
+    /// Replicated providers report content and metadata independently. Keep
+    /// the legacy joint identifier above, but never rotate the content token
+    /// for a metadata-only commit (which would request an unnecessary fetch).
+    var itemVersion: NSFileProviderItemVersion {
+        NSFileProviderItemVersion(
+            contentVersion: Data("c\(item.contentVersion)".utf8),
+            metadataVersion: Data("m\(item.metadataVersion)".utf8)
+        )
+    }
+
     var contentModificationDate: Date? { item.modificationDate }
 
     var creationDate: Date? { item.creationDate }

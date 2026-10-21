@@ -101,7 +101,7 @@ enum SharedDocumentsBridgeError: Error {
     /// A delete was rejected because the committed versions moved on.
     case rejectedDeletion(existing: SharedDocumentsItem)
     /// The system's base version was neither `beforeFirstSyncComponent` nor
-    /// one of our `c<n>.m<n>` tokens. Failing closed: the mutation is
+    /// our complete canonical counter pair. Failing closed: the mutation is
     /// refused rather than applied against an unknown base.
     case malformedBaseVersion
 }
@@ -113,7 +113,8 @@ enum SharedDocumentsBaseVersion: Sendable, Equatable {
     /// with. The mutation applies against the committed CAS base, which still
     /// fails closed when a concurrent writer moved the item.
     case beforeFirstSync
-    /// One component carries our exact `c<n>.m<n>` token.
+    /// Both independent counters (or equal canonical legacy joint tokens)
+    /// carry the exact committed CAS base.
     case exact(SharedDocumentsExpectedVersions)
     /// Not before-first-sync and not ours: corrupt or foreign data.
     case malformed
@@ -586,26 +587,41 @@ final class SharedDocumentsFileProviderBridge: Sendable {
         if version.contentVersion == beforeFirstSync, version.metadataVersion == beforeFirstSync {
             return .beforeFirstSync
         }
-        for component in [version.contentVersion, version.metadataVersion] {
-            if let decoded = decodeVersionComponent(component) {
-                return .exact(decoded)
-            }
+        // A partial before-first-sync marker cannot grant a revision bypass.
+        guard version.contentVersion != beforeFirstSync,
+              version.metadataVersion != beforeFirstSync else { return .malformed }
+        if let content = decodeCounterComponent(version.contentVersion, prefix: "c"),
+           let metadata = decodeCounterComponent(version.metadataVersion, prefix: "m") {
+            return .exact(SharedDocumentsExpectedVersions(content: content, metadata: metadata))
+        }
+        // Compatibility with the prior joint identifier is deliberately
+        // narrow: both components must be canonical AND name the same pair.
+        if let content = decodeVersionComponent(version.contentVersion),
+           let metadata = decodeVersionComponent(version.metadataVersion),
+           content == metadata {
+            return .exact(content)
         }
         return .malformed
     }
 
     static func decodeVersionComponent(_ data: Data) -> SharedDocumentsExpectedVersions? {
-        guard data != NSFileProviderItemVersion.beforeFirstSyncComponent,
-              let text = String(data: data, encoding: .utf8),
-              text.hasPrefix("c"),
-              let separator = text.firstIndex(of: "m")
-        else {
-            return nil
-        }
-        let contentText = text[text.index(after: text.startIndex)..<separator]
-        let metadataText = text[text.index(after: separator)...]
-        guard let content = Int(contentText), let metadata = Int(metadataText) else { return nil }
+        guard data.count <= 128,
+              data != NSFileProviderItemVersion.beforeFirstSyncComponent,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let parts = text.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let content = decodeCounterComponent(Data(parts[0].utf8), prefix: "c"),
+              let metadata = decodeCounterComponent(Data(parts[1].utf8), prefix: "m") else { return nil }
         return SharedDocumentsExpectedVersions(content: content, metadata: metadata)
+    }
+
+    private static func decodeCounterComponent(_ data: Data, prefix: Character) -> Int? {
+        guard data.count <= 128, let text = String(data: data, encoding: .utf8),
+              text.first == prefix else { return nil }
+        let digits = text.dropFirst()
+        guard !digits.isEmpty, digits.utf8.allSatisfy({ (48...57).contains($0) }),
+              let value = Int(digits), value >= 0, String(value) == digits else { return nil }
+        return value
     }
 }
 
