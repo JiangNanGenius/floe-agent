@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "请重点测试：\n- Excel 荧光笔连续书写，抬笔后的白底、颜色和网格。\n- Office 自动保存、助手编辑及指定屏幕外区域查看。\n- PDF／打印选择工作表或单元格范围，横向一页适配与页码。\n- 助手导出文件的预览、分享，以及快捷指令“获取运行文件”。\n- 手记连续书写的冲突恢复，以及联网内容插件的三个默认来源。",
+  "en-US": "Please test:\n- Continuous Excel highlighting: post-lift background, color and grid.\n- Office autosave, assistant edits and offscreen region inspection.\n- PDF/Print sheet or cell scope, landscape one-page fit and final pages.\n- Assistant file exports, Preview/Share and Shortcuts Get Run Files.\n- Notes handwriting/recovery conflicts and the three default Online content sources."
+}
