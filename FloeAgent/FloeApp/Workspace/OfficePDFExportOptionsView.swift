@@ -387,7 +387,7 @@ struct OfficePreparedPDFPrintSheet: UIViewControllerRepresentable {
             }
             printing.printInfo = info
             printing.printingItem = url
-            let completed: UIPrintInteractionCompletionHandler = { [weak self] _, _, error in
+            let completed: UIPrintInteractionController.CompletionHandler = { [weak self] _, _, error in
                 Task { @MainActor in self?.finish(error) }
             }
             let accepted: Bool

@@ -86,7 +86,7 @@ struct RunOutputFilesCard: View {
 
 /// One receipt row: icon, concise filename, measured size, and native
 /// preview/share once the snapshot bytes prove identical to the receipt.
-/// Verification runs lazily on the first preview/share request, not on every
+/// Verification runs lazily on each preview/share request, not on every
 /// body render; the row itself stays visible at all times.
 struct RunOutputFileView: View {
     let receipt: RunOutputFile
@@ -220,10 +220,6 @@ struct RunOutputFileView: View {
     }
 
     private func activate(_ action: PendingAction) {
-        if case .verified(let url) = state {
-            present(action, url: url)
-            return
-        }
         pendingAction = action
         state = .verifying
         verificationGeneration &+= 1
