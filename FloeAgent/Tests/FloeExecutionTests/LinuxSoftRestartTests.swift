@@ -1203,10 +1203,10 @@ final class LinuxSoftRestartDedupTests: XCTestCase {
         let store = FakeSoftRestartStore()
         let orchestrator = makeOrchestrator(transport: transport, store: store)
 
-        _ = try await orchestrator.perform(makeRequest(operationKey: "call-1", ownerTaskID: "task-1"))
+        _ = try await orchestrator.perform(makeRequest(ownerTaskID: "task-1", operationKey: "call-1"))
 
         do {
-            _ = try await orchestrator.perform(makeRequest(operationKey: "call-1", ownerTaskID: "task-2"))
+            _ = try await orchestrator.perform(makeRequest(ownerTaskID: "task-2", operationKey: "call-1"))
             XCTFail("a same-key call from a different owner must refuse")
         } catch let error as LinuxGuestLifecycleError {
             guard case .softRestartIdempotencyConflict = error else {
