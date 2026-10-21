@@ -12,6 +12,7 @@
 #include <common/LangUtil.hpp>
 #include <rtl/bootstrap.hxx>
 #include <Poco/Util/LayeredConfiguration.h>
+#include <cstdlib>
 #include <exception>
 #include <string>
 #import "ios.h"
@@ -42,6 +43,58 @@ static NSError *OfficeError(NSInteger code, NSString *description) {
     return [NSError errorWithDomain:FloeOfficeNativeErrorDomain code:code
                           userInfo:@{NSLocalizedDescriptionKey: description}];
 }
+
+// FLOE_CALC_BACKGROUND_BEGIN
+// Render the Calc sheet background and gridlines with the mature native
+// renderer instead of the transparent tiled-target optimization.
+// Upstream setupKitEnvironment() (kit/SetupKitEnvironment.hpp, pinned
+// 27b21dc1) defaults SAL_KIT_OPTIONS to
+// "unipoll[:notebookbar]:sc_no_grid_bg:sc_print_twips_msgs"; the engine's
+// first init (engine/desktop/source/lib/init.cxx) turns the sc_no_grid_bg
+// token into Compat::scNoGridBackground, and ScGridWindow::DrawContent
+// (engine/sc/source/ui/view/gridwin4.cxx) then skips the opaque document
+// background and the native grid. The kit client must fake a background
+// instead, and the transparent target mis-composites translucent ink.
+// Build 283 candidate 19 A/B proved the native path keeps 100% of the grid
+// and the exact FFCC00@40% colour when only sc_no_grid_bg is omitted. This
+// host therefore normalizes the environment after the upstream setup and
+// before cok_init_2's first engine init, removing only the exact
+// sc_no_grid_bg token and preserving every other option (upstream parses
+// tokens by exact ':'-split comparison). The selection needs no additional
+// core member; the existing salios.o member keeps only the narrow readback
+// zero-init compile, and no test-only override is required or honoured.
+static bool FloeNormalizeKitOptionsForCalcBackground(void) {
+    const char *kVariable = "SAL_KIT_OPTIONS";
+    const char *kGridToken = "sc_no_grid_bg";
+    const char *existing = ::getenv(kVariable);
+    if (!existing)
+        return true; // Upstream did not apply a default; nothing to normalize.
+    const std::string options(existing);
+    std::string kept;
+    bool removedGridToken = false;
+    size_t start = 0;
+    while (true) {
+        const size_t end = options.find(':', start);
+        const std::string token = options.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        if (token == kGridToken) {
+            removedGridToken = true;
+        } else {
+            if (!kept.empty())
+                kept += ':';
+            kept += token;
+        }
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    if (!removedGridToken)
+        return true; // No transparent-grid optimization requested; keep as-is.
+    // A failed override would silently keep the transparent-grid token
+    // active; report the failure instead of starting half-configured.
+    return ::setenv(kVariable, kept.c_str(), 1 /* override */) == 0;
+}
+// FLOE_CALC_BACKGROUND_END
 
 // FLOE_OFFICE_LOG_BEGIN
 // Bounded, content-free diagnostics. A report is a single line of engine state
@@ -2564,6 +2617,15 @@ static void ServerReady() {
     }
     try {
         setupKitEnvironment(UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? "notebookbar" : "");
+        // Let Calc keep its native opaque background and gridlines (see
+        // FloeNormalizeKitOptionsForCalcBackground above); must run before
+        // cok_init_2's first engine init parses SAL_KIT_OPTIONS. A failed
+        // normalization (SAL_KIT_OPTIONS override rejected) takes the same
+        // generic startup-failure route as the surrounding init steps.
+        if (!FloeNormalizeKitOptionsForCalcBackground()) {
+            [self fail:OfficeError(3, @"Office engine initialization failed.")];
+            return;
+        }
         Log::initialize("FloeOffice", "warning");
         app_locale = FloeEditorLanguage(NSLocale.preferredLanguages);
         app_text_direction = LangUtil::isRtlLanguage(std::string(app_locale.UTF8String)) ? @"rtl" : @"";

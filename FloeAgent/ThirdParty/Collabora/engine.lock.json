@@ -238,9 +238,9 @@
         "salios.o": {
           "sourceFile": "engine/vcl/ios/salios.cxx",
           "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-          "patchedSHA256": "8e5e6e27fb0113cfedaa14ab1e6a463acbc871ebeac690ba933ec77aca7584bb",
+          "patchedSHA256": "50599ba2db8fa0a63604e03c723f12c2a7fad21d0fe274bd29998188f7615d7b",
           "patch": "patches/ios-foreign-bitmap-readback.patch",
-          "patchSHA256": "a1692d3267845b9c9cf5ce8731c5a59a2c20c179df6d7107a4489ccb498334de",
+          "patchSHA256": "7ca139cbe14c44e13366fc8f5c6625b5e159928d328d5c57f71e395a85e5e7b1",
           "originalMemberSHA256": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f"
         },
         "executor.o": {
@@ -726,26 +726,6 @@
         "patch": "patches/ios-embedded-lifecycle-compiled.patch",
         "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
         "additionalArchives": {
-          "libdrawinglayerlo.a": {
-            "sourceFile": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx",
-            "originalSHA256": "322daa7f4c0fe85b2c6393b10a900b49fc75b02eddea7bc36ed02fc94c6a7462",
-            "patchedSHA256": "259030728b94ffd2cc03aa748621dd8be382cd50e650c2bbe6b8ee4750a8055b",
-            "archive": "source/engine/instdir/program/libdrawinglayerlo.a",
-            "members": {
-              "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
-            },
-            "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
-            "compileOverrides": {
-              "flags": [
-                "-DDRAWINGLAYER_DLLIMPLEMENTATION"
-              ],
-              "language": "c++",
-              "sourceIncludes": [
-                "engine/drawinglayer/source/processor2d"
-              ]
-            }
-          },
           "libsallo.a": {
             "sourceFile": "engine/sal/osl/unx/thread.cxx",
             "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
@@ -835,9 +815,9 @@
           "salios.o": {
             "sourceFile": "engine/vcl/ios/salios.cxx",
             "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-            "patchedSHA256": "f6fc1cce4b6e412f6ed575465dc974242c84a59e829bc79d1cfae11f9c78a473",
-            "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
+            "patchedSHA256": "50599ba2db8fa0a63604e03c723f12c2a7fad21d0fe274bd29998188f7615d7b",
+            "patch": "patches/ios-foreign-bitmap-readback.patch",
+            "patchSHA256": "7ca139cbe14c44e13366fc8f5c6625b5e159928d328d5c57f71e395a85e5e7b1",
             "originalMemberSHA256": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f"
           },
           "executor.o": {
@@ -866,26 +846,6 @@
         "patch": "patches/ios-embedded-lifecycle-compiled.patch",
         "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
         "additionalArchives": {
-          "libdrawinglayerlo.a": {
-            "sourceFile": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx",
-            "originalSHA256": "322daa7f4c0fe85b2c6393b10a900b49fc75b02eddea7bc36ed02fc94c6a7462",
-            "patchedSHA256": "259030728b94ffd2cc03aa748621dd8be382cd50e650c2bbe6b8ee4750a8055b",
-            "archive": "source/engine/instdir/program/libdrawinglayerlo.a",
-            "members": {
-              "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
-            },
-            "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
-            "compileOverrides": {
-              "flags": [
-                "-DDRAWINGLAYER_DLLIMPLEMENTATION"
-              ],
-              "language": "c++",
-              "sourceIncludes": [
-                "engine/drawinglayer/source/processor2d"
-              ]
-            }
-          },
           "libsallo.a": {
             "sourceFile": "engine/sal/osl/unx/thread.cxx",
             "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
@@ -975,9 +935,9 @@
           "salios.o": {
             "sourceFile": "engine/vcl/ios/salios.cxx",
             "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-            "patchedSHA256": "f6fc1cce4b6e412f6ed575465dc974242c84a59e829bc79d1cfae11f9c78a473",
-            "patch": "patches/ios-unified-transparency-alpha.patch",
-            "patchSHA256": "171971cd003c8e1d3510bbf75eb1b31f3f75517a7af4243432c2f072b3ea4c7d",
+            "patchedSHA256": "50599ba2db8fa0a63604e03c723f12c2a7fad21d0fe274bd29998188f7615d7b",
+            "patch": "patches/ios-foreign-bitmap-readback.patch",
+            "patchSHA256": "7ca139cbe14c44e13366fc8f5c6625b5e159928d328d5c57f71e395a85e5e7b1",
             "originalMemberSHA256": "0750a6f288e10ed032d6baa08a160889d3278f69436ec54c1cf1b6624f18156a"
           },
           "executor.o": {

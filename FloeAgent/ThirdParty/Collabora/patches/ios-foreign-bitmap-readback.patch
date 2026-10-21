@@ -1,7 +1,31 @@
+diff --git a/engine/vcl/ios/salios.cxx b/engine/vcl/ios/salios.cxx
+index 8f407f6..389c802 100644
 --- a/engine/vcl/ios/salios.cxx
 +++ b/engine/vcl/ios/salios.cxx
-@@ -138,8 +138,58 @@
-     mrShared.applyXorContext();
+@@ -71,6 +71,22 @@ bool QuartzSalBitmap::Create(CGLayerHolder const & rLayerHolder, int nBitmapBits
+     // initialize drawing context
+     CreateContext();
+ 
++    if (maGraphicContext.isSet())
++    {
++        // The readback context buffer is heap-allocated and left
++        // uninitialized by CreateContext(); CGContextDrawLayerAtPoint blends
++        // the layer over those undefined bytes using source-over. Without an
++        // explicit transparent start the returned bitmap would carry stale
++        // garbage pixels (observed on iOS as random speckles, white gaps and
++        // corrupted channels in the settled highlighter group buffer). Zero
++        // the backing store so the blend result is exactly the layer's own
++        // premultiplied content.
++        void* pReadbackData = CGBitmapContextGetData(maGraphicContext.get());
++        if (pReadbackData)
++            memset(pReadbackData, 0,
++                   CGBitmapContextGetBytesPerRow(maGraphicContext.get()) * mnHeight);
++    }
++
+     // copy layer content into the bitmap buffer
+     const CGPoint aSrcPoint = { static_cast<CGFloat>(-nX), static_cast<CGFloat>(-nY) };
+     if (maGraphicContext.isSet()) // remove warning
+@@ -139,6 +155,56 @@ void AquaGraphicsBackend::copyBits(const SalTwoRect& rPosAry, SalGraphics *pSrcG
      if (!bSameGraphics)
          pSrcShared->applyXorContext();
  
@@ -58,4 +82,3 @@
      SAL_WARN_IF (!pSrcShared->maLayer.isSet(), "vcl.quartz",
                   "AquaSalGraphics::copyBits() from non-layered graphics this=" << this);
  
-     const CGPoint aDstPoint = CGPointMake(+rPosAry.mnDestX - rPosAry.mnSrcX, rPosAry.mnDestY - rPosAry.mnSrcY);
