@@ -1471,7 +1471,7 @@ public struct ShareInbox: Sendable {
     fileprivate func syncFile(_ url: URL) throws {
         #if canImport(Darwin) || canImport(Glibc)
         let descriptor = open(url.path, O_RDONLY)
-        guard descriptor >= 0 else { throw posixError(.write, code: errno) }
+        guard descriptor >= 0 else { throw Self.posixError(.write, code: errno) }
         defer {
             #if canImport(Darwin)
             _ = Darwin.close(descriptor)
@@ -1480,7 +1480,7 @@ public struct ShareInbox: Sendable {
             #endif
         }
         if fsync(descriptor) != 0, errno != EINVAL {
-            throw posixError(.write, code: errno)
+            throw Self.posixError(.write, code: errno)
         }
         #endif
     }
