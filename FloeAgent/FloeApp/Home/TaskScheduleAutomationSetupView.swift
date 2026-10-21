@@ -283,8 +283,8 @@ struct TaskScheduleAutomationSetupView: View {
                         }
                         if showsImport {
                             Text(setupText(
-                                zh: "导入快捷指令，选择计划「\(schedule.title)」。",
-                                en: "Import the shortcut and choose “\(schedule.title)”."))
+                                zh: "添加后，点「日程」选择计划「\(schedule.title)」，再返回保存。",
+                                en: "After adding, set Schedule to “\(schedule.title)”, then return to save."))
                             Text(setupText(
                                 zh: "新建「特定时间」自动化，运行该快捷指令；\(repeatInstruction)。",
                                 en: "Create a Specific Time automation for that shortcut; \(repeatInstruction)."))

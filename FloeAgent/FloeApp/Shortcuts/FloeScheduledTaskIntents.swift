@@ -9,9 +9,11 @@
 // random manual instance, or a success string that hides a store failure.
 //
 // The picked-entity route is the ONLY identity route, on purpose: a shared
-// signed template personalizes this action through the system's own import
-// QUESTION on the same `Schedule` entity parameter (measured in the iPadOS
-// 27 automation editor), so the recipient always names the concrete plan.
+// signed template personalizes this action through the same REQUIRED
+// `Schedule` entity parameter, chosen once in the system Shortcuts editor
+// (the shipped template carries no import question: the iPadOS 27 importer's
+// question-completion path could not commit, while the editor binding is
+// measured to persist), so the recipient always names the concrete plan.
 // A name/title text route could silently re-point an old imported trigger
 // at a different same-title plan after the original was deleted or renamed
 // — never a stable identity substitute.

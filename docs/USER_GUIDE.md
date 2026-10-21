@@ -426,7 +426,7 @@ Scheduled tasks live on Home under **Scheduled** (**Schedule task** adds one). C
 
 **System automation for one plan.** Save the plan first, then choose **Automation** on its Home row or row menu. The setup shows the saved plan and a suggested trigger time in its anchor time zone.
 
-1. Choose **Import scheduled-task shortcut**, select the saved plan in the system setup and confirm the add. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
+1. Choose **Import scheduled-task shortcut** and confirm the add. Then open the shortcut in the editor, tap the empty **Schedule** field of the **Run Scheduled Task** action, select the saved plan, then return to save. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
 2. In Shortcuts, create a **Specific Time** automation at the suggested time and cadence. Run the added shortcut, select **Run Immediately** and enable it.
 3. To continue with results, use the returned run with **Status / Wait / Text / Files / Cancel**. Query that run later rather than starting the plan again.
 
