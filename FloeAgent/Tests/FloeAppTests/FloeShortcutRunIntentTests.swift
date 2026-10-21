@@ -522,7 +522,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
                     try await intent.perform()
                 }
             }
-            XCTAssertEqual(result.value.state, .unavailable, "purpose \(purpose)")
+            XCTAssertEqual(try XCTUnwrap(result.value).state, .unavailable, "purpose \(purpose)")
         }
     }
 
@@ -566,7 +566,7 @@ final class FloeShortcutRunIntentTests: XCTestCase {
         let route: @MainActor (UUID) async throws -> BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt = { _ in
             called = true
             return BackgroundRunCoordinator.FloeSelectedScheduleRunReceipt(
-                runID: runID, conversationID: conversationID, freshlyLaunched: true)
+                runID: self.runID, conversationID: self.conversationID, freshlyLaunched: true)
         }
         var entity = TaskScheduleEntity(id: scheduleID, title: "Daily report")
         entity.id = "not-a-uuid"
