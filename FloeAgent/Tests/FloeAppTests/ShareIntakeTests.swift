@@ -653,7 +653,7 @@ struct ShareIntakeCenterTests {
         #expect(destination.attachments.isEmpty)
         #expect(staging.staged.isEmpty)
         #expect(try inbox.pending().map(\.id) == [envelope.id])
-        let retry = try #require(inbox.claimNext())
+        let retry = try #require(try inbox.claimNext())
         try inbox.release(retry)
     }
 
