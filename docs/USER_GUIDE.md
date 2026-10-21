@@ -1,10 +1,12 @@
-<!-- docs-updated: 2026-10-20 -->
+<!-- docs-updated: 2026-10-21 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
 [简体中文](USER_GUIDE.zh-CN.md) · [Documentation](README.md) · [Website manual](https://www.floe-agent.com/docs/en.html)
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
+
+Version note: Office autosave, region viewing, Get Run Files and Volcengine search described here target 1.7.42 (283), which has not been distributed yet.
 
 ## Contents
 
@@ -77,6 +79,19 @@ In Add text/image/video, tap the **Provider** field itself to open ONE searchabl
 Catalog metadata is verified per model, not promised for a whole provider. A model you add now starts with the capabilities the bundled catalog actually verified for it (for example image input for a vision-capable model). Models you saved before that metadata existed are never rewritten silently: Floe offers a one-time **Model capability updates** review that lists each model and the exact capability it would gain (**Before → After**) and writes nothing until you choose **Apply updates** (or **Not now**). A capability you set yourself is recorded as your own decision — a later catalog refresh or iCloud sync never flips it back, and a capability you switched off stays off. "Supports text/images/video" describes the roles the catalog verifies for that entry, not a tested live inference: the first real request is still the compatibility check. GitHub Copilot, Azure, Amazon Bedrock and Google Vertex are not offered when adding a new provider — Floe cannot execute them without OAuth or deployment-scoped endpoints — but connections you already saved to those providers stay listed and editable.
 
 Models that support it also carry a reasoning/thinking effort setting. With **Automatic**, Floe asks your configured auxiliary text model once when a fresh round starts to choose an effort for that request; the decision is kept for the round, including guide/steer and continuation messages, and is not reclassified mid-round. A manual effort you choose is never changed. If no auxiliary model is configured, or the helper fails or times out, Floe falls back to the model's own supported default.
+
+### Web search providers
+
+Settings → Web Search keeps the existing provider list and order. **Volcengine Web Search** remains in that list, off by default; enable it only if you have a Volcengine account.
+
+In the Volcengine editor, choose the account that matches your key:
+
+- **Agent Plan Doubao Search** — an Agent Plan key, with optional **Professional datasets** (off by default and independent of the main search switch; the editor shows its real connection state).
+- **Ark Responses** — an ordinary Ark API key. Under **Search engine**, **Doubao Search Custom** uses the Doubao search engine, while **Online content** uses Toutiao, Douyin encyclopedia and Moji weather together.
+- **Doubao Search API** — a separate Doubao Search key.
+- **Custom endpoint (legacy)** — an existing custom endpoint.
+
+**Online content** enables all three sources together, without individual switches. **Query rewrite** and **Authoritative sources only** are available for Agent Plan and Doubao Search API. Your existing default search provider and priority are unchanged.
 
 <!-- doc-anchor: section-5 -->
 ### Vision, generation and image editing
@@ -187,10 +202,14 @@ Saving an Office document in Notes updates its automatic cover from the saved co
 1. Open a DOCX, XLSX or PPTX file, wait for it to load, then enter editing.
 2. Edit according to the format: Word supports styles, lists, alignment and tables; Excel supports cells and formulas, formatting, rows and columns, freeze panes, sorting and filtering; presentations support slide duplication, reordering and object alignment.
 3. Tap the toolbar pen button to write with Apple Pencil. In **Pen settings**, choose **Pen**, **Marker** or **Highlighter** and adjust color, width and transparency. Five dots from small to large offer quick widths; use the slider for fine adjustment with a live stroke preview. Tap **Done** to close settings and keep drawing; tap the pen button again to return to ordinary editing.
-4. In Notes, open the document assistant and describe your edit. It can read the visible page, including unsaved handwriting, and saves completed strokes before changing spreadsheet cells. Lift the pen before sending. When a modification needs confirmation, use the proposal's **Apply edit** or **Discard** buttons.
+4. In Notes, open the document assistant and describe what to view or edit. It can request a specific region, including completed ink; an ordinary message no longer attaches a screenshot of the current page automatically. When a modification needs confirmation, use the proposal's **Apply edit** or **Discard** buttons.
 5. Save and wait for completion. Export the file when ready to share.
 
 Available operations depend on the file format; unavailable options explain why. If loading or saving fails, keep the original and check the error. Compare conflicting versions before saving.
+
+**Office autosave in Notes.** Completed edits save after you pause; a pen contact still down defers saving until you lift it. A failed save keeps the editing copy so you can retry.
+
+**View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.
 
 An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
 
@@ -391,7 +410,9 @@ Live input, file transcription and video subtitles are separate paths. Check tex
 <!-- doc-anchor: section-21 -->
 ## 17. Skills, MCP, mail and automation
 
-**Shortcuts drafts (awaiting an integrated build):** Repeated **Send to Floe** and **Create a task** actions keep separate drafts. Home fills a free composer in order and preserves existing text and attachments; when drafts are waiting, free the composer and use **Insert next**. Review the draft and send it yourself. Queued drafts survive reopening, and older unsent drafts migrate automatically. Adding a draft does not require a configured model.
+**Shortcuts drafts:** Repeated **Send to Floe** and **Create a task** actions keep separate drafts. Home fills a free composer in order and preserves existing text and attachments; when drafts are waiting, free the composer and use **Insert next**. Review the draft and send it yourself. Queued drafts survive reopening, and older unsent drafts migrate automatically. Adding a draft does not require a configured model.
+
+**Get Run Files.** In Shortcuts, add **Get Run Files** and choose an existing Floe run. It returns the verified files produced by that exact run as Shortcuts files. Leave **Include partial results** off for complete results; turn it on only when you explicitly want verified files from a run that is still active, failed or cancelled. Use native Shortcuts steps such as **Quick Look** or **Save File** to view or store them. A run that produced no files returns an empty result.
 
 Skills supply methods; installation/enabling does not grant file, network or account access. Use only needed skills and inspect source/version. MCP tools depend on configured, available servers.
 
