@@ -334,7 +334,7 @@ final class HealthKitService: HealthDataProviding, @unchecked Sendable {
                 try await descriptor.descriptor.result(for: self.store)
             }
             if cancellation.isCancelled { throw HealthAccessError.cancelled }
-            let interval = statistics?.mostRecentQuantityDateInterval
+            let interval = statistics?.mostRecentQuantityDateInterval()
             return HealthAggregateValue(
                 metric: metric,
                 aggregation: aggregation,
