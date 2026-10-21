@@ -52,7 +52,7 @@ func registerAppleContactsMediaTools(
     mediaService: SystemMediaPlaybackService? = nil,
     audioBusyReason: @escaping @Sendable () async -> String?,
     isForeground: @escaping @Sendable () async -> Bool = {
-        await ContactsMediaForeground.isActive
+        await ContactsMediaForeground.isActive()
     }
 ) {
     SystemMediaAudioCoordination.shared.update(probe: audioBusyReason)

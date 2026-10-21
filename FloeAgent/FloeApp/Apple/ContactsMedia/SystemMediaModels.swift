@@ -234,17 +234,13 @@ final class SystemMediaAudioCoordination: @unchecked Sendable {
     }
 
     func update(probe: @escaping Probe) {
-        lock.lock()
-        self.probe = probe
-        lock.unlock()
+        lock.withLock { self.probe = probe }
     }
 
     /// Returns a short trusted reason ("recording", "speech", "taskAudio",
     /// "video") when existing Floe audio ownership must not be replaced.
     func busyReason() async -> String? {
-        lock.lock()
-        let probe = self.probe
-        lock.unlock()
+        let probe = lock.withLock { self.probe }
         let reason = await probe()
         guard let reason, !reason.isEmpty else { return nil }
         return String(reason.prefix(40))

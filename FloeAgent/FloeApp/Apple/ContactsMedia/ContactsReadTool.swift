@@ -64,7 +64,7 @@ struct AppleContactsListTool: AgentTool {
         monitor: any ContactsAuthorizationEpochProviding,
         store: ContactsMediaSnapshotStore,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await ContactsMediaForeground.isActive
+            await ContactsMediaForeground.isActive()
         }
     ) {
         self.service = service

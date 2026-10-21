@@ -76,7 +76,7 @@ struct AppleHealthReadTool: AgentTool {
     init(
         service: any HealthDataProviding,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await AppleHealthForeground.isActive
+            await AppleHealthForeground.isActive()
         }
     ) {
         self.service = service

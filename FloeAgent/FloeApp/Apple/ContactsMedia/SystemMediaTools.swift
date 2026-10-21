@@ -220,7 +220,7 @@ struct AppleMediaSearchTool: AgentTool {
         service: SystemMediaPlaybackService,
         store: ContactsMediaSnapshotStore,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await ContactsMediaForeground.isActive
+            await ContactsMediaForeground.isActive()
         }
     ) {
         self.service = service
@@ -470,7 +470,7 @@ struct AppleMediaNowPlayingTool: AgentTool {
     init(
         service: SystemMediaPlaybackService,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await ContactsMediaForeground.isActive
+            await ContactsMediaForeground.isActive()
         }
     ) {
         self.service = service
@@ -534,7 +534,7 @@ struct AppleMediaPlayTool: AgentTool {
     init(
         service: SystemMediaPlaybackService,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await ContactsMediaForeground.isActive
+            await ContactsMediaForeground.isActive()
         }
     ) {
         self.service = service
@@ -667,7 +667,7 @@ struct AppleMediaControlTool: AgentTool {
     init(
         service: SystemMediaPlaybackService,
         isForeground: @escaping @Sendable () async -> Bool = {
-            await ContactsMediaForeground.isActive
+            await ContactsMediaForeground.isActive()
         }
     ) {
         self.service = service

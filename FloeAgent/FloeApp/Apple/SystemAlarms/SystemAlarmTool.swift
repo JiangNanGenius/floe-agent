@@ -28,7 +28,7 @@ enum SystemAlarmOutput {
         ToolExecutionOutput(digesting: summary, exitStatus: exitStatus)
     }
 
-    static func iso(_ date: Date) -> String { PersistenceCodec.encode(date) }
+    static func iso(_ date: Date) -> String { SystemAlarmDateCoding.encode(date) }
 
     /// Render one durable record as a bounded, privacy-safe line (opaque
     /// label digest, never the raw title).

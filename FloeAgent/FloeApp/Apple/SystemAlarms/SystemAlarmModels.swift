@@ -44,14 +44,32 @@ struct SystemAlarmOwner: Sendable, Equatable {
     /// part of owner equality — one task legitimately makes many calls; it is
     /// the dedup input, not the ownership boundary.
     func sameTask(as other: SystemAlarmOwner) -> Bool {
-        if let lhs = taskID, let rhs = other.taskID { return lhs == rhs }
-        guard taskID == nil, other.taskID == nil else { return false }
-        return runID == other.runID
+        sameTask(taskID: other.taskID, runID: other.runID)
+    }
+
+    /// Compare a durable ledger row without manufacturing another call's
+    /// trusted operation identity.
+    func sameTask(taskID otherTaskID: UUID?, runID otherRunID: UUID) -> Bool {
+        if let lhs = taskID, let rhs = otherTaskID { return lhs == rhs }
+        guard taskID == nil, otherTaskID == nil else { return false }
+        return runID == otherRunID
     }
 
     /// Log-safe owner descriptor (no raw title/PII).
     var logDescription: String {
         "task=\(taskID?.uuidString ?? "run") run=\(runID.uuidString)"
+    }
+}
+
+// MARK: - Canonical date representation
+
+/// Matches the ledger's ISO-8601 fractional-second representation without
+/// reaching into FloePersistence's module-internal row-mapping codec.
+enum SystemAlarmDateCoding {
+    static func encode(_ date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 }
 
@@ -115,7 +133,7 @@ enum SystemAlarmIdentity {
         parts.append("kind=\(kind.rawValue)")
         parts.append("tz=\(intendedTimezone)")
         if let intendedFireDate {
-            parts.append("fire=\(PersistenceCodec.encode(intendedFireDate))")
+            parts.append("fire=\(SystemAlarmDateCoding.encode(intendedFireDate))")
         }
         switch repeatRule {
         case .never: parts.append("repeat=never")
@@ -288,7 +306,7 @@ enum SystemAlarmError: Error, Sendable, Equatable {
 /// is created; the store and service run their real production paths.
 protocol SystemAlarmNativeManaging: Sendable {
     var isAvailable: Bool { get }
-    var authorization: SystemAlarmAuthorization { get }
+    var authorization: SystemAlarmAuthorization { get async }
     func requestAuthorization() async throws -> SystemAlarmAuthorization
     /// All alarms currently scheduled for this app (throws on readback error).
     func alarms() async throws -> [SystemAlarmNativeSnapshot]
@@ -309,7 +327,7 @@ protocol SystemAlarmNativeManaging: Sendable {
     /// adopted silently.
     func cancel(id: UUID) async throws
     /// Observe native alarm-set changes (service-owned, bounded).
-    var alarmUpdates: AsyncStream<[SystemAlarmNativeSnapshot]> { get }
+    var alarmUpdates: AsyncStream<[SystemAlarmNativeSnapshot]> { get async }
 }
 
 /// Read-only native alarm snapshot used by the service and fakes.

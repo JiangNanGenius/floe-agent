@@ -154,6 +154,19 @@ struct SystemAlarmToolsTests {
         return formatter.string(from: date)
     }
 
+    @Test("Alarm date encoding preserves ledger precision and stable identity")
+    func canonicalDateEncoding() {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.125)
+        let canonical = "2023-11-14T22:13:20.125Z"
+        #expect(SystemAlarmDateCoding.encode(date) == canonical)
+        #expect(SystemAlarmOutput.iso(date) == canonical)
+        let expectedPayload = "kind=alarm|tz=UTC|fire=\(canonical)|repeat=never"
+        #expect(SystemAlarmIdentity.payloadDigest(
+            kind: .alarm, intendedTimezone: "UTC", intendedFireDate: date,
+            repeatRule: .never, timerDuration: nil
+        ) == FloeDigest.sha256Hex(Data(expectedPayload.utf8)))
+    }
+
     // MARK: - Persistence: transactions / claims / CAS
 
     @Test("Intent is persisted before mutation and converges on idempotent enqueue")

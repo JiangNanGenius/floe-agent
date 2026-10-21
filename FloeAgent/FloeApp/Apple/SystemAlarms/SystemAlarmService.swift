@@ -79,8 +79,9 @@ actor SystemAlarmService {
     /// never duplicating and never resurrecting. Idempotent.
     func start() {
         guard observationTask == nil else { return }
-        let stream = native.alarmUpdates
-        observationTask = Task { [weak self] in
+        observationTask = Task { [weak self, native] in
+            guard !Task.isCancelled else { return }
+            let stream = await native.alarmUpdates
             for await snapshots in stream {
                 guard !Task.isCancelled else { return }
                 guard let self else { return }
@@ -102,7 +103,7 @@ actor SystemAlarmService {
 
     func authorization() async -> SystemAlarmAuthorization {
         guard native.isAvailable else { return .unavailable }
-        let current = native.authorization
+        let current = await native.authorization
         if current == .notDetermined {
             // The system prompt cannot appear for a backgrounded app; the
             // caller must resurface in the foreground rather than hang.
@@ -272,10 +273,7 @@ actor SystemAlarmService {
             // Native unknown/unmapped id — not adopted, not cancelled.
             throw SystemAlarmError.native("alarm \(alarmID.uuidString) is not owned by this app")
         }
-        guard owner.sameTask(as: SystemAlarmOwner(
-            taskID: record.ownerTaskID, runID: record.ownerRunID,
-            operationID: owner.operationID, idempotencyKey: owner.idempotencyKey
-        )) else {
+        guard owner.sameTask(taskID: record.ownerTaskID, runID: record.ownerRunID) else {
             // Another task's alarm: refuse regardless of UUID knowledge.
             throw SystemAlarmError.native("alarm \(alarmID.uuidString) belongs to another task")
         }

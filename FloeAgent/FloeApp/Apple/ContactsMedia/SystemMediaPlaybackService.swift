@@ -170,7 +170,7 @@ actor SystemMediaPlaybackService {
                 cancellation: cancellation,
                 timeout: 20
             ) {
-                try await player.prepareToPlay()
+                try await self.player.prepareToPlay()
             }
         } catch ContactsMediaRequestError.cancelled {
             await player.stop()

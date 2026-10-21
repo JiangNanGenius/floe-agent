@@ -16,11 +16,16 @@ import FloeCore
 import FloePersistence
 import AlarmKit
 
-/// Real AlarmKit-backed manager.
+/// Real AlarmKit-backed manager. All access to the SDK's non-Sendable
+/// singleton stays on the main actor; only our Sendable snapshots escape.
+@MainActor
 final class AlarmKitNativeManager: SystemAlarmNativeManaging {
-    private let manager = AlarmManager.shared
+    // Resolve the native singleton only inside this isolated facade. Creating
+    // the facade itself is safe from synchronous discovery/registration code.
+    nonisolated init() {}
+    private var manager: AlarmManager { AlarmManager.shared }
 
-    var isAvailable: Bool { true }
+    nonisolated var isAvailable: Bool { true }
 
     var authorization: SystemAlarmAuthorization {
         switch manager.authorizationState {
@@ -48,7 +53,7 @@ final class AlarmKitNativeManager: SystemAlarmNativeManaging {
     var alarmUpdates: AsyncStream<[SystemAlarmNativeSnapshot]> {
         AsyncStream { continuation in
             let task = Task {
-                for await alarms in manager.alarmUpdates {
+                for await alarms in self.manager.alarmUpdates {
                     let snapshots = alarms.map {
                         SystemAlarmNativeSnapshot(id: $0.id, state: Self.describe($0.state))
                     }

@@ -29,7 +29,7 @@ func registerAppleHealthNFCTools(
     nfcReader: any NDEFReading = AppleHealthNFCServices.nfc,
     nfcAlertMessage: String = FloeL10n.l("apple.nfc.read.alert"),
     isForeground: @escaping @Sendable () async -> Bool = {
-        await AppleHealthForeground.isActive
+        await AppleHealthForeground.isActive()
     }
 ) {
     ToolCatalog.register(AppleHealthReadTool.self)
