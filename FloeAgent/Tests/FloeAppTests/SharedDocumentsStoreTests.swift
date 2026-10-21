@@ -643,15 +643,30 @@ struct SharedDocumentsStoreRecoveryTests {
             kind: .file,
             stage: try await stageBytes(Data("bye".utf8), store: store)
         )
+        let dir = root.appendingPathComponent("store/blobs/\(item.id)", isDirectory: true)
+        let lock = dir.appendingPathComponent("lock")
+        let attributesBeforeDelete = try FileManager.default.attributesOfItem(atPath: lock.path)
+        let inodeBeforeDelete = try #require(attributesBeforeDelete[.systemFileNumber] as? NSNumber).uint64Value
+        let content = try #require(try await store.committedContentURL(id: item.id))
+        #expect(try Data(contentsOf: content) == Data("bye".utf8))
+
         let outcome = try await store.commitDelete(id: item.id, expected: item.versions, recursive: false)
         #expect(outcome.deletedIDs == [item.id])
         await #expect(throws: SharedDocumentsError.self) {
             _ = try await store.item(id: item.id)
         }
-        // A second delete of the same identity is an unknown-item no-op path
-        // handled by the bridge; the store itself reports not found.
-        let dir = root.appendingPathComponent("store/blobs/\(item.id)", isDirectory: true)
-        #expect((try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.isEmpty != false)
+        // Content must be gone once this unleased delete commits. The stable
+        // per-item flock inode is coordination metadata, not content: removing
+        // it could let another process create and lock a different inode.
+        #expect(!FileManager.default.fileExists(atPath: content.path))
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        #expect(remaining == ["lock"])
+        let lockProperties = try lock.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        #expect(lockProperties.isRegularFile == true && lockProperties.isSymbolicLink == false)
+        let attributesAfterDelete = try FileManager.default.attributesOfItem(atPath: lock.path)
+        let inodeAfterDelete = try #require(attributesAfterDelete[.systemFileNumber] as? NSNumber).uint64Value
+        #expect(inodeAfterDelete == inodeBeforeDelete)
+        #expect((attributesAfterDelete[.size] as? NSNumber)?.int64Value == 0)
     }
 
     @Test("non-empty folder delete requires recursion and stays bounded")

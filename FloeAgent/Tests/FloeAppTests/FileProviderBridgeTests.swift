@@ -908,6 +908,16 @@ struct FileProviderBridgeClosureTests {
         #expect(fetched.itemIdentifier == item.itemIdentifier)
         // The returned item version describes exactly the returned bytes.
         #expect(fetched.versionIdentifier == Data("c1.m1".utf8))
+        // A successful result belongs to the receiver until its bytes have
+        // been consumed. The real extension passes this URL to FileProvider;
+        // this direct bridge fixture owns and releases its successful copy.
+        let successfulCopies = try FileManager.default.contentsOfDirectory(
+            at: materialization, includingPropertiesForKeys: nil
+        )
+        #expect(successfulCopies.map(\.standardizedFileURL) == [url.standardizedFileURL])
+        try FileManager.default.removeItem(at: url)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: materialization.path).isEmpty)
+
         // Corrupt the committed bytes: fetch must fail AND remove its temp file.
         let stored = try await store.item(id: item.itemIdentifier.rawValue)
         let blob = root.appendingPathComponent("store/blobs/\(stored.id)/v1", isDirectory: false)
@@ -915,10 +925,10 @@ struct FileProviderBridgeClosureTests {
         await #expect(throws: SharedDocumentsError.self) {
             _ = try await bridge.fetchContents(for: item.itemIdentifier, requestedVersion: nil)
         }
-        let leftovers = (try? FileManager.default.contentsOfDirectory(
+        let leftovers = try FileManager.default.contentsOfDirectory(
             at: materialization,
             includingPropertiesForKeys: nil
-        )) ?? []
+        )
         #expect(leftovers.isEmpty)
     }
 
