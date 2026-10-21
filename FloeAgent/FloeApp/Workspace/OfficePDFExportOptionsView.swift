@@ -804,10 +804,10 @@ private struct OfficePDFPreviewPDFView: UIViewControllerRepresentable {
             pdfView.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(pdfView)
             NSLayoutConstraint.activate([
-                pdfView.leadingAnchor.constraint(equalTo: view.safeAreaLeadingAnchor),
-                pdfView.trailingAnchor.constraint(equalTo: view.safeAreaTrailingAnchor),
-                pdfView.topAnchor.constraint(equalTo: view.safeAreaTopAnchor),
-                pdfView.bottomAnchor.constraint(equalTo: view.safeAreaBottomAnchor),
+                pdfView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor),
+                pdfView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
+                pdfView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+                pdfView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
             ])
         }
     }
