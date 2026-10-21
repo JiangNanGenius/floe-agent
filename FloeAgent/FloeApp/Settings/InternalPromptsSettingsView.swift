@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 //
-// Read-only review surface for the signed `floe.prompts.core` package plus
-// the lifecycle actions (check/install/rollback) for that one content id.
+// Version and lifecycle controls (check/install/rollback) for the signed
+// `floe.prompts.core` package.
 // ContentUpdateCenter owns verification, version policy, install and
 // rollback; this view renders its state and never parses, verifies or
 // compares versions itself. The safety/permission rules below are compiled
@@ -11,8 +11,7 @@
 //
 // Failure presentation: a failed check — automatic, pull-to-refresh or
 // button — is an inline status, never a modal alert; built-in content stays
-// active regardless, and the section list keeps showing the compiled
-// built-in sections when no signed package is installed.
+// active regardless.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -47,7 +46,6 @@ struct InternalPromptsSettingsView: View {
             if let error = center.errorMessage {
                 inlineErrorSection(error)
             }
-            sectionsSection
             fixedRulesSection
         }
         .navigationTitle(FloeL10n.l("settings.section.internal_prompts"))
@@ -108,6 +106,7 @@ struct InternalPromptsSettingsView: View {
                     .textSelection(.enabled)
             }
             sourceRow
+            sourceDetailsSection
             actionRow
             if let last = center.lastCheck {
                 Text(FloeL10n.l(
@@ -260,87 +259,6 @@ struct InternalPromptsSettingsView: View {
             }
         }
         .accessibilityIdentifier("settings.internal_prompts.inline_error")
-    }
-
-    // MARK: - Published sections (read-only)
-
-    private var promptLocale: String {
-        FloeL10n.currentLanguageCode == "zh-Hans" ? "zh-Hans" : "en"
-    }
-
-    private func localizedText(_ values: [String: String]) -> String {
-        values[promptLocale] ?? values["en"] ?? values.values.first ?? ""
-    }
-
-    /// UI-only localized label for a compiled built-in section. The runtime
-    /// freeze stores the English heading (its body is compiled verbatim and
-    /// must stay identical across resume); this maps the stable section id to
-    /// the app's own localization table for the review-screen title so zh-Hans
-    /// users do not see an English built-in heading. The displayed body and the
-    /// model-facing frozen content are never touched. Signed packages keep
-    /// their own localized titles (see `localizedText(section.title)`).
-    private func builtInSectionTitle(_ section: ContentPackageCodec.PromptSection) -> String {
-        switch section.id {
-        case AgentPromptOverlay.deliverySectionID:
-            return FloeL10n.l("settings.internal_prompts.section.delivery")
-        case AgentPromptOverlay.communicationSectionID:
-            return FloeL10n.l("settings.internal_prompts.section.communication")
-        default:
-            return localizedText(section.title)
-        }
-    }
-
-    private var sectionsSection: some View {
-        Section {
-            let sections = center.promptSections()
-            if sections.isEmpty {
-                // No signed package installed (or the network was never
-                // available): show the compiled built-in sections, which are
-                // exactly what the runtime uses in that state.
-                let builtIn = center.builtInPromptSections()
-                if builtIn.isEmpty {
-                    Text("settings.internal_prompts.sections.empty")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(builtIn, id: \.id) { section in
-                        DisclosureGroup {
-                            Text(localizedText(section.body))
-                                .font(FloeTheme.Typography.body)
-                                .textSelection(.enabled)
-                        } label: {
-                            Text(builtInSectionTitle(section))
-                                .font(FloeTheme.Typography.section)
-                        }
-                        .accessibilityIdentifier("settings.internal_prompts.section.\(section.id)")
-                    }
-                    sourceDetailsSection
-                }
-            } else {
-                ForEach(sections, id: \.id) { section in
-                    DisclosureGroup {
-                        Text(localizedText(section.body))
-                            .font(FloeTheme.Typography.body)
-                            .textSelection(.enabled)
-                    } label: {
-                        Text(localizedText(section.title))
-                            .font(FloeTheme.Typography.section)
-                    }
-                    .accessibilityIdentifier("settings.internal_prompts.section.\(section.id)")
-                }
-                sourceDetailsSection
-            }
-        } header: {
-            Text("settings.internal_prompts.sections.header")
-        } footer: {
-            Text(sectionsFooter)
-        }
-    }
-
-    private var sectionsFooter: String {
-        if center.promptSections().isEmpty {
-            return FloeL10n.l("settings.internal_prompts.sections.footer.built_in")
-        }
-        return FloeL10n.l("settings.internal_prompts.sections.footer")
     }
 
     // MARK: - Fixed code-owned rules
