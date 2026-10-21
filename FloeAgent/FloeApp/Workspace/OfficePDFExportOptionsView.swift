@@ -17,7 +17,7 @@ enum OfficePDFExportPurpose: String, Identifiable {
 
 /// One modal intent survives SwiftUI task remounts. Ending the actual
 /// presentation cancels its work; a transient child-view disappearance does not.
-struct OfficePDFExportRequest: Identifiable {
+struct OfficePDFPresentationRequest: Identifiable {
     let id = UUID()
     let purpose: OfficePDFExportPurpose
     let cancellation = CancellationToken()

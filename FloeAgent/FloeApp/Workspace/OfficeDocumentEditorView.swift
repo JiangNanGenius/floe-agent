@@ -3960,7 +3960,7 @@ struct OfficeDocumentEditorView: View {
     @State private var confirmingClose = false
     @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
-    @State private var pdfExportRequest: OfficePDFExportRequest?
+    @State private var pdfExportRequest: OfficePDFPresentationRequest?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
