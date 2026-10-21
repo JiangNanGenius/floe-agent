@@ -1116,7 +1116,7 @@ struct SelectedScheduleRunTests {
         let daily = TaskScheduleRecord(
             title: "Daily", prompt: "p", cadence: .daily,
             scheduledAt: Date().addingTimeInterval(-120),
-            modelID: model.id, anchorTimezone: "UTC")
+            anchorTimezone: "UTC", modelID: model.id)
         try await store.save(daily)
         async let left = environment.backgroundRunCoordinator
             .runSelectedSchedule(scheduleID: daily.id)
