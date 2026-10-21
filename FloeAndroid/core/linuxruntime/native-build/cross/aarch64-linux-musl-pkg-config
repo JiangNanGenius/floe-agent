@@ -1,0 +1,25 @@
+#!/bin/sh
+# Minimal pkg-config facade for the talloc staged prefix only (the sole
+# dependency PRoot's GNUmakefile queries). FLOE_LINUXRUNTIME_TALLOC_PREFIX
+# is set by build-bootstrap.sh; no absolute paths are embedded.
+set -u
+P="${FLOE_LINUXRUNTIME_TALLOC_PREFIX:?run via build-bootstrap.sh}"
+case "$1" in
+  --exists)
+    [ -f "$P/lib/pkgconfig/talloc.pc" ] && [ -f "$P/lib/libtalloc.a" ]
+    ;;
+  --cflags)
+    echo "-I$P/include"
+    ;;
+  --libs)
+    echo "-L$P/lib -ltalloc"
+    ;;
+  --libs\ --static|--static\ --libs)
+    echo "-L$P/lib -ltalloc"
+    ;;
+  --variable=*)
+    ;;
+  *)
+    echo ""
+    ;;
+esac

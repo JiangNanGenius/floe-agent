@@ -1,0 +1,10 @@
+Checking uname sysname type: UNKNOWN
+Checking uname machine type: UNKNOWN
+Checking uname release type: UNKNOWN
+Checking uname version type: UNKNOWN
+rpath library support: UNKNOWN
+-Wl,--version-script support: UNKNOWN
+Checking getconf LFS_CFLAGS: UNKNOWN
+Checking for large file support without additional flags: UNKNOWN
+Checking for -D_FILE_OFFSET_BITS=64: UNKNOWN
+Checking for -D_LARGE_FILES: UNKNOWN

@@ -1,0 +1,3 @@
+#!/bin/sh
+# Env-wired llvm-objcopy from the pinned NDK (FLOE_LINUXRUNTIME_OBJCOPY).
+exec "${FLOE_LINUXRUNTIME_OBJCOPY:?run via build-bootstrap.sh}" "$@"

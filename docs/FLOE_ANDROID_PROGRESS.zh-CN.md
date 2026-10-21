@@ -1,6 +1,6 @@
 # Floe Android 分目标实施记录
 
-> 当前状态（2026-10-21）：G01已关闭；G02未完成。[Alpha3已公开发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.3)，正式签名full ARM64 APK与SHA256SUMS已独立下载核对。API37/16KiB平板的云对话、暂停重启继续、临时Keep/丢弃及代表设置/选择器通过；三星API33从公开Alpha2直接升级、旧数据/配置/凭据、首发/连续回复、停止及重启通过。G02-R1的源码、安装包、设备验证和清理已完成，当前为R2模型/设置17项的连贯源码批次；R3–R5仍按顺序待开始；见[最新计划](FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan)。下文保留历史状态，不以旧的未构建/未发布描述代替当前交付。
+> 当前状态（2026-10-22）：G01、G02代码阶段与代表性接线已关闭；[Alpha7已公开预发布](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.7)，正式签名full ARM64 APK、SHA256SUMS及不可变来源已独立读回。G02末轮App验证未调用付费模型，任务清理已完成。G03-R1执行基础已完成本地组件验证：同一资格宿主APK在三星Android13／4KiB和Android17／16KiB平板模拟器各通过9项检查；实际产品App的环境安装、作业、通知与执行路由归G03-R2，当前公开版本仍为Alpha7。完整设备、视觉和功能联调仍按后续目标推进；见文末最新记录及[实施计划](FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#23-目标模式执行顺序先代码完整-再集中调试)。下文保留各日期的历史记录，旧的“未发布／未完成”描述不代替当前状态。
 
 ### G02 插件与 MCP 展示组件定向验证（2026-10-19）
 
@@ -814,3 +814,21 @@ R7本地集成检查：53项设置/隐私JVM用例通过，无跳过；新增用
 - [41项退出台账](../FloeAndroid/planning/G02_EXIT_LEDGER.json)已区分源码、组件、代表App与未覆盖范围。G02代码/关键接线收口不表示41项逐项App全通过；三星仍为Alpha4，完整跨模块、真机/平板、IME/笔和视觉矩阵归G12/G13/G14。当前只开放实际支持的单次审批，任务/项目/主机复用授权仍须扩展原生契约并验证，列入G11权限整合；不把未转发的UI选项算作功能。
 - 末段移除过期APK、中间包、已导出native派生副本、缓存APK和已消费索引，并去重最终相同签名文件；与本轮任务快照及先前中间包清理合计，观察到外置盘可用空间累计增加约9.1GiB、内置约0.13GiB（共享盘差额可能受并发工作影响）。补充清理226个已被正式App替代的早期探针库／测试包路径，源代码、哈希、命令和原始日志保留；8个本批已消费终态Worker已退役，源码交接和原始失败保留。保留当前交付、上版恢复、三星现用版恢复、运行中清除的源绑定候选、必要符号及供G03复用的SDK/AVD和增量缓存；没有删除源代码或其他任务工作。模拟器、临时服务、转发/网络规则和构建守护进程均已收尾。
 - G02-R8退出，下一目标G03：先做Linux终端、PTY、环境/作业与通知生命周期的完整代码批次，再集中检查。后续要求留在计划中，不转成依赖任务排队；不再重放本轮App或付费云测试。
+
+### G03-R1开始：Linux/PTY执行基础（2026-10-22，进行中）
+
+- 当前仅派发两项互不重叠的Normal代码包：ARM64 Linux/PTY后端与最小普通App运行宿主；复用既有`FloeEnvironments`权威类型、持久根目录和明确的任务／项目／会话／写层归属。后者仅交代码，组件构建与后续App检查串行；没有预排依赖任务，没有新增付费模型验证。
+- 保留target37与普通App权限，先验证APK内启动器、真实Linux命令、PTY、退出及取消，不用开发机shell、Root或下载成功代替运行证据。[Android官方说明](https://developer.android.com/about/versions/10/behavior-changes-10#execute-permission)明确了target29起App可写目录的直接执行限制；该边界须由实际启动路径解决。
+- PRoot只作为兼容后端候选，不视为安全容器。[AOSP隔离进程策略](https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/main/private/isolated_app_all.te)还限制直接打开App数据文件及创建普通网络套接字，不能仅加`isolatedProcess`就宣称常规rootfs与网络均可用。先用合成数据确认实际边界，再决定模型代码的开放方式；目前尚无G03设备运行、隔离或可安装功能交付结论。
+
+
+### G03-R1收口：真实ARM64 Linux／PTY与环境归属基础（2026-10-22）
+
+- 已实现普通App UID下的PTY启动、输入／窗口尺寸／Ctrl-C／EOF、输出上限、非零退出和按进程创建身份取消。Linux启动参数必须明确提供rootfs、临时目录、绑定、任务／项目／环境与写层；不默认选择第一个项目，不增加宿主或语言执行工具别名。
+- 使用固定来源的Termux PRoot `v5.1.107.98`、独立APK加载器及捕获的`EXITKILL`生命周期补丁；可从固定源码构建，许可证与静态运行库通知保留。普通App数据目录直接exec的受限路径与实际加载器执行分别核对；PRoot不是安全容器，没有关闭系统seccomp或借ADB／Root证明App执行。
+- 同一非debuggable、target37资格宿主APK，SHA256 `213108f8b1f06f213ee605d863d35d1fbe2b4ca1973f80faee2a727eebfb34bf`（2,522,747字节），在三星SM-G9810／API33／4KiB和API37／16KiB平板模拟器各9项通过。实际Debian命令有标准输出、错误输出及退出23；Linux子进程通过setsid离开进程组后仍被取消并确认消失。安装后的4份本地库哈希与APK一致，3份执行载荷的加载段与来源产物相同；JNI为16KiB、PRoot／加载器为64KiB对齐。
+- `FloeEnvironments`继续复用原权威实现；20项归属／租约组件检查通过，13份环境源码完成Swift6.4.1 ARM64对象编译。推送前另按实际公开main源码核对共享输入，补齐遗漏的原始`RunOutputFile.swift`模型入口，使用公开原始依赖与本批Android覆盖层完成目标对象编译，保留早期配置／工具链错误。没有重跑G02 App矩阵，也没有因源码补核重做设备检查。
+- 资格宿主的固定样例、构建和运行说明见[Linux运行资格宿主](../FloeAndroid/qualification/linuxruntime-host/README.md)。它是开发检查工具，本批不作为产品APK发布；模型工具发现、完整环境安装／合并写层、作业与通知服务、凭据边界和产品App接线仍归G03-R2。实际执行体与主App凭据的边界必须在接线前落实，不能用同UID的PRoot冒充隔离。
+- 本轮App付费模型调用为0。临时宿主已从两台设备移除，三星原Alpha4与模拟器Alpha7保留；本任务启动的平板模拟器已关闭，未删除AVD或用户数据。本轮清理约4.56 GiB生成文件：误装的旧NDK、旧构建／原生临时目录、重复探针包与旧样例、一次性SwiftBuild输出和已释放的资格宿主构建目录。保留当前资格APK／JNI符号／固定样例、两个最小失败APK与原始报告、当前原生产物及重链接证据，以及下一批需要的SDK／AVD／共享核心暖缓存。
+
+下一批G03-R2按[执行批次计划](FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#2323-g03执行批次2026-10-22)推进完整环境、作业、通知及App接线代码；后续要求保留在计划中，不预排Worker。G03整体尚未关闭。

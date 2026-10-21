@@ -1,0 +1,7 @@
+#!/bin/sh
+# Env-wired llvm-objdump from the pinned NDK (FLOE_LINUXRUNTIME_OBJDUMP).
+# PRoot's OBJIFY rule parses `objdump -f` output; llvm-objdump prints the
+# `file format` token used for --output-target and simply lacks an
+# `architecture:` line, so --binary-architecture is inferred from the
+# output target (behavior verified against the qualification build).
+exec "${FLOE_LINUXRUNTIME_OBJDUMP:?run via build-bootstrap.sh}" "$@"
