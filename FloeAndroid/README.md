@@ -9,7 +9,8 @@ its standalone probe and the integrated five-APK batch passed. The first device
 review returned seven material fixes; after one repair batch and two targeted
 review rounds all seven IDs were resolved for the G01 representative foundation
 (`ship`). That acceptance covers those representative pages only. Whole-product
-visual parity, full CJK IME/TalkBack and 16 KB runtime behavior are not claimed.
+visual parity and full CJK IME/TalkBack are not claimed. That G01 evidence did not
+cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
 G01 source, handoff and cleanup closure are complete; G02 is the active goal. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
@@ -18,17 +19,19 @@ local LLM backend.
 
 ## Android Alpha
 
-[Download 0.1.0-alpha.2](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.2)
+[Download 0.1.0-alpha.3](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.3)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
-Alpha 2 was checked for ordinary cloud dialogue and upgrade on the API 37 /
-16 KiB tablet emulator. The earlier Alpha 1 cloud configuration, replies and
-cold-start persistence were checked on Samsung SM-G9810, Android 13 / API 33 /
-4 KiB. Alpha 2 on Samsung, long-stream stop/resume and advanced G02 flows still
-need their own acceptance checks. Current source batches contain additional
-changes that are not in the public APK yet.
-G02 remains active. The current execution target is **G02-R1: deliver Alpha 3**
-from the integrated source batch; Android cross-build, packaged-app checks and
-upgrade acceptance are still pending. See the
+Alpha3 was checked on an API37 / 16 KiB ARM64 tablet emulator and Samsung SM-G9810,
+Android 13 / API33 / 4 KiB. The Samsung directly upgraded from public Alpha2,
+retaining original history, model configuration and stored credentials. Real new
+and continuous replies, Stop and cold-reopened history passed; the emulator also
+exercised paused-run Continue, temporary Keep/discard, settings columns/modals
+and system-picker cancellation. The public APK and checksum were independently
+downloaded and verified. See the [batch qualification](planning/ALPHA3_QUALIFICATION.md)
+for source binding and limits, including the test-only post-build overlay.
+G02 remains active. **G02-R1** delivery and cleanup are complete. The next target
+is **G02-R2: model and settings closure**, covering 17 operations after reusing
+already-qualified evidence. See the
 [current inventory and sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
 Later targets are a backlog, not prequeued worker tasks. Alpha delivery does not
 close the full 41-operation G02 scope.

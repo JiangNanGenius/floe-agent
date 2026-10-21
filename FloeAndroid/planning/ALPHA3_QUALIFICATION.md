@@ -69,3 +69,22 @@ of the roadmap are not claimed complete by their module markers or this release.
 The release contains one signed full ARM64 APK and `SHA256SUMS` only, is a
 prerelease, and must use `latest=false`. Publication, independent download hashing
 and cleanup are recorded separately after they actually finish.
+
+
+## Publication and cleanup closure
+
+The prerelease is [public](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.3).
+The immutable tag resolves to `1b22d0ce392d000c146bd8860c167e1a0bdac807` on main.
+Both public assets were independently streamed and hashed; APK size and SHA-256
+match the artifact above, and the checksum file matches exactly. The pre-existing
+iOS Latest remained unchanged.
+
+Completed build caches and obsolete package copies were removed: 25,184,567,640
+logical bytes (23.455 GiB), with measured available-space increases of 14.146 GiB
+on the external volume and 8.335 GiB internally. Concurrent unrelated iOS writes
+and APFS sharing affect the internal delta. The current APK, Alpha2 rollback and
+canonical unstripped core were rehashed successfully after cleanup. All source,
+reports, symbols and original failure evidence remain. Historical native cores
+and archives remain for R2–R5 provenance reconciliation. The task emulator was
+shut down without deleting its data; Samsung display settings were restored and
+the phone was confirmed locked. G02-R1 is delivered; the full G02 scope remains open.
