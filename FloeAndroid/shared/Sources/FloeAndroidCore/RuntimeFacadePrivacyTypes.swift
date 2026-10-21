@@ -415,6 +415,28 @@ public struct PrivacyHistoryRemaining: Sendable, Equatable, Codable {
     }
 }
 
+/// Truthful owned private-workspace DIRECTORY accounting for one
+/// `privacy.history.clear`. Counts are real effects over conversations
+/// whose ownership row existed at the snapshot:
+///  * `removed` — an owned directory actually existed and was deleted;
+///  * `absent` — nothing existed at the owned path (the lifecycle goal was
+///    already satisfied; NEVER counted as a removal and never a failure);
+///  * `deferred` — cleanup was refused/deferred typed (survivors, changed
+///    ownership, unbound cleaner, foreign target, removal failure): the
+///    per-item typed reason is in `failures` and the durable V36 queue row
+///    survives for the retry sweep.
+public struct PrivacyWorkspaceDirectoryCleanup: Sendable, Equatable, Codable {
+    public var removed: Int
+    public var absent: Int
+    public var deferred: Int
+
+    public init(removed: Int = 0, absent: Int = 0, deferred: Int = 0) {
+        self.removed = removed
+        self.absent = absent
+        self.deferred = deferred
+    }
+}
+
 public struct PrivacyHistoryClearReport: Sendable, Equatable, Codable {
     public var enumerated: PrivacyHistoryEnumerated
     public var deleted: PrivacyHistoryDeleted
@@ -426,6 +448,12 @@ public struct PrivacyHistoryClearReport: Sendable, Equatable, Codable {
     /// nil ONLY with a typed `remainingFailure` and `partial=true`.
     public var remaining: PrivacyHistoryRemaining?
     public var remainingFailure: String?
+    /// ADDITIVE (2026-10-21, G02-R7): real per-conversation private
+    /// workspace-directory effects. Absent from reports produced before
+    /// this field existed; otherwise always present — an all-zero block is
+    /// the REAL effect set of a clear whose enumerated conversations had no
+    /// private-task ownership rows, never an invented default.
+    public var workspaceDirectories: PrivacyWorkspaceDirectoryCleanup?
     public var failurePage: PrivacyFailurePageSummary?
 
     public init(enumerated: PrivacyHistoryEnumerated,
@@ -434,6 +462,7 @@ public struct PrivacyHistoryClearReport: Sendable, Equatable, Codable {
                 partial: Bool,
                 remaining: PrivacyHistoryRemaining?,
                 remainingFailure: String? = nil,
+                workspaceDirectories: PrivacyWorkspaceDirectoryCleanup? = nil,
                 failurePage: PrivacyFailurePageSummary? = nil) {
         self.enumerated = enumerated
         self.deleted = deleted
@@ -441,6 +470,7 @@ public struct PrivacyHistoryClearReport: Sendable, Equatable, Codable {
         self.partial = partial
         self.remaining = remaining
         self.remainingFailure = remainingFailure
+        self.workspaceDirectories = workspaceDirectories
         self.failurePage = failurePage
     }
 }

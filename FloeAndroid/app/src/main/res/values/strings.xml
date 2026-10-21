@@ -217,6 +217,7 @@
     <string name="settings_privacy_active_grants">Runtime grants</string>
     <string name="settings_privacy_remaining">Remaining</string>
     <string name="settings_privacy_recount_unavailable">Recount unavailable (%1$s)</string>
+    <string name="settings_privacy_workspace_cleanup">Task folders: %1$d removed, %2$d already absent, %3$d deferred</string>
     <string name="settings_privacy_model_config">Model Configuration</string>
     <string name="settings_privacy_providers">Providers</string>
     <string name="settings_privacy_models">Models</string>

@@ -217,6 +217,7 @@
     <string name="settings_privacy_active_grants">运行授权</string>
     <string name="settings_privacy_remaining">剩余</string>
     <string name="settings_privacy_recount_unavailable">重新统计不可用（%1$s）</string>
+    <string name="settings_privacy_workspace_cleanup">任务文件夹：已移除 %1$d 个，%2$d 个原本不存在，%3$d 个延后处理</string>
     <string name="settings_privacy_model_config">模型配置</string>
     <string name="settings_privacy_providers">提供商</string>
     <string name="settings_privacy_models">模型</string>

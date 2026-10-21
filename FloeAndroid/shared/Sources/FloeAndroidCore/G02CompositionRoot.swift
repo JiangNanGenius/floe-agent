@@ -345,8 +345,63 @@ public final class G02RuntimeComposition: @unchecked Sendable {
                 await attachExtension(ext, to: composition,
                                       identity: gen.identity, gen: gen)
             }
+
+            // 5. G02-R7: ONE durable V36 private-workspace cleanup retry,
+            //    owned by THIS generation and drained like any other domain
+            //    work (see `runPrivateWorkspaceCleanupSweepOnce`). It runs
+            //    inside the admitted startup window, after the conversation
+            //    domain exists, and never gates or fails the bootstrap.
+            await runPrivateWorkspaceCleanupSweepOnce(composition: composition,
+                                                      gen: gen)
             return true
         }
+    }
+
+    /// The ONE real bootstrap/root-lifecycle retry of the durable
+    /// `local_workspace_cleanup` queue (G02-R7 gap 3).
+    ///
+    /// * Owned: a `.conversation` owned-work token (the frozen registry
+    ///   vocabulary — no new kind) is attached before the sweep, so every
+    ///   Root shutdown/retirement drain waits for the real work, and the
+    ///   EXACT token is detached afterwards. If the attach is refused (a
+    ///   stop was already requested, the store is not ready or the epoch is
+    ///   not admitting), the sweep is skipped and every row stays durably
+    ///   queued for the next launch.
+    /// * Fenced to the actual root/epoch: the same `bootstrapStillCurrent`
+    ///   predicate that gates the rest of the install is re-checked after
+    ///   the attach and before every item; when the generation stops
+    ///   starting, the sweep stops after the current item instead of
+    ///   touching a newer generation's root.
+    /// * One-shot: called exactly once from the owned install. No UI
+    ///   action, no polling, no detached/unowned task, no duplicate call.
+    private func runPrivateWorkspaceCleanupSweepOnce(
+        composition: G02InstalledComposition,
+        gen: AndroidRuntimeBootstrap.Generation
+    ) async {
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: gen.epoch,
+                                                           owner: gen.owner) else {
+            return
+        }
+        let registry = RuntimeOwnedWorkRegistry.shared
+        let ownerID = "cleanup-sweep:\(gen.epoch):\(UUID().uuidString)"
+        guard case .attached(let token) = registry.attach(
+            epoch: gen.epoch, kind: .conversation, ownerID: ownerID) else {
+            return
+        }
+        defer { registry.detach(token) }
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: gen.epoch,
+                                                           owner: gen.owner) else {
+            return
+        }
+        // Capture only Sendable values for the per-item fence closure; the
+        // `Generation` struct itself is never captured.
+        let epoch = gen.epoch
+        let owner = gen.owner
+        _ = await composition.conversationDomain
+            .retryPendingLocalWorkspaceCleanup(shouldContinue: {
+                AndroidRuntimeBootstrap.bootstrapStillCurrent(
+                    epoch: epoch, owner: owner)
+            })
     }
 
     /// Rolls back the self-installing lanes of a FAILED build for the exact

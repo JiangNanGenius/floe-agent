@@ -271,6 +271,7 @@ public actor RuntimeFacadePrivacy {
         var deletedRuns = 0
         var deletedPersistedGrants = 0
         var deletedInMemoryGrants = 0
+        var workspaceDirectories = PrivacyWorkspaceDirectoryCleanup()
 
         defer {
             if let spoolDescriptor {
@@ -380,6 +381,19 @@ public actor RuntimeFacadePrivacy {
                         if let post = result.postCommitFailure {
                             collector.record(PrivacyClearFailure(
                                 itemID: id, phase: .drain, reason: post))
+                        }
+                        switch result.workspaceCleanup {
+                        case .removed:
+                            workspaceDirectories.removed += 1
+                        case .absent:
+                            workspaceDirectories.absent += 1
+                        case .deferred, .failed:
+                            // Deferred/failed outcomes keep their typed
+                            // per-item collector entry (recorded above via
+                            // postCommitFailure) and the durable V36 row.
+                            workspaceDirectories.deferred += 1
+                        case nil:
+                            break
                         }
                     } catch PrivacyDomainError.notFound {
                         // Concurrently removed: the state is already reached;
@@ -508,6 +522,7 @@ public actor RuntimeFacadePrivacy {
                 collector: &collector,
                 remaining: remaining,
                 remainingFailure: remainingFailure,
+                workspaceDirectories: workspaceDirectories,
                 paused: pausedForRetirement)
         } catch {
             if let fence, let fenceOwner = globalFence {
@@ -524,9 +539,15 @@ public actor RuntimeFacadePrivacy {
         collector: inout PrivacyFailureCollector<PrivacyClearFailure>,
         remaining: PrivacyHistoryRemaining?,
         remainingFailure: String?,
+        workspaceDirectories: PrivacyWorkspaceDirectoryCleanup,
         paused: Bool
     ) throws -> PrivacyHistoryClearReport {
         let page = try collector.finish(reportStore: reportStore, now: clock())
+        // Absent directories are NOT failures and NOT removals: they are the
+        // lifecycle goal already reached. Deferred/failed keep their typed
+        // collector entries AND force `partial=true` through the collector,
+        // so a clear with refused/removal-failed directories can never
+        // report full success.
         return PrivacyHistoryClearReport(
             enumerated: enumerated,
             deleted: deleted,
@@ -534,6 +555,7 @@ public actor RuntimeFacadePrivacy {
             partial: collector.total > 0 || remainingFailure != nil || paused,
             remaining: remaining,
             remainingFailure: remainingFailure,
+            workspaceDirectories: workspaceDirectories,
             failurePage: page)
     }
 
@@ -545,6 +567,8 @@ public actor RuntimeFacadePrivacy {
     private struct ConversationDeletionResult: Sendable {
         var deleted: Bool
         var postCommitFailure: String?
+        /// Truthful owned-directory cleanup effect for THIS conversation.
+        var workspaceCleanup: ConversationPrivateWorkspaceCleanup.Outcome?
     }
 
     private func deleteEnumeratedConversation(
@@ -633,17 +657,30 @@ public actor RuntimeFacadePrivacy {
             if settlement != .released && settlement != .alreadySettled {
                 postCommitFailure = "deletionFenceSettlementUnavailable"
             }
+            var workspaceCleanup: ConversationPrivateWorkspaceCleanup.Outcome?
             if let capturedTask {
-                do {
-                    try await workspaceCleaning?.removePrivateTaskDirectory(
-                        relativePath: capturedTask)
-                } catch {
-                    postCommitFailure = postCommitFailure
-                        ?? "privateWorkspaceCleanupUnavailable"
+                // The SAME authoritative ownership/lifecycle sequence as
+                // conversation.delete (ConversationPrivateWorkspaceCleanup):
+                // survivor/ownership re-checks, ORIGINAL row removal and the
+                // durable V36 queue — never a bare filesystem call on a
+                // captured path string. Removed/absent/deferred/failed stay
+                // distinct and failures stay typed (the opaque
+                // `privateWorkspaceCleanupUnavailable` era is over).
+                let outcome = await ConversationPrivateWorkspaceCleanup.perform(
+                    workspaceStore: workspaceStore,
+                    cleaning: workspaceCleaning,
+                    workspaceID: capturedTask.workspaceID,
+                    relativePath: capturedTask.relativePath)
+                workspaceCleanup = outcome
+                if case .deferred(let reason) = outcome {
+                    postCommitFailure = postCommitFailure ?? reason
+                } else if case .failed(let reason) = outcome {
+                    postCommitFailure = postCommitFailure ?? reason
                 }
             }
             return ConversationDeletionResult(deleted: true,
-                                              postCommitFailure: postCommitFailure)
+                                              postCommitFailure: postCommitFailure,
+                                              workspaceCleanup: workspaceCleanup)
         } catch {
             if !committed {
                 _ = await lifecycle.abortDeletionFence(fence)
@@ -652,13 +689,15 @@ public actor RuntimeFacadePrivacy {
         }
     }
 
-    private func capturePrivateTask(_ conversationID: UUID) async throws -> String? {
+    private func capturePrivateTask(_ conversationID: UUID) async throws
+        -> (workspaceID: UUID, relativePath: String)?
+    {
         guard let workspaceID = try await workspaceStore.workspaceID(
             conversationID: conversationID) else { return nil }
         guard let record = try await workspaceStore.workspace(id: workspaceID),
               record.kind == .privateTask,
               let relative = record.internalRelativePath else { return nil }
-        return relative
+        return (workspaceID: workspaceID, relativePath: relative)
     }
 
     // MARK: - Spool line parsing / run accounting

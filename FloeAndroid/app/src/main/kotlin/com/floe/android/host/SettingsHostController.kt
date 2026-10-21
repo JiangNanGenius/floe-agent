@@ -152,6 +152,15 @@ class SettingsHostController internal constructor(
         val entries: List<MemoryEntryProjection> = emptyList(),
         val nextCursor: String? = null,
         val loadingMore: Boolean = false,
+        /**
+         * True once the INITIAL (non-continuation) read settled in ANY
+         * terminal class — a real page (even an empty inventory), a typed
+         * refusal/failure, or a cancelled/superseded terminal. Until then a
+         * page open may run the one-shot recovery read; afterwards the
+         * surface is settled data (or a typed error with Retry) and is never
+         * refreshed indiscriminately.
+         */
+        val loaded: Boolean = false,
         val searchItems: List<MemorySearchItemProjection> = emptyList(),
         val searchActive: Boolean = false,
         val searchQuery: String = "",
@@ -337,6 +346,12 @@ class SettingsHostController internal constructor(
      */
     data class PersonalizationSurface(
         val kind: String = "soul",
+        /**
+         * True once the INITIAL document read settled in ANY terminal class
+         * (see [MemorySurface.loaded]); the page-open recovery read uses it
+         * exactly like the Privacy surface uses `summary != null`.
+         */
+        val loaded: Boolean = false,
         val activeRevision: Int? = null,
         val content: String = "",
         val contentHandle: String? = null,
@@ -390,6 +405,11 @@ class SettingsHostController internal constructor(
 
     data class UsageSurface(
         val totals: UsageTotalsProjection? = null,
+        /**
+         * True once the INITIAL read for the current settled dimension
+         * settled in ANY terminal class (see [MemorySurface.loaded]).
+         */
+        val loaded: Boolean = false,
         val byDay: List<UsageDayProjection> = emptyList(),
         val rows: List<UsageBreakdownProjection> = emptyList(),
         val nextCursor: String? = null,
@@ -492,6 +512,17 @@ class SettingsHostController internal constructor(
          * NOT a failure). Null until a model-config clear report lands.
          */
         val preferencesReset: Boolean? = null,
+        /**
+         * History-clear report truth only: REAL owned private-task workspace
+         * directory effects from the accepted native lifecycle
+         * (removed = actually deleted, absent = already gone — never
+         * counted as removed —, deferred = typed refusal/failure kept in
+         * `failures`). Null until a history-clear report lands; never
+         * invented zeros.
+         */
+        val workspaceRemoved: Long? = null,
+        val workspaceAbsent: Long? = null,
+        val workspaceDeferred: Long? = null,
     )
 
     data class PrivacyRemainingProjection(
@@ -673,6 +704,90 @@ class SettingsHostController internal constructor(
         }
     }
 
+    /**
+     * One-shot Settings/Memory page-open recovery (mirrors
+     * [ensurePrivacySummaryLoaded]): the surface `loaded` flag plays the
+     * role of Privacy's `summary != null`. A real settled page — even an
+     * empty inventory — is never re-read; a settled typed error keeps its
+     * Retry; a still-unsettled surface re-reads once, refreshing the real
+     * native readiness first when its own domain has not admitted yet.
+     */
+    fun ensureMemoryLoaded() {
+        if (stateFlow.value.memory.loaded) return
+        if (admitted("settings.memory")) {
+            refreshMemory()
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            host.refreshDomainReadiness()
+            if (admitted("settings.memory")) {
+                refreshMemory()
+            } else {
+                update { state ->
+                    if (!state.memory.loaded && state.memoryStatus.error == null) {
+                        state.copy(memoryStatus = SurfaceStatus(error = "unavailable"))
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * One-shot Settings/Personalization page-open recovery (mirrors
+     * [ensurePrivacySummaryLoaded]); see [ensureMemoryLoaded].
+     */
+    fun ensurePersonalizationLoaded() {
+        if (stateFlow.value.personalization.loaded) return
+        if (admitted("settings.personalization")) {
+            refreshPersonalization(stateFlow.value.personalization.kind)
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            host.refreshDomainReadiness()
+            if (admitted("settings.personalization")) {
+                refreshPersonalization(stateFlow.value.personalization.kind)
+            } else {
+                update { state ->
+                    if (!state.personalization.loaded &&
+                        state.personalizationStatus.error == null
+                    ) {
+                        state.copy(personalizationStatus = SurfaceStatus(error = "unavailable"))
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * One-shot Settings/Usage page-open recovery (mirrors
+     * [ensurePrivacySummaryLoaded]); see [ensureMemoryLoaded].
+     */
+    fun ensureUsageLoaded() {
+        if (stateFlow.value.usage.loaded) return
+        if (admitted("settings.usage")) {
+            refreshUsage()
+            return
+        }
+        host.scope.launch(host.ioDispatcher) {
+            host.refreshDomainReadiness()
+            if (admitted("settings.usage")) {
+                refreshUsage()
+            } else {
+                update { state ->
+                    if (!state.usage.loaded && state.usageStatus.error == null) {
+                        state.copy(usageStatus = SurfaceStatus(error = "unavailable"))
+                    } else {
+                        state
+                    }
+                }
+            }
+        }
+    }
+
     private inline fun update(transform: (SettingsHostState) -> SettingsHostState) {
         // Independent IO callbacks must not copy an old aggregate state over
         // another surface's settled result. Serialize the whole read/copy/write;
@@ -800,7 +915,20 @@ class SettingsHostController internal constructor(
         java.util.concurrent.atomic.AtomicLong(0)
 
     fun refreshMemory() {
-        if (!admitted("settings.memory")) return
+        if (!admitted("settings.memory")) {
+            // The memory domain is not (yet) the owner of this surface.
+            // Settle a typed, retryable state instead of leaving the default
+            // loading flag forever; a real later admission (or the page-open
+            // ensure) re-reads it.
+            update { state ->
+                if (!state.memory.loaded && state.memoryStatus.error == null) {
+                    state.copy(memoryStatus = SurfaceStatus(error = "unavailable"))
+                } else {
+                    state
+                }
+            }
+            return
+        }
         val generation = memoryGeneration.incrementAndGet()
         update {
             it.copy(
@@ -845,6 +973,19 @@ class SettingsHostController internal constructor(
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val root = outcome.value as? JsonObject
+                    if (!append && root == null) {
+                        // A valueless Closed completion is a LOST value, not
+                        // an empty inventory: settling it as "no memories"
+                        // would be a fabricated empty (Privacy's
+                        // summaryUnavailable analogue).
+                        update {
+                            it.copy(
+                                memoryStatus = SurfaceStatus(error = "listUnavailable"),
+                                memory = it.memory.copy(loaded = true, loadingMore = false),
+                            )
+                        }
+                        return@trackOperation
+                    }
                     val page = (root?.get("entries") as? JsonArray)
                         ?.mapNotNull { e -> decodeMemoryEntry(e as? JsonObject) }
                         ?: emptyList()
@@ -862,6 +1003,7 @@ class SettingsHostController internal constructor(
                                     page
                                 },
                                 nextCursor = next,
+                                loaded = if (append) it.memory.loaded else true,
                                 loadingMore = false,
                             ),
                         )
@@ -870,16 +1012,43 @@ class SettingsHostController internal constructor(
                 is HostOperationOutcome.Rejected -> update {
                     it.copy(
                         memoryStatus = SurfaceStatus(error = outcome.code),
-                        memory = it.memory.copy(loadingMore = false),
+                        memory = it.memory.copy(
+                            loaded = if (append) it.memory.loaded else true,
+                            loadingMore = false,
+                        ),
                     )
                 }
                 is HostOperationOutcome.Failed -> update {
                     it.copy(
                         memoryStatus = SurfaceStatus(error = outcome.code),
-                        memory = it.memory.copy(loadingMore = false),
+                        memory = it.memory.copy(
+                            loaded = if (append) it.memory.loaded else true,
+                            loadingMore = false,
+                        ),
                     )
                 }
-                else -> update { it.copy(memory = it.memory.copy(loadingMore = false)) }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> {
+                    // A cancelled/replaced terminal of the INITIAL read must
+                    // settle typed and retryable — never leave the surface on
+                    // the default loading flag forever. Continuations only
+                    // clear their spinner.
+                    val code = if (outcome == HostOperationOutcome.Cancelled) {
+                        "cancelled"
+                    } else {
+                        "superseded"
+                    }
+                    update {
+                        if (append) {
+                            it.copy(memory = it.memory.copy(loadingMore = false))
+                        } else {
+                            it.copy(
+                                memoryStatus = SurfaceStatus(error = code),
+                                memory = it.memory.copy(loaded = true, loadingMore = false),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -1103,7 +1272,18 @@ class SettingsHostController internal constructor(
                         memory = it.memory.copy(searchLoadingMore = false, searchHasMore = false),
                     )
                 }
-                else -> update { it.copy(memory = it.memory.copy(searchLoadingMore = false)) }
+                HostOperationOutcome.Cancelled -> update {
+                    it.copy(
+                        memoryStatus = SurfaceStatus(error = "cancelled"),
+                        memory = it.memory.copy(searchLoadingMore = false, searchHasMore = false),
+                    )
+                }
+                HostOperationOutcome.Superseded -> update {
+                    it.copy(
+                        memoryStatus = SurfaceStatus(error = "superseded"),
+                        memory = it.memory.copy(searchLoadingMore = false, searchHasMore = false),
+                    )
+                }
             }
         }
     }
@@ -1926,7 +2106,20 @@ class SettingsHostController internal constructor(
         revisionsCursor: String? = null,
         ownerViewGeneration: Long? = null,
     ) {
-        if (!admitted("settings.personalization")) return
+        if (!admitted("settings.personalization")) {
+            // Settle a typed, retryable state for an unsettled surface
+            // instead of leaving the default loading flag forever.
+            update { state ->
+                if (!state.personalization.loaded &&
+                    state.personalizationStatus.error == null
+                ) {
+                    state.copy(personalizationStatus = SurfaceStatus(error = "unavailable"))
+                } else {
+                    state
+                }
+            }
+            return
+        }
         val append = revisionsCursor != null
         var epoch = 0L
         var contentGeneration = 0L
@@ -1990,6 +2183,23 @@ class SettingsHostController internal constructor(
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val root = outcome.value as? JsonObject
+                    if (!append && root == null) {
+                        // A valueless Closed completion is a LOST value, not
+                        // an empty document: the editor must not open an
+                        // unsaved blank over the real state (Privacy's
+                        // summaryUnavailable analogue).
+                        update {
+                            it.copy(
+                                personalizationStatus =
+                                    SurfaceStatus(error = "documentUnavailable"),
+                                personalization = it.personalization.copy(
+                                    loaded = true,
+                                    contentLoading = false,
+                                ),
+                            )
+                        }
+                        return@trackOperation
+                    }
                     val active = root?.obj("active")
                     val historyPage = (root?.get("revisionsMeta") as? JsonArray)
                         ?.mapNotNull { decodeRevisionMeta(it as? JsonObject) }
@@ -2010,6 +2220,9 @@ class SettingsHostController internal constructor(
                         } else {
                             PersonalizationSurface(
                                 kind = kind,
+                                // The initial document read settled — even an
+                                // empty document is real settled data.
+                                loaded = true,
                                 // The ACTIVE slot is the real `active` document
                                 // row, not MAX(history). A storedAsDraft result
                                 // advances latestRevision without moving the
@@ -2054,7 +2267,13 @@ class SettingsHostController internal constructor(
                         it.copy(personalization = it.personalization.copy(
                             revisionsLoadingMore = false))
                     } else {
-                        it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                        it.copy(
+                            personalizationStatus = SurfaceStatus(error = outcome.code),
+                            personalization = it.personalization.copy(
+                                loaded = true,
+                                contentLoading = false,
+                            ),
+                        )
                     }
                 }
                 is HostOperationOutcome.Failed -> update {
@@ -2062,10 +2281,44 @@ class SettingsHostController internal constructor(
                         it.copy(personalization = it.personalization.copy(
                             revisionsLoadingMore = false))
                     } else {
-                        it.copy(personalizationStatus = SurfaceStatus(error = outcome.code))
+                        it.copy(
+                            personalizationStatus = SurfaceStatus(error = outcome.code),
+                            personalization = it.personalization.copy(
+                                loaded = true,
+                                contentLoading = false,
+                            ),
+                        )
                     }
                 }
-                else -> Unit
+                HostOperationOutcome.Cancelled -> settlePersonalizationTerminal(
+                    "cancelled", append,
+                )
+                HostOperationOutcome.Superseded -> settlePersonalizationTerminal(
+                    "superseded", append,
+                )
+            }
+        }
+    }
+
+    /**
+     * A cancelled/replaced terminal of a `personalization.get` settles
+     * typed and retryable: the initial read never keeps the default loading
+     * flag forever, and a continuation never leaves the revisions pager
+     * spinning. Settled documents are never re-opened by this path.
+     */
+    private fun settlePersonalizationTerminal(code: String, append: Boolean) {
+        update {
+            if (append) {
+                it.copy(personalization = it.personalization.copy(
+                    revisionsLoadingMore = false))
+            } else {
+                it.copy(
+                    personalizationStatus = SurfaceStatus(error = code),
+                    personalization = it.personalization.copy(
+                        loaded = true,
+                        contentLoading = false,
+                    ),
+                )
             }
         }
     }
@@ -2753,7 +3006,18 @@ class SettingsHostController internal constructor(
      * generation; a continuation appends only while it still owns it.
      */
     fun refreshUsage(dimension: String = stateFlow.value.usage.dimension) {
-        if (!admitted("settings.usage")) return
+        if (!admitted("settings.usage")) {
+            // Settle a typed, retryable state for an unsettled surface
+            // instead of leaving the default loading flag forever.
+            update { state ->
+                if (!state.usage.loaded && state.usageStatus.error == null) {
+                    state.copy(usageStatus = SurfaceStatus(error = "unavailable"))
+                } else {
+                    state
+                }
+            }
+            return
+        }
         val normalized = when (dimension) {
             "conversation", "model", "provider" -> dimension
             else -> "total"
@@ -2808,6 +3072,19 @@ class SettingsHostController internal constructor(
             when (outcome) {
                 is HostOperationOutcome.Completed -> {
                     val root = outcome.value as? JsonObject
+                    if (!append && root == null) {
+                        // A valueless Closed completion is a LOST value, not
+                        // "no usage recorded": settling it as empty would be
+                        // a fabricated zero report (Privacy's
+                        // summaryUnavailable analogue).
+                        update {
+                            it.copy(
+                                usageStatus = SurfaceStatus(error = "statisticsUnavailable"),
+                                usage = it.usage.copy(loaded = true, loadingMore = false),
+                            )
+                        }
+                        return@trackOperation
+                    }
                     val pageRows = (root?.get("rows") as? JsonArray)
                         ?.mapNotNull { r -> (r as? JsonObject)?.let(::decodeUsageRow) }
                         ?: emptyList()
@@ -2822,6 +3099,7 @@ class SettingsHostController internal constructor(
                             usage = UsageSurface(
                                 totals = (root?.get("totals") as? JsonObject)
                                     ?.let(::decodeUsageTotals),
+                                loaded = if (append) state.usage.loaded else true,
                                 byDay = (root?.get("byDay") as? JsonArray)
                                     ?.mapNotNull { d ->
                                         (d as? JsonObject)?.let { day ->
@@ -2844,16 +3122,42 @@ class SettingsHostController internal constructor(
                 is HostOperationOutcome.Rejected -> update {
                     it.copy(
                         usageStatus = SurfaceStatus(error = outcome.code),
-                        usage = it.usage.copy(loadingMore = false),
+                        usage = it.usage.copy(
+                            loaded = if (append) it.usage.loaded else true,
+                            loadingMore = false,
+                        ),
                     )
                 }
                 is HostOperationOutcome.Failed -> update {
                     it.copy(
                         usageStatus = SurfaceStatus(error = outcome.code),
-                        usage = it.usage.copy(loadingMore = false),
+                        usage = it.usage.copy(
+                            loaded = if (append) it.usage.loaded else true,
+                            loadingMore = false,
+                        ),
                     )
                 }
-                else -> update { it.copy(usage = it.usage.copy(loadingMore = false)) }
+                HostOperationOutcome.Cancelled,
+                HostOperationOutcome.Superseded -> {
+                    // A cancelled/replaced terminal of the INITIAL read
+                    // settles typed and retryable — never a permanent
+                    // loading state; continuations only clear their spinner.
+                    val code = if (outcome == HostOperationOutcome.Cancelled) {
+                        "cancelled"
+                    } else {
+                        "superseded"
+                    }
+                    update {
+                        if (append) {
+                            it.copy(usage = it.usage.copy(loadingMore = false))
+                        } else {
+                            it.copy(
+                                usageStatus = SurfaceStatus(error = code),
+                                usage = it.usage.copy(loaded = true, loadingMore = false),
+                            )
+                        }
+                    }
+                }
             }
         }
     }
@@ -3495,6 +3799,9 @@ class SettingsHostController internal constructor(
                 modelRemaining = prior?.modelRemaining,
                 modelRemainingFailure = prior?.modelRemainingFailure,
                 preferencesReset = prior?.preferencesReset,
+                workspaceRemoved = prior?.workspaceRemoved,
+                workspaceAbsent = prior?.workspaceAbsent,
+                workspaceDeferred = prior?.workspaceDeferred,
             ),
             historyFailures = if (sameRoot) previous.historyFailures else emptyList(),
             modelConfigFailures = if (sameRoot) previous.modelConfigFailures else emptyList(),
@@ -3551,6 +3858,15 @@ class SettingsHostController internal constructor(
             remainingFailure
         }
         val preferencesReset = if (history) null else root.bool("preferencesReset")
+        // ADDITIVE native accounting (G02-R7): real owned private-task
+        // workspace directory effects. An absent key means an older native
+        // build produced the report: stay null, never invent zeros (a
+        // present all-zero block is itself the real "no ownership rows"
+        // effect set).
+        val workspaceDirectories = if (history) root.obj("workspaceDirectories") else null
+        val workspaceRemoved = workspaceDirectories?.long("removed")
+        val workspaceAbsent = workspaceDirectories?.long("absent")
+        val workspaceDeferredCount = workspaceDirectories?.long("deferred")
         val page = root.obj("failurePage")?.let { p ->
             val handle = p.string("handle") ?: return@let null
             PrivacyReportPage(
@@ -3590,6 +3906,21 @@ class SettingsHostController internal constructor(
                         s.modelRemainingFailure
                     } else {
                         modelRemainingFailure
+                    },
+                    workspaceRemoved = if (history) {
+                        workspaceRemoved
+                    } else {
+                        s.workspaceRemoved
+                    },
+                    workspaceAbsent = if (history) {
+                        workspaceAbsent
+                    } else {
+                        s.workspaceAbsent
+                    },
+                    workspaceDeferred = if (history) {
+                        workspaceDeferredCount
+                    } else {
+                        s.workspaceDeferred
                     },
                     partial = partial,
                 )

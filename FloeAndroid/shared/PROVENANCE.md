@@ -618,3 +618,27 @@ closure contains 19 libraries; the ten SDK libraries outside that closure are
 excluded from staging. Native compilation and static packaging evidence are
 separate from App/device acceptance. Original symbols and canonical versus
 packaged hashes are retained with the private exact-source artifacts.
+
+## G02-R7 private-workspace cleanup repair (2026-10-21)
+
+`Sources/FloePersistence/WorkspaceStore.swift` was previously a relative
+symlink into the protected iOS tree (`../../../../FloeAgent/Sources/
+FloePersistence/WorkspaceStore.swift`). The bridge normalized a symlink
+scope to the iOS destination, so the Android owner atomically replaced ONLY
+this Android path with an exact byte-for-byte regular mirror before the
+cleanup repair. The upstream file was not modified and still has SHA-256
+`be046a7c7365116498d724bebf5bf176eb824b39678fe70d01a9c859f63c1da6`;
+the regular mirror had the same hash at conversion and carries the
+Android-only additions below. Future upstream adoption of this file
+requires an explicit diff; the remaining relative links are unchanged.
+
+The Android-only additions are marked `ANDROID-ONLY (G02-R7)` and are the
+only changes to that file: `retirePrivateTaskForCleanup(workspaceID:
+expectedRelativePath:)` performs the survivor/kind/exact-path/durable-queue
+admission and the conditional `workspaces` delete in ONE original
+`DatabaseManager.writer` transaction (no rehoming), and
+`finishLocalCleanup(workspaceID:expectedRelativePath:)` deletes only the
+exact queue binding after a real file effect. The original `pendingLocalCleanup`,
+`finishLocalCleanup(workspaceID:)`, `deleteWorkspace`, schema, V36 trigger and
+queue are byte-unchanged. No new migration or parallel ownership registry was
+introduced.

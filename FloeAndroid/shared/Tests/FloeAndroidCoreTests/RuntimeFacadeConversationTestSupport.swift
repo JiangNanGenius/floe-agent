@@ -39,7 +39,7 @@ enum RB3TestBed {
         // purge owns final removal (same convention the existing shared-core
         // suites use); keeping this helper free of XCTestCase instance calls
         // lets every test share it.
-        let root = FileManager.default.temporaryDirectory
+        let root = androidTestFixtureDirectory
             .appendingPathComponent("FloeRB3Tests-\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let manager = try DatabaseManager(path: root.appendingPathComponent("floe.sqlite"))
@@ -595,7 +595,7 @@ final class TempWorkspaceCleaning: ConversationOwnedWorkspaceCleaning, @unchecke
     }
 
     init(failOnce: Bool = false) throws {
-        let base = FileManager.default.temporaryDirectory
+        let base = androidTestFixtureDirectory
             .appendingPathComponent("FloeRB3Workspace-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
             at: base.appendingPathComponent("FloeAgent/PrivateTasks", isDirectory: true),
@@ -623,7 +623,9 @@ final class TempWorkspaceCleaning: ConversationOwnedWorkspaceCleaning, @unchecke
         lock.lock(); defer { lock.unlock() }; return attempts
     }
 
-    func removePrivateTaskDirectory(relativePath: String) async throws {
+    func removePrivateTaskDirectory(relativePath: String) async throws
+        -> PrivateTaskDirectoryRemoval
+    {
         withLocked { attempts.append(relativePath) }
         if failOnce {
             withLocked { failOnce = false }
@@ -639,9 +641,11 @@ final class TempWorkspaceCleaning: ConversationOwnedWorkspaceCleaning, @unchecke
         guard target.resolvingSymlinksInPath().deletingLastPathComponent() == managedRoot else {
             throw CocoaError(.fileReadInvalidFileName)
         }
-        if FileManager.default.fileExists(atPath: target.path) {
-            try FileManager.default.removeItem(at: target)
+        guard FileManager.default.fileExists(atPath: target.path) else {
+            return .absent
         }
+        try FileManager.default.removeItem(at: target)
+        return .removed
     }
 }
 

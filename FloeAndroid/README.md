@@ -19,20 +19,22 @@ local LLM backend.
 
 ## Android Alpha
 
-[Download 0.1.0-alpha.3](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.3)
+[Download 0.1.0-alpha.5](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.5)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
-Alpha3 was checked on an API37 / 16 KiB ARM64 tablet emulator and Samsung SM-G9810,
-Android 13 / API33 / 4 KiB. The Samsung directly upgraded from public Alpha2,
-retaining original history, model configuration and stored credentials. Real new
-and continuous replies, Stop and cold-reopened history passed; the emulator also
-exercised paused-run Continue, temporary Keep/discard, settings columns/modals
-and system-picker cancellation. The public APK and checksum were independently
-downloaded and verified. See the [batch qualification](planning/ALPHA3_QUALIFICATION.md)
-for source binding and limits, including the test-only post-build overlay.
-G02 remains active. **G02-R1** delivery and cleanup are complete. The next target
-is **G02-R2: model and settings closure**, covering 17 operations after reusing
-already-qualified evidence. See the
-[current inventory and sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
+Alpha5 fixes settings result races and privacy-summary recovery, with focused
+local tests and actual API37 / 16 KiB tablet-emulator checks using a local
+provider fixture. Its public APK and checksum were independently downloaded
+and verified. The physical Samsung SM-G9810 remains on Alpha4; Alpha5 phone
+acceptance is not claimed. Earlier Alpha3/4 compatibility evidence is retained
+in [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md).
+
+G02 remains active. R1–R6 stage deliveries are complete; **G02-R7** is repairing
+managed private-workspace cleanup and recovery of memory, personalization and
+usage settings. The cleanup adapter is already bound: relative-path validation
+and history-clear integration with the existing ownership/retry lifecycle need
+repair. A directory-cleanup failure is not a successful deletion. The current
+code batch will receive focused integrated checks before another stage release.
+See the [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
 Later targets are a backlog, not prequeued worker tasks. Alpha delivery does not
 close the full 41-operation G02 scope.
 

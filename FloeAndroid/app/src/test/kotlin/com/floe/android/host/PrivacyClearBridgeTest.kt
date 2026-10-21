@@ -46,6 +46,7 @@ class PrivacyClearBridgeTest {
     private class ScriptExchange(
         private val receiptFor: (command: String, correlation: String) -> String,
         private val effectFor: (receipt: String, correlation: String) -> String?,
+        private val receiptForRequest: ((String) -> String?)? = null,
     ) : HostBridgeExchange {
         val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
 
@@ -58,7 +59,7 @@ class PrivacyClearBridgeTest {
                     ?: """{"version":3,"requestID":"$correlation","ok":false,"schema":"floe.effect-cursor/3","correlationID":"$correlation","error":"unknownReceipt"}"""
             }
             val command = commandOf(request)
-            val receipt = receiptFor(command, correlation)
+            val receipt = receiptForRequest?.invoke(request) ?: receiptFor(command, correlation)
             return """{"version":3,"ok":true,"queued":true,"correlationID":"$correlation","operationReceiptID":"$receipt"}"""
         }
 
@@ -648,9 +649,14 @@ class PrivacyClearBridgeTest {
     fun historyClearRefreshesConsumersAndReleasesOnlyDeletedHolders() = runBlocking {
         val holderReads = java.util.concurrent.atomic.AtomicInteger()
         val exchange = ScriptExchange(
-            receiptFor = { command, c ->
-                if (command == "conversation.get") "rc:cget-prv-${holderReads.incrementAndGet()}"
-                else "rc:$c"
+            receiptFor = { _, c -> "rc:$c" },
+            receiptForRequest = { request ->
+                if (ScriptExchange.commandOf(request) != "conversation.get") null else {
+                    val envelope = (Json.parseToJsonElement(request) as JsonObject)["envelope"] as JsonObject
+                    val owner = envelope["owner"] as JsonObject
+                    val taskID = (owner["taskID"] as kotlinx.serialization.json.JsonPrimitive).content
+                    "rc:cget-prv-$taskID"
+                }
             },
             effectFor = { receipt, correlation ->
                 when {
@@ -661,7 +667,7 @@ class PrivacyClearBridgeTest {
                     receipt.startsWith("rc:hlist") ->
                         accepted(correlation, receipt,
                             """{"rows":[{"conversationID":"c-keep","title":"Keep","updatedAt":"2026-10-21T00:00:00Z","archived":false}]}""")
-                    receipt == "rc:cget-prv-1" ->
+                    receipt == "rc:cget-prv-c-del" ->
                         rejected(correlation, receipt, "notFound")
                     receipt.startsWith("rc:cget-prv") ->
                         accepted(correlation, receipt, """{"revision":{"resourceID":"c","version":"v1"}}""")

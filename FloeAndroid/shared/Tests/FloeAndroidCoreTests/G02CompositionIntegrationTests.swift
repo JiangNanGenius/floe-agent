@@ -36,6 +36,8 @@
 // reuse with synchronous resets.
 import XCTest
 import Foundation
+import GRDB
+import FloePersistence
 @testable import FloeAndroidCore
 
 final class G02CompositionIntegrationTests: XCTestCase {
@@ -92,12 +94,18 @@ final class G02CompositionIntegrationTests: XCTestCase {
     /// any terminal kind.
     @discardableResult
     private func bootInstalledGeneration(
+        preparedRoot: String? = nil,
         file: StaticString = #filePath, line: UInt = #line
     ) async throws -> Boot {
-        let root = NSTemporaryDirectory()
-            .appending("g02-tests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(atPath: root,
-                                                withIntermediateDirectories: true)
+        let root: String
+        if let preparedRoot {
+            root = preparedRoot
+        } else {
+            root = (androidTestFixtureDirectory.path + "/")
+                .appending("g02-tests-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(atPath: root,
+                                                    withIntermediateDirectories: true)
+        }
         let token = String((0..<16).map { _ in "0123456789abcdef".randomElement()! })
         let epoch = FixtureEpoch.allocate()
         guard case .accepted(let receipt) = AndroidRuntimeBootstrap.start(
@@ -701,4 +709,59 @@ final class G02CompositionIntegrationTests: XCTestCase {
         XCTAssertEqual(G02RuntimeComposition.shared.transportGate.startupRefusal,
                        "defaultTrustStoreUnavailable")
     }
+
+    // MARK: - G02-R7 startup cleanup retry
+
+    /// Process-death recovery through the REAL composition install: the
+    /// durable V36 queue row and the owned directory exist BEFORE the trusted
+    /// root starts; the ONE epoch-owned startup sweep must complete both
+    /// without any UI action, and its owned-work token must already be
+    /// drained when the accepted bootstrap terminal is observable.
+    func testStartupSweepCompletesQueuedPrivateWorkspaceCleanupOnce() async throws {
+        // 1. Prepare the exact process-death shape on a fresh trusted root.
+        let root = (androidTestFixtureDirectory.path + "/")
+            .appending("g02-sweep-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(atPath: root,
+                                                withIntermediateDirectories: true)
+        let workspaceID = UUID()
+        let relative = "PrivateTasks/\(UUID().uuidString)"
+        let databaseURL = URL(fileURLWithPath: root)
+            .appendingPathComponent("floe.sqlite")
+        let seedManager = try DatabaseManager(path: databaseURL)
+        try await seedManager.migrate()
+        try await seedManager.writer { db in
+            try db.execute(sql: """
+                INSERT INTO local_workspace_cleanup (workspace_id, relative_path)
+                VALUES (?, ?)
+                """, arguments: [workspaceID.uuidString, relative])
+        }
+        try await seedManager.close()
+        let ownedDirectory = URL(fileURLWithPath: root)
+            .appendingPathComponent("Workspace", isDirectory: true)
+            .appendingPathComponent(relative, isDirectory: true)
+        try FileManager.default.createDirectory(at: ownedDirectory,
+                                                withIntermediateDirectories: true)
+        let marker = ownedDirectory.appendingPathComponent("notes.md")
+        try Data("recoverable".utf8).write(to: marker)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+
+        // 2. Real trusted start -> accepted bootstrap -> ordinary install.
+        let boot = try await bootInstalledGeneration(preparedRoot: root)
+        let installed = try XCTUnwrap(
+            G02RuntimeComposition.shared.installedComposition)
+        XCTAssertEqual(installed.epoch, boot.epoch)
+
+        // The sweep ran inside the install, before the terminal: the owned
+        // directory is gone and the exact queue row was completed.
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ownedDirectory.path))
+        let remainingQueue: Int = try await installed.cluster.database.reader { db in
+            try Int.fetchOne(db,
+                             sql: "SELECT COUNT(*) FROM local_workspace_cleanup") ?? 0
+        }
+        XCTAssertEqual(remainingQueue, 0)
+        // The sweep attached REAL owned work and detached its exact token;
+        // it can never be an unowned detached task.
+        XCTAssertEqual(RuntimeOwnedWorkRegistry.shared.count(for: boot.epoch), 0)
+    }
 }
+

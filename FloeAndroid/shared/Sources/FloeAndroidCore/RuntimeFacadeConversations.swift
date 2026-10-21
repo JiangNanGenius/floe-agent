@@ -681,20 +681,154 @@ public protocol ConversationCredentialDeletionDraining: Sendable {
     func drainDeletionQueue() async -> CredentialDeletionDrainSummary
 }
 
+/// The truthful on-disk effect of ONE private-task workspace directory
+/// removal. `.absent` is distinct from `.removed`: the lifecycle goal (no
+/// directory after the owning task stopped) was already satisfied, so the
+/// caller counts it as absorbed — never as a removal and never as a
+/// failure. Only an actually-removed owned directory reports `.removed`.
+public enum PrivateTaskDirectoryRemoval: Sendable, Equatable {
+    case removed
+    case absent
+}
+
 /// Removes ONE already-queued private-task workspace directory tree inside
 /// the trusted host-owned application root. The real implementation mirrors
 /// WorkspaceCenter.removePrivateWorkspaceDirectory
 /// (FloeApp/Workspace/WorkspaceCenter.swift:423-443): the relative path must
-/// be exactly `PrivateTasks/<uuid>`, the target must resolve inside the
-/// canonical managed root with no symlink escape, and the durable
-/// bookkeeping stays on the ORIGINAL store APIs (pendingLocalCleanup /
-/// workspace(id:) / conversations(workspaceID:) / deleteWorkspace /
-/// finishLocalCleanup), which this adapter already drives. The port exists
-/// ONLY for the host-filesystem removal the facade has no entitlement for.
+/// be exactly `PrivateTasks/<uuid>`, the managed root/ancestors/final entry
+/// are validated with non-following metadata (no symlink escape, no
+/// permission/I/O "absence"), and the durable bookkeeping is driven by
+/// `ConversationPrivateWorkspaceCleanup` over the ORIGINAL queue APIs plus
+/// the Android-only atomic admission/completion pair. The port exists ONLY
+/// for the host-filesystem removal the facade has no entitlement for.
 /// Unbound → the V36 trigger-queued rows survive and the reply reports
 /// `.deferredQueueRetained`.
+///
+/// Refusals (traversal/shape/foreign/link) throw a typed
+/// `ConversationDomainError` and MUST NOT touch the filesystem target; a
+/// permission/I/O refusal and a partial recursive-removal failure also
+/// throw, leaving recoverable data in place for the durable queue retry.
 public protocol ConversationOwnedWorkspaceCleaning: Sendable {
     func removePrivateTaskDirectory(relativePath: String) async throws
+        -> PrivateTaskDirectoryRemoval
+}
+
+// MARK: - Shared owned-private-workspace cleanup lifecycle
+
+/// The ONE authoritative ownership/lifecycle sequence for removing an
+/// app-owned private-task workspace after its conversation was deleted.
+/// Both `conversation.delete` (post-commit) and `privacy.history.clear`
+/// (per enumerated conversation) drive these EXACT store/reference facts —
+/// never a parallel registry and never a model-supplied path:
+///   1. ONE store writer transaction (`retirePrivateTaskForCleanup`):
+///      no surviving conversation reference, the current row exactly
+///      `privateTask` with the captured `internal_relative_path`, OR — when
+///      the row is already absent — a matching durable queue row; then the
+///      ORIGINAL row is conditionally deleted (its V36 trigger re-queues with
+///      INSERT OR IGNORE, so the durable cleanup row stays) and the committed
+///      queue path is verified. Survivors/kind/path/queue conflicts defer
+///      BEFORE any mutation and never rehome a live task;
+///   2. the host-filesystem port removes only the bounded owned directory
+///      (non-following ancestor/final validation; nothing is inferred from
+///      `fileExists` or path strings);
+///   3. only after the REAL filesystem success, the durable V36 row is
+///      completed with an exact `workspace_id + relative_path` condition, so
+///      a replaced queue binding is never erased.
+/// Every non-success outcome RETAINS the durable queue row: the next
+/// launch sweep (`retryPendingLocalWorkspaceCleanup`) or an explicit retry
+/// completes recovery. Nothing here ever touches project repositories,
+/// shared/base environment resources, Notes/Canvas data, externally
+/// selected SAF documents or exported user files — a privateTask workspace
+/// is created ONLY under the managed root and its lifetime is owned by its
+/// conversation.
+public enum ConversationPrivateWorkspaceCleanup {
+    public enum Outcome: Sendable, Equatable {
+        /// The owned directory existed and was removed; its exact durable
+        /// queue binding was completed.
+        case removed
+        /// Nothing existed at the owned path; the goal state was already
+        /// reached and its exact durable queue binding was completed. Counted
+        /// separately from `.removed`, never as a failure.
+        case absent
+        /// Typed deferral (unbound cleaner, surviving references, changed
+        /// ownership, queue conflict/unknown, unsettled completion); the
+        /// durable V36 row is retained.
+        case deferred(String)
+        /// Typed failure (removal refused/threw); the durable V36 row is
+        /// retained and recoverable data is preserved.
+        case failed(String)
+    }
+
+    public static func perform(
+        workspaceStore: SQLiteWorkspaceStore,
+        cleaning: (any ConversationOwnedWorkspaceCleaning)?,
+        workspaceID: UUID,
+        relativePath: String
+    ) async -> Outcome {
+        guard let cleaning else { return .deferred("workspaceCleaningUnbound") }
+
+        let admission: SQLiteWorkspaceStore.PrivateTaskRetirementAdmission
+        do {
+            admission = try await workspaceStore.retirePrivateTaskForCleanup(
+                workspaceID: workspaceID,
+                expectedRelativePath: relativePath)
+        } catch let error as ConversationDomainError {
+            return .failed(error.wireReason ?? error.wireCode)
+        } catch {
+            return .failed("cleanupThrew")
+        }
+
+        switch admission {
+        case .deferredSurvivors:
+            return .deferred("workspaceOwnershipSurvivors")
+        case .deferredOwnershipChanged:
+            return .deferred("workspaceOwnershipChanged")
+        case .deferredQueueConflict:
+            return .deferred("workspaceCleanupQueueConflict")
+        case .deferredUnknownOwnership:
+            return .deferred("workspaceOwnershipUnknown")
+        case .rowRetired, .queueAuthority:
+            break
+        }
+
+        let removal: PrivateTaskDirectoryRemoval
+        do {
+            removal = try await cleaning.removePrivateTaskDirectory(
+                relativePath: relativePath)
+        } catch let error as ConversationDomainError {
+            return .failed(error.wireReason ?? error.wireCode)
+        } catch {
+            // The durable cleanup row REMAINS; the next launch sweep (or an
+            // explicit retryPendingLocalWorkspaceCleanup) completes
+            // recovery. Process-death recoverable by construction.
+            return .failed("cleanupThrew")
+        }
+
+        // Completion is conditional AND after the real success: a replaced
+        // binding is left intact (false), and a completion write failure is
+        // reported as a deferred lifecycle, never as a fake removal.
+        do {
+            let completed = try await workspaceStore.finishLocalCleanup(
+                workspaceID: workspaceID,
+                expectedRelativePath: relativePath)
+            if !completed {
+                // An already-completed row is idempotent success. A replaced
+                // durable binding must stay visible as an unsettled cleanup,
+                // rather than reporting a fully completed lifecycle.
+                let pending = try await workspaceStore.pendingLocalCleanup()
+                if pending.contains(where: { $0.workspaceID == workspaceID }) {
+                    return .deferred("workspaceCleanupQueueUnsettled")
+                }
+            }
+        } catch {
+            return .deferred("workspaceCleanupQueueUnsettled")
+        }
+
+        switch removal {
+        case .removed: return .removed
+        case .absent: return .absent
+        }
+    }
 }
 
 // MARK: - Closed request values
@@ -3298,36 +3432,25 @@ public actor FacadeConversationDomain {
     private func cleanupOwnedPrivateWorkspace(_ captured: (workspaceID: UUID, relativePath: String)) async
         -> ConversationDeleteCleanupStatus
     {
-        guard let cleaning = self.workspaceCleaning else {
-            return .deferredQueueRetained("workspaceCleaningUnbound")
-        }
-        do {
-            // Native ownership re-check (retryPendingLocalCleanup
-            // WorkspaceCenter:386-396): no surviving conversation may share
-            // the workspace.
-            let survivors = try await workspaceStore.conversations(workspaceID: captured.workspaceID)
-            guard survivors.isEmpty else {
-                return .deferredQueueRetained("workspaceOwnershipSurvivors")
-            }
-            if let record = try await workspaceStore.workspace(id: captured.workspaceID) {
-                guard record.kind == .privateTask,
-                      record.internalRelativePath == captured.relativePath else {
-                    return .deferredQueueRetained("workspaceOwnershipChanged")
-                }
-                // ORIGINAL row removal; the V36 workspace trigger re-queues
-                // via INSERT OR IGNORE over the existing cleanup row — safe.
-                try await workspaceStore.deleteWorkspace(id: captured.workspaceID)
-            }
-            try await cleaning.removePrivateTaskDirectory(relativePath: captured.relativePath)
-            try await workspaceStore.finishLocalCleanup(workspaceID: captured.workspaceID)
+        // The ONE shared ownership/lifecycle sequence (see
+        // ConversationPrivateWorkspaceCleanup): identical facts drive
+        // conversation.delete and privacy.history.clear.
+        switch await ConversationPrivateWorkspaceCleanup.perform(
+            workspaceStore: workspaceStore,
+            cleaning: workspaceCleaning,
+            workspaceID: captured.workspaceID,
+            relativePath: captured.relativePath) {
+        case .removed, .absent:
+            // `.absent` is reported as `.removed` on this frozen wire: the
+            // reply's contract is "the private workspace has no on-disk
+            // remnants", which an already-absent owned directory satisfies
+            // truthfully. The removed/absent distinction is surfaced only by
+            // the additive privacy history-clear accounting.
             return .removed
-        } catch let error as ConversationDomainError {
-            return .failed(error.wireCode)
-        } catch {
-            // The durable cleanup row REMAINS; the next launch sweep (or an
-            // explicit retryPendingLocalWorkspaceCleanup) completes
-            // recovery. Process-death recoverable by construction.
-            return .failed("cleanupThrew")
+        case .deferred(let reason):
+            return .deferredQueueRetained(reason)
+        case .failed(let reason):
+            return .failed(reason)
         }
     }
 
@@ -3336,26 +3459,37 @@ public actor FacadeConversationDomain {
     /// ORIGINAL store APIs. Returns a typed per-workspace failure map;
     /// uncleaned rows simply stay queued. No-op when no host file port is
     /// bound (deferral remains recoverable).
-    public func retryPendingLocalWorkspaceCleanup() async -> [String: String] {
+    ///
+    /// G02-R7: this is the ONE durable recovery path for the V36 queue and
+    /// the production caller is the epoch-owned one-shot startup sweep in
+    /// `G02RuntimeComposition.install` (never a UI action, a poll or an
+    /// unowned detached task). `shouldContinue` lets that owner stop after
+    /// the current item as soon as its root epoch is no longer starting;
+    /// every remaining row stays durably queued.
+    public func retryPendingLocalWorkspaceCleanup(
+        shouldContinue: @Sendable () -> Bool = { true }
+    ) async -> [String: String] {
         var failures: [String: String] = [:]
-        guard let cleaning = self.workspaceCleaning else { return failures }
+        guard workspaceCleaning != nil else { return failures }
         do {
             let pending = try await workspaceStore.pendingLocalCleanup()
             for item in pending {
-                do {
-                    let survivors = try await workspaceStore.conversations(workspaceID: item.workspaceID)
-                    guard survivors.isEmpty else { continue }
-                    if let record = try await workspaceStore.workspace(id: item.workspaceID) {
-                        guard record.kind == .privateTask,
-                              record.internalRelativePath == item.relativePath else {
-                            throw ConversationDomainError.sessionFenced("cleanupOwnershipChanged")
-                        }
-                        try await workspaceStore.deleteWorkspace(id: item.workspaceID)
-                    }
-                    try await cleaning.removePrivateTaskDirectory(relativePath: item.relativePath)
-                    try await workspaceStore.finishLocalCleanup(workspaceID: item.workspaceID)
-                } catch {
-                    failures[item.workspaceID.uuidString] = "cleanupFailed"
+                guard shouldContinue(), !Task.isCancelled else { break }
+                switch await ConversationPrivateWorkspaceCleanup.perform(
+                    workspaceStore: workspaceStore,
+                    cleaning: workspaceCleaning,
+                    workspaceID: item.workspaceID,
+                    relativePath: item.relativePath) {
+                case .removed, .absent:
+                    continue
+                case .deferred("workspaceOwnershipSurvivors"):
+                    // A live conversation still owns the workspace: the row
+                    // INTENTIONALLY stays queued; not a sweep failure.
+                    continue
+                case .deferred(let reason):
+                    failures[item.workspaceID.uuidString] = reason
+                case .failed(let reason):
+                    failures[item.workspaceID.uuidString] = reason
                 }
             }
         } catch {

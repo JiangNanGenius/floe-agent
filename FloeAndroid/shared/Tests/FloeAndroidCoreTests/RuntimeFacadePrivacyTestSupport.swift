@@ -23,12 +23,20 @@ import FloeProviders
 import FloeTools
 @testable import FloeAndroidCore
 
+/// Main can keep synthetic test roots inside its repository-owned scratch.
+var androidTestFixtureDirectory: URL {
+    if let path = ProcessInfo.processInfo.environment["FLOE_TEST_SCRATCH_ROOT"], !path.isEmpty {
+        return URL(fileURLWithPath: path, isDirectory: true)
+    }
+    return FileManager.default.temporaryDirectory
+}
+
 enum PrivacyTestBed {
     struct FixtureError: Error { let detail: String
         init(_ detail: String) { self.detail = detail } }
 
     static func openMigrated(name: String) async throws -> (DatabaseManager, URL) {
-        let root = FileManager.default.temporaryDirectory
+        let root = androidTestFixtureDirectory
             .appendingPathComponent("FloePrivacyTests-\(name)-\(UUID().uuidString)",
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: root,
@@ -589,8 +597,21 @@ actor FakeCredentialDrain: ConversationCredentialDeletionDraining {
 
 actor FakeWorkspaceCleaning: ConversationOwnedWorkspaceCleaning {
     private(set) var removed: [String] = []
-    func removePrivateTaskDirectory(relativePath: String) async throws {
+    /// Scripted failure: non-nil throws ONCE with the given error (then
+    /// behaves as the real filesystem truthfully reports).
+    private var scriptedFailure: (any Error)?
+    init(scriptedFailure: (any Error)? = nil) {
+        self.scriptedFailure = scriptedFailure
+    }
+    func removePrivateTaskDirectory(relativePath: String) async throws
+        -> PrivateTaskDirectoryRemoval
+    {
         removed.append(relativePath)
+        if let scriptedFailure {
+            self.scriptedFailure = nil
+            throw scriptedFailure
+        }
+        return .removed
     }
 }
 

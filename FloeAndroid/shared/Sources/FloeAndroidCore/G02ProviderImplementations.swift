@@ -9,6 +9,14 @@
 // optional-domain extension successors through the G02DomainExtension seam;
 // the ordinary base neither constructs nor advertises them.
 import Foundation
+#if canImport(Android)
+import Android
+#endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 import FloeCore
 import GRDB
 import FloePersistence
@@ -534,6 +542,33 @@ public struct G02ConversationRevisionReader: RunConversationRevisionReading {
 }
 
 /// Workspace private-task directory cleanup bounded to the trusted root.
+///
+/// R5 truth: the previous implementation standardized the caller's
+/// relative path through `URL(fileURLWithPath:)` — which resolves a
+/// relative path against the process CWD and is therefore ALWAYS absolute —
+/// and then rejected every absolute result as traversal. Every real cleanup
+/// deterministically failed and was reported as the opaque
+/// `privateWorkspaceCleanupUnavailable`. This implementation validates the
+/// RAW relative input component-wise, enforces the materializer's owned
+/// shape `PrivateTasks/<conversation uuid>` (WorkspaceStore.swift /
+/// RunLaunchStore.swift), and resolves strictly inside
+/// `<root>/Workspace`. The on-disk effect is reported truthfully:
+/// `.removed` (an owned directory was actually deleted), `.absent` (nothing
+/// existed; the lifecycle goal was already satisfied), or a typed refusal
+/// with the filesystem untouched (traversal, wrong shape, or a foreign
+/// entry — symlink/regular file — whose destination or content is never
+/// touched).
+///
+/// G02-R7 containment repair: the managed root and EVERY intermediate
+/// component (`Workspace`, `Workspace/PrivateTasks`, then the final owned
+/// entry) are validated with non-following `lstat` metadata. A symlink at
+/// any of those levels — including a symlink whose destination is external
+/// user data — is a typed `workspaceTargetForeign` refusal that preserves
+/// the link and its destination. Only an authoritative `ENOENT` is reported
+/// as `.absent`; every other errno (EACCES, EIO, ENOTDIR, ...) is a typed
+/// failure so a permission or I/O problem can never masquerade as "nothing
+/// to clean". The caller's raw relative path is never used as an absolute
+/// path and an embedded NUL is refused before any filesystem call.
 public struct G02WorkspaceCleaning: ConversationOwnedWorkspaceCleaning {
     private let root: RuntimeStorageRoot
 
@@ -541,20 +576,145 @@ public struct G02WorkspaceCleaning: ConversationOwnedWorkspaceCleaning {
         self.root = root
     }
 
-    public func removePrivateTaskDirectory(relativePath: String) async throws {
-        // Bounded, traversal-safe: the target must stay inside the owned
-        // workspace directory of the trusted root.
+    /// Non-following kind of one path component. `.absent` is ONLY returned
+    /// for an authoritative `ENOENT`; a missing/foreign parent directory in
+    /// the middle of the path (`ENOTDIR`) is a containment problem, never
+    /// absence.
+    private enum EntryKind {
+        case directory
+        case symbolicLink
+        case other
+        case absent
+    }
+
+    private func entryKind(_ path: String) throws -> EntryKind {
+        var info = stat()
+        guard lstat(path, &info) == 0 else {
+            switch errno {
+            case ENOENT:
+                return .absent
+            case ENOTDIR:
+                // An ancestor is not a directory (a file or a replaced
+                // component): the owned shape no longer holds.
+                throw ConversationDomainError.sessionFenced(
+                    "workspaceTargetForeign")
+            default:
+                // Permission/I/O/other: NOT absence.
+                throw ConversationDomainError.runtimeUnavailable(
+                    "workspaceTargetUnreadable")
+            }
+        }
+        let mode = info.st_mode & mode_t(S_IFMT)
+        if mode == mode_t(S_IFLNK) { return .symbolicLink }
+        if mode == mode_t(S_IFDIR) { return .directory }
+        return .other
+    }
+
+    /// Validates ONE owned path component. Missing -> `false` (the caller
+    /// reports authoritative absence); non-directory/link -> typed foreign
+    /// refusal with nothing touched.
+    private func requireDirectory(_ path: String) throws -> Bool {
+        switch try entryKind(path) {
+        case .directory:
+            return true
+        case .absent:
+            return false
+        case .symbolicLink, .other:
+            throw ConversationDomainError.sessionFenced(
+                "workspaceTargetForeign")
+        }
+    }
+
+    public func removePrivateTaskDirectory(relativePath: String) async throws
+        -> PrivateTaskDirectoryRemoval
+    {
+        // 1. The RAW input must be a plain relative path. Anything absolute,
+        //    carrying traversal/dot components or an embedded NUL refuses
+        //    BEFORE any filesystem call. (`URL(fileURLWithPath:)` may NOT be
+        //    used for this check: it resolves relatives against the CWD,
+        //    and POSIX would silently truncate at NUL.)
+        guard !relativePath.unicodeScalars.contains(where: { $0.value == 0 }) else {
+            throw ConversationDomainError.invalidEnvelope("workspacePathTraversal")
+        }
+        guard !relativePath.hasPrefix("/") else {
+            throw ConversationDomainError.invalidEnvelope("workspacePathTraversal")
+        }
+        let components = relativePath
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard !components.isEmpty,
+              !components.contains(".."),
+              !components.contains("."),
+              !components.contains("") else {
+            throw ConversationDomainError.invalidEnvelope("workspacePathTraversal")
+        }
+        // 2. Owned-shape guard: the ONLY materialized private-task layout is
+        //    exactly `PrivateTasks/<conversation uuid>`. This blocks
+        //    arbitrary model-supplied URLs/prefixes by construction and can
+        //    never express a project repo, a shared/base environment
+        //    resource, Notes/Canvas data, an SAF document or an exported
+        //    user file — none of those live under the managed root.
+        guard components.count == 2,
+              components[0] == "PrivateTasks",
+              UUID(uuidString: components[1]) != nil else {
+            throw ConversationDomainError.invalidEnvelope("workspacePathShape")
+        }
+        // The trusted root path is host-supplied and already validated. We
+        // never walk the whole absolute prefix (a platform root such as
+        // /var may legitimately be a link); the managed components below it
+        // are the ones this port must prove.
         let workspaceRoot = URL(fileURLWithPath: root.path)
             .appendingPathComponent("Workspace", isDirectory: true)
             .standardizedFileURL
-        let standardized = URL(fileURLWithPath: relativePath).standardizedFileURL.path
-        guard !standardized.hasPrefix("/"), !standardized.contains("..") else {
+        let privateTasksRoot = workspaceRoot
+            .appendingPathComponent("PrivateTasks", isDirectory: true)
+        let target = privateTasksRoot
+            .appendingPathComponent(components[1], isDirectory: true)
+        // 3. Containment: defense in depth behind the component guards.
+        guard target.standardizedFileURL.path
+            .hasPrefix(workspaceRoot.path + "/") else {
             throw ConversationDomainError.invalidEnvelope("workspacePathTraversal")
         }
-        let target = workspaceRoot.appendingPathComponent(standardized).standardizedFileURL
-        guard target.path.hasPrefix(workspaceRoot.standardizedFileURL.path) else {
-            throw ConversationDomainError.invalidEnvelope("workspacePathTraversal")
+        // 4. Entry-type truth with NON-FOLLOWING metadata at every managed
+        //    level. A symlink at the managed root or at PrivateTasks may
+        //    point at external user data: refuse typed and touch NOTHING
+        //    (do not unlink the link, do not read/write the destination).
+        //    Only an authoritative ENOENT is `.absent`.
+        guard try requireDirectory(workspaceRoot.path) else { return .absent }
+        guard try requireDirectory(privateTasksRoot.path) else { return .absent }
+        switch try entryKind(target.path) {
+        case .directory:
+            break
+        case .absent:
+            return .absent
+        case .symbolicLink, .other:
+            throw ConversationDomainError.sessionFenced(
+                "workspaceTargetForeign")
         }
+        // 5. Re-validate the SAME non-following facts immediately before the
+        //    effect. The app-private root is not shared with other apps; this
+        //    second check narrows the window in which an in-process replace
+        //    could redirect the path resolution.
+        guard try requireDirectory(workspaceRoot.path),
+              try requireDirectory(privateTasksRoot.path) else {
+            return .absent
+        }
+        switch try entryKind(target.path) {
+        case .directory:
+            break
+        case .absent:
+            return .absent
+        case .symbolicLink, .other:
+            throw ConversationDomainError.sessionFenced(
+                "workspaceTargetForeign")
+        }
+        // 6. Bounded recursive removal of the OWNED directory only.
+        //    `removeItem` never follows symlinks inside the tree (it
+        //    unlinks them), so an embedded link can never redirect the
+        //    deletion outside the owned directory. A mid-removal failure
+        //    throws: partial contents stay recoverable and the durable V36
+        //    queue row survives for the retry sweep.
         try FileManager.default.removeItem(at: target)
+        return .removed
     }
 }

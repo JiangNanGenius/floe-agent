@@ -562,6 +562,12 @@ object SettingsHostPages {
     fun MemoryPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val memory = state.memory
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            // One-shot page-open recovery for a surface whose initial read
+            // never settled (missed readiness snapshot or lost terminal);
+            // a settled inventory — even an empty one — is never re-read.
+            settings.ensureMemoryLoaded()
+        }
         var search by remember { mutableStateOf("") }
         var selectionMode by remember { mutableStateOf(false) }
         var selectedIDs by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -633,16 +639,18 @@ object SettingsHostPages {
             }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_memories)) {
                 if (entries.isEmpty()) {
+                    // An unsettled read is NOT "no memories yet": in flight
+                    // shows loading, a settled typed terminal shows
+                    // Unavailable with the Retry below — only a real settled
+                    // empty inventory shows the empty label.
+                    val emptyLabel = when {
+                        memory.searchActive -> R.string.settings_memory_search_empty
+                        state.memoryStatus.loading -> R.string.settings_privacy_loading
+                        state.memoryStatus.error != null -> R.string.unavailable
+                        else -> R.string.settings_memory_empty
+                    }
                     FloeSectionRow(title = {
-                        StatusLine(
-                            stringResource(
-                                if (memory.searchActive) {
-                                    R.string.settings_memory_search_empty
-                                } else {
-                                    R.string.settings_memory_empty
-                                },
-                            ),
-                        )
+                        StatusLine(stringResource(emptyLabel))
                     })
                 }
                 entries.forEach { entry ->
@@ -1332,6 +1340,12 @@ object SettingsHostPages {
     fun PersonalizationPage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val surface = state.personalization
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            // One-shot page-open recovery for a document read that never
+            // settled; a settled document — even an empty one — and a
+            // settled typed error (Retry below) are left alone.
+            settings.ensurePersonalizationLoaded()
+        }
         val loading = surface.contentLoading || state.personalizationStatus.loading
         // A draft owns its text AND the active-slot token it was written on.
         // It is never re-keyed by a background content change: only an
@@ -1447,6 +1461,16 @@ object SettingsHostPages {
                         label = stringResource(R.string.settings_retry),
                         onClick = { settings.refreshPersonalization(surface.kind) },
                     )
+                }
+                if (!loading && state.personalizationStatus.error != null &&
+                    !surface.contentLoadFailed
+                ) {
+                    // The initial document read settled typed-unavailable:
+                    // say so at the editor — not silently "Loading…" — and
+                    // keep the Retry below the fold actionable.
+                    FloeSectionRow(title = {
+                        StatusLine(stringResource(R.string.unavailable))
+                    })
                 }
                 androidx.compose.foundation.layout.Box(
                     Modifier
@@ -1759,6 +1783,12 @@ object SettingsHostPages {
     fun UsagePage(settings: SettingsHostController) {
         val state by settings.state.collectAsState()
         val usage = state.usage
+        androidx.compose.runtime.LaunchedEffect(Unit) {
+            // One-shot page-open recovery for a statistics read that never
+            // settled; a settled report — even an all-zero one — is real
+            // data and is never re-read here.
+            settings.ensureUsageLoaded()
+        }
         Column(
             Modifier
                 .fillMaxWidth()
@@ -1797,7 +1827,17 @@ object SettingsHostPages {
             FloeSettingsSectionCard(title = stringResource(R.string.settings_usage_totals)) {
                 val totals = usage.totals
                 if (totals == null) {
-                    FloeSectionRow(title = { StatusLine(stringResource(R.string.settings_usage_empty)) })
+                    // No totals is ambiguous by itself: in flight shows
+                    // loading, a settled typed terminal shows Unavailable
+                    // (Retry below), and ONLY a real settled empty report
+                    // shows "no usage recorded" — never a fabricated zero
+                    // and never a permanent loading label.
+                    val emptyLabel = when {
+                        state.usageStatus.loading -> R.string.settings_privacy_loading
+                        state.usageStatus.error != null -> R.string.unavailable
+                        else -> R.string.settings_usage_empty
+                    }
+                    FloeSectionRow(title = { StatusLine(stringResource(emptyLabel)) })
                 } else {
                     FloeValueRow(
                         stringResource(R.string.settings_usage_input),
@@ -1953,6 +1993,23 @@ object SettingsHostPages {
                     }
                     // No report has settled yet: nothing to show — never a
                     // fabricated "recount unavailable".
+                    if (summary.workspaceRemoved != null) {
+                        // REAL owned task-folder effects from the accepted
+                        // native clear lifecycle. "Already absent" is honest
+                        // bookkeeping (nothing needed removal), and deferred
+                        // folders keep their typed failure rows above with a
+                        // durable retry — none of these are invented.
+                        FloeSectionRow(title = {
+                            StatusLine(
+                                stringResource(
+                                    R.string.settings_privacy_workspace_cleanup,
+                                    summary.workspaceRemoved,
+                                    summary.workspaceAbsent ?: 0,
+                                    summary.workspaceDeferred ?: 0,
+                                ),
+                            )
+                        })
+                    }
                 }
             }
             FloeSettingsSectionCard(title = stringResource(R.string.settings_privacy_model_config)) {
