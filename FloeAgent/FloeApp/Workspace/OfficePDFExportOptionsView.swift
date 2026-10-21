@@ -278,12 +278,14 @@ struct OfficePDFExportOptionsView: View {
 
     private func needsSourceRefresh(_ error: Error) -> Bool {
         if error is OfficePDFExportScreenError { return true }
+        #if canImport(FloeOfficeNative)
         if let exportError = error as? OfficePDFExportError {
             switch exportError {
             case .invalidSourceIdentity, .staleSource, .sourceChangedDuringExport: return true
             default: break
             }
         }
+        #endif
         if let copyError = error as? OfficePrintCopyError {
             switch copyError {
             case .staleSource, .sourceChangedDuringCopy, .unknownSheet: return true
@@ -321,6 +323,7 @@ struct OfficePDFExportOptionsView: View {
             default: break
             }
         }
+        #if canImport(FloeOfficeNative)
         if let exportError = error as? OfficePDFExportError {
             switch exportError {
             case .invalidSourceIdentity, .staleSource, .sourceChangedDuringExport:
@@ -332,6 +335,7 @@ struct OfficePDFExportOptionsView: View {
             default: break
             }
         }
+        #endif
         if let floeError = error as? FloeError, case .validationFailed(let message) = floeError {
             return message
         }

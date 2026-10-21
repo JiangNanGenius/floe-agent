@@ -679,7 +679,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",
@@ -726,6 +726,26 @@
         "patch": "patches/ios-embedded-lifecycle-compiled.patch",
         "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
         "additionalArchives": {
+          "libdrawinglayerlo.a": {
+            "sourceFile": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx",
+            "originalSHA256": "322daa7f4c0fe85b2c6393b10a900b49fc75b02eddea7bc36ed02fc94c6a7462",
+            "patchedSHA256": "259030728b94ffd2cc03aa748621dd8be382cd50e650c2bbe6b8ee4750a8055b",
+            "archive": "source/engine/instdir/program/libdrawinglayerlo.a",
+            "members": {
+              "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
+            },
+            "patch": "patches/ios-unified-transparency-alpha.patch",
+            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
+            "compileOverrides": {
+              "flags": [
+                "-DDRAWINGLAYER_DLLIMPLEMENTATION"
+              ],
+              "language": "c++",
+              "sourceIncludes": [
+                "engine/drawinglayer/source/processor2d"
+              ]
+            }
+          },
           "libsallo.a": {
             "sourceFile": "engine/sal/osl/unx/thread.cxx",
             "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
@@ -815,9 +835,9 @@
           "salios.o": {
             "sourceFile": "engine/vcl/ios/salios.cxx",
             "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-            "patchedSHA256": "8e5e6e27fb0113cfedaa14ab1e6a463acbc871ebeac690ba933ec77aca7584bb",
-            "patch": "patches/ios-foreign-bitmap-readback.patch",
-            "patchSHA256": "a1692d3267845b9c9cf5ce8731c5a59a2c20c179df6d7107a4489ccb498334de",
+            "patchedSHA256": "514b4a44edb6249c8cea5742612ffb2b7ebc0aa88122027d1995d056216476c2",
+            "patch": "patches/ios-unified-transparency-alpha.patch",
+            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
             "originalMemberSHA256": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f"
           },
           "executor.o": {
@@ -846,6 +866,26 @@
         "patch": "patches/ios-embedded-lifecycle-compiled.patch",
         "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
         "additionalArchives": {
+          "libdrawinglayerlo.a": {
+            "sourceFile": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx",
+            "originalSHA256": "322daa7f4c0fe85b2c6393b10a900b49fc75b02eddea7bc36ed02fc94c6a7462",
+            "patchedSHA256": "259030728b94ffd2cc03aa748621dd8be382cd50e650c2bbe6b8ee4750a8055b",
+            "archive": "source/engine/instdir/program/libdrawinglayerlo.a",
+            "members": {
+              "vclhelperbufferdevice.o": "engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx"
+            },
+            "patch": "patches/ios-unified-transparency-alpha.patch",
+            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
+            "compileOverrides": {
+              "flags": [
+                "-DDRAWINGLAYER_DLLIMPLEMENTATION"
+              ],
+              "language": "c++",
+              "sourceIncludes": [
+                "engine/drawinglayer/source/processor2d"
+              ]
+            }
+          },
           "libsallo.a": {
             "sourceFile": "engine/sal/osl/unx/thread.cxx",
             "originalSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
@@ -935,9 +975,9 @@
           "salios.o": {
             "sourceFile": "engine/vcl/ios/salios.cxx",
             "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-            "patchedSHA256": "8e5e6e27fb0113cfedaa14ab1e6a463acbc871ebeac690ba933ec77aca7584bb",
-            "patch": "patches/ios-foreign-bitmap-readback.patch",
-            "patchSHA256": "a1692d3267845b9c9cf5ce8731c5a59a2c20c179df6d7107a4489ccb498334de",
+            "patchedSHA256": "514b4a44edb6249c8cea5742612ffb2b7ebc0aa88122027d1995d056216476c2",
+            "patch": "patches/ios-unified-transparency-alpha.patch",
+            "patchSHA256": "a06487a758107a813810bf74244486f8141db83c6ad4ca678e54594822c06ac3",
             "originalMemberSHA256": "0750a6f288e10ed032d6baa08a160889d3278f69436ec54c1cf1b6624f18156a"
           },
           "executor.o": {

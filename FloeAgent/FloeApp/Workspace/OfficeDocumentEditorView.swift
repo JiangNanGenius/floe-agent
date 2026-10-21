@@ -761,8 +761,16 @@ final class OfficeFileSession: ObservableObject {
         guard passiveExitFenceIsCurrent(fence), quiescentAfter else {
             throw OfficePDFExportScreenError.sourceChanged
         }
-        let sheets = ext == "xlsx"
-            ? try OfficeRegionExport.workbookSheets(sourceURL: copyURL, expectedSHA256: sha) : []
+        let sheets: [OfficeRegionWorkbookSheet]
+        if ext == "xlsx" {
+            sheets = try await Task.detached(priority: .userInitiated) {
+                try OfficeRegionExport.workbookSheets(sourceURL: copyURL, expectedSHA256: sha)
+            }.value
+        } else {
+            sheets = []
+        }
+        try Task.checkCancellation()
+        guard passiveExitFenceIsCurrent(fence) else { throw OfficePDFExportScreenError.sourceChanged }
         let activeName = selectedPart.flatMap { index in sheets.first(where: { $0.index == index && $0.isVisible })?.name }
         return OfficePDFExportPreparation(
             sourceURL: copyURL, sourceSHA256: sha, fileExtension: ext,
@@ -823,9 +831,17 @@ final class OfficeFileSession: ObservableObject {
             let delivery = source.lease.directory.appendingPathComponent(exportedName)
             // Unique leased directory, with the same no-overwrite rule as the
             // backend. Re-measure after giving the file its user-facing name.
-            try FileManager.default.copyItem(at: result.pdfURL, to: delivery)
-            guard try FloeDigest.sha256Hex(ofFileAt: delivery) == result.pdfSHA256 else {
-                throw CocoaError(.fileReadCorruptFile)
+            let producedURL = result.pdfURL, producedSHA = result.pdfSHA256
+            try await Task.detached(priority: .userInitiated) {
+                try FileManager.default.copyItem(at: producedURL, to: delivery)
+                guard try FloeDigest.sha256Hex(ofFileAt: delivery) == producedSHA else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+            }.value
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            guard self.controller === controller, await source.isCurrent() else {
+                throw OfficePDFExportScreenError.sourceChanged
             }
             return OfficePDFPreparedDelivery(url: delivery, lease: source.lease)
         } catch {

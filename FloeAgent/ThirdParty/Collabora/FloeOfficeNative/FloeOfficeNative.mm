@@ -100,10 +100,48 @@ static NSDictionary<NSString *, id> *FloeOfficeMemoryFacts(void) {
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView;
 @end
 
+/// Print-request gating, implemented by the host controller below and
+/// declared here only so the editor subclass can consult it without owning
+/// host close state. Registers no runtime method.
+@interface FloeOfficeNativeViewController (FloePrintRequest)
+/// YES only while the host is live (not closing/closed) and the App has bound
+/// its Print handler for this session.
+- (BOOL)floeAcceptsPrintRequest;
+@end
+
 @interface FloeOfficeDocumentViewController : DocumentViewController
+/// Weak back-reference for Print gating only; the host owns this editor, so
+/// no cycle is created and a dead host simply falls back to upstream.
+@property (nonatomic, weak, nullable) FloeOfficeNativeViewController *floeHost;
 @end
 
 @implementation FloeOfficeDocumentViewController
+- (void)userContentController:(WKUserContentController *)userContentController
+      didReceiveScriptMessage:(WKScriptMessage *)message {
+    // Intercept ONLY the editor's own `lok` message whose body is exactly the
+    // NSString "PRINT", and only while the App has bound this session's Print
+    // handler and the host controller is still live. Every other message —
+    // including PRINT before the App binds or after close begins — goes to
+    // the pinned upstream implementation unchanged.
+    if ([message.name isEqualToString:@"lok"]
+        && [message.body isKindOfClass:NSString.class]
+        && [message.body isEqualToString:@"PRINT"]) {
+        FloeOfficeNativeViewController *host = self.floeHost;
+        if (host && [host floeAcceptsPrintRequest]) {
+            __weak FloeOfficeNativeViewController *weakHost = host;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                FloeOfficeNativeViewController *liveHost = weakHost;
+                if (!liveHost || ![liveHost floeAcceptsPrintRequest])
+                    return;
+                void (^handler)(void) = liveHost.onPrintRequested;
+                if (handler)
+                    handler();
+            });
+            return;
+        }
+    }
+    [super userContentController:userContentController didReceiveScriptMessage:message];
+}
 - (void)webViewWebContentProcessDidTerminate:(WKWebView *)webView {
     // Pinned upstream teardown first: `[self bye]` closes the document,
     // dismisses the dead surface and settles the host's close completion.
@@ -3204,7 +3242,7 @@ static bool FloeRenderFactsSatisfySessionReady(FloeRenderFacts facts, bool readO
 @property (nonatomic, readwrite, getter=isReadOnly) BOOL readOnly;
 @property (nonatomic, readwrite) BOOL sessionIsReadOnly;
 @property (nonatomic, copy, readwrite) NSURL *workingFileURL;
-@property DocumentViewController *editor;
+@property FloeOfficeDocumentViewController *editor;
 @property (nonatomic, strong) FloeSaveReceiptJoiner *saveReceipts;
 @property (nonatomic, strong) FloeOfficeEnginePermissionObserver *permissionObserver;
 @property (nonatomic) BOOL closing;
@@ -3330,6 +3368,15 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
 }
 
 @implementation FloeOfficeNativeViewController
+/// Print-request gate consulted by the editor subclass before intercepting a
+/// `lok` PRINT message. The handler is honoured only while the App still has
+/// one bound and the session has not begun closing, so a late engine message
+/// can never re-enter a dead or closing controller.
+- (BOOL)floeAcceptsPrintRequest {
+    NSAssert(NSThread.isMainThread, @"Office controllers are main-queue owned");
+    return self.onPrintRequested != nil && !self.closed && !self.closing;
+}
+
 /// Main-queue accessor for the exact engine document URL the UIDocument
 /// loaded (`copyFileURL`, the `file_path` handed to the bundled editor).
 /// nil whenever the engine document or its copy URL is unavailable; the URL
@@ -3369,6 +3416,8 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
         // The Floe subclass calls the pinned upstream termination callback
         // through and then reports web-content death (see the recovery block).
         _editor = [[FloeOfficeDocumentViewController alloc] initWithNibName:nil bundle:nil];
+        // Weak Print-gating reference only; the host owns the editor.
+        _editor.floeHost = self;
         FloeOfficeDocument *document = [[FloeOfficeDocument alloc] initWithFileURL:file];
         document->readOnly = readOnly;
         document.floeEngineCopyDirectory = [directory URLByAppendingPathComponent:@"engine" isDirectory:YES];

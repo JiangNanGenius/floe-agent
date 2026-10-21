@@ -1,0 +1,383 @@
+--- a/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx
++++ b/engine/drawinglayer/source/processor2d/vclhelperbufferdevice.cxx
+@@ -55,8 +55,10 @@
+     struct Entry
+     {
+         VclPtr<VirtualDevice> buf;
+-        Entry(const VclPtr<VirtualDevice>& vdev)
++        DeviceFormat meFormat;
++        Entry(const VclPtr<VirtualDevice>& vdev, DeviceFormat eFormat)
+             : buf(vdev)
++            , meFormat(eFormat)
+         {
+         }
+     };
+@@ -80,7 +82,8 @@
+     VDevBuffer();
+     virtual ~VDevBuffer() override;
+ 
+-    VclPtr<VirtualDevice> alloc(OutputDevice& rOutDev, const Size& rSizePixel);
++    VclPtr<VirtualDevice> alloc(OutputDevice& rOutDev, const Size& rSizePixel,
++                                DeviceFormat eFormat = DeviceFormat::WITHOUT_ALPHA);
+     void free(VirtualDevice& rDevice);
+ 
+     // Timer virtuals
+@@ -140,7 +143,8 @@
+ }
+ 
+ // [-loplugin:scopedvclptr]
+-VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSizePixel)
++VclPtr<VirtualDevice> VDevBuffer::alloc(OutputDevice& rOutDev, const Size& rSizePixel,
++                                        DeviceFormat eFormat)
+ {
+     std::unique_lock aGuard(m_aMutex);
+     VclPtr<VirtualDevice> pRetval;
+@@ -148,7 +152,11 @@
+     sal_Int32 nBits = rOutDev.GetBitCount();
+ 
+     bool bOkay(false);
+-    if (!maFreeBuffers.empty())
++    // Only opaque buffers are cached. An alpha-capable buffer cannot be erased
++    // back to transparent by Erase() (it paints the background colour), so it
++    // is created fresh and disposed on free instead of being reused with
++    // unknown alpha contents.
++    if (eFormat == DeviceFormat::WITHOUT_ALPHA && !maFreeBuffers.empty())
+     {
+         auto aFound(maFreeBuffers.end());
+ 
+@@ -156,7 +164,7 @@
+         {
+             assert(a->buf && "Empty pointer in VDevBuffer (!)");
+ 
+-            if (nBits == a->buf->GetBitCount())
++            if (nBits == a->buf->GetBitCount() && a->meFormat == DeviceFormat::WITHOUT_ALPHA)
+             {
+                 // candidate is valid due to bit depth
+                 if (aFound != maFreeBuffers.end())
+@@ -237,9 +245,20 @@
+     // no success yet, create new buffer
+     if (!pRetval)
+     {
+-        pRetval = VclPtr<VirtualDevice>::Create(rOutDev, DeviceFormat::WITHOUT_ALPHA);
++        pRetval = VclPtr<VirtualDevice>::Create(rOutDev, eFormat);
+         maDeviceTemplates[pRetval] = &rOutDev;
+-        pRetval->SetOutputSizePixel(rSizePixel, true);
++        if (eFormat == DeviceFormat::WITH_ALPHA)
++        {
++            // An isolated group buffer must start fully transparent, never on
++            // the white VDev background. Erase() cannot clear alpha, so use the
++            // alpha-initialising SetOutputSizePixel( ..., true, true ) form.
++            pRetval->SetBackground(Wallpaper(COL_TRANSPARENT));
++            pRetval->SetOutputSizePixel(rSizePixel, true, true);
++        }
++        else
++        {
++            pRetval->SetOutputSizePixel(rSizePixel, true);
++        }
+     }
+     else
+     {
+@@ -249,7 +268,7 @@
+     }
+ 
+     // remember allocated buffer
+-    maUsedBuffers.emplace_back(pRetval);
++    maUsedBuffers.emplace_back(pRetval, eFormat);
+ 
+     return pRetval;
+ }
+@@ -264,12 +283,23 @@
+                 "OOps, non-registered buffer freed (!)");
+     if (aUsedFound != maUsedBuffers.end())
+     {
+-        maFreeBuffers.emplace_back(*aUsedFound);
+-        maUsedBuffers.erase(aUsedFound);
+-        SAL_WARN_IF(maFreeBuffers.size() > 1000, "drawinglayer",
+-                    "excessive cached buffers, " << maFreeBuffers.size() << " entries!");
++        if (aUsedFound->meFormat == DeviceFormat::WITHOUT_ALPHA)
++        {
++            maFreeBuffers.emplace_back(*aUsedFound);
++            maUsedBuffers.erase(aUsedFound);
++            SAL_WARN_IF(maFreeBuffers.size() > 1000, "drawinglayer",
++                        "excessive cached buffers, " << maFreeBuffers.size() << " entries!");
++            Start();
++        }
++        else
++        {
++            // Alpha buffers are not cached: dispose them now, since nothing
++            // else can bring them back to a transparent initial state.
++            maDeviceTemplates.erase(aUsedFound->buf);
++            aUsedFound->buf.disposeAndClear();
++            maUsedBuffers.erase(aUsedFound);
++        }
+     }
+-    Start();
+ }
+ 
+ void VDevBuffer::Invoke()
+@@ -283,6 +313,31 @@
+         aLastOne.buf.disposeAndClear();
+         maFreeBuffers.pop_back();
+     }
++}
++
++// A device whose pixels can be transparent must be treated as an isolated
++// group. The iOS tile and slideshow targets carry real RGBA pixels but report
++// HasAlpha() == false (they are foreign-context devices created as
++// DeviceFormat::WITHOUT_ALPHA), so the explicit transparent background is the
++// reliable signal. For those targets the documented algorithm — blit the
++// backdrop into a buffer and alpha-composite the whole bounding rectangle
++// back — turns every transparent destination pixel into an opaque white
++// matte. An isolated group instead starts from a fully transparent buffer,
++// renders only the children and applies the group opacity once on top of the
++// untouched destination, which never attenuates destination pixels twice.
++// Non-iOS targets keep the historical behaviour.
++bool isIsolatedGroupTarget(const OutputDevice& rOutDev)
++{
++#if defined(IOS)
++    if (rOutDev.HasAlpha())
++        return true;
++    const Wallpaper& rBackground = rOutDev.GetBackground();
++    return rBackground.GetStyle() != WallpaperStyle::NONE
++        && rBackground.GetColor().IsTransparent();
++#else
++    (void)rOutDev;
++    return false;
++#endif
+ }
+ 
+ #ifdef SPEED_COMPARE
+@@ -401,7 +456,9 @@
+     if (!isVisible())
+         return;
+ 
+-    mpContent = getVDevBuffer().alloc(mrOutDev, maDestPixel.GetSize());
++    const bool bIsolatedGroup = isIsolatedGroupTarget(mrOutDev);
++    mpContent = getVDevBuffer().alloc(mrOutDev, maDestPixel.GetSize(),
++        bIsolatedGroup ? DeviceFormat::WITH_ALPHA : DeviceFormat::WITHOUT_ALPHA);
+ 
+     // #i93485# assert when copying from window to VDev is used
+     SAL_WARN_IF(
+@@ -409,12 +466,16 @@
+         "impBufferDevice render helper: Copying from Window to VDev, this should be avoided (!)");
+ 
+     // initialize buffer by blitting content of source to prepare for
+-    // transparence/ copying back
+-    const bool bWasEnabledSrc(mrOutDev.IsMapModeEnabled());
+-    mrOutDev.EnableMapMode(false);
+-    mpContent->DrawOutDev(Point(), maDestPixel.GetSize(), maDestPixel.TopLeft(),
+-                          maDestPixel.GetSize(), mrOutDev);
+-    mrOutDev.EnableMapMode(bWasEnabledSrc);
++    // transparence/ copying back. An isolated group must not do this: the
++    // destination is left untouched and the buffer starts fully transparent.
++    if (!bIsolatedGroup)
++    {
++        const bool bWasEnabledSrc(mrOutDev.IsMapModeEnabled());
++        mrOutDev.EnableMapMode(false);
++        mpContent->DrawOutDev(Point(), maDestPixel.GetSize(), maDestPixel.TopLeft(),
++                              maDestPixel.GetSize(), mrOutDev);
++        mrOutDev.EnableMapMode(bWasEnabledSrc);
++    }
+ 
+     MapMode aNewMapMode(mrOutDev.GetMapMode());
+ 
+@@ -448,6 +509,7 @@
+     if (!isVisible())
+         return;
+ 
++    const bool bIsolatedGroup = isIsolatedGroupTarget(mrOutDev);
+     const Point aEmptyPoint;
+     const Size aSizePixel(maDestPixel.GetSize());
+     const bool bWasEnabledDst(mrOutDev.IsMapModeEnabled());
+@@ -488,25 +550,45 @@
+ #endif
+ 
+         Bitmap aContent(mpContent->GetBitmap(aEmptyPoint, aSizePixel));
++        // The isolated group buffer owns per-pixel alpha (it never contained the
++        // destination). Combine it with the mask instead of replacing it, else
++        // transparent content pixels would paint the mask colour at full alpha.
++        if (bIsolatedGroup && aContent.HasAlpha())
++            aAlphaMask.BlendWith(aContent.CreateAlphaMask());
+         mrOutDev.DrawBitmap(maDestPixel.TopLeft(), Bitmap(aContent, aAlphaMask));
+     }
+     else if (0.0 != fTrans)
+     {
+         const Bitmap aContent(mpContent->GetBitmap(aEmptyPoint, aSizePixel));
+ 
+-#ifdef SPEED_COMPARE
+-        static bool bCompareFormerAndNewTimings(true);
+-
+-        if (bCompareFormerAndNewTimings)
++        if (bIsolatedGroup && aContent.HasAlpha())
+         {
+-            doSpeedCompare(fTrans, aContent, maDestPixel, mrOutDev);
++            // Isolated group: the buffer holds only the children with their own
++            // alpha. DrawTransformedBitmapEx multiplies that alpha by (1-fTrans),
++            // so the group opacity is applied exactly once over the untouched
++            // destination; the constant-AlphaMask variant would replace the
++            // content alpha and paint the matte.
++            mrOutDev.DrawTransformedBitmapEx(basegfx::utils::createScaleTranslateB2DHomMatrix(
++                                                 aSizePixel.Width(), aSizePixel.Height(),
++                                                 maDestPixel.TopLeft().X(),
++                                                 maDestPixel.TopLeft().Y()),
++                                             aContent, 1.0 - fTrans);
+         }
+         else
+-#endif
+-        // Note: this extra scope is needed due to 'clang plugin indentation'. It complains
+-        //       that lines 494 and (now) 539 are 'statement mis-aligned compared to neighbours'.
+-        //       That is true if SPEED_COMPARE is not defined. Not nice, but have to fix this.
+         {
++#ifdef SPEED_COMPARE
++            static bool bCompareFormerAndNewTimings(true);
++
++            if (bCompareFormerAndNewTimings)
++            {
++                doSpeedCompare(fTrans, aContent, maDestPixel, mrOutDev);
++            }
++            else
++#endif
++            // Note: this extra scope is needed due to 'clang plugin indentation'. It complains
++            //       that lines 494 and (now) 539 are 'statement mis-aligned compared to neighbours'.
++            //       That is true if SPEED_COMPARE is not defined. Not nice, but have to fix this.
++            {
+             // For the case we have a unified transparency value there is a former
+             // and new method to paint that which can be used. To decide on measurements,
+             // I added 'doSpeedCompare' above which can be activated by defining
+@@ -556,10 +638,24 @@
+                 mrOutDev.DrawBitmap(maDestPixel.TopLeft(), Bitmap(aContent, aAlphaMask));
+             }
+         }
++        }
+     }
+     else
+     {
+-        mrOutDev.DrawOutDev(maDestPixel.TopLeft(), aSizePixel, aEmptyPoint, aSizePixel, *mpContent);
++        // no transparence, but a live mask content or a plain dump of the buffer
++        if (bIsolatedGroup)
++        {
++            const Bitmap aContent(mpContent->GetBitmap(aEmptyPoint, aSizePixel));
++            mrOutDev.DrawTransformedBitmapEx(basegfx::utils::createScaleTranslateB2DHomMatrix(
++                                                 aSizePixel.Width(), aSizePixel.Height(),
++                                                 maDestPixel.TopLeft().X(),
++                                                 maDestPixel.TopLeft().Y()),
++                                             aContent, 1.0);
++        }
++        else
++        {
++            mrOutDev.DrawOutDev(maDestPixel.TopLeft(), aSizePixel, aEmptyPoint, aSizePixel, *mpContent);
++        }
+     }
+ 
+     mrOutDev.SetRasterOp(aOrigRasterOp);
+--- a/engine/vcl/ios/salios.cxx
++++ b/engine/vcl/ios/salios.cxx
+@@ -138,6 +138,56 @@
+     mrShared.applyXorContext();
+     if (!bSameGraphics)
+         pSrcShared->applyXorContext();
++
++    // Foreign bitmap render targets keep an auxiliary layer which is not their pixel source.
++    // Limit this experiment to the observed top-left bitmap -> internal layer copy.
++    if (!bSameGraphics && pSrcShared->mbVirDev && pSrcShared->mnBitmapDepth == 0
++        && pSrcShared->maContextHolder.isSet() && pSrcShared->maLayer.isSet()
++        && pSrcShared->maContextHolder.get() != CGLayerGetContext(pSrcShared->maLayer.get())
++        && mrShared.maLayer.isSet()
++        && mrShared.maContextHolder.get() == CGLayerGetContext(mrShared.maLayer.get())
++        && (!pSrcShared->mpXorEmulation || !pSrcShared->mpXorEmulation->IsEnabled()))
++    {
++        const CGAffineTransform aSourceCTM = CGContextGetCTM(pSrcShared->maContextHolder.get());
++        if (aSourceCTM.a == 1 && aSourceCTM.b == 0 && aSourceCTM.c == 0
++            && aSourceCTM.d == -1 && aSourceCTM.tx == 0)
++        {
++            CGImageRef xSnapshot = CGBitmapContextCreateImage(pSrcShared->maContextHolder.get());
++            if (xSnapshot)
++            {
++                const double nImageWidth = static_cast<double>(CGImageGetWidth(xSnapshot));
++                const double nImageHeight = static_cast<double>(CGImageGetHeight(xSnapshot));
++                // The observed CTM maps source user-space top-left directly to image rows.
++                const bool bInside = aSourceCTM.ty == nImageHeight
++                    && rPosAry.mnSrcX >= 0 && rPosAry.mnSrcY >= 0
++                    && rPosAry.mnSrcX <= nImageWidth && rPosAry.mnSrcY <= nImageHeight
++                    && rPosAry.mnSrcWidth <= nImageWidth - rPosAry.mnSrcX
++                    && rPosAry.mnSrcHeight <= nImageHeight - rPosAry.mnSrcY;
++                CGImageRef xCrop = bInside ? CGImageCreateWithImageInRect(xSnapshot,
++                    CGRectMake(rPosAry.mnSrcX, rPosAry.mnSrcY,
++                               rPosAry.mnSrcWidth, rPosAry.mnSrcHeight)) : nullptr;
++                CGImageRelease(xSnapshot);
++                if (xCrop)
++                {
++                    const CGRect aDestRect = CGRectMake(rPosAry.mnDestX, rPosAry.mnDestY,
++                        rPosAry.mnDestWidth, rPosAry.mnDestHeight);
++                    mrShared.maContextHolder.saveState();
++                    CGContextClipToRect(mrShared.maContextHolder.get(), aDestRect);
++                    // Preserve VCL source-user Y order when drawing a top-left image into a layer.
++                    CGContextTranslateCTM(mrShared.maContextHolder.get(),
++                        static_cast<CGFloat>(rPosAry.mnDestX),
++                        static_cast<CGFloat>(rPosAry.mnDestY) + static_cast<CGFloat>(rPosAry.mnDestHeight));
++                    CGContextScaleCTM(mrShared.maContextHolder.get(), 1, -1);
++                    CGContextDrawImage(mrShared.maContextHolder.get(),
++                        CGRectMake(0, 0, rPosAry.mnDestWidth, rPosAry.mnDestHeight), xCrop);
++                    mrShared.maContextHolder.restoreState();
++                    CGImageRelease(xCrop);
++                    refreshRect(aDestRect);
++                    return;
++                }
++            }
++        }
++    }
+ 
+     SAL_WARN_IF (!pSrcShared->maLayer.isSet(), "vcl.quartz",
+                  "AquaSalGraphics::copyBits() from non-layered graphics this=" << this);
+@@ -508,7 +558,7 @@
+     }
+ }
+ 
+-bool AquaSalVirtualDevice::SetSize( tools::Long nDX, tools::Long nDY, bool /*bAlphaMaskTransparent*/ )
++bool AquaSalVirtualDevice::SetSize( tools::Long nDX, tools::Long nDY, bool bAlphaMaskTransparent )
+ {
+     SAL_INFO( "vcl.virdev", "AquaSalVirtualDevice::SetSize() this=" << this <<
+               " (" << nDX << "x" << nDY << ") mbForeignContext=" << (mbForeignContext ? "YES" : "NO"));
+@@ -556,7 +606,13 @@
+ 
+             const int nBytesPerRow = (mnBitmapDepth * nDX) / 8;
+             void* pRawData = std::malloc( nBytesPerRow * nDY );
+-            const int nFlags = kCGImageAlphaNoneSkipFirst | kCGImageByteOrder32Little;
++            // A transparent init (VirtualDevice::SetOutputSizePixel( ..., true, true ))
++            // requires a real alpha surface: the opaque kCGImageAlphaNoneSkipFirst
++            // context used so far cannot retain transparency at all. The drawinglayer
++            // isolated-group buffer is the known consumer; nothing else changes.
++            const int nFlags = (bAlphaMaskTransparent
++                    ? kCGImageAlphaPremultipliedFirst
++                    : kCGImageAlphaNoneSkipFirst) | kCGImageByteOrder32Little;
+             maBitmapContext.set(CGBitmapContextCreate(pRawData, nDX, nDY, 8, nBytesPerRow,
+                                                       GetSalData()->mxRGBSpace, nFlags));
+             xCGContextHolder = maBitmapContext;
+@@ -565,9 +621,27 @@
+ 
+     SAL_WARN_IF(!xCGContextHolder.isSet(), "vcl.quartz", "No context");
+ 
++    if( bAlphaMaskTransparent && xCGContextHolder.isSet() )
++    {
++        // The buffer data is std::malloc'ed above; make the requested
++        // transparent init explicit so both the backing context and the layer
++        // derived from it start from zero alpha.
++        memset(CGBitmapContextGetData(xCGContextHolder.get()), 0,
++                    CGBitmapContextGetBytesPerRow(xCGContextHolder.get()) * nDY);
++    }
++
+     const CGSize aNewSize = { static_cast<CGFloat>(nDX), static_cast<CGFloat>(nDY) };
+     maLayer.set(CGLayerCreateWithContext(xCGContextHolder.get(), aNewSize, nullptr));
+ 
++    if( bAlphaMaskTransparent && maLayer.isSet() )
++    {
++        // CGLayerCreateWithContext does not necessarily leave the new layer
++        // fully cleared on iOS; force it so a transparent initialisation is
++        // really transparent.
++        CGContextClearRect(CGLayerGetContext(maLayer.get()),
++                           CGRectMake(0, 0, nDX, nDY));
++    }
++
+     if (maLayer.isSet() && mpGraphics)
+     {
+         // get the matching Quartz context
