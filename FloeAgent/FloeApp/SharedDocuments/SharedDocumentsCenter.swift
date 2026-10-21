@@ -4,7 +4,7 @@
 // App-owned entry point for the local Files provider location:
 //
 // * `registerDomainIfNeeded()` reconciles exactly ONE stable domain
-//   ("shared-documents") via `NSFileProviderManager.getDomains`/`addDomain`.
+//   ("shared-documents") via the FileProvider domain query and `addDomain`.
 //   It never removes or re-registers other domains and never claims the
 //   location is mounted: registration success only means the system accepted
 //   the domain; actual Files visibility is answered separately by
@@ -124,7 +124,7 @@ final class SharedDocumentsCenter: ObservableObject {
             identifier: NSFileProviderDomainIdentifier(SharedDocumentsIdentity.domainIdentifier),
             displayName: SharedDocumentsCopy.locationName
         )
-        guard let manager = NSFileProviderManager.managerForDomain(domain) else { return }
+        guard let manager = NSFileProviderManager(for: domain) else { return }
         let identifier: NSFileProviderItemIdentifier
         switch container.kind {
         case .workingSet:
@@ -174,8 +174,8 @@ final class SharedDocumentsCenter: ObservableObject {
             displayName: SharedDocumentsCopy.locationName
         )
         do {
-            let existing = try await Self.domains()
-            if existing.contains(where: { $0.identifier == domain.identifier }) {
+            let existing = try await Self.domainIdentifiers()
+            if existing.contains(domain.identifier.rawValue) {
                 domainState = .registered
                 return
             }
@@ -194,7 +194,7 @@ final class SharedDocumentsCenter: ObservableObject {
             identifier: NSFileProviderDomainIdentifier(SharedDocumentsIdentity.domainIdentifier),
             displayName: SharedDocumentsCopy.locationName
         )
-        guard let manager = NSFileProviderManager.managerForDomain(domain) else { return nil }
+        guard let manager = NSFileProviderManager(for: domain) else { return nil }
         return await withCheckedContinuation { continuation in
             manager.getUserVisibleURL(for: .rootContainer) { url, _ in
                 continuation.resume(returning: url)
@@ -276,20 +276,23 @@ final class SharedDocumentsCenter: ObservableObject {
 
     // MARK: - FileProvider domain plumbing
 
-    private static func domains() async throws -> [NSFileProviderDomain] {
+    private static func domainIdentifiers() async throws -> [String] {
         try await withCheckedThrowingContinuation { continuation in
-            NSFileProviderManager.getDomains { domains, error in
+            NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
                 if let error {
                     continuation.resume(throwing: error)
                 } else {
-                    continuation.resume(returning: domains ?? [])
+                    // Framework domain objects belong to this callback.
+                    // Reconciliation only needs immutable identity values;
+                    // send those across the actor boundary, not NSObjects.
+                    continuation.resume(returning: domains.map { $0.identifier.rawValue })
                 }
             }
         }
     }
 
     private static func addDomain(_ domain: NSFileProviderDomain) async throws {
-        try await withCheckedThrowingContinuation { continuation in
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             NSFileProviderManager.add(domain) { error in
                 if let error {
                     continuation.resume(throwing: error)
