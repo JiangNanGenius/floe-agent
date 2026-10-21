@@ -1,6 +1,6 @@
 // FloeWorkspace — Tool registration entry point.
 // See docs/ARCHITECTURE_AGENT_WORKSPACE.md §6 接线: called once at app
-// startup from `AppEnvironment`. Registers the nine workspace tool
+// startup from `AppEnvironment`. Registers the workspace tool
 // descriptors with `ToolCatalog` (compile-time visibility) and the matching
 // `AnyAgentTool` runners with `ToolRunnerRegistry` (runtime execution).
 // Both are required for a tool to execute. The runtime module never
@@ -10,7 +10,7 @@ import Foundation
 import FloeCore
 import FloeTools
 
-/// Registers all nine workspace file tools.
+/// Registers every workspace file tool, including explicit run-output publication.
 ///
 /// - Parameters:
 ///   - rootProvider: Supplies the current workspace root URL. Returning nil
@@ -43,6 +43,7 @@ public func registerWorkspaceTools(
     ToolCatalog.register(WorkspaceCreateDirectoryTool.self)
     ToolCatalog.register(WorkspaceCopyFileTool.self)
     ToolCatalog.register(WorkspaceArchiveTool.self)
+    ToolCatalog.register(WorkspacePublishOutputTool.self)
 
     // Runtime runners.
     registry.register(WorkspaceListDirectoryTool(environment: environment))
@@ -59,6 +60,7 @@ public func registerWorkspaceTools(
     registry.register(WorkspaceCreateDirectoryTool(environment: environment))
     registry.register(WorkspaceCopyFileTool(environment: environment))
     registry.register(WorkspaceArchiveTool(environment: environment, compressedHandler: compressedArchiveHandler))
+    registry.register(WorkspacePublishOutputTool(environment: environment))
 
     return environment
 }

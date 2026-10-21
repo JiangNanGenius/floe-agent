@@ -92,7 +92,13 @@ struct NotesOfficeView: View {
                     Text(message).font(.callout)
                     HStack {
                         if canRetryOpen { Button("notes.notes_office_view.retry_opening") { Task { await prepare(force: true) } }.disabled(committing) }
-                        if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task { if await office.saveInPlace() { await commit() } } }.disabled(committing) }
+                        if pendingCommit { Button("notes.notes_office_view.retry_saving_to_notes") { Task {
+                            if office.autosaveActive {
+                                _ = await office.requestAutosaveTransaction(reason: "manualRetry")
+                            } else if await office.saveInPlace() {
+                                await commit()
+                            }
+                        } }.disabled(committing) }
                         if canRetryPreview { Button("notes.office.preview.retry") { startCoverRefresh() }.disabled(committing || coverRefreshRunning || !office.canAct) }
                         if let recoveryURL { ShareLink("notes.office.externalUpdate.exportCopy", item: recoveryURL) }
                     }
@@ -129,6 +135,14 @@ struct NotesOfficeView: View {
                                          stableInkIdentity: inkIdentity,
                                          onSaved: {
                     pendingCommit = true
+                    if office.autosaveActive {
+                        // Join the one serialized owner transaction: this
+                        // promotes the just-flushed draft without a second
+                        // native flush and never races the debounce, an
+                        // explicit engine save or the assistant chain.
+                        let proof = await office.requestAutosaveTransaction(reason: "closePromote")
+                        return proof.isCommittedState
+                    }
                     await commit()
                     return !pendingCommit
                 }, onClose: {
@@ -194,6 +208,11 @@ struct NotesOfficeView: View {
             // close or replacement can never describe another document.
             NotesOfficeLiveBinding.bind(documentID: document.id, session: office,
                                         commit: { await self.liveCommit() })
+            // Session-owned autosave owner for this exact document mount. The
+            // mounted Office session carries it across same-session remounts;
+            // it is torn down with this view so a stale callback can never
+            // touch a reopened or other document.
+            office.installAutosaveOwner(makeAutosaveOwner())
             session.registerLeaveGuard(for: document.id) {
                 if coverRefreshRunning, !pendingCommit, office.readOnly {
                     // The only in-flight work is the read-only cover backfill
@@ -239,6 +258,26 @@ struct NotesOfficeView: View {
                     return false
                 }
                 if !office.readOnly {
+                    if office.autosaveActive {
+                        // One serialized owner transaction (verified engine
+                        // flush -> draft commit -> async Notes CAS promotion).
+                        // A duplicate promotion across back/debounce/explicit
+                        // save is structurally impossible here.
+                        let proof = await office.requestAutosaveTransaction(reason: "leaveGuard")
+                        guard proof.isCommittedState else {
+                            recordStage("notes.exit.saveFailed")
+                            session.errorMessage = proof.error ?? office.error
+                                ?? FloeL10n.l("notes.notes_office_view.the_office_save_did_not_finish")
+                            return false
+                        }
+                        if pendingCommit {
+                            recordStage("notes.exit.commitFailed")
+                            session.errorMessage = message ?? FloeL10n.l("notes.notes_office_view.could_not_save_to_notes_please")
+                            return false
+                        }
+                        recordStage("notes.exit.ok")
+                        return true
+                    }
                     guard await office.saveInPlace() else {
                         recordStage("notes.exit.saveFailed")
                         session.errorMessage = office.error ?? FloeL10n.l("notes.notes_office_view.the_office_save_did_not_finish")
@@ -299,6 +338,7 @@ struct NotesOfficeView: View {
         .onDisappear {
             isVisible = false
             NotesOfficeLiveBinding.unbind(documentID: document.id, session: office)
+            office.installAutosaveOwner(nil)
             pendingExternalResource = nil
             externalRefreshTask?.cancel()
             session.removeLeaveGuard(for: document.id)
@@ -677,17 +717,30 @@ struct NotesOfficeView: View {
     /// resource and package digest on success; on any refusal the original
     /// resource stays untouched and the reason is reported truthfully.
     @MainActor private func liveCommit() async -> NotesOfficeCommitOutcome {
-        guard isVisible, let draftURL, session.store != nil else {
+        guard isVisible, draftURL != nil, session.store != nil else {
             return NotesOfficeCommitOutcome(committed: false, revision: nil, resourceID: nil,
                                             packageSHA256: nil, hadUnsavedChanges: false,
                                             message: "The Office editor for this document is no longer open. Nothing was saved.")
         }
-        guard !office.readOnly, office.canAct else {
+        guard !office.readOnly else {
             return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
                                             packageSHA256: nil, hadUnsavedChanges: false,
-                                            message: office.readOnly
-                                                ? "The editor is a read-only preview; there are no unsaved edits to commit."
-                                                : "The editor is busy or not ready; retry after the current operation finishes.")
+                                            message: "The editor is a read-only preview; there are no unsaved edits to commit.")
+        }
+        if office.autosaveActive {
+            // One serialized owner transaction, shared with the idle debounce,
+            // the engine's own Save entries, back and the manual retry. An
+            // active or unknown pen defers BEFORE any current-saved proof is
+            // claimed; a clean no-op requires the real draft hash plus the
+            // current Notes resource/revision proof. Missing proof is an
+            // explicit failure — never `committed=true` with a swallowed hash.
+            let proof = await office.requestAutosaveTransaction(reason: "assistantCommit")
+            return NotesOfficeCommitOutcome(proof: proof)
+        }
+        guard office.canAct else {
+            return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                            packageSHA256: nil, hadUnsavedChanges: false,
+                                            message: "The editor is busy or not ready; retry after the current operation finishes.")
         }
         // A pen that is still down must never be saved or cancelled underneath
         // the user: refuse the commit (fail closed on unknown pen state) so an
@@ -702,7 +755,19 @@ struct NotesOfficeView: View {
         // following Notes promotion failed. That validated draft still needs
         // to be committed before an assistant may edit the Notes resource.
         guard hadEditorChanges || pendingCommit else {
-            let sha = try? FloeDigest.sha256Hex(ofFileAt: draftURL)
+            // The coordinator-less legacy fallback: the strict current
+            // resource/revision proof is not available here, so a missing
+            // draft digest is an explicit failure (never `try?` into a fake
+            // committed clean).
+            let sha: String?
+            do {
+                guard let draftURL else { throw CocoaError(.fileReadNoSuchFile) }
+                sha = try FloeDigest.sha256Hex(ofFileAt: draftURL)
+            } catch {
+                return NotesOfficeCommitOutcome(committed: false, revision: baseRevision, resourceID: baseResourceID,
+                                                packageSHA256: nil, hadUnsavedChanges: false,
+                                                message: "The saved package digest could not be read; nothing is claimed. Reopen and retry.")
+            }
             return NotesOfficeCommitOutcome(committed: true, revision: baseRevision, resourceID: baseResourceID,
                                             packageSHA256: sha, hadUnsavedChanges: false, message: nil)
         }
@@ -725,13 +790,87 @@ struct NotesOfficeView: View {
                                             packageSHA256: nil, hadUnsavedChanges: true,
                                             message: message ?? "The saved document could not be promoted to a Notes revision; the engine draft is preserved.")
         }
-        let sha = try? FloeDigest.sha256Hex(ofFileAt: draftURL)
+        let sha: String?
+        do {
+            guard let draftURL else { throw CocoaError(.fileReadNoSuchFile) }
+            sha = try FloeDigest.sha256Hex(ofFileAt: draftURL)
+        } catch {
+            return NotesOfficeCommitOutcome(committed: false, revision: revision, resourceID: resourceID,
+                                            packageSHA256: nil, hadUnsavedChanges: true,
+                                            message: "The promoted package digest could not be read; re-read notes.read officeFields before writing again.")
+        }
         return NotesOfficeCommitOutcome(committed: true, revision: revision, resourceID: resourceID,
                                         packageSHA256: sha, hadUnsavedChanges: true, message: nil)
     }
 
-    private func commit() async {
-        guard !committing, let url = draftURL, let store = session.store, baseRevision != nil else { return }
+    /// The session-owned autosave owner transaction for this exact document
+    /// mount. Every closure re-validates the view/session identity itself and
+    /// fails safe on unknown state; the coordinator owns scheduling and
+    /// serialization only.
+    private func makeAutosaveOwner() -> OfficeAutosaveOwner {
+        OfficeAutosaveOwner(
+            documentID: document.id,
+            isCurrent: {
+                isVisible && session.document?.id == document.id
+                    && draftURL != nil && session.store != nil
+            },
+            hasPendingPromotion: { pendingCommit },
+            markPendingPromotion: { pendingCommit = true },
+            isContentDirty: {
+                // The pending-promotion marker folds into the dirty truth: a
+                // validated draft that still owes promotion is always
+                // demanded work. Unknown engine state already fails toward
+                // dirty inside `hasLocalEditsToProtect()`.
+                if pendingCommit { return true }
+                return await office.hasLocalEditsToProtect()
+            },
+            hasActivePen: { await office.hasActivePenContact() },
+            flushEngine: { await office.saveInPlace() },
+            promote: { await self.autosavePromote() },
+            publishScheduledOutcome: { proof in
+                // Reuse the existing actionable failure + retry affordance.
+                // No new chrome: hashes/CAS evidence stays in the trace.
+                guard !proof.isCommittedState else { return }
+                if pendingCommit || (proof.dirtyAfterTransaction ?? false) {
+                    message = proof.error ?? FloeL10n.l("notes.notes_office_view.the_office_save_did_not_finish")
+                }
+            }
+        )
+    }
+
+    /// The coordinator's promotion step: the strict clean no-op proof when
+    /// nothing is pending (real draft hash + current resource/revision
+    /// equality), otherwise the same primitive-backed production `commit()`
+    /// chain with its read-back promotion proof.
+    @MainActor private func autosavePromote() async -> OfficeNotesPromotionOutcome {
+        guard isVisible, session.document?.id == document.id, let url = draftURL,
+              let resource = baseResourceID, let revision = baseRevision, session.store != nil else {
+            return .failed(reason: "notes.ownerViewInactive",
+                           message: "The Office editor for this document is no longer open. Nothing was saved.")
+        }
+        if !pendingCommit {
+            do {
+                let receipt = try await OfficeNotesDraftPromotion.verifySavedNoop(
+                    documentID: document.id, draftURL: url, resourceID: resource,
+                    expectedRevision: revision, session: session)
+                return .alreadySaved(revision: receipt.revision, resourceID: receipt.resourceID,
+                                     packageSHA256: receipt.resourceSHA256)
+            } catch OfficeNotesDraftPromotion.Failure.draftDiverged {
+                // The verified draft quietly differs from the current
+                // resource: the real promotion below retains it.
+            } catch {
+                return .verificationFailed(reason: "notes.noopProofMissing", message: error.localizedDescription)
+            }
+        }
+        return await commit()
+    }
+
+    @discardableResult
+    private func commit() async -> OfficeNotesPromotionOutcome {
+        guard !committing, let url = draftURL, session.store != nil,
+              let expectedResourceID = baseResourceID, baseRevision != nil else {
+            return .failed(reason: committing ? "notes.commitBusy" : "notes.commitGuard", message: message)
+        }
         committing = true
         defer {
             committing = false
@@ -740,22 +879,23 @@ struct NotesOfficeView: View {
         }
         do {
             // OfficeFileSession's save path has already validated its native save receipt and
-            // working-copy commit. Re-import never overwrites the former immutable resource.
+            // working-copy commit. Re-import never overwrites the former immutable resource,
+            // and the imported digest/size are proven BEFORE the CAS publishes them.
             recordStage("notes.commit.started")
-            let resource = try await store.importResource(from: url, mediaType: "application/octet-stream")
-            let current = try await store.document(document.id)
-            guard current.officeResourceID == baseResourceID else { throw NoteError.conflict }
-            let updated = try await session.commit([.replaceOfficeResource(resource)], documentID: document.id, expectedRevision: current.revision)
-            let savedResource = try await store.resourceURL(resource)
-            let metadata = ["documentID": document.id.uuidString, "resourceID": resource.uuidString,
-                            "revision": String(updated.revision), "fileName": url.lastPathComponent, "sourceHash": savedResource.lastPathComponent]
+            let receipt = try await OfficeNotesDraftPromotion.promote(
+                documentID: document.id, draftURL: url,
+                expectedResourceID: expectedResourceID, session: session)
+            let metadata = ["documentID": document.id.uuidString, "resourceID": receipt.resourceID.uuidString,
+                            "revision": String(receipt.revision), "fileName": url.lastPathComponent,
+                            "sourceHash": receipt.savedResourceURL.lastPathComponent]
             // The content transaction has committed. A metadata failure must not retry an old revision.
-            baseRevision = updated.revision; baseResourceID = resource; pendingCommit = false; message = nil
-            recordStage("notes.commit.ok", ["revision": String(updated.revision)])
-            previewAttemptedSource = resource
-            if updated.matchingOfficePreviewResourceID == nil {
+            baseRevision = receipt.revision; baseResourceID = receipt.resourceID
+            pendingCommit = false; message = nil
+            recordStage("notes.commit.ok", ["revision": String(receipt.revision)])
+            previewAttemptedSource = receipt.resourceID
+            if receipt.matchingPreviewResourceID == nil {
                 do {
-                    try await refreshGeneratedPreview(sourceID: resource, revision: updated.revision)
+                    try await refreshGeneratedPreview(sourceID: receipt.resourceID, revision: receipt.revision)
                     canRetryPreview = false
                 } catch {
                     // The content transaction already succeeded. A cache
@@ -770,10 +910,34 @@ struct NotesOfficeView: View {
             do {
                 try JSONSerialization.data(withJSONObject: metadata, options: [.sortedKeys]).write(to: url.deletingLastPathComponent().appendingPathComponent("recovery.json"), options: .atomic)
             } catch { message = FloeL10n.l("notes.notes_office_view.the_document_was_saved_but_the", error.localizedDescription) }
+            return .promoted(revision: receipt.revision, resourceID: receipt.resourceID,
+                             packageSHA256: receipt.resourceSHA256)
+        } catch OfficeNotesDraftPromotion.Failure.postCommitProofUnavailable(let revision, let landedResource, let detail) {
+            // The CAS genuinely committed the pre-verified package; only the
+            // final re-read failed. Advance the owned baseline to the real
+            // committed values, retain recovery evidence, and report the
+            // outcome UNPROVEN — never a bare success, never a fabricated
+            // "nothing happened".
+            recordStage("notes.commit.unproven", ["revision": String(revision)])
+            baseRevision = revision; baseResourceID = landedResource
+            pendingCommit = false
+            recoveryURL = url
+            message = detail
+            return .verificationFailed(reason: "notes.postCommitProofUnavailable", message: detail)
         } catch {
             recordStage("notes.commit.failed", ["domain": (error as NSError).domain])
             message = FloeL10n.l("notes.notes_office_view.could_not_save_to_notes_the", error.localizedDescription)
             recoveryURL = url
+            if case OfficeNotesDraftPromotion.Failure.resourceConflict = error {
+                return .conflict(message: message)
+            }
+            if let noteError = error as? NoteError, case .conflict = noteError {
+                return .conflict(message: message)
+            }
+            if case OfficeNotesDraftPromotion.Failure.proofUnavailable = error {
+                return .verificationFailed(reason: "notes.promotionProofUnavailable", message: message)
+            }
+            return .failed(reason: "notes.commitFailed", message: message)
         }
     }
 
@@ -1152,6 +1316,41 @@ struct NotesOfficeCommitOutcome: Sendable {
     let packageSHA256: String?
     let hadUnsavedChanges: Bool
     let message: String?
+}
+
+extension NotesOfficeCommitOutcome {
+    /// Backward-compatible mapping of the stable autosave proof onto the
+    /// existing assistant surface. `committed=true` only ever comes from a
+    /// transaction that proved a real revision/resource and a read-back
+    /// package digest (`saved`), or the strict clean no-op proof
+    /// (`alreadySaved`, which reports the EXISTING revision and never claims
+    /// a new one or a flushed stroke). Every other outcome stays a truthful
+    /// refusal with the current dirty evidence retained.
+    init(proof: OfficeSavedProof) {
+        switch proof.outcome {
+        case .saved:
+            self.init(committed: true, revision: proof.revision, resourceID: proof.resourceID,
+                      packageSHA256: proof.packageSHA256, hadUnsavedChanges: true, message: nil)
+        case .alreadySaved:
+            self.init(committed: true, revision: proof.revision, resourceID: proof.resourceID,
+                      packageSHA256: proof.packageSHA256, hadUnsavedChanges: false, message: nil)
+        case .deferred:
+            let text = proof.reason == "autosave.penActive"
+                ? "A pen contact is still active in the editor; the commit was refused so the in-progress stroke is preserved. Lift the pen and retry."
+                : "The editor is busy with another operation; the commit was deferred so nothing overlaps. Retry after it finishes."
+            self.init(committed: false, revision: nil, resourceID: nil, packageSHA256: nil,
+                      hadUnsavedChanges: proof.dirtyAfterTransaction ?? true, message: text)
+        case .cancelled:
+            self.init(committed: false, revision: nil, resourceID: nil, packageSHA256: nil,
+                      hadUnsavedChanges: proof.dirtyAfterTransaction ?? true,
+                      message: proof.error ?? "The editor closed before its saved draft could be committed to Notes. The draft is preserved.")
+        case .refused, .failed, .failedVerification:
+            self.init(committed: false, revision: proof.revision, resourceID: proof.resourceID,
+                      packageSHA256: proof.packageSHA256,
+                      hadUnsavedChanges: proof.dirtyAfterTransaction ?? true,
+                      message: proof.error ?? "Nothing was committed; the original resource and the retained draft are untouched.")
+        }
+    }
 }
 
 /// Identity-checked weak registry of the LIVE Office editor mounted for each

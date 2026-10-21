@@ -40126,6 +40126,23 @@
         }
       }
     },
+    "remote.conversation_center.run_output_cleanup_failed_partial": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld task was deleted, but its run outputs could not be removed. Floe will retry automatically; if this keeps appearing, the storage may need attention."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已删除 %lld 个任务，但其运行输出未能移除。Floe 会自动重试；如果此提示反复出现，可能需要检查存储空间。"
+          }
+        }
+      }
+    },
     "remote.conversation_center.task_paused": {
       "extractionState": "manual",
       "localizations": {
@@ -57978,6 +57995,465 @@
           "stringUnit": {
             "state": "translated",
             "value": "联网搜索"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.interface": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "账户"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.agentPlan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Plan Doubao Search"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Plan 豆包搜索"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.arkResponses": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ark Responses"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方舟 Responses"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.doubaoSearch": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doubao Search API"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "豆包搜索 API"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.legacy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Custom endpoint (legacy)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自定义端点（旧版）"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.engine": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search engine"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索引擎"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.engine.doubao": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doubao Search Custom"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "豆包搜索 Custom 版"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.engine.online": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Online content"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "联网内容插件"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.credential.agentPlan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Plan key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Agent Plan 密钥"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.credential.ark": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ark API key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "方舟 API Key"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.credential.doubao": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Doubao Search key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "豆包搜索密钥"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.credential.legacy": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API key"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 密钥"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.queryRewrite": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Query rewrite"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查询改写"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.authoritativeOnly": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Authoritative sources only"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅权威来源"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.dataPro": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Professional datasets"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业数据集"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.dataPro.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.dataPro.footer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requires Agent Plan and the Harness deduction option enabled in the Volcengine console."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需已订阅 Agent Plan，并在火山引擎控制台开启 Harness 抵扣。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.dataPro.requiresAgentPlan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requires an Agent Plan account"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要 Agent Plan 账户"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.advanced": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Advanced"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "高级"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Search model"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "搜索模型"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.configuration": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved Volcengine configuration is invalid. Select an account to continue."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已保存的火山引擎配置无效，请选择账户后继续。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.credential": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter the key for the selected account, or choose an account that already has one."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入所选账户的密钥，或选择已有密钥的账户。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.endpoint": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid HTTP(S) endpoint without embedded credentials."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的 HTTP(S) 端点，且不要在地址中嵌入凭据。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.model": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enter a valid Ark search model identifier."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "请输入有效的方舟搜索模型标识。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.requiresAgentPlan": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Professional datasets require the Agent Plan account."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "专业数据集需要 Agent Plan 账户。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.dataProUnavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Professional datasets are unavailable in this build."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此版本暂不支持专业数据集。"
+          }
+        }
+      }
+    },
+    "websearch.volcengine.error.dataProConflict": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "An existing MCP connection at the reserved DataPro identity has different settings. Rename or remove it before enabling professional datasets."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预留的专业数据集 MCP 标识已被其他连接占用且配置不同。请先重命名或移除该连接再开启。"
           }
         }
       }
@@ -90081,6 +90557,193 @@
           "stringUnit": {
             "state": "translated",
             "value": "请检查 Floe 设置中的模型配置。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.files.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get Run Files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取运行文件"
+          }
+        }
+      }
+    },
+    "shortcuts.run.files.description": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Get the files produced by the selected Floe run"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "获取所选 Floe 运行产生的文件"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.service": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe could not read run files. Retry after Floe finishes launching."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 无法读取运行文件，请在 Floe 启动完成后重试。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This run's files are not available. Check the reference and try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这次运行的文件不可用。请检查引用后重试。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.not_ready": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Files are available after the task finishes successfully. Wait for it, or turn on partial results."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务成功结束后才有文件可用。请等待运行完成，或打开“包含部分结果”。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.damaged": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The saved file records for this run are damaged."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这次运行保存的文件记录已损坏。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.limit": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This run's files exceed the allowed size or count."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这次运行的文件超出允许的大小或数量。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file \"%@\" from this run is no longer available."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "这次运行的文件“%@”已不可用。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.changed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file \"%@\" changed after this run produced it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件“%@”在这次运行生成后发生了改动。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.unverified": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file \"%@\" could not be verified."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件“%@”无法通过校验。"
+          }
+        }
+      }
+    },
+    "shortcuts.run.error.files.cancelled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The file check was cancelled. Run this shortcut again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件检查已取消。请重新运行此快捷指令。"
           }
         }
       }

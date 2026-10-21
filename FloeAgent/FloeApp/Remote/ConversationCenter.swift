@@ -6102,9 +6102,14 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func stopRunsAndDelete(conversationIDs: Set<UUID>) async throws {
+        // Per-conversation durable run IDs, captured before any cascade: the
+        // exact S3-D cleanup tombstone for this deletion names only these
+        // runs' `RunOutputs/<runUUID>` trees.
+        var runIDsByConversation: [UUID: [UUID]] = [:]
         var durableRunIDs = Set<UUID>()
         for conversationID in conversationIDs {
             let runs = try await environment.runStore.runs(conversationID: conversationID)
+            runIDsByConversation[conversationID] = runs.map(\.id)
             durableRunIDs.formUnion(runs.map(\.id))
         }
         let services = runServices.values.filter {
@@ -6149,6 +6154,13 @@ final class ConversationCenter: ObservableObject {
             await environment.contentUpdateCenter.releaseRunSnapshot(runID)
         }
 
+        // S3-D run-output cleanup ordering: writers were cancelled and joined
+        // above, so no publication can still be committing. Each conversation's
+        // exact cleanup request is persisted BEFORE its DB cascade; snapshots
+        // are removed only after that conversation's deletion is confirmed.
+        // Any cleanup failure keeps the request (bootstrap retry) and is
+        // surfaced visibly at the end instead of being swallowed.
+        var runOutputCleanupFailureCount = 0
         for id in conversationIDs {
             let ownerLabel = try await environment.conversationStore.conversation(id: id)?.title
                 ?? FloeL10n.l("remote.conversation_center.deleted_tasks")
@@ -6156,8 +6168,20 @@ final class ConversationCenter: ObservableObject {
                 conversationID: id,
                 ownerLabel: ownerLabel
             )
-            try await environment.conversationStore.deleteConversation(id: id)
+            let conversationRunIDs = runIDsByConversation[id] ?? []
+            let cleanupSucceeded = try await Self.runOutputAwareDeletion(
+                conversationID: id,
+                durableRunIDs: conversationRunIDs
+            ) { [environment] in
+                try await environment.conversationStore.deleteConversation(id: id)
+            }
             environment.browserCenter.discard(conversationID: id)
+            if !cleanupSucceeded {
+                // The conversation is gone but its snapshots could not be
+                // removed: the persisted request survives and the launch
+                // readiness retry reattempts exactly this tombstone.
+                runOutputCleanupFailureCount += 1
+            }
         }
         Self.removeChangeArtifacts(runIDs: durableRunIDs)
         // Also forget completed services retained for historical live-tail
@@ -6170,6 +6194,62 @@ final class ConversationCenter: ObservableObject {
             snapshotTasks[runID] = nil
             runServices[runID] = nil
             activeRuns[runID] = nil
+        }
+        // Finish in-memory deletion even when snapshot cleanup is deferred.
+        // The durable request owns retries; stale live-tail state must not
+        // survive a conversation that has already been deleted.
+        if runOutputCleanupFailureCount > 0 {
+            throw FloeError.storageCorrupted(
+                FloeL10n.l(
+                    "remote.conversation_center.run_output_cleanup_failed_partial",
+                    runOutputCleanupFailureCount))
+        }
+    }
+
+    /// The exact S3-D per-conversation deletion order, shared by
+    /// `stopRunsAndDelete` and the focused lifecycle tests.
+    ///
+    /// 1. The task-owned cleanup request (conversationID + the durable run
+    ///    IDs captured BEFORE the cascade) is persisted atomically first. An
+    ///    enqueue failure THROWS and the DB deletion never runs: outputs can
+    ///    never be orphaned without a recovery tombstone.
+    /// 2. The caller's DB cascade runs. Its failure propagates with the
+    ///    tombstone still persisted and the snapshots untouched.
+    /// 3. Only after the DB deletion is confirmed are exactly the canonical
+    ///    `RunOutputs/<runUUID>` trees for those runs removed and the request
+    ///    completed. A cleanup failure keeps the request (the launch
+    ///    readiness retry reattempts it) and is reported to the caller via
+    ///    the `false` return so the failure stays visible.
+    ///
+    /// Must be called only after every writer for these runs has been
+    /// cancelled and joined.
+    static func runOutputAwareDeletion(
+        conversationID: UUID,
+        durableRunIDs: [UUID],
+        storeRoot: URL? = nil,
+        artifactRoot: URL? = nil,
+        isolation: isolated (any Actor)? = #isolation,
+        deleteConversation: () async throws -> Void
+    ) async throws -> Bool {
+        if durableRunIDs.isEmpty {
+            try await deleteConversation()
+            return true
+        }
+        try RunOutputCleanupQueue.enqueue(
+            .init(conversationID: conversationID, runIDs: durableRunIDs),
+            storeRoot: storeRoot
+        )
+        try await deleteConversation()
+        do {
+            try RunOutputCleanupQueue.removeOwnedSnapshots(
+                for: .init(conversationID: conversationID, runIDs: durableRunIDs),
+                artifactRoot: artifactRoot
+            )
+            try RunOutputCleanupQueue.complete(
+                conversationID: conversationID, storeRoot: storeRoot)
+            return true
+        } catch {
+            return false
         }
     }
 

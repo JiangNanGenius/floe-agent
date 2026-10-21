@@ -33,7 +33,8 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
                     resolve: { host in
                         switch host {
                         case "api.bochaai.com", "api.tavily.com",
-                             "wsa.tencentcloudapi.com", "redirected.example.org":
+                             "wsa.tencentcloudapi.com", "redirected.example.org",
+                             "open.feedcoopapi.com", "ark.cn-beijing.volces.com":
                             return ["93.184.216.34"]
                         default:
                             throw URLError(.cannotFindHost)
@@ -56,6 +57,21 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
             credentialAccount: "test-\(kind.rawValue)",
             enabled: true,
             priority: priority
+        )
+    }
+
+    private func volcengineProvider(
+        _ interface: VolcengineSearchInterface,
+        options: [String: String] = [:]
+    ) -> WebSearchProviderConfiguration {
+        var values = options
+        values[VolcengineSearchOptions.Key.interface] = interface.rawValue
+        return WebSearchProviderConfiguration(
+            kind: .volcengine,
+            displayName: "Volcengine",
+            credentialAccount: "test-volcengine-\(interface.rawValue)",
+            enabled: true,
+            options: values
         )
     }
 
@@ -230,6 +246,247 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
         } catch {
             XCTFail("unexpected error: \(error)")
         }
+    }
+
+    // MARK: - Volcengine account/interface end-to-end
+
+    func testVolcengineAgentPlanEndToEnd() async throws {
+        MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { _ in
+            .ok(Stubs.volcengineDirectBody(
+                title: "Agent Plan story",
+                url: "https://example.com/agent-plan",
+                snippet: "agent plan snippet",
+                publishTime: "2026-10-20T10:00:00+08:00",
+                siteName: "Example",
+                logoURL: "https://example.com/logo.png"
+            ))
+        }
+        let service = makeService([
+            (volcengineProvider(.agentPlan),
+             WebSearchCredential(values: ["apiKey": "agent-plan-key"]))
+        ])
+
+        let response = try await service.search(WebSearchQuery(
+            text: "latest story",
+            mode: .balanced,
+            maxResults: 10,
+            requestedProvider: "volcengine"
+        ))
+
+        XCTAssertEqual(response.providersUsed, [.volcengine])
+        XCTAssertTrue(response.failures.isEmpty)
+        XCTAssertTrue(response.generatedAnswers.isEmpty)
+        XCTAssertEqual(response.results.first?.title, "Agent Plan story")
+        XCTAssertEqual(response.results.first?.snippet, "agent plan snippet")
+        XCTAssertEqual(response.results.first?.publishedAt, "2026-10-20T10:00:00+08:00")
+        XCTAssertEqual(response.results.first?.sourceName, "Example")
+        XCTAssertEqual(response.results.first?.faviconURL, "https://example.com/logo.png")
+
+        let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+        XCTAssertEqual(sent.url?.absoluteString, "https://open.feedcoopapi.com/search_api/web_search")
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "Authorization"), "Bearer agent-plan-key")
+        let body = try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(Self.bodyData(of: sent))
+        ) as? [String: Any]
+        XCTAssertEqual(body?["Query"] as? String, "latest story")
+        XCTAssertEqual(body?["Count"] as? Int, 10)
+        XCTAssertNil(sent.value(forHTTPHeaderField: "X-Traffic-Tag"))
+    }
+
+    func testVolcengineArkCitationsAndAnswerReachToolOutput() async throws {
+        MockURLProtocol.state.stub(host: "ark.cn-beijing.volces.com") { _ in
+            .ok(Stubs.volcengineArkBody(
+                answer: "The generated weather summary.",
+                citations: [(
+                    title: "Weather source",
+                    url: "https://example.com/weather",
+                    summary: "Short citation summary",
+                    siteName: "Example Weather",
+                    publishTime: "2026-10-20T08:00:00+08:00"
+                )]
+            ))
+        }
+        let service = makeService([
+            (volcengineProvider(.arkResponses),
+             WebSearchCredential(values: ["apiKey": "ark-key"]))
+        ])
+
+        let response = try await service.search(WebSearchQuery(
+            text: "weather",
+            mode: .balanced,
+            maxResults: 10,
+            requestedProvider: "volcengine"
+        ))
+
+        XCTAssertEqual(response.providersUsed, [.volcengine])
+        XCTAssertEqual(response.results.count, 1)
+        XCTAssertEqual(response.results.first?.snippet, "Short citation summary")
+        XCTAssertEqual(response.generatedAnswers.count, 1)
+        XCTAssertEqual(response.generatedAnswers.first?.text, "The generated weather summary.")
+
+        let output = try WebSearchTool.output(response)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        let answers = try XCTUnwrap(object["generatedAnswers"] as? [[String: Any]])
+        XCTAssertEqual(answers.first?["answer"] as? String, "The generated weather summary.")
+        XCTAssertNotNil(object["providerGeneratedAnswerNote"] as? String)
+        let rows = try XCTUnwrap(object["results"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["snippet"] as? String, "Short citation summary")
+        XCTAssertNotEqual(rows.first?["snippet"] as? String,
+                          answers.first?["answer"] as? String)
+    }
+
+    func testVolcengineArkAnswerWithoutURLCitationsIsNotAnEmptyFailure() async throws {
+        MockURLProtocol.state.stub(host: "ark.cn-beijing.volces.com") { _ in
+            .ok(Stubs.volcengineArkAnswerOnlyBody("Useful weather text without citations."))
+        }
+        let service = makeService([
+            (volcengineProvider(.arkResponses),
+             WebSearchCredential(values: ["apiKey": "ark-key"]))
+        ])
+
+        let response = try await service.search(WebSearchQuery(
+            text: "weather",
+            mode: .balanced,
+            maxResults: 10,
+            requestedProvider: "volcengine"
+        ))
+        XCTAssertTrue(response.results.isEmpty)
+        XCTAssertEqual(response.generatedAnswers.first?.text, "Useful weather text without citations.")
+
+        let output = try WebSearchTool.output(response)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(object["returned"] as? Int, 0)
+        let answers = try XCTUnwrap(object["generatedAnswers"] as? [[String: Any]])
+        XCTAssertEqual(answers.first?["answer"] as? String, "Useful weather text without citations.")
+        XCTAssertNotNil(object["providerGeneratedAnswerNote"] as? String)
+    }
+
+    func testVolcengineArkIncomplete200IsReportedAsProviderFailure() async {
+        MockURLProtocol.state.stub(host: "ark.cn-beijing.volces.com") { _ in
+            .ok(Stubs.volcengineArkStatusBody("incomplete", reason: "max_output_tokens"))
+        }
+        let service = makeService([
+            (volcengineProvider(.arkResponses),
+             WebSearchCredential(values: ["apiKey": "ark-key"]))
+        ])
+
+        do {
+            _ = try await service.search(WebSearchQuery(
+                text: "weather",
+                mode: .balanced,
+                maxResults: 10,
+                requestedProvider: "volcengine"
+            ))
+            XCTFail("expected allProvidersFailed")
+        } catch let WebRetrievalError.allProvidersFailed(failures) {
+            XCTAssertEqual(failures.count, 1)
+            XCTAssertTrue(failures.first?.hasPrefix("volcengine: ") == true)
+            XCTAssertTrue(failures.first?.contains("incomplete") == true)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testVolcengineInterfaceOriginsAreCanonicalAndDistinct() throws {
+        let cases: [(VolcengineSearchInterface, String)] = [
+            (.agentPlan, "https://open.feedcoopapi.com/search_api/web_search"),
+            (.doubaoSearch, "https://open.feedcoopapi.com/search_api/web_search"),
+            (.arkResponses, "https://ark.cn-beijing.volces.com/api/v3/responses")
+        ]
+        for (interface, expected) in cases {
+            let configuration = volcengineProvider(interface)
+            let request = try WebSearchService.makeRequest(
+                configuration,
+                credential: WebSearchCredential(values: ["apiKey": "k"]),
+                query: WebSearchQuery(text: "q")
+            )
+            XCTAssertEqual(request.url?.absoluteString, expected, interface.rawValue)
+            XCTAssertTrue(
+                WebSearchService.requestURLIsCanonical(request.url, configuration: configuration),
+                interface.rawValue)
+            XCTAssertTrue(
+                WebSearchService.allowsTransientTunnel(for: configuration),
+                interface.rawValue)
+        }
+        // The legacy record has no fixed origin and no tunnel relaxation.
+        let legacy = WebSearchProviderConfiguration(
+            kind: .volcengine,
+            displayName: "legacy",
+            endpoint: URL(string: "https://search.example.com/api"),
+            credentialAccount: "legacy",
+            enabled: true
+        )
+        XCTAssertNil(WebSearchService.canonicalEndpoint(for: legacy))
+        XCTAssertFalse(WebSearchService.allowsTransientTunnel(for: legacy))
+    }
+
+    func testVolcengineCrossOriginRedirectIsRejected() async throws {
+        MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { request in
+            if request.url?.path == "/search_api/web_search" {
+                return .redirect(to: "https://ark.cn-beijing.volces.com/api/v3/responses")
+            }
+            return .status(500)
+        }
+        MockURLProtocol.state.stub(host: "ark.cn-beijing.volces.com") { _ in
+            .ok(Stubs.volcengineArkAnswerOnlyBody("must not arrive"))
+        }
+        let service = makeService([
+            (volcengineProvider(.agentPlan),
+             WebSearchCredential(values: ["apiKey": "agent-plan-key"]))
+        ])
+
+        do {
+            _ = try await service.search(WebSearchQuery(
+                text: "redirect",
+                mode: .balanced,
+                maxResults: 10,
+                requestedProvider: "volcengine"
+            ))
+            XCTFail("expected provider failure")
+        } catch let WebRetrievalError.allProvidersFailed(failures) {
+            XCTAssertEqual(failures.first, "volcengine: HTTP 302")
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        let hosts = Set(MockURLProtocol.state.captured.compactMap { $0.url?.host })
+        XCTAssertEqual(hosts, ["open.feedcoopapi.com"])
+    }
+
+    func testVolcengineGeneratedAnswerToolOutputIsBoundedWithMetadata() throws {
+        let answer = String(repeating: "多字节回答", count: 2_000)
+        let response = WebSearchResponse(
+            query: "q",
+            results: [
+                WebSearchResult(
+                    title: "Result",
+                    url: URL(string: "https://example.com/result")!,
+                    snippet: "snippet",
+                    provider: .volcengine,
+                    citationID: "citation"
+                )
+            ],
+            providersUsed: [.volcengine],
+            generatedAnswers: [
+                WebSearchProviderGeneratedAnswer(provider: .volcengine, text: answer)
+            ]
+        )
+        let output = try WebSearchTool.output(response)
+        XCTAssertLessThanOrEqual(output.summary.count, 4_096)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(object["truncated"] as? Bool, true)
+        let answers = try XCTUnwrap(object["generatedAnswers"] as? [[String: Any]])
+        let first = try XCTUnwrap(answers.first)
+        XCTAssertEqual(first["answerTruncated"] as? Bool, true)
+        XCTAssertEqual(first["originalCharacters"] as? Int, answer.count)
+        let bounded = try XCTUnwrap(first["answer"] as? String)
+        XCTAssertLessThan(bounded.count, answer.count)
+        XCTAssertFalse(bounded.isEmpty)
     }
 
     // MARK: - Redirect destination protection
@@ -551,5 +808,73 @@ enum Stubs {
     static func genericResults(items: [(title: String, url: String, snippet: String)]) -> Data {
         let values = items.map { ["title": $0.title, "url": $0.url, "snippet": $0.snippet] }
         return try! JSONSerialization.data(withJSONObject: ["results": values])
+    }
+
+    static func volcengineDirectBody(
+        title: String,
+        url: String,
+        snippet: String,
+        publishTime: String? = nil,
+        siteName: String? = nil,
+        logoURL: String? = nil
+    ) -> Data {
+        var item: [String: Any] = [
+            "Title": title, "Url": url, "Snippet": snippet, "Id": "1", "SortId": 1
+        ]
+        if let publishTime { item["PublishTime"] = publishTime }
+        if let siteName { item["SiteName"] = siteName }
+        if let logoURL { item["LogoUrl"] = logoURL }
+        return try! JSONSerialization.data(withJSONObject: ["results": [item]])
+    }
+
+    static func volcengineArkBody(
+        answer: String,
+        citations: [(title: String, url: String, summary: String,
+                     siteName: String, publishTime: String)]
+    ) -> Data {
+        let annotations = citations.map { citation -> [String: Any] in
+            [
+                "type": "url_citation",
+                "title": citation.title,
+                "url": citation.url,
+                "summary": citation.summary,
+                "site_name": citation.siteName,
+                "publish_time": citation.publishTime
+            ]
+        }
+        let payload: [String: Any] = [
+            "object": "response",
+            "status": "completed",
+            "output": [[
+                "type": "message",
+                "role": "assistant",
+                "content": [[
+                    "type": "output_text",
+                    "text": answer,
+                    "annotations": annotations
+                ]]
+            ]]
+        ]
+        return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    static func volcengineArkAnswerOnlyBody(_ answer: String) -> Data {
+        let payload: [String: Any] = [
+            "object": "response",
+            "status": "completed",
+            "output": [[
+                "type": "message",
+                "content": [["type": "output_text", "text": answer, "annotations": []]]
+            ]]
+        ]
+        return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    static func volcengineArkStatusBody(_ status: String, reason: String? = nil) -> Data {
+        var payload: [String: Any] = ["object": "response", "status": status]
+        if let reason {
+            payload["incomplete_details"] = ["reason": reason]
+        }
+        return try! JSONSerialization.data(withJSONObject: payload)
     }
 }

@@ -91,6 +91,13 @@ public struct ToolResult: Sendable, Codable, Hashable {
     /// Bounded Floe-owned artifacts produced by this tool. The provider only
     /// receives verified image bytes when the selected model supports vision.
     public var artifacts: [ToolArtifactReference]
+    /// Stable run-owned user-file outputs produced by this exact call
+    /// (S3-D). Executors may propose receipts, but the runtime seals every
+    /// identity field against its real run/call context before persistence;
+    /// model text, quoted paths and artifact namespaces cannot grant
+    /// ownership. Each path is a canonical `RunOutputs` snapshot, never a
+    /// live workspace pointer, and the field is empty for ordinary tools.
+    public var outputFiles: [RunOutputFile]
     /// Harness-authored provenance. Executors may return a value, but the
     /// runtime overwrites it before persistence so model/tool output cannot
     /// spoof resource identity or execution ownership.
@@ -112,6 +119,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest: String,
         exitStatus: Int32? = nil,
         artifacts: [ToolArtifactReference] = [],
+        outputFiles: [RunOutputFile] = [],
         provenance: ToolResultProvenance? = nil,
         maximumSummaryCharacters: Int = 4096
     ) {
@@ -122,11 +130,12 @@ public struct ToolResult: Sendable, Codable, Hashable {
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
         self.artifacts = artifacts
+        self.outputFiles = outputFiles
         self.provenance = provenance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, provenance, maximumSummaryCharacters
+        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters
     }
 
     public init(from decoder: any Decoder) throws {
@@ -138,6 +147,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
         outputDigest = try values.decode(String.self, forKey: .outputDigest)
         exitStatus = try values.decodeIfPresent(Int32.self, forKey: .exitStatus)
         artifacts = try values.decodeIfPresent([ToolArtifactReference].self, forKey: .artifacts) ?? []
+        // Legacy ToolResult JSON predates S3-D: absent field decodes to the
+        // stable empty value, never to a guessed or reconstructed receipt.
+        outputFiles = try values.decodeIfPresent([RunOutputFile].self, forKey: .outputFiles) ?? []
         provenance = try values.decodeIfPresent(ToolResultProvenance.self, forKey: .provenance)
     }
 
@@ -150,6 +162,9 @@ public struct ToolResult: Sendable, Codable, Hashable {
         try values.encode(outputDigest, forKey: .outputDigest)
         try values.encodeIfPresent(exitStatus, forKey: .exitStatus)
         if !artifacts.isEmpty { try values.encode(artifacts, forKey: .artifacts) }
+        // Emit the key only when non-empty so existing stored payloads and
+        // wire shapes stay byte-identical for ordinary tools.
+        if !outputFiles.isEmpty { try values.encode(outputFiles, forKey: .outputFiles) }
         try values.encodeIfPresent(provenance, forKey: .provenance)
     }
 }

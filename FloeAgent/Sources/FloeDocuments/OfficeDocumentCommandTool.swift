@@ -903,8 +903,42 @@ public struct OfficeEditTool: AgentTool {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let json = String(decoding: (try? encoder.encode(receipt)) ?? Data("{}".utf8), as: UTF8.self)
-        return output("status=\(receipt.saved ? "saved" : "partial") replay=\(receipt.replay) "
-            + "mode=automatic-copy sourceUnchanged=\(receipt.sourceUnchanged)\n\(json)")
+        let summary = "status=\(receipt.saved ? "saved" : "partial") replay=\(receipt.replay) "
+            + "mode=automatic-copy sourceUnchanged=\(receipt.sourceUnchanged)\n\(json)"
+        // S3-D: only a verified saved automatic copy yields a run receipt,
+        // published from the host's output digest/size at commit. A bound-run
+        // publication failure throws an observable error; the copy and the
+        // untouched source remain on disk. Legacy direct and temporary
+        // contexts keep the original summary byte-identical.
+        guard receipt.saved else { return output(summary) }
+        switch RunOutputProducerSupport.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return output(summary)
+        case .partiallyBound:
+            throw RunOutputProducerSupport.partialBindingFailure
+        case .required:
+            let copyURL = try resolveWorkspaceFile(receipt.outputRelativePath, context: context, mustExist: true)
+            do {
+                let published = try RunOutputSnapshotStore.publish(
+                    RunOutputSnapshotRequest(
+                        producerTool: Self.name,
+                        slot: "copy",
+                        commit: RunOutputCommit(
+                            sourceURL: copyURL,
+                            sha256: receipt.outputSHA256,
+                            byteCount: receipt.outputByteCount,
+                            displayName: copyURL.lastPathComponent,
+                            mimeType: RunOutputProducerSupport.officeMIME(receipt.outputRelativePath),
+                            uti: RunOutputProducerSupport.officeUTI(receipt.outputRelativePath)
+                        )
+                    ),
+                    using: context
+                )
+                return ToolExecutionOutput(digesting: summary, exitStatus: 0, outputFiles: [published])
+            } catch let error as RunOutputSnapshotError {
+                throw RunOutputProducerSupport.publicationFailure(error)
+            }
+        }
     }
 
     private func export(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
@@ -920,8 +954,41 @@ public struct OfficeEditTool: AgentTool {
         let receipt = try await host.export(documentID: path, relativeOutput: relativeOutput, access: access)
         // The source is never modified by export.
         let sourceAfter = try OfficeOutputSnapshot.capture(url: url)
-        return output("exported=\(receipt.relativePath) sha256=\(receipt.sha256) bytes=\(receipt.byteCount) "
-            + "sourceUnchanged=\(!sourceBefore.isEmpty && sourceBefore == sourceAfter.sha256)")
+        let summary = "exported=\(receipt.relativePath) sha256=\(receipt.sha256) bytes=\(receipt.byteCount) "
+            + "sourceUnchanged=\(!sourceBefore.isEmpty && sourceBefore == sourceAfter.sha256)"
+        // S3-D: freeze the exported copy into the run's snapshot namespace
+        // using the host's verified export receipt (digest + size at commit).
+        // Bound-run publication failures throw an observable error; the
+        // export itself and the untouched source remain on disk. Legacy
+        // direct and temporary contexts keep the original summary exactly.
+        switch RunOutputProducerSupport.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return output(summary)
+        case .partiallyBound:
+            throw RunOutputProducerSupport.partialBindingFailure
+        case .required:
+            let exportURL = try resolveWorkspaceFile(receipt.relativePath, context: context, mustExist: true)
+            do {
+                let published = try RunOutputSnapshotStore.publish(
+                    RunOutputSnapshotRequest(
+                        producerTool: Self.name,
+                        slot: "export",
+                        commit: RunOutputCommit(
+                            sourceURL: exportURL,
+                            sha256: receipt.sha256,
+                            byteCount: receipt.byteCount,
+                            displayName: exportURL.lastPathComponent,
+                            mimeType: RunOutputProducerSupport.officeMIME(receipt.relativePath),
+                            uti: RunOutputProducerSupport.officeUTI(receipt.relativePath)
+                        )
+                    ),
+                    using: context
+                )
+                return ToolExecutionOutput(digesting: summary, exitStatus: 0, outputFiles: [published])
+            } catch let error as RunOutputSnapshotError {
+                throw RunOutputProducerSupport.publicationFailure(error)
+            }
+        }
     }
 
     private func replaceImage(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {

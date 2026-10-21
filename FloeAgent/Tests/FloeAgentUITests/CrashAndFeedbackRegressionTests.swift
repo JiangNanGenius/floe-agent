@@ -1514,4 +1514,575 @@ extension CrashAndFeedbackRegressionTests {
         #expect(!cancelledAttempt)
     }
 }
+// MARK: - Notes handwriting acknowledgement lineage (build 283 feedback)
+//
+// Real NotesStore + real NotesSession. The session may adopt its own last
+// acknowledged ink commit for a page only for the canvas lineage and epoch
+// that produced it (or one reloaded with those exact bytes), and only while
+// the live store page still holds them. Every test below exercises one of
+// those boundaries; none mock the store.
+extension CrashAndFeedbackRegressionTests {
+    /// Build one deterministic stroke. Tests reuse the SAME stroke instances
+    /// across drawings (D2 literally contains D1's stroke) and store each
+    /// expected Data once — repeated `inkData` rebuilds are never used as
+    /// byte-proof.
+    private func makeStroke(_ offset: CGFloat) -> PKStroke {
+        let date = Date(timeIntervalSince1970: 0)
+        let points = [CGPoint(x: 8 + offset, y: 12), CGPoint(x: 36 + offset, y: 44)].enumerated().map { i, point in
+            PKStrokePoint(location: point, timeOffset: Double(i), size: CGSize(width: 3, height: 3), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
+        }
+        return PKStroke(ink: PKInk(.pen, color: .black), path: PKStrokePath(controlPoints: points, creationDate: date))
+    }
+
+    private func drawingData(_ strokes: [PKStroke]) -> Data {
+        PKDrawing(strokes: strokes).dataRepresentation()
+    }
+
+    @MainActor private func drainInk(_ session: NotesSession) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while session.pendingWrites > 0 && Date() < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(session.pendingWrites == 0)
+    }
+
+    private func pageInk(_ store: NotesStore, _ document: NoteDocument) async throws -> Data? {
+        guard let resource = document.pages[0].drawingResourceID else { return nil }
+        return try Data(contentsOf: await store.resourceURL(resource))
+    }
+
+    @Test("Own next stroke after a drained save uses the acknowledged base, not a stale UI base")
+    @MainActor func inkSaveReentryUsesOwnAcknowledgedBaseline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-reentry-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Continuous writing"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        let first = drawingData([strokeA])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let savedOnce = try await store.document(base.id)
+        #expect(savedOnce.revision == base.revision + 1)
+        #expect(try await pageInk(store, savedOnce) == first)
+        // The editor baseline is still the pre-save snapshot here; the next
+        // stroke must not be treated as a concurrent edit of our own commit.
+        let second = drawingData([strokeA, makeStroke(300)])
+        #expect(try PKDrawing(data: second).strokes.count == 2)
+        session.saveDrawing(second, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let savedTwice = try await store.document(base.id)
+        #expect(try await store.conflictReviews().isEmpty)
+        #expect(savedTwice.revision == base.revision + 2)
+        let storedSecond = try #require(try await pageInk(store, savedTwice))
+        #expect(storedSecond == second)
+        #expect(try PKDrawing(data: storedSecond).strokes.count == 2)
+        #expect(try await store.editingSnapshot(base.id, revision: savedOnce.revision) == savedOnce)
+    }
+
+    @Test("Two strokes queued back to back coalesce into one commit without duplicates")
+    @MainActor func multipleInflightInkSavesCommitOnceWithoutDuplicates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-inflight-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Rapid strokes"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        let first = drawingData([strokeA])
+        let second = drawingData([strokeA, makeStroke(300)])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        session.saveDrawing(second, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let saved = try await store.document(base.id)
+        #expect(try await store.conflictReviews().isEmpty)
+        #expect(saved.revision == base.revision + 1)
+        let stored = try #require(try await pageInk(store, saved))
+        #expect(stored == second)
+        #expect(try PKDrawing(data: stored).strokes.count == 2)
+    }
+
+    @Test("An obsolete older-sequence report cannot overwrite the newer queued stroke")
+    @MainActor func olderSequenceCannotReplaceNewerPendingStroke() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-sequence-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Ordered reports"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        let newer = drawingData([strokeA, makeStroke(300)])
+        let obsolete = drawingData([strokeA, makeStroke(600)])
+        session.saveDrawing(newer, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        // A stale callback from the same canvas/generation arriving after the
+        // newer report must be ignored, not coalesced over it.
+        session.saveDrawing(obsolete, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let saved = try await store.document(base.id)
+        #expect(try await store.conflictReviews().isEmpty)
+        #expect(saved.revision == base.revision + 1)
+        let stored = try #require(try await pageInk(store, saved))
+        #expect(stored == newer)
+        #expect(try PKDrawing(data: stored).strokes.count == 2)
+    }
+
+    @Test("A late older report cannot replace a newer stroke after the queue has drained")
+    @MainActor func olderSequenceCannotReplaceDrainedStroke() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-drained-order-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Drained report order"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID(), stroke = makeStroke(0)
+        let newest = drawingData([stroke, makeStroke(300)])
+        session.saveDrawing(newest, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let committed = try await store.document(base.id)
+        session.saveDrawing(drawingData([stroke]), pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let afterLateCallback = try await store.document(base.id)
+        #expect(afterLateCallback.revision == committed.revision)
+        #expect(try await pageInk(store, afterLateCallback) == newest)
+        #expect(try await store.conflictReviews().isEmpty)
+    }
+
+    @Test("Another producer cannot overwrite a failed producer's durable recovery envelope")
+    @MainActor func failedProducerRecoverySurvivesOtherProducerAndRestarts() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("ink-producer-recovery-\(UUID())")
+        defer { try? fm.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        // A missing document makes the real store reject AFTER the recovery
+        // envelope is durable, without replacing the store with a fake.
+        let missing = NoteDocument(title: "Recovered producer")
+        let folder = try fm.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                appropriateFor: nil, create: true)
+            .appendingPathComponent("FloeAgent/Notes/InkRecovery/\(missing.id.uuidString)", isDirectory: true)
+        defer { try? fm.removeItem(at: folder) }
+        let session = NotesSession()
+        await session.open(using: store)
+        let failedInk = drawingData([makeStroke(0)])
+        session.saveDrawing(failedInk, pageID: missing.pages[0].id, base: missing,
+                            provenance: .init(lineage: UUID(), generation: 1, sequence: 1))
+        try await drainInk(session)
+        #expect(session.errorMessage != nil)
+        let envelopes = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "inkdraft" }
+        let failedEnvelope = try #require(envelopes.first)
+        #expect(envelopes.count == 1)
+        let retainedBytes = try Data(contentsOf: failedEnvelope)
+        #expect(try JSONDecoder().decode(NoteInkDraft.self, from: retainedBytes).drawing == failedInk)
+
+        let base = try await store.create(missing)
+        let succeedingInk = drawingData([makeStroke(600)])
+        session.saveDrawing(succeedingInk, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: UUID(), generation: 1, sequence: 1))
+        try await drainInk(session)
+        #expect(try Data(contentsOf: failedEnvelope) == retainedBytes)
+        let current = try await store.document(base.id)
+        #expect(try await pageInk(store, current) == succeedingInk)
+
+        // A fresh session replays the ORIGINAL file independently, preserving
+        // both genuinely different drawings and retiring only its own file.
+        let restarted = NotesSession()
+        await restarted.open(using: store)
+        restarted.recoverInk(documentID: base.id)
+        try await drainInk(restarted)
+        let review = try #require(try await store.conflictReviews().first)
+        let copy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, copy) == failedInk)
+        #expect(try await pageInk(store, try await store.document(base.id)) == succeedingInk)
+        #expect(!fm.fileExists(atPath: failedEnvelope.path))
+    }
+
+    @Test("Pencil dispatches once to the captured page and retains legacy fallback")
+    @MainActor func pencilReportsOnceToCapturedOriginAndPreservesLegacyFallback() {
+        let base = NoteDocument(title: "Callback origin")
+        var legacyCalls = 0, provenancedCalls = 0, differentPageCalls = 0
+        var view = NotePencilView(page: base.pages[0], drawing: nil, background: nil,
+            fingerDrawing: false, tool: PKInkingTool(.pen, color: .black, width: 3),
+            onDrawing: { _ in legacyCalls += 1 }, drawingBaseline: base)
+        let canvas = PKCanvasView(), coordinator = view.makeCoordinator()
+        coordinator.loadedBaseline = base
+        canvas.drawing = PKDrawing(strokes: [makeStroke(0)])
+        coordinator.canvasViewDrawingDidChange(canvas)
+        #expect(legacyCalls == 1)
+        view.onVersionedDrawingProvenance = { _, snapshot, _, _ in
+            #expect(snapshot.id == base.id)
+            provenancedCalls += 1
+        }
+        coordinator.parent = view
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        var other = view
+        other.onVersionedDrawingProvenance = { _, _, _, _ in differentPageCalls += 1 }
+        coordinator.parent = other
+        canvas.drawing = PKDrawing(strokes: [makeStroke(0), makeStroke(300)])
+        coordinator.canvasViewDrawingDidChange(canvas)
+        coordinator.canvasViewDidEndUsingTool(canvas)
+        #expect(legacyCalls == 1)
+        #expect(provenancedCalls == 1)
+        #expect(differentPageCalls == 0)
+    }
+
+    @Test("A stale view snapshot cannot rewind ink and equal-byte loads confirm their actual generation")
+    @MainActor func pencilSnapshotCannotRewindNewerLocalInk() async {
+        let base = NoteDocument(title: "Snapshot order")
+        var adopted: [UInt64] = []
+        let view = NotePencilView(page: base.pages[0], drawing: nil,
+            onDrawingAdopted: { _, generation in adopted.append(generation) }, background: nil,
+            fingerDrawing: false, tool: PKInkingTool(.pen, color: .black, width: 3), onDrawing: { _ in })
+        let canvas = PKCanvasView(), coordinator = view.makeCoordinator()
+        canvas.drawing = PKDrawing(strokes: [makeStroke(0), makeStroke(300)])
+        coordinator.canvasViewDrawingDidChange(canvas)
+        let newInk = canvas.drawing.dataRepresentation()
+        coordinator.applyDrawingSnapshot(drawingData([makeStroke(600)]), generation: 1,
+            baseline: base, mutation: 0, to: canvas)
+        #expect(canvas.drawing.dataRepresentation() == newInk)
+        coordinator.applyDrawingSnapshot(newInk, generation: 2, baseline: base,
+            mutation: coordinator.mutationCounter, to: canvas)
+        // The actual adoption proof must be delivered BEFORE a new gesture
+        // can retire any deferred notification.
+        #expect(adopted == [2])
+        coordinator.canvasViewDidBeginUsingTool(canvas)
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        #expect(adopted == [2])
+        #expect(coordinator.adoptedGeneration == 2)
+        #expect(canvas.drawing.dataRepresentation() == newInk)
+    }
+
+    @Test("A report from a generation retired by reload registration cannot use the ack, the current one can")
+    @MainActor func staleGenerationReportRejectedAfterReloadRegistration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-register-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Reload registration"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        let first = drawingData([strokeA])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let acknowledged = try #require(try await store.document(base.id).pages[0].drawingResourceID)
+        // The canvas reloads the same bytes; the confirmed adoption registers
+        // generation 2 and retires generation 1.
+        session.noteInkCanvasSynced(documentID: base.id, pageID: base.pages[0].id,
+                                    canvasLineage: lineage, canvasGeneration: 2, drawingResourceID: acknowledged)
+        // A stale generation-1 report (captured before the reload) must fail
+        // closed even though it matches the ack's producer: the registered
+        // generation fence retires it.
+        let stale = drawingData([strokeA, makeStroke(600)])
+        session.saveDrawing(stale, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let review = try #require(try await store.conflictReviews().first)
+        let currentAfterStale = try await store.document(base.id)
+        #expect(try await pageInk(store, currentAfterStale) == first)
+        let staleCopy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, staleCopy) == stale)
+        // The current generation-2 report adopts through the verified reload
+        // and continues the line without a second conflict.
+        let resumed = drawingData([strokeA, makeStroke(300)])
+        session.saveDrawing(resumed, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 2, sequence: 3))
+        try await drainInk(session)
+        #expect(try await store.conflictReviews().count == 1)
+        let saved = try await store.document(base.id)
+        #expect(saved.revision == base.revision + 2)
+        #expect(try await pageInk(store, saved) == resumed)
+    }
+
+    @Test("A canvas reloaded with the acknowledged bytes may continue that line")
+    @MainActor func remountedCanvasAdoptsAckAfterSyncedReload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-remount-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Remounted canvas"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let firstLineage = UUID()
+        let first = drawingData([makeStroke(0)])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: firstLineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let savedOnce = try await store.document(base.id)
+        let acknowledged = try #require(savedOnce.pages[0].drawingResourceID)
+        // The editor remounts: a new canvas loads the committed bytes through
+        // the verified page task and registers that exact resource.
+        let secondLineage = UUID()
+        session.noteInkCanvasSynced(documentID: base.id, pageID: base.pages[0].id,
+                                    canvasLineage: secondLineage, canvasGeneration: 1, drawingResourceID: acknowledged)
+        let second = drawingData([makeStroke(0), makeStroke(300)])
+        session.saveDrawing(second, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: secondLineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let savedTwice = try await store.document(base.id)
+        #expect(try await store.conflictReviews().isEmpty)
+        #expect(savedTwice.revision == base.revision + 2)
+        #expect(try await pageInk(store, savedTwice) == second)
+    }
+
+    @Test("A foreign canvas that never reloaded the acknowledged bytes cannot consume the ack")
+    @MainActor func foreignCanvasCannotConsumeAcknowledgedBaseline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-foreign-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Foreign canvas"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let first = drawingData([makeStroke(0)])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        // A different lineage with no synced reload reports from an old base:
+        // it must fail closed to the preserved-conflict path, not overwrite.
+        let foreign = drawingData([makeStroke(600)])
+        session.saveDrawing(foreign, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: UUID(), generation: 1, sequence: 1))
+        try await drainInk(session)
+        let review = try #require(try await store.conflictReviews().first)
+        let current = try await store.document(base.id)
+        #expect(try await pageInk(store, current) == first)
+        let copy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, copy) == foreign)
+        #expect(current.revision == base.revision + 1)
+    }
+
+    @Test("A generation retired by a rewind cannot consume the old acknowledgement")
+    @MainActor func retiredGenerationCannotConsumeAckAfterRewind() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-rewind-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Rewind"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        let first = drawingData([strokeA])
+        session.saveDrawing(first, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let savedOnce = try await store.document(base.id)
+        #expect(savedOnce.pages[0].drawingResourceID != nil)
+        // The user undoes the stroke; the editor's page task reloads the
+        // rewound bytes and the canvas adoption advances the generation.
+        _ = try await store.undo(base.id, expectedRevision: savedOnce.revision)
+        let rewound = try await store.document(base.id)
+        #expect(rewound.revision == savedOnce.revision + 1)
+        #expect(rewound.pages[0].drawingResourceID == nil)
+        session.noteInkCanvasSynced(documentID: base.id, pageID: base.pages[0].id,
+                                    canvasLineage: lineage, canvasGeneration: 2, drawingResourceID: nil)
+        // A stale closure from before the rewind still carries generation 1
+        // (the pre-undo canvas). The live-page guard fences the ack closed:
+        // both versions are preserved instead of the old bytes winning.
+        let stale = drawingData([strokeA, makeStroke(300)])
+        session.saveDrawing(stale, pageID: base.pages[0].id, base: savedOnce,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let review = try #require(try await store.conflictReviews().first)
+        let current = try await store.document(base.id)
+        #expect(current.pages[0].drawingResourceID == nil)
+        #expect(current.revision == rewound.revision)
+        let copy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, copy) == stale)
+    }
+
+    @Test("Continuing to write after a valid undo saves cleanly with the rewound baseline")
+    @MainActor func validUndoThenContinueWritingSavesWithoutConflict() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-undo-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Undo then write"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        session.saveDrawing(drawingData([makeStroke(0)]), pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let savedOnce = try await store.document(base.id)
+        _ = try await store.undo(base.id, expectedRevision: savedOnce.revision)
+        let rewound = try await store.document(base.id)
+        // The rewound canvas re-registers at a new generation; a fresh stroke
+        // is a legitimate new edit on the rewound state and must save
+        // directly with the refreshed baseline.
+        session.noteInkCanvasSynced(documentID: base.id, pageID: base.pages[0].id,
+                                    canvasLineage: lineage, canvasGeneration: 2, drawingResourceID: nil)
+        let resumed = drawingData([makeStroke(300)])
+        session.saveDrawing(resumed, pageID: base.pages[0].id, base: rewound,
+                            provenance: .init(lineage: lineage, generation: 2, sequence: 1))
+        try await drainInk(session)
+        let saved = try await store.document(base.id)
+        #expect(try await store.conflictReviews().isEmpty)
+        #expect(saved.revision == rewound.revision + 1)
+        #expect(try await pageInk(store, saved) == resumed)
+    }
+
+    @Test("External same-page ink still conflicts, keeps both versions, and resolves at the latest revision")
+    @MainActor func externalSamePageInkStillConflictsAndPreservesBoth() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-external-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "True concurrency"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let strokeA = makeStroke(0)
+        session.saveDrawing(drawingData([strokeA]), pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let mine = try await store.document(base.id)
+        // Another writer path commits different bytes to the same page.
+        let external = drawingData([makeStroke(900)])
+        let externalFile = root.appendingPathComponent("external.drawing")
+        try external.write(to: externalFile)
+        let externalResource = try await store.importResource(from: externalFile, mediaType: "application/vnd.apple.pencilkit")
+        let externalSaved = try await store.apply(.init(documentID: base.id, expectedRevision: mine.revision,
+            title: "External", edits: [.drawing(pageID: base.pages[0].id, resourceID: externalResource)]))
+        let human = drawingData([strokeA, makeStroke(300), makeStroke(600)])
+        session.saveDrawing(human, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let review = try #require(try await store.conflictReviews().first)
+        let current = try await store.document(base.id)
+        #expect(current == externalSaved)
+        #expect(try await pageInk(store, current) == external)
+        let copy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, copy) == human)
+        // Resolving with "use mine" applies at the latest revision and keeps
+        // the external text-era document state addressable in history.
+        await session.resolveEditConflict(review, useMine: true)
+        try await drainInk(session)
+        #expect(try await store.conflictReviews().isEmpty)
+        let resolved = try await store.document(base.id)
+        #expect(resolved.revision == externalSaved.revision + 1)
+        #expect(try await pageInk(store, resolved) == human)
+        #expect(session.errorMessage == nil)
+    }
+
+    @Test("An identical repeated conflict reuses its review and copy instead of duplicating")
+    @MainActor func repeatedIdenticalInkConflictDoesNotDuplicateCopy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-dedup-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Repeated conflict"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let human = drawingData([makeStroke(0), makeStroke(300)])
+        // Force the first conflict with an external page change.
+        let external = drawingData([makeStroke(900)])
+        let externalFile = root.appendingPathComponent("external.drawing")
+        try external.write(to: externalFile)
+        let externalResource = try await store.importResource(from: externalFile, mediaType: "application/vnd.apple.pencilkit")
+        let externalSaved = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "External", edits: [.drawing(pageID: base.pages[0].id, resourceID: externalResource)]))
+        session.saveDrawing(human, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let firstReview = try #require(try await store.conflictReviews().first)
+        let documentCount = try await store.documents(includeTrash: true).count
+        // An unrelated edit moves the document on; the same failing bytes
+        // must refresh the same review instead of minting a second copy.
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "unrelated")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
+        try await store.apply(.init(documentID: base.id, expectedRevision: externalSaved.revision,
+            title: "External text", edits: [.textSource(id: sourceID, text: "unrelated"),
+                                           .upsertElement(pageID: base.pages[0].id, element: textElement)]))
+        session.saveDrawing(human, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 2))
+        try await drainInk(session)
+        let reviews = try await store.conflictReviews()
+        #expect(reviews.count == 1)
+        let refreshed = try #require(reviews.first)
+        #expect(refreshed.id == firstReview.id)
+        #expect(refreshed.copy.id == firstReview.copy.id)
+        #expect(refreshed.current.revision == externalSaved.revision + 1)
+        #expect(refreshed.current.textSources?.values.contains("unrelated") == true)
+        #expect(refreshed.current.pages[0].elements.contains(textElement))
+        #expect(try await store.documents(includeTrash: true).count == documentCount)
+        let copy = try await store.document(refreshed.copy.id)
+        #expect(try await pageInk(store, copy) == human)
+    }
+
+    @Test("Crash recovery replays the true disk baseline and cannot consume a live-canvas ack")
+    @MainActor func recoveryReplayCannotAdoptLiveAck() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-recovery-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Recovered draft"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let committed = drawingData([makeStroke(0)])
+        session.saveDrawing(committed, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        #expect(try await pageInk(store, try await store.document(base.id)) == committed)
+        // A crash envelope with different, older bytes survives the restart.
+        let recovery = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true).appendingPathComponent("FloeAgent/Notes/InkRecovery/\(base.id.uuidString)")
+        defer { try? FileManager.default.removeItem(at: recovery) }
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+        let staleDraft = drawingData([makeStroke(300)])
+        let envelope = NoteInkDraft(base: base, pageID: base.pages[0].id, drawing: staleDraft)
+        try JSONEncoder().encode(envelope).write(to: recovery.appendingPathComponent("\(base.pages[0].id.uuidString).inkdraft"))
+        session.recoverInk(documentID: base.id)
+        try await drainInk(session)
+        // The recovery kept its real baseline: the newer committed ink wins
+        // the page, the older draft is preserved as the recovery copy.
+        let review = try #require(try await store.conflictReviews().first)
+        let current = try await store.document(base.id)
+        #expect(try await pageInk(store, current) == committed)
+        let copy = try await store.document(review.copy.id)
+        #expect(try await pageInk(store, copy) == staleDraft)
+    }
+
+    @Test("Crash recovery of already-applied bytes replays without a conflict or a new revision")
+    @MainActor func recoveryReplayOfAppliedBytesIsIdempotent() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ink-replay-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Idempotent replay"))
+        let session = NotesSession()
+        await session.open(using: store)
+        let lineage = UUID()
+        let committed = drawingData([makeStroke(0)])
+        session.saveDrawing(committed, pageID: base.pages[0].id, base: base,
+                            provenance: .init(lineage: lineage, generation: 1, sequence: 1))
+        try await drainInk(session)
+        let saved = try await store.document(base.id)
+        // Crash between commit and envelope removal: same bytes replay.
+        let recovery = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true).appendingPathComponent("FloeAgent/Notes/InkRecovery/\(base.id.uuidString)")
+        defer { try? FileManager.default.removeItem(at: recovery) }
+        try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+        let envelope = NoteInkDraft(base: base, pageID: base.pages[0].id, drawing: committed)
+        try JSONEncoder().encode(envelope).write(to: recovery.appendingPathComponent("\(base.pages[0].id.uuidString).inkdraft"))
+        session.recoverInk(documentID: base.id)
+        try await drainInk(session)
+        #expect(try await store.conflictReviews().isEmpty)
+        let replayed = try await store.document(base.id)
+        #expect(replayed.revision == saved.revision)
+        #expect(try await pageInk(store, replayed) == committed)
+    }
+}
+
 #endif

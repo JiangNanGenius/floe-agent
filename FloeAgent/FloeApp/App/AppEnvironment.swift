@@ -1821,6 +1821,30 @@ final class AppEnvironment: ObservableObject {
                 FloeLogger(category: .persistence).error(
                     "childRunReconcileFailed errorType=\(String(describing: type(of: error)))")
             }
+            // S3-D run-output tombstones left by a conversation deletion whose
+            // snapshot cleanup failed (or whose process died mid-deletion) are
+            // retried exactly here — once per readiness pass, no timer, no
+            // global scan. Each persisted request is reattempted only after
+            // its original conversation is verified truly absent, so a
+            // pre-DB-failure tombstone can never delete a live run's output.
+            // Failures keep their requests on disk and stay observable.
+            let cleanupOutcome = await RunOutputCleanupQueue.retryPersistedTombstones { [database] conversationID in
+                // A read failure is unknown, not proof of deletion. Let the
+                // queue retain the request and the user's output snapshots.
+                try await SQLiteConversationStore(database: database)
+                    .conversation(id: conversationID) != nil
+            }
+            if cleanupOutcome.completedRequests > 0
+                || cleanupOutcome.retainedLiveConversationRequests > 0 {
+                FloeLogger(category: .persistence).info(
+                    "runOutputCleanupRetry completed=\(cleanupOutcome.completedRequests) "
+                    + "liveRetained=\(cleanupOutcome.retainedLiveConversationRequests)")
+            }
+            if cleanupOutcome.failedRequestCount > 0 {
+                FloeLogger(category: .persistence).error(
+                    "runOutputCleanupRetryFailed count=\(cleanupOutcome.failedRequestCount) "
+                    + "details=\(cleanupOutcome.failureDescriptions.joined(separator: " | "))")
+            }
             // Native CAD proposals interrupted mid-apply and decision
             // deliveries that never reached the originating task reconcile
             // from durable records (never from ordering alone).
@@ -2274,6 +2298,7 @@ final class AppEnvironment: ObservableObject {
         let store = runStore
         let conversations = conversationStore
         let replyReader = SQLiteRunReplyReader(database: database)
+        let outputReader = SQLiteRunOutputReader(database: database)
         return FloeShortcutRunService(deps: FloeShortcutRunDeps(
             ensureReady: { [weak self] access in
                 guard let self else { throw FloeShortcutRunError.applicationStillStarting }
@@ -2333,6 +2358,19 @@ final class AppEnvironment: ObservableObject {
                 try await replyReader.provenFinalReplyText(
                     runID: runID, conversationID: conversationID, messageID: messageID
                 )
+            },
+            // S3-D exact-run file projection. Both IDs are bound inside the
+            // SQL predicate itself, and snapshot verification re-checks the
+            // canonical RunOutputs bytes at retrieval. No new service graph,
+            // no environment/provider dependency: reads need durable
+            // storage only, same as the reply/text paths above.
+            runOutputManifest: { runID, conversationID in
+                try await outputReader.manifestRows(
+                    runID: runID, expectedConversationID: conversationID
+                )
+            },
+            verifyRunOutputSnapshot: { receipt in
+                RunOutputSnapshotStore.verify(receipt)
             }
         ))
     }

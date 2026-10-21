@@ -7,9 +7,16 @@ import WebKit
 @MainActor
 final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
     private static let handler = "floeCommitDocument"
+    private static let dirtyHandler = "floeOfficeDocumentModified"
     private weak var webView: WKWebView?
     private var save: (@MainActor () async -> Bool)?
     private var pending = false
+    /// The engine's own accepted content-change EDGE (`.uno:ModifiedStatus`
+    /// transitioning clean -> modified). This is the runtime dirty signal the
+    /// session's autosave coordinator debounces on; it is a schedule/recheck
+    /// trigger only, never save proof. Installed by the mounted session for
+    /// editable generations; previews have nothing to signal.
+    var onDocumentModified: (@MainActor () -> Void)?
 
     init(controller: UIViewController, save: @escaping @MainActor () async -> Bool) throws {
         super.init()
@@ -23,23 +30,33 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
         self.save = save
         let content = webView.configuration.userContentController
         content.add(self, name: Self.handler)
+        content.add(self, name: Self.dirtyHandler)
         content.addUserScript(WKUserScript(source: Self.script,
             injectionTime: .atDocumentEnd, forMainFrameOnly: true))
     }
 
     func invalidate() {
-        webView?.configuration.userContentController.removeScriptMessageHandler(forName: Self.handler)
+        let content = webView?.configuration.userContentController
+        content?.removeScriptMessageHandler(forName: Self.handler)
+        content?.removeScriptMessageHandler(forName: Self.dirtyHandler)
         save = nil
+        onDocumentModified = nil
         webView = nil
     }
 
     func userContentController(_ userContentController: WKUserContentController,
                                didReceive message: WKScriptMessage) {
-        guard !pending, message.name == Self.handler, message.frameInfo.isMainFrame,
+        guard message.frameInfo.isMainFrame,
               let webView, message.webView === webView,
               let url = message.frameInfo.request.url, url.isFileURL,
               url.lastPathComponent == "cool.html",
-              let body = message.body as? String, body == "save", let save else { return }
+              let body = message.body as? String else { return }
+        if message.name == Self.dirtyHandler {
+            guard body == "modified" else { return }
+            onDocumentModified?()
+            return
+        }
+        guard !pending, message.name == Self.handler, body == "save", let save else { return }
         pending = true
         Task { @MainActor [weak self, weak webView] in
             let success = await save()
@@ -483,12 +500,7 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             };
             const stateChanged = proto.onCommandStateChanged;
             if (typeof stateChanged !== 'function') return;
-            window.floeModificationTrackingInstalled = true;
-            window.floeModifiedSinceCommit = false;
             proto.onCommandStateChanged = function (event) {
-                if (event.commandName === '.uno:ModifiedStatus'
-                    && (event.state === true || event.state === 'true'))
-                    window.floeModifiedSinceCommit = true;
                 if (event.commandName === '.uno:CharFontName') {
                     const control = document.getElementById('fontnamecombobox');
                     if (control && typeof control.onSetText === 'function') control.onSetText(event.state);
@@ -511,6 +523,13 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
             if (!proto || typeof proto.fire !== 'function' || proto.floeExplicitSaveInstalled) return;
             proto.floeExplicitSaveInstalled = true;
             const fire = proto.fire;
+            // Track the engine event at its source. Notebookbar UI builders
+            // register their current function as a listener and may already
+            // have done so before the document-end controls script runs.
+            // Their cached state remains readable even when that later
+            // prototype wrapper never sees a modification.
+            window.floeModificationTrackingInstalled = true;
+            window.floeModifiedSinceCommit = false;
             let pendingMap = null;
             let savedStatus = null;
             // Bounded watchdog: if the native handoff is lost (the message is
@@ -537,6 +556,17 @@ final class OfficeExplicitSaveBridge: NSObject, WKScriptMessageHandler {
                     status.showSaveFailedStatus();
             };
             proto.fire = function (type, event) {
+                if (type === 'commandstatechanged' && event
+                    && event.commandName === '.uno:ModifiedStatus'
+                    && (event.state === true || event.state === 'true')) {
+                    const wasModified = window.floeModifiedSinceCommit === true;
+                    window.floeModifiedSinceCommit = true;
+                    if (!wasModified) {
+                        try {
+                            window.webkit.messageHandlers.floeOfficeDocumentModified.postMessage('modified');
+                        } catch (_) {}
+                    }
+                }
                 if (type !== 'postMessage' || !event || event.msgId !== 'UI_Save')
                     return fire.apply(this, arguments);
                 // Every shipped Save entry (toolbar, notebookbar, file menu

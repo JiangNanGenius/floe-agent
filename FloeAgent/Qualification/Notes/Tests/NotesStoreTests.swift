@@ -559,6 +559,170 @@ struct NotesStoreTests {
         #expect(cached.revision == saved.revision)
         #expect((cached.officeExtractedText ?? "").count == 2_000_000)
     }
+
+    // MARK: - Drawing replay (content-addressed, already-applied bytes)
+
+    private func importInk(_ store: NotesStore, root: URL, bytes: Data, name: String) async throws -> UUID {
+        let file = root.appendingPathComponent(name)
+        try bytes.write(to: file)
+        return try await store.importResource(from: file, mediaType: "application/vnd.apple.pencilkit")
+    }
+
+    @Test func alreadyAppliedDrawingReplayIsNotAConflict() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Replay"))
+        let page = base.pages[0].id
+        let inkA = Data([0, 1, 2, 255])
+        let resourceA = try await importInk(store, root: root, bytes: inkA, name: "a.drawing")
+        let applied = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        // Stale base (R0) replaying the bytes the page already holds: satisfied.
+        let result = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]), base: base)
+        #expect(result == applied)
+        #expect(result.revision == applied.revision)
+        #expect(result.pages[0].drawingResourceID == resourceA)
+    }
+
+    @Test func drawingReplayPreservesUnrelatedSiblingEditsInMixedBatch() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Mixed"))
+        let page = base.pages[0].id
+        let inkA = Data([9, 8, 7])
+        let resourceA = try await importInk(store, root: root, bytes: inkA, name: "a.drawing")
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "kept")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
+            title: "Agent", edits: [.textSource(id: sourceID, text: "kept"),
+                                    .upsertElement(pageID: page, element: textElement)]))
+        // Replay of A (already installed) drops out; the rename still applies
+        // through the normal rebase path and the agent text survives.
+        let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Rename", edits: [.drawing(pageID: page, resourceID: resourceA), .rename("Mixed, retitled")]), base: base)
+        #expect(merged.title == "Mixed, retitled")
+        #expect(merged.pages[0].drawingResourceID == resourceA)
+        #expect(merged.textSources?.values.contains("kept") == true)
+        #expect(merged.pages[0].elements.contains(textElement))
+        #expect(merged.revision == base.revision + 3)
+    }
+
+    @Test func differentDrawingOnChangedPageStillConflicts() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Contended"))
+        let page = base.pages[0].id
+        let resourceA = try await importInk(store, root: root, bytes: Data([1]), name: "a.drawing")
+        let resourceX = try await importInk(store, root: root, bytes: Data([2]), name: "x.drawing")
+        let resourceY = try await importInk(store, root: root, bytes: Data([3]), name: "y.drawing")
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Mine", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        let external = try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
+            title: "External", edits: [.drawing(pageID: page, resourceID: resourceX)]))
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Mine", edits: [.drawing(pageID: page, resourceID: resourceY)]), base: base)
+        }
+        let current = try await store.document(base.id)
+        #expect(current == external)
+        #expect(current.pages[0].drawingResourceID == resourceX)
+    }
+
+    @Test func unrelatedTextAndOtherPageChangesStillRebaseDrawing() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        var value = NoteDocument(title: "Two pages")
+        value.pages.append(NotePage())
+        let base = try await store.create(value)
+        let firstPage = base.pages[0].id
+        let secondPage = base.pages[1].id
+        let resourceA = try await importInk(store, root: root, bytes: Data([1, 2]), name: "a.drawing")
+        let resourceB = try await importInk(store, root: root, bytes: Data([3, 4]), name: "b.drawing")
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: firstPage, resourceID: resourceA)]))
+        let sourceID = UUID()
+        var textElement = NoteElement(text: "external note")
+        textElement.textFormat = "markdown"
+        textElement.textSourceID = sourceID
+        textElement.textSlice = .init(start: 0, count: 1, total: 1)
+        // External text on page 1 and external ink on page 2 progress independently.
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
+            title: "External", edits: [.textSource(id: sourceID, text: "external note"),
+                                       .upsertElement(pageID: firstPage, element: textElement),
+                                       .drawing(pageID: secondPage, resourceID: resourceB)]))
+        // Our stale-base ink edit on page 1 rebases cleanly and keeps both.
+        let merged = try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: firstPage, resourceID: resourceA)]), base: base)
+        #expect(merged.pages[0].drawingResourceID == resourceA)
+        #expect(merged.pages[1].drawingResourceID == resourceB)
+        #expect(merged.textSources?.values.contains("external note") == true)
+        #expect(merged.pages[0].elements.contains(textElement))
+    }
+
+    @Test func resizedPageBlocksDrawingReplayAsConflict() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Resized"))
+        let page = base.pages[0].id
+        let resourceA = try await importInk(store, root: root, bytes: Data([5, 6]), name: "a.drawing")
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        var resized = base.pages[0]; resized.width += 100
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision + 1,
+            title: "Resize", edits: [.updatePage(resized)]))
+        // Same bytes, but the surface changed: never silently "satisfied".
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]), base: base)
+        }
+        #expect(try await store.document(base.id).pages[0].width == resized.width)
+    }
+
+    @Test func receiptedDrawingReplayKeepsConflictSemantics() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Receipted"))
+        let page = base.pages[0].id
+        let resourceA = try await importInk(store, root: root, bytes: Data([7]), name: "a.drawing")
+        try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)], requestID: "req-ink-1"), base: base)
+        // A receipted replay from the stale base must NOT take the satisfied
+        // path; its semantics stay exactly as before the optimization.
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)], requestID: "req-ink-1"), base: base)
+        }
+        #expect(try await store.editReceipt(requestID: "req-ink-1", documentID: base.id) != nil)
+    }
+
+    @Test func emptyOrOversizedSatisfiedBatchStillRejects() async throws {
+        let root = try root(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = try NotesStore(root: root)
+        let base = try await store.create(NoteDocument(title: "Batch guard"))
+        let page = base.pages[0].id
+        let resourceA = try await importInk(store, root: root, bytes: Data([11]), name: "a.drawing")
+        try await store.apply(.init(documentID: base.id, expectedRevision: base.revision,
+            title: "Write", edits: [.drawing(pageID: page, resourceID: resourceA)]))
+        // Even though the page already holds A (every edit is "satisfied"),
+        // the store's batch contract must reject empty and oversized batches
+        // exactly as `apply` does — the no-op path never bypasses it.
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Empty", edits: []), base: base)
+        }
+        let oversized = Array(repeating: NoteEdit.drawing(pageID: page, resourceID: resourceA), count: 10_001)
+        await #expect(throws: NoteError.self) {
+            try await store.applyRebased(.init(documentID: base.id, expectedRevision: base.revision,
+                title: "Oversized", edits: oversized), base: base)
+        }
+        #expect(try await store.document(base.id).revision == base.revision + 1)
+    }
 }
 
 @Test func permanentDeletionPreservesSharedHistoryAndActiveReaders() async throws {

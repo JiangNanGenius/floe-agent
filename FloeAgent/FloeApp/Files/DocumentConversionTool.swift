@@ -15,6 +15,75 @@ struct DocumentConversionArguments: Decodable, Sendable {
     var format: String
 }
 
+/// App-target helper for S3-D run-output publication at producer commit
+/// boundaries. Not a parallel store: it applies only the trusted
+/// `RunOutputSnapshotStore` rules. Fixed failure policy: a run-bound
+/// publication that fails produces an observable tool error (the committed
+/// original is preserved); only genuine legacy direct contexts (no call AND
+/// no task binding) and temporary runs (no durable output by design) skip
+/// publication with byte-identical legacy summaries; a partially bound
+/// context must fail rather than silently skip.
+enum RunOutputPublication {
+    enum State {
+        case required
+        case legacyDirect
+        case temporaryExempt
+        case partiallyBound
+    }
+
+    static func state(_ context: ToolContext) -> State {
+        let hasCall = context.toolCallID?.isEmpty == false
+        let hasTask = context.conversationID != nil
+        if !hasCall && !hasTask { return .legacyDirect }
+        if hasCall != hasTask { return .partiallyBound }
+        if context.temporaryReadOnly { return .temporaryExempt }
+        return .required
+    }
+
+    static var partialBindingFailure: FloeError {
+        FloeError.validationFailed(
+            "run output publication requires both the tool-call and task binding")
+    }
+
+    static func publicationFailure(_ error: RunOutputSnapshotError) -> FloeError {
+        switch error {
+        case .bindingMissing: return FloeError.validationFailed("run output publication failed (unbound)")
+        case .policyRefused: return FloeError.validationFailed("run output publication refused by policy")
+        case .identityInvalid: return FloeError.validationFailed("run output publication failed (invalid identity)")
+        case .sourceUnavailable: return FloeError.validationFailed("run output publication failed (source unavailable)")
+        case .commitIdentityStale: return FloeError.validationFailed("run output publication failed (stale commit identity)")
+        case .conflict(let name): return FloeError.validationFailed("run output publication failed (conflict: \(name))")
+        case .overCap: return FloeError.validationFailed("run output publication failed (over cap)")
+        case .snapshotAliased: return FloeError.validationFailed("run output publication failed (aliased snapshot)")
+        case .ioFailure: return FloeError.storageCorrupted("run output publication failed (storage)")
+        }
+    }
+
+    static func documentMIMEType(_ format: String) -> String {
+        switch format {
+        case "pdf": return "application/pdf"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "html": return "text/html"
+        case "rtf": return "application/rtf"
+        case "markdown": return "text/markdown"
+        case "text": return "text/plain"
+        default: return "application/octet-stream"
+        }
+    }
+
+    static func documentUTI(_ format: String) -> String? {
+        switch format {
+        case "pdf": return "com.adobe.pdf"
+        case "docx": return "org.openxmlformats.wordprocessingml.document"
+        case "html": return "public.html"
+        case "rtf": return "public.rtf"
+        case "markdown": return "net.daringfireball.markdown"
+        case "text": return "public.plain-text"
+        default: return nil
+        }
+    }
+}
+
 struct DocumentConvertTool: AgentTool {
     typealias Arguments = DocumentConversionArguments
     static let name = "document.convert"
@@ -26,7 +95,7 @@ struct DocumentConvertTool: AgentTool {
     func validate(_ args: Arguments) throws { try DocumentFileConverter.validate(args, requiresPDF: false) }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
-        return try await DocumentFileConverter.convert(args, context: context)
+        return try await DocumentFileConverter.convert(args, context: context, producerTool: Self.name)
     }
 }
 
@@ -41,7 +110,7 @@ struct PDFConvertTool: AgentTool {
     func validate(_ args: Arguments) throws { try DocumentFileConverter.validate(args, requiresPDF: true) }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args)
-        return try await DocumentFileConverter.convert(args, context: context)
+        return try await DocumentFileConverter.convert(args, context: context, producerTool: Self.name)
     }
 }
 
@@ -71,7 +140,8 @@ enum DocumentFileConverter {
         }
     }
 
-    static func convert(_ args: DocumentConversionArguments, context: ToolContext) async throws -> ToolExecutionOutput {
+    static func convert(_ args: DocumentConversionArguments, context: ToolContext,
+                        producerTool: String) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
         guard let root = context.workspaceRootURL else { throw FloeError.invalidConfiguration("No task workspace") }
         try context.authorizeWorkspacePath(args.inputPath)
@@ -94,7 +164,44 @@ enum DocumentFileConverter {
         let digest = FloeDigest.sha256Hex(result.data)
         // Bounded status only: never put converted document text back in context.
         let warnings = result.warnings.prefix(8).map { String($0.prefix(400)) }.joined(separator: " | ")
-        return PDFToolSupport.output("converted=\(args.outputPath) format=\(args.format) bytes=\(result.data.count) sha256=\(digest) originalPreserved=true offline=true modelRewrite=false warnings=\(warnings)", status: 0)
+        let summary = "converted=\(args.outputPath) format=\(args.format) bytes=\(result.data.count) sha256=\(digest) originalPreserved=true offline=true modelRewrite=false warnings=\(warnings)"
+        // S3-D: freeze the committed bytes into this run's snapshot receipt
+        // from the trusted digest measured at commit. A bound-run publication
+        // failure throws an observable error while the converted original
+        // stays on disk; genuine legacy direct and temporary contexts keep
+        // the legacy summary untouched.
+        switch RunOutputPublication.state(context) {
+        case .legacyDirect, .temporaryExempt:
+            return PDFToolSupport.output(summary, status: 0)
+        case .partiallyBound:
+            throw RunOutputPublication.partialBindingFailure
+        case .required:
+            do {
+                let published = try RunOutputSnapshotStore.publish(
+                    RunOutputSnapshotRequest(
+                        producerTool: producerTool,
+                        slot: "document",
+                        commit: RunOutputCommit(
+                            sourceURL: outputURL,
+                            sha256: digest,
+                            byteCount: result.data.count,
+                            displayName: outputURL.lastPathComponent,
+                            mimeType: RunOutputPublication.documentMIMEType(args.format),
+                            uti: RunOutputPublication.documentUTI(args.format)
+                        )
+                    ),
+                    using: context
+                )
+                return ToolExecutionOutput(
+                    summary: summary,
+                    fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)),
+                    exitStatus: 0,
+                    outputFiles: [published]
+                )
+            } catch let error as RunOutputSnapshotError {
+                throw RunOutputPublication.publicationFailure(error)
+            }
+        }
     }
 
     struct Result: Sendable { var data: Data; var warnings: [String] }

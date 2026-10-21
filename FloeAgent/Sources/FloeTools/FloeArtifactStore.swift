@@ -16,6 +16,11 @@ public enum ArtifactNamespace: String, CaseIterable, Sendable {
     /// Design-revision payloads, stored content-addressed under the existing
     /// artifact authority (never a parallel material library).
     case designRevisions = "DesignRevisions"
+    /// Stable per-run user-output snapshots (`RunOutputs/<runID>/<outputID>/
+    /// <basename>`). Owned by `RunOutputSnapshotStore`; bytes are frozen at
+    /// publication and validated again at retrieval. This namespace is the
+    /// only path a `RunOutputFile` receipt may ever reference.
+    case runOutputs = "RunOutputs"
 }
 
 /// Resolves and verifies app-storage artifact references produced by tools

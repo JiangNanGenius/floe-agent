@@ -37,6 +37,295 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         try await exercise("docx", contactCount: 3)
     }
 
+    /// Build-283 idle autosave: a real Notes Office editor with two real
+    /// Pencil contacts must promote through the session-owned coordinator's
+    /// idle debounce alone — no explicit save, no commitLiveEdits, no close.
+    /// The pre-save truthful-dirty probe is asserted WHILE the ink is visible
+    /// (this is the check that catches the build-282 false-negative class:
+    /// commitLiveEdits claimed hadUnsaved=false with visible ink), then the
+    /// test only waits for idle and reads the Notes revision/resource and the
+    /// reopened package to prove the accepted ink entered the saved bytes.
+    func testWordIdleAutosavePromotesVisiblePencilInkWithoutExplicitSave() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in actual Notes/native save qualification")
+        }
+        XCTAssertTrue(UIView.areAnimationsEnabled,
+                      "Live preview acceptance requires production UIKit animation timing")
+        executionTimeAllowance = 450
+        continueAfterFailure = false
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-idle-autosave-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // XCTest awaits teardown blocks before the next case. Register
+        // storage removal first so the later override reset executes first.
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Idle ink.docx")
+        try OfficeDocumentBuilder.createWord(at: source, title: "Idle ink", paragraphs: ["IDLE-ORIGINAL-KEEP"])
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let imported = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+        let document = try await store.create(imported)
+        await NotesRepository.shared.setStoreOverride(store)
+        addTeardownBlock {
+            await NotesRepository.shared.setStoreOverride(nil)
+        }
+        let notes = NotesSession()
+        await notes.open(using: store)
+        let selected = await notes.select(document)
+        XCTAssertTrue(selected)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(rootView:
+            LiveNotesOfficeQualificationHost(session: notes).environmentObject(AppEnvironment.preview()))
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        let office = try await waitForBoundEditableOfficeSession(document: document)
+        do {
+            let native = try XCTUnwrap(office.controller as? FloeOfficeNativeViewController)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await wait { OfficeFileSession.hostRenderDiagnostics(native)["stage"] == "visible-render" }
+            office.useInkPreferences(workspaceIdentity: root.path, documentKey: "Idle ink.docx")
+            let preferences = office.inkPreferences
+            let old = preferences.stroke
+            defer {
+                preferences.setPreset(old.preset); preferences.setColorHex(old.colorHex)
+                preferences.setWidthMillimeters(old.widthMillimeters)
+                preferences.setTransparencyPercent(old.transparencyPercent)
+            }
+            preferences.setPreset(.marker)
+            preferences.setColorHex("#FF0000")
+            preferences.setWidthMillimeters(4)
+            try await office.toggleDrawing()
+            await office.applyInkPreferences()
+            XCTAssertNil(office.inkError)
+
+            let originalDocument = try await store.document(document.id)
+            let originalRevision = originalDocument.revision
+            let originalResource = try await store.resourceURL(try XCTUnwrap(originalDocument.officeResourceID))
+            let originalSHA = try FloeDigest.sha256Hex(ofFileAt: originalResource)
+            // Strict baseline: the freshly opened editor must prove clean
+            // before any contact. A dirty answer here means the truth chain
+            // already diverged before the stimulus.
+            let cleanBefore = await office.hasLocalEditsToProtect()
+            XCTAssertFalse(cleanBefore, "A freshly opened committed document must prove clean")
+
+            // Two real Pencil contacts, lifted. No explicit save follows.
+            for index in 0..<2 {
+                let before = try await snapshot(web, label: "idle-autosave-\(index)-before-contact")
+                _ = try await web.callAsyncJavaScript(Self.beginAndMove,
+                    arguments: ["contactIndex": index], in: nil, contentWorld: .page)
+                let stillDown = try await web.evaluateJavaScript("window.__floeOfficePenState().activeStroke")
+                XCTAssertEqual(stillDown as? Bool, true, "Contact \(index): pen must be down before lift")
+                _ = try await snapshot(web, label: "idle-autosave-\(index)-while-pen-is-down")
+                _ = try await web.evaluateJavaScript(Self.liftPen)
+            }
+            try await Task.sleep(for: .milliseconds(500))
+            let afterLift = try await snapshot(web, label: "idle-autosave-after-lifting-pen")
+            XCTAssertGreaterThan(redPixels(afterLift), 40,
+                "Visible committed ink must exist on the canvas before the idle save")
+
+            // The build-282 false-negative probe: with visible ink and no
+            // save of any kind, the REAL dirty truth must report edits worth
+            // protecting. This is the assertion that would have failed when
+            // commitLiveEdits claimed hadUnsaved=false with visible ink.
+            let dirtyWithVisibleInk = await office.hasLocalEditsToProtect()
+            XCTAssertTrue(dirtyWithVisibleInk,
+                "Visible accepted ink must read dirty before the idle save; the 282 false-clean regression lives here")
+
+            try await attachLiveDiagnostics(web, label: "word-before-idle-save")
+
+            // ONLY wait for the idle debounce/coordinator now. Never call
+            // explicitSave/saveInPlace/commitLiveEdits/close in this test.
+            let idleDeadline = ContinuousClock.now.advanced(by: .seconds(60))
+            var savedDocument = originalDocument
+            while savedDocument.revision == originalRevision && ContinuousClock.now < idleDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                savedDocument = try await store.document(document.id)
+            }
+            XCTAssertGreaterThan(savedDocument.revision, originalRevision,
+                "The idle autosave must create a real new Notes revision without any explicit save trigger")
+            guard let savedResourceID = savedDocument.officeResourceID else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            let savedResource = try await store.resourceURL(savedResourceID)
+            let savedSHA = try FloeDigest.sha256Hex(ofFileAt: savedResource)
+            XCTAssertNotEqual(savedSHA, originalSHA, "The promoted package must differ from the original")
+            XCTAssertEqual(savedSHA.count, 64)
+
+            // The saved state must prove clean after the idle promotion.
+            let cleanDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var stillDirty = true
+            while stillDirty && ContinuousClock.now < cleanDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                stillDirty = await office.hasLocalEditsToProtect()
+            }
+            XCTAssertFalse(stillDirty, "The saved state must prove clean after the idle promotion")
+            let postSaveDocument = try await store.document(document.id)
+            XCTAssertEqual(postSaveDocument.revision, savedDocument.revision,
+                "No second promotion may race after the idle drain settles")
+
+            // Reopen the real saved package and prove both accepted strokes
+            // entered the persisted bytes (actual OOXML drawing markup).
+            let stagedSaved = try NotesOfficeResourceStaging.stage(source: savedResource, fileExtension: "docx")
+            defer { NotesOfficeResourceStaging.remove(stagedSaved) }
+            XCTAssertGreaterThanOrEqual(try vectorCount(in: stagedSaved), 2,
+                "Both Pencil contacts must be retained in the idled-saved package")
+            let package = XCTAttachment(contentsOfFile: savedResource)
+            package.name = "idle-autosave-saved-docx"; package.lifetime = .keepAlways
+            add(package)
+            let canvasAttachment = XCTAttachment(image: afterLift)
+            canvasAttachment.name = "idle-autosave-visible-ink-before-wait"
+            canvasAttachment.lifetime = .keepAlways
+            add(canvasAttachment)
+            await office.release()
+        } catch {
+            await office.release()
+            throw error
+        }
+    }
+
+    /// Ordinary ENGINE editing (not Pencil, not a physical keyboard): the
+    /// production UNO dispatcher selects documented cell A3 and commits a
+    /// unique cell string through the engine's own input path. The idle
+    /// autosave must then promote through the session-owned coordinator
+    /// alone — no applyEngineCommands, no explicit save, no commitLiveEdits,
+    /// no close — and the reopened package must show A1 preserved and A3
+    /// carrying the exact engine-typed text.
+    func testWorkbookEngineCellEditIdleAutosavePromotesWithoutExplicitSave() async throws {
+        guard ProcessInfo.processInfo.environment["FLOE_NATIVE_DRAWING_APP_QUALIFICATION"] == "1" else {
+            throw XCTSkip("Opt-in actual Notes/native save qualification")
+        }
+        XCTAssertTrue(UIView.areAnimationsEnabled,
+                      "Live preview acceptance requires production UIKit animation timing")
+        executionTimeAllowance = 450
+        continueAfterFailure = false
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-idle-cell-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        // XCTest awaits teardown blocks before the next case. Register
+        // storage removal first so the later override reset executes first.
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Idle cell.xlsx")
+        try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
+            .init(name: "Idle", rows: [["ORIGINAL-CONTENT-KEEP", "12"], ["Formula", "=B1*2"]])
+        ])
+        let store = try NotesStore(root: root.appendingPathComponent("store"))
+        let imported = try await NoteFileImporter.importFile(source, notebookID: nil, store: store)
+        let document = try await store.create(imported)
+        await NotesRepository.shared.setStoreOverride(store)
+        addTeardownBlock {
+            await NotesRepository.shared.setStoreOverride(nil)
+        }
+        let notes = NotesSession()
+        await notes.open(using: store)
+        let selected = await notes.select(document)
+        XCTAssertTrue(selected)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        window.rootViewController = UIHostingController(rootView:
+            LiveNotesOfficeQualificationHost(session: notes).environmentObject(AppEnvironment.preview()))
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        let office = try await waitForBoundEditableOfficeSession(document: document)
+        do {
+            let native = try XCTUnwrap(office.controller as? FloeOfficeNativeViewController)
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            try await wait {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+            }
+            // Opening a workbook may still deliver its initial calculation
+            // and clean-state notifications after first paint. Establish the
+            // baseline only once the real owner/idle-save path proves clean;
+            // do not clear a dirty latch or explicitly save to manufacture it.
+            let startupDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var startupDirty = await office.hasLocalEditsToProtect()
+            while startupDirty && ContinuousClock.now < startupDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                startupDirty = await office.hasLocalEditsToProtect()
+            }
+            try await attachLiveDiagnostics(web, label: "workbook-startup-before-engine-edit")
+            XCTAssertFalse(startupDirty, "The opened workbook must settle clean through its real idle path before typing")
+            let originalDocument = try await store.document(document.id)
+            let originalRevision = originalDocument.revision
+            let originalResource = try await store.resourceURL(try XCTUnwrap(originalDocument.officeResourceID))
+            let originalSHA = try FloeDigest.sha256Hex(ofFileAt: originalResource)
+
+            // Real engine edit stimulus (page-level, not the tool layer):
+            // the production UNO dispatcher selects documented cell A3 and
+            // commits the marker string through the engine's own input path.
+            // Drawing mode stays off; nothing here saves.
+            let stimulus = try await web.callAsyncJavaScript(Self.selectCellAndEnterString,
+                arguments: ["cell": "A3", "marker": "IDLE-CELL-7"], in: nil, contentWorld: .page) as? [String: Any]
+            let stimulusAttachment = XCTAttachment(string: String(describing: stimulus))
+            stimulusAttachment.name = "idle-cell-engine-edit-stimulus"
+            stimulusAttachment.lifetime = .keepAlways
+            add(stimulusAttachment)
+            XCTAssertEqual(stimulus?["accepted"] as? Bool, true,
+                "The engine must accept the cell edit stimulus (path \(stimulus?["path"] ?? "unknown"))")
+
+            // Truthful-demand gate: an accepted engine edit must read dirty.
+            // This is the ordinary-editing counterpart of the Pencil case's
+            // false-negative catch; no dirty is ever stubbed or forced.
+            try await waitForDirtyTruth(office: office, timeout: .seconds(15))
+            let dirtyAfterInput = await office.hasLocalEditsToProtect()
+            XCTAssertTrue(dirtyAfterInput,
+                "An accepted engine cell edit must read dirty before the idle save")
+
+            // ONLY wait for the idle debounce/coordinator now.
+            let idleDeadline = ContinuousClock.now.advanced(by: .seconds(60))
+            var savedDocument = originalDocument
+            while savedDocument.revision == originalRevision && ContinuousClock.now < idleDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                savedDocument = try await store.document(document.id)
+            }
+            XCTAssertGreaterThan(savedDocument.revision, originalRevision,
+                "The idle autosave must create a real new Notes revision without any explicit save trigger")
+            guard let savedResourceID = savedDocument.officeResourceID else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            let savedResource = try await store.resourceURL(savedResourceID)
+            let savedSHA = try FloeDigest.sha256Hex(ofFileAt: savedResource)
+            XCTAssertNotEqual(savedSHA, originalSHA, "The promoted package must differ from the original")
+            XCTAssertEqual(savedSHA.count, 64)
+
+            let cleanDeadline = ContinuousClock.now.advanced(by: .seconds(30))
+            var stillDirty = true
+            while stillDirty && ContinuousClock.now < cleanDeadline {
+                try await Task.sleep(for: .milliseconds(250))
+                stillDirty = await office.hasLocalEditsToProtect()
+            }
+            XCTAssertFalse(stillDirty, "The saved state must prove clean after the idle promotion")
+            let postSaveDocument = try await store.document(document.id)
+            XCTAssertEqual(postSaveDocument.revision, savedDocument.revision,
+                "No second promotion may race after the idle drain settles")
+
+            // Reopen the real saved package and prove the exact engine-typed
+            // cell text landed in documented cell A3 while A1's original
+            // marker survived untouched.
+            let stagedSaved = try NotesOfficeResourceStaging.stage(source: savedResource, fileExtension: "xlsx")
+            defer { NotesOfficeResourceStaging.remove(stagedSaved) }
+            let snapshot = try OfficeDocumentService.inspect(url: stagedSaved)
+            let fields = Dictionary(uniqueKeysWithValues: snapshot.fields.map { ($0.id, $0.text) })
+            XCTAssertEqual(fields["xl/worksheets/sheet1.xml|c|A3"], "IDLE-CELL-7",
+                "Documented cell A3 must carry the engine-typed text; got \(fields)")
+            XCTAssertEqual(fields["xl/worksheets/sheet1.xml|c|A1"], "ORIGINAL-CONTENT-KEEP",
+                "Cell A1's original marker must survive the idle save")
+            let package = XCTAttachment(contentsOfFile: savedResource)
+            package.name = "idle-cell-saved-workbook"; package.lifetime = .keepAlways
+            add(package)
+            await office.release()
+        } catch {
+            await office.release()
+            throw error
+        }
+    }
+
     /// Actual Notes view → its production commit closure → notes.edit → new
     /// immutable resource. This supplies deterministic recognized numbers;
     /// the separate sender proof verifies how the model receives the image.
@@ -48,7 +337,9 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         continueAfterFailure = false
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("notes-live-write-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: root) }
+        // XCTest awaits teardown blocks before the next case. Register
+        // storage removal first so the later override reset executes first.
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("Numbers.xlsx")
         try OfficeDocumentBuilder.createWorkbook(at: source, sheets: [
             .init(name: "Numbers", rows: [["11111", "123456"], ["KEEP", "=B1*2"]])
@@ -59,7 +350,9 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         let conversationID = UUID()
         try await store.bindAssistant(conversationID: conversationID, documentID: document.id, canEdit: true)
         await NotesRepository.shared.setStoreOverride(store)
-        defer { Task { await NotesRepository.shared.setStoreOverride(nil) } }
+        addTeardownBlock {
+            await NotesRepository.shared.setStoreOverride(nil)
+        }
         let notes = NotesSession()
         await notes.open(using: store)
         let selected = await notes.select(document)
@@ -114,7 +407,10 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
                                    "text": "=SUM(C1:C15)", "createCell": true])
                 let data = try JSONSerialization.data(withJSONObject: [
                     "documentID": document.id.uuidString, "expectedRevision": baseline.revision,
-                    "expectedSHA256": sha, "title": "Recognized numbers", "operations": operations
+                    // Match the schema-valid payload seen on Build 282: no
+                    // optional batch title. Exercise validation AND the real
+                    // mounted editor/save/rewrite chain with that payload.
+                    "expectedSHA256": sha, "operations": operations
                 ])
                 let args = try JSONDecoder().decode(NotesEditTool.Arguments.self, from: data)
                 let tool = NotesEditTool()
@@ -384,6 +680,28 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         }
     }
 
+    private func waitForBoundEditableOfficeSession(document: NoteDocument) async throws -> OfficeFileSession {
+        try await wait {
+            let bound = NotesOfficeLiveBinding.boundSession(documentID: document.id,
+                                                            fileName: document.officeFileName)
+            return bound?.canAct == true && bound?.documentActionsReady == true
+        }
+        let office = try XCTUnwrap(NotesOfficeLiveBinding.boundSession(documentID: document.id,
+                                                                       fileName: document.officeFileName))
+        if office.readOnly {
+            let entered = await office.requestEditing()
+            XCTAssertTrue(entered, office.error ?? "Edit entry refused")
+        }
+        try await wait {
+            let bound = NotesOfficeLiveBinding.boundSession(documentID: document.id,
+                                                            fileName: document.officeFileName)
+            return bound?.readOnly == false && bound?.canAct == true
+                && bound?.documentActionsReady == true && bound?.autosaveActive == true
+        }
+        return try XCTUnwrap(NotesOfficeLiveBinding.boundSession(documentID: document.id,
+                                                                 fileName: document.officeFileName))
+    }
+
     private func wait(_ predicate: () -> Bool) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(150))
         while !predicate(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(100)) }
@@ -406,14 +724,21 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
             const app=window.app, c=app.sectionContainer.canvas, r=c.getBoundingClientRect();
             const a=app.sectionContainer.getDocumentAnchorSection();
             const svg=document.querySelector('#floe-ink-live-preview svg');
-            return {pen:window.__floeOfficePenState(),
+            return {modifiedBridge:{
+                    installed:window.floeModificationTrackingInstalled === true,
+                    latch:window.floeModifiedSinceCommit ?? null,
+                    cached:app.map.stateChangeHandler?.getItemValue('.uno:ModifiedStatus') ?? null,
+                    mapHook:window.L?.Map?.prototype?.floeExplicitSaveInstalled === true,
+                    nativeHandler:!!window.webkit?.messageHandlers?.floeOfficeDocumentModified,
+                    page:location.pathname.split('/').pop()},
+                pen:typeof window.__floeOfficePenState === 'function' ? window.__floeOfficePenState() : null,
                 preview:window.__floeOfficePenPreview ? window.__floeOfficePenPreview() : null,
                 viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY,
                     visualScale:visualViewport?.scale ?? null},
                 canvas:{width:c.width,height:c.height,left:r.left,top:r.top,widthCSS:r.width,heightCSS:r.height},
                 layout:{name:app.activeDocument.activeLayout.constructor.name,
                     zoom:app.map.getZoom(),dpiScale:app.dpiScale,twipsToPixels:app.twipsToPixels,
-                    anchor:a.myTopLeft,size:a.size},
+                    anchor:a?.myTopLeft ?? null,size:a?.size ?? null},
                 paths:svg ? Array.from(svg.children).map(p=>({d:p.getAttribute('d'),
                     color:p.getAttribute('stroke'),width:p.getAttribute('stroke-width'),
                     opacity:p.getAttribute('stroke-opacity')})) : []};
@@ -458,6 +783,110 @@ final class OfficeLiveInkAppQualificationTests: XCTestCase {
         }
         return counter.count
     }
+
+    /// The engine can hold an accepted edit in memory briefly before the
+    /// modified edge reaches the native probes; poll the REAL dirty truth
+    /// (never a stub) until it reflects the accepted edit or time out.
+    private func waitForDirtyTruth(office: OfficeFileSession, timeout: Duration) async throws {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        var dirty = false
+        while !dirty && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(200))
+            dirty = await office.hasLocalEditsToProtect()
+        }
+        XCTAssertTrue(dirty, "The real dirty probe must reflect the accepted engine edit")
+        if !dirty { throw CocoaError(.coderInvalidValue) }
+    }
+
+    /// Documented-cell engine edit stimulus (page-level, never the tool
+    /// layer): the production UNO dispatcher selects a documented cell
+    /// (default A3), then the engine's own TextInput seam types the marker
+    /// and a real Return commits the cell edit — the same textinput/key path
+    /// physical or IME typing drives. Selection, edit mode and the resulting
+    /// modified state are read back for assertions; nothing here saves.
+    private static let selectCellAndEnterString = #"""
+    const map = window.app && window.app.map;
+    if (!map || typeof map.sendUnoCommand !== 'function')
+        throw new Error('Engine UNO dispatcher unavailable');
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    // The pinned sendUnoCommand silently drops commands unless the engine UI
+    // is in edit mode (control/Toolbar.js:371-379). Wait briefly for the
+    // engine's own edit entry, then fail with evidence instead of pretending
+    // the edit was attempted.
+    let editReady = false;
+    for (let i = 0; i < 60; i++) {
+        if (typeof map.isEditMode === 'function' && map.isEditMode() === true) {
+            editReady = true;
+            break;
+        }
+        await frame();
+    }
+    if (!editReady)
+        throw new Error('Engine UI is not in edit mode');
+    const targetCell = (typeof cell === 'string' && /^[A-Z]+[0-9]+$/.test(cell)) ? cell : 'A3';
+    const text = (typeof marker === 'string' && marker.length > 0) ? marker : 'IDLE-CELL-7';
+    const addressOf = () => {
+        try {
+            const address = window.app && window.app.calc && window.app.calc.cellAddress;
+            return address ? { x: address.x, y: address.y } : null;
+        } catch (_) { return null; }
+    };
+    const expected = (() => {
+        const match = /^([A-Z]+)([0-9]+)$/.exec(targetCell);
+        if (!match) return null;
+        let x = 0;
+        for (const letter of match[1])
+            x = x * 26 + (letter.charCodeAt(0) - 64);
+        return { x: x - 1, y: parseInt(match[2], 10) - 1 };
+    })();
+    // Production cell-selection dispatch: control/CalcNotifications.ts:68 in
+    // the pinned browser uses the same .uno:GoToCell/ToPoint route. The real
+    // cellcursor message updates app.calc.cellAddress, so this is an engine
+    // selection readback rather than a guessed property.
+    map.sendUnoCommand('.uno:GoToCell', { 'ToPoint': { type: 'string', value: targetCell } });
+    let address = null;
+    for (let i = 0; i < 120; i++) {
+        address = addressOf();
+        if (address && expected && address.x === expected.x && address.y === expected.y) break;
+        await frame();
+    }
+    if (!address || !expected || address.x !== expected.x || address.y !== expected.y)
+        throw new Error('Engine cell selection did not reach ' + targetCell + ': ' + JSON.stringify(address));
+    // Real engine text input: TextInput._sendText posts the pinned 'textinput'
+    // websocket message (layer/marker/TextInput.js:877-905 and 1268-1272),
+    // which kit/ChildSession.cpp:2205-2231 converts to ExtTextInput /
+    // EndExtTextInput. The pinned TextInput has no insertText method, so the
+    // old fallback could never run.
+    const input = map._textInput;
+    if (!input || typeof input._sendText !== 'function' || typeof input.focus !== 'function')
+        throw new Error('Engine TextInput seam unavailable');
+    input.focus(true);
+    input._sendText(text);
+    for (let i = 0; i < 6; i++) await frame();
+    // Commit with the engine's real Return path. _sendText('\n') takes the
+    // pinned _sendNewlineEvent branch, i.e. key type=input char=13 key=1280;
+    // this is the COKit route that publishes the document modified state even
+    // before any save. It is a finished cell edit, not an explicit save.
+    input._sendText('\n');
+    const modified = () => {
+        if (window.floeModifiedSinceCommit === true) return true;
+        const handler = map.stateChangeHandler;
+        if (!handler || typeof handler.getItemValue !== 'function') return false;
+        const value = handler.getItemValue('.uno:ModifiedStatus');
+        return value === true || value === 'true';
+    };
+    let observed = modified();
+    for (let i = 0; i < 120 && !observed; i++) {
+        await frame();
+        observed = modified();
+    }
+    let modifiedState = null;
+    try { modifiedState = map.stateChangeHandler.getItemValue('.uno:ModifiedStatus'); } catch (_) {}
+    return { path: 'textInput._sendText+Return', cell: targetCell, text: text,
+        accepted: observed === true, latch: window.floeModifiedSinceCommit === true,
+        modified: modifiedState, address: address, expected: expected,
+        uiEdit: map.isEditMode() === true };
+    """#
 
     /// Synthetic TouchEvents enter the real canvas handlers, beginning with
     /// one finger as required by CanvasSectionContainer. No direct zoom call,
