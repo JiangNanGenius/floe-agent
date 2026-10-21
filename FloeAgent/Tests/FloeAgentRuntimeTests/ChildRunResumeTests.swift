@@ -457,8 +457,8 @@ struct ChildRunResumeTests {
         let writeIntent = ChildRunCheckpoint.CallIntent(id: "write-1", toolName: "test.write", argumentsJSON: #"{"path":"b.txt"}"#)
         let (childID, conversationID, _) = try await makeInterruptedChild(
             store: store,
-            kind: .preCall,
             pendingCalls: [readIntent, writeIntent],
+            kind: .preCall,
             task: "read then write"
         )
 
@@ -646,8 +646,8 @@ struct ChildRunResumeTests {
         let writeIntent = ChildRunCheckpoint.CallIntent(id: "write-1", toolName: "test.write", argumentsJSON: #"{"path":"b.txt"}"#)
         let (childID, conversationID, _) = try await makeInterruptedChild(
             store: store,
-            kind: .preCall,
-            pendingCalls: [writeIntent]
+            pendingCalls: [writeIntent],
+            kind: .preCall
         )
         let service = ChildResumeService(store: store)
         let plan = try await service.begin(

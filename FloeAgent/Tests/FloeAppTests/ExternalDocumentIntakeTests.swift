@@ -185,7 +185,9 @@ private actor DocumentIntakeTestCanvasLibrary {
     private(set) var cleanupCalls: [UUID] = []
     /// Simulates a restore that committed its owned payload but died before
     /// the registry write: `exists` stays false and a partial payload exists.
-    var ownsPartialPayload: Set<UUID> = []
+    private var ownsPartialPayload: Set<UUID> = []
+
+    func markOwnedPartialPayload(_ id: UUID) { ownsPartialPayload.insert(id) }
 
     func importCanvas(plannedID: UUID) -> UUID {
         calls += 1
@@ -1032,7 +1034,7 @@ struct ExternalDocumentIntakeRecoveryTests {
         let firstQueue = try DocumentIntakeQueue(root: root)
         let request = intakeRequest()
         // The interrupted attempt left an owned partial payload behind.
-        await canvasLibrary.ownsPartialPayload.insert(request.plannedRootDocumentID)
+        await canvasLibrary.markOwnedPartialPayload(request.plannedRootDocumentID)
         let staged = try await DocumentIntakeStager.stage(
             source, root: root, limits: .production, request: request
         )
