@@ -532,9 +532,9 @@ private struct ExpressionParser {
         guard let lhs = parseSum() else { return nil }
         skipWhitespace()
         let operation: ExpressionOperator?
-        if consume("<>") { operation = .notEqual }
-        else if consume("<=") { operation = .lessEqual }
-        else if consume(">=") { operation = .greaterEqual }
+        if consumeToken("<>") { operation = .notEqual }
+        else if consumeToken("<=") { operation = .lessEqual }
+        else if consumeToken(">=") { operation = .greaterEqual }
         else if consume("=") { operation = .equal }
         else if consume("<") { operation = .less }
         else if consume(">") { operation = .greater }
@@ -726,6 +726,15 @@ private struct ExpressionParser {
         skipWhitespace()
         guard index < scalars.count, scalars[index] == character else { return false }
         index += 1
+        return true
+    }
+
+    private mutating func consumeToken(_ token: String) -> Bool {
+        skipWhitespace()
+        let characters = Array(token)
+        guard !characters.isEmpty, index + characters.count <= scalars.count,
+              scalars[index..<(index + characters.count)].elementsEqual(characters) else { return false }
+        index += characters.count
         return true
     }
 }
