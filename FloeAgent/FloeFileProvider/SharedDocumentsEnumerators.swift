@@ -47,9 +47,10 @@ final class SharedDocumentsFolderEnumerator: NSObject, NSFileProviderEnumerator 
         startingAt page: NSFileProviderPage
     ) {
         let observerBox = UnsafeSendableFileProviderBox(value: observer)
-        let initial = (page == NSFileProviderInitialPageSortedByName)
-            || (page == NSFileProviderInitialPageSortedByDate)
-        let cursor: Data? = initial ? nil : Data(page)
+        let rawPage = page.rawValue as Data
+        let initial = rawPage == (NSFileProviderPage.initialPageSortedByName as Data)
+            || rawPage == (NSFileProviderPage.initialPageSortedByDate as Data)
+        let cursor: Data? = initial ? nil : rawPage
         enumerationTask = Task { [bridge, containerID] in
             let observer = observerBox.value
             do {
@@ -62,10 +63,10 @@ final class SharedDocumentsFolderEnumerator: NSObject, NSFileProviderEnumerator 
                 )
                 guard !Task.isCancelled else { return }
                 if !pageResult.items.isEmpty {
-                    observer.didEnumerateItems(pageResult.items)
+                    observer.didEnumerate(pageResult.items)
                 }
                 guard !Task.isCancelled else { return }
-                observer.finishEnumerating(upTo: pageResult.nextCursorToken)
+                observer.finishEnumerating(upTo: pageResult.nextCursorToken.map(NSFileProviderPage.init(rawValue:)))
             } catch is CancellationError {
                 // Invalidated mid-flight: the observer is no longer valid.
             } catch {
@@ -95,9 +96,10 @@ final class SharedDocumentsWorkingSetEnumerator: NSObject, NSFileProviderEnumera
         startingAt page: NSFileProviderPage
     ) {
         let observerBox = UnsafeSendableFileProviderBox(value: observer)
-        let initial = (page == NSFileProviderInitialPageSortedByName)
-            || (page == NSFileProviderInitialPageSortedByDate)
-        let cursor: Data? = initial ? nil : Data(page)
+        let rawPage = page.rawValue as Data
+        let initial = rawPage == (NSFileProviderPage.initialPageSortedByName as Data)
+            || rawPage == (NSFileProviderPage.initialPageSortedByDate as Data)
+        let cursor: Data? = initial ? nil : rawPage
         enumerationTask = Task { [bridge, cursor] in
             let observer = observerBox.value
             do {
@@ -109,10 +111,10 @@ final class SharedDocumentsWorkingSetEnumerator: NSObject, NSFileProviderEnumera
                 )
                 guard !Task.isCancelled else { return }
                 if !pageResult.items.isEmpty {
-                    observer.didEnumerateItems(pageResult.items)
+                    observer.didEnumerate(pageResult.items)
                 }
                 guard !Task.isCancelled else { return }
-                observer.finishEnumerating(upTo: pageResult.nextCursorToken)
+                observer.finishEnumerating(upTo: pageResult.nextCursorToken.map(NSFileProviderPage.init(rawValue:)))
             } catch is CancellationError {
                 // Invalidated mid-flight: the observer is no longer valid.
             } catch {
@@ -129,7 +131,8 @@ final class SharedDocumentsWorkingSetEnumerator: NSObject, NSFileProviderEnumera
         from anchor: NSFileProviderSyncAnchor
     ) {
         let observerBox = UnsafeSendableFileProviderBox(value: observer)
-        enumerationTask = Task { [bridge] in
+        let rawAnchor = anchor.rawValue as Data
+        enumerationTask = Task { [bridge, rawAnchor] in
             let observer = observerBox.value
             do {
                 let suggested: Int? = observer.suggestedBatchSize
@@ -140,16 +143,16 @@ final class SharedDocumentsWorkingSetEnumerator: NSObject, NSFileProviderEnumera
                 // ONE batch per invocation, finished exactly once; when
                 // moreComing is true the system re-invokes from the returned
                 // anchor. No callback ever fires after the finish.
-                let batch = try await bridge.changeBatch(anchor: Data(anchor), limit: batchLimit)
+                let batch = try await bridge.changeBatch(anchor: rawAnchor, limit: batchLimit)
                 guard !Task.isCancelled else { return }
                 if !batch.updates.isEmpty {
-                    observer.didUpdateItems(batch.updates)
+                    observer.didUpdate(batch.updates)
                 }
                 if !batch.deletions.isEmpty {
                     observer.didDeleteItems(withIdentifiers: batch.deletions)
                 }
                 guard !Task.isCancelled else { return }
-                observer.finishEnumeratingChanges(upTo: batch.nextAnchor, moreComing: batch.more)
+                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(rawValue: batch.nextAnchor), moreComing: batch.more)
             } catch is CancellationError {
                 // Invalidated mid-flight: the observer is no longer valid.
             } catch {
@@ -168,7 +171,7 @@ final class SharedDocumentsWorkingSetEnumerator: NSObject, NSFileProviderEnumera
                 completionBox.value(nil)
                 return
             }
-            completionBox.value(anchor)
+            completionBox.value(NSFileProviderSyncAnchor(rawValue: anchor))
         }
     }
 }

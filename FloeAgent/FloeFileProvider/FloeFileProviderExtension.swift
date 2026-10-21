@@ -33,7 +33,7 @@ final class FloeFileProviderExtension: NSObject, NSFileProviderReplicatedExtensi
 
     init(domain: NSFileProviderDomain) {
         self.domain = domain
-        let manager = NSFileProviderManager.managerForDomain(domain)
+        let manager = NSFileProviderManager(for: domain)
         let managerBox = UnsafeSendableFileProviderBox(value: manager)
         // Real post-commit enumeration signal. Fire-and-forget: a signal
         // failure is logged and dropped — the data is committed either way,
@@ -71,10 +71,7 @@ final class FloeFileProviderExtension: NSObject, NSFileProviderReplicatedExtensi
                     guard let manager = managerBox.value else {
                         throw SharedDocumentsError.storageCorrupted("file provider manager unavailable")
                     }
-                    guard let url = try manager.temporaryDirectoryURL() else {
-                        throw SharedDocumentsError.storageCorrupted("file provider temporary directory unavailable")
-                    }
-                    return url
+                    return try manager.temporaryDirectoryURL()
                 }
             )
             self.unavailableError = nil
@@ -278,15 +275,19 @@ final class FloeFileProviderExtension: NSObject, NSFileProviderReplicatedExtensi
         progress.cancellationHandler = { cancellation.cancel() }
         let completion = UnsafeSendableFileProviderBox(value: completionHandler)
         let progressBox = UnsafeSendableFileProviderBox(value: progress)
-        Task { [bridge, unavailableError] in
+        // Snapshot immutable version bytes before crossing the Task boundary;
+        // the framework-owned NSObject remains with the calling context.
+        let contentVersion = version.contentVersion
+        let metadataVersion = version.metadataVersion
+        Task { [bridge, unavailableError, contentVersion, metadataVersion] in
             if let unavailableError {
                 once.complete { completion.value(unavailableError) }
                 return
             }
             do {
-                try await bridge.delete(
+                _ = try await bridge.delete(
                     identifier: identifier,
-                    baseVersion: version,
+                    baseVersion: NSFileProviderItemVersion(contentVersion: contentVersion, metadataVersion: metadataVersion),
                     options: options,
                     cancellation: cancellation
                 )

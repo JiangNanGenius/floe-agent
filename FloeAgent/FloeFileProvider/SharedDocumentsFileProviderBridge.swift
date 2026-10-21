@@ -44,6 +44,7 @@
 
 import Foundation
 import FileProvider
+import UniformTypeIdentifiers
 import FloeCore
 import FloePersistence
 #if canImport(Darwin)
@@ -235,7 +236,11 @@ final class SharedDocumentsFileProviderBridge: Sendable {
     ) async throws -> CreateOutcome {
         let parentID = try SharedDocumentsFileProviderIdentity.storeIdentifier(for: template.parentItemIdentifier)
         let name = template.filename
-        let type = template.contentType
+        // The ObjC protocol permits iOS templates to supply either the modern
+        // UTType or the legacy UTI. Unknown types cannot silently become files.
+        guard let type = template.contentType ?? template.typeIdentifier.flatMap({ UTType($0) }) else {
+            throw SharedDocumentsError.specialFileRefused
+        }
         let kind: SharedDocumentsItemKind = type.conforms(to: .folder) ? .folder : .file
 
         // Declared support: folders and regular files only.
