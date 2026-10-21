@@ -53023,36 +53023,19 @@
         }
       }
     },
-    "shortcuts.schedule.run.summary": {
+    "Run scheduled task: ${schedule}": {
       "extractionState": "manual",
       "localizations": {
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Run scheduled task: %@"
+            "value": "Run scheduled task: ${schedule}"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "运行定时任务：%@"
-          }
-        }
-      }
-    },
-    "shortcuts.schedule.run.summary %@": {
-      "extractionState": "manual",
-      "localizations": {
-        "en": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Run scheduled task: %@"
-          }
-        },
-        "zh-Hans": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "运行定时任务：%@"
+            "value": "运行定时任务：${schedule}"
           }
         }
       }

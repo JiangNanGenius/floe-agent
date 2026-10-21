@@ -125,8 +125,8 @@ struct TaskScheduleAutomationSetupView: View {
     private var limitationText: String? {
         switch schedule.cadence {
         case .once:
-            setupText(zh: "单次计划请添加日期判断，避免提前触发。完成后关闭重复的自动化。",
-                      en: "For a one-time plan, add a date condition to avoid early triggers. Turn off any repeating automation after completion.")
+            setupText(zh: "系统定时会重复触发；请在预期的一次运行成功后关闭此自动化。",
+                      en: "The system trigger repeats. After the intended run succeeds, turn this automation off.")
         case .interval:
             setupText(zh: "固定间隔请使用应用内计划，后台执行时间由系统安排。",
                       en: "Use the in-app plan for this interval. iOS schedules its background execution.")
@@ -143,7 +143,7 @@ struct TaskScheduleAutomationSetupView: View {
         switch schedule.cadence {
         case .daily: setupText(zh: "重复选「每天」", en: "set Repeat to Daily")
         case .weekly: setupText(zh: "重复选「每周」并勾选对应的星期", en: "set Repeat to Weekly with its weekday")
-        case .once: setupText(zh: "仅此一次；运行后请回到快捷指令关闭该自动化", en: "run it once; turn the automation off in Shortcuts after it runs")
+        case .once: setupText(zh: "重复保持默认", en: "leave Repeat at its default")
         case .interval: setupText(zh: "用「每天」近似开始时间", en: "use Daily to approximate the start time")
         case .afterSuccess: ""
         }
@@ -189,9 +189,7 @@ struct TaskScheduleAutomationSetupView: View {
                                        en: "2. Add the action “Run Scheduled Task” from Floe."))
                         Text(setupText(zh: "3. 在该操作中选择计划「\(schedule.title)」。",
                                        en: "3. Pick the plan “\(schedule.title)” in the action."))
-                    }
-                    Section {
-                        ShortcutsLink { }
+                        Text(enableStepText)
                     }
                     if let limitationText {
                         Section {
@@ -199,6 +197,9 @@ struct TaskScheduleAutomationSetupView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
+                    }
+                    Section {
+                        ShortcutsLink { }
                     }
                 }
             }
@@ -212,8 +213,13 @@ struct TaskScheduleAutomationSetupView: View {
     }
 
     private var stepOneText: String {
-        setupText(zh: "1. 在快捷指令的「自动化」页新建「特定时间」，时间设为上方建议值，\(repeatInstruction)，并打开「自动化」开关。",
-                  en: "1. In Shortcuts, add a Specific Time automation, set the time to the suggested value above, \(repeatInstruction), and turn the automation switch on.")
+        setupText(zh: "1. 在快捷指令的「自动化」页新建「特定时间」，时间设为上方建议值，\(repeatInstruction)。",
+                  en: "1. In Shortcuts, create a Specific Time automation at the suggested time above, and \(repeatInstruction).")
+    }
+
+    private var enableStepText: String {
+        setupText(zh: "4. 打开自动化开关，使其自动运行。",
+                  en: "4. Turn the automation on so it runs automatically.")
     }
 
     /// Inline bilingual fallback for strings whose central catalog entry has
