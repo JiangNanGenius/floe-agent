@@ -426,9 +426,11 @@ Scheduled tasks live on Home under **Scheduled** (**Schedule task** adds one). C
 
 **System automation for one plan.** Save the plan first, then choose **Automation** on its Home row or row menu. The setup shows the saved plan and a suggested trigger time in its anchor time zone.
 
-1. In Shortcuts, add a **Specific Time** automation at the suggested time. Match **Daily** or **Weekly** to the plan and enable the automation.
-2. Add Floe's **Run Scheduled Task** action and select the saved plan.
-3. Use the returned run with **Status / Wait / Text / Files / Cancel**. To read a result later, query that run rather than starting the plan again.
+1. Choose **Import scheduled-task shortcut**, select the saved plan in the system setup and confirm the add. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
+2. In Shortcuts, create a **Specific Time** automation at the suggested time and cadence. Run the added shortcut, select **Run Immediately** and enable it.
+3. To continue with results, use the returned run with **Status / Wait / Text / Files / Cancel**. Query that run later rather than starting the plan again.
+
+When a possibly configured plan is deleted or its one-shot run ends, Floe retains a cleanup reminder. Remove its Shortcut and automation in the system app, then choose **Removed**; **Dismiss** only silences the reminder. Pausing a plan or completing one recurring occurrence does not prompt deletion. Floe cannot detect or delete system Shortcuts, and opening an add page does not mean the shortcut was added.
 
 The action uses the existing plan's model, workspace, environment and permissions. The suggestion rounds up to a whole minute to avoid firing before the plan's stored seconds; it does not change the plan. If the device and plan use different time zones, convert the suggested time and adjust the automation when those zones change. For a one-time plan, add a date condition and turn off any repeating automation after completion. This setup covers once, daily and weekly plans; fixed intervals remain on the in-app scheduler, and after-success plans use their upstream event. Enable a disabled plan before running it. Opening Shortcuts does not create an automation, and Floe cannot read its enabled state. Locked and force-quit behavior remains unverified on a physical device.
 
