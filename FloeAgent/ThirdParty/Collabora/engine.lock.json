@@ -3,12 +3,12 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "39547738032",
+    "runID": "39634788604",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 12321886770,
-    "workflowCommit": "137ea88cd068650ff4b090ac3a5c03789f761939",
-    "archiveSHA256": "aeea503a160a4b834ae8373327ea2e7357eaffc9714ef0cce65148afcc9a6ee3",
-    "executableSHA256": "263681f631f89e78e6835f06074fde4e510eedf7b75d2a9c2744190305e6b835",
+    "artifactID": 12360238402,
+    "workflowCommit": "e5d880fe364d0587b8efae536ed3b144511998a5",
+    "archiveSHA256": "ea11a7bacea4596a46c7e33cbf44af0df8e6097790341e44d5664f7e8f0c111b",
+    "executableSHA256": "c48ee46df101e1b895262c03fb671f57dc0e7db681257dd6d5eeee0942032774",
     "overlaySHA256": "807aa8b89514fa81652b45440a6cb0258183580687378e4ab916ec5a62e8884a",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e0fb3d5d90f86c379c7de68f61bb7072886cc8ad22eb00c7fab1bf5600c71cfb",
@@ -18,7 +18,7 @@
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "7b14aa1ca650e42caa94867a353589934fa769a48ec5a7c718195087fcdde698",
+    "manifestSHA256": "496d5758a3368d072178d5fed60531159251a30b3e1ef919661246aa67832a4b",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e0fb3d5d90f86c379c7de68f61bb7072886cc8ad22eb00c7fab1bf5600c71cfb",
       "Info.plist": "53b2ef0ba3a8b95a56e7faf31361982f05021225eb621d97c4837f68a30d310d",
@@ -31,41 +31,45 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Rebuilt and re-qualified from the source in this revision (staged-font catalog fingerprint profile identity and Pencil-only annotation input gating). Native host compile/link and Swift import passed. Engine source and filter patches unchanged. This is framework evidence; App build, TestFlight and physical-device acceptance are separate.",
+    "note": "Locally compiled and imported iOS arm64 component from 5f3e6172 with the scoped iOS Symbol font mapping. Public metadata packaging preserves executable and payload bytes. Storage-only workflow 39634788604; App rendering and save/reopen acceptance remain pending.",
     "filterOverlay": {
       "patchSHA256": "59b7842fbc2abf14b2f2f155c2e6f55a2a38d6b4e39a7f6890a5422ddd74412f",
       "sourceFiles": {
-        "engine/sc/source/filter/inc/xcl97rec.hxx": {
-          "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
-          "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+        "engine/oox/source/export/chartexport.cxx": {
+          "originalSHA256": "80d8b329acd92d386f49ead2c38da51f40df2fb8d7fe29fc41a62bd1950afd02",
+          "patchedSHA256": "204323726555e3a5ae268069620d1d9cf7c99d94b10a34807ef94f590ec57808"
         },
-        "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
-          "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
-          "patchedSHA256": "bf3b6c8d6eab56610019ee4e445f06dc72e47941bb46a1fd71c6ddff0e5baed0"
-        },
-        "engine/sc/source/filter/excel/xlroot.cxx": {
-          "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
-          "patchedSHA256": "c0dd1b923008fe76a62b40cd4fe4530548c54a5bc1387de144822c2ba0c91c9b"
-        },
-        "engine/sc/source/filter/inc/unitconverter.hxx": {
-          "originalSHA256": "22bd36bf192ea6d79145f5c3e68ebdaf88ef16aba2154b1e07f80225d20e663c",
-          "patchedSHA256": "7a50f88d0ac1011f4403d8ae2d86f722a50c16c4c7875b90d85d46843661d705"
-        },
-        "engine/sc/source/filter/oox/unitconverter.cxx": {
-          "originalSHA256": "baa3a9cba59b78637c14a46cf67d0be3d2a809c622732010030757f3ddd93eca",
-          "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
+        "engine/oox/source/export/shapes.cxx": {
+          "originalSHA256": "025fd73bd88ea82ae0f81e092e62f1dc36d9ab37f9c5ed38482b9e197c3bcb03",
+          "patchedSHA256": "f9ec6ef8b837c7f1a2f704f051f998be207463eb395badd9a090236084d99c12"
         },
         "engine/oox/source/vml/vmlshape.cxx": {
           "originalSHA256": "7016e58713cc845b5ad73daca1b67d6bda64247d599cfe04f85c549805ba47ca",
           "patchedSHA256": "9b9872562a4627a52aec2d24631ccfc7bda6dfca4b279ed63ba2918ed16ee48d"
         },
-        "engine/sc/source/filter/oox/drawingfragment.cxx": {
-          "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
-          "patchedSHA256": "5a75d6910a2c68831403b6c6a70e9117461942773443cbf970c91c62cdbad7b6"
+        "engine/sc/source/filter/excel/xlroot.cxx": {
+          "originalSHA256": "a03e6d3c8f5fc179dd1599d9dc2ea1012ac672ab839adaecaa6f72831052bc88",
+          "patchedSHA256": "c0dd1b923008fe76a62b40cd4fe4530548c54a5bc1387de144822c2ba0c91c9b"
         },
         "engine/sc/source/filter/inc/drawingfragment.hxx": {
           "originalSHA256": "0fb5f7da89711cee297856ebf20d3107fac852840d7c2d285327458538726476",
           "patchedSHA256": "75bb351c366524a7385135fbbadb88be929381c15c853b9580512e387cc98a0a"
+        },
+        "engine/sc/source/filter/inc/unitconverter.hxx": {
+          "originalSHA256": "22bd36bf192ea6d79145f5c3e68ebdaf88ef16aba2154b1e07f80225d20e663c",
+          "patchedSHA256": "7a50f88d0ac1011f4403d8ae2d86f722a50c16c4c7875b90d85d46843661d705"
+        },
+        "engine/sc/source/filter/inc/xcl97rec.hxx": {
+          "originalSHA256": "2849336a9facbc47eb836122191ffdd702fbebf9725bf40787d7b5f7f4afd39f",
+          "patchedSHA256": "025398a1044e4faf26cb113f11031cae2f19025d5f3b40221e04c86140d19b93"
+        },
+        "engine/sc/source/filter/oox/drawingfragment.cxx": {
+          "originalSHA256": "2a84bf22221574e078cf33c3b3867d00f1c4f32fe4301c0186e9b9a9ad85e48d",
+          "patchedSHA256": "5a75d6910a2c68831403b6c6a70e9117461942773443cbf970c91c62cdbad7b6"
+        },
+        "engine/sc/source/filter/oox/unitconverter.cxx": {
+          "originalSHA256": "baa3a9cba59b78637c14a46cf67d0be3d2a809c622732010030757f3ddd93eca",
+          "patchedSHA256": "7d2bd9fe65d966025ade2a8f96a365b9ccc3f7d986ccb1c80e09f8966c5906fa"
         },
         "engine/sc/source/filter/oox/worksheetfragment.cxx": {
           "originalSHA256": "8217b2d495cdf9f56b16129ad5461f1b232f296fe3d3dee21bf16d5742729090",
@@ -75,107 +79,103 @@
           "originalSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f",
           "patchedSHA256": "1f444b7b1d653f32251d80f8eaddf3d8cd4c89bba3a4158ff28572ed6d10e63f"
         },
-        "engine/oox/source/export/chartexport.cxx": {
-          "originalSHA256": "80d8b329acd92d386f49ead2c38da51f40df2fb8d7fe29fc41a62bd1950afd02",
-          "patchedSHA256": "204323726555e3a5ae268069620d1d9cf7c99d94b10a34807ef94f590ec57808"
+        "engine/sc/source/filter/xcl97/xcl97rec.cxx": {
+          "originalSHA256": "cfc6ad7262deb1ef682662c3c05e9b49c05b246796c637c4f7ed9d57164ce5b9",
+          "patchedSHA256": "bf3b6c8d6eab56610019ee4e445f06dc72e47941bb46a1fd71c6ddff0e5baed0"
         },
-        "engine/sd/source/ui/view/drviewse.cxx": {
-          "originalSHA256": "0585ec290509acecd1deb90267c77023ede02f4357c7f29cbafcb20809d83c99",
-          "patchedSHA256": "559d86e2902b174ffd0bb21020931c22cd20df2283b43bdaba6881b4d3d55217"
-        },
-        "engine/sd/source/ui/unoidl/unomodel.cxx": {
-          "originalSHA256": "ea2306df724d398e4428bbfcb89b3b32632cec2e1ac907f47432834823458aca",
-          "patchedSHA256": "44b3a58316d49ff02072a93ec4f297d026cee71a823d715d30032fd494443b37"
+        "engine/sd/source/filter/eppt/pptx-epptooxml.cxx": {
+          "originalSHA256": "5c8c2ef83f32669a87625b83cd17f8ddfd9182ab6210ecba06c9acc7d318a509",
+          "patchedSHA256": "2f5a05bba0026de45ab544dcb35ef2f1820bdaf78c73d75c937b0672a1e70667"
         },
         "engine/sd/source/ui/func/fuconbez.cxx": {
           "originalSHA256": "acf7ce56db8fc17fe14ea145eba509d4dc87d5c0a6a7f433139df494298a1ddd",
           "patchedSHA256": "378fb7e6f6e741297395ee3c694dbd0f7b63a557b3c3ac686f3cb4f7bfa9a83d"
         },
-        "engine/oox/source/export/shapes.cxx": {
-          "originalSHA256": "025fd73bd88ea82ae0f81e092e62f1dc36d9ab37f9c5ed38482b9e197c3bcb03",
-          "patchedSHA256": "f9ec6ef8b837c7f1a2f704f051f998be207463eb395badd9a090236084d99c12"
+        "engine/sd/source/ui/unoidl/unomodel.cxx": {
+          "originalSHA256": "ea2306df724d398e4428bbfcb89b3b32632cec2e1ac907f47432834823458aca",
+          "patchedSHA256": "44b3a58316d49ff02072a93ec4f297d026cee71a823d715d30032fd494443b37"
         },
-        "engine/sd/source/filter/eppt/pptx-epptooxml.cxx": {
-          "originalSHA256": "5c8c2ef83f32669a87625b83cd17f8ddfd9182ab6210ecba06c9acc7d318a509",
-          "patchedSHA256": "2f5a05bba0026de45ab544dcb35ef2f1820bdaf78c73d75c937b0672a1e70667"
+        "engine/sd/source/ui/view/drviewse.cxx": {
+          "originalSHA256": "0585ec290509acecd1deb90267c77023ede02f4357c7f29cbafcb20809d83c99",
+          "patchedSHA256": "559d86e2902b174ffd0bb21020931c22cd20df2283b43bdaba6881b4d3d55217"
         }
       },
       "headerDependencies": {
-        "mdds": {
-          "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz",
-          "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c",
-          "root": "mdds-3.1.0",
-          "include": "include",
-          "patch": "patches/mdds-gcc12-upstream.patch",
-          "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
-          "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1"
-        },
         "frozen": {
-          "url": "https://dev-www.libreoffice.org/src/frozen-1.2.0.tar.gz",
-          "sha256": "ed8339c017d7c5fe019ac2c642477f435278f0dc643c1d69d3f3b1e95915e823",
-          "root": "frozen-1.2.0",
           "include": "include",
           "patch": "patches/frozen-upstream.patch",
           "patchSHA256": "52c173cd07880abd7ba3163fe95635d640ddd46382f90604ef86f685426acb4b",
-          "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0"
+          "root": "frozen-1.2.0",
+          "sha256": "ed8339c017d7c5fe019ac2c642477f435278f0dc643c1d69d3f3b1e95915e823",
+          "upstreamPatch": "engine/external/frozen/cid1532449_use_move_ctor.0 + cid1538304_reference_ctor.0 + cid1586676_use_move_ctor.0 + cid1618765_big_param.0",
+          "url": "https://dev-www.libreoffice.org/src/frozen-1.2.0.tar.gz"
         },
         "icu": {
-          "url": "https://dev-www.libreoffice.org/src/icu4c-78.2-sources.tgz",
-          "sha256": "3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35",
-          "root": "icu",
           "include": "source/common",
           "maxArchiveBytes": 33554432,
-          "maxExtractBytes": 268435456
+          "maxExtractBytes": 268435456,
+          "root": "icu",
+          "sha256": "3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35",
+          "url": "https://dev-www.libreoffice.org/src/icu4c-78.2-sources.tgz"
+        },
+        "mdds": {
+          "include": "include",
+          "patch": "patches/mdds-gcc12-upstream.patch",
+          "patchSHA256": "3411f0814815e06914ea1fbf50c5428af86cbed68c82c0481e09dd62bc8a22c6",
+          "root": "mdds-3.1.0",
+          "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c",
+          "upstreamPatch": "engine/external/mdds/gcc-12-silence-use-after-free.patch.1",
+          "url": "https://dev-www.libreoffice.org/src/mdds-3.1.0.tar.xz"
         }
       },
       "archiveSHA256": "19e3c681c6ec5d3818313c61889c4194c4b8c6c155f31c4717033dd9523e6d7e",
       "objectSHA256": "3df473274c48d9177ffa7bb64e5f356143dd7aa916ae58106be7810a5c5261fe",
       "selectedArchiveSHA256": "19e3c681c6ec5d3818313c61889c4194c4b8c6c155f31c4717033dd9523e6d7e",
       "selectedArchiveSHA256ByName": {
-        "libscfiltlo.a": "19e3c681c6ec5d3818313c61889c4194c4b8c6c155f31c4717033dd9523e6d7e",
         "libooxlo.a": "27f711df6ac17de256a1968b048aa7216c0e3fc0e4d75338a67d7dd3ed0beb0d",
+        "libscfiltlo.a": "19e3c681c6ec5d3818313c61889c4194c4b8c6c155f31c4717033dd9523e6d7e",
         "libsdlo.a": "c2017f45b6a7bc38d3a8b8cb27a3c92b4df8565c5c21894ce553d3ae8a6b6bf7"
       },
       "additionalArchives": {
         "libooxlo.a": {
-          "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
           "archiveSHA256": "27f711df6ac17de256a1968b048aa7216c0e3fc0e4d75338a67d7dd3ed0beb0d",
           "objectSHA256ByMember": {
-            "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77",
             "chartexport.o": "af7da7bb40ebc0af6204c5980be4b5963f96d642f1c37276674b463b4f237168",
-            "shapes.o": "02a773b2488daab57ce67a97e18c36bec2d775abd6952970f223b3fc55807576"
+            "shapes.o": "02a773b2488daab57ce67a97e18c36bec2d775abd6952970f223b3fc55807576",
+            "vmlshape.o": "2604ddfce94e017f396803e4a882b07230032bd1b637b22a0d1afdb309732f77"
           },
+          "originalArchiveSHA256": "55120d505e2b6565e5b4c3b8a5df651537ed43d0117c3cf76d4c88bc104251e9",
+          "preservedMemberCount": 233,
           "replacedMembers": [
             "vmlshape.o",
             "chartexport.o",
             "shapes.o"
-          ],
-          "preservedMemberCount": 233
+          ]
         },
         "libsdlo.a": {
-          "originalArchiveSHA256": "7228330d1d6ca820c86e88fb09025f30e6c42c377b13dc578c8ec53bc92119d9",
           "archiveSHA256": "c2017f45b6a7bc38d3a8b8cb27a3c92b4df8565c5c21894ce553d3ae8a6b6bf7",
           "objectSHA256ByMember": {
             "drviewse.o": "0009a05ff86c5ea8c600db0e95197713347edb1b236b5f8a4118216c73da5d42",
-            "unomodel.o": "041b36227e5f17fdd277475a5849081864edc7fdcb4a1f7dfc24a6f36d94ce05",
             "fuconbez.o": "e293fd5788759f09f72a86816f3af2665ee91b9cad4be01fa10ee87d2f4105db",
-            "pptx-epptooxml.o": "81667eed44f4bb43d54ba1fb2c73edbaf65c8a46329a28c5d010d1d67260de32"
+            "pptx-epptooxml.o": "81667eed44f4bb43d54ba1fb2c73edbaf65c8a46329a28c5d010d1d67260de32",
+            "unomodel.o": "041b36227e5f17fdd277475a5849081864edc7fdcb4a1f7dfc24a6f36d94ce05"
           },
+          "originalArchiveSHA256": "7228330d1d6ca820c86e88fb09025f30e6c42c377b13dc578c8ec53bc92119d9",
+          "preservedMemberCount": 372,
           "replacedMembers": [
             "drviewse.o",
             "unomodel.o",
             "fuconbez.o",
             "pptx-epptooxml.o"
-          ],
-          "preservedMemberCount": 372
+          ]
         }
       }
     },
     "capabilityQualification": {
-      "embeddedEditorPassed": false,
-      "pptxVisibleRenderPassed": false,
       "deviceRoundtripPassed": false,
-      "originalFileWritebackPassed": false
+      "embeddedEditorPassed": false,
+      "originalFileWritebackPassed": false,
+      "pptxVisibleRenderPassed": false
     },
     "schemeOverlaySHA256": "0d41d552707a3fcbcf1a94bcd1bc89e86386d74838f4a912a9e7de92dc6ad14a",
     "forwardingOverlaySHA256": "f30782622b4dd84cd0abdd23818a84d95123c7186790fc785534499214a65395",
@@ -202,110 +202,11 @@
       "lockSHA256": "e3940bf995e2464e7d681c8e3a952e491fd4a83577617e3c62bcb680e830efb6"
     },
     "embeddedLifecycleMember": {
-      "schemaVersion": 3,
-      "platform": "IOS",
-      "archive": "source/engine/instdir/program/libvcllo.a",
-      "members": {
-        "svdata.o": "engine/vcl/source/app/svdata.cxx",
-        "AquaGraphicsBackend.o": "engine/vcl/quartz/AquaGraphicsBackend.cxx",
-        "salios.o": "engine/vcl/ios/salios.cxx",
-        "executor.o": "engine/vcl/jsdialog/executor.cxx"
-      },
-      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-      "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
-      "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
-      "sourceFile": "engine/vcl/source/app/svdata.cxx",
-      "originalSourceSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
-      "patchedSourceSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
-      "compilePassed": true,
-      "archiveReplacementPassed": true,
-      "memberSources": {
-        "svdata.o": {
-          "sourceFile": "engine/vcl/source/app/svdata.cxx",
-          "originalSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
-          "patchedSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
-          "patch": "patches/ios-embedded-lifecycle-compiled.patch",
-          "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4"
-        },
-        "AquaGraphicsBackend.o": {
-          "sourceFile": "engine/vcl/quartz/AquaGraphicsBackend.cxx",
-          "originalSHA256": "34c806f0c84fdfab9902f953e3625b1744ed5e536112b3dccedb9ce0cc319906",
-          "patchedSHA256": "1ad64b3eadd7eb5525d09eb2165fb7f8ce605eef489f7a56338f21e101e89140",
-          "patch": "patches/ios-aqua-chart-path-probe.patch",
-          "patchSHA256": "8d9ece82809621763db6dbf63c834ddf5197f6be2d77d54b21dcd0d660896ecb",
-          "originalMemberSHA256": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254"
-        },
-        "salios.o": {
-          "sourceFile": "engine/vcl/ios/salios.cxx",
-          "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
-          "patchedSHA256": "50599ba2db8fa0a63604e03c723f12c2a7fad21d0fe274bd29998188f7615d7b",
-          "patch": "patches/ios-foreign-bitmap-readback.patch",
-          "patchSHA256": "7ca139cbe14c44e13366fc8f5c6625b5e159928d328d5c57f71e395a85e5e7b1",
-          "originalMemberSHA256": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f"
-        },
-        "executor.o": {
-          "sourceFile": "engine/vcl/jsdialog/executor.cxx",
-          "originalSHA256": "5f2897eaabbc7bf9a113911b549ed19f810a2f84fa51b217898586095b14710d",
-          "patchedSHA256": "f784360d801323792555a4580ea1f114f55608b45517666819464dd7fe84ab24",
-          "patch": "patches/ios-jsdialog-treeview-utf8.patch",
-          "patchSHA256": "5fec4d222117c416d149d20aa708f37ddff2e5dafd0c4a6f249106aaef4baa50",
-          "originalMemberSHA256": "b3c312c4b6ccd82edb8be83dcd23c6cd3bbbd74e00b7012248cfe7ebb1904b64",
-          "compileOverrides": {
-            "auxiliaryIncludes": [
-              "source/engine/workdir/UnpackedTarball/frozen/include"
-            ]
-          }
-        }
-      },
-      "originalArchiveSHA256": "df9bcde15702a1947835ebf646df295f64c1cdc70a43837e810559d0edc96c89",
-      "archiveSHA256": "dfa4d66e050afde3f0690bef38bdc629af3c975e537fcebc91c0d21d122e703e",
-      "objectSHA256ByMember": {
-        "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff",
-        "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
-        "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
-        "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc"
-      },
-      "linkerListSHA256": "0e3282784e7f4973d1d79cba57af6cbc3cac784f6b557af5f2ba6e1c772083c3",
-      "originalObjectSHA256ByMember": {
-        "svdata.o": "2f9a3ebe381efc35c92aeb0a9b359c9e05075b0fa0d24013d1d61f4d1d7752d3",
-        "AquaGraphicsBackend.o": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254",
-        "salios.o": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f",
-        "executor.o": "b3c312c4b6ccd82edb8be83dcd23c6cd3bbbd74e00b7012248cfe7ebb1904b64"
-      },
-      "objectABIByMember": {
-        "svdata.o": {
-          "arch": "arm64",
-          "platform": "IOS"
-        },
-        "AquaGraphicsBackend.o": {
-          "arch": "arm64",
-          "platform": "IOS"
-        },
-        "salios.o": {
-          "arch": "arm64",
-          "platform": "IOS"
-        },
-        "executor.o": {
-          "arch": "arm64",
-          "platform": "IOS"
-        }
-      },
       "additionalArchives": {
         "libsallo.a": {
-          "schemaVersion": 1,
-          "platform": "IOS",
           "archive": "source/engine/instdir/program/libsallo.a",
-          "members": {
-            "thread.o": "engine/sal/osl/unx/thread.cxx"
-          },
-          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
-          "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
-          "sourceFile": "engine/sal/osl/unx/thread.cxx",
-          "originalSourceSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
-          "patchedSourceSHA256": "1d5de5f98a7b6f654bb5bd434efddb0ceafeacb44b5fc97131092bf0b1a1ef19",
-          "compilePassed": true,
           "archiveReplacementPassed": true,
+          "archiveSHA256": "08ddd8dfb81ae42914c6dde1a8dcd31d9cddbe8c0a99c118b3fbeb711805cecf",
           "compileOverrides": {
             "flags": [
               "-DSAL_DLLIMPLEMENTATION"
@@ -315,152 +216,267 @@
               "engine/sal/osl/unx"
             ]
           },
-          "originalArchiveSHA256": "d07491dcb70518a15b0bc3981373f660bccb69a59b7ded3c4e1505d6260744ce",
-          "archiveSHA256": "2d5e25648afb036de92f860cf9a3325679939cc997e4639f40d70b1cd3ce98e7",
+          "compilePassed": true,
+          "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+          "linkerListSHA256": "99dcc41ddd730cd3641239eb9f3e04fd7b3a6167f6610f84ce18b6c0a94913de",
+          "members": {
+            "thread.o": "engine/sal/osl/unx/thread.cxx"
+          },
           "objectSHA256ByMember": {
             "thread.o": "0bf09093ac757843466111e3010ed819a9bbf255b79637f0d27a36bb6b6feb3e"
           },
-          "linkerListSHA256": "04f80c4fd4af3692504096d00d4d10ec2ccc35d30f73adb6ae6001a5acb634a3"
+          "originalArchiveSHA256": "d07491dcb70518a15b0bc3981373f660bccb69a59b7ded3c4e1505d6260744ce",
+          "originalSourceSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
+          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
+          "patchedSourceSHA256": "1d5de5f98a7b6f654bb5bd434efddb0ceafeacb44b5fc97131092bf0b1a1ef19",
+          "platform": "IOS",
+          "schemaVersion": 1,
+          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+          "sourceFile": "engine/sal/osl/unx/thread.cxx"
         },
         "libsfxlo.a": {
-          "schemaVersion": 1,
-          "platform": "IOS",
           "archive": "source/engine/instdir/program/libsfxlo.a",
-          "members": {
-            "SfxNotebookBar.o": "engine/sfx2/source/notebookbar/SfxNotebookBar.cxx"
-          },
-          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
-          "compiledPatchSHA256": "6ee496b15702fc28ebc3341293c660e69df7917964a28a9e6106b26be60cfc3e",
-          "sourceFile": "engine/sfx2/source/notebookbar/SfxNotebookBar.cxx",
-          "originalSourceSHA256": "37ad6c7b1926e97bcb1bdb14a89aab7175c35060a83ecca2253c9626a6fca4af",
-          "patchedSourceSHA256": "1f4cf5fb506f7fe7ca3ca0f3c03f8a8d2711a7cb9f9ca8d60ff061ff3e5a343f",
-          "compilePassed": true,
           "archiveReplacementPassed": true,
+          "archiveSHA256": "aea39ca861051dc219a2498d6ccd5319eac0aeed6052a95531f669c2805ed185",
           "compileOverrides": {
             "flags": [
               "-DSFX2_DLLIMPLEMENTATION"
             ],
+            "officecfgHeaders": {
+              "Office/UI/ToolbarMode": {
+                "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
+                "generatedSHA256": "7a47a1cd71c61bd3f4e51cbe90bceb48bbf4f5977251c380d7e693ba3a42eed0",
+                "schemaSHA256": "21fb9a154c102ff652f7ee52455164673ca9f021be21c40083ef89de99b2da16",
+                "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd"
+              }
+            },
             "sourceIncludes": [
               "engine/sfx2/inc",
               "engine/sfx2/source/inc"
-            ],
-            "officecfgHeaders": {
-              "Office/UI/ToolbarMode": {
-                "schemaSHA256": "21fb9a154c102ff652f7ee52455164673ca9f021be21c40083ef89de99b2da16",
-                "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd",
-                "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
-                "generatedSHA256": "7a47a1cd71c61bd3f4e51cbe90bceb48bbf4f5977251c380d7e693ba3a42eed0"
-              }
-            }
+            ]
           },
-          "originalArchiveSHA256": "f67c0df3fbe24ccfd928d3554884a5ef994cbfee3f7a813af52ebbad8c18bc0a",
-          "archiveSHA256": "06b4ddcd4123b6a56e09c2f099314d865fad38184531286b5a79618ce064eae7",
+          "compilePassed": true,
+          "compiledPatchSHA256": "6ee496b15702fc28ebc3341293c660e69df7917964a28a9e6106b26be60cfc3e",
+          "linkerListSHA256": "3dbcf6eaa7be64cd1c3f5fdb6bcdbdd18781a0d0e2de787cd3e68491d7d915e9",
+          "members": {
+            "SfxNotebookBar.o": "engine/sfx2/source/notebookbar/SfxNotebookBar.cxx"
+          },
           "objectSHA256ByMember": {
             "SfxNotebookBar.o": "24b871ea20257fbbc23865afe1bd39e1d8d5f1242a4b170f053bf3de8022561e"
           },
-          "linkerListSHA256": "7d34c2c087792796cb642bb377290fefef5219a642f24eda3c0c96eefacb9e16"
+          "originalArchiveSHA256": "f67c0df3fbe24ccfd928d3554884a5ef994cbfee3f7a813af52ebbad8c18bc0a",
+          "originalSourceSHA256": "37ad6c7b1926e97bcb1bdb14a89aab7175c35060a83ecca2253c9626a6fca4af",
+          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
+          "patchedSourceSHA256": "1f4cf5fb506f7fe7ca3ca0f3c03f8a8d2711a7cb9f9ca8d60ff061ff3e5a343f",
+          "platform": "IOS",
+          "schemaVersion": 1,
+          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+          "sourceFile": "engine/sfx2/source/notebookbar/SfxNotebookBar.cxx"
         },
         "libsvxcorelo.a": {
-          "schemaVersion": 1,
-          "platform": "IOS",
           "archive": "source/engine/instdir/program/libsvxcorelo.a",
-          "members": {
-            "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
-          },
-          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
-          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
-          "compiledPatchSHA256": "a9c8bc2ead408ff7f14e4149331bb7ee36c6f0e8bd1dae7ad120f7c79f20c9ac",
-          "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx",
-          "originalSourceSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
-          "patchedSourceSHA256": "228b223051206b4f277e2e78764b58fba8c5c1de474d8716e68e26c5c93e977b",
-          "compilePassed": true,
           "archiveReplacementPassed": true,
+          "archiveSHA256": "7ecd3fcf458b1bcb4061df27922a9dad61a64119588c73326aa0c4e1f4cc087f",
           "compileOverrides": {
             "flags": [
               "-DSVXCORE_DLLIMPLEMENTATION"
             ],
-            "sourceIncludes": [
-              "engine/svx/source/inc"
-            ],
             "language": "c++",
             "officecfgHeaders": {
               "Office/Common": {
-                "schemaSHA256": "61502860517a904e3591bcbe5d48f5cf6bb5867cff1172cbde886e64b708a812",
-                "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd",
                 "dtdSHA256": "e0a91098484770dec8f571fb115f2f0567e13a416bed36a5f4717e4a37a71d30",
-                "generatedSHA256": "5b5203f6be114ba6440884f9f9936743e727c4e048a5670fc66d001c9ac41f1b"
+                "generatedSHA256": "5b5203f6be114ba6440884f9f9936743e727c4e048a5670fc66d001c9ac41f1b",
+                "schemaSHA256": "61502860517a904e3591bcbe5d48f5cf6bb5867cff1172cbde886e64b708a812",
+                "stylesheetSHA256": "c18d6167f2807b8ce747e7f077f7a474fb5b94f7b8bdc6617b1422570b8c82dd"
               }
-            }
+            },
+            "sourceIncludes": [
+              "engine/svx/source/inc"
+            ]
           },
-          "originalArchiveSHA256": "c31984be5d9736b98e229db9273f25daa18467e7e19cba04c0e51bb29f50b9f8",
-          "archiveSHA256": "f0a1ffdd186dd8c57f20ead25e92e11b1e607e9abd76db2c4ec3dcd75931b39c",
+          "compilePassed": true,
+          "compiledPatchSHA256": "a9c8bc2ead408ff7f14e4149331bb7ee36c6f0e8bd1dae7ad120f7c79f20c9ac",
+          "linkerListSHA256": "5be52df3b93f44dcbbf9ae5c8fe2961e686240dee3d7bf452406241bf13c4441",
+          "members": {
+            "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
+          },
           "objectSHA256ByMember": {
             "svdcrtv.o": "f0ccdee55852879fa49f8c96e73d5a92f313f910c01f83152bba0993ee4fc344"
           },
-          "linkerListSHA256": "a6de82ef2ed08348ee9a20ce56740f129ea2cc4996479df0a511f9741eb10c90"
+          "originalArchiveSHA256": "c31984be5d9736b98e229db9273f25daa18467e7e19cba04c0e51bb29f50b9f8",
+          "originalSourceSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
+          "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
+          "patchedSourceSHA256": "228b223051206b4f277e2e78764b58fba8c5c1de474d8716e68e26c5c93e977b",
+          "platform": "IOS",
+          "schemaVersion": 1,
+          "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+          "sourceFile": "engine/svx/source/svdraw/svdcrtv.cxx"
         }
       },
+      "archive": "source/engine/instdir/program/libvcllo.a",
+      "archiveReplacementPassed": true,
+      "archiveSHA256": "dc74d61155a4363777090c4a6d1f4c7dc2aa9dfc835417ffcbf3c75332e1f737",
+      "compilePassed": true,
+      "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
       "linkOwnership": {
-        "linkMapSHA256": "bd5df75cc09ca601d718ed4a9ab667abe893645b9e09e3ef7e46ab51beebcb53",
-        "linkerListSHA256": "32af2018e76863004caec8847b6068521ddbfbd9c0d1454a3f113143eb5caa49",
         "archives": {
-          "libvcllo.a": {
-            "archiveSHA256": "dfa4d66e050afde3f0690bef38bdc629af3c975e537fcebc91c0d21d122e703e",
-            "objectSHA256ByMember": {
-              "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff",
-              "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
-              "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
-              "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc"
-            }
-          },
           "libsallo.a": {
-            "archiveSHA256": "2d5e25648afb036de92f860cf9a3325679939cc997e4639f40d70b1cd3ce98e7",
+            "archiveSHA256": "08ddd8dfb81ae42914c6dde1a8dcd31d9cddbe8c0a99c118b3fbeb711805cecf",
             "objectSHA256ByMember": {
               "thread.o": "0bf09093ac757843466111e3010ed819a9bbf255b79637f0d27a36bb6b6feb3e"
             }
           },
           "libsfxlo.a": {
-            "archiveSHA256": "06b4ddcd4123b6a56e09c2f099314d865fad38184531286b5a79618ce064eae7",
+            "archiveSHA256": "aea39ca861051dc219a2498d6ccd5319eac0aeed6052a95531f669c2805ed185",
             "objectSHA256ByMember": {
               "SfxNotebookBar.o": "24b871ea20257fbbc23865afe1bd39e1d8d5f1242a4b170f053bf3de8022561e"
             }
           },
           "libsvxcorelo.a": {
-            "archiveSHA256": "f0a1ffdd186dd8c57f20ead25e92e11b1e607e9abd76db2c4ec3dcd75931b39c",
+            "archiveSHA256": "7ecd3fcf458b1bcb4061df27922a9dad61a64119588c73326aa0c4e1f4cc087f",
             "objectSHA256ByMember": {
               "svdcrtv.o": "f0ccdee55852879fa49f8c96e73d5a92f313f910c01f83152bba0993ee4fc344"
             }
+          },
+          "libvcllo.a": {
+            "archiveSHA256": "dc74d61155a4363777090c4a6d1f4c7dc2aa9dfc835417ffcbf3c75332e1f737",
+            "objectSHA256ByMember": {
+              "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
+              "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc",
+              "fontcache.o": "95e937d496745dcbf9b5c53b15a806324e18ec0c121dc3c6337f4295e7864f81",
+              "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
+              "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff"
+            }
           }
         },
+        "linkMapSHA256": "3bf3503b2b1eda7ddf5eb95f8034bbcab55c3db3223dd9a60d82efff298aa719",
+        "linkerListSHA256": "a4baaf9396aa284d06b21a5d1247dea2e3c1ba3db152258b45f899dc09d08e16",
         "preparedObjects": {
+          "kit/Kit.cpp": {
+            "objectName": "Kit.o",
+            "objectSHA256": "16002a4b9a583ca34eb20162ab0ab3cdaf715437c1500ba8aa8ed5e845aabfc5",
+            "preparedSourceSHA256": "f3ec03aca544ad3b0a1b54eeb9c8af80a6c01629c3a11c8b2167b2fb3360d871"
+          },
           "net/FakeSocket.cpp": {
-            "preparedSourceSHA256": "c5167ebc2131998c25d549d7484efcf93bb870a8e81ef815fd4a99d622c09ec2",
-            "objectSHA256": "c47d202826e5b523864aeb69b6969fbb603d94b97b94cec02ec8cb3245214040",
-            "objectName": "FakeSocket.o"
+            "objectName": "FakeSocket.o",
+            "objectSHA256": "715db01592600c9ed3eb01a141bdc3629d5ae5f9b2f6bd9903d298d35f347885",
+            "preparedSourceSHA256": "c5167ebc2131998c25d549d7484efcf93bb870a8e81ef815fd4a99d622c09ec2"
           },
           "wsd/COOLWSD.cpp": {
-            "preparedSourceSHA256": "7c2392b1d2649067e93c68aff0e8eb5bcbbc5401c7f201c69468d8a91e26bfc9",
-            "objectSHA256": "71dde8d8f18f4d660b05d0b9ea10c35c204574ae8ce1412518f6e92bef5e5058",
-            "objectName": "COOLWSD.o"
-          },
-          "kit/Kit.cpp": {
-            "preparedSourceSHA256": "f3ec03aca544ad3b0a1b54eeb9c8af80a6c01629c3a11c8b2167b2fb3360d871",
-            "objectSHA256": "d430f9da5964847975dee877949ed4af3e642e8fa6b5f7ab8456f2ccc7ec5a73",
-            "objectName": "Kit.o"
+            "objectName": "COOLWSD.o",
+            "objectSHA256": "d99b3ee5066b1ab962a80d73a66c54db6fb6eb97993f066c49f77934c9c2a9a4",
+            "preparedSourceSHA256": "7c2392b1d2649067e93c68aff0e8eb5bcbbc5401c7f201c69468d8a91e26bfc9"
           }
         }
-      }
+      },
+      "linkerListSHA256": "a8c323fb4e69bf27255e77c8ec137b959d167c052ca52cd65786af56e1d78cc5",
+      "memberSources": {
+        "AquaGraphicsBackend.o": {
+          "originalMemberSHA256": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254",
+          "originalSHA256": "34c806f0c84fdfab9902f953e3625b1744ed5e536112b3dccedb9ce0cc319906",
+          "patch": "patches/ios-aqua-chart-path-probe.patch",
+          "patchSHA256": "8d9ece82809621763db6dbf63c834ddf5197f6be2d77d54b21dcd0d660896ecb",
+          "patchedSHA256": "1ad64b3eadd7eb5525d09eb2165fb7f8ce605eef489f7a56338f21e101e89140",
+          "sourceFile": "engine/vcl/quartz/AquaGraphicsBackend.cxx"
+        },
+        "executor.o": {
+          "compileOverrides": {
+            "auxiliaryIncludes": [
+              "source/engine/workdir/UnpackedTarball/frozen/include"
+            ]
+          },
+          "originalMemberSHA256": "b3c312c4b6ccd82edb8be83dcd23c6cd3bbbd74e00b7012248cfe7ebb1904b64",
+          "originalSHA256": "5f2897eaabbc7bf9a113911b549ed19f810a2f84fa51b217898586095b14710d",
+          "patch": "patches/ios-jsdialog-treeview-utf8.patch",
+          "patchSHA256": "5fec4d222117c416d149d20aa708f37ddff2e5dafd0c4a6f249106aaef4baa50",
+          "patchedSHA256": "f784360d801323792555a4580ea1f114f55608b45517666819464dd7fe84ab24",
+          "sourceFile": "engine/vcl/jsdialog/executor.cxx"
+        },
+        "fontcache.o": {
+          "originalMemberSHA256": "d094e02b3b3241bdfa80b393d0589f8b0a8afcfd54fe104f537b393bd2ac8930",
+          "originalSHA256": "562127cce91fab9e118dc77904f1022ca3cc255e5924dd9e4ea1ac014489bb3b",
+          "patch": "patches/ios-symbol-font-recoding.patch",
+          "patchSHA256": "b84b546a2f557e1d1d42e196c4d4f6c35ea4d3512ec4a0b52e99fba3ab5f919c",
+          "patchedSHA256": "1a3ae74fb2f00fbfd853b01eca067e53bc3fa878fd5237425aa2d904e34e3293",
+          "sourceFile": "engine/vcl/source/font/fontcache.cxx"
+        },
+        "salios.o": {
+          "originalMemberSHA256": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f",
+          "originalSHA256": "0a671dcd57de890a480d52a672bb5721c119547ca5724463077e705cab356d5a",
+          "patch": "patches/ios-foreign-bitmap-readback.patch",
+          "patchSHA256": "7ca139cbe14c44e13366fc8f5c6625b5e159928d328d5c57f71e395a85e5e7b1",
+          "patchedSHA256": "50599ba2db8fa0a63604e03c723f12c2a7fad21d0fe274bd29998188f7615d7b",
+          "sourceFile": "engine/vcl/ios/salios.cxx"
+        },
+        "svdata.o": {
+          "originalSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
+          "patch": "patches/ios-embedded-lifecycle-compiled.patch",
+          "patchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
+          "patchedSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
+          "sourceFile": "engine/vcl/source/app/svdata.cxx"
+        }
+      },
+      "members": {
+        "AquaGraphicsBackend.o": "engine/vcl/quartz/AquaGraphicsBackend.cxx",
+        "executor.o": "engine/vcl/jsdialog/executor.cxx",
+        "fontcache.o": "engine/vcl/source/font/fontcache.cxx",
+        "salios.o": "engine/vcl/ios/salios.cxx",
+        "svdata.o": "engine/vcl/source/app/svdata.cxx"
+      },
+      "objectABIByMember": {
+        "AquaGraphicsBackend.o": {
+          "arch": "arm64",
+          "platform": "IOS"
+        },
+        "executor.o": {
+          "arch": "arm64",
+          "platform": "IOS"
+        },
+        "fontcache.o": {
+          "arch": "arm64",
+          "platform": "IOS"
+        },
+        "salios.o": {
+          "arch": "arm64",
+          "platform": "IOS"
+        },
+        "svdata.o": {
+          "arch": "arm64",
+          "platform": "IOS"
+        }
+      },
+      "objectSHA256ByMember": {
+        "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
+        "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc",
+        "fontcache.o": "95e937d496745dcbf9b5c53b15a806324e18ec0c121dc3c6337f4295e7864f81",
+        "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
+        "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff"
+      },
+      "originalArchiveSHA256": "df9bcde15702a1947835ebf646df295f64c1cdc70a43837e810559d0edc96c89",
+      "originalObjectSHA256ByMember": {
+        "AquaGraphicsBackend.o": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254",
+        "executor.o": "b3c312c4b6ccd82edb8be83dcd23c6cd3bbbd74e00b7012248cfe7ebb1904b64",
+        "fontcache.o": "d094e02b3b3241bdfa80b393d0589f8b0a8afcfd54fe104f537b393bd2ac8930",
+        "salios.o": "b637387280db86a355448e937ff84e6a73f5ba58a9e24affa11422ab6550dc6f",
+        "svdata.o": "2f9a3ebe381efc35c92aeb0a9b359c9e05075b0fa0d24013d1d61f4d1d7752d3"
+      },
+      "originalSourceSHA256": "d4134c6ccd979fb0ad3ac2e46484c5715c2e5ba86d50c45f26778784b95b3fb8",
+      "patchSHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
+      "patchedSourceSHA256": "b41f80bdd46c8c1a3bdad684e6eba9730470b912e3529fee3cac3ffdcb394397",
+      "platform": "IOS",
+      "schemaVersion": 3,
+      "sourceCommit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
+      "sourceFile": "engine/vcl/source/app/svdata.cxx"
     },
     "embeddedLifecycleOverlaySHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
     "localStorageArtifact": {
       "kind": "office-local-host-artifact-storage",
-      "runID": "39547738032",
-      "workflowCommit": "137ea88cd068650ff4b090ac3a5c03789f761939",
+      "runID": "39634788604",
+      "workflowCommit": "e5d880fe364d0587b8efae536ed3b144511998a5",
       "artifactName": "office-native-host-unsigned",
-      "archiveSHA256": "aeea503a160a4b834ae8373327ea2e7357eaffc9714ef0cce65148afcc9a6ee3",
+      "archiveSHA256": "ea11a7bacea4596a46c7e33cbf44af0df8e6097790341e44d5664f7e8f0c111b",
       "note": "Storage-only provenance: the device host was produced by the local device build (engine source 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, verified by validate_local_office_transport); this Actions run retains the exact bytes for download and did not compile them.",
-      "artifactID": 12321886770,
+      "artifactID": 12360238402,
       "nativeProducer": "local-device-host-build"
     },
     "browserResources": {
