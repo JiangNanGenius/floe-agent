@@ -27,9 +27,9 @@ private final class Written: @unchecked Sendable {
 }
 
 @MainActor
-private func makeCleanupStore() throws -> TaskScheduleCleanupReminderStore {
+private func makeCleanupStore() async throws -> TaskScheduleCleanupReminderStore {
     let database = try DatabaseManager.inMemory()
-    try database.migrate()
+    try await database.migrate()
     return TaskScheduleCleanupReminderStore(database: database)
 }
 
@@ -63,7 +63,10 @@ private func makeModel(
 struct TaskScheduleShortcutImportTests {
 
     private func makeSuite() -> UserDefaults {
-        UserDefaults(suiteName: "floe.tests.\(UUID().uuidString)")!
+        let name = "floe.tests.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: name)!
+        suite.set(name, forKey: "floe.test.suiteName")
+        return suite
     }
 
     private func cleanup(_ suite: UserDefaults, _ written: Written) {
@@ -73,14 +76,16 @@ struct TaskScheduleShortcutImportTests {
                 try? FileManager.default.removeItem(at: directory)
             }
         }
-        suite.removePersistentDomain(forName: suite.suiteName ?? "")
+        if let name = suite.string(forKey: "floe.test.suiteName"), name.hasPrefix("floe.tests.") {
+            suite.removePersistentDomain(forName: name)
+        }
     }
 
     @Test("No bundled template keeps the manual-only path with zero durable writes")
     func noTemplate() async throws {
         let suite = makeSuite()
         let written = Written()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let scheduleID = UUID()
         let model = makeModel(
             templateData: nil, scheduleID: scheduleID, title: "T",
@@ -124,7 +129,7 @@ struct TaskScheduleShortcutImportTests {
         let data = Data("signed-v1".utf8)
         let suite = makeSuite()
         let written = Written()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let scheduleID = UUID()
         var handedURLs: [URL] = []
         let model = makeModel(
@@ -166,7 +171,7 @@ struct TaskScheduleShortcutImportTests {
     func shareFallback() async throws {
         let suite = makeSuite()
         let written = Written()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let scheduleID = UUID()
         let model = makeModel(
             templateData: Data("x".utf8),
@@ -194,7 +199,7 @@ struct TaskScheduleShortcutImportTests {
 
         let suite2 = makeSuite()
         let written2 = Written()
-        let store2 = try makeCleanupStore()
+        let store2 = try await makeCleanupStore()
         let other = UUID()
         let model2 = makeModel(
             templateData: Data("y".utf8),
@@ -217,7 +222,7 @@ struct TaskScheduleShortcutImportTests {
     @Test("Unwritable temp copy records failed and persists nothing durable")
     func failureStates() async throws {
         let suite = makeSuite()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let scheduleID = UUID()
         let model = TaskScheduleShortcutImport(
             templateReader: { Data("z".utf8) },
@@ -239,7 +244,7 @@ struct TaskScheduleShortcutImportTests {
         let second = UUID()
         let suite = makeSuite()
         let written = Written()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let model = makeModel(
             templateData: data,
             opener: { _ in true },
@@ -287,7 +292,7 @@ struct TaskScheduleShortcutImportTests {
     @Test("Explicit confirmation alone starts monitoring (manual path)")
     func manualConfirmationIsMonitored() async throws {
         let suite = makeSuite()
-        let store = try makeCleanupStore()
+        let store = try await makeCleanupStore()
         let scheduleID = UUID()
         let model = makeModel(
             templateData: nil, scheduleID: scheduleID, title: "Manual only",
@@ -305,7 +310,7 @@ struct TaskScheduleShortcutImportTests {
     @Test("Handoff monitoring then a real delete opens exactly one cleanup")
     func monitoredDeleteOpensCleanup() async throws {
         let database = try DatabaseManager.inMemory()
-        try database.migrate()
+        try await database.migrate()
         let suite = makeSuite()
         let store = TaskScheduleCleanupReminderStore(database: database)
         let schedules = SQLiteTaskScheduleStore(database: database)

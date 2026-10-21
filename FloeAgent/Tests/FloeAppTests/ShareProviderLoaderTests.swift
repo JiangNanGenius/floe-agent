@@ -103,7 +103,7 @@ private func register(
 ) {
     provider.registerItem(forTypeIdentifier: typeIdentifier) { completion, _, _ in
         requests?.record(typeIdentifier)
-        completion(object(), nil)
+        completion?(object(), nil)
     }
 }
 
@@ -373,8 +373,8 @@ struct ShareItemProviderLoaderTests {
                 temporaryRoot: tempRoot
             )
             let staged = try expectFileInput(inputs)
-            #expect(staged.typeIdentifier == syntheticPDFTypeIdentifier, label)
-            #expect(try Data(contentsOf: staged.url) == syntheticPDFBytes, label)
+            #expect(staged.typeIdentifier == syntheticPDFTypeIdentifier, "URL representation: \(label)")
+            #expect(try Data(contentsOf: staged.url) == syntheticPDFBytes, "URL representation: \(label)")
         }
         try FileManager.default.removeItem(at: sourceURL)
     }

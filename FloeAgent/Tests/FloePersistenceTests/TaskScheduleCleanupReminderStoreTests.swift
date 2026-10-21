@@ -29,13 +29,13 @@ import Testing
 @Suite("FloePersistence.TaskScheduleCleanupReminderStore")
 struct TaskScheduleCleanupReminderStoreTests {
 
-    private func makeStores() throws -> (
+    private func makeStores() async throws -> (
         database: DatabaseManager,
         schedules: SQLiteTaskScheduleStore,
         reminders: TaskScheduleCleanupReminderStore
     ) {
         let database = try DatabaseManager.inMemory()
-        try database.migrate()
+        try await database.migrate()
         return (
             database,
             SQLiteTaskScheduleStore(database: database),
@@ -68,7 +68,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("No setup: deleting a never-configured plan records nothing")
     func deleteWithoutSetupIsSilent() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Never shared")
         try await schedules.delete(id: record.id)
         #expect(try await reminders.openReminders().isEmpty)
@@ -78,7 +78,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Monitoring is silent: a live monitored plan shows nothing")
     func monitoringInvisible() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Monitored live")
         try await monitor(reminders, record)
         #expect(try await reminders.openReminders().isEmpty)
@@ -91,7 +91,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Actual handoff then delete opens one reminder that survives relaunch")
     func setupThenDeleteOpensAndSurvivesRelaunch() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Weekly digest")
         try await monitor(reminders, record)
         try await schedules.delete(id: record.id)
@@ -117,7 +117,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Started-but-running one-shot shows nothing; terminal shows onceConsumed")
     func onceTerminalNotStart() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Once", cadence: .once)
         try await monitor(reminders, record)
 
@@ -147,7 +147,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("recordRunCompletion is a terminal retirement moment too")
     func onceTerminalViaRunCompletion() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Once run", cadence: .once)
         try await monitor(reminders, record)
         let runID = UUID()
@@ -172,7 +172,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Recurring occurrence completion and any pause record nothing")
     func recurringAndPauseAreNotRetirement() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Daily", cadence: .daily)
         try await monitor(reminders, record)
 
@@ -204,7 +204,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A cancelled one-shot occurrence is terminal and retires")
     func cancelledOnceOccurrenceRetires() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Once cancelled", cadence: .once)
         try await monitor(reminders, record)
         let occurrence = TaskScheduleOccurrence(
@@ -228,7 +228,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Reconcile opens monitoring rows whose delete write was lost")
     func reconcileOpensMissedDelete() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Crash deleted")
         try await monitor(reminders, record)
         // Simulate the crash window: the plan row is gone but the cleanup
@@ -248,7 +248,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Reconcile opens a consumed one-shot whose terminal write was lost")
     func reconcileOpensConsumedOnce() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Crash once", cadence: .once)
         try await monitor(reminders, record)
         // markStarted consumed the plan; no live occurrence remains; the
@@ -263,7 +263,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Reconcile never opens a one-shot still running or never started")
     func reconcileGuardsRunningAndPausedOnce() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         // Still running: claimed+running instance exists.
         let running = try await makeSchedule(schedules, title: "Running once", cadence: .once)
         try await monitor(reminders, running)
@@ -292,7 +292,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A fresh handoff after a resolved marker can retire again")
     func freshSetupAfterResolved() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         var record = try await makeSchedule(schedules, title: "Round one")
         try await monitor(reminders, record)
         try await schedules.delete(id: record.id)
@@ -322,7 +322,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Repeated retirement events dedupe to one row and keep the first reason")
     func dedupeKeepsFirstReason() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Twice", cadence: .once)
         try await monitor(reminders, record)
         try await schedules.delete(id: record.id)
@@ -342,7 +342,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Dismiss and mark-removed are distinct user-side transitions")
     func userTransitions() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let first = try await makeSchedule(schedules, title: "A")
         let second = try await makeSchedule(schedules, title: "B")
         try await monitor(reminders, first)
@@ -368,7 +368,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A new stale fire REOPENS a removed row (the fire disproves it)")
     func staleReopensRemoved() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Claimed gone")
         try await monitor(reminders, record)
         try await schedules.delete(id: record.id)
@@ -387,7 +387,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A stale fire never re-nags a dismissed event, only advances evidence")
     func dismissedStaysSilent() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Silenced")
         try await monitor(reminders, record)
         try await schedules.delete(id: record.id)
@@ -407,7 +407,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Stale fire for a never-monitored deleted plan creates the reminder")
     func staleWithoutSetup() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         // Old app: a plan was deleted with NO monitoring (pre-import or the
         // user never confirmed anything). The fire itself is the evidence.
         let record = try await makeSchedule(schedules, title: "Old trigger")
@@ -427,7 +427,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Reminder writes never touch schedule, occurrence or enable state")
     func noLifecycleSideEffects() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Invariant", cadence: .once)
         let before = try #require(try await schedules.schedule(id: record.id))
         try await reminders.recordSetup(
@@ -455,7 +455,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A cleanup write failure can never roll back core mutations")
     func auxiliaryFailureCannotBreakCore() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let record = try await makeSchedule(schedules, title: "Break me", cadence: .once)
         try await monitor(reminders, record)
         let occurrence = TaskScheduleOccurrence(
@@ -490,7 +490,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A malformed reminder row is skipped without blanking the list")
     func malformedRowSkipped() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         try await database.writer { db in
             // CHECK-valid values but an unparseable UUID column: only a
             // decode-level failure can exercise the quiet-skip path.
@@ -540,7 +540,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Re-enabling a consumed one-shot silences the old event; a reversible pause never reminds")
     func reEnabledOncePauseNeverReminds() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Rearm once", cadence: .once)
         try await reminders.recordSetup(
@@ -594,7 +594,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A fresh handoff after an old terminal is not consumed by historical evidence")
     func freshHandoffAfterTerminalIsNotConsumedByHistory() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Handoff twice", cadence: .once)
         try await reminders.recordSetup(
@@ -640,7 +640,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Re-arm after a lost terminal write stays silent across a pause; a new launch still reconciles open")
     func lostTerminalWriteThenRearmStaysSilent() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Crash window", cadence: .once)
         try await reminders.recordSetup(
@@ -672,7 +672,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Re-arm creates nothing for a never-setup plan (enable toggle and edit upsert)")
     func reArmNeverRecordsUnmonitoredPlans() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Never monitored", cadence: .once)
         try await schedules.setEnabled(id: record.id, enabled: false, at: base)
@@ -697,7 +697,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Re-arm keeps a resolved mark intact and survives a missing reminders table")
     func reArmRespectsResolvedRowsAndMissingTable() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Dismissed round", cadence: .once)
         try await reminders.recordSetup(
@@ -754,7 +754,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Legacy system fire: an enabled one-shot round is observed, its terminal then opens")
     func invocationObservesLiveOnceRound() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Legacy once", cadence: .once)
         // The app never recorded an import/share/confirm handoff: this was a
@@ -782,7 +782,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("System fire repeats never reset the monitoring epoch; an open event is never hidden or re-nagged")
     func repeatedInvocationPreservesMonitoringEpoch() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Legacy once", cadence: .once)
         try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
@@ -824,7 +824,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("System fire for an already-started legacy round anchors at the actual start, never at now")
     func invocationAnchorsLiveRoundAtItsActualStart() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Late observer", cadence: .once)
         // The round started and is running BEFORE any observation exists.
@@ -854,7 +854,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A pending or claimed occurrence cannot make a paused historical once plan live")
     func pendingOrClaimedHistoricalRoundIsNotObserved() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Paused retry", cadence: .once)
         try await launch(
@@ -875,7 +875,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("System fire for a missing, paused or long-consumed plan records nothing")
     func ineligibleInvocationsRecordNothing() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
 
         // Missing plan (a deleted schedule): the stale-fire hook is the ONLY
@@ -912,7 +912,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A dismissed consumed round is never re-nagged by the lingering automation's repeated fires")
     func dismissedConsumedRoundIsNotRenagged() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Dismissed legacy", cadence: .once)
         try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
@@ -938,7 +938,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("A genuinely enabled fire after an earlier resolved mark starts fresh monitoring at the current epoch")
     func enabledInvocationReopensResolvedForNewLifecycle() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         let record = try await makeSchedule(schedules, title: "Round two", cadence: .once)
         try await reminders.observeIntentInvocation(scheduleID: record.id, at: base)
@@ -988,7 +988,7 @@ struct TaskScheduleCleanupReminderStoreTests {
 
     @Test("Observation never rewrites an existing monitoring row and enables nothing")
     func observationRespectsExistingRowsAndLifecycle() async throws {
-        let (database, schedules, reminders) = try makeStores()
+        let (database, schedules, reminders) = try await makeStores()
         let base = Date()
         // An explicit handoff already monitors this live plan.
         let record = try await makeSchedule(schedules, title: "Digest", cadence: .daily)
