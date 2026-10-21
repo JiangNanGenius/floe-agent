@@ -2805,10 +2805,15 @@ struct NotesExportTool: AgentTool {
         let sheetIndex: Int?
         let cellRange: String?
         let workbook: Bool?
+        let sheets: [String]?
+        let usePrintArea: Bool?
         let paper: String?
         let orientation: String?
         let fit: String?
         let margins: String?
+        let scalePercent: Int?
+        let fitPagesWide: Int?
+        let fitPagesTall: Int?
     }
     struct ExportResult: Encodable {
         var documentID: UUID; var revision: Int; var sourceState: String
@@ -2821,11 +2826,11 @@ struct NotesExportTool: AgentTool {
     static let name = "notes.export"
     static let toolDescription = """
     Export one explicitly granted Notes document into the current task workspace and return a real run-owned file receipt. Read notes.read section=exportCapabilities first: it reports the formats and options this document actually supports. \
-    format=pdf renders a notebook through the editor's page renderer (ordered pageIDs, or a 1-based pages selection; omit both for all pages) and a saved Office .docx/.xlsx/.pptx through the shared Office PDF engine. For .xlsx, pass an exact sheet or sheetIndex (never implied), an optional canonical cellRange such as A1:R37, workbook=true for every visible sheet, optional paper/orientation/fit/margins, and pages for the final PDF pages. Word/PowerPoint accept pages only. Legacy .doc/.xls/.ppt/.odt/.ods/.odp have no saved PDF export; use original or floenote. \
+    format=pdf renders a notebook through the editor's page renderer (ordered pageIDs, or a 1-based pages selection; omit both for all pages) and a saved Office .docx/.xlsx/.pptx through the shared Office PDF engine. For .xlsx, pass an exact sheet or sheetIndex (never implied), an optional canonical cellRange such as A1:R37, workbook=true for every visible sheet, sheets=[tab names] for an explicit multi-sheet selection (each with its full content, printed in tab order), usePrintArea=true with one sheet to print that sheet's own saved print area (full content when it has none), optional paper/orientation/margins, exactly one scaling control — fit, scalePercent (10-400) or the paired fitPagesWide/fitPagesTall page budget — and pages for the final PDF pages. Word/PowerPoint accept pages only. Legacy .doc/.xls/.ppt/.odt/.ods/.odp have no saved PDF export; use original or floenote. \
     format=markdown exports a mind map outline; format=original copies the exact Office/engineering source; format=floenote exports any kind as the portable archive. \
     An open Office editor with unsaved content is committed first through its own save chain; an active pen, busy or unproven dirty state refuses truthfully. A different existing destination is never overwritten (identical bytes are an idempotent success). The Notes original is never modified. Temporary chats cannot export durable files.
     """
-    static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string"},"format":{"type":"string","enum":["pdf","floenote","markdown","original"]},"pageIDs":{"type":"array","maxItems":500,"items":{"type":"string"},"description":"Notebook PDF only: ordered exact page IDs."},"pages":{"type":"string","maxLength":1024,"description":"PDF only: strict 1-based final page selection like 2-4,7. Notebook: selects notebook pages. Office: selects final PDF pages."},"expectedRevision":{"type":"integer","minimum":1},"targetPath":{"type":"string","maxLength":512,"description":"New workspace-relative destination; extension must match the format."},"sheet":{"type":"string","maxLength":128,"description":"Excel PDF only: exact worksheet tab name."},"sheetIndex":{"type":"integer","minimum":0,"maximum":255,"description":"Excel PDF only: 0-based tab-order index from exportCapabilities. Never falls back to the first sheet."},"cellRange":{"type":"string","minLength":1,"maxLength":24,"description":"Excel PDF only: canonical A1 range; requires sheet or sheetIndex."},"workbook":{"type":"boolean","description":"Excel PDF only: export every visible sheet with full content."},"paper":{"type":"string","enum":["a4","a3","letter","legal"]},"orientation":{"type":"string","enum":["portrait","landscape"]},"fit":{"type":"string","enum":["actualSize","fitToWidth","fitToOnePage"]},"margins":{"type":"string","enum":["document","normal","narrow","wide"]}},"required":["documentID","format"],"additionalProperties":false}"#
+    static let parametersJSON = #"{"type":"object","properties":{"documentID":{"type":"string"},"format":{"type":"string","enum":["pdf","floenote","markdown","original"]},"pageIDs":{"type":"array","maxItems":500,"items":{"type":"string"},"description":"Notebook PDF only: ordered exact page IDs."},"pages":{"type":"string","maxLength":1024,"description":"PDF only: strict 1-based final page selection like 2-4,7. Notebook: selects notebook pages. Office: selects final PDF pages."},"expectedRevision":{"type":"integer","minimum":1},"targetPath":{"type":"string","maxLength":512,"description":"New workspace-relative destination; extension must match the format."},"sheet":{"type":"string","maxLength":128,"description":"Excel PDF only: exact worksheet tab name."},"sheetIndex":{"type":"integer","minimum":0,"maximum":255,"description":"Excel PDF only: 0-based tab-order index from exportCapabilities. Never falls back to the first sheet."},"cellRange":{"type":"string","minLength":1,"maxLength":24,"description":"Excel PDF only: canonical A1 range; requires sheet or sheetIndex."},"workbook":{"type":"boolean","description":"Excel PDF only: export every visible sheet with full content."},"sheets":{"type":"array","maxItems":255,"minItems":1,"items":{"type":"string","maxLength":128},"description":"Excel PDF only: explicit worksheet tab names printed with full content (ink included), emitted in workbook tab order; exclusive with sheet/sheetIndex/workbook/cellRange/usePrintArea."},"usePrintArea":{"type":"boolean","description":"Excel PDF only: print the one named/indexed sheet's own saved print area (its full content when it declares none); never combines with cellRange."},"paper":{"type":"string","enum":["a4","a3","letter","legal"]},"orientation":{"type":"string","enum":["portrait","landscape"]},"fit":{"type":"string","enum":["actualSize","fitToWidth","fitToOnePage"]},"margins":{"type":"string","enum":["document","normal","narrow","wide"]},"scalePercent":{"type":"integer","minimum":10,"maximum":400,"description":"Excel PDF only: exact pageSetup scale percent; exclusive with fit and fitPagesWide/fitPagesTall."},"fitPagesWide":{"type":"integer","minimum":1,"maximum":99,"description":"Excel PDF only: fit-to-pages width; must pair with fitPagesTall; exclusive with fit and scalePercent."},"fitPagesTall":{"type":"integer","minimum":1,"maximum":99,"description":"Excel PDF only: fit-to-pages height; must pair with fitPagesWide."}},"required":["documentID","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     /// Archives up to this size are fully re-imported to verify every digest;
@@ -2841,10 +2846,22 @@ struct NotesExportTool: AgentTool {
     func validate(_ args: Arguments) throws {
         let format = args.format.lowercased()
         let isPDF = format == "pdf"
+        let hasSheetsSelection = args.sheets != nil
         let hasSheetScope = args.sheet != nil || args.sheetIndex != nil
             || args.cellRange != nil || args.workbook == true
+            || hasSheetsSelection || args.usePrintArea == true
         let hasPageSetup = args.paper != nil || args.orientation != nil
             || args.fit != nil || args.margins != nil
+            || args.scalePercent != nil || args.fitPagesWide != nil || args.fitPagesTall != nil
+        let scalingCount = (args.fit != nil ? 1 : 0)
+            + (args.scalePercent != nil ? 1 : 0)
+            + (args.fitPagesWide != nil || args.fitPagesTall != nil ? 1 : 0)
+        let fitPagesPaired = (args.fitPagesWide == nil) == (args.fitPagesTall == nil)
+        let sheetsBounded = args.sheets.map { selection in
+            selection.count <= OfficePDFPrintPlan.maximumSelectedSheets
+                && !selection.isEmpty
+                && selection.allSatisfy { $0.utf8.count <= 128 }
+        } ?? true
         guard DocumentExportFormat(rawValue: format) != nil,
               (args.expectedRevision ?? 1) > 0,
               (args.pageIDs?.count ?? 0) <= NoteExportSelection.maximumPages,
@@ -2862,6 +2879,23 @@ struct NotesExportTool: AgentTool {
               args.orientation == nil || Self.orientationValues.contains(args.orientation!.lowercased()),
               args.fit == nil || Self.fitValues.contains(args.fit!),
               args.margins == nil || Self.marginValues.contains(args.margins!.lowercased()),
+              scalingCount <= 1,
+              fitPagesPaired,
+              args.scalePercent == nil
+                  || (OfficePDFScale.minimumPercent...OfficePDFScale.maximumPercent).contains(args.scalePercent!),
+              args.fitPagesWide == nil
+                  || (OfficePDFFitPages.minimum...OfficePDFFitPages.maximum).contains(args.fitPagesWide!),
+              args.fitPagesTall == nil
+                  || (OfficePDFFitPages.minimum...OfficePDFFitPages.maximum).contains(args.fitPagesTall!),
+              sheetsBounded,
+              // The multi-sheet selection owns the scope entirely.
+              !hasSheetsSelection
+                  || (args.sheet == nil && args.sheetIndex == nil && args.workbook != true
+                      && args.cellRange == nil && args.usePrintArea != true),
+              // usePrintArea needs exactly one tab identity and no range.
+              args.usePrintArea != true
+                  || ((args.sheet != nil || args.sheetIndex != nil)
+                      && args.cellRange == nil && args.workbook != true),
               isPDF || (!hasSheetScope && !hasPageSetup && args.pages == nil && args.pageIDs == nil),
               args.workbook != true || (args.sheet == nil && args.sheetIndex == nil && args.cellRange == nil),
               args.cellRange == nil || args.sheet != nil || args.sheetIndex != nil else {
@@ -2888,10 +2922,15 @@ struct NotesExportTool: AgentTool {
                 sheetIndex: args.sheetIndex,
                 cellRange: args.cellRange,
                 workbook: args.workbook,
+                sheets: args.sheets,
+                usePrintArea: args.usePrintArea,
                 paper: args.paper?.lowercased(),
                 orientation: args.orientation?.lowercased(),
                 fit: args.fit,
-                margins: args.margins?.lowercased()),
+                margins: args.margins?.lowercased(),
+                scalePercent: args.scalePercent,
+                fitPagesWide: args.fitPagesWide,
+                fitPagesTall: args.fitPagesTall),
             expectedRevision: args.expectedRevision,
             targetPath: args.targetPath)
         let result = try await DocumentExportService.export(request, store: store, context: context)

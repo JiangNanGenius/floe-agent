@@ -98,11 +98,15 @@ struct OfficePDFExportServiceTests {
         let xlsx = try #require(OfficePDFExportService.capability(forExtension: "XLSX"))
         #expect(xlsx.savedIsolatedExport && xlsx.liveSessionFinalize)
         #expect(xlsx.sheetScope && xlsx.customPageSetup && xlsx.finalPageRange)
+        #expect(xlsx.selectedSheetsScope && xlsx.printAreaScope)
+        #expect(xlsx.exactScale && xlsx.fitPageCount)
 
         for ext in ["docx", "pptx"] {
             let capability = try #require(OfficePDFExportService.capability(forExtension: ext))
             #expect(capability.savedIsolatedExport && capability.liveSessionFinalize)
             #expect(!capability.sheetScope && !capability.customPageSetup)
+            #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
+            #expect(!capability.exactScale && !capability.fitPageCount)
             #expect(capability.finalPageRange)
         }
 
@@ -111,6 +115,8 @@ struct OfficePDFExportServiceTests {
             #expect(!capability.savedIsolatedExport, "\(ext) must not claim saved isolation")
             #expect(capability.liveSessionFinalize, "\(ext) must remain exportable from a live session")
             #expect(!capability.sheetScope && !capability.customPageSetup)
+            #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
+            #expect(!capability.exactScale && !capability.fitPageCount)
             #expect(capability.finalPageRange)
         }
         #expect(OfficePDFExportService.capability(forExtension: "txt") == nil)
@@ -131,6 +137,156 @@ struct OfficePDFExportServiceTests {
             try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(paper: .a4))
                 .validate(forExtension: "odt")
         }
+    }
+
+    // MARK: - Build 285 preview round: choices, scopes and the preview fence
+
+    @Test("every supported Excel choice maps into the validated plan")
+    func choicesMapEverySupportedOption() throws {
+        let tabOrder = ["First", "Second", "Third"]
+
+        var selected = OfficePDFExportChoices()
+        selected.scope = .selectedSheets
+        // Deliberately out-of-order: the plan must carry tab order.
+        selected.selectedSheetNames = ["Second", "First"]
+        let selectedPlan = try selected.plan(activeSheetName: nil, sheetTabOrder: tabOrder)
+        #expect(selectedPlan.scope == .sheets(names: ["First", "Second"]))
+        try selectedPlan.validate(forExtension: "xlsx")
+
+        var printArea = OfficePDFExportChoices()
+        printArea.scope = .sheet
+        printArea.sheetName = "Second"
+        printArea.sheetContent = .printArea
+        let printAreaPlan = try printArea.plan(activeSheetName: "First", sheetTabOrder: tabOrder)
+        #expect(printAreaPlan.scope == .sheetWithPrintArea(name: "Second"))
+        try printAreaPlan.validate(forExtension: "xlsx")
+
+        var range = printArea
+        range.sheetContent = .range
+        range.cellRange = "A1:R37"
+        #expect(try range.plan(activeSheetName: nil, sheetTabOrder: tabOrder).scope
+                == .sheet(name: "Second", cellRange: "A1:R37"))
+
+        var exact = OfficePDFExportChoices()
+        exact.fit = .exactScale
+        exact.scalePercentText = "85"
+        let exactPlan = try exact.plan(activeSheetName: nil)
+        #expect(exactPlan.pageSetup.scalePercent == 85)
+        #expect(exactPlan.pageSetup.fit == nil)
+        #expect(exactPlan.pageSetup.hasOverrides)
+        try exactPlan.validate(forExtension: "xlsx")
+
+        var pages = OfficePDFExportChoices()
+        pages.fit = .fitPages
+        pages.fitPagesWideText = "2"
+        pages.fitPagesTallText = "3"
+        let pagesPlan = try pages.plan(activeSheetName: nil)
+        #expect(pagesPlan.pageSetup.fitPages == OfficePDFFitPages(width: 2, height: 3))
+        try pagesPlan.validate(forExtension: "xlsx")
+
+        // The full-content sheet scope stays the ink-safe default: no range
+        // crop is invented when the user only names the sheet.
+        var full = OfficePDFExportChoices()
+        full.scope = .sheet
+        full.sheetName = "Second"
+        #expect(try full.plan(activeSheetName: nil, sheetTabOrder: tabOrder).scope
+                == .sheet(name: "Second", cellRange: nil))
+    }
+
+    @Test("invalid new-choice input is refused instead of producing a best-effort plan")
+    func invalidChoiceInputsThrow() throws {
+        var selected = OfficePDFExportChoices()
+        selected.scope = .selectedSheets
+        #expect(throws: (any Error).self) {
+            _ = try selected.plan(activeSheetName: nil, sheetTabOrder: ["A"])
+        }
+        selected.selectedSheetNames = ["Ghost"]
+        #expect(throws: (any Error).self) {
+            _ = try selected.plan(activeSheetName: nil, sheetTabOrder: ["A", "B"])
+        }
+
+        var printArea = OfficePDFExportChoices()
+        printArea.scope = .sheet
+        printArea.sheetName = "A"
+        printArea.sheetContent = .range
+        #expect(throws: (any Error).self) {
+            _ = try printArea.plan(activeSheetName: nil, sheetTabOrder: ["A"])
+        }
+
+        var exact = OfficePDFExportChoices()
+        exact.fit = .exactScale
+        for text in ["", "5", "401", "abc"] {
+            exact.scalePercentText = text
+            #expect(throws: (any Error).self) {
+                _ = try exact.plan(activeSheetName: nil)
+            }
+        }
+
+        var pages = OfficePDFExportChoices()
+        pages.fit = .fitPages
+        pages.fitPagesWideText = "1"
+        pages.fitPagesTallText = ""
+        #expect(throws: (any Error).self) {
+            _ = try pages.plan(activeSheetName: nil)
+        }
+    }
+
+    @Test("live-session finalize refuses the new print-copy scopes before any file read")
+    func finalizeRefusesNewScopes() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try writeSource(root, name: "book.xlsx")
+        let sha = try FloeDigest.sha256Hex(ofFileAt: source)
+        let owned = root.appendingPathComponent("owned", isDirectory: true)
+
+        for plan in [
+            OfficePDFPrintPlan(scope: .sheets(names: ["A", "B"])),
+            OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "A")),
+            OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(scalePercent: 85)),
+        ] {
+            await #expect(throws: OfficePDFExportError.self) {
+                _ = try await OfficePDFExportService.finalizeExistingPDF(
+                    OfficePDFFinalizeRequest(
+                        exportedPDFURL: root.appendingPathComponent("missing.pdf"),
+                        sourceURL: source, sourceSHA256: sha,
+                        formatExtension: "xlsx", plan: plan,
+                        ownedDirectory: owned))
+            }
+        }
+        // No child directory may exist: refusal happens before file work.
+        #expect(childDirectories(in: owned).isEmpty)
+    }
+
+    @Test("the preview fence accepts only the current generation and goes stale on any choice change")
+    func previewFenceSemantics() throws {
+        var state = OfficePDFExportPreviewState()
+        #expect(state.isReady == false)
+        _ = state.beginGeneration()
+        let token = state.beginGeneration()
+        let artifact = OfficePDFExportPreviewState.Artifact(
+            url: URL(fileURLWithPath: "/tmp/floe-preview-test.pdf"),
+            pageCount: 2, byteCount: 1_234,
+            pdfSHA256: String(repeating: "0", count: 64))
+        // A late completion from the fenced older generation never publishes.
+        #expect(state.accept(token: token - 1, artifact: artifact,
+                              choices: OfficePDFExportChoices()) == false)
+        #expect(state.isReady == false)
+        let accepted = OfficePDFExportChoices()
+        #expect(state.accept(token: token, artifact: artifact, choices: accepted) == true)
+        #expect(state.isReady)
+        #expect(state.isStale(currentChoices: accepted) == false)
+        var changed = accepted
+        changed.pages = "1"
+        #expect(state.isStale(currentChoices: changed) == true)
+        changed = accepted
+        changed.fit = .exactScale
+        #expect(state.isStale(currentChoices: changed) == true)
+        changed = accepted
+        changed.selectedSheetNames = ["A"]
+        #expect(state.isStale(currentChoices: changed) == true)
+        state.invalidate()
+        #expect(state.isReady == false)
+        #expect(state.isStale(currentChoices: accepted) == false)
     }
 
     // MARK: - Preflight

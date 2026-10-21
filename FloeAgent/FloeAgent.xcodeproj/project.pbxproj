@@ -222,6 +222,7 @@
 		46D347EB73D041CC33B6B4D4 /* PiPAudioBackendAppTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F5362F9CDAEE9FF1E699C22 /* PiPAudioBackendAppTests.swift */; };
 		46D5A4A93F0BBEB565A3B1D8 /* CanvasNativeCADEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9AD3ADFBF9496EA4063EBE3 /* CanvasNativeCADEditor.swift */; };
 		4707D8E92893B0ED9C62F8F9 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 33E1861DD057C3FCDE832CE6 /* WhisperKit */; };
+		471EFCA739FAE48703A330CC /* OfficePrintCopyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCB2AF610435402F4FD408B /* OfficePrintCopyTests.swift */; };
 		472534210F52FCB8425D6BF8 /* IDENativeTextPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA8760896151B342A625F67 /* IDENativeTextPane.swift */; };
 		473BC8D7DDBD28B21CE8C911 /* EnvironmentPersistenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C8613918B4A049C34A8640 /* EnvironmentPersistenceTests.swift */; };
 		4761AB0346D6EB6AB2BFAC8A /* NativeCADDocumentCreationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2614369AD5D159DC6F35F4C4 /* NativeCADDocumentCreationTests.swift */; };
@@ -970,6 +971,7 @@
 		2A7AA9D321701A98A3C0B09E /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		2B67791BBA9F8559F8ADFC3D /* ProviderProfileTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderProfileTests.swift; sourceTree = "<group>"; };
 		2B7ED13E8B700DF4CDE979AD /* ToolDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolDiscoveryTests.swift; sourceTree = "<group>"; };
+		2BCB2AF610435402F4FD408B /* OfficePrintCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficePrintCopyTests.swift; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
 		2CA3163CD02BDC8D4255197F /* IDEWorkspaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEWorkspaceTabs.swift; sourceTree = "<group>"; };
 		2CB02CACBA3CCB3E8E8A8311 /* OfficeWorkbookCellCreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkbookCellCreationTests.swift; sourceTree = "<group>"; };
@@ -2220,6 +2222,7 @@
 				AAE80E6FED1C07627719F097 /* OfficeEngineCommandTests.swift */,
 				6F5C49173898846F800FC412 /* OfficeExplicitTargetTests.swift */,
 				3C1A6D917BA65A388363433F /* OfficeFormulaVerificationTests.swift */,
+				2BCB2AF610435402F4FD408B /* OfficePrintCopyTests.swift */,
 			);
 			path = FloeDocumentsTests;
 			sourceTree = "<group>";
@@ -4089,6 +4092,7 @@
 				D0CC6ED08DC66F48F8D677B1 /* OfficePDFExportAcceptanceTests.swift in Sources */,
 				4F97FC66D77C1DF8AA8B88C1 /* OfficePDFExportServiceTests.swift in Sources */,
 				5A30E1D4F62F7C8D84B39A5D /* OfficePresentationOpeningTests.swift in Sources */,
+				471EFCA739FAE48703A330CC /* OfficePrintCopyTests.swift in Sources */,
 				181C028D7604E273FBB5B794 /* OfficeSelectedObjectSaveTests.swift in Sources */,
 				BB330D6C6DA150BECE8F5B30 /* OfficeSymbolBulletTests.swift in Sources */,
 				2FC75E225513C8820C96CEB0 /* OfficeWorkbookCellCreationTests.swift in Sources */,

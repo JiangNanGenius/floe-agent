@@ -829,6 +829,15 @@ final class OfficeFileSession: ObservableObject {
             }
             let exportedName = source.displayName.isEmpty ? "Document.pdf" : source.displayName + ".pdf"
             let delivery = source.lease.directory.appendingPathComponent(exportedName)
+            // Preview regeneration replaces the leased slot: the previous
+            // preview file is fenced stale output (the options view never
+            // presents share/print while a generation runs), so removing it
+            // before copying the newly verified bytes is required cleanup,
+            // not an overwrite of foreign content. The source document is
+            // never a destination on any path.
+            if FileManager.default.fileExists(atPath: delivery.path) {
+                try FileManager.default.removeItem(at: delivery)
+            }
             // Unique leased directory, with the same no-overwrite rule as the
             // backend. Re-measure after giving the file its user-facing name.
             let producedURL = result.pdfURL, producedSHA = result.pdfSHA256
@@ -843,7 +852,18 @@ final class OfficeFileSession: ObservableObject {
             guard self.controller === controller, await source.isCurrent() else {
                 throw OfficePDFExportScreenError.sourceChanged
             }
-            return OfficePDFPreparedDelivery(url: delivery, lease: source.lease)
+            // The service child only carried the produced PDF; the leased
+            // delivery now holds the verified bytes. Remove the child so a
+            // regenerate cycle never accumulates duplicate copies, with the
+            // same quarantine retention as the error path.
+            let producedDirectory = producedURL.deletingLastPathComponent()
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: producedDirectory)
+            }
+            return OfficePDFPreparedDelivery(
+                url: delivery, lease: source.lease,
+                pageCount: result.pageCount, byteCount: result.byteCount,
+                pdfSHA256: producedSHA)
         } catch {
             if await OfficeAutomaticExecutionGate.shared.isQuarantined {
                 // The service retained a native session that did not close.

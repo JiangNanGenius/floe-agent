@@ -63,11 +63,26 @@ struct DocumentExportScope: Sendable, Equatable {
     var cellRange: String? = nil
     /// Workbook only: print every visible sheet with full content.
     var workbook: Bool? = nil
+    /// Workbook only: print exactly the chosen worksheet tabs, each with its
+    /// full content, in workbook tab order. Mutually exclusive with
+    /// `sheet`/`sheetIndex`/`workbook`/`cellRange`/`usePrintArea`.
+    var sheets: [String]? = nil
+    /// Workbook only: print the one named sheet's OWN saved print area
+    /// (full content when it declares none). Requires `sheet` or
+    /// `sheetIndex`, never together with `cellRange`.
+    var usePrintArea: Bool? = nil
     /// Workbook page setup overrides. `nil` preserves the document's own value.
     var paper: String? = nil
     var orientation: String? = nil
     var fit: String? = nil
     var margins: String? = nil
+    /// Workbook only: exact `pageSetup@scale` percent (10…400). Mutually
+    /// exclusive with `fit` and `fitPagesWide`/`fitPagesTall`.
+    var scalePercent: Int? = nil
+    /// Workbook only: fit-to-pages budget; both must be set together and are
+    /// mutually exclusive with `fit` and `scalePercent`.
+    var fitPagesWide: Int? = nil
+    var fitPagesTall: Int? = nil
 }
 
 struct DocumentExportRequest: Sendable, Equatable {
@@ -120,8 +135,19 @@ struct DocumentExportCapabilities: Encodable, Sendable, Equatable {
         var finalPageRangeSupported: Bool
         var sheetScopeSupported: Bool
         var workbookScopeSupported: Bool
+        /// Workbook only: the `.sheets(names:)` explicit multi-tab selection.
+        var selectedSheetsScopeSupported: Bool = false
+        /// Workbook only: `.sheetWithPrintArea(name)` — print the tab's own
+        /// saved `_xlnm.Print_Area`.
+        var printAreaScopeSupported: Bool = false
         var cellRangeSupported: Bool
         var customPageSetupSupported: Bool
+        /// Workbook only: exact `pageSetup@scale` percent.
+        var exactScaleSupported: Bool = false
+        var scalePercentRange: [Int]? = nil
+        /// Workbook only: exact `fitToWidth`×`fitToHeight` page budget.
+        var fitPageCountSupported: Bool = false
+        var fitPagesMaximum: Int? = nil
         var supportedPaper: [String]
         var supportedOrientation: [String]
         var supportedFit: [String]
@@ -265,8 +291,16 @@ enum DocumentExportService {
                     finalPageRangeSupported: canExportPDF && capability.finalPageRange,
                     sheetScopeSupported: capability.sheetScope,
                     workbookScopeSupported: capability.sheetScope,
+                    selectedSheetsScopeSupported: canExportPDF && capability.selectedSheetsScope,
+                    printAreaScopeSupported: canExportPDF && capability.printAreaScope,
                     cellRangeSupported: capability.sheetScope,
                     customPageSetupSupported: capability.customPageSetup,
+                    exactScaleSupported: canExportPDF && capability.exactScale,
+                    scalePercentRange: canExportPDF && capability.exactScale
+                        ? [OfficePDFScale.minimumPercent, OfficePDFScale.maximumPercent] : nil,
+                    fitPageCountSupported: canExportPDF && capability.fitPageCount,
+                    fitPagesMaximum: canExportPDF && capability.fitPageCount
+                        ? OfficePDFFitPages.maximum : nil,
                     supportedPaper: capability.customPageSetup ? OfficePDFPaper.allCases.map(\.rawValue) : [],
                     supportedOrientation: capability.customPageSetup ? OfficePDFOrientation.allCases.map(\.rawValue) : [],
                     supportedFit: capability.customPageSetup ? OfficePDFFit.allCases.map(\.rawValue) : [],
@@ -663,8 +697,51 @@ enum DocumentExportService {
             }
             plan.pageSetup.margins = value
         }
+        if let scalePercent = request.scope.scalePercent {
+            plan.pageSetup.scalePercent = scalePercent
+        }
+        if (request.scope.fitPagesWide == nil) != (request.scope.fitPagesTall == nil) {
+            throw NoteError.invalidOperation(OfficeInkText.t(
+                "fitPagesWide 与 fitPagesTall 必须同时提供。",
+                "fitPagesWide and fitPagesTall must be provided together."))
+        }
+        if let wide = request.scope.fitPagesWide, let tall = request.scope.fitPagesTall {
+            plan.pageSetup.fitPages = OfficePDFFitPages(width: wide, height: tall)
+        }
+        // Exactly one scaling control; the pure plan validator also refuses
+        // this, but the assistant gets the dedicated sentence before any
+        // engine work starts.
+        guard plan.pageSetup.scalingControlCount <= 1 else {
+            throw NoteError.invalidOperation(OfficeInkText.t(
+                "fit、scalePercent 与 fitPages 只能选择一种。",
+                "Choose only one of fit, scalePercent or fitPages."))
+        }
         if fileExtension == "xlsx" {
-            if let index = request.scope.sheetIndex {
+            let selectedSheets = request.scope.sheets?.filter {
+                !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            if let selectedSheets, !selectedSheets.isEmpty {
+                guard request.scope.sheet == nil, request.scope.sheetIndex == nil,
+                      request.scope.workbook != true, request.scope.cellRange == nil,
+                      request.scope.usePrintArea != true else {
+                    throw NoteError.invalidOperation(OfficeInkText.t(
+                        "sheets 选择不能与 sheet/sheetIndex/workbook/cellRange/usePrintArea 同时使用。",
+                        "sheets cannot be combined with sheet/sheetIndex/workbook/cellRange/usePrintArea."))
+                }
+                plan.scope = .sheets(names: selectedSheets)
+            } else if request.scope.usePrintArea == true {
+                // One explicit tab whose OWN saved print area is printed.
+                // The tab identity resolution rules are the existing ones:
+                // never a silent first-sheet fallback.
+                guard request.scope.cellRange == nil, request.scope.sheets == nil else {
+                    throw NoteError.invalidOperation(OfficeInkText.t(
+                        "usePrintArea 只接受工作表名称或序号，不能搭配单元格区域或 sheets 选择。",
+                        "usePrintArea accepts only a sheet name or index, never a cell range or sheets."))
+                }
+                let resolved = try Self.resolveWorkbookSheetName(
+                    scope: request.scope, staged: staged, stagedSHA: stagedSHA)
+                plan.scope = .sheetWithPrintArea(name: resolved)
+            } else if let index = request.scope.sheetIndex {
                 guard request.scope.sheet == nil else {
                     throw NoteError.invalidOperation(OfficeInkText.t(
                         "请只指定工作表名称或序号中的一个。",
@@ -727,7 +804,10 @@ enum DocumentExportService {
                 verification += " finalPages=\(pages.map(String.init).joined(separator: ","))"
             }
             let warnings = serviceResult.notes
-                .filter { $0 == .otherSheetsSuppressed || $0 == .printAreasCleared }
+                .filter {
+                    $0 == .otherSheetsSuppressed || $0 == .printAreasCleared
+                        || $0 == .documentPrintAreaPreserved
+                }
                 .map(\.rawValue)
             await Self.removeOwnedDirectoryUnlessQuarantined(owned)
             return RenderedExport(stagedURL: staging, displayName: staging.lastPathComponent,
@@ -746,10 +826,37 @@ enum DocumentExportService {
         }
     }
 
+    /// Resolves one explicit sheet identity (name xor index — never a silent
+    /// first-sheet fallback) against the staged workbook's real tab order.
+    private static func resolveWorkbookSheetName(scope: DocumentExportScope,
+                                                 staged: URL,
+                                                 stagedSHA: String) async throws -> String {
+        guard (scope.sheet == nil) != (scope.sheetIndex == nil) else {
+            throw NoteError.invalidOperation(OfficeInkText.t(
+                "usePrintArea 需要且只需要一个工作表名称或序号。",
+                "usePrintArea requires exactly one sheet name or index."))
+        }
+        if let index = scope.sheetIndex {
+            let expected = stagedSHA
+            let sheets = try await Task.detached(priority: .userInitiated) {
+                try OfficeRegionExport.workbookSheets(sourceURL: staged, expectedSHA256: expected)
+            }.value
+            guard sheets.indices.contains(index) else {
+                throw NoteError.invalidOperation(OfficeInkText.t(
+                    "工作表序号不存在。请先读取 exportCapabilities 获取真实工作表列表。",
+                    "That worksheet index does not exist. Read exportCapabilities first for the real sheet list."))
+            }
+            return sheets[index].name
+        }
+        return scope.sheet!
+    }
+
     private static func scopeDescription(_ scope: OfficePDFScope) -> String {
         switch scope {
         case .documentSettings: return "documentSettings"
         case .sheet(let name, let range): return "sheet(\(name)\(range.map { ",\($0)" } ?? ""))"
+        case .sheetWithPrintArea(let name): return "sheetPrintArea(\(name))"
+        case .sheets(let names): return "sheets(\(names.joined(separator: ",")))"
         case .allVisibleSheets: return "allVisibleSheets"
         }
     }
@@ -804,10 +911,13 @@ enum DocumentExportService {
     private static func validate(request: DocumentExportRequest, document: NoteDocument) throws {
         let scope = request.scope
         let isPDF = request.format == .pdf
+        let hasSheetsSelection = scope.sheets?.isEmpty == false
         let hasSheetScope = scope.sheet != nil || scope.sheetIndex != nil
             || scope.cellRange != nil || scope.workbook == true
+            || hasSheetsSelection || scope.usePrintArea == true
         let hasPageSetup = scope.paper != nil || scope.orientation != nil
             || scope.fit != nil || scope.margins != nil
+            || scope.scalePercent != nil || scope.fitPagesWide != nil || scope.fitPagesTall != nil
         guard scope.pageIDs == nil || (isPDF && scope.pages == nil) else {
             throw invalidScope()
         }
@@ -825,6 +935,31 @@ enum DocumentExportService {
             throw invalidScope()
         }
         if scope.cellRange != nil, !hasSheetScope { throw invalidScope() }
+        if let sheets = scope.sheets {
+            guard !sheets.isEmpty,
+                  sheets.count <= OfficePDFPrintPlan.maximumSelectedSheets,
+                  sheets.allSatisfy({ !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && $0.utf8.count <= 128 }) else { throw invalidScope() }
+            guard scope.sheet == nil, scope.sheetIndex == nil, scope.workbook != true,
+                  scope.cellRange == nil, scope.usePrintArea != true else { throw invalidScope() }
+        }
+        if scope.usePrintArea == true {
+            guard scope.cellRange == nil, scope.workbook != true,
+                  scope.sheet != nil || scope.sheetIndex != nil else { throw invalidScope() }
+        }
+        if let scalePercent = scope.scalePercent,
+           !(OfficePDFScale.minimumPercent...OfficePDFScale.maximumPercent).contains(scalePercent) {
+            throw invalidScope()
+        }
+        if (scope.fitPagesWide == nil) != (scope.fitPagesTall == nil) { throw invalidScope() }
+        if let wide = scope.fitPagesWide,
+           !(OfficePDFFitPages.minimum...OfficePDFFitPages.maximum).contains(wide) { throw invalidScope() }
+        if let tall = scope.fitPagesTall,
+           !(OfficePDFFitPages.minimum...OfficePDFFitPages.maximum).contains(tall) { throw invalidScope() }
+        guard (scope.fit != nil ? 1 : 0) + (scope.scalePercent != nil ? 1 : 0)
+            + ((scope.fitPagesWide != nil || scope.fitPagesTall != nil) ? 1 : 0) <= 1 else {
+            throw invalidScope()
+        }
 
         switch request.format {
         case .pdf:
@@ -1056,7 +1191,7 @@ enum DocumentExportService {
                 parts.append("For a notebook PDF, pass ordered pageIDs (or pages with 1-based numbers) to export a subset; omit both for every page.")
             }
             if pdf.sheetScopeSupported {
-                parts.append("For a workbook PDF, pass an exact sheet or sheetIndex with an optional canonical cellRange, workbook=true for every visible sheet, and optional paper/orientation/fit/margins plus pages for the final PDF pages. A cellRange never implies the first sheet.")
+                parts.append("For a workbook PDF, pass an exact sheet or sheetIndex with an optional canonical cellRange, workbook=true for every visible sheet, sheets=[tab names] for an explicit multi-sheet full-content selection, usePrintArea=true with one sheet to print that sheet's own saved print area (full content when it declares none), optional paper/orientation/margins, exactly one scaling control (fit, scalePercent 10-400, or the paired fitPagesWide/fitPagesTall 1-99 page budget), and pages for the final PDF pages. A cellRange never implies the first sheet.")
             }
             if pdf.finalPageRangeSupported, !pdf.sheetScopeSupported {
                 parts.append("Pass pages (1-based, e.g. 2-4,7) to select final PDF pages.")

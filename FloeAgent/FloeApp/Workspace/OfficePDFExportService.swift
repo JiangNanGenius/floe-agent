@@ -116,6 +116,7 @@ enum OfficePDFExportNote: String, Codable, Sendable, Equatable {
     case documentSettingsPreserved
     case otherSheetsSuppressed
     case printAreasCleared
+    case documentPrintAreaPreserved
     case printTitlesPreserved
     case finalPageSelectionApplied
     case legacyFormatFinalized
@@ -160,7 +161,11 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
     var savedIsolatedExport: Bool
     var liveSessionFinalize: Bool
     var sheetScope: Bool
+    var selectedSheetsScope: Bool
+    var printAreaScope: Bool
     var customPageSetup: Bool
+    var exactScale: Bool
+    var fitPageCount: Bool
     var finalPageRange: Bool
 
     static func resolve(forExtension ext: String) -> OfficePDFExportCapability? {
@@ -172,7 +177,11 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
             savedIsolatedExport: support.supportsSavedIsolatedExport,
             liveSessionFinalize: true,
             sheetScope: support.supportsSheetScope,
+            selectedSheetsScope: support.supportsSelectedSheetsScope,
+            printAreaScope: support.supportsPrintAreaScope,
             customPageSetup: support.supportsCustomPageSetup,
+            exactScale: support.supportsExactScale,
+            fitPageCount: support.supportsFitPageCount,
             finalPageRange: support.supportsFinalPageRange)
     }
 }
@@ -454,10 +463,17 @@ enum OfficePDFExportService {
             notes.append(.documentSettingsPreserved)
         }
         if let copyPlan {
-            if case .sheet = plan.scope, !copyPlan.suppressedSheetNames.isEmpty {
-                notes.append(.otherSheetsSuppressed)
+            switch plan.scope {
+            case .sheet, .sheetWithPrintArea, .sheets:
+                if !copyPlan.suppressedSheetNames.isEmpty {
+                    notes.append(.otherSheetsSuppressed)
+                }
+            case .documentSettings, .allVisibleSheets:
+                break
             }
-            if copyPlan.removedPrintAreas > 0 {
+            if copyPlan.preservedDocumentPrintArea {
+                notes.append(.documentPrintAreaPreserved)
+            } else if copyPlan.removedPrintAreas > 0 {
                 notes.append(.printAreasCleared)
             }
             if copyPlan.preservedPrintTitles > 0 {

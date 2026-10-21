@@ -909,6 +909,7 @@ targets:
       # ZIPFoundation/FloeDocuments already linked in this target.
       - path: Tests/FloeDocumentsTests/OfficeEngineCommandTests.swift
       - path: Tests/FloeDocumentsTests/OfficeFormulaVerificationTests.swift
+      - path: Tests/FloeDocumentsTests/OfficePrintCopyTests.swift
       - path: Tests/FloeDocumentsTests/OfficeExplicitTargetTests.swift
       - path: Tests/FloeDocumentsTests/OfficeEmbeddedWorkbookPreservationTests.swift
       # G2: the cover picker target-snapshot lifecycle (primary-reported

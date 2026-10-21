@@ -97,6 +97,70 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    func testRealWorkbookSelectedSheetsAndExactScaleProduceActualDifferentPDFs() async throws {
+        let (source, sha, root) = try input()
+        do {
+            let sheets = try OfficeRegionExport.workbookSheets(sourceURL: source, expectedSHA256: sha)
+            let visible = sheets.filter(\.isVisible)
+            XCTAssertFalse(visible.isEmpty)
+
+            // The explicit selection of exactly the visible tabs prints the
+            // same content set, but through its own verified copy: the bytes
+            // differ while the measured pagination stays honest.
+            let selected = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: .init(scope: .sheets(names: visible.map(\.name))),
+                ownedDirectory: root))
+            XCTAssertEqual(Set(selected.appliedPrintPlan?.printedSheetNames ?? []),
+                           Set(visible.map(\.name)))
+            XCTAssertGreaterThanOrEqual(selected.pageCount, 1)
+            XCTAssertTrue(selected.appliedPrintPlan?.drawingPartsPreserved ?? false,
+                          "the print copy must carry the ink/drawing members byte-for-byte")
+            XCTAssertFalse(selected.pdfSHA256.isEmpty)
+            attach(selected.pdfURL, "provided-selected-sheets.pdf")
+
+            // An exact scale below 100% must never ADD pages for the same
+            // content: 60% fits at least as much on a page as the source's
+            // own 100% settings (the two horizontal A4 slices measured in
+            // the baseline test).
+            let scaled = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: .init(scope: .sheets(names: visible.map(\.name)),
+                            pageSetup: .init(scalePercent: 60)),
+                ownedDirectory: root))
+            XCTAssertLessThanOrEqual(scaled.pageCount, max(selected.pageCount, 2))
+            XCTAssertGreaterThanOrEqual(scaled.pageCount, 1)
+            XCTAssertNotEqual(scaled.pdfSHA256, selected.pdfSHA256,
+                              "the scale member must change the actual PDF bytes")
+            XCTAssertEqual(scaled.appliedPrintPlan?.appliedPageSetup.scalePercent, 60)
+            attach(scaled.pdfURL, "provided-exact-scale-60.pdf")
+
+            // A 1×1 fit-pages budget is the explicit spelling of the proven
+            // one-page mode and must reproduce its page geometry truthfully.
+            let fitted = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: .init(scope: .sheets(names: visible.map(\.name)),
+                            pageSetup: .init(paper: .a4, orientation: .landscape,
+                                             fitPages: OfficePDFFitPages(width: 1, height: 1))),
+                ownedDirectory: root))
+            XCTAssertEqual(fitted.pageCount, 1)
+            XCTAssertEqual(fitted.pageSizes.first?.width ?? 0, 841.89, accuracy: 3)
+            XCTAssertEqual(fitted.pageSizes.first?.height ?? 0, 595.28, accuracy: 3)
+            attach(fitted.pdfURL, "provided-fit-pages-1x1.pdf")
+
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha,
+                           "the original workbook bytes are never touched")
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: root)
+            }
+            throw error
+        }
+    }
+
     func testNativeToolbarPrintOpensSharedOptionsAndSavedSource() async throws {
         let (source, sha, root) = try input()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
