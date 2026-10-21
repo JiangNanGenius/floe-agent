@@ -6,7 +6,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-Version note: Office autosave, region viewing, PDF/Print options, assistant exports, Get Run Files and Volcengine search described here target 1.7.42 (283), which has not been distributed yet.
+Version note: This guide follows the source. The new print/PDF preview, Excel export options and this round’s system integrations belong to the [1.7.44 (285) candidate](releases/notes/RELEASE_NOTES_1.7.44_BUILD_285.md), pending qualification and delivery.
 
 ## Contents
 
