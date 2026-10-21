@@ -47,6 +47,10 @@ struct ThreadEventView: View {
     /// owns the navigation (the delegate card's "View" action). The optional
     /// record is the specific child when known, nil for the inspector list.
     var onOpenChild: ((ChildRunRecord?) -> Void)? = nil
+    /// The conversation that owns this thread, when the hosting surface knows
+    /// it. Enables the run-output card's conversation-equality check; the
+    /// runtime-sealed taskID is still required when nil.
+    var conversationID: UUID? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -192,7 +196,9 @@ struct ThreadEventView: View {
                     approvalSummary: approvalSummary,
                     decisionSummary: decisionSummary,
                     duration: duration(from: toolRequestResultPayload),
-                    artifacts: artifacts(from: toolRequestResultPayload)
+                    artifacts: artifacts(from: toolRequestResultPayload),
+                    outputFiles: outputFiles(from: toolRequestResultPayload),
+                    outputContext: outputContext(from: toolRequestResultPayload)
                 )
             }
 
@@ -220,7 +226,9 @@ struct ThreadEventView: View {
                     approvalSummary: approvalSummary,
                     decisionSummary: decisionSummary,
                     duration: duration(from: payload),
-                    artifacts: artifacts(from: payload)
+                    artifacts: artifacts(from: payload),
+                    outputFiles: outputFiles(from: payload),
+                    outputContext: outputContext(from: payload)
                 )
             }
 
@@ -287,6 +295,25 @@ struct ThreadEventView: View {
             [ToolArtifactReference].self,
             from: data
         )) ?? []
+    }
+
+    /// Sealed run-output receipts persisted inside the same completion-critical
+    /// toolResult payload. Decoded only as data; ownership is re-checked by
+    /// `RunOutputReceiptGate` against the event's own identity before display.
+    private func outputFiles(from payload: [String: String]) -> [RunOutputFile] {
+        guard let encoded = payload["outputFilesJSON"],
+              let data = encoded.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([RunOutputFile].self, from: data)) ?? []
+    }
+
+    private func outputContext(from payload: [String: String]) -> RunOutputReceiptContext? {
+        guard payload["outputFilesJSON"] != nil else { return nil }
+        return RunOutputReceiptContext(
+            runID: event.runID,
+            conversationID: conversationID,
+            callID: payload["id"],
+            toolName: payload["tool"]
+        )
     }
 
     private var usageBody: some View {

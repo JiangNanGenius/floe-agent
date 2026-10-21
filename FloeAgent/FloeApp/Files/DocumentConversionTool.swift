@@ -13,6 +13,9 @@ struct DocumentConversionArguments: Decodable, Sendable {
     var inputPath: String
     var outputPath: String
     var format: String
+    /// Office -> PDF only: strict 1-based selection of the actual final PDF
+    /// pages (e.g. "2-4,7"). Nil keeps every page.
+    var pages: String? = nil
 }
 
 /// App-target helper for S3-D run-output publication at producer commit
@@ -102,8 +105,8 @@ struct DocumentConvertTool: AgentTool {
 struct PDFConvertTool: AgentTool {
     typealias Arguments = DocumentConversionArguments
     static let name = "document.pdf.convert"
-    static let toolDescription = "Convert Markdown, Word DOCX, HTML, RTF or text files to a paginated PDF, or extract a copy-permitted text PDF into Markdown, DOCX, HTML, RTF or text. Operates offline on existing files without model rewriting. Source is preserved and output must be new. PDF extraction retains page order and searchable text, not original layout, tables or images; image-only/scanned pages fail with an OCR-required message instead of silently disappearing. For non-PDF conversions use document.convert."
-    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["pdf","markdown","docx","html","rtf","text"]}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
+    static let toolDescription = "Convert Markdown, Word DOCX, Excel XLSX, PowerPoint PPTX, HTML, RTF or text files to a paginated PDF, or extract a copy-permitted text PDF into Markdown, DOCX, HTML, RTF or text. DOCX/XLSX/PPTX inputs use the shared pinned Office engine for a real layout-preserving PDF of the saved package; other inputs use the offline HTML renderer. Optional pages (1-based, e.g. 2-4,7) selects the final PDF pages of an Office-generated PDF. Operates offline on existing files without model rewriting. Source is preserved and output must be new. PDF extraction retains page order and searchable text, not original layout, tables or images; image-only/scanned pages fail with an OCR-required message instead of silently disappearing. For non-PDF conversions use document.convert."
+    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["pdf","markdown","docx","html","rtf","text"]},"pages":{"type":"string","maxLength":1024,"description":"Office -> PDF only: strict 1-based final page selection like 2-4,7."}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
@@ -121,6 +124,8 @@ enum DocumentFileConverter {
         switch (path as NSString).pathExtension.lowercased() {
         case "md", "markdown": "markdown"
         case "docx": "docx"
+        case "xlsx": "xlsx"
+        case "pptx": "pptx"
         case "htm", "html": "html"
         case "rtf": "rtf"
         case "txt": "text"
@@ -132,11 +137,23 @@ enum DocumentFileConverter {
         try PDFToolSupport.validatePath(args.inputPath)
         try PDFToolSupport.validatePath(args.outputPath)
         guard args.inputPath.utf8.count <= 1024, args.outputPath.utf8.count <= 1024,
+              ["markdown", "docx", "html", "rtf", "text", "pdf"].contains(args.format),
               let source = format(args.inputPath), format(args.outputPath) == args.format,
               args.inputPath != args.outputPath,
               (source == "pdf" || args.format == "pdf") == requiresPDF,
               !(source == "pdf" && args.format == "pdf") else {
             throw FloeError.validationFailed("Choose supported input and matching new output extension; use the PDF conversion tool when either format is PDF")
+        }
+        let sourceExtension = (args.inputPath as NSString).pathExtension.lowercased()
+        if ["xlsx", "pptx"].contains(sourceExtension), args.format != "pdf" {
+            throw FloeError.validationFailed("Excel and PowerPoint inputs convert to PDF only")
+        }
+        if let pages = args.pages, !pages.isEmpty {
+            guard args.format == "pdf",
+                  ["docx", "xlsx", "pptx"].contains(sourceExtension),
+                  OfficePDFPageRange.parse(pages) != nil else {
+                throw FloeError.validationFailed("pages applies only to an Office DOCX/XLSX/PPTX to PDF conversion and must be a 1-based selection like 2-4,7")
+            }
         }
     }
 
@@ -151,6 +168,15 @@ enum DocumentFileConverter {
         let outputURL = try guarder.resolve(args.outputPath)
         guard sourceURL != outputURL, !FileManager.default.fileExists(atPath: outputURL.path) else {
             throw FloeError.validationFailed("Output exists; choose a new filename")
+        }
+        if args.format == "pdf", let officeFormat = OfficeDocumentFormat(fileExtension: sourceURL.pathExtension) {
+            return try await convertOfficePDF(
+                sourceURL: sourceURL, outputURL: outputURL, format: officeFormat,
+                pages: args.pages, outputPath: args.outputPath,
+                context: context, producerTool: producerTool)
+        }
+        guard args.pages == nil else {
+            throw FloeError.validationFailed("pages applies only to an Office DOCX/XLSX/PPTX to PDF conversion")
         }
         try guarder.assertReadableSize(sourceURL)
         let input = try Data(floeContentsOf: sourceURL)
@@ -202,6 +228,111 @@ enum DocumentFileConverter {
                 throw RunOutputPublication.publicationFailure(error)
             }
         }
+    }
+
+    /// Office DOCX/XLSX/PPTX -> PDF through the shared isolated engine. The
+    /// saved package is read only; the returned PDF is measured by the
+    /// service, re-verified here, committed with the ordinary never-overwrite
+    /// policy and published as a run-owned file when a real binding exists.
+    private static func convertOfficePDF(sourceURL: URL, outputURL: URL,
+                                         format: OfficeDocumentFormat, pages: String?,
+                                         outputPath: String, context: ToolContext,
+                                         producerTool: String) async throws -> ToolExecutionOutput {
+        #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
+        try context.cancellation.throwIfCancelled()
+        let values = try sourceURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let size = values.fileSize,
+              size > 0, size <= 128 * 1_024 * 1_024 else {
+            throw FloeError.validationFailed("Office PDF input must be a regular file up to 128 MiB")
+        }
+        var plan = OfficePDFPrintPlan()
+        if let pages, !pages.isEmpty {
+            guard let range = OfficePDFPageRange.parse(pages) else {
+                throw FloeError.validationFailed("pages must be a 1-based selection like 2-4,7")
+            }
+            plan.pageRange = range
+        }
+        try plan.validate(for: format)
+        let sourceSHA = try await Task.detached(priority: .userInitiated) {
+            try FloeDigest.sha256Hex(ofFileAt: sourceURL)
+        }.value
+        let owned = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-document-pdf-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: owned, withIntermediateDirectories: true)
+        do {
+            let exported = try await OfficePDFExportService.export(OfficePDFExportRequest(
+                sourceURL: sourceURL, sourceSHA256: sourceSHA,
+                formatExtension: format.rawValue, plan: plan,
+                ownedDirectory: owned, cancellation: context.cancellation))
+            try context.cancellation.throwIfCancelled()
+            let data = try Data(floeContentsOf: exported.pdfURL)
+            guard data.count == exported.byteCount,
+                  FloeDigest.sha256Hex(data) == exported.pdfSHA256 else {
+                throw FloeError.validationFailed("The exported Office PDF changed after measurement")
+            }
+            let verifiedPages = try PDFKitGate.run {
+                try withPDFExceptionGuard { PDFDocument(data: data)?.pageCount }
+            }
+            guard verifiedPages == exported.pageCount else {
+                throw FloeError.validationFailed("The exported Office PDF failed page-count verification")
+            }
+            _ = try AtomicFileCommitter.commit(
+                data, to: outputURL,
+                policy: FileCommitPolicy(
+                    conflict: .failIfExists,
+                    maxBytes: OfficePDFExportService.maximumPDFBytes,
+                    checkCancellation: { try context.cancellation.throwIfCancelled() }))
+            NotificationCenter.default.post(name: .floePDFDocumentDidChange, object: outputURL)
+            let digest = exported.pdfSHA256
+            var summary = "converted=\(outputPath) format=pdf bytes=\(data.count) sha256=\(digest) pages=\(exported.pageCount) officeEngine=true originalPreserved=true modelRewrite=false"
+            if let applied = exported.appliedPageRange {
+                summary += " finalPages=\(applied.map(String.init).joined(separator: ","))"
+            }
+            await cleanupOfficeExportDirectory(owned)
+            switch RunOutputPublication.state(context) {
+            case .legacyDirect, .temporaryExempt:
+                return PDFToolSupport.output(summary, status: 0)
+            case .partiallyBound:
+                throw RunOutputPublication.partialBindingFailure
+            case .required:
+                do {
+                    let published = try RunOutputSnapshotStore.publish(
+                        RunOutputSnapshotRequest(
+                            producerTool: producerTool,
+                            slot: "document",
+                            commit: RunOutputCommit(
+                                sourceURL: outputURL,
+                                sha256: digest,
+                                byteCount: data.count,
+                                displayName: outputURL.lastPathComponent,
+                                mimeType: RunOutputPublication.documentMIMEType("pdf"),
+                                uti: RunOutputPublication.documentUTI("pdf"))),
+                        using: context)
+                    return ToolExecutionOutput(
+                        summary: summary,
+                        fullOutputSHA256: FloeDigest.sha256Hex(Data(summary.utf8)),
+                        exitStatus: 0,
+                        outputFiles: [published])
+                } catch let error as RunOutputSnapshotError {
+                    throw RunOutputPublication.publicationFailure(error)
+                }
+            }
+        } catch {
+            await cleanupOfficeExportDirectory(owned)
+            throw error
+        }
+        #else
+        throw FloeError.validationFailed("This build does not include the Office PDF engine")
+        #endif
+    }
+
+    /// The shared engine service retains its child when an unacknowledged
+    /// close quarantined automatic work. The caller's directory must survive
+    /// in that state too; otherwise a retained engine resource would point at
+    /// deleted bytes.
+    private static func cleanupOfficeExportDirectory(_ url: URL) async {
+        if await OfficeAutomaticExecutionGate.shared.isQuarantined { return }
+        try? FileManager.default.removeItem(at: url)
     }
 
     struct Result: Sendable { var data: Data; var warnings: [String] }

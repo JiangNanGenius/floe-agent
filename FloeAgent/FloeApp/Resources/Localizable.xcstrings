@@ -27534,13 +27534,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Only note documents can be exported as PDF; for Office use document.pdf.export, and export mind maps via outline."
+            "value": "This action only supports notebook pages."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "只有手记文档可以导出 PDF；Office 请用 document.pdf.export，导图请用大纲导出。"
+            "value": "此操作仅支持手记页面。"
           }
         }
       }
@@ -90846,6 +90846,74 @@
           "stringUnit": {
             "state": "translated",
             "value": "这次运行已不在此处进行，请在 Floe 中查看状态。"
+          }
+        }
+      }
+    },
+    "chat.run_output_file_view.verifying": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verifying file"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在验证文件"
+          }
+        }
+      }
+    },
+    "chat.run_output_file_view.preview": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Preview %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "预览 %@"
+          }
+        }
+      }
+    },
+    "chat.run_output_file_view.share": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Share %@"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分享 %@"
+          }
+        }
+      }
+    },
+    "chat.run_output_file_view.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "File unavailable; verify again"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "文件不可用，重新验证"
           }
         }
       }

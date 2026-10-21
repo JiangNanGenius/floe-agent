@@ -702,7 +702,10 @@ final class NotesAgentToolsTests: XCTestCase {
         let readProperties = try XCTUnwrap(readSchema["properties"] as? [String: Any])
         let sectionSchema = try XCTUnwrap(readProperties["section"] as? [String: Any])
         let sectionEnum = try XCTUnwrap(sectionSchema["enum"] as? [String])
-        XCTAssertEqual(Set(sectionEnum), Set(NoteCapabilityMatrix.readSections))
+        let supportedReadSections = Set(NoteCapabilityMatrix.readSections)
+            .union(NoteCapabilityMatrix.appendedReadSections)
+            .union([NoteCapabilityMatrix.exportCapabilitiesSection])
+        XCTAssertEqual(Set(sectionEnum), supportedReadSections)
 
         let editSchema = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(NotesEditTool.parametersJSON.utf8)) as? [String: Any])

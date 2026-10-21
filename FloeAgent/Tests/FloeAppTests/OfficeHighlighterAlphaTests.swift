@@ -203,13 +203,52 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
                 XCTAssertEqual(lifted["activeAfter"] as? Bool, false)
                 _ = try await snapshot(web, root: root, name: "provided-grid-after-lift",
                                        afterScreenUpdates: false)
-                try await Task.sleep(for: .milliseconds(750))
-                receipt["diagnosticSettledPreview"] = try await currentPreviewState(web)
+                let firstRetired = try await waitForPreviewRetirement(web, timeout: 8)
+                receipt["diagnosticSettledPreview"] = firstRetired
+                XCTAssertEqual(firstRetired["livePreview"] as? Bool, false)
+                XCTAssertEqual(firstRetired["lastPreviewClear"] as? String, "painted")
                 let settled = try await snapshot(web, root: root, name: "provided-grid-settled")
                 let retention = try providedGridRetention(before: gridBefore, after: settled, points: points)
                 receipt["settledGridRetention"] = retention
                 XCTAssertGreaterThanOrEqual(retention["retainedFraction"] as? Double ?? 0, 0.95,
                                             "Post-lift repaint erased the empty-cell grid")
+                let firstYellow = providedNewHighlighterPixels(before: gridBefore, after: settled, points: points)
+                receipt["firstNewHighlighterPixels"] = firstYellow
+                XCTAssertGreaterThan(firstYellow, 300, "The engine must actually display the committed stroke")
+                // A second equal-sized group in another row band must not
+                // inherit the first buffer's alpha or erase either region.
+                let secondPoints = points.map { [$0[0], $0[1] - Double(rect.height) * 0.28] }
+                let secondDense = try densified(secondPoints)
+                let secondBefore = try await snapshot(web, root: root, name: "provided-grid-second-before")
+                receipt["secondDiagnosticPointsCSS"] = secondPoints
+                receipt["secondDiagnosticBegin"] = try await strokePhase(web, phase: "begin", points: secondDense)
+                do {
+                    let secondContact = try await snapshot(web, root: root, name: "provided-grid-second-contact")
+                    let contactRetention = try providedGridRetention(before: secondBefore, after: secondContact, points: secondPoints)
+                    receipt["secondContactGridRetention"] = contactRetention
+                    XCTAssertGreaterThanOrEqual(contactRetention["retainedFraction"] as? Double ?? 0, 0.95)
+                } catch {
+                    _ = try? await strokePhase(web, phase: "cleanup", points: secondDense)
+                    throw error
+                }
+                let secondLift = try await strokePhase(web, phase: "lift", points: secondDense)
+                receipt["secondDiagnosticLift"] = secondLift
+                XCTAssertEqual(secondLift["strokeDelta"] as? Int, 1)
+                XCTAssertEqual(secondLift["activeAfter"] as? Bool, false)
+                let secondRetired = try await waitForPreviewRetirement(web, timeout: 8)
+                receipt["secondSettledPreview"] = secondRetired
+                XCTAssertEqual(secondRetired["livePreview"] as? Bool, false)
+                XCTAssertEqual(secondRetired["lastPreviewClear"] as? String, "painted")
+                let secondSettled = try await snapshot(web, root: root, name: "provided-grid-second-settled")
+                let secondRetention = try providedGridRetention(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondSettledGridRetention"] = secondRetention
+                XCTAssertGreaterThanOrEqual(secondRetention["retainedFraction"] as? Double ?? 0, 0.95)
+                let secondYellow = providedNewHighlighterPixels(before: secondBefore, after: secondSettled, points: secondPoints)
+                receipt["secondNewHighlighterPixels"] = secondYellow
+                XCTAssertGreaterThan(secondYellow, 300, "The second committed stroke must remain visible")
+                let firstStillRetained = try providedGridRetention(before: gridBefore, after: secondSettled, points: points)
+                receipt["firstGridAfterSecondStroke"] = firstStillRetained
+                XCTAssertGreaterThanOrEqual(firstStillRetained["retainedFraction"] as? Double ?? 0, 0.95)
                 try await session.toggleDrawing()
                 let exported = try await session.exportDocument(format: "xlsx")
                 let copy = root.appendingPathComponent("provided-with-diagnostic-stroke.xlsx")
@@ -231,6 +270,25 @@ final class OfficeHighlighterAlphaTests: XCTestCase {
     /// Sample only neutral grid pixels selected from the BEFORE image in
     /// the inner 60% of the actual stroke bounds, away from every U segment.
     /// The AFTER image cannot change which pixels participate in the oracle.
+    private func providedNewHighlighterPixels(before: Snapshot, after: Snapshot,
+                                             points: [[Double]]) -> Int {
+        guard before.width == after.width, before.height == after.height,
+              let minX = points.map({ $0[0] }).min(), let maxX = points.map({ $0[0] }).max(),
+              let minY = points.map({ $0[1] }).min(), let maxY = points.map({ $0[1] }).max() else { return 0 }
+        let scale = Double(before.scale)
+        let left = max(0, Int(minX * scale) - 24), right = min(before.width, Int(maxX * scale) + 24)
+        let top = max(0, Int(minY * scale) - 24), bottom = min(before.height, Int(maxY * scale) + 24)
+        var count = 0
+        for y in top..<bottom { for x in left..<right {
+            let i = (y * before.width + x) * 4
+            let r = Int(before.pixels[i]), g = Int(before.pixels[i + 1]), b = Int(before.pixels[i + 2])
+            guard min(r,g,b) >= 170, max(r,g,b) - min(r,g,b) <= 8 else { continue }
+            let ar = Int(after.pixels[i]), ag = Int(after.pixels[i + 1]), ab = Int(after.pixels[i + 2])
+            if ar >= 240, ag >= 200, ab <= 220, ag - ab >= 20 { count += 1 }
+        } }
+        return count
+    }
+
     private func providedGridRetention(before: Snapshot, after: Snapshot,
                                        points: [[Double]]) throws -> [String: Any] {
         guard before.width == after.width, before.height == after.height,

@@ -36,6 +36,13 @@ struct ToolCallCardView: View {
     /// Digest-addressed files returned by the tool. Image artifacts render
     /// directly in the conversation and expose the system save/share sheet.
     var artifacts: [ToolArtifactReference] = []
+    /// Sealed run-owned user files produced by this exact call. Kept outside
+    /// the fold so a delivered file remains visible when the diagnostic
+    /// details are collapsed.
+    var outputFiles: [RunOutputFile] = []
+    /// Trusted identity of the persisted tool-result row that carries the
+    /// receipts; nil for calls without a verifiable envelope.
+    var outputContext: RunOutputReceiptContext? = nil
 
     @State private var isExpanded = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -48,6 +55,9 @@ struct ToolCallCardView: View {
             }
             if !richArtifacts.isEmpty {
                 RichArtifactGallery(artifacts: richArtifacts)
+            }
+            if let outputContext, !outputFiles.isEmpty {
+                RunOutputFilesCard(receipts: outputFiles, context: outputContext)
             }
             if isExpanded {
                 Divider()

@@ -813,6 +813,10 @@ targets:
       - path: Tests/FloeAppTests/FloeRunFileProductionChainTests.swift
       - path: Tests/FloeAppTests/VolcengineSearchSettingsTests.swift
       - path: Tests/FloeAppTests/OfficeHighlighterAlphaTests.swift
+      - path: Tests/FloeAppTests/OfficePDFExportServiceTests.swift
+      - path: Tests/FloeAppTests/OfficePDFExportAcceptanceTests.swift
+      - path: Tests/FloeAppTests/DocumentExportServiceTests.swift
+      - path: Tests/FloeAppTests/RunOutputFileViewTests.swift
       - path: Qualification/Notes/Tests/NotesStoreTests.swift
     dependencies:
       - target: FloeAgent
