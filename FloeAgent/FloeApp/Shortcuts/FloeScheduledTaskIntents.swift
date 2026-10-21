@@ -183,7 +183,7 @@ struct RunScheduledTaskIntent: AppIntent {
         // The system localizes a parameter summary with the exact compiled
         // template: this literal text plus a `${schedule}` token, not a
         // printf-style "%@" key, from the app's default Localizable table.
-        Summary("Run scheduled task: \(\.$schedule)")
+        Summary("shortcuts.schedule.run.summary \(\.$schedule)")
     }
 
     @MainActor

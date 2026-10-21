@@ -53023,7 +53023,7 @@
         }
       }
     },
-    "Run scheduled task: ${schedule}": {
+    "shortcuts.schedule.run.summary ${schedule}": {
       "extractionState": "manual",
       "localizations": {
         "en": {
