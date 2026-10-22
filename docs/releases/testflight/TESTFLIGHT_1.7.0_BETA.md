@@ -1,6 +1,14 @@
 # Floe 1.7 TestFlight delivery
 
-## Latest: 1.7.41 (282) — internal available; publictest1 review pending
+## Latest: 1.7.47 (288) — internal available; external web authentication pending
+
+2026-10-23: immutable `v1.7.47` source `aaa262c541dad1483166dfafb9aae536a6f7019a` is `VALID`, unexpired and available in the existing Floe QA group. The same local archive produced the stable latest unsigned Release and verified Feather entry. External submission stopped at an API 403 before attaching publictest1 or creating a review submission; Safari awaits Apple two-factor authentication. No external submission or approval is claimed.
+
+288 已完成内部可安装、稳定无签名安装包及 Feather 交付。聊天、语音、九种音色、实时试听和搜索目录已交付；公开 TestFlight 只剩网页认证后的送审与回查。普通界面使用“增强语音识别”和“增强语音模型”。
+
+[Qualification and delivery record](BUILD_288_DELIVERY.md) · [Stable unsigned Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.47).
+
+## Previous: 1.7.41 (282) — internal available; publictest1 review pending
 
 2026-10-21: immutable `v1.7.41` source `268e21cb8aaaf13c92f3b35a07e57ae1071126ee` is available in the existing internal Floe QA group. The same uploaded build was submitted once through the authenticated Safari session to the existing `publictest1`. [Independent readback](https://github.com/JiangNanGenius/floe-agent/actions/runs/39493804095) confirms `VALID`, unexpired, the external group attached, `WAITING_FOR_BETA_REVIEW`, and exactly one `pending_review` submission. External approval and installation are not yet confirmed. Build 281 was not queried or resubmitted; the formal 275 submission is unchanged.
 
