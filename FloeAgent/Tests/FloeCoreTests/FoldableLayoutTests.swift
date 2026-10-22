@@ -340,7 +340,14 @@ struct FoldableWorkbenchPlacementTests {
             assistantVisible: true, width: 1200, containerSize: unfoldedSize,
             snapshot: unfolded, adaptationEnabled: true,
             previouslySideBySide: true, regions: [bookBand])
-        #expect(book == .foldable(mode: .sideBySide(secondaryWidth: 552, gapWidth: 48)))
+        // The hinge occupies x=576...624, so the right region is 576 wide.
+        #expect(book == .foldable(mode: .sideBySide(secondaryWidth: 576, gapWidth: 48)))
+        let rects = FoldableLayoutEngine.rects(
+            for: .sideBySide(secondaryWidth: 576, gapWidth: 48),
+            containerSize: unfoldedSize)
+        #expect(rects.primary.maxX == 576)
+        #expect(rects.secondary.x == 624)
+        #expect(rects.secondary.maxX == 1200)
     }
 
     @Test("side-by-side hysteresis prevents churn across the width threshold")

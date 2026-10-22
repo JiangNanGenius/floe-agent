@@ -214,16 +214,29 @@ struct FoldableWorkbenchLayoutTests {
                                     containerSize: container) {
                 Color.red
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { size in Task { @MainActor in probe.size = size } }
-            })
-        host.beginAppearanceTransition(true, animated: false)
-        host.view.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
-        host.view.layoutIfNeeded()
-        host.endAppearanceTransition()
-        // Allow the SwiftUI geometry action to deliver (bounded, not a race
-        // on layout: two runloop hops).
-        for _ in 0..<20 where probe.size == .zero {
-            try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            .frame(width: 800, height: 600)
+            .ignoresSafeArea())
+        let scene = try #require(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive })
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+        window.rootViewController = host
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+            previous?.makeKey()
+        }
+        // SwiftUI geometry is delivered only for a host attached to a real
+        // window. Allow bounded layout delivery, then assert exact bounds.
+        let deadline = Date().addingTimeInterval(2)
+        while probe.size == .zero && Date() < deadline {
             host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
         }
         #expect(probe.size == CGSize(width: 800, height: 600))
     }
