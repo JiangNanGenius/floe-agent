@@ -35,6 +35,23 @@
         }
       }
     },
+    "NSHealthUpdateUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe only reads the Health data you authorize; it does not save or modify Health data."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 仅会读取你授权的健康数据，不会写入或修改健康数据。"
+          }
+        }
+      }
+    },
     "NFCReaderUsageDescription": {
       "extractionState": "manual",
       "localizations": {
