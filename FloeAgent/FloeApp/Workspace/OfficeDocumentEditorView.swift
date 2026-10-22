@@ -3312,6 +3312,9 @@ final class OfficeFileSession: ObservableObject {
                 if entry.readOnly == false, !entry.pendingPassword {
                     restoreReadUI = restoresViewMode && uiEditMode == false
                 }
+                // Preserve cancellation before interpreting a failed/stale
+                // acknowledgement; cleanup still restores a successful entry.
+                try Task.checkCancellation()
                 guard controller === native, passiveExitFenceIsCurrent(fence) else {
                     recordStage("save.refused.staleController")
                     throw Self.staleSaveSurfaceError()
