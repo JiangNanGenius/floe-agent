@@ -1002,6 +1002,63 @@ public actor WebSearchService {
         return nil
     }
 
+    /// Ephemeral single-instance test transport. The frozen draft
+    /// configuration and the in-memory supplied credential are captured only
+    /// for this call: nothing is persisted, the credential never enters the
+    /// Keychain or a log, and because exactly one resolver pair exists the
+    /// service's ordered-failover loop can never reach another provider.
+    /// Request construction, signing, SSRF policy and parsing are the real
+    /// production paths, including the provider-specific Volcengine
+    /// interface guards.
+    public static func searchTest(
+        configuration: WebSearchProviderConfiguration,
+        credential: WebSearchCredential,
+        text: String,
+        maxResults: Int = 5
+    ) async -> WebSearchTestOutcome {
+        let service = WebSearchService(configurations: { [(configuration, credential)] })
+        return await service.testSearch(
+            configuration: configuration,
+            credential: credential,
+            text: text,
+            maxResults: maxResults
+        )
+    }
+
+    /// Test Search on this service for exactly one frozen draft. The query
+    /// names the draft's provider id, so even a service that resolves other
+    /// providers can never fall back to a different one: `search` filters to
+    /// the requested provider and stops after the first attempt. Nothing is
+    /// persisted; the supplied credential lives only for this call.
+    func testSearch(
+        configuration: WebSearchProviderConfiguration,
+        credential: WebSearchCredential,
+        text: String,
+        maxResults: Int = 5
+    ) async -> WebSearchTestOutcome {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return WebSearchTestOutcome(results: [], error: "empty query")
+        }
+        guard WebSearchService.isConfigured(configuration, credential: credential) else {
+            return WebSearchTestOutcome(
+                results: [],
+                error: WebSearchTestOutcome.notConfiguredReason
+            )
+        }
+        let query = WebSearchQuery(
+            text: trimmed,
+            maxResults: max(1, min(maxResults, 10)),
+            requestedProvider: configuration.id.uuidString.lowercased()
+        )
+        do {
+            let response = try await search(query)
+            return WebSearchTestOutcome(results: Array(response.results.prefix(maxResults)), error: nil)
+        } catch {
+            return WebSearchTestOutcome(results: [], error: error.localizedDescription)
+        }
+    }
+
     private static func deduplicate(_ results: [WebSearchResult], limit: Int) -> [WebSearchResult] {
         var seen = Set<String>()
         var output: [WebSearchResult] = []

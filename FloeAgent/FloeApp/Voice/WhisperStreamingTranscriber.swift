@@ -121,7 +121,7 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
         var committed = ""
         var decodedCount = 0
         var emptyAttempts = 0
-        let code: String? = language == .automatic ? nil : language == .english ? "en" : "zh"
+        let code: String? = language.recognitionCode
         let options = DecodingOptions(language: code, detectLanguage: code == nil, skipSpecialTokens: true, withoutTimestamps: true)
         do {
             for await _ in signals {

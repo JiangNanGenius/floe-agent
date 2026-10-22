@@ -124,6 +124,14 @@
       "source": "https://github.com/kishikawakatsumi/SMBClient.git"
     },
     {
+      "identity": "speech-swift-tts",
+      "license": "Apache-2.0",
+      "evidence": "ThirdParty/SpeechSwiftTTS/LICENSE",
+      "sha256": "8b86cbde30daef6bfac0780dee1649be3b2de2abf4ecdefd5b7099df212c5a1d",
+      "revision": "7baf2781d5c6a5d38b008a96eef3dca61c55f369",
+      "source": "https://github.com/soniqo/speech-swift.git"
+    },
+    {
       "identity": "svgpath",
       "license": "MIT",
       "evidence": "FloeApp/Resources/Licenses/SVGPath-LICENSE.txt",

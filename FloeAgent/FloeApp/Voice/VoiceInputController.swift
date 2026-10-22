@@ -24,6 +24,8 @@ import AVFoundation
 
 @MainActor
 final class VoiceInputController: ObservableObject {
+    /// Host-owned output handoff, shared by all dictation entry points.
+    var prepareForCapture: (@MainActor () async -> Void)?
 
     @Published private(set) var state: VoiceInputState = .idle
     /// The latest transcript of the current session (partial or final).
@@ -48,6 +50,7 @@ final class VoiceInputController: ObservableObject {
     private var preparationTask: Task<Void, Never>?
     private var preparationWatchdog: Task<Void, Never>?
     private var stopTask: Task<Void, Never>?
+    private var cleanupTask: Task<Void, Never>?
     private let preparationTimeout: Duration
     /// Monotonic token: a superseded start must never activate a session.
     private var startToken: UInt64 = 0
@@ -108,21 +111,23 @@ final class VoiceInputController: ObservableObject {
     }
 
     private func prepareSession(token: UInt64) async {
+        if let prepareForCapture { await prepareForCapture() }
+        guard canPrepare(token) else { return }
         // Microphone first, then speech recognition: the failure copy
         // names the exact permission the user must grant.
         guard await authorization.requestMicrophoneAccess() else {
-            guard isCurrent(token) else { return }
+            guard canPrepare(token) else { return }
             diagnostics?.voicePermissionDenied(kind: "microphone")
             state = .failed(reason: .microphonePermissionDenied)
             return
         }
         guard await authorization.requestSpeechRecognitionAccess() else {
-            guard isCurrent(token) else { return }
+            guard canPrepare(token) else { return }
             diagnostics?.voicePermissionDenied(kind: "speech")
             state = .failed(reason: .speechPermissionDenied)
             return
         }
-        guard isCurrent(token) else { return }
+        guard canPrepare(token) else { return }
 
         state = .preparing
         diagnostics?.voiceSessionPreparing()
@@ -141,59 +146,66 @@ final class VoiceInputController: ObservableObject {
             self.state = .failed(reason: .recognizerFailed)
         }
 
-        let transcriber: any SpeechTranscribing
-        do {
-            transcriber = try await makeTranscriber()
-        } catch let error as VoiceSessionError {
-            fail(with: error.failure, token: token)
-            return
-        } catch {
-            fail(with: .recognizerFailed, token: token)
-            return
-        }
-        guard isCurrent(token) else {
-            await transcriber.finishAudio()
-            return
-        }
-
-        let capturer = makeCapturer()
-        self.transcriber = transcriber
-        self.capturer = capturer
-        do {
-            try await capturer.start(into: transcriber)
-        } catch let error as VoiceSessionError {
-            guard isCurrent(token) else {
+        // A failed predecessor must finish releasing its recognizer before a
+        // fresh attempt acquires the microphone. Retry belongs to this tap.
+        for attempt in 0..<2 {
+            if let cleanupTask { await cleanupTask.value }
+            guard canPrepare(token) else { return }
+            let transcriber: any SpeechTranscribing
+            do { transcriber = try await makeTranscriber() }
+            catch {
+                let failure = (error as? VoiceSessionError)?.failure ?? .recognizerFailed
+                guard canPrepare(token) else { return }
+                if attempt == 0 && Self.canRecoverStartup(failure) { continue }
+                fail(with: failure, token: token)
+                return
+            }
+            guard canPrepare(token) else {
+                await transcriber.finishAudio()
+                return
+            }
+            let capturer = makeCapturer()
+            self.transcriber = transcriber
+            self.capturer = capturer
+            do {
+                try await capturer.start(into: transcriber)
+                try Task.checkCancellation()
+                try await capturer.waitUntilReady()
+            } catch {
+                guard canPrepare(token) else {
+                    capturer.stop()
+                    await transcriber.finishAudio()
+                    return
+                }
+                let failure = (error as? VoiceSessionError)?.failure ?? .recognizerFailed
+                teardown()
+                if let cleanupTask { await cleanupTask.value }
+                guard canPrepare(token) else { return }
+                if attempt == 0 && Self.canRecoverStartup(failure) { continue }
+                fail(with: failure, token: token)
+                return
+            }
+            guard canPrepare(token) else {
                 capturer.stop()
                 await transcriber.finishAudio()
                 return
             }
-            teardown()
-            fail(with: error.failure, token: token)
-            return
-        } catch {
-            guard isCurrent(token) else {
-                capturer.stop()
-                await transcriber.finishAudio()
-                return
-            }
-            teardown()
-            fail(with: .recognizerFailed, token: token)
+            preparationWatchdog?.cancel()
+            preparationWatchdog = nil
+            state = .listening
+            diagnostics?.voiceListeningStarted()
+            observeLevels(of: capturer, token: token)
+            observeTranscripts(of: transcriber, token: token)
             return
         }
-        guard isCurrent(token) else {
-            // This attempt ended while start was suspended. A newer session
-            // may now own the controller; release only this attempt's objects.
-            capturer.stop()
-            await transcriber.finishAudio()
-            return
-        }
+    }
 
-        preparationWatchdog?.cancel()
-        preparationWatchdog = nil
-        state = .listening
-        diagnostics?.voiceListeningStarted()
-        observeLevels(of: capturer, token: token)
-        observeTranscripts(of: transcriber, token: token)
+    private func canPrepare(_ token: UInt64) -> Bool {
+        isCurrent(token) && !Task.isCancelled && (state == .requestingPermission || state == .preparing)
+    }
+
+    private static func canRecoverStartup(_ failure: VoiceInputFailure) -> Bool {
+        failure == .noAudioInput || failure == .recognizerFailed
     }
 
     /// Stops the session. Safe to call at any time, from any state.
@@ -247,6 +259,12 @@ final class VoiceInputController: ObservableObject {
             self.stopTask = nil
             if wasListening { self.diagnostics?.voiceListeningStopped() }
         }
+    }
+
+    func stopAndWait() async {
+        stop()
+        if let stopTask { await stopTask.value }
+        if let cleanupTask { await cleanupTask.value }
     }
 
     /// External interruption: scene backgrounded, page disappeared, audio
@@ -363,8 +381,10 @@ final class VoiceInputController: ObservableObject {
         capturer = nil
         let activeTranscriber = transcriber
         transcriber = nil
-        if let activeTranscriber {
-            Task { await activeTranscriber.finishAudio() }
+        let previousCleanup = cleanupTask
+        cleanupTask = Task {
+            if let previousCleanup { await previousCleanup.value }
+            if let activeTranscriber { await activeTranscriber.finishAudio() }
         }
     }
 }

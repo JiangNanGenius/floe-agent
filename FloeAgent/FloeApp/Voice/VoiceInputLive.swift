@@ -36,7 +36,8 @@ struct SystemSpeechAuthorizationProvider: SpeechAuthorizationProviding {
 
     func requestSpeechRecognitionAccess() async -> Bool {
         #if canImport(WhisperKit)
-        if await WhisperModelStore.shared.isInstalled() { return true }
+        if VoiceRecognitionPreferences.method == .enhanced { return true }
+        if VoiceRecognitionPreferences.method == .automatic, await WhisperModelStore.shared.isInstalled() { return true }
         #endif
         return await Self.requestAppleAccess()
     }
@@ -358,6 +359,10 @@ private final class LegacyAnalyzerInputConverter: @unchecked Sendable {
 /// preconditions on runtime audio state.
 final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
 
+    private var receivedFirstBuffer = false
+    private var readinessStopped = false
+    private var readinessWaiter: CheckedContinuation<Void, Error>?
+    private var readinessTimeout: Task<Void, Never>?
     private let engine = AVAudioEngine()
     private var tapInstalled = false
     private var sessionActivated = false
@@ -414,6 +419,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             // Some route transitions deliver an empty terminal buffer. Speech
             // treats that as a programmer error and traps, so drop it here.
             guard buffer.frameLength > 0 else { return }
+            self?.markFirstBuffer()
             self?.publishLevel(of: buffer)
             transcriber.feed(buffer, at: time)
         }
@@ -427,6 +433,43 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
             throw VoiceSessionError.failure(.noAudioInput)
         }
         #endif
+    }
+
+    func waitUntilReady() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
+                lock.lock()
+                if readinessStopped || Task.isCancelled {
+                    lock.unlock(); waiter.resume(throwing: CancellationError()); return
+                }
+                if receivedFirstBuffer { lock.unlock(); waiter.resume(); return }
+                readinessWaiter = waiter
+                readinessTimeout = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(3)) } catch { return }
+                    self?.finishReadiness(.failure(VoiceSessionError.failure(.noAudioInput)))
+                }
+                lock.unlock()
+            }
+        } onCancel: { [weak self] in self?.cancelReadiness() }
+    }
+
+    private func markFirstBuffer() {
+        lock.withLock { receivedFirstBuffer = true }
+        finishReadiness(.success(()))
+    }
+    private func cancelReadiness() {
+        lock.withLock { readinessStopped = true }
+        finishReadiness(.failure(CancellationError()))
+    }
+    private func finishReadiness(_ result: Result<Void, Error>) {
+        lock.lock()
+        let waiter = readinessWaiter
+        readinessWaiter = nil
+        let timeout = readinessTimeout
+        readinessTimeout = nil
+        lock.unlock()
+        timeout?.cancel()
+        waiter?.resume(with: result)
     }
 
     /// Measures the real RMS of one captured buffer, advances the noise-gated
@@ -444,6 +487,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
     /// Idempotent teardown: stops the engine, removes the tap exactly
     /// once, releases the audio session. Safe from any thread context.
     func stop() {
+        cancelReadiness()
         lock.lock()
         let hadTap = tapInstalled
         tapInstalled = false
@@ -484,28 +528,31 @@ extension VoiceInputController {
                 )
                 let language = stored.flatMap(VoiceRecognitionLanguage.init(rawValue:))
                     ?? .automatic
-                #if canImport(WhisperKit)
-                do {
-                    let local = try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics)
-                    FloeLogger(category: .app).info("voiceBackendSelected domain=voice backend=whisperLocal")
-                    return local
-                } catch is CancellationError { throw CancellationError() }
-                catch {
-                    guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
-                        throw VoiceSessionError.failure(.speechPermissionDenied)
-                    }
-                }
-                #endif
-                FloeLogger(category: .app).info("voiceBackendSelected domain=voice backend=sfSpeechRecognizer")
-                return try StreamingSpeechRecognizerTranscriber(
-                    locale: language.locale,
-                    diagnostics: diagnostics
-                )
+                return try await Self.makePreferredTranscriber(language: language, diagnostics: diagnostics)
             },
             makeCapturer: { AudioEngineCapturer() },
             diagnostics: diagnostics
         )
     }
+    static func makePreferredTranscriber(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)? = nil) async throws -> any SpeechTranscribing {
+        let method = VoiceRecognitionPreferences.method
+        #if canImport(WhisperKit)
+        if method != .system {
+            do { return try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics) }
+            catch is CancellationError { throw CancellationError() }
+            catch {
+                if method == .enhanced { throw VoiceSessionError.failure(.modelNotReady) }
+            }
+        }
+        #else
+        if method == .enhanced { throw VoiceSessionError.failure(.modelNotReady) }
+        #endif
+        guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
+            throw VoiceSessionError.failure(.speechPermissionDenied)
+        }
+        return try StreamingSpeechRecognizerTranscriber(locale: language.locale, diagnostics: diagnostics)
+    }
+
 }
 
 /// Isolated factory so the controller's @MainActor closure can await the

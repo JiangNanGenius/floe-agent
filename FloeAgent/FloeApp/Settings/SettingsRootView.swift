@@ -189,7 +189,10 @@ struct SettingsRootView: View {
         case .auxiliary:
             AuxiliarySettingsView(center: environment.conversationCenter)
         case .webSearch:
-            WebSearchSettingsView(center: environment.webSearchSettingsCenter)
+            WebSearchSettingsView(
+                center: environment.webSearchSettingsCenter,
+                catalogOwner: environment.contentUpdateCenter
+            )
         case .localModels:
             LocalModelsSettingsView(center: environment.localModelsCenter)
         case .canvas:

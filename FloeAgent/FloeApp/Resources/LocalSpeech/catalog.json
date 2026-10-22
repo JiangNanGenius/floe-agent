@@ -1,0 +1,311 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "qwen3-tts-0.6b-customvoice-bf16",
+      "title": "Qwen3-TTS",
+      "engine": "qwen3TTS",
+      "repository": "aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16",
+      "revision": "3affbf656d9d6aa9255ec0b31cc90055605170bc",
+      "license": "Apache-2.0",
+      "languages": [
+        "zh",
+        "en",
+        "de",
+        "it",
+        "pt",
+        "es",
+        "ja",
+        "ko",
+        "fr",
+        "ru"
+      ],
+      "tokenizerRelativePath": "speech_tokenizer_12hz",
+      "voices": [
+        {
+          "id": "vivian",
+          "name": "Vivian",
+          "languages": [
+            "zh"
+          ]
+        },
+        {
+          "id": "serena",
+          "name": "Serena",
+          "languages": [
+            "zh"
+          ]
+        },
+        {
+          "id": "uncle_fu",
+          "name": "Uncle_Fu",
+          "languages": [
+            "zh"
+          ]
+        },
+        {
+          "id": "dylan",
+          "name": "Dylan",
+          "languages": [
+            "zh"
+          ]
+        },
+        {
+          "id": "eric",
+          "name": "Eric",
+          "languages": [
+            "zh"
+          ]
+        },
+        {
+          "id": "ryan",
+          "name": "Ryan",
+          "languages": [
+            "en"
+          ]
+        },
+        {
+          "id": "aiden",
+          "name": "Aiden",
+          "languages": [
+            "en"
+          ]
+        },
+        {
+          "id": "ono_anna",
+          "name": "Ono_Anna",
+          "languages": [
+            "ja"
+          ]
+        },
+        {
+          "id": "sohee",
+          "name": "Sohee",
+          "languages": [
+            "ko"
+          ]
+        }
+      ],
+      "sampleRate": 24000,
+      "channels": 1,
+      "files": [
+        {
+          "path": "config.json",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/config.json",
+          "sha256": "81aca2b6fac304944d8acf345272d8a9a727d5fc2e2e66b222ab4729340c7455",
+          "byteCount": 4908
+        },
+        {
+          "path": "merges.txt",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/merges.txt",
+          "sha256": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+          "byteCount": 1671839
+        },
+        {
+          "path": "model.safetensors",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/model.safetensors",
+          "sha256": "465675a36380251e143cfbca8d693f375c47ba6bf0ae334966cb529ef1be34d9",
+          "byteCount": 1811626144
+        },
+        {
+          "path": "model.safetensors.index.json",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/model.safetensors.index.json",
+          "sha256": "463127e455292c8f002a9bfe67ec165235ecc107017228e3fb64e28fdb145f6f",
+          "byteCount": 30630
+        },
+        {
+          "path": "tokenizer_config.json",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/tokenizer_config.json",
+          "sha256": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+          "byteCount": 7344
+        },
+        {
+          "path": "vocab.json",
+          "url": "https://huggingface.co/aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16/resolve/3affbf656d9d6aa9255ec0b31cc90055605170bc/vocab.json",
+          "sha256": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+          "byteCount": 2776833
+        },
+        {
+          "path": "speech_tokenizer_12hz/config.json",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-Tokenizer-12Hz/resolve/7dd38ad4e9bad454aae9cd937d0cd577604fe229/config.json",
+          "sha256": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+          "byteCount": 2336
+        },
+        {
+          "path": "speech_tokenizer_12hz/model.safetensors",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-Tokenizer-12Hz/resolve/7dd38ad4e9bad454aae9cd937d0cd577604fe229/model.safetensors",
+          "sha256": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+          "byteCount": 682293092
+        },
+        {
+          "path": "speech_tokenizer_12hz/preprocessor_config.json",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-Tokenizer-12Hz/resolve/7dd38ad4e9bad454aae9cd937d0cd577604fe229/preprocessor_config.json",
+          "sha256": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+          "byteCount": 234
+        },
+        {
+          "path": "speech_tokenizer_12hz/configuration.json",
+          "url": "https://huggingface.co/Qwen/Qwen3-TTS-Tokenizer-12Hz/resolve/7dd38ad4e9bad454aae9cd937d0cd577604fe229/configuration.json",
+          "sha256": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd",
+          "byteCount": 76
+        }
+      ],
+      "totalBytes": 2498413436,
+      "minimumMemoryBytes": 5368709120
+    },
+    {
+      "id": "moss-tts-nano-100m-coreml",
+      "title": "MOSS-TTS-Nano",
+      "engine": "mossTTSNano",
+      "repository": "aufklarer/MOSS-TTS-Nano-100M-CoreML",
+      "revision": "fdef5dc64de5b68b126d6ff726ff32a02a783e42",
+      "license": "Apache-2.0",
+      "languages": [
+        "zh",
+        "en",
+        "de",
+        "es",
+        "fr",
+        "ja",
+        "it",
+        "hu",
+        "ko",
+        "ru",
+        "fa",
+        "ar",
+        "pl",
+        "pt",
+        "cs",
+        "da",
+        "sv",
+        "el",
+        "tr"
+      ],
+      "voices": [
+        {
+          "id": "default",
+          "name": "内置默认音色",
+          "languages": [
+            "zh",
+            "en"
+          ]
+        }
+      ],
+      "sampleRate": 48000,
+      "channels": 2,
+      "tokenizerRelativePath": null,
+      "files": [
+        {
+          "path": "config.json",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/config.json",
+          "sha256": "5e13b0ddd521cdcf99d9cc26e6859c2ea7dacfda1582dc9f78592437b5dedba4",
+          "byteCount": 56490
+        },
+        {
+          "path": "tokenizer_swift.json",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/tokenizer_swift.json",
+          "sha256": "d17408c4e51adaaa413e4ecbeeba760d5356f4ac668487edb7b2446957c6d627",
+          "byteCount": 1011701
+        },
+        {
+          "path": "GlobalDecoder.mlmodelc/model.mil",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/GlobalDecoder.mlmodelc/model.mil",
+          "sha256": "ed5d1cbf2914f5398e014f8ca436ffd5711fbb002679716ff74d7c59d434e83e",
+          "byteCount": 370896
+        },
+        {
+          "path": "LocalDecoder.mlmodelc/model.mil",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/LocalDecoder.mlmodelc/model.mil",
+          "sha256": "dbb8c46ee757c48663a8cbb11582eb0da50388752bc15b9ae100a90985934709",
+          "byteCount": 34685
+        },
+        {
+          "path": "CodecDecoder.mlmodelc/model.mil",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecDecoder.mlmodelc/model.mil",
+          "sha256": "f15e4428042cbc4947f79812d77f2b6ecfc3444f395fd66ce7ec358c84c60564",
+          "byteCount": 417780
+        },
+        {
+          "path": "CodecEncoder.mlmodelc/model.mil",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecEncoder.mlmodelc/model.mil",
+          "sha256": "35ae54e08bce1f2a4d8f4f6ea11eee9a066cb9dd156af219d8dd29f717e46496",
+          "byteCount": 417982
+        },
+        {
+          "path": "GlobalDecoder.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/GlobalDecoder.mlmodelc/coremldata.bin",
+          "sha256": "e7e524000edf14a62e3ce803230a4010080d89069aa8bbfb5374de4dd5c7db5e",
+          "byteCount": 1577
+        },
+        {
+          "path": "LocalDecoder.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/LocalDecoder.mlmodelc/coremldata.bin",
+          "sha256": "38bbaaeda0358884c4dfecf211bb7c706eb2e71d4cbd2dc2b18250b6fa6dd9fd",
+          "byteCount": 730
+        },
+        {
+          "path": "CodecDecoder.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecDecoder.mlmodelc/coremldata.bin",
+          "sha256": "6bb443b643238ad884c842e65344538f5e10422aff789635049f9a4845c5bf52",
+          "byteCount": 1759
+        },
+        {
+          "path": "CodecEncoder.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecEncoder.mlmodelc/coremldata.bin",
+          "sha256": "627007a9025202726c435354ff4059cdad35d576a907abeb149ed4aae4c1895e",
+          "byteCount": 1759
+        },
+        {
+          "path": "GlobalDecoder.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/GlobalDecoder.mlmodelc/weights/weight.bin",
+          "sha256": "ecce4ece9bdb02e481bef32ac77cddd7db3de7d39d4ee35573bb0e6b785cc5f1",
+          "byteCount": 220460032
+        },
+        {
+          "path": "LocalDecoder.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/LocalDecoder.mlmodelc/weights/weight.bin",
+          "sha256": "9fde8d6c996de26b9d031dd400e02b7a369f9a3fcebe45d277fed172f8f32341",
+          "byteCount": 78693892
+        },
+        {
+          "path": "CodecDecoder.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecDecoder.mlmodelc/weights/weight.bin",
+          "sha256": "f7fb51950c4b4ddb18b933f96660aab28d885c7e350bdb8e61b23677ecfa834d",
+          "byteCount": 22170656
+        },
+        {
+          "path": "CodecEncoder.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecEncoder.mlmodelc/weights/weight.bin",
+          "sha256": "bc6b8d5854bede400386f8ac588b164215583c476eda991120938451163341f4",
+          "byteCount": 45041856
+        },
+        {
+          "path": "GlobalDecoder.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/GlobalDecoder.mlmodelc/analytics/coremldata.bin",
+          "sha256": "a5d7506e47883189854fd2e180e4463b260af0c2fc9042b47cf6fa8a2a3f95b3",
+          "byteCount": 243
+        },
+        {
+          "path": "LocalDecoder.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/LocalDecoder.mlmodelc/analytics/coremldata.bin",
+          "sha256": "e01a8e8cbd54756b2b6412c60d6fbd8e7cdf31fea48d293f66fa0a3e1797e82c",
+          "byteCount": 243
+        },
+        {
+          "path": "CodecDecoder.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecDecoder.mlmodelc/analytics/coremldata.bin",
+          "sha256": "ee87472d14660461f08b499fa8803bb3d2e51bc3263a08d70634b9d43a83eac5",
+          "byteCount": 243
+        },
+        {
+          "path": "CodecEncoder.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/aufklarer/MOSS-TTS-Nano-100M-CoreML/resolve/fdef5dc64de5b68b126d6ff726ff32a02a783e42/CodecEncoder.mlmodelc/analytics/coremldata.bin",
+          "sha256": "26a745bd513ebed511b6fece9d65e8cba9dcd06244ab59967e33cf9c326d2918",
+          "byteCount": 243
+        }
+      ],
+      "totalBytes": 368682767,
+      "minimumMemoryBytes": 805306368
+    }
+  ]
+}

@@ -1619,6 +1619,7 @@ final class ThreadDetailViewModel: ObservableObject {
     private func startLiveUpdates() {
         liveEventTask?.cancel()
         observedServiceRunID = nil
+        liveStreamedText = ""
         guard let run = selectedRun else { return }
         liveStateName = run.state
         liveReasoningText = ""

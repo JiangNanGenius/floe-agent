@@ -25,7 +25,8 @@ import FloeNotes
 enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
     /// Chat plus approved tool calls (default agent behavior).
     case agent
-    /// Chat only — no tool execution requested.
+    /// Conversation with public web and associated-file reads. Runtime
+    /// policy enforces this ceiling independently of the selected model.
     case chat
     /// Read-only discovery that produces a reviewable plan.
     case plan
@@ -69,7 +70,7 @@ enum AgentExecutionMode: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    var toolsEnabled: Bool { self != .chat }
+    var toolsEnabled: Bool { true }
 }
 
 /// Where the next run executes. Hosts are wired when SSH tools land;
@@ -167,6 +168,9 @@ struct ThreadComposerView: View {
 
     let onSend: () -> Void
     let onStop: () -> Void
+    /// Opens the app-owned continuous voice surface. Dictation remains a
+    /// separate action and never sends a transcript automatically.
+    var onContinuousVoice: (() -> Void)? = nil
     var onManualCompact: (() -> Void)? = nil
     var onPermissions: () -> Void = {}
     var approvalMode: TaskApprovalMode = .ask
@@ -216,6 +220,9 @@ struct ThreadComposerView: View {
     /// Display name of a model whose *default persistence* failed; the
     /// selection itself is already active for this composer.
     @State private var modelPersistenceFailure: String?
+    @State private var chatReasoningPreference: ChatReasoningPreference = .fast
+    @State private var chatReasoningRevision: UInt64 = 0
+    @State private var isSavingChatReasoning = false
     @State private var dictationPrefix = ""
     /// Draft identity that started the current voice session. A transcript
     /// (including the final one draining after Stop) may only land in the
@@ -252,6 +259,7 @@ struct ThreadComposerView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var router: AppRouter
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.continuousVoiceActive) private var continuousVoiceActive
     @Environment(\.composerHeightBudget) private var composerHeightBudget
 
     /// Persistence identity for the draft: the conversation in a thread, or
@@ -259,6 +267,10 @@ struct ThreadComposerView: View {
     /// launch/send and is only the Notes-picker identity).
     private var draftKey: UUID {
         contextID ?? draftIdentity ?? ComposerDraftStore.homeDraftID
+    }
+
+    private var chatPreferenceOwnerID: UUID {
+        contextID ?? notesDraftID ?? draftKey
     }
 
     var body: some View {
@@ -345,7 +357,7 @@ struct ThreadComposerView: View {
                 text: $draft,
                 restoredSelection: editorSelection,
                 undoManager: composerUndoManager,
-                canSend: canSend && !isAttachmentProcessing,
+                canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
                 onSend: { onSend() },
                 onFinalSelection: { range in
                     // Conversation identity guard: a late callback from a
@@ -478,6 +490,17 @@ struct ThreadComposerView: View {
             } else {
                 environment.workspaceCenter.closeCurrentWorkspace()
             }
+        }
+        .task(id: "\(chatPreferenceOwnerID.uuidString):\(agentMode.rawValue)") {
+            guard agentMode == .chat, !temporary else { return }
+            let owner = chatPreferenceOwnerID
+            chatReasoningRevision &+= 1
+            let revision = chatReasoningRevision
+            isSavingChatReasoning = false
+            let preference = await environment.conversationCenter.chatReasoningPreference(for: owner)
+            guard !Task.isCancelled, owner == chatPreferenceOwnerID,
+                  revision == chatReasoningRevision else { return }
+            chatReasoningPreference = preference
         }
         .onChange(of: isRunning) { _, running in
             if running { attachmentError = nil }
@@ -849,7 +872,7 @@ struct ThreadComposerView: View {
             ComposerReturnField(
                 text: $draft,
                 placeholder: String(localized: "home.new_task.placeholder"),
-                canSend: canSend && !isAttachmentProcessing,
+                canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
                 lineLimit: 1...8,
                 maxHeightBudget: composerHeightBudget,
                 restoredSelection: editorSelection,
@@ -919,7 +942,7 @@ struct ThreadComposerView: View {
                     .background(FloeTheme.primary.opacity(0.09), in: Circle())
             }
             .buttonStyle(.plain)
-            .disabled(voiceInput.state == .requestingPermission
+            .disabled(continuousVoiceActive || voiceInput.state == .requestingPermission
                       || voiceInput.state == .preparing
                       || voiceInput.state == .stopping)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
@@ -927,6 +950,24 @@ struct ThreadComposerView: View {
             .accessibilityValue(voiceAccessibilityValue)
             .accessibilityHint("voice.hint")
             .accessibilityIdentifier("composer.voice")
+
+            if let onContinuousVoice, !documentAssistant {
+                if agentMode == .chat || temporary {
+                    continuousVoiceButton(action: onContinuousVoice)
+                } else {
+                    Menu {
+                        Button("voice.conversation.switch_and_start") {
+                            agentMode = .chat
+                            onContinuousVoice()
+                        }
+                    } label: {
+                        continuousVoiceIcon
+                    }
+                    .disabled(!providerConfigured || isRunning || continuousVoiceActive || isSavingChatReasoning)
+                    .accessibilityLabel("voice.conversation.open")
+                    .accessibilityIdentifier("composer.continuous_voice")
+                }
+            }
 
             if isRunning {
                 Button(role: .destructive) {
@@ -959,7 +1000,7 @@ struct ThreadComposerView: View {
                 }
             }
             .buttonStyle(.plain)
-            .disabled(!canSend || isAttachmentProcessing)
+            .disabled(!canSend || isAttachmentProcessing || isSavingChatReasoning)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel(sendAccessibilityLabel)
             .accessibilityIdentifier("composer.send")
@@ -1040,12 +1081,27 @@ struct ThreadComposerView: View {
 
     // MARK: - Context row: model / project / target / mode
 
+    private var continuousVoiceIcon: some View {
+        Image(systemName: "waveform")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(FloeTheme.primary)
+            .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+    }
+
+    private func continuousVoiceButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) { continuousVoiceIcon }
+            .buttonStyle(.plain)
+            .disabled(!providerConfigured || isRunning || continuousVoiceActive || isSavingChatReasoning)
+            .accessibilityLabel("voice.conversation.open")
+            .accessibilityIdentifier("composer.continuous_voice")
+    }
+
     private var contextRow: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 modelPicker
                 reasoningPicker
-                if !embedded, !temporary {
+                if !embedded, !temporary, agentMode != .chat {
                     projectPicker
                     targetPicker
                 }
@@ -1076,7 +1132,7 @@ struct ThreadComposerView: View {
                     }
                     .accessibilityLabel("chat.thread_composer_view.send_method_while_running")
                 }
-                if !documentAssistant, !temporary {
+                if !documentAssistant, !temporary, agentMode != .chat {
                     Button { onPermissions() } label: {
                         composerChip(title: approvalModeTitle, systemImage: "lock.shield")
                     }
@@ -1379,7 +1435,26 @@ struct ThreadComposerView: View {
     /// translate it to its own supported wire fields.
     @ViewBuilder
     private var reasoningPicker: some View {
-        if let model = models.first(where: { $0.id == selectedModelID }) {
+        if agentMode == .chat, !temporary {
+            Menu {
+                ForEach(ChatReasoningPreference.allCases) { preference in
+                    Button {
+                        updateChatReasoning(preference)
+                    } label: {
+                        if chatReasoningPreference == preference {
+                            Label(chatReasoningTitle(preference), systemImage: "checkmark")
+                        } else {
+                            Text(chatReasoningTitle(preference))
+                        }
+                    }
+                }
+            } label: {
+                composerChip(title: chatReasoningTitle(chatReasoningPreference), systemImage: "brain.head.profile")
+            }
+            .disabled(isSavingChatReasoning)
+            .accessibilityLabel("model.reasoning.effort")
+            .accessibilityIdentifier("composer.chat_reasoning")
+        } else if let model = models.first(where: { $0.id == selectedModelID }) {
             Menu {
                 ForEach(ModelReasoningEffort.allCases) { effort in
                     Button {
@@ -1400,6 +1475,37 @@ struct ThreadComposerView: View {
             }
             .accessibilityLabel("model.reasoning.effort")
             .accessibilityIdentifier("composer.reasoning_effort")
+        }
+    }
+
+    private func updateChatReasoning(_ preference: ChatReasoningPreference) {
+        let owner = chatPreferenceOwnerID
+        let old = chatReasoningPreference
+        chatReasoningRevision &+= 1
+        let revision = chatReasoningRevision
+        chatReasoningPreference = preference
+        isSavingChatReasoning = true
+        Task { @MainActor in
+            do {
+                try await environment.conversationCenter.setChatReasoningPreference(preference, for: owner)
+                guard owner == chatPreferenceOwnerID, revision == chatReasoningRevision else { return }
+                isSavingChatReasoning = false
+            } catch {
+                guard owner == chatPreferenceOwnerID, revision == chatReasoningRevision else { return }
+                chatReasoningPreference = old
+                isSavingChatReasoning = false
+                attachmentError = presentableComposerError(error, operation: String(localized: "chat.reasoning.save"))
+            }
+        }
+    }
+
+    private func chatReasoningTitle(_ preference: ChatReasoningPreference) -> String {
+        switch preference {
+        case .fast: String(localized: "chat.reasoning.fast")
+        case .low: reasoningTitle(.low)
+        case .medium: reasoningTitle(.medium)
+        case .high: reasoningTitle(.high)
+        case .maximum: reasoningTitle(.maximum)
         }
     }
 

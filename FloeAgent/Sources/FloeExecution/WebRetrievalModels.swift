@@ -281,6 +281,68 @@ public struct WebSearchProviderConfiguration: Codable, Identifiable, Hashable, S
     }
 }
 
+/// Storage identity constants for the searchable provider catalog flow.
+/// v1 (`providers.v1`) is the historical auto-preset list; v2 is the
+/// user-instance store. The v1 bytes are never rewritten by v2 code: they
+/// stay readable by older builds and act as the natural migration source,
+/// next to the explicit `migrationBackupKey` written by the v1→v2 move.
+public enum WebSearchInstanceStore {
+    public static let legacyProvidersKey = "floe.webSearch.providers.v1"
+    public static let instancesKey = "floe.webSearch.instances.v2"
+    public static let migrationBackupKey = "floe.webSearch.v1.migration-backup"
+    public static let keychainService = "org.floeagent.ios.web-search"
+
+    /// Instance-owned Keychain account. Every added instance gets its own
+    /// account derived from its provider UUID, so two accounts of the same
+    /// brand never share a secret and no global rewrite can move one.
+    public static func instanceCredentialAccount(for providerID: UUID) -> String {
+        "web-search.instance.\(providerID.uuidString.lowercased())"
+    }
+}
+
+/// A user-added search provider instance: the runtime configuration plus
+/// declarative catalog provenance. `appliedCatalogVersion` records which
+/// signed catalog revision the managed defaults were last reviewed against;
+/// `overrides` names the fields the user personally set, so a catalog update
+/// merges only the values still controlled by the catalog. A nil
+/// `catalogCredentialKeys` means the instance predates catalog awareness (no
+/// recorded credential schema), which suppresses auth-change proposals until
+/// the user adds or edits through a catalog entry.
+public struct WebSearchProviderInstance: Codable, Identifiable, Hashable, Sendable {
+    public var configuration: WebSearchProviderConfiguration
+    public var presetID: String?
+    public var appliedCatalogVersion: String?
+    public var overrides: Set<String>
+    public var catalogCredentialKeys: [String]?
+
+    public var id: UUID { configuration.id }
+
+    public init(
+        configuration: WebSearchProviderConfiguration,
+        presetID: String?,
+        appliedCatalogVersion: String?,
+        overrides: Set<String> = [],
+        catalogCredentialKeys: [String]? = nil
+    ) {
+        self.configuration = configuration
+        self.presetID = presetID
+        self.appliedCatalogVersion = appliedCatalogVersion
+        self.overrides = overrides
+        self.catalogCredentialKeys = catalogCredentialKeys
+    }
+
+    /// The instance-owned credential account for this provider identity.
+    public static func credentialAccount(for providerID: UUID) -> String {
+        WebSearchInstanceStore.instanceCredentialAccount(for: providerID)
+    }
+
+    /// Managed field names the catalog can change for this instance, used by
+    /// the editor to record what the user touched.
+    public static let catalogManagedOverrideKeys: Set<String> = [
+        "displayName", "endpoint", "options"
+    ]
+}
+
 /// Decrypted only for the duration of a request. Provider-specific keys use
 /// stable names: apiKey, secretId, secretKey, engineId, projectId.
 public struct WebSearchCredential: Codable, Hashable, Sendable {
@@ -464,3 +526,23 @@ public enum WebRetrievalError: Error, LocalizedError, Sendable {
 }
 
 public typealias WebSearchConfigurationResolver = @Sendable () async -> [(WebSearchProviderConfiguration, WebSearchCredential)]
+
+/// Outcome of the settings-page Test Search. Exactly one provider is ever
+/// attempted, with an in-memory credential; the result is UI feedback, never
+/// evidence that a run or a provider is production-ready.
+public struct WebSearchTestOutcome: Sendable {
+    public static let notConfiguredReason = "provider-not-configured"
+
+    public var results: [WebSearchResult]
+    /// Machine reason (stable label) or a provider error description. The UI
+    /// maps `notConfiguredReason` to product copy and shows provider errors
+    /// verbatim (they never contain credentials).
+    public var error: String?
+
+    public init(results: [WebSearchResult], error: String?) {
+        self.results = results
+        self.error = error
+    }
+
+    public var didSucceed: Bool { error == nil && !results.isEmpty }
+}

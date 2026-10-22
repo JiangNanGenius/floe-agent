@@ -14,12 +14,32 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build  # noqa: E402
 
+# Packages referenced by the currently published, signed index.json.
 EXPECTED_IDS = {
     "floe.prompts.core",
     "floe.help.quickstart",
     "floe.templates.report",
     "floe.providers.compatibility",
     "floe.models.catalog-metadata",
+}
+
+# Staged packages: sources and deterministic package bytes are committed, but
+# the index is NOT regenerated here. The serialized release owner re-signs
+# index.json/index.sig once; until then the existing published signature must
+# stay byte-identical (never replace it with an unsigned index). When the
+# staged package is signed, move its id into EXPECTED_IDS.
+STAGED_IDS = {"floe.search.providers"}
+
+SEARCH_CATALOG_ADAPTERS = {
+    "bocha": "bochaWeb",
+    "tencent-wsa": "tencentWSA",
+    "volcengine": "volcengine",
+    "brave": "brave",
+    "tavily": "tavily",
+    "exa": "exa",
+    "google-programmable": "googleProgrammable",
+    "searxng": "searxng",
+    "custom-interface": "custom",
 }
 
 
@@ -39,15 +59,72 @@ class ContentHubBuildTests(unittest.TestCase):
 
     def test_committed_repo_artifacts_match_sources(self):
         entries, packages = build.plan(build.ROOT / "sources", build.PATH_PREFIX)
-        self.assertEqual({entry["id"] for entry in entries}, EXPECTED_IDS)
+        self.assertEqual({entry["id"] for entry in entries}, EXPECTED_IDS | STAGED_IDS)
+        # Every committed package byte, including the staged (unsigned) one,
+        # must match its sources exactly.
         build.write_packages(build.ROOT, packages, check=True)
-        payload = build.build_index(entries, build.ROOT, sign=False)
+        signed_index = json.loads((build.ROOT / "index.json").read_bytes())
+        published_ids = {entry["id"] for entry in signed_index["entries"]}
+        # Both sides of the signing transaction are valid: the existing feed
+        # stays signed before publication, and the publish workflow verifies
+        # the newly signed candidate before its promotion to EXPECTED_IDS.
+        # Never omit an established package or admit an unknown candidate.
+        self.assertTrue(EXPECTED_IDS <= published_ids)
+        self.assertTrue(published_ids <= EXPECTED_IDS | STAGED_IDS)
+        published = [entry for entry in entries if entry["id"] in published_ids]
+        payload = build.build_index(published, build.ROOT, sign=False)
         self.assertEqual(payload, (build.ROOT / "index.json").read_bytes())
+        # The published signature still verifies against the pinned identity.
+        build.check(build.ROOT, build.REPO, build.PATH_PREFIX, build.ROOT / "public-key.json")
         for entry in entries:
             self.assertEqual(entry["path"], f"content-hub/packages/{entry['id']}/{entry['version']}/{entry['id']}.zip")
             self.assertFalse(entry["containsScripts"])
             self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
             self.assertRegex(entry["contentDigest"], r"^[0-9a-f]{64}$")
+
+    def test_staged_search_catalog_package(self):
+        source = build.ROOT / "sources/providers/floe.search.providers"
+        envelope = json.loads((source / "content.json").read_bytes())
+        self.assertEqual(envelope["id"], "floe.search.providers")
+        self.assertEqual(envelope["kind"], "providers")
+        self.assertEqual(envelope["version"], "1.0.0")
+        # The catalog payload is only understood by app builds that ship the
+        # searchable-catalog flow; 1.7.0 would silently block activation.
+        self.assertEqual(envelope["minimumAppVersion"], "1.7.47")
+        self.assertFalse(envelope["containsScripts"])
+        self.assertTrue(envelope["releaseNotes"]["en"])
+        self.assertTrue(envelope["releaseNotes"]["zh-Hans"])
+
+        payload_path = source / "SearchProviderCatalog.json"
+        payload = json.loads(payload_path.read_bytes())
+        self.assertEqual(payload["schemaVersion"], 1)
+        self.assertEqual(payload["id"], envelope["id"])
+        self.assertEqual(payload["version"], envelope["version"])
+        entries = payload["entries"]
+        self.assertEqual(len(entries), len(SEARCH_CATALOG_ADAPTERS))
+        self.assertEqual(
+            {entry["presetID"]: entry["adapterKind"] for entry in entries},
+            SEARCH_CATALOG_ADAPTERS,
+        )
+        for entry in entries:
+            # Entries describe adapters and defaults only: no source switch,
+            # no enablement and no secret may exist in catalog data.
+            self.assertNotIn("enabled", entry)
+            self.assertNotIn("apiKey", json.dumps(entry).lower().replace("apikey", ""))
+            for field in ("name", "blurb"):
+                localized = entry[field]
+                self.assertTrue(localized["en"].strip())
+                self.assertTrue(localized["zh-Hans"].strip())
+            if entry.get("defaultEndpoint") is not None:
+                self.assertTrue(entry["defaultEndpoint"].startswith("https://"))
+
+        # The committed package zip contains the exact payload bytes.
+        entries_plan, packages = build.plan(build.ROOT / "sources", build.PATH_PREFIX)
+        staged = next(entry for entry in entries_plan if entry["id"] == "floe.search.providers")
+        relative = staged["path"][len(build.PATH_PREFIX):]
+        files = build.unpack(packages[relative])
+        self.assertEqual(files["SearchProviderCatalog.json"], payload_path.read_bytes())
+        self.assertEqual(files["content.json"], (source / "content.json").read_bytes())
 
     def test_deterministic_rebuild(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -74,7 +151,10 @@ class ContentHubBuildTests(unittest.TestCase):
             private = fixture / "signing-key.b64"
             self.assertTrue(private.is_file())
             self.assertEqual(private.stat().st_mode & 0o777, 0o600)
-            self.assertEqual(len(list((fixture / "packages").rglob("*.zip"))), 5)
+            self.assertEqual(
+            len(list((fixture / "packages").rglob("*.zip"))),
+            len(EXPECTED_IDS | STAGED_IDS),
+        )
 
     def test_tampered_package_byte_fails(self):
         with tempfile.TemporaryDirectory() as temporary:

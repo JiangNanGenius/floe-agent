@@ -23,6 +23,17 @@ private struct ThreadScrollMetrics: Equatable {
     let bottomDistance: Double
 }
 
+private struct AutomaticReadSignal: Equatable {
+    let loaded: Bool
+    let runID: UUID?
+    let runState: String?
+    let lastEventID: UUID?
+    let running: Bool
+    let draining: Bool
+    let lastMessageID: UUID?
+    let enabled: Bool
+}
+
 /// A user-selected context staged for review in the regular composer; never auto-sends.
 struct ThreadComposerInput: Identifiable {
     let id = UUID()
@@ -42,6 +53,10 @@ struct ThreadDetailView: View {
     @EnvironmentObject private var designEntryState: DesignEntryStateCenter
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.continuousVoiceWindowID) private var voiceWindowID
+    @Environment(\.continuousVoiceActive) private var continuousVoiceActive
+    @StateObject private var automaticRead = ChatAutomaticReadController()
+    @State private var autoReadEnabled = false
     @State private var editingPendingInput: PendingUserInput?
     @State private var showingGoalBuilder = false
     @State private var showingPermissionsSheet = false
@@ -153,7 +168,32 @@ struct ThreadDetailView: View {
                 consumedInputID = input.id
                 onInputConsumed(input.id)
             }
-            .onDisappear { viewModel.stopLiveUpdates() }
+            .onDisappear {
+                automaticRead.cancel()
+                viewModel.stopLiveUpdates()
+            }
+            .onReceive(environment.continuousVoicePresentation.$returnedDraft) { returned in
+                guard let returned, returned.windowID == voiceWindowID,
+                      returned.ownerID == viewModel.conversationID else { return }
+                if viewModel.isTemporary {
+                    viewModel.draft += (viewModel.draft.isEmpty || returned.text.isEmpty ? "" : "\n\n") + returned.text
+                } else {
+                    viewModel.draft = returned.text
+                    viewModel.attachments = returned.attachments
+                }
+                Task { @MainActor in environment.continuousVoicePresentation.consumeReturnedDraft(returned.id) }
+            }
+            .onReceive(environment.ttsSettingsService.$snapshot) { settings in
+                autoReadEnabled = settings.autoReadEnabled
+            }
+            .onChange(of: automaticReadSignal, initial: true) { _, _ in
+                refreshAutomaticRead()
+            }
+            .onReceive(environment.continuousVoicePresentation.$activeConversationID) { conversationID in
+                if conversationID == viewModel.conversationID {
+                    viewModel.selectAgentMode(.chat)
+                }
+            }
 
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
@@ -517,7 +557,13 @@ struct ThreadDetailView: View {
                             messageID: persisted.id, attachmentID: item.attachmentID)
                     })
             } else {
-                AssistantMessageView(text: text, isStreaming: false, onSaveToNotes: onSaveToNotes)
+                AssistantMessageView(
+                    text: text, isStreaming: false,
+                    allowsReadAloud: !viewModel.isRunning && viewModel.selectedRunID.flatMap {
+                        FinalAnswerSpeech.answer(runID: $0, events: viewModel.events, messages: viewModel.messages)
+                    }?.id.uuidString == idSuffix,
+                    onSaveToNotes: onSaveToNotes
+                )
             }
 
         case .event(let event):
@@ -1043,45 +1089,59 @@ struct ThreadDetailView: View {
                 if viewModel.needsProvider {
                     addProviderBar
                 }
-                ThreadComposerView(
-                    draft: $viewModel.draft,
-                    selectedModelID: $viewModel.selectedModelID,
-                    models: viewModel.availableModels,
-                    modelName: viewModel.selectedModelName,
-                    providerConfigured: !viewModel.needsProvider,
-                    isRunning: viewModel.isRunning,
-                    runningInputMode: $viewModel.runningInputMode,
-                    canSend: viewModel.canSend,
-                    projects: viewModel.availableProjects,
-                    projectSelectionLocked: true,
-                    selectedProjectID: $viewModel.selectedProjectID,
-                    executionTarget: $viewModel.executionTarget,
-                    agentMode: Binding(
-                        get: { viewModel.effectiveAgentMode },
-                        set: { viewModel.selectAgentMode($0) }
-                    ),
-                    attachments: $viewModel.attachments,
-                    onSend: {
-                        // Sending owns the composer from this point. End any
-                        // in-flight dictation first so late partial results
-                        // cannot mutate the already-submitted prompt.
-                        environment.voiceInput.stop()
-                        Task { await viewModel.send() }
-                    },
-                    onStop: { Task { await viewModel.cancel() } },
-                    onManualCompact: { viewModel.requestManualCompaction() },
-                    onPermissions: { showingPermissionsSheet = true },
-                    approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
-                    contextID: viewModel.conversationID,
-                    isDraftConsumedBySend: viewModel.isConsumingDraft,
-                    embedded: embedded,
-                    documentAssistant: documentAssistant,
-                    temporary: viewModel.isTemporary,
-                    draftPersistenceEnabled: viewModel.shouldPersistDraftEdits,
-                    onDraftEdited: { viewModel.noteDraftEditedByUser() }
-                )
+                inlineTaskComposer
             }
         }
+    }
+
+    private var threadContinuousVoiceAction: (() -> Void)? {
+        guard !documentAssistant else { return nil }
+        return { openContinuousVoice() }
+    }
+
+    private var inlineTaskComposer: some View {
+        ThreadComposerView(
+            draft: $viewModel.draft,
+            selectedModelID: $viewModel.selectedModelID,
+            models: viewModel.availableModels,
+            modelName: viewModel.selectedModelName,
+            providerConfigured: !viewModel.needsProvider,
+            isRunning: viewModel.isRunning,
+            runningInputMode: $viewModel.runningInputMode,
+            canSend: viewModel.canSend,
+            projects: viewModel.availableProjects,
+            projectSelectionLocked: true,
+            selectedProjectID: $viewModel.selectedProjectID,
+            executionTarget: $viewModel.executionTarget,
+            agentMode: Binding(
+                get: { viewModel.effectiveAgentMode },
+                set: { viewModel.selectAgentMode($0) }
+            ),
+            attachments: $viewModel.attachments,
+            onSend: {
+                // Sending owns the composer from this point. End any
+                // in-flight dictation first so late partial results
+                // cannot mutate the already-submitted prompt.
+                environment.voiceInput.stop()
+                automaticRead.cancel()
+                Task { await viewModel.send() }
+            },
+            onStop: {
+                automaticRead.cancel()
+                Task { await viewModel.cancel() }
+            },
+            onContinuousVoice: threadContinuousVoiceAction,
+            onManualCompact: { viewModel.requestManualCompaction() },
+            onPermissions: { showingPermissionsSheet = true },
+            approvalMode: viewModel.taskPolicy.resolvedApprovalMode,
+            contextID: viewModel.conversationID,
+            isDraftConsumedBySend: viewModel.isConsumingDraft,
+            embedded: embedded,
+            documentAssistant: documentAssistant,
+            temporary: viewModel.isTemporary,
+            draftPersistenceEnabled: viewModel.shouldPersistDraftEdits,
+            onDraftEdited: { viewModel.noteDraftEditedByUser() }
+        )
     }
 
     private var addProviderBar: some View {
@@ -1098,6 +1158,63 @@ struct ThreadDetailView: View {
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(FloeTheme.pending.opacity(0.08))
+    }
+
+    private func openContinuousVoice() {
+        guard !viewModel.isRunning, let voiceWindowID,
+              let (_, model) = environment.conversationCenter.providerAndModel(
+                modelID: viewModel.selectedModelID
+              ) else { return }
+        let request = ContinuousVoiceRequest(
+            windowID: voiceWindowID, conversationID: viewModel.conversationID,
+            modelID: model.id, workspaceID: viewModel.selectedProjectID,
+            attachments: viewModel.isTemporary ? [] : viewModel.attachments,
+            onConversationCreated: { _ in },
+            onModelSelected: { viewModel.selectedModelID = $0 },
+            onAttachmentsConsumed: { files in
+                let ids = Set(files.map(\.id))
+                viewModel.attachments.removeAll { ids.contains($0.id) }
+            }
+        )
+        if environment.continuousVoicePresentation.present(request) {
+            environment.voiceInput.stop()
+            environment.speechService.stop()
+        }
+    }
+
+    private var automaticReadSignal: AutomaticReadSignal {
+        AutomaticReadSignal(
+            loaded: viewModel.hasLoaded, runID: viewModel.selectedRunID,
+            runState: viewModel.runs.first?.state, lastEventID: viewModel.events.last?.id,
+            running: viewModel.isRunning, draining: viewModel.isDraining,
+            lastMessageID: viewModel.messages.last?.id,
+            enabled: autoReadEnabled && !continuousVoiceActive && !documentAssistant
+        )
+    }
+
+    private func makeAutomaticReadStream(_ id: UUID) -> ChatReadAloudStream {
+        let handle = environment.speechService.beginStream(id: id)
+        return ChatReadAloudStream(
+            append: { handle.append($0) }, finish: { handle.finish() }, cancel: { handle.cancel() }
+        )
+    }
+
+    private func refreshAutomaticRead() {
+        guard viewModel.hasLoaded else { return }
+        automaticRead.establishHistoryBaseline(
+            viewModel.messages.suffix(80).map(\.id) + viewModel.events.suffix(200).map(\.id)
+        )
+        let enabled = automaticReadSignal.enabled
+            && viewModel.selectedRunID == viewModel.runs.first?.id
+        if !enabled { automaticRead.cancel() }
+        guard !viewModel.isRunning, !viewModel.isDraining,
+              viewModel.selectedRun?.state == "completed",
+              let runID = viewModel.selectedRunID,
+              let final = FinalAnswerSpeech.answer(runID: runID, events: viewModel.events, messages: viewModel.messages) else { return }
+        automaticRead.observeFinalMessages(
+            [(id: final.id, runID: Optional(final.runID), text: AnswerSpeechText.plainText(final.text))],
+            enabled: enabled, makeStream: makeAutomaticReadStream
+        )
     }
 }
 

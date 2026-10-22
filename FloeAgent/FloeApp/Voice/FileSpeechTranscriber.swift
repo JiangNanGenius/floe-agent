@@ -66,7 +66,7 @@ actor FileSpeechTranscriber {
                     var segments: [TimedSpeechSegment]?
                     if let whisper = kit {
                         do {
-                            let code: String? = language == .automatic ? nil : language == .english ? "en" : "zh"
+                            let code: String? = language.recognitionCode
                             let results = try await whisper.transcribe(audioArray: audio, decodeOptions: DecodingOptions(
                                 language: code, detectLanguage: code == nil, skipSpecialTokens: true,
                                 withoutTimestamps: false, wordTimestamps: true))

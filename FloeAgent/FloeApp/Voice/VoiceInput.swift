@@ -16,6 +16,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import FloeCore
 import Speech
 import AVFoundation
 
@@ -24,6 +25,7 @@ enum VoiceRecognitionLanguage: String, CaseIterable, Sendable {
     case simplifiedChinese
     case traditionalChinese
     case english
+    case japanese, korean, french, german, spanish, italian, portuguese, russian
 
     static let defaultsKey = "org.floeagent.voice.recognitionLanguage"
 
@@ -33,6 +35,24 @@ enum VoiceRecognitionLanguage: String, CaseIterable, Sendable {
         case .simplifiedChinese: Locale(identifier: "zh-CN")
         case .traditionalChinese: Locale(identifier: "zh-TW")
         case .english: Locale(identifier: "en-US")
+        case .japanese: Locale(identifier: "ja-JP")
+        case .korean: Locale(identifier: "ko-KR")
+        case .french: Locale(identifier: "fr-FR")
+        case .german: Locale(identifier: "de-DE")
+        case .spanish: Locale(identifier: "es-ES")
+        case .italian: Locale(identifier: "it-IT")
+        case .portuguese: Locale(identifier: "pt-BR")
+        case .russian: Locale(identifier: "ru-RU")
+        }
+    }
+    var recognitionCode: String? { self == .automatic ? nil : locale.language.languageCode?.identifier }
+    var displayName: String {
+        switch self {
+        case .automatic: return FloeL10n.l("settings.general_settings_view.automatic")
+        case .simplifiedChinese: return FloeL10n.l("settings.general.language.zh_hans")
+        case .traditionalChinese: return FloeL10n.l("settings.general_settings_view.text")
+        case .english: return "English"
+        default: return FloeL10n.l("voice.input.language." + rawValue)
         }
     }
 }
@@ -234,6 +254,8 @@ protocol VoiceAudioCapturing: AnyObject, Sendable {
     /// Throws a `VoiceInputFailure`-mappable error — never traps on an
     /// invalid input format.
     func start(into transcriber: any SpeechTranscribing) async throws
+    /// Production capture confirms at least one real (possibly silent) buffer.
+    func waitUntilReady() async throws
     /// Idempotent teardown: stops the engine, removes any tap, releases
     /// the audio session.
     func stop()
@@ -243,6 +265,7 @@ protocol VoiceAudioCapturing: AnyObject, Sendable {
 }
 
 extension VoiceAudioCapturing {
+    func waitUntilReady() async throws { }
     /// Seams without metering report an immediately-finished stream; the
     /// waveform then stays at its static baseline (never a timer).
     var levels: AsyncStream<VoiceAudioLevel> {

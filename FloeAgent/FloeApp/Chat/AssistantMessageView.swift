@@ -18,6 +18,7 @@ struct AssistantMessageView: View {
     /// True while the owning run is non-terminal (incremental tail
     /// reparse instead of full-document parse per token).
     var isStreaming: Bool = false
+    var allowsReadAloud: Bool = true
     var onSaveToNotes: ((String) -> Void)? = nil
     /// Real file/image parts carried by the assistant notice. A returned
     /// adopted design result renders through this SAME shared chip surface
@@ -26,6 +27,7 @@ struct AssistantMessageView: View {
     var onOpenAttachment: ((AttachmentChipItem) -> Void)? = nil
 
     @EnvironmentObject private var speechService: SpeechService
+    @Environment(\.continuousVoiceActive) private var continuousVoiceActive
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -35,13 +37,28 @@ struct AssistantMessageView: View {
             }
             if !isStreaming, !text.isEmpty {
                 HStack(spacing: 12) {
-                    readAloudButton
+                    if allowsReadAloud { readAloudButton }
+                    if speechService.isSpeaking && ownsPlayback {
+                        Button(speechService.isPaused ? "voice.action.resume" : "voice.action.pause", systemImage: speechService.isPaused ? "play.fill" : "pause.fill") {
+                            if speechService.isPaused { speechService.resume() } else { speechService.pause() }
+                        }
+                        .font(FloeTheme.Typography.metadata)
+                        .frame(minHeight: FloeTheme.minimumTarget)
+                    }
                     copyButton
                     if let onSaveToNotes {
                         Button("chat.assistant_message_view.save_to_notes", systemImage: "square.and.arrow.down") { onSaveToNotes(text) }
                             .font(FloeTheme.Typography.metadata).frame(minHeight: FloeTheme.minimumTarget)
                     }
                 }
+            }
+            if allowsReadAloud, let failed = speechService.failedText, AnswerSpeechText.plainText(failed) == AnswerSpeechText.plainText(text), let failureKey = speechService.failureKey {
+                HStack {
+                    Text(LocalizedStringKey(failureKey)).font(.footnote).foregroundStyle(.red)
+                    Button("voice.action.retry") { speechService.retry() }
+                    Button("voice.action.system_voice") { speechService.useSystemVoice() }
+                }
+                .disabled(continuousVoiceActive)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,9 +80,13 @@ struct AssistantMessageView: View {
         .accessibilityLabel("workspace.workspace_canvas_view.copy")
     }
 
+    private var ownsPlayback: Bool {
+        guard let current = speechService.speakingText else { return false }
+        return AnswerSpeechText.plainText(current) == AnswerSpeechText.plainText(text)
+    }
+
     private var readAloudButton: some View {
-        let isThisMessageSpeaking = speechService.isSpeaking
-            && speechService.speakingText == text
+        let isThisMessageSpeaking = speechService.isSpeaking && ownsPlayback
         return Button {
             speechService.speak(text)
         } label: {
@@ -77,6 +98,7 @@ struct AssistantMessageView: View {
             .foregroundStyle(.secondary)
         }
         .buttonStyle(.plain)
+        .disabled(continuousVoiceActive)
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(isThisMessageSpeaking ? "chat.assistant_message_view.stop_reading" : "chat.assistant_message_view.read_aloud")
     }

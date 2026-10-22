@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.search.providers",
+  "version": "1.0.0",
+  "kind": "providers",
+  "minimumAppVersion": "1.7.47",
+  "sourceRevision": "",
+  "containsScripts": false,
+  "requiredCapabilities": [],
+  "dependencies": [],
+  "releaseNotes": {
+    "zh-Hans": "搜索服务目录：可搜索的添加流程与独立账号配置；目录更新在应用内审核后生效。",
+    "en": "Search provider catalog: searchable add flow with independent accounts; catalog updates are reviewed in-app before applying."
+  },
+  "privacy": {
+    "zh-Hans": "本包仅包含声明式目录数据，不含密钥、令牌或可执行代码。",
+    "en": "This package contains declarative catalog data only: no keys, tokens or executable code."
+  }
+}

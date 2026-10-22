@@ -463,3 +463,181 @@ struct ContentUpdateStoreTests {
         #expect(state.entries["floe.providers.compatibility"]?.entry.version == "1.0.0")
     }
 }
+
+
+// MARK: - Signed search-provider catalog package
+
+@Suite("Search provider content package")
+struct SearchProviderContentPackageTests {
+
+    static func payload(version: String, entries: String = #"[{"presetID":"brave","adapterKind":"brave","name":{"en":"Brave","zh-Hans":"Brave"},"blurb":{"en":"Index","zh-Hans":"索引"}}]"#) -> Data {
+        Data(#"{"schemaVersion":1,"id":"floe.search.providers","version":"\#(version)","entries":\#(entries)}"#.utf8)
+    }
+
+    static func envelope(version: String) -> Data {
+        Data(#"{"schemaVersion":1,"id":"floe.search.providers","version":"\#(version)","kind":"providers"}"#.utf8)
+    }
+
+    static func entry(version: String, files: [String: Data]) -> SignedContentEntry {
+        let zip = try! ContentUpdateStoreTests.zip(files)
+        return SignedContentEntry(
+            id: "floe.search.providers",
+            kind: .providers,
+            version: version,
+            schemaVersion: 1,
+            minimumAppVersion: "1.7.47",
+            requiredCapabilities: [],
+            dependencies: [],
+            path: "content-hub/packages/floe.search.providers/\(version)/floe.search.providers.zip",
+            size: zip.count,
+            sha256: SignedContentArchive.sha256Hex(zip),
+            contentDigest: SignedContentArchive.canonicalDigest(files),
+            releaseNotes: ["en": "Catalog", "zh-Hans": "目录"],
+            sourceRevision: "",
+            containsScripts: false
+        )
+    }
+
+    /// The shared structural gate accepts a correctly formed search catalog
+    /// payload and storage, and rejects identity drift or a missing payload
+    /// before any signed install can activate it.
+    @Test("Codec gates the search catalog payload by package identity")
+    func codecValidatesSearchPayload() throws {
+        let goodFiles = [
+            "content.json": Self.envelope(version: "1.0.0"),
+            "SearchProviderCatalog.json": Self.payload(version: "1.0.0")
+        ]
+        let goodEntry = Self.entry(version: "1.0.0", files: goodFiles)
+        try ContentPackageCodec(kind: .providers).validate(entry: goodEntry, files: goodFiles)
+
+        let missingPayload = ["content.json": Self.envelope(version: "1.0.0")]
+        let missingEntry = Self.entry(version: "1.0.0", files: missingPayload)
+        do {
+            try ContentPackageCodec(kind: .providers).validate(entry: missingEntry, files: missingPayload)
+            Issue.record("missing payload must be rejected")
+        } catch {
+            #expect(error as? ContentPackageError == .invalidContent(
+                "search provider packages require a bounded SearchProviderCatalog.json payload"
+            ))
+        }
+
+        let driftedFiles = [
+            "content.json": Self.envelope(version: "1.0.0"),
+            "SearchProviderCatalog.json": Self.payload(version: "9.9.9")
+        ]
+        let driftedEntry = Self.entry(version: "1.0.0", files: driftedFiles)
+        do {
+            try ContentPackageCodec(kind: .providers).validate(entry: driftedEntry, files: driftedFiles)
+            Issue.record("identity drift must be rejected")
+        } catch {
+            #expect(error as? ContentPackageError == .invalidContent(
+                "search provider catalog version must match the signed entry"
+            ))
+        }
+
+        // Missing Simplified Chinese copy is rejected too.
+        let unlocalized = [
+            "content.json": Self.envelope(version: "1.0.0"),
+            "SearchProviderCatalog.json": Data(#"{"schemaVersion":1,"id":"floe.search.providers","version":"1.0.0","entries":[{"presetID":"brave","adapterKind":"brave","name":{"en":"Brave"},"blurb":{"en":"Index"}}]}"#.utf8)
+        ]
+        let unlocalizedEntry = Self.entry(version: "1.0.0", files: unlocalized)
+        #expect(throws: (any Error).self) {
+            try ContentPackageCodec(kind: .providers).validate(entry: unlocalizedEntry, files: unlocalized)
+        }
+    }
+
+    /// The pre-existing compatibility provider package keeps its own payload
+    /// name and is not affected by the search-catalog dispatch.
+    @Test("Provider compatibility packages keep their existing gate")
+    func providerCompatibilityUnaffected() throws {
+        let files = [
+            "content.json": Data(#"{"schemaVersion":1,"id":"floe.providers.compatibility","version":"1.1.0","kind":"providers","notice":{"en":"Mapping","zh-Hans":"映射"}}"#.utf8),
+            "ProviderCatalog.json": Data(#"{"schemaVersion":1,"providers":[]}"#.utf8)
+        ]
+        let zip = try ContentUpdateStoreTests.zip(files)
+        let entry = SignedContentEntry(
+            id: "floe.providers.compatibility",
+            kind: .providers,
+            version: "1.1.0",
+            schemaVersion: 1,
+            minimumAppVersion: "1.7.0",
+            requiredCapabilities: [],
+            dependencies: [],
+            path: "content-hub/packages/floe.providers.compatibility/1.1.0/floe.providers.compatibility.zip",
+            size: zip.count,
+            sha256: SignedContentArchive.sha256Hex(zip),
+            contentDigest: SignedContentArchive.canonicalDigest(files),
+            releaseNotes: ["en": "Mapping", "zh-Hans": "映射"],
+            sourceRevision: "",
+            containsScripts: false
+        )
+        try ContentPackageCodec(kind: .providers).validate(entry: entry, files: files)
+    }
+
+    /// A rejected search-catalog revision leaves the previously active
+    /// catalog exactly in place (the add page keeps working on the old copy).
+    @Test("Failed search catalog install keeps the active catalog")
+    func failedInstallKeepsActiveCatalog() async throws {
+        let store = try ContentUpdateStoreTests.makeStore()
+
+        let goodFiles = [
+            "content.json": Self.envelope(version: "1.0.0"),
+            "SearchProviderCatalog.json": Self.payload(version: "1.0.0")
+        ]
+        let goodEntry = Self.entry(version: "1.0.0", files: goodFiles)
+        let goodZip = try ContentUpdateStoreTests.zip(goodFiles)
+        _ = try await store.commit(
+            [.init(entry: goodEntry, zip: goodZip)],
+            appVersion: "1.7.47",
+            allowedCapabilities: [],
+            domainValidate: Self.domainValidator
+        )
+        let active = try #require(
+            try await store.file(id: "floe.search.providers", relativePath: "SearchProviderCatalog.json")
+        )
+        #expect(active == Self.payload(version: "1.0.0"))
+
+        // New revision with structurally invalid payload entries (not array).
+        let brokenFiles = [
+            "content.json": Self.envelope(version: "1.1.0"),
+            "SearchProviderCatalog.json": Data(#"{"schemaVersion":1,"id":"floe.search.providers","version":"1.1.0","entries":"nope"}"#.utf8)
+        ]
+        let brokenEntry = Self.entry(version: "1.1.0", files: brokenFiles)
+        let brokenZip = try ContentUpdateStoreTests.zip(brokenFiles)
+        await #expect(throws: (any Error).self) {
+            _ = try await store.commit(
+                [.init(entry: brokenEntry, zip: brokenZip)],
+                appVersion: "1.7.47",
+                allowedCapabilities: [],
+                domainValidate: Self.domainValidator
+            )
+        }
+        let stillActive = try #require(
+            try await store.file(id: "floe.search.providers", relativePath: "SearchProviderCatalog.json")
+        )
+        #expect(stillActive == Self.payload(version: "1.0.0"))
+        let state = await store.currentState()
+        #expect(state.entries["floe.search.providers"]?.entry.version == "1.0.0")
+    }
+
+    /// Mirrors the app's domain gate shape: shared codec plus a package-local
+    /// typed payload check (the app uses `SearchProviderCatalogDocument`).
+    static let domainValidator: @Sendable (SignedContentEntry, [String: Data]) throws -> Void = { entry, files in
+        try ContentPackageCodec(kind: entry.kind).validate(entry: entry, files: files)
+        if entry.id == "floe.search.providers" {
+            guard let data = files["SearchProviderCatalog.json"],
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let entries = object["entries"] as? [[String: Any]],
+                  !entries.isEmpty else {
+                throw ContentPackageError.invalidContent("invalid search catalog payload")
+            }
+            for item in entries {
+                guard let presetID = item["presetID"] as? String,
+                      let adapterKind = item["adapterKind"] as? String,
+                      !presetID.isEmpty, !adapterKind.isEmpty else {
+                    throw ContentPackageError.invalidContent("invalid search catalog entry")
+                }
+            }
+        }
+    }
+}

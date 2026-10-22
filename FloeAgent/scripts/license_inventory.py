@@ -165,6 +165,27 @@ VENDORED_PACKAGES = (
             "section": "swift",
         },
     },
+    {
+        "identity": "speech-swift-tts",
+        "path": "ThirdParty/SpeechSwiftTTS",
+        "revision": "7baf2781d5c6a5d38b008a96eef3dca61c55f369",
+        "upstream": "https://github.com/soniqo/speech-swift.git",
+        "license": "Apache-2.0",
+        "note": (
+            "speech_swift_vendor",
+            "Includes the speech-swift AudioCommon, MLXCommon, Qwen3TTS and MossTTSNano subset, with Floe session cancellation and cache-reclamation adaptations. Model weights are optional downloads.",
+        ),
+        "document": {
+            "id": "speech-swift-tts",
+            "repositoryPath": "FloeApp/Resources/Licenses/SpeechSwiftTTS-LICENSE.txt",
+            "bundlePath": "Licenses/SpeechSwiftTTS-LICENSE.txt",
+            "titleKey": "settings.licenses.document.speech_swift.title",
+            "titleFallback": "Speech Swift",
+            "kind": "full_text",
+            "required": True,
+            "section": "swift",
+        },
+    },
 )
 VENDORED_LICENSE_NAME = "LICENSE"
 

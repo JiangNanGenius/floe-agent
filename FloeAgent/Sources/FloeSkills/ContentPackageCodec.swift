@@ -5,6 +5,16 @@
 // that ship declarative JSON (prompts/providers/models/help/templates) with
 // no executable code. Providers keep their own stricter validator on the app
 // side; this is the shared structural gate that runs before activation.
+//
+// Two `providers` payloads exist and are dispatched narrowly by package
+// identity, never by loosening either validator:
+//   * `floe.providers.compatibility` — provider/model compatibility mapping
+//     plus the separate ProviderCatalog.json document (typed validation stays
+//     in the app's ProviderCatalogIndex gate).
+//   * `floe.search.providers` — a search-provider catalog document. The
+//     structure and bilingual copy are checked here; adapter semantics
+//     (known adapter kind, endpoint policy, unsupported-entry fail-closing)
+//     are checked by the app's `SearchProviderCatalogDocument` gate.
 
 import Foundation
 import FloeCore
@@ -20,6 +30,14 @@ public struct ContentPackageCodec: Sendable {
     public static let maximumDocuments = 32
     public static let maximumSections = 64
     public static let maximumDocumentBytes = 1_048_576
+
+    /// Stable identity of the signed search-provider catalog package. Kept in
+    /// sync with `SearchProviderCatalog.packageID` (FloeExecution); the app
+    /// layer ties the two gates together.
+    public static let searchProvidersPackageID = "floe.search.providers"
+    public static let searchProviderCatalogPayload = "SearchProviderCatalog.json"
+    public static let maximumSearchCatalogBytes = 512 * 1_024
+    public static let maximumSearchCatalogEntries = 32
 
     /// Validates one staged package against its signed entry. Throws a
     /// `SkillValidationError`-shaped domain failure; callers map it to the
@@ -77,7 +95,12 @@ public struct ContentPackageCodec: Sendable {
             try validateReferencedFiles(object, keys: ["documents"], files: files)
         case .templates:
             try validateReferencedFiles(object, keys: ["template"], files: files)
-        case .providers, .models:
+        case .providers:
+            try validateLocalizedField(object["notice"])
+            if entry.id == Self.searchProvidersPackageID {
+                try validateSearchProviderCatalogPayload(entry: entry, files: files)
+            }
+        case .models:
             try validateLocalizedField(object["notice"])
         }
     }
@@ -172,6 +195,75 @@ public struct ContentPackageCodec: Sendable {
             _ = try AgentPromptOverlay(sections: runtimeSections)
         } catch {
             throw ContentPackageError.invalidContent(error.localizedDescription)
+        }
+    }
+
+    /// Structural gate for the signed search-provider catalog payload. This
+    /// deliberately knows nothing about adapter kinds: the package must carry
+    /// a bounded, version-locked, uniquely identified, bilingual document;
+    /// the app's typed validator decides which adapters this build compiles
+    /// and fails closed for the rest. Missing payload, identity drift or
+    /// malformed entries reject the whole package, so a failed install keeps
+    /// the previously active catalog.
+    private func validateSearchProviderCatalogPayload(entry: SignedContentEntry, files: [String: Data]) throws {
+        guard let data = files[Self.searchProviderCatalogPayload],
+              data.count <= Self.maximumSearchCatalogBytes else {
+            throw ContentPackageError.invalidContent(
+                "search provider packages require a bounded \(Self.searchProviderCatalogPayload) payload"
+            )
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ContentPackageError.invalidContent("\(Self.searchProviderCatalogPayload) must be a JSON object")
+        }
+        guard object["schemaVersion"] as? Int == 1 else {
+            throw ContentPackageError.invalidContent("search provider catalog schemaVersion must be 1")
+        }
+        guard object["id"] as? String == entry.id else {
+            throw ContentPackageError.invalidContent("search provider catalog id must match the signed entry")
+        }
+        guard object["version"] as? String == entry.version else {
+            throw ContentPackageError.invalidContent("search provider catalog version must match the signed entry")
+        }
+        guard let entries = object["entries"] as? [[String: Any]],
+              (1...Self.maximumSearchCatalogEntries).contains(entries.count) else {
+            throw ContentPackageError.invalidContent(
+                "search provider catalog requires 1...\(Self.maximumSearchCatalogEntries) entries"
+            )
+        }
+        var presetIDs: Set<String> = []
+        for item in entries {
+            guard let presetID = item["presetID"] as? String,
+                  !presetID.isEmpty,
+                  presetID.utf8.count <= 64,
+                  presetIDs.insert(presetID).inserted else {
+                throw ContentPackageError.invalidContent("search provider preset ids must be unique and bounded")
+            }
+            guard let adapterKind = item["adapterKind"] as? String,
+                  !adapterKind.isEmpty,
+                  adapterKind.utf8.count <= 64 else {
+                throw ContentPackageError.invalidContent("search provider \(presetID) needs an adapter kind")
+            }
+            for field in ["name", "blurb"] {
+                guard let localized = item[field] as? [String: String],
+                      !localized.isEmpty,
+                      localized.count <= 8,
+                      let en = localized["en"], !en.isEmpty, en.utf8.count <= 1_120,
+                      let zh = localized["zh-Hans"], !zh.isEmpty, zh.utf8.count <= 1_120 else {
+                    throw ContentPackageError.invalidContent(
+                        "search provider \(presetID) needs bounded English and Simplified Chinese \(field) copy"
+                    )
+                }
+            }
+            if let endpoint = item["defaultEndpoint"] as? String,
+               endpoint.utf8.count > 512 {
+                throw ContentPackageError.invalidContent("search provider \(presetID) endpoint is too long")
+            }
+            if let fields = item["credentialFields"] as? [Any], fields.count > 8 {
+                throw ContentPackageError.invalidContent("search provider \(presetID) declares too many credential fields")
+            }
+            if let fields = item["optionFields"] as? [Any], fields.count > 8 {
+                throw ContentPackageError.invalidContent("search provider \(presetID) declares too many option fields")
+            }
         }
     }
 

@@ -1,0 +1,319 @@
+import Foundation
+
+// MARK: - Model Size Detection
+
+/// Supported TTS model sizes
+public enum TTSModelSize {
+    case small  // 0.6B
+    case large  // 1.7B
+
+    /// Detect model size from a HuggingFace model ID
+    public static func detect(from modelId: String) -> TTSModelSize {
+        if modelId.contains("1.7B") || modelId.contains("1.7b") {
+            return .large
+        }
+        return .small
+    }
+
+    /// Detect quantization bits from a HuggingFace model ID.
+    /// Returns 4 by default if not specified; 0 means no quantization (bf16/fp32 path).
+    public static func detectBits(from modelId: String) -> Int {
+        let lower = modelId.lowercased()
+        if lower.contains("8bit") || lower.contains("8-bit") {
+            return 8
+        }
+        if lower.contains("bf16") || lower.contains("fp16") || lower.contains("fp32") {
+            return 0
+        }
+        return 4
+    }
+}
+
+// MARK: - Talker Config
+
+public struct TalkerConfig: Codable, Sendable {
+    public var hiddenSize: Int = 1024
+    public var numLayers: Int = 28
+    public var numHeads: Int = 16
+    public var numKVHeads: Int = 8
+    public var headDim: Int = 128
+    public var intermediateSize: Int = 3072
+    public var ropeTheta: Float = 1_000_000.0
+    public var mropeSections: [Int] = [24, 20, 20]
+    public var rmsNormEps: Float = 1e-6
+    public var textVocabSize: Int = 151936
+    public var textHiddenSize: Int = 2048
+    public var codecVocabSize: Int = 3072
+    public var groupSize: Int = 64
+    // int4 was decommissioned for TTS (too much quality loss); 8-bit is the floor
+    // for the 0.6B Base/CustomVoice models, bf16 for the 1.7B Base model.
+    public var bits: Int = 8
+
+    public init() {}
+
+    /// 0.6B, 8-bit (the smallest shipped 0.6B precision; no 0.6B bf16 bundle exists).
+    public static var base06B: TalkerConfig { TalkerConfig() }
+
+    /// 0.6B, 8-bit
+    public static var small8bit: TalkerConfig {
+        var config = TalkerConfig()
+        config.bits = 8
+        return config
+    }
+
+    /// 1.7B base dims; precision set by the derived configs (bf16 floor).
+    public static var large: TalkerConfig {
+        var config = TalkerConfig()
+        config.hiddenSize = 2048
+        config.numHeads = 16
+        config.numKVHeads = 8
+        config.headDim = 128
+        config.intermediateSize = 6144
+        config.textHiddenSize = 2048
+        config.bits = 0
+        return config
+    }
+
+    /// 1.7B, 8-bit
+    public static var large8bit: TalkerConfig {
+        var config = large
+        config.bits = 8
+        return config
+    }
+
+    /// 0.6B, bf16 (no quantization).
+    public static var smallBf16: TalkerConfig {
+        var config = TalkerConfig()
+        config.bits = 0
+        return config
+    }
+
+    /// 1.7B, bf16 (no quantization) — the production floor.
+    public static var largeBf16: TalkerConfig { large }
+}
+
+// MARK: - Code Predictor Config
+
+public struct CodePredictorConfig: Codable, Sendable {
+    public var hiddenSize: Int = 1024
+    /// Embedding dimension (may differ from hiddenSize in 1.7B where embeddings are 2048-dim)
+    public var embeddingDim: Int = 1024
+    public var numLayers: Int = 5
+    public var numHeads: Int = 16
+    public var numKVHeads: Int = 8
+    public var headDim: Int = 128
+    public var intermediateSize: Int = 3072
+    public var ropeTheta: Float = 1_000_000.0
+    public var rmsNormEps: Float = 1e-6
+    public var vocabSize: Int = 2048
+    public var numCodeGroups: Int = 16
+    public var groupSize: Int = 64
+    // int4 decommissioned for TTS; 8-bit floor (0.6B), bf16 (1.7B).
+    public var bits: Int = 8
+
+    /// Whether a projection from embeddingDim → hiddenSize is needed
+    public var needsProjection: Bool { embeddingDim != hiddenSize }
+
+    public init() {}
+
+    /// 0.6B, 8-bit
+    public static var small8bit: CodePredictorConfig {
+        var config = CodePredictorConfig()
+        config.bits = 8
+        return config
+    }
+
+    /// 1.7B base dims (embeddings 2048-dim with projection to 1024); precision set by derived configs.
+    public static var large: CodePredictorConfig {
+        var config = CodePredictorConfig()
+        config.embeddingDim = 2048
+        config.bits = 0
+        return config
+    }
+
+    /// 1.7B, 8-bit
+    public static var large8bit: CodePredictorConfig {
+        var config = large
+        config.bits = 8
+        return config
+    }
+
+    /// 0.6B, bf16 (no quantization).
+    public static var smallBf16: CodePredictorConfig {
+        var config = CodePredictorConfig()
+        config.bits = 0
+        return config
+    }
+
+    /// 1.7B, bf16 (no quantization) — the production floor.
+    public static var largeBf16: CodePredictorConfig { large }
+}
+
+// MARK: - Speech Tokenizer Decoder Config
+
+public struct SpeechTokenizerDecoderConfig: Codable, Sendable {
+    public var latentDim: Int = 1024
+    public var decoderDim: Int = 1536
+    public var hiddenSize: Int = 512
+    public var numHeads: Int = 16
+    public var numKVHeads: Int = 16
+    public var headDim: Int = 64
+    public var numLayers: Int = 8
+    public var upsampleRates: [Int] = [8, 5, 4, 3]
+    public var upsamplingRatios: [Int] = [2, 2]
+    public var numQuantizers: Int = 16
+    public var semanticCodebookSize: Int = 2048
+    public var acousticCodebookSize: Int = 2048
+    public var codebookDim: Int = 256
+    public var slidingWindow: Int = 72
+    public var sampleRate: Int = 24000
+    public var frameRate: Double = 12.5
+    public var rmsNormEps: Float = 1e-8
+
+    public init() {}
+}
+
+// MARK: - Special Codec Tokens
+
+public struct CodecTokens {
+    public static let codecPad: Int = 2148
+    public static let codecBos: Int = 2149
+    public static let codecEos: Int = 2150
+    public static let codecThink: Int = 2154
+    public static let codecNothink: Int = 2155
+    public static let codecThinkBos: Int = 2156
+    public static let codecThinkEos: Int = 2157
+    public static let ttsPad: Int = 151671
+    public static let ttsBos: Int = 151672
+    public static let ttsEos: Int = 151673
+    public static let languageEnglish: Int = 2050
+    public static let languageGerman: Int = 2053
+    public static let languageChinese: Int = 2055
+    public static let languageJapanese: Int = 2058
+    public static let languageSpanish: Int = 2054
+    public static let languageFrench: Int = 2061
+    public static let languageKorean: Int = 2064
+    public static let languageRussian: Int = 2069
+    public static let languageItalian: Int = 2070
+    public static let languagePortuguese: Int = 2071
+    public static let languageBeijingDialect: Int = 2074
+    public static let languageSichuanDialect: Int = 2062
+
+    public static func languageId(for language: String) -> Int? {
+        switch language.lowercased() {
+        case "english", "en": return languageEnglish
+        case "german", "de": return languageGerman
+        case "chinese", "zh": return languageChinese
+        case "japanese", "ja": return languageJapanese
+        case "spanish", "es": return languageSpanish
+        case "french", "fr": return languageFrench
+        case "korean", "ko": return languageKorean
+        case "russian", "ru": return languageRussian
+        case "italian", "it": return languageItalian
+        case "portuguese", "pt": return languagePortuguese
+        case "beijing_dialect": return languageBeijingDialect
+        case "sichuan_dialect": return languageSichuanDialect
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Speaker Config
+
+/// Parsed speaker data from CustomVoice model config.json
+public struct SpeakerConfig: Sendable {
+    /// Speaker name → codec token ID mapping
+    public let speakerIds: [String: Int]
+    /// Speaker name → dialect name mapping (e.g., "eric" → "sichuan_dialect")
+    public let speakerDialects: [String: String]
+    /// Dynamic language ID mapping from config.json codec_language_id
+    public let codecLanguageIds: [String: Int]
+
+    public var availableSpeakers: [String] { Array(speakerIds.keys).sorted() }
+
+    public init(speakerIds: [String: Int], speakerDialects: [String: String], codecLanguageIds: [String: Int] = [:]) {
+        self.speakerIds = speakerIds
+        self.speakerDialects = speakerDialects
+        self.codecLanguageIds = codecLanguageIds
+    }
+}
+
+// MARK: - Streaming Config
+
+/// Configuration for streaming TTS synthesis with chunked audio output.
+public struct StreamingConfig: Sendable {
+    /// Number of codec frames in the first emitted chunk (lower = lower latency).
+    /// At 12.5 Hz, each frame = 80ms audio. Default 3 = 240ms audio.
+    public var firstChunkFrames: Int
+
+    /// Number of codec frames per subsequent chunk. Default 25 = 2s audio.
+    public var chunkFrames: Int
+
+    /// Left context frames for decoder quality (overlapping decode window). Default 10.
+    public var decoderLeftContext: Int
+
+    public init(firstChunkFrames: Int = 3, chunkFrames: Int = 25, decoderLeftContext: Int = 10) {
+        self.firstChunkFrames = firstChunkFrames
+        self.chunkFrames = chunkFrames
+        self.decoderLeftContext = decoderLeftContext
+    }
+
+    /// Balanced defaults: ~225ms first-packet latency, 2s subsequent chunks.
+    public static var `default`: StreamingConfig { .init() }
+
+    /// Low-latency preset: ~120ms first-packet latency, smaller chunks.
+    public static var lowLatency: StreamingConfig { .init(firstChunkFrames: 1, chunkFrames: 15) }
+
+    /// No chunking: decode entire utterance at once for best quality.
+    /// Higher latency (no audio until generation completes) but no chunk boundary artifacts.
+    public static var noChunking: StreamingConfig { .init(firstChunkFrames: 500, chunkFrames: 500, decoderLeftContext: 0) }
+}
+
+// MARK: - Model Variant
+
+/// Well-known TTS model variants
+public enum TTSModelVariant: String, CaseIterable, Sendable {
+    // int4 decommissioned for TTS. The 0.6B Base/CustomVoice models use 8-bit;
+    // the 1.7B production Base model is bf16.
+    case base = "aufklarer/Qwen3-TTS-12Hz-0.6B-Base-MLX-8bit"
+    case base17B8bit = "aufklarer/Qwen3-TTS-12Hz-1.7B-Base-MLX-8bit"
+    case base17Bbf16 = "aufklarer/Qwen3-TTS-12Hz-1.7B-Base-MLX-bf16"
+    // CustomVoice ships full precision only — the 8-bit bundle was retired
+    // (synthesis quantization audibly degrades speech).
+    case customVoice = "aufklarer/Qwen3-TTS-12Hz-0.6B-CustomVoice-MLX-bf16"
+}
+
+// MARK: - Combined TTS Config
+
+public struct Qwen3TTSConfig: Codable, Sendable {
+    public var talker: TalkerConfig
+    public var codePredictor: CodePredictorConfig
+    public var speechTokenizerDecoder: SpeechTokenizerDecoderConfig
+
+    public init(
+        talker: TalkerConfig = TalkerConfig(),
+        codePredictor: CodePredictorConfig = CodePredictorConfig(),
+        speechTokenizerDecoder: SpeechTokenizerDecoderConfig = SpeechTokenizerDecoderConfig()
+    ) {
+        self.talker = talker
+        self.codePredictor = codePredictor
+        self.speechTokenizerDecoder = speechTokenizerDecoder
+    }
+
+    public static var base06B: Qwen3TTSConfig {
+        Qwen3TTSConfig()
+    }
+
+    /// Build config for a given model size and quantization. `bits == 0` selects bf16.
+    ///
+    /// int4 is no longer shipped for any TTS model. This still respects any `bits` —
+    /// the loader builds the config for whatever precision the model id reports — so a
+    /// 4-bit bundle (none ship today) would still load rather than being routed away.
+    public static func config(for size: TTSModelSize, bits: Int) -> Qwen3TTSConfig {
+        var talker: TalkerConfig = (size == .large) ? .large : TalkerConfig()
+        var codePredictor: CodePredictorConfig = (size == .large) ? .large : CodePredictorConfig()
+        talker.bits = bits
+        codePredictor.bits = bits
+        return Qwen3TTSConfig(talker: talker, codePredictor: codePredictor)
+    }
+}

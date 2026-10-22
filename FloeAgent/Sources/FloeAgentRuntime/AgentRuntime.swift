@@ -464,6 +464,26 @@ public actor FloeAgentRuntime {
         /// caller (the same flag that narrowed `allowedToolNames`); never
         /// model-minted and never changed mid-run.
         public var temporaryReadOnly: Bool
+        /// True for an ORDINARY (non-temporary) fast conversation `.chat`
+        /// run. The canonical dispatcher then re-validates every main-run and
+        /// delegated-child call against `ChatToolPolicy` — the narrow public
+        /// web trio plus exact-bound attachment reads — before any effect, and
+        /// offered schemas are that policy's projection. A temporary run never
+        /// sets this flag: its stricter `temporaryReadOnly` ceiling stays
+        /// authoritative (chat mode changes only reasoning and prompt there).
+        /// Set once by the caller; never model-minted, never changed mid-run.
+        public var chatFastMode: Bool
+        /// Frozen associated-resource proof for this chat run: the exact
+        /// normalized attachment paths of THIS conversation, captured from
+        /// durable records plus this round's staged copies at launch. Only
+        /// consulted when `chatFastMode`. `nil` (no resolved task workspace,
+        /// no attachments) fails the ceiling closed to public web only.
+        public var chatResourceCeiling: ChatToolPolicy.ResourceContext?
+        /// Request-level reasoning policy for the run's provider dispatch
+        /// (the frozen chat fast/level resolution). `.modelDefault` keeps
+        /// today's behavior for every other run; `.disabled` transmits the
+        /// endpoint's documented disable knob only.
+        public var reasoningPolicy: ProviderReasoningPolicy
         /// Explicit execution environment identity for this run and every
         /// child it delegates to. Frozen from the app's resolved task
         /// environment; the runtime never infers it from the first project or
@@ -536,6 +556,9 @@ public actor FloeAgentRuntime {
             ephemeralTransport: Bool = false,
             publicWebOnly: Bool = false,
             temporaryReadOnly: Bool = false,
+            chatFastMode: Bool = false,
+            chatResourceCeiling: ChatToolPolicy.ResourceContext? = nil,
+            reasoningPolicy: ProviderReasoningPolicy = .modelDefault,
             environmentID: String? = nil,
             environmentLifecycleWait: TimeInterval = 30,
             localLinuxGuestEnvironment: Bool = false,
@@ -575,6 +598,9 @@ public actor FloeAgentRuntime {
             self.ephemeralTransport = ephemeralTransport
             self.publicWebOnly = publicWebOnly
             self.temporaryReadOnly = temporaryReadOnly
+            self.chatFastMode = chatFastMode
+            self.chatResourceCeiling = chatResourceCeiling
+            self.reasoningPolicy = reasoningPolicy
             self.environmentID = environmentID
             self.environmentLifecycleWait = max(0, environmentLifecycleWait)
             self.localLinuxGuestEnvironment = localLinuxGuestEnvironment
@@ -1615,6 +1641,17 @@ public actor FloeAgentRuntime {
             descriptors = descriptors.compactMap {
                 TemporaryChatToolPolicy.readOnlyDescriptor($0)
             }
+        } else if configuration.chatFastMode {
+            // Fast chat presentation projection: the name+metadata ceiling.
+            // Bound file reads appear only when the run actually has frozen
+            // associated resources; a chat with no attachments never
+            // advertises file reading. The temporary projection above wins
+            // whenever both flags could be set (a temporary run is never
+            // launched chat-fast; the ordering keeps that explicit).
+            let hasResources = !(configuration.chatResourceCeiling?.isEmpty ?? true)
+            descriptors = descriptors.compactMap {
+                ChatToolPolicy.offeredDescriptor($0, hasResourceContext: hasResources)
+            }
         }
         return descriptors
     }
@@ -1634,6 +1671,13 @@ public actor FloeAgentRuntime {
                !allowed.contains(descriptor.name) { continue }
             if configuration.temporaryReadOnly,
                TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil { continue }
+            if configuration.chatFastMode {
+                // Fast chat never delegates: sibling collaboration tools are
+                // task-mode machinery, and neither the public web trio nor a
+                // bound attachment read is ever child-only. The frozen chat
+                // catalog therefore contains no child boundary tool.
+                continue
+            }
             names.insert(descriptor.name)
         }
         cachedRuntimeCatalogNames = names
@@ -1662,6 +1706,33 @@ public actor FloeAgentRuntime {
         // never smuggle a name the run never offered.
         guard runtimeVisibleCatalogNameSet().contains(descriptor.name) else {
             return "The '\(descriptor.name)' tool is not part of this temporary chat's offered capability set."
+        }
+        return nil
+    }
+
+    /// Canonical, execution-time check of the fast chat ceiling for one exact
+    /// call. Returns nil only when `ChatToolPolicy` explicitly allows this
+    /// descriptor+arguments pair against the run's FROZEN resource context;
+    /// every other case fails closed with the policy's own reason.
+    /// `descriptor` is the ORIGINAL catalog descriptor (never a projected
+    /// copy), so the decision is bound to the real authorization identity,
+    /// and a callable name must still be inside the run's frozen catalog
+    /// identity — a wrapper, alias, batch or child can never re-widen the
+    /// ceiling through discovery or a forged descriptor.
+    private func chatCeilingDenial(
+        descriptor: ToolCatalog.Descriptor,
+        arguments: Data
+    ) -> String? {
+        guard configuration.chatFastMode else { return nil }
+        if let reason = ChatToolPolicy.denialReason(
+            descriptor: descriptor,
+            arguments: arguments,
+            resourceContext: configuration.chatResourceCeiling
+        ) {
+            return reason
+        }
+        guard runtimeVisibleCatalogNameSet().contains(descriptor.name) else {
+            return "The '\(descriptor.name)' tool is not part of this chat's offered capability set."
         }
         return nil
     }
@@ -2247,6 +2318,11 @@ public actor FloeAgentRuntime {
             // always callable, so they belong to that ceiling too.
             allToolNames: discoverableDescriptors.map(\.name)
                 + [ToolDiscovery.name, ToolDiscovery.listName],
+            // Frozen per-run reasoning policy (chat fast/level resolution).
+            // `.modelDefault` is today's behavior for every other run; the
+            // dispatch snapshot already round-trips `reasoningDisabled`, so a
+            // resumed chat run replays the exact knob without a new decision.
+            reasoningPolicy: configuration.reasoningPolicy,
             ephemeralTransport: configuration.ephemeralTransport
         )
         // A retry must replay the exact safe dispatch boundary. In particular,
@@ -2831,6 +2907,11 @@ public actor FloeAgentRuntime {
             }
             if stopReason == .endTurn,
                configuration.verifyFinalAnswer,
+               // Fast chat answers conversationally: the task-pipeline
+               // self-critique hop would double latency for no product
+               // benefit. The center also configures this off; the runtime
+               // gate is the second, independent boundary.
+               !configuration.chatFastMode,
                !didVerifyFinalAnswer,
                !streamText.isEmpty {
                 await beginFinalAnswerVerification(stopReason: stopReason)
@@ -3159,6 +3240,17 @@ public actor FloeAgentRuntime {
             return .denied(
                 reason: "Denied: \(reason)",
                 decision: "deny:temporary-readonly"
+            )
+        }
+        // Fast chat (ordinary `.chat` runs) re-validates the narrow public-web
+        // plus bound-attachment ceiling at this same canonical boundary: the
+        // descriptor AND the concrete arguments against the frozen resource
+        // context. A wrapper, alias, batch, discovery guess or delegated
+        // child cannot widen it.
+        if let reason = chatCeilingDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
+            return .denied(
+                reason: "Denied: \(reason)",
+                decision: "deny:chat-ceiling"
             )
         }
         let statefulRouteGoal = messages.last(where: { $0.role == "user" })?.content ?? ""
@@ -3862,6 +3954,16 @@ public actor FloeAgentRuntime {
                 call,
                 reason: "Denied: \(reason)",
                 decision: "deny:child-temporary-readonly"
+            )
+        }
+        // Same chat ceiling as the main dispatch: a child of a fast chat run
+        // inherits the frozen resource context and cannot reach workspace
+        // writes, execution or unrestricted discovery.
+        if let reason = chatCeilingDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
+            return await childDenied(
+                call,
+                reason: "Denied: \(reason)",
+                decision: "deny:child-chat-ceiling"
             )
         }
         let resolution = await resolveToolCall(call, chargeParentBudget: false)
