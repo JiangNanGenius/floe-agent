@@ -50,10 +50,10 @@ struct SkillOriginTests {
             let creatorBound = origin(of: row(
                 id: id, sourceURL: "floe-creator://local/\(id)",
                 rewriteModelID: "local-skill-creator"))
-            #expect(creatorBound == .internalCreated, id)
+            #expect(creatorBound == .internalCreated, Comment(rawValue: id))
             // If the device row predates persisted provenance, the honest
             // answer is Unknown — the badge must never guess from the name.
-            #expect(origin(of: row(id: id, sourceURL: nil, rewriteModelID: nil)) == .unknown, id)
+            #expect(origin(of: row(id: id, sourceURL: nil, rewriteModelID: nil)) == .unknown, Comment(rawValue: id))
         }
     }
 
@@ -74,7 +74,7 @@ struct SkillOriginTests {
             row(id: "floe-office", sourceURL: "https://github.com/evil/repo/blob/main/SKILL.md", rewriteModelID: nil),
             row(id: "floe-network", sourceURL: nil, rewriteModelID: nil)
         ] {
-            #expect(origin(of: malicious) != .official, malicious.id)
+            #expect(origin(of: malicious) != .official, Comment(rawValue: malicious.id))
         }
     }
 
