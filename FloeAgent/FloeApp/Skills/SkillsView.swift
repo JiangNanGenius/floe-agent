@@ -63,6 +63,7 @@ struct SkillsView: View {
                             HStack {
                                 Text(definition.name).font(.headline).accessibilityIdentifier("plugins.card.\(definition.id)")
                                 Spacer()
+                                SkillOriginPill(origin: .official)
                                 Text("v\(center.installed.contains(where: { $0.id == definition.id }) ? (center.catalogPackages[definition.id]?.version ?? definition.version) : definition.version)").font(.caption).foregroundStyle(.secondary)
                             }
                             Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
@@ -120,7 +121,11 @@ struct SkillsView: View {
                             HStack {
                                 VStack(alignment: .leading) {
                                     Text(skill.name).font(.headline)
-                                    Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+                                    HStack(spacing: 6) {
+                                        Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+                                        SkillOriginPill(origin: center.origin(of: skill))
+                                            .accessibilityIdentifier("skills.origin.\(skill.id)")
+                                    }
                                 }
                                 Spacer()
                                 Toggle("skills.enabled", isOn: Binding(
@@ -210,6 +215,21 @@ struct SkillsView: View {
     }
 }
 
+/// Compact secondary provenance tag beside a skill's name/version. Labels
+/// come from the shared localization catalog (`skills.origin.*`).
+private struct SkillOriginPill: View {
+    let origin: SkillOrigin
+    var body: some View {
+        Text(FloeL10n.l(origin.badgeKey))
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.quaternary, in: Capsule())
+            .accessibilityLabel(FloeL10n.l(origin.badgeKey))
+    }
+}
+
 private struct SkillGitHubUpgradeSheet: View {
     @ObservedObject var center: SkillsCenter
     let skill: PersistedSkill
@@ -220,7 +240,11 @@ private struct SkillGitHubUpgradeSheet: View {
     @State private var path = "SKILL.md"
     @State private var validationError: String?
     @State private var confirmingRollback = false
-    private var isOfficial: Bool { OfficialSkillHub.skillIDs.contains(skill.id) }
+    /// Drives the auto official-hub check and hides the manual source fields.
+    /// Uses the same trusted-origin binding as the hub badge: an official ID
+    /// alone no longer claims an official update for an unprovable row. The
+    /// update transaction itself stays reserved-ID verified in SkillsCenter.
+    private var isOfficial: Bool { center.origin(of: skill) == .official }
 
     var body: some View {
         NavigationStack {

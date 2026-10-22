@@ -43,7 +43,18 @@
 // write all six physical-inch attributes. An exact scale writes
 // `fitToPage="0"` + `scale=<percent>` with no fit attributes; a fit-to-pages
 // budget writes `fitToPage="1"` + `fitToWidth=<w>` + `fitToHeight=<h>` with
-// no stale `scale`. Every unrelated package member — drawings, media,
+// no stale `scale`. Printed gridlines are a separate explicit choice: an
+// on/off decision writes only the `printOptions@gridLines` member of the
+// private copy (creating the element in schema order — after `hyperlinks`,
+// before `pageMargins` — or updating it in place while every other declared
+// attribute such as `headings`/`horizontalCentered`/`verticalCentered`
+// survives unchanged and is verified); per ECMA-376 gridlines print only
+// when `gridLines` AND `gridLinesSet` are both true, so an explicit "on"
+// also coerces a saved `gridLinesSet="false"`, and an explicit "off" never
+// needs more than `gridLines="0"`. A nil choice keeps the worksheet's own
+// printOptions byte-identical (Excel's shipped default prints NO gridlines
+// regardless of the screen display). Cell borders and the source package are
+// never touched. Every unrelated package member — drawings, media,
 // styles, relationships, theme, custom properties — is compared byte-for-byte
 // before the copy is committed.
 
@@ -795,6 +806,14 @@ public enum OfficePrintCopy {
         var requiresFitWidthAbsent = false
         var requiresFitHeightAbsent = false
         var margins: [String: String]?
+        /// True when an explicit printed-gridlines choice forced the copy to
+        /// carry a `printOptions` element with these exact declared values.
+        var requiresPrintOptions = false
+        var printGridLines: String?
+        var printGridLinesSet: String?
+        /// Other attributes the source element already declared; each must
+        /// survive verbatim next to the gridlines change.
+        var preservedPrintOptions: [String: String] = [:]
     }
 
     private static func applyPageSetup(_ setup: OfficePDFPageSetup,
@@ -835,6 +854,17 @@ public enum OfficePrintCopy {
         if setup.paper != nil || setup.orientation != nil || setup.fit != nil
             || setup.scalePercent != nil || setup.fitPages != nil {
             xml = try updatePageSetup(xml, setup: setup, expectation: &expectation)
+        }
+
+        // Printed gridlines are the `printOptions` member, independent of the
+        // `pageSetup` element: an explicit on/off writes only this attribute
+        // into the copy, creating the element in schema order when the sheet
+        // never declared one. A nil choice returned `hasOverrides == false`
+        // for this member and never reaches a rewrite.
+        if let printGridlines = setup.printGridlines {
+            xml = applyPrintOptionsGridlines(xml,
+                                             print: printGridlines,
+                                             expectation: &expectation)
         }
         return (xml, expectation)
     }
@@ -1001,6 +1031,68 @@ public enum OfficePrintCopy {
         }
         fixed.insert(contentsOf: element, at: insertion)
         return fixed
+    }
+
+    /// Writes the explicit printed-gridlines choice into the private copy.
+    /// Only `printOptions@gridLines` changes (plus `gridLinesSet` where an
+    /// explicit "on" needs it); every other declared attribute of the source
+    /// element — `headings`, `horizontalCentered`, `verticalCentered` — is
+    /// recorded in the expectation and must survive verbatim. When the sheet
+    /// never declared a `printOptions`, the element is created in schema
+    /// order (after `hyperlinks`, before `pageMargins`/`pageSetup`). Cell
+    /// borders and the source package are never touched by this writer.
+    private static func applyPrintOptionsGridlines(_ worksheet: String,
+                                                   print: Bool,
+                                                   expectation: inout PageSetupExpectation) -> String {
+        var fixed = worksheet
+        let gridLines = print ? "1" : "0"
+        expectation.requiresPrintOptions = true
+        expectation.printGridLines = gridLines
+        if let range = elementRanges(fixed, tag: "printOptions").first {
+            var element = String(fixed[range])
+            for name in ["headings", "horizontalCentered", "verticalCentered"] {
+                if let value = attribute(name, inOpeningElement: element) {
+                    expectation.preservedPrintOptions[name] = value
+                }
+            }
+            let savedGridLinesSet = attribute("gridLinesSet", inOpeningElement: element)
+            element = setAttribute(element, name: "gridLines", value: gridLines)
+            if print, let savedGridLinesSet,
+               savedGridLinesSet == "0" || savedGridLinesSet == "false" {
+                // ECMA-376 prints gridlines only when `gridLines` AND
+                // `gridLinesSet` are both true, so an explicit "on" has to
+                // coerce a saved "false"; an explicit "off" is complete with
+                // `gridLines="0"` alone and never needs to touch `gridLinesSet`.
+                element = setAttribute(element, name: "gridLinesSet", value: "1")
+                expectation.printGridLinesSet = "1"
+            } else if let savedGridLinesSet {
+                expectation.printGridLinesSet = savedGridLinesSet
+            }
+            fixed.replaceSubrange(range, with: element)
+            return fixed
+        }
+        var attributes = ["gridLines=\"\(gridLines)\""]
+        if print {
+            // A created element states both members so "on" is self-contained
+            // and never depends on a consumer's reading of the schema default.
+            attributes.append("gridLinesSet=\"1\"")
+            expectation.printGridLinesSet = "1"
+        }
+        let element = "<printOptions " + attributes.joined(separator: " ") + "/>"
+        fixed.insert(contentsOf: element, at: printOptionsInsertionIndex(in: fixed))
+        return fixed
+    }
+
+    /// The schema position of `printOptions`: before `pageMargins` and
+    /// `pageSetup` when the sheet declares either, otherwise the page-block
+    /// boundary (`headerFooter`/`rowBreaks`/`drawing`/… or the closing root).
+    private static func printOptionsInsertionIndex(in worksheet: String) -> String.Index {
+        let earlier = [
+            elementRanges(worksheet, tag: "pageMargins").first?.lowerBound,
+            elementRanges(worksheet, tag: "pageSetup").first?.lowerBound,
+        ].compactMap { $0 }
+        if let earliest = earlier.min() { return earliest }
+        return pageBlockInsertionIndex(in: worksheet)
     }
 
     /// The first element after `pageSetup`/`pageMargins` in the worksheet
@@ -1260,6 +1352,25 @@ public enum OfficePrintCopy {
                 for (name, expected) in margins {
                     guard attribute(name, inOpeningElement: element) == expected else {
                         throw OfficePrintCopyError.verificationFailed(reason: "margin \(name) differs from the plan")
+                    }
+                }
+            }
+            if expectation.requiresPrintOptions {
+                guard let range = elementRanges(xml, tag: "printOptions").first else {
+                    throw OfficePrintCopyError.verificationFailed(reason: "printOptions is missing")
+                }
+                let element = String(xml[range])
+                guard attribute("gridLines", inOpeningElement: element) == expectation.printGridLines else {
+                    throw OfficePrintCopyError.verificationFailed(reason: "printed gridlines differ from the plan")
+                }
+                if let expected = expectation.printGridLinesSet,
+                   attribute("gridLinesSet", inOpeningElement: element) != expected {
+                    throw OfficePrintCopyError.verificationFailed(reason: "gridLinesSet differs from the plan")
+                }
+                for (name, expected) in expectation.preservedPrintOptions {
+                    guard attribute(name, inOpeningElement: element) == expected else {
+                        throw OfficePrintCopyError.verificationFailed(
+                            reason: "print option \(name) was lost by the gridlines write")
                     }
                 }
             }

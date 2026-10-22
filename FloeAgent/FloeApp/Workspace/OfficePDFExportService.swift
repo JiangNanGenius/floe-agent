@@ -166,6 +166,10 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
     var customPageSetup: Bool
     var exactScale: Bool
     var fitPageCount: Bool
+    /// Explicit printed-gridlines choice: the shared backend writes only the
+    /// private copy's `printOptions@gridLines`, never cell borders and never
+    /// the source package. False for every non-XLSX format.
+    var printGridlines: Bool
     var finalPageRange: Bool
 
     static func resolve(forExtension ext: String) -> OfficePDFExportCapability? {
@@ -182,6 +186,7 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
             customPageSetup: support.supportsCustomPageSetup,
             exactScale: support.supportsExactScale,
             fitPageCount: support.supportsFitPageCount,
+            printGridlines: support.supportsPrintGridlines,
             finalPageRange: support.supportsFinalPageRange)
     }
 }

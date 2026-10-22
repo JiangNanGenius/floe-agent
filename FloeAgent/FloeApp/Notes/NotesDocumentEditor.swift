@@ -87,6 +87,13 @@ struct NotesDocumentEditor: View {
     @AppStorage("notes.fingerDrawing.enabled") private var fingerDrawing = false
     @State private var inkPreferences = NotesInkPreferences.shared
     @State private var showingInkOptions = false
+    /// Scene foldable capability (environment value; unknown default keeps
+    /// every ordinary device and isolated host on the historical layout).
+    @Environment(\.foldableDisplay) private var foldableDisplay
+    @ObservedObject private var layoutPreferences = LayoutPreferences.shared
+    /// Previous inline decision, fed back for hysteresis so a physical fold
+    /// animation crossing the width threshold cannot churn column<->sheet.
+    @State private var assistantInlineActive = false
     private typealias InkTool = NotesInkTool
     init(session: NotesSession, document: NoteDocument) {
         self.session = session
@@ -130,40 +137,97 @@ struct NotesDocumentEditor: View {
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing: 0) {
-                editorContent
-                    .overlay(alignment: .top) {
-                        if let focusNotice {
-                            Text(focusNotice)
-                                .font(.footnote)
-                                .padding(.horizontal, 12).padding(.vertical, 8)
-                                .background(.thinMaterial, in: Capsule())
-                                .padding(8)
-                                .accessibilityIdentifier("notes.search.focus.notice")
+            let decision = FoldablePresentationSupport.decideWorkbench(
+                proxy: geometry,
+                snapshot: foldableDisplay,
+                adaptationEnabled: layoutPreferences.settings.foldableAdaptationEnabled,
+                assistantVisible: showAssistant,
+                previouslySideBySide: assistantInlineActive)
+            Group {
+                if decision.usesStableWorkbench {
+                    // Proven foldable hardware — ONE stable custom Layout with
+                    // both children mounted at fixed positions for the whole
+                    // scene. Folded with the assistant open is the SAME
+                    // secondary overlaying the lower region (never a sheet),
+                    // so unfolding only moves rects: the assistant session,
+                    // its scroll state and the editor stay mounted. When the
+                    // assistant is not open the secondary slot collapses and
+                    // NO conversation is created.
+                    FoldableWorkbenchLayout(
+                        mode: decision.mode,
+                        containerSize: FoldableSize(width: Double(geometry.size.width),
+                                                    height: Double(geometry.size.height))) {
+                        editorContent
+                            .overlay(alignment: .top) {
+                                if let focusNotice {
+                                    Text(focusNotice)
+                                        .font(.footnote)
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(.thinMaterial, in: Capsule())
+                                        .padding(8)
+                                        .accessibilityIdentifier("notes.search.focus.notice")
+                                }
+                            }
+                        if showAssistant, let store = session.store {
+                            assistantPanel(store: store)
+                                .background(FloeTheme.readingSurface)
+                                .accessibilityIdentifier(decision.assistantBelow
+                                    ? FoldableLayoutIdentifiers.notesAssistantInlineBelow
+                                    : FoldableLayoutIdentifiers.notesAssistantInlineColumn)
                         }
                     }
-                if showAssistant, usesAssistantColumn(width: geometry.size.width), let store = session.store {
-                    Divider()
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
-                        .frame(width: min(440, max(360, geometry.size.width * 0.36)))
-                        .background(FloeTheme.readingSurface)
-                        .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showAssistant)
+                    .background(FloeTheme.groupedSurface)
+                } else {
+                    // Historical adaptive layout for every ordinary device,
+                    // byte-for-byte: HStack column on wide iPad, sheet below
+                    // the threshold, unchanged close semantics.
+                    HStack(spacing: 0) {
+                        editorContent
+                            .overlay(alignment: .top) {
+                                if let focusNotice {
+                                    Text(focusNotice)
+                                        .font(.footnote)
+                                        .padding(.horizontal, 12).padding(.vertical, 8)
+                                        .background(.thinMaterial, in: Capsule())
+                                        .padding(8)
+                                        .accessibilityIdentifier("notes.search.focus.notice")
+                                }
+                            }
+                        if showAssistant, decision.ordinaryUsesColumn, let store = session.store {
+                            Divider()
+                            assistantPanel(store: store)
+                                .frame(width: min(440, max(360, geometry.size.width * 0.36)))
+                                .background(FloeTheme.readingSurface)
+                                .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
+                        }
+                    }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showAssistant)
+                    .background(FloeTheme.groupedSurface)
+                    .sheet(isPresented: Binding(get: { showAssistant && !decision.ordinaryUsesColumn }, set: { if !$0 { showAssistant = false } })) {
+                        if let store = session.store {
+                            assistantPanel(store: store)
+                                .presentationDetents([.large])
+                                .presentationDragIndicator(.visible)
+                                .accessibilityIdentifier(FoldableLayoutIdentifiers.notesAssistantSheet)
+                        }
+                    }
                 }
             }
-            .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: showAssistant)
-            .background(FloeTheme.groupedSurface)
-            .sheet(isPresented: Binding(get: { showAssistant && !usesAssistantColumn(width: geometry.size.width) }, set: { if !$0 { showAssistant = false } })) {
-                if let store = session.store {
-                    NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
-                        .presentationDetents([.large])
-                        .presentationDragIndicator(.visible)
-                }
+            .onChange(of: geometry.size.width) { _, _ in
+                // Hysteresis input only; foldable side-by-side↔overlay and
+                // tabletop moves happen inside the SAME parent, so this can
+                // never churn a sheet↔inline reparent.
+                assistantInlineActive = decision.sideBySideActive
             }
         }
     }
 
-    private func usesAssistantColumn(width: CGFloat) -> Bool {
-        UIDevice.current.userInterfaceIdiom == .pad && width >= 850
+    /// The assistant owns its conversation through the store binding, so the
+    /// stable-layout branch keeps one live panel across folds; the ordinary
+    /// branch preserves the existing re-resolution behavior unchanged.
+    private func assistantPanel(store: NotesStore) -> some View {
+        NotesAssistantPanel(document: document, store: store, close: { showAssistant = false }, pageID: page?.id, onSaveAnswer: { answerToSave = $0 }, composerInput: assistantInput, onInputConsumed: { if assistantInput?.id == $0 { assistantInput = nil } })
     }
 
     private var editorContent: some View {

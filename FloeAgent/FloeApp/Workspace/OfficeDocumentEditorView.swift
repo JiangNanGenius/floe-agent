@@ -140,6 +140,47 @@ final class OfficeSaveReceipt {
     }
 }
 
+/// One-shot, main-queue value receipt used to bound a web-view probe or
+/// restore. The first resolution (JavaScript completion or a detached
+/// deadline task) wins; a callback arriving after the deadline is ignored, so
+/// a decision the caller already returned can never be changed by a late
+/// engine answer. The deadline is an unstructured `Task`, never a child the
+/// caller would keep waiting on.
+@MainActor
+private final class OfficeBoundedValue<Value: Sendable> {
+    private let fallback: Value
+    private var continuation: CheckedContinuation<Value, Never>?
+    private var settledResult: Value?
+    private var settled = false
+
+    init(fallback: Value) { self.fallback = fallback }
+
+    func wait() async -> Value {
+        if settled { return settledResult ?? fallback }
+        return await withCheckedContinuation { continuation in
+            if settled {
+                continuation.resume(returning: settledResult ?? fallback)
+            } else {
+                // One waiter by construction; a stale second waiter resolves
+                // to the documented fallback instead of orphaning the first.
+                if let stale = self.continuation {
+                    self.continuation = nil
+                    stale.resume(returning: fallback)
+                }
+                self.continuation = continuation
+            }
+        }
+    }
+
+    func resolve(_ value: Value) {
+        guard !settled else { return }
+        settled = true
+        settledResult = value
+        continuation?.resume(returning: value)
+        continuation = nil
+    }
+}
+
 // FLOE_VISIBLE_RENDER_GATE_BEGIN
 /// How a document's readiness is proven. Presentations start in the engine's
 /// file-based view (endless slide scrolling / slide sorter), where page
@@ -769,10 +810,26 @@ final class OfficeFileSession: ObservableObject {
 
     private func performPDFExportPreparation() async throws -> OfficePDFExportPreparation {
         try Task.checkCancellation()
+        // Captured before the first guard so every refusal breadcrumb —
+        // including the readiness guard itself — can compare against the
+        // exact fence this preparation observed at entry. Pure read of the
+        // current generation/controller/working-copy identity; claiming still
+        // happens only at the proven points below.
+        let fence = capturePassiveExitFence()
         guard canAct, documentActionsReady, let controller, let currentSession = session else {
+            // The real editable/autosave trace showed preparations settling
+            // with NO ok/refused breadcrumb: every silent refusal below now
+            // names its guard on the same content-free trace, so the next
+            // actual run identifies the exact owner instead of a blank sheet.
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "sessionReady", fence: fence)
+                            .merging([
+                                "actionsReady": documentActionsReady ? "true" : "false",
+                                "controller": controller == nil ? "false" : "true",
+                                "session": session == nil ? "false" : "true"
+                            ]) { _, latest in latest })
             throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
         }
-        let fence = capturePassiveExitFence()
         // Exactly one reservation for this whole preparation, released once at
         // return — including on a thrown refusal or a cancellation.
         var reserved = false
@@ -793,6 +850,8 @@ final class OfficeFileSession: ObservableObject {
         }
         let activePen = readOnly ? false : await hasActivePenContact()
         guard !activePen else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "activePen", fence: fence))
             throw FloeError.validationFailed(OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again."))
         }
         if !readOnly {
@@ -825,10 +884,23 @@ final class OfficeFileSession: ObservableObject {
                             ? OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again.")
                             : OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")))
                     }
+                    // Not always "busy": a failed/cancelled transaction also
+                    // lands here, so label the guard itself and keep the
+                    // exact outcome/reason rather than claiming a busy owner.
+                    recordStage("export.prepare.refused",
+                                exportRefusalFacts(stage: "prepare", guardAt: "autosaveProof", fence: fence)
+                                    .merging([
+                                        "claim": "unprovenSave",
+                                        "outcome": proof.outcome.rawValue,
+                                        "reason": proof.reason ?? "none",
+                                        "retryScheduled": proof.retryScheduled ? "true" : "false"
+                                    ]) { _, latest in latest })
                     throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
                 }
             } else {
                 guard await saveInPlace() else {
+                    recordStage("export.prepare.refused",
+                                exportRefusalFacts(stage: "prepare", guardAt: "saveInPlace", fence: fence))
                     throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
                 }
             }
@@ -861,6 +933,16 @@ final class OfficeFileSession: ObservableObject {
         try Task.checkCancellation()
         let quiescentBefore = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard quiescentBefore else {
+            // Editable-only silent refusal: the pen/modified probes fail
+            // closed, and the read-only path never reaches this guard. The
+            // breadcrumb names it with the working-copy dirty fact so the
+            // next actual trace separates a real in-flight edit from a stale
+            // engine modified latch after an owner autosave.
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "quiescentBefore", fence: fence)
+                            .merging([
+                                "uncommitted": hasUncommittedChanges ? "true" : "false"
+                            ]) { _, latest in latest })
             throw FloeError.validationFailed(OfficeInkText.t("文档仍在编辑，请稍后重试。", "The document is still being edited. Try again shortly."))
         }
         let sourceURL = currentSession.workingURL
@@ -935,6 +1017,7 @@ final class OfficeFileSession: ObservableObject {
                 "请检查工作表、单元格区域和 PDF 页码。", "Check the sheet, cell range and PDF pages."))
         }
         try cancellation.throwIfCancelled()
+        recordStage("export.generate.started")
         let surfaceCurrent = await source.isCurrent()
         guard surfaceCurrent, let controller else {
             recordStage("export.generate.refused",
@@ -1015,6 +1098,8 @@ final class OfficeFileSession: ObservableObject {
             if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
                 try? FileManager.default.removeItem(at: producedDirectory)
             }
+            recordStage("export.generate.ok",
+                        ["pages": String(result.pageCount), "bytes": String(result.byteCount)])
             return OfficePDFPreparedDelivery(
                 url: delivery, lease: source.lease,
                 pageCount: result.pageCount, byteCount: result.byteCount,
@@ -1040,7 +1125,7 @@ final class OfficeFileSession: ObservableObject {
         if !readOnly, let native = controller as? FloeOfficeNativeViewController {
             // Bounded; export flushes the working copy first and can be slow on
             // large documents, so allow a longer window than an ordinary save.
-            try await Self.saveWorkingCopy(native, timeout: 60)
+            try await saveWorkingCopyGuardingEditEntry(native, timeout: 60)
         }
         #endif
         // The shipped host is pinned separately. A selector capability check keeps old hosts
@@ -1881,7 +1966,7 @@ final class OfficeFileSession: ObservableObject {
     }
     #endif
 
-    private struct PermissionProbe {
+    private struct PermissionProbe: Sendable {
         let backendReadOnly: Bool?
         let permission: String?
         let isEditMode: Bool?
@@ -1889,9 +1974,13 @@ final class OfficeFileSession: ObservableObject {
         let shouldStartReadOnly: Bool?
         let documentProtected: Bool?
 
-        /// No engine state at all (map missing, surface changed, JS error).
-        /// Unknown is never treated as writable; the caller attempts the
-        /// engine's guarded entry and re-probes before deciding.
+        /// No engine state at all (map missing, surface changed, JS error or
+        /// bounded deadline). Unknown is never treated as writable; the caller
+        /// attempts the engine's guarded entry and re-probes before deciding.
+        static let unknown = PermissionProbe(backendReadOnly: nil, permission: nil, isEditMode: nil,
+                                             isReadOnlyMode: nil, shouldStartReadOnly: nil,
+                                             documentProtected: nil)
+
         var isKnown: Bool {
             backendReadOnly != nil || permission != nil || isEditMode != nil || isReadOnlyMode != nil
         }
@@ -1911,10 +2000,11 @@ final class OfficeFileSession: ObservableObject {
 
     private static func permissionProbe(_ webView: WKWebView) async -> PermissionProbe {
         let raw = try? await webView.evaluateJavaScript(OfficeExplicitSaveBridge.permissionProbeScript)
-        guard let result = raw as? [String: Any] else {
-            return PermissionProbe(backendReadOnly: nil, permission: nil, isEditMode: nil, isReadOnlyMode: nil,
-                                   shouldStartReadOnly: nil, documentProtected: nil)
-        }
+        return permissionProbe(from: raw)
+    }
+
+    private static func permissionProbe(from raw: Any?) -> PermissionProbe {
+        guard let result = raw as? [String: Any] else { return .unknown }
         return PermissionProbe(
             backendReadOnly: result["backendReadOnly"] as? Bool,
             permission: result["permission"] as? String,
@@ -1977,17 +2067,19 @@ final class OfficeFileSession: ObservableObject {
             defer { native.view.isUserInteractionEnabled = true }
             // Bounded: a save that neither acknowledges nor fails in time
             // surfaces a recoverable error instead of an endless "Saving…".
-            // A save dispatched while another tracked save is still open is
-            // rejected pre-dispatch (native error 9, the engine's one-save
-            // admission); retry that proven busy signal exactly once after
-            // the activity settles. Generic completion failures (code 8) are
-            // surfaced, never masked: they can be genuine save defects.
+            // This explicit save is the only callsite that retries the proven
+            // pre-dispatch busy signal (native error 9). Each attempt is one
+            // guarded save: when the mobile UI is in its Read mode the helper
+            // follows the host's guarded edit entry before the bounded
+            // receipt, and restores the chosen Read UI after an in-place save.
+            // Generic completion failures (code 8 included) are surfaced,
+            // never retried and never converted to success.
             let saveAttempts = try await OfficeSaveAdmissionRetry.run(
                 onRetry: { [weak self] in
                     Task { @MainActor [weak self] in self?.recordStage("save.busyRetry", [:]) }
                 }
             ) {
-                try await Self.saveWorkingCopy(native)
+                try await saveWorkingCopyGuardingEditEntry(native, restoresViewMode: !returnToPreview)
             }
             if saveAttempts > 1 {
                 recordStage("save.busyRetry.ok", ["attempts": "\(saveAttempts)"])
@@ -2074,7 +2166,7 @@ final class OfficeFileSession: ObservableObject {
         if !readOnly {
             native.view.isUserInteractionEnabled = false
             defer { native.view.isUserInteractionEnabled = true }
-            try await Self.saveWorkingCopy(native)
+            try await saveWorkingCopyGuardingEditEntry(native)
         }
         _ = workspace
         let snapshot = try OfficeOutputSnapshot.capture(url: session.workingURL)
@@ -2728,7 +2820,7 @@ final class OfficeFileSession: ObservableObject {
             native.view.isUserInteractionEnabled = false
             defer { native.view.isUserInteractionEnabled = true }
             // Bounded so a share/save-copy flush can never strand on "Saving…".
-            try await Self.saveWorkingCopy(native)
+            try await saveWorkingCopyGuardingEditEntry(native)
             let copy = try await workspace.prepareExport(session)
             exportSnapshot = copy
             exportWorkspace = workspace
@@ -2763,7 +2855,7 @@ final class OfficeFileSession: ObservableObject {
                 native.view.isUserInteractionEnabled = false
                 defer { native.view.isUserInteractionEnabled = true }
                 // Bounded so a share flush can never strand on "Saving…".
-                try await Self.saveWorkingCopy(native)
+                try await saveWorkingCopyGuardingEditEntry(native)
             }
             let copy = try await workspace.prepareExport(session)
             exportSnapshot = copy
@@ -2817,7 +2909,9 @@ final class OfficeFileSession: ObservableObject {
                 native.view.isUserInteractionEnabled = false
                 defer { native.view.isUserInteractionEnabled = true }
                 // Bounded so a persist-and-leave can never strand on "Saving…".
-                try await Self.saveWorkingCopy(native)
+                // The close that follows owns the shutdown, so the temporary
+                // entry must not inject a Read-mode frame before it.
+                try await saveWorkingCopyGuardingEditEntry(native, restoresViewMode: false)
             }
             #endif
             try await closeController()
@@ -3140,6 +3234,324 @@ final class OfficeFileSession: ObservableObject {
             }
         }
     }
+
+    // FLOE_GUARDED_SAVE_ENTRY_BEGIN
+    /// App-owned save precondition for the engine's mobile Read/Edit UI mode.
+    ///
+    /// The pinned frontend's tablet `closemobile`/"Read mode" checkmark
+    /// (`actionsMap.closetablet` -> `uiManager.enterReadonlyOrClose`) reports
+    /// `setviewreadonly true`, so the engine *view* is read-only while the
+    /// backing permission (the only state the pinned host reports) stays
+    /// writable. An App save issued from that UI has been observed to settle
+    /// NO (native code 8). The exact frame-level failure branch (core save
+    /// versus UIDocument save) is unknown and is not assumed here.
+    ///
+    /// Before the receipt, this follows the host's existing guarded mobile edit
+    /// entry (`enterEditMode`: the engine's own `_switchToEditMode`, keeping its
+    /// lock/password/already-editing checks) whenever the engine UI is not
+    /// positively observed editing. A positive writable acknowledgement is
+    /// required: a read-only mount (41), a pending password (42), a lost ack, a
+    /// replaced controller/working copy or cancellation rejects the save before
+    /// dispatch and retains the working copy. The receipt itself is surfaced
+    /// unchanged (code 8 included): no inner retry, no fallback bytes and no
+    /// success conversion.
+    ///
+    /// When the UI was positively observed as Read, the chosen UI is restored
+    /// after the receipt by one fixed script. The script only mutates a page
+    /// that still carries this operation's nonce (written to the exact probed
+    /// map) before a short native expiry, so a reloaded page, a replaced map,
+    /// a late callback or a later save cannot flip another document or a later
+    /// user Edit. Restoration is best-effort, never dispatches `closeapp` and
+    /// never overrides the receipt. Save+close callers pass
+    /// `restoresViewMode: false` so the close owns the shutdown.
+    ///
+    /// This helper is exactly one guarded save attempt. Only the explicit-save
+    /// callsite wraps it in the native error 9 pre-admission retry. The calling
+    /// surface keeps native interaction disabled for the whole window.
+    private func saveWorkingCopyGuardingEditEntry(_ native: FloeOfficeNativeViewController,
+                                                  timeout: TimeInterval = 30,
+                                                  restoresViewMode: Bool = true) async throws {
+        let fence = capturePassiveExitFence()
+        try Task.checkCancellation()
+        try requireCurrentSaveSurface(native, fence: fence)
+
+        // One operation nonce per attempt. A later save overwrites it, so a
+        // restore left over from an earlier attempt cannot act.
+        let restoreNonce = UUID().uuidString
+        var entryWebView: WKWebView?
+        var uiEditMode: Bool?
+        if native.isViewLoaded, let webView = OfficeExplicitSaveBridge.findWebView(in: native.view) {
+            entryWebView = webView
+            uiEditMode = await Self.permissionProbeBounded(webView, nonce: restoreNonce).isEditMode
+            try Task.checkCancellation()
+            try requireCurrentSaveSurface(native, fence: fence, webView: webView)
+        }
+
+        var restoreReadUI = false
+        do {
+            if uiEditMode != true {
+                // Not positively editing: follow the engine's guarded mobile
+                // entry. Its script returns immediately for an already-editable
+                // UI, so a healthy Word/Excel editor is never bounced — it only
+                // switches a genuine view UI, and the engine keeps its own
+                // refusal codes.
+                recordStage("save.editEntry.started", [
+                    "uiEdit": uiEditMode == false ? "false" : "unknown",
+                    "backingReadOnly": engineSessionReadOnly == true ? "true"
+                        : (engineSessionReadOnly == false ? "false" : "unknown"),
+                    "appReadOnly": readOnly ? "true" : "false",
+                ])
+                let entry = await Self.enterEditMode(native)
+                recordStage("save.editEntry", [
+                    "readOnly": entry.readOnly ? "true" : "false",
+                    "pendingPassword": entry.pendingPassword ? "true" : "false",
+                    "uiEditBefore": uiEditMode == false ? "false" : "unknown",
+                ])
+                // A successful temporary entry is restored by the catch and
+                // success paths below even when the next check refuses.
+                if entry.readOnly == false, !entry.pendingPassword {
+                    restoreReadUI = restoresViewMode && uiEditMode == false
+                }
+                // Preserve cancellation before interpreting a failed/stale
+                // acknowledgement; cleanup still restores a successful entry.
+                try Task.checkCancellation()
+                guard controller === native, passiveExitFenceIsCurrent(fence) else {
+                    recordStage("save.refused.staleController")
+                    throw Self.staleSaveSurfaceError()
+                }
+                if entry.pendingPassword {
+                    // A challenge is not a denial and not a save: keep the
+                    // working copy and reuse the session's password guidance.
+                    throw Self.savePasswordRequiredError()
+                }
+                guard entry.readOnly == false else {
+                    // A read-only mount (41) or an unverified ack is never an
+                    // editing grant: reject instead of dispatching.
+                    throw Self.editEntryRefusedError()
+                }
+                try Task.checkCancellation()
+                try requireCurrentSaveSurface(native, fence: fence)
+            }
+            // Re-checked even when the probe already reported editing: the
+            // source and page may have changed during any earlier await.
+            try Task.checkCancellation()
+            try requireCurrentSaveSurface(native, fence: fence)
+            // Exactly one guarded receipt. Code 8 is surfaced unchanged and is
+            // never retried here; the explicit-save callsite owns the native
+            // error 9 pre-admission retry only.
+            try await Self.saveWorkingCopy(native, timeout: timeout)
+        } catch {
+            if restoreReadUI {
+                await restoreReadUIAfterTemporaryEntry(native, webView: entryWebView,
+                                                       nonce: restoreNonce, fence: fence)
+            }
+            throw error
+        }
+        if restoreReadUI {
+            await restoreReadUIAfterTemporaryEntry(native, webView: entryWebView,
+                                                   nonce: restoreNonce, fence: fence)
+        }
+        // A real private-copy receipt does not authorize a later original-file
+        // commit after cancellation or a surface change during cleanup.
+        try Task.checkCancellation()
+        try requireCurrentSaveSurface(native, fence: fence)
+    }
+
+    /// Refuses before dispatch when the controller, open generation, working
+    /// copy, release state or (when supplied) the probed page changed while an
+    /// await was in flight. Never dispatches a save against a lost source.
+    private func requireCurrentSaveSurface(_ native: FloeOfficeNativeViewController,
+                                           fence: PassiveExitFence,
+                                           webView: WKWebView? = nil) throws {
+        guard !runtimeFailed, !readOnly, !native.isReadOnly,
+              controller === native, passiveExitFenceIsCurrent(fence) else {
+            recordStage("save.refused.staleController")
+            throw Self.staleSaveSurfaceError()
+        }
+        if let webView {
+            guard let current = OfficeExplicitSaveBridge.findWebView(in: native.view),
+                  current === webView else {
+                recordStage("save.refused.stalePage")
+                throw Self.staleSaveSurfaceError()
+            }
+        }
+    }
+
+    private static func staleSaveSurfaceError() -> NSError {
+        NSError(domain: "org.floeagent.office.save", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: OfficeInkText.t(
+                "文档已变化，修改已保留。请重新打开后重试。",
+                "The document changed. Your edits were retained; reopen it and try again.")
+        ])
+    }
+
+    private static func savePasswordRequiredError() -> NSError {
+        NSError(domain: "org.floeagent.office.save", code: 3, userInfo: [
+            NSLocalizedDescriptionKey: OfficeInkText.t(
+                "该文档需要编辑密码，请在编辑器中输入。未保存任何更改。",
+                "This document requires its edit password. Enter it in the editor; nothing was saved.")
+        ])
+    }
+
+    private static func editEntryRefusedError() -> NSError {
+        NSError(domain: "org.floeagent.office.save", code: 4, userInfo: [
+            NSLocalizedDescriptionKey: OfficeInkText.t(
+                "未能启用编辑，修改已保留。请在文档中重试。",
+                "Editing could not be enabled. Your edits were retained; try again in the document.")
+        ])
+    }
+
+    /// Bounded save-path probe. The JavaScript callback and an unstructured
+    /// deadline task race into one MainActor value receipt, so a hung web view
+    /// reads as an unknown probe at the deadline and a late callback cannot
+    /// change the decision after the caller returns.
+    private static func permissionProbeBounded(_ webView: WKWebView,
+                                               nonce: String,
+                                               timeout: TimeInterval = 3) async -> PermissionProbe {
+        let receipt = OfficeBoundedValue<PermissionProbe>(fallback: .unknown)
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.1, timeout) * 1_000_000_000))
+            receipt.resolve(.unknown)
+        }
+        webView.evaluateJavaScript(Self.savePathProbeScript(nonce: nonce),
+                                   in: nil, in: .page) { result in
+            switch result {
+            case .success(let raw):
+                receipt.resolve(Self.permissionProbe(from: raw))
+            case .failure:
+                receipt.resolve(.unknown)
+            }
+        }
+        let probe = await receipt.wait()
+        timeoutTask.cancel()
+        return probe
+    }
+
+    /// Bounded best-effort return to the engine's own Read UI after this
+    /// operation's temporary edit entry. The native fence and the probed page
+    /// are re-checked immediately before the script runs; the script itself
+    /// re-verifies the operation nonce and the short expiry. The caller
+    /// returns at the deadline even if the web view never answers.
+    private func restoreReadUIAfterTemporaryEntry(_ native: FloeOfficeNativeViewController,
+                                                  webView: WKWebView?,
+                                                  nonce: String,
+                                                  fence: PassiveExitFence) async {
+        guard !runtimeFailed, let target = webView, controller === native,
+              passiveExitFenceIsCurrent(fence),
+              let current = OfficeExplicitSaveBridge.findWebView(in: native.view),
+              current === target else {
+            recordStage("save.restore", ["ok": "false", "reason": "stale"])
+            return
+        }
+        let expiresAt = Date().addingTimeInterval(Self.readModeRestoreValidity)
+        let receipt = OfficeBoundedValue<(ok: Bool, reason: String)>(fallback: (false, "timeout"))
+        let timeoutTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: UInt64(Self.readModeRestoreTimeout * 1_000_000_000))
+            receipt.resolve((false, "timeout"))
+        }
+        target.evaluateJavaScript(Self.readModeRestoreScript(nonce: nonce, expiresAt: expiresAt),
+                                  in: nil, in: .page) { result in
+            switch result {
+            case .success(let raw):
+                guard let fields = raw as? [String: Any], let ok = fields["ok"] as? Bool else {
+                    receipt.resolve((false, "unreadable"))
+                    return
+                }
+                receipt.resolve((ok, ok ? "ok" : (fields["reason"] as? String ?? "refused")))
+            case .failure:
+                receipt.resolve((false, "failed"))
+            }
+        }
+        let outcome = await receipt.wait()
+        timeoutTask.cancel()
+        recordStage("save.restore", ["ok": outcome.ok ? "true" : "false",
+                                     "reason": outcome.reason])
+    }
+
+    /// The restore deadline also bounds the caller's cleanup wait. A script
+    /// that starts after this short validity refuses to mutate the UI; the
+    /// validity stays inside the deadline so a queued script cannot act after
+    /// the caller has already returned.
+    private static let readModeRestoreValidity: TimeInterval = 2.5
+    private static let readModeRestoreTimeout: TimeInterval = 3
+
+    // FLOE_SAVE_PATH_PROBE_BEGIN
+    /// Reports the engine permission/UI state and binds this operation's
+    /// nonce to the exact page/map instance. The nonce is consumed only by
+    /// `readModeRestoreScript`; a reloaded page or a replaced map has none.
+    private static func savePathProbeScript(nonce: String) -> String {
+        #"""
+        (() => {
+            try {
+                const map = window.app && window.app.map;
+                if (!map) return null;
+                const file = window.app && window.app.file;
+                const backendReadOnly = file && typeof file.readOnly === 'boolean' ? file.readOnly : null;
+                const permission = typeof map._permission === 'string' ? map._permission : null;
+                const isEditMode = typeof map.isEditMode === 'function' ? map.isEditMode() === true : null;
+                const readOnlyMode = typeof map.isReadOnlyMode === 'function' ? map.isReadOnlyMode() === true : null;
+                const shouldStartReadOnly = typeof map._shouldStartReadOnly === 'function'
+                    ? map._shouldStartReadOnly() === true : null;
+                let documentProtected = null;
+                const docLayer = map._docLayer || (map.getDocLayer && map.getDocLayer());
+                if (docLayer && docLayer._docInfo && typeof docLayer._docInfo.isProtected === 'boolean')
+                    documentProtected = docLayer._docInfo.isProtected;
+                else if (typeof map._isDocProtected === 'boolean')
+                    documentProtected = map._isDocProtected;
+                try {
+                    map.__floeSaveRestore = { nonce: '__FLOE_SAVE_RESTORE_NONCE__' };
+                } catch (_) {}
+                return { backendReadOnly, permission, isEditMode, readOnlyMode,
+                         shouldStartReadOnly, documentProtected };
+            } catch (_) {
+                return null;
+            }
+        })()
+        """#
+        .replacingOccurrences(of: "__FLOE_SAVE_RESTORE_NONCE__", with: nonce)
+    }
+    // FLOE_SAVE_PATH_PROBE_END
+
+    // FLOE_SAVE_PATH_RESTORE_SCRIPT_BEGIN
+    /// Fixed restore script: mutates only a page that still carries this
+    /// operation's nonce before the native expiry and only while the engine
+    /// reports editing. The already-Read branch and `closeapp` are
+    /// unreachable; it never dispatches an action.
+    private static func readModeRestoreScript(nonce: String, expiresAt: Date) -> String {
+        let expiryMilliseconds = Int64((expiresAt.timeIntervalSince1970 * 1000).rounded(.down))
+        return #"""
+        (() => {
+            try {
+                const app = window.app;
+                const map = app && app.map;
+                if (!map) return { ok: false, reason: 'not-ready' };
+                const bound = map.__floeSaveRestore;
+                if (!bound || bound.nonce !== '__FLOE_SAVE_RESTORE_NONCE__')
+                    return { ok: false, reason: 'stale-page' };
+                if (!(Date.now() <= __FLOE_SAVE_RESTORE_EXPIRY_MS__))
+                    return { ok: false, reason: 'expired' };
+                if (typeof map.isEditMode !== 'function' || map.isEditMode() !== true)
+                    return { ok: false, reason: 'not-editing' };
+                if (typeof map.setPermission !== 'function')
+                    return { ok: false, reason: 'no-permission-api' };
+                delete map.__floeSaveRestore;
+                map.setPermission('readonly');
+                const toolbar = map.topToolbar;
+                if (toolbar && typeof toolbar.selectItem === 'function') {
+                    toolbar.selectItem('closemobile', false);
+                    toolbar.selectItem('close', false);
+                }
+                return { ok: true };
+            } catch (_) {
+                return { ok: false, reason: 'error' };
+            }
+        })()
+        """#
+        .replacingOccurrences(of: "__FLOE_SAVE_RESTORE_NONCE__", with: nonce)
+        .replacingOccurrences(of: "__FLOE_SAVE_RESTORE_EXPIRY_MS__", with: String(expiryMilliseconds))
+    }
+    // FLOE_SAVE_PATH_RESTORE_SCRIPT_END
+    // FLOE_GUARDED_SAVE_ENTRY_END
     #endif
 
     private func activate(readOnly: Bool) async throws {
@@ -4187,9 +4599,20 @@ struct OfficeDocumentEditorView: View {
             .sheet(item: Binding(
                 get: { pdfExportRequest },
                 set: { next in
+                    // Content-free presentation lifecycle. A nil write is the
+                    // ONLY dismissal signal this parent emits; ordering it
+                    // against the options view's own disappear breadcrumb
+                    // names the actual dismissal owner on the live trace.
+                    session.recordOwnerStage("export.sheet.bindingSet", [
+                        "nil": next == nil ? "true" : "false",
+                        "replaces": pdfExportRequest != nil && next?.id != pdfExportRequest?.id
+                            ? "true" : "false"
+                    ])
                     if let previous = pdfExportRequest, previous.id != next?.id {
                         previous.cancellation.cancel()
                         session.cancelPDFExportPreparation(cancellation: previous.cancellation)
+                        session.recordOwnerStage("export.prepare.cancelRequested",
+                                                 ["purpose": previous.purpose.rawValue])
                     }
                     pdfExportRequest = next
                 })) { request in
@@ -4197,10 +4620,13 @@ struct OfficeDocumentEditorView: View {
                     prepare: { try await session.preparePDFExport(cancellation: request.cancellation) },
                     export: { prepared, choices, cancellation in
                         try await session.exportConfiguredPDF(prepared, choices: choices, cancellation: cancellation)
-                    })
+                    },
+                    observe: { stage, facts in session.recordOwnerStage(stage, facts) })
             }
             .onChange(of: session.printRequestGeneration) { _, _ in
                 guard pdfExportRequest == nil else { return }
+                session.recordOwnerStage("export.sheet.requested",
+                                         ["purpose": "printDocument", "source": "nativePrint"])
                 pdfExportRequest = .init(purpose: .printDocument)
             }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
@@ -4406,6 +4832,8 @@ struct OfficeDocumentEditorView: View {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
                             if format == "pdf" {
+                                session.recordOwnerStage("export.sheet.requested",
+                                                         ["purpose": "export", "source": "menuExport"])
                                 pdfExportRequest = .init(purpose: .export)
                                 return
                             }
@@ -4419,6 +4847,8 @@ struct OfficeDocumentEditorView: View {
             }
             if session.exportFormats.contains("pdf") {
                 Button(OfficeInkText.t("打印…", "Print…"), systemImage: "printer") {
+                    session.recordOwnerStage("export.sheet.requested",
+                                             ["purpose": "printDocument", "source": "menuPrint"])
                     pdfExportRequest = .init(purpose: .printDocument)
                 }
                 .accessibilityIdentifier("office.editor.print")

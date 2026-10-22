@@ -292,6 +292,56 @@ struct DocumentExportServiceTests {
         #expect(throws: (any Error).self) { try NotesExportTool().validate(rangeWithoutSheet) }
     }
 
+    @Test func gridlineOptionIsTypedAndPDFOnly() throws {
+        let schema = try #require(JSONSerialization.jsonObject(
+            with: Data(NotesExportTool.parametersJSON.utf8)) as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        let gridlines = try #require(properties["printGridlines"] as? [String: Any])
+        #expect(gridlines["type"] as? String == "boolean")
+        for enabled in [false, true] {
+            for format in ["pdf", "floenote"] {
+                let bytes = try JSONSerialization.data(withJSONObject: [
+                    "documentID": UUID().uuidString, "format": format,
+                    "printGridlines": enabled
+                ])
+                let args = try JSONDecoder().decode(NotesExportTool.Arguments.self, from: bytes)
+                #expect(args.printGridlines == enabled)
+                if format == "pdf" {
+                    try NotesExportTool().validate(args)
+                } else {
+                    #expect(throws: (any Error).self) { try NotesExportTool().validate(args) }
+                }
+            }
+        }
+    }
+
+    @Test func notebookRejectsBothExplicitGridlineChoicesWithoutOutput() async throws {
+        let harness = try makeHarness()
+        defer { harness.cleanup() }
+        let created = try await harness.store.create(NoteDocument(title: "Gridline scope"))
+        try await harness.store.grantAccess(
+            conversationID: conversationID, documentID: created.id, canEdit: false)
+        let context = makeContext(workspace: harness.workspace)
+        let baseline = try await DocumentExportService.export(
+            .init(documentID: created.id, format: .pdf, scope: .init(),
+                  expectedRevision: created.revision, targetPath: "exports/base.pdf"),
+            store: harness.store, context: context, artifactRoot: harness.artifactRoot)
+        #expect(baseline.pageCount == 1)
+        for enabled in [false, true] {
+            let path = "exports/gridlines-\(enabled).pdf"
+            do {
+                _ = try await DocumentExportService.export(
+                    .init(documentID: created.id, format: .pdf,
+                          scope: .init(printGridlines: enabled),
+                          expectedRevision: created.revision, targetPath: path),
+                    store: harness.store, context: context, artifactRoot: harness.artifactRoot)
+                Issue.record("Printed gridlines apply only to workbooks")
+            } catch {}
+            #expect(!FileManager.default.fileExists(
+                atPath: harness.workspace.appendingPathComponent(path).path))
+        }
+    }
+
     @Test func documentConversionValidatesOfficePDFAndPages() throws {
         for ext in ["docx", "xlsx", "pptx"] {
             try DocumentFileConverter.validate(
@@ -358,6 +408,10 @@ struct DocumentExportServiceTests {
         try await harness.store.grantAccess(
             conversationID: conversationID, documentID: created.id, canEdit: false)
 
+        let capabilities = try await DocumentExportService.capabilities(
+            documentID: created.id, includeLayout: false, store: harness.store)
+        #expect(capabilities.pdf?.printGridlinesSupported == true)
+
         // Landscape + fit-to-one-page through the assistant producer: the
         // same route the UI Print/Export sheet uses, on the saved package.
         let callID = "call-office-notes-export"
@@ -365,7 +419,7 @@ struct DocumentExportServiceTests {
         let request = DocumentExportRequest(
             documentID: created.id,
             format: .pdf,
-            scope: DocumentExportScope(paper: "a4", orientation: "landscape", fit: "fitToOnePage"),
+            scope: DocumentExportScope(paper: "a4", orientation: "landscape", fit: "fitToOnePage", printGridlines: true),
             expectedRevision: created.revision,
             targetPath: "exports/provided.pdf")
         let result = try await DocumentExportService.export(

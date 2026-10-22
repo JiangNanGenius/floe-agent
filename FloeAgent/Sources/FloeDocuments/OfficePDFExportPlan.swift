@@ -5,11 +5,11 @@
 // scope (the document's own settings, one named sheet with all of its content,
 // the sheet's own saved print area, one canonical cell range, an explicitly
 // selected set of worksheets, or every visible sheet), the page setup
-// overrides (paper, orientation, margins, and exactly one scaling control:
-// preset fit, an exact 10–400% scale, or a fit-to-width×height page count),
-// and an optional final PDF page selection. It also owns the read-only
-// content-extent resolver the live UI can use to prefill an explicit cell
-// range from the saved package.
+// overrides (paper, orientation, margins, exactly one scaling control —
+// preset fit, an exact 10–400% scale, or a fit-to-width×height page count —
+// and the optional explicit printed-gridlines choice), and an optional final
+// PDF page selection. It also owns the read-only content-extent resolver the
+// live UI can use to prefill an explicit cell range from the saved package.
 //
 // Nothing here renders, opens an engine session or touches a live editor.
 // `OfficePrintCopy` turns an XLSX plan into a private copy with real print
@@ -135,19 +135,29 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
     /// Exact fit-to-pages budget (1…99 × 1…99). Mutually exclusive with
     /// `fit` and `scalePercent`.
     public var fitPages: OfficePDFFitPages?
+    /// Explicit `printOptions@gridLines` decision written only into the
+    /// private print copy: `nil` keeps the worksheet's own printOptions
+    /// member byte-identical, `true`/`false` declares printed gridlines
+    /// on/off. Cell borders and the source package are never touched.
+    /// Excel defaults to NOT printing gridlines regardless of the screen
+    /// display (Microsoft: "Print gridlines in a worksheet"), so the UI
+    /// default must stay `nil` unless the user chooses explicitly.
+    public var printGridlines: Bool?
 
     public init(paper: OfficePDFPaper? = nil,
                 orientation: OfficePDFOrientation? = nil,
                 fit: OfficePDFFit? = nil,
                 margins: OfficePDFMargins? = nil,
                 scalePercent: Int? = nil,
-                fitPages: OfficePDFFitPages? = nil) {
+                fitPages: OfficePDFFitPages? = nil,
+                printGridlines: Bool? = nil) {
         self.paper = paper
         self.orientation = orientation
         self.fit = fit
         self.margins = margins
         self.scalePercent = scalePercent
         self.fitPages = fitPages
+        self.printGridlines = printGridlines
     }
 
     /// Keep every page-setup member of the source worksheet.
@@ -158,6 +168,7 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
         paper == nil && orientation == nil && fit == nil
             && (margins == nil || margins == .document)
             && scalePercent == nil && fitPages == nil
+            && printGridlines == nil
     }
 
     /// True when at least one member must be written.
@@ -202,6 +213,10 @@ public enum OfficePDFFormatSupport: String, Codable, Sendable, Equatable {
     /// Exact `fitToWidth`×`fitToHeight` page budget — the same members the
     /// qualified fit presets write.
     public var supportsFitPageCount: Bool { self == .workbook }
+    /// Explicit printed-gridlines choice — the same `printOptions@gridLines`
+    /// member a saved worksheet's own print settings already carry. It is
+    /// written only into the private print copy, never into cell borders.
+    public var supportsPrintGridlines: Bool { self == .workbook }
     public var supportsFinalPageRange: Bool { true }
     /// The saved-file isolated engine host is qualified for `.xlsx`,
     /// `.docx` and `.pptx` only. Legacy formats use the live-session
@@ -520,7 +535,7 @@ public enum OfficePDFPlanError: LocalizedError, Sendable, Equatable {
         case .unsupportedScope(let format):
             "Sheet and workbook scopes are available for .xlsx workbooks only (requested .\(format))."
         case .unsupportedPageSetup(let format):
-            "Custom paper, orientation, fit and margin settings are available for .xlsx workbooks only (requested .\(format))."
+            "Custom paper, orientation, fit, margin and printed-gridlines settings are available for .xlsx workbooks only (requested .\(format))."
         case .conflictingScalingControls:
             "Choose only one scaling control: a fit preset, an exact scale, or a fit-to-pages size."
         case .scalePercentOutOfRange(let requested, let minimum, let maximum):

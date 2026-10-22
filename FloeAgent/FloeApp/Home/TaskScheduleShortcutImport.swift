@@ -11,14 +11,21 @@
 // install for a third-party app, and this code never claims otherwise:
 //
 //   • availability distinguishes `.ready(digest:)` (a signed template is in
-//     the bundle) from `.noTemplate` (it is not — the manual ShortcutsLink
-//     path is then the entire UI, exactly as before);
+//     the bundle) from `.noTemplate` (it is not);
+//   • the setup sheet shows ONE control — the system Shortcuts badge.
+//     `badgeAction`/`performBadgeTap` route its tap honestly: a ready
+//     template invokes the real import handoff, no template keeps the
+//     badge's own documented behavior of opening the Shortcuts app for the
+//     manual steps. Opening Shortcuts records NOTHING; it is not import
+//     evidence;
 //   • attempt evidence records only what Floe itself did (file prepared →
 //     opened by the system, or handed to the user via the share sheet, or
 //     cancelled/failed). None of these mean "installed";
-//   • a separate USER-CONFIRMED mark stores only the person's own tap in
-//     Floe saying they added the automation. The app cannot verify it and
-//     never infers it.
+//   • the USER-CONFIRMED mark API is retained for historical rows and the
+//     monitoring vocabulary (build 286 recorded rows), but the setup sheet
+//     no longer offers a self-confirmation toggle: a real system firing is
+//     the strongest evidence this lane can observe, and the import lane
+//     never requires the user to vouch for the system side.
 //
 // Three events are MONITORING evidence and persist a silent monitoring row
 // in `task_schedule_cleanup_reminders` through the shared cleanup store:
@@ -131,6 +138,31 @@ final class TaskScheduleShortcutImport: ObservableObject {
         case ready(digest: String?)
     }
 
+    /// What the ONE Shortcuts badge does when tapped. A pure decision so
+    /// the routing is testable without a view or any real system contact.
+    enum ShortcutBadgeAction: Hashable {
+        /// A signed template is bundled: hand it to the system's own
+        /// "Add Shortcut" page (the real native import path).
+        case presentImport
+        /// No template: keep the badge's documented behavior of opening
+        /// the Shortcuts app so the user can follow the manual steps.
+        /// Records nothing — opening an app proves nothing about imports.
+        case openShortcutsApp
+    }
+
+    /// Apple's documented scheme for launching Shortcuts to its last-used
+    /// state (support.apple.com "Open and create a shortcut using a URL
+    /// scheme"). Used for the badge fallback and the Home cleanup popup.
+    /// Floe cannot list, verify or delete anything on the system side.
+    static let shortcutsAppURL = URL(string: "shortcuts://")!
+
+    var badgeAction: ShortcutBadgeAction {
+        switch availability {
+        case .ready: return .presentImport
+        case .noTemplate: return .openShortcutsApp
+        }
+    }
+
     @Published private(set) var availability: Availability = .noTemplate
     @Published private(set) var evidence: TaskScheduleSetupEvidenceRecord?
     /// Set when the direct open was refused and the documented share-sheet
@@ -148,6 +180,9 @@ final class TaskScheduleShortcutImport: ObservableObject {
     var tempWriter: ((Data, String) -> URL?)?
     var fileOpener: ((URL) async -> Bool)?
     var defaults: UserDefaults?
+    /// What "open the Shortcuts app" does. Injectable so tests never
+    /// contact UIApplication; production performs the documented URL open.
+    var shortcutsAppOpener: ((URL) -> Void)?
 
     init(templateReader: (() -> Data?)? = nil,
          tempWriter: ((Data, String) -> URL?)? = nil,
@@ -181,6 +216,26 @@ final class TaskScheduleShortcutImport: ObservableObject {
             availability = .noTemplate
         }
         evidence = TaskScheduleSetupEvidenceStore.load(scheduleID: scheduleID, defaults: defaults)
+    }
+
+    /// The ONE real action behind the badge. Routes the tap by `badgeAction`
+    /// so a single control serves both honest paths:
+    ///   • ready template — invoke the existing native import handoff
+    ///     (the system's own "Add Shortcut" page for the signed file);
+    ///   • no template — perform exactly what the badge itself documents:
+    ///     open the Shortcuts app for the manual steps. This records
+    ///     NOTHING: launching an app proves nothing about any import, and
+    ///     no attempt or monitoring row is written for it.
+    func performBadgeTap() async {
+        switch badgeAction {
+        case .presentImport:
+            await presentImport()
+        case .openShortcutsApp:
+            let open = shortcutsAppOpener ?? { url in
+                UIApplication.shared.open(url)
+            }
+            open(Self.shortcutsAppURL)
+        }
     }
 
     /// The one import handoff. Never claims an install: at best it records

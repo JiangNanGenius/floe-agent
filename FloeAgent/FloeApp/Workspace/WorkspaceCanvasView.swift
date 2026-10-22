@@ -5630,6 +5630,15 @@ struct WorkspaceCanvasView: View {
     /// opens the native CAD editor through the production binding route once
     /// (`--ui-test-canvas-cad-fixture`). Nil in every product path.
     @Environment(\.canvasCADFixtureAutoOpen) private var canvasCADFixtureAutoOpen
+    /// Scene foldable capability (plain environment value; the unknown default
+    /// keeps the historical `.phone || width < 620` chrome rule byte-for-byte
+    /// on every ordinary device and every isolated host).
+    @Environment(\.foldableDisplay) private var foldableDisplay
+    @ObservedObject private var layoutPreferences = LayoutPreferences.shared
+    /// Last expanded/compact chrome decision, fed back to the pure engine so
+    /// a physical fold animating across the width threshold cannot oscillate
+    /// between control clusters.
+    @State private var canvasChromeExpanded = false
     @AppStorage("creative.canvas.sync.enabled") private var globalCanvasSyncEnabled = true
     @AppStorage("creative.canvas.appearance") private var canvasAppearance = "system"
     @AppStorage("floe.settings.appearance") private var appAppearance = "system"
@@ -6499,6 +6508,13 @@ struct WorkspaceCanvasView: View {
                     panStart = pan
                 }
                 canvasViewportSize = size
+                // Feed the hysteresis input off the real viewport geometry.
+                canvasChromeExpanded = !FoldableLayoutEngine.canvasUsesCompactChrome(
+                    snapshot: foldableDisplay,
+                    adaptationEnabled: layoutPreferences.settings.foldableAdaptationEnabled,
+                    width: Double(size.width),
+                    previouslyExpanded: canvasChromeExpanded,
+                    isPhoneIdiom: UIDevice.current.userInterfaceIdiom == .phone)
             }
             .overlay(alignment: .bottomTrailing) {
                 if editingNodeID == nil || !compactCanvas(size: geometry.size) {
@@ -6565,7 +6581,16 @@ struct WorkspaceCanvasView: View {
     }
 
     private func compactCanvas(size: CGSize) -> Bool {
-        UIDevice.current.userInterfaceIdiom == .phone || size.width < 620
+        // Proven foldable hardware with adaptation on decides from the actual
+        // available width (plus hysteresis), so an unfolded phone reaches the
+        // expanded workbench chrome. Every other device keeps the historical
+        // idiom-or-width rule exactly.
+        FoldableLayoutEngine.canvasUsesCompactChrome(
+            snapshot: foldableDisplay,
+            adaptationEnabled: layoutPreferences.settings.foldableAdaptationEnabled,
+            width: Double(size.width),
+            previouslyExpanded: canvasChromeExpanded,
+            isPhoneIdiom: UIDevice.current.userInterfaceIdiom == .phone)
     }
 
     private func clampedPaletteCoordinate(_ value: CGFloat, extent: CGFloat, halfSize: CGFloat) -> CGFloat {

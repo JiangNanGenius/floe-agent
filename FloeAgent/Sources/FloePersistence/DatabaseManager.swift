@@ -141,6 +141,22 @@ public actor DatabaseManager {
         return try await pool.write { db in try block(db) }
     }
 
+    /// The single underlying GRDB reader, exposed ONLY for read-only
+    /// `ValueObservation` attachments by table owners. Returning the app's
+    /// one connection prevents a second pool/queue (which could never see
+    /// these commits anyway); the value conforms to `DatabaseReader`
+    /// (AnyObject, Sendable) and carries no mutation surface. Observations
+    /// grant no lifecycle power: they read.
+    public func observationReader() throws -> any DatabaseReader {
+        if let pool {
+            return pool
+        }
+        guard let queue else {
+            throw FloeError.internalError("DatabaseManager has no configured reader")
+        }
+        return queue
+    }
+
     /// Current `PRAGMA user_version`, aligned with applied migrations.
     public func userVersion() async throws -> Int {
         try await reader { db in

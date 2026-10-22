@@ -55,7 +55,8 @@ struct OfficePrintCopyTests {
                               includeDefinedNames: Bool = true,
                               dataDimension: String? = "A1:B1",
                               includeDrawing: Bool = true,
-                              oneCellAnchor: Bool = false) throws {
+                              oneCellAnchor: Bool = false,
+                              dataPrintOptions: String? = nil) throws {
         let workbook: String = {
             let names = includeDefinedNames ? """
             <definedNames>
@@ -95,11 +96,16 @@ struct OfficePrintCopyTests {
         let dataSheet: String = {
             let dimension = dataDimension.map { "<dimension ref=\"\($0)\"/>" } ?? ""
             let drawing = includeDrawing ? "<drawing r:id=\"rId1\"/>" : ""
+            // Schema position: after the sheet content/hyperlinks, before
+            // `pageMargins`. Tests inject saved print options here to prove
+            // the gridlines writer preserves the other declared flags.
+            let printOptions = dataPrintOptions ?? ""
             return """
             <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
               <sheetPr><pageSetUpPr fitToPage="0"/></sheetPr>
               \(dimension)
               <sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>label</t></is></c><c r="B1" t="inlineStr"><is><t>value</t></is></c></row></sheetData>
+              \(printOptions)
               <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>
               <pageSetup paperSize="9" orientation="portrait" scale="100"/>
               \(drawing)
@@ -947,10 +953,206 @@ struct OfficePrintCopyTests {
             OfficePDFPrintPlan(scope: .allVisibleSheets,
                                pageSetup: OfficePDFPageSetup(
                                    fitPages: OfficePDFFitPages(width: 2, height: 3))),
+            OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(printGridlines: true)),
+            OfficePDFPrintPlan(scope: .sheets(names: ["Data"]),
+                               pageSetup: OfficePDFPageSetup(scalePercent: 120,
+                                                             printGridlines: false)),
         ]
         let roundTrip = try JSONEncoder().encode(plans)
         let decoded = try JSONDecoder().decode([OfficePDFPrintPlan].self, from: roundTrip)
         #expect(decoded == plans)
+    }
+
+    // MARK: - Printed gridlines (Excel print usability)
+
+    @Test("explicit gridlines on keeps the other saved print flags, propagates the scale and leaves the source and borders untouched")
+    func gridlinesOnPreservesOtherFlagsAndSource() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source,
+                         dataPrintOptions: #"<printOptions headings="1" gridLines="0" horizontalCentered="1"/>"#)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let sourceStyles = try member(try Archive(url: source, accessMode: .read), "xl/styles.xml")
+        let destination = root.appendingPathComponent("copy-grid-on.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(scalePercent: 85, printGridlines: true))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: sourceSHA,
+                                                   plan: plan)
+        let copy = try Archive(url: destination, accessMode: .read)
+        let worksheet = try xmlString(copy, "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"gridLines="1""#))
+        // The other members the saved worksheet declared survive verbatim
+        // next to the gridlines change.
+        #expect(worksheet.contains(#"headings="1""#))
+        #expect(worksheet.contains(#"horizontalCentered="1""#))
+        // The percentage propagates through the same verified copy.
+        #expect(worksheet.contains(#"scale="85""#))
+        #expect(copyPlan.appliedPageSetup.printGridlines == true)
+        #expect(copyPlan.appliedPageSetup.scalePercent == 85)
+        // Cell borders live in styles.xml; the copy must keep them byte-
+        // identical, and the source package itself never changes.
+        #expect(try member(copy, "xl/styles.xml") == sourceStyles)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
+    @Test("gridlines on coerces a saved gridLinesSet false because ECMA-376 prints only when both members are true")
+    func gridlinesOnCoercesSavedGridLinesSet() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source,
+                         dataPrintOptions: #"<printOptions headings="1" gridLines="0" gridLinesSet="false"/>"#)
+        let destination = root.appendingPathComponent("copy-grid-coerce.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(printGridlines: true))
+        _ = try OfficePrintCopy.prepare(sourceURL: source,
+                                        destinationURL: destination,
+                                        expectedSHA256: nil,
+                                        plan: plan)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"gridLines="1""#))
+        #expect(worksheet.contains(#"gridLinesSet="1""#))
+        #expect(!worksheet.contains("gridLinesSet=\"false\""))
+        #expect(worksheet.contains(#"headings="1""#))
+    }
+
+    @Test("gridlines off writes only gridLines=0 and leaves the other saved members alone")
+    func gridlinesOffWritesOnlyGridLinesZero() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source,
+                         dataPrintOptions: #"<printOptions headings="1" gridLines="true" gridLinesSet="true"/>"#)
+        let destination = root.appendingPathComponent("copy-grid-off.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(printGridlines: false))
+        _ = try OfficePrintCopy.prepare(sourceURL: source,
+                                        destinationURL: destination,
+                                        expectedSHA256: nil,
+                                        plan: plan)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"gridLines="0""#))
+        // An explicit "off" is complete with gridLines=0; gridLinesSet keeps
+        // the saved spelling and every other flag survives.
+        #expect(worksheet.contains(#"gridLinesSet="true""#))
+        #expect(worksheet.contains(#"headings="1""#))
+    }
+
+    @Test("a created printOptions element lands before pageMargins in schema order")
+    func gridlinesCreatedInSchemaOrder() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-grid-create.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .documentSettings,
+            pageSetup: OfficePDFPageSetup(printGridlines: true))
+        #expect(plan.requiresPrintCopy)
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: nil,
+                                                   plan: plan)
+        #expect(copyPlan.changedSheetParts.count == 2)
+        let copy = try Archive(url: destination, accessMode: .read)
+        let worksheet = try xmlString(copy, "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"<printOptions gridLines="1" gridLinesSet="1"/>"#))
+        guard let options = worksheet.range(of: "<printOptions"),
+              let margins = worksheet.range(of: "<pageMargins"),
+              let setup = worksheet.range(of: "<pageSetup") else {
+            Issue.record("printOptions must exist before pageMargins/pageSetup")
+            return
+        }
+        #expect(options.lowerBound < margins.lowerBound)
+        #expect(margins.lowerBound < setup.lowerBound)
+        // A sheet without any page members gets the element too (before the
+        // closing root), and the very-hidden sheet is never rewritten.
+        let summary = try xmlString(copy, "xl/worksheets/sheet1.xml")
+        #expect(summary.contains(#"<printOptions gridLines="1" gridLinesSet="1"/>"#))
+        let hidden = try xmlString(copy, "xl/worksheets/sheet3.xml")
+        #expect(!hidden.contains("printOptions"))
+    }
+
+    @Test("off creates a self-contained gridLines=0 element without touching gridLinesSet")
+    func gridlinesOffCreatedElement() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-grid-off-create.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(printGridlines: false))
+        _ = try OfficePrintCopy.prepare(sourceURL: source,
+                                        destinationURL: destination,
+                                        expectedSHA256: nil,
+                                        plan: plan)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"<printOptions gridLines="0"/>"#))
+        #expect(!worksheet.contains("gridLinesSet"))
+    }
+
+    @Test("the default choice keeps the worksheet's own printOptions byte-identical")
+    func nilChoiceKeepsPrintOptionsIdentical() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        let saved = #"<printOptions headings="1" gridLines="1" gridLinesSet="0"/>"#
+        try makeWorkbook(at: source, dataPrintOptions: saved)
+        let destination = root.appendingPathComponent("copy-grid-keep.xlsx")
+
+        // Only the paper changes; the gridlines decision stays unmade.
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(paper: .a3))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: nil,
+                                                   plan: plan)
+        #expect(copyPlan.appliedPageSetup.printGridlines == nil)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(saved))
+        #expect(!worksheet.contains(#"gridLines="0""#))
+
+        // The fully default setup is still "no worksheet change at all".
+        #expect(OfficePDFPageSetup().isDocumentSettings)
+        #expect(OfficePDFPageSetup(printGridlines: true).hasOverrides)
+    }
+
+    @Test("gridlines choices validate honestly per format")
+    func gridlinesFormatValidation() throws {
+        let on = OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(printGridlines: true))
+        #expect(on.pageSetup.hasOverrides)
+        #expect(on.requiresPrintCopy)
+        try on.validate(forExtension: "xlsx")
+        #expect(throws: OfficePDFPlanError.unsupportedPageSetup(format: "docx")) {
+            try on.validate(forExtension: "docx")
+        }
+        #expect(throws: OfficePDFPlanError.unsupportedPageSetup(format: "pptx")) {
+            try on.validate(forExtension: "pptx")
+        }
+        #expect(throws: OfficePDFPlanError.unsupportedPageSetup(format: "ods")) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(printGridlines: false))
+                .validate(forExtension: "ods")
+        }
+        // The default choice keeps document-settings passthrough.
+        try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(printGridlines: nil))
+            .validate(forExtension: "docx")
     }
 
     // MARK: - Plan / page range

@@ -369,6 +369,29 @@ public actor TaskScheduleCleanupReminderStore {
         }
     }
 
+    /// Live, POLITE observation of exactly the OPEN cleanup list — the same
+    /// decode, silent-row exclusion and newest-seen-first ordering as
+    /// `openReminders()`. Built on GRDB's own async `ValueObservation` over
+    /// the app's single connection: one fresh value when the observation
+    /// starts and one per committed change to the open set. No polling, no
+    /// timer, no second connection, and no lifecycle surface — an
+    /// observation only reads; it cannot write, enable, arm or launch.
+    /// The terminal cleanup popup consumes this; ordinary deletes of
+    /// never-monitored plans change nothing and emit nothing.
+    public func openRemindersObservation() async throws
+        -> AsyncValueObservation<[TaskScheduleCleanupReminder]> {
+        let reader = try await database.observationReader()
+        return ValueObservation
+            .tracking { db in
+                try Row.fetchAll(db, sql: """
+                    SELECT * FROM task_schedule_cleanup_reminders
+                    WHERE status = 'open'
+                    ORDER BY last_seen_at DESC
+                    """).compactMap(Self.decodeQuietly)
+            }
+            .values(in: reader)
+    }
+
     public func reminder(id: UUID) async throws -> TaskScheduleCleanupReminder? {
         try await database.reader { db in
             guard let row = try Row.fetchOne(
