@@ -516,6 +516,13 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         } catch {
             // Preserve the first failure, as the read-only host test does, before
             // release can report a secondary WebKit removal error.
+            attachWindow(window, "editable-owner-print-failure")
+            let ax = Self.accessibilityNodes(in: window)
+                .map { ["identifier": $0.identifier, "label": $0.label] }
+            if let data = try? JSONSerialization.data(withJSONObject: ax, options: [.sortedKeys]) {
+                attach(data, "editable-owner-print-failure-accessibility.json")
+            }
+            attachStages(ownerEvents(for: session, since: .distantPast), "editable-owner-print-failure-stages.json")
             XCTFail("Editable-owner print remount regression failed: \(error)")
             await session.release()
             return
@@ -891,8 +898,9 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
 
     /// Collects the accessibility nodes a hosted tree vends. The element count
     /// is queried on every container first: SwiftUI builds its assistive tree
-    /// lazily, and this test is the client. UIAccessibilityElement wrappers are
-    /// read directly; plain UIView elements are covered by the subview walk.
+    /// lazily, and this test is the client. UIView and UIAccessibilityElement
+    /// nodes are read through their own public properties; the subview walk
+    /// covers UIKit-backed content the virtual tree only references.
     private static func accessibilityNodes(in view: UIView) -> [HostedAccessibilityNode] {
         var nodes: [HostedAccessibilityNode] = []
         var visited = Set<ObjectIdentifier>()
@@ -903,7 +911,7 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             // SwiftUI vends virtual containers as well as UIViews. Traverse
             // their public container protocol recursively, not just one level.
             let count = node.accessibilityElementCount()
-            let identifier = (node as? UIAccessibilityIdentification)?.accessibilityIdentifier ?? ""
+            let identifier = Self.hostedAccessibilityIdentifier(of: node)
             if node.isAccessibilityElement || !identifier.isEmpty {
                 let label = node.accessibilityLabel ?? node.accessibilityValue ?? ""
                 nodes.append(HostedAccessibilityNode(
@@ -922,6 +930,23 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
         walk(view, depth: 0)
         return nodes
+    }
+
+    /// The identifier a public hosted node actually vends. UIKit declares
+    /// `UIView`'s conformance in a category (`UIAccessibilityIdentification.h`)
+    /// and `UIAccessibilityElement` adopts it in its class declaration there,
+    /// so both are read directly on that public type; some other public
+    /// wrappers do not declare the conformance at all. The protocol cast is
+    /// therefore kept only for the SDK's other formal adopters (bar items,
+    /// images, menu and alert actions). No selector, KVC or private wrapper.
+    private static func hostedAccessibilityIdentifier(of node: NSObject) -> String {
+        if let view = node as? UIView {
+            return view.accessibilityIdentifier ?? ""
+        }
+        if let element = node as? UIAccessibilityElement {
+            return element.accessibilityIdentifier ?? ""
+        }
+        return (node as? UIAccessibilityIdentification)?.accessibilityIdentifier ?? ""
     }
 
     private static func uiButtons(in view: UIView) -> [HostedButton] {
