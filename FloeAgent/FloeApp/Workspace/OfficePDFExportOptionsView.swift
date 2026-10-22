@@ -357,6 +357,11 @@ struct OfficePDFExportOptionsView: View {
     let purpose: OfficePDFExportPurpose
     let prepare: @MainActor () async throws -> OfficePDFExportPreparation
     let export: @MainActor (OfficePDFExportPreparation, OfficePDFExportChoices, CancellationToken) async throws -> OfficePDFPreparedDelivery
+    /// Content-free lifecycle breadcrumbs onto the owning session's durable
+    /// stage trace (appear/load/cancel/error/preview/dismiss ownership).
+    /// Default no-op: hosts without a session trace stay bit-for-bit
+    /// unchanged, and nothing here ever carries document content.
+    var observe: @MainActor (String, [String: String]) -> Void = { _, _ in }
     @Environment(\.dismiss) private var dismiss
     @State private var source: OfficePDFExportPreparation?
     @State private var choices = OfficePDFExportChoices()
@@ -373,6 +378,10 @@ struct OfficePDFExportOptionsView: View {
     @State private var presentation: OfficePDFDeliveryPresentation?
     @State private var deliveryFailed = false
     @State private var loadAttempt = 0
+    /// Latch distinguishing this view's own teardown (Cancel, delivery done)
+    /// from an external presentation dismissal, so the trace names the actual
+    /// dismissal owner instead of leaving a silent disappearance.
+    @State private var abandoning = false
 
     private func t(_ chinese: String, _ english: String) -> String { OfficeInkText.t(chinese, english) }
 
@@ -394,7 +403,7 @@ struct OfficePDFExportOptionsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(t("取消", "Cancel")) { abandon() }
+                    Button(t("取消", "Cancel")) { abandon(source: "cancelButton") }
                         .frame(minHeight: 44)
                 }
             }
@@ -403,6 +412,7 @@ struct OfficePDFExportOptionsView: View {
         .interactiveDismissDisabled(working || presentation != nil)
         .task(id: loadAttempt) {
             loading = true; error = nil
+            observe("export.options.loadBegin", ["attempt": String(loadAttempt)])
             do {
                 let prepared = try await prepare()
                 try Task.checkCancellation()
@@ -411,14 +421,29 @@ struct OfficePDFExportOptionsView: View {
                 // choice. No first-sheet substitution for Current Sheet.
                 choices.sheetName = prepared.activeSheetName
                     ?? prepared.sheets.first(where: \.isVisible)?.name ?? ""
-            } catch is CancellationError { }
-            catch { self.error = message(for: error) }
+                observe("export.options.loaded", ["attempt": String(loadAttempt)])
+            } catch is CancellationError {
+                observe("export.options.loadCancelled", ["attempt": String(loadAttempt)])
+            }
+            catch {
+                observe("export.options.loadError",
+                        ["attempt": String(loadAttempt), "kind": Self.errorKind(error)])
+                self.error = message(for: error)
+            }
             loading = false
             // The initial preview is automatic: no Generate stage.
             scheduleAutoPreview(choices)
         }
         .onChange(of: choices) { _, next in scheduleAutoPreview(next) }
-        .onDisappear { abandon() }
+        .onDisappear {
+            // An external teardown (the presentation owner removed this
+            // sheet) reaches here WITHOUT a prior abandon. Ordering this
+            // breadcrumb against the parent's export.sheet.bindingSet nil
+            // write names the actual dismissal owner on the live trace.
+            observe("export.options.disappear",
+                    ["owner": abandoning ? "abandon" : "external"])
+            abandon(source: "disappear")
+        }
         .sheet(item: $presentation, onDismiss: {
             if deliveryFailed {
                 deliveryFailed = false
@@ -447,7 +472,13 @@ struct OfficePDFExportOptionsView: View {
         }
     }
 
-    private func abandon() {
+    private func abandon(source: String) {
+        // Diagnostic stage: observe only. Reentrant teardown (Cancel then
+        // onDisappear, or an external dismissal reaching the same path) keeps
+        // its original cleanup/dismiss calls unchanged; the latch exists only
+        // to label which breadcrumb observed the teardown first.
+        abandoning = true
+        observe("export.options.abandon", ["source": source])
         cancellation.cancel(); operation?.cancel()
         debounce?.cancel(); pendingChoices = nil
         preview.invalidate()
@@ -735,7 +766,10 @@ struct OfficePDFExportOptionsView: View {
     /// structurally impossible (the leased delivery slot and the native host
     /// each carry exactly one operation at a time).
     private func scheduleAutoPreview(_ next: OfficePDFExportChoices) {
-        guard source != nil else { return }
+        guard source != nil else {
+            observe("export.preview.skip", ["reason": "noSource"])
+            return
+        }
         pendingChoices = next
         debounce?.cancel()
         debounce = Task { @MainActor in
@@ -748,23 +782,42 @@ struct OfficePDFExportOptionsView: View {
 
     private func pumpPreview() {
         guard let source, !loading, !working, presentation == nil,
-              let pending = pendingChoices else { return }
+              let pending = pendingChoices else {
+            observe("export.preview.skip", ["reason": pumpSkipReason()])
+            return
+        }
         pendingChoices = nil
         // Already-current artifact: nothing to regenerate.
-        if preview.artifact != nil, !preview.isStale(currentChoices: pending) { return }
+        if preview.artifact != nil, !preview.isStale(currentChoices: pending) {
+            observe("export.preview.skip", ["reason": "current"])
+            return
+        }
         // Auto-render complete, valid settings only. Mid-edit input (a
         // partial range, an out-of-bounds percent) stays silently queued
         // until the next change instead of spamming an error for every
         // keystroke; the visible preview just reads as stale.
         guard (try? pending.plan(activeSheetName: source.activeSheetName,
-                                 sheetTabOrder: source.tabOrder)) != nil else { return }
+                                 sheetTabOrder: source.tabOrder)) != nil else {
+            observe("export.preview.skip", ["reason": "invalidPlan"])
+            return
+        }
         startGeneration(for: pending, source: source)
+    }
+
+    /// Why the automatic queue could not pump right now; content-free.
+    private func pumpSkipReason() -> String {
+        if source == nil { return "noSource" }
+        if loading { return "loading" }
+        if working { return "working" }
+        if presentation != nil { return "presenting" }
+        return "noPending"
     }
 
     private func startGeneration(for snapshot: OfficePDFExportChoices,
                                  source: OfficePDFExportPreparation) {
         working = true; error = nil
         let token = preview.beginGeneration()
+        observe("export.preview.generationStarted", ["token": String(token)])
         operation = Task { @MainActor in
             defer {
                 working = false; operation = nil
@@ -786,11 +839,19 @@ struct OfficePDFExportOptionsView: View {
                     // the session was cancelled or the source changed while
                     // this run was in flight. The lease and directory stay
                     // owned by the preparation; nothing here touches them.
+                    observe("export.preview.generationFenced", ["token": String(token)])
                     return
                 }
                 delivery = result
-            } catch is CancellationError { }
+                observe("export.preview.generationAccepted", ["token": String(token)])
+            } catch is CancellationError {
+                observe("export.preview.generationCancelled", ["token": String(token)])
+            }
             catch {
+                // Content-free error family only; the user-facing message
+                // keeps its existing mapping below.
+                observe("export.preview.generationError",
+                        ["token": String(token), "kind": Self.errorKind(error)])
                 if needsSourceRefresh(error) {
                     self.source = nil
                     preview.invalidate()
@@ -844,6 +905,25 @@ struct OfficePDFExportOptionsView: View {
             }
         }
         return false
+    }
+
+    /// Content-free error family for trace breadcrumbs: never the localized
+    /// message, never document content.
+    private static func errorKind(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        if let screen = error as? OfficePDFExportScreenError {
+            switch screen {
+            case .sourceChanged: return "sourceChanged"
+            case .sessionBusy: return "sessionBusy"
+            }
+        }
+        if error is OfficePDFPlanError { return "plan" }
+        if error is OfficePrintCopyError { return "copy" }
+        #if canImport(FloeOfficeNative)
+        if error is OfficePDFExportError { return "exportError" }
+        #endif
+        if let floe = error as? FloeError, case .validationFailed = floe { return "validation" }
+        return "other"
     }
 
     private func message(for error: Error) -> String {

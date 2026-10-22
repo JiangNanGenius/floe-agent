@@ -769,10 +769,26 @@ final class OfficeFileSession: ObservableObject {
 
     private func performPDFExportPreparation() async throws -> OfficePDFExportPreparation {
         try Task.checkCancellation()
+        // Captured before the first guard so every refusal breadcrumb —
+        // including the readiness guard itself — can compare against the
+        // exact fence this preparation observed at entry. Pure read of the
+        // current generation/controller/working-copy identity; claiming still
+        // happens only at the proven points below.
+        let fence = capturePassiveExitFence()
         guard canAct, documentActionsReady, let controller, let currentSession = session else {
+            // The real editable/autosave trace showed preparations settling
+            // with NO ok/refused breadcrumb: every silent refusal below now
+            // names its guard on the same content-free trace, so the next
+            // actual run identifies the exact owner instead of a blank sheet.
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "sessionReady", fence: fence)
+                            .merging([
+                                "actionsReady": documentActionsReady ? "true" : "false",
+                                "controller": controller == nil ? "false" : "true",
+                                "session": session == nil ? "false" : "true"
+                            ]) { _, latest in latest })
             throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
         }
-        let fence = capturePassiveExitFence()
         // Exactly one reservation for this whole preparation, released once at
         // return — including on a thrown refusal or a cancellation.
         var reserved = false
@@ -793,6 +809,8 @@ final class OfficeFileSession: ObservableObject {
         }
         let activePen = readOnly ? false : await hasActivePenContact()
         guard !activePen else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "activePen", fence: fence))
             throw FloeError.validationFailed(OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again."))
         }
         if !readOnly {
@@ -825,10 +843,23 @@ final class OfficeFileSession: ObservableObject {
                             ? OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again.")
                             : OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")))
                     }
+                    // Not always "busy": a failed/cancelled transaction also
+                    // lands here, so label the guard itself and keep the
+                    // exact outcome/reason rather than claiming a busy owner.
+                    recordStage("export.prepare.refused",
+                                exportRefusalFacts(stage: "prepare", guardAt: "autosaveProof", fence: fence)
+                                    .merging([
+                                        "claim": "unprovenSave",
+                                        "outcome": proof.outcome.rawValue,
+                                        "reason": proof.reason ?? "none",
+                                        "retryScheduled": proof.retryScheduled ? "true" : "false"
+                                    ]) { _, latest in latest })
                     throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
                 }
             } else {
                 guard await saveInPlace() else {
+                    recordStage("export.prepare.refused",
+                                exportRefusalFacts(stage: "prepare", guardAt: "saveInPlace", fence: fence))
                     throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
                 }
             }
@@ -861,6 +892,16 @@ final class OfficeFileSession: ObservableObject {
         try Task.checkCancellation()
         let quiescentBefore = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard quiescentBefore else {
+            // Editable-only silent refusal: the pen/modified probes fail
+            // closed, and the read-only path never reaches this guard. The
+            // breadcrumb names it with the working-copy dirty fact so the
+            // next actual trace separates a real in-flight edit from a stale
+            // engine modified latch after an owner autosave.
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "quiescentBefore", fence: fence)
+                            .merging([
+                                "uncommitted": hasUncommittedChanges ? "true" : "false"
+                            ]) { _, latest in latest })
             throw FloeError.validationFailed(OfficeInkText.t("文档仍在编辑，请稍后重试。", "The document is still being edited. Try again shortly."))
         }
         let sourceURL = currentSession.workingURL
@@ -935,6 +976,7 @@ final class OfficeFileSession: ObservableObject {
                 "请检查工作表、单元格区域和 PDF 页码。", "Check the sheet, cell range and PDF pages."))
         }
         try cancellation.throwIfCancelled()
+        recordStage("export.generate.started")
         let surfaceCurrent = await source.isCurrent()
         guard surfaceCurrent, let controller else {
             recordStage("export.generate.refused",
@@ -1015,6 +1057,8 @@ final class OfficeFileSession: ObservableObject {
             if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
                 try? FileManager.default.removeItem(at: producedDirectory)
             }
+            recordStage("export.generate.ok",
+                        ["pages": String(result.pageCount), "bytes": String(result.byteCount)])
             return OfficePDFPreparedDelivery(
                 url: delivery, lease: source.lease,
                 pageCount: result.pageCount, byteCount: result.byteCount,
@@ -4187,9 +4231,20 @@ struct OfficeDocumentEditorView: View {
             .sheet(item: Binding(
                 get: { pdfExportRequest },
                 set: { next in
+                    // Content-free presentation lifecycle. A nil write is the
+                    // ONLY dismissal signal this parent emits; ordering it
+                    // against the options view's own disappear breadcrumb
+                    // names the actual dismissal owner on the live trace.
+                    session.recordOwnerStage("export.sheet.bindingSet", [
+                        "nil": next == nil ? "true" : "false",
+                        "replaces": pdfExportRequest != nil && next?.id != pdfExportRequest?.id
+                            ? "true" : "false"
+                    ])
                     if let previous = pdfExportRequest, previous.id != next?.id {
                         previous.cancellation.cancel()
                         session.cancelPDFExportPreparation(cancellation: previous.cancellation)
+                        session.recordOwnerStage("export.prepare.cancelRequested",
+                                                 ["purpose": previous.purpose.rawValue])
                     }
                     pdfExportRequest = next
                 })) { request in
@@ -4197,10 +4252,13 @@ struct OfficeDocumentEditorView: View {
                     prepare: { try await session.preparePDFExport(cancellation: request.cancellation) },
                     export: { prepared, choices, cancellation in
                         try await session.exportConfiguredPDF(prepared, choices: choices, cancellation: cancellation)
-                    })
+                    },
+                    observe: { stage, facts in session.recordOwnerStage(stage, facts) })
             }
             .onChange(of: session.printRequestGeneration) { _, _ in
                 guard pdfExportRequest == nil else { return }
+                session.recordOwnerStage("export.sheet.requested",
+                                         ["purpose": "printDocument", "source": "nativePrint"])
                 pdfExportRequest = .init(purpose: .printDocument)
             }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
@@ -4406,6 +4464,8 @@ struct OfficeDocumentEditorView: View {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
                             if format == "pdf" {
+                                session.recordOwnerStage("export.sheet.requested",
+                                                         ["purpose": "export", "source": "menuExport"])
                                 pdfExportRequest = .init(purpose: .export)
                                 return
                             }
@@ -4419,6 +4479,8 @@ struct OfficeDocumentEditorView: View {
             }
             if session.exportFormats.contains("pdf") {
                 Button(OfficeInkText.t("打印…", "Print…"), systemImage: "printer") {
+                    session.recordOwnerStage("export.sheet.requested",
+                                             ["purpose": "printDocument", "source": "menuPrint"])
                     pdfExportRequest = .init(purpose: .printDocument)
                 }
                 .accessibilityIdentifier("office.editor.print")
