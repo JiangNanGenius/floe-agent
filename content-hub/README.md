@@ -69,6 +69,36 @@ compiled into the App and cannot be replaced by a content package.
 沟通和交付段落；运行时为每个任务冻结选定内容。权限、审批、工具协议和安全规则
 仍由 App 代码固定，内容包不可替换。
 
+### Search provider catalog / 搜索服务目录
+
+`sources/providers/floe.search.providers/` is the search-provider catalog
+package: `content.json` is the signed envelope (kind `providers`, currently
+`minimumAppVersion` `1.7.47`) and `SearchProviderCatalog.json` is the payload
+the app validates. Entries describe **existing compiled adapters only** —
+preset id, adapter kind, bilingual name/blurb, documented default endpoint,
+required credential field keys and option defaults. The package carries no
+scripts, no credential values, no enablement flags and no new runtime
+protocol; an adapter kind the app does not compile is dropped fail-closed and
+needs an app update. The app installs it through the same signed transaction
+as every other content kind and keeps its previously active catalog on any
+signature/schema/minimum-version failure.
+
+`sources/providers/floe.search.providers/` 为搜索服务目录包：`content.json`
+是签名信封（kind 为 `providers`，当前 `minimumAppVersion` 为 `1.7.47`），
+`SearchProviderCatalog.json` 是 App 校验的目录正文。条目只描述**已编译的现有
+适配器**：预设 ID、适配器类型、中英文名称与简介、官方默认端点、必填凭据字段与
+选项默认值。包内无脚本、无凭据值、无启用开关、不引入新的运行时协议；App 未编译的
+适配器类型会被安全丢弃并需升级 App。安装与其它内容类型使用同一签名事务，任何签名、
+结构或最低版本失败都保留原有目录。
+
+The search catalog package 1.0.0 is signed by the official trust root. Tests
+verify its exact source bytes, pinned signature, package hashes and minimum
+App version. New candidates can be checked before signing without replacing
+the active signed feed.
+
+搜索目录包 1.0.0 已使用官方密钥签名。测试核对源码字节、固定公钥签名、包摘要与
+最低 App 版本；新候选包可在签名前验证，现有有效签名目录保持可用。
+
 ## Build / Check / Sign / 构建、校验、签名
 
 ```sh

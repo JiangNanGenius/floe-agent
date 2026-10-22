@@ -21,6 +21,7 @@ import SwiftUI
 import FloeCore
 import FloeSkills
 import FloeProviders
+import FloeExecution
 import FloeAgentRuntime
 
 @MainActor
@@ -93,6 +94,19 @@ final class ContentUpdateCenter: ObservableObject {
     nonisolated static let providerCatalogPath = "ProviderCatalog.json"
     nonisolated static let promptsPackageID = "floe.prompts.core"
 
+    /// Independently versioned signed search-provider catalog. It reuses the
+    /// existing `providers` content kind, signature root and install
+    /// transaction; only the package identity and payload differ, so a
+    /// search-catalog release never republishes the provider compatibility
+    /// package and vice versa.
+    nonisolated static let searchProviderPackageID = SearchProviderCatalog.packageID
+    nonisolated static let searchProviderCatalogPath = SearchProviderCatalog.payloadFileName
+
+    /// Version of the search catalog compiled into the app bundle. A signed
+    /// package at this version or newer wins; a strictly newer built-in takes
+    /// over exactly like every other bundled baseline.
+    nonisolated static let builtInSearchProvidersVersion = "1.0.0"
+
     /// Version of the prompt sections compiled into the app. This is a
     /// content version (not the app marketing version): bump it whenever the
     /// compiled method/communication/delivery sections change so app-upgrade
@@ -108,7 +122,8 @@ final class ContentUpdateCenter: ObservableObject {
     /// package is invented for unconsumed types.
     nonisolated static let builtInBaselines: [String: String] = [
         providerPackageID: "1.1.1",
-        promptsPackageID: builtInPromptsVersion
+        promptsPackageID: builtInPromptsVersion,
+        searchProviderPackageID: builtInSearchProvidersVersion
     ]
 
     /// Declarative content may never require credentials. Script runtimes are
@@ -145,6 +160,7 @@ final class ContentUpdateCenter: ObservableObject {
     private var feedSnapshot: FeedSnapshot?
     private var installInFlight: Set<String> = []
     private var providerCatalogCache: ProviderCatalogIndex?
+    private var searchProviderCatalogCache: SearchProviderCatalogIndex?
     private var promptSectionCache: [ContentPackageCodec.PromptSection] = []
     private var helpFileCache: [String: [String: Data]] = [:]
 
@@ -308,6 +324,14 @@ final class ContentUpdateCenter: ObservableObject {
             providerCatalogCache = index
         } else {
             providerCatalogCache = nil
+        }
+        if let data = try? await store.file(
+            id: Self.searchProviderPackageID,
+            relativePath: Self.searchProviderCatalogPath
+        ), let index = try? SearchProviderCatalogIndex.validated(from: data) {
+            searchProviderCatalogCache = index
+        } else {
+            searchProviderCatalogCache = nil
         }
         if let files = try? await store.files(id: Self.promptsPackageID) {
             promptSectionCache = ContentPackageCodec.promptSections(in: files)
@@ -602,6 +626,42 @@ final class ContentUpdateCenter: ObservableObject {
         }
     }
 
+    // MARK: - Search provider catalog (signed package only)
+
+    /// The effective search-provider catalog: the active signed install when
+    /// one exists, otherwise the app-bundled copy. Never fetched unsigned and
+    /// never mutated by UI code; a corrupt/absent install silently falls back
+    /// to the bundle so the add page keeps working while the update surface
+    /// explains the failure.
+    func searchProviderCatalog() -> SearchProviderCatalogIndex? {
+        searchProviderCatalogCache ?? SearchProviderCatalogIndex.loadBundled()
+    }
+
+    /// True when a signed catalog revision newer than the active/bundled one
+    /// is available for review. The instance list shows per-instance update
+    /// badges from the same catalog version, never auto-applying defaults.
+    var searchProviderCatalogUpdateAvailable: Bool {
+        available[Self.searchProviderPackageID]?.decision.isUpdate == true
+    }
+
+    /// Signed refresh + install for the search catalog only. Delegated from
+    /// both the Content Updates page and the Add Provider page through this
+    /// single owner; verification, version policy and atomic install are the
+    /// unchanged production path.
+    func refreshSearchProviderCatalog() async {
+        await ensureLoaded()
+        await checkForUpdates(force: true)
+        guard let decision = available[Self.searchProviderPackageID]?.decision else { return }
+        if decision.isUpdate {
+            await performInstall(id: Self.searchProviderPackageID) {
+                guard let snapshot = self.feedSnapshot, let store = self.store else {
+                    throw ContentUpdateStoreError.conflict("no frozen feed")
+                }
+                try await self.commitEntries([Self.searchProviderPackageID], snapshot: snapshot, store: store)
+            }
+        }
+    }
+
     // MARK: - Prompt review + runtime consumption
 
     func promptSections() -> [ContentPackageCodec.PromptSection] {
@@ -707,9 +767,19 @@ final class ContentUpdateCenter: ObservableObject {
 
     nonisolated static func domainValidator(entry: SignedContentEntry, files: [String: Data]) throws {
         try ContentPackageCodec(kind: entry.kind).validate(entry: entry, files: files)
-        if entry.kind == .providers,
-           let catalogData = files[providerCatalogPath] {
-            _ = try ProviderCatalogIndex.validated(from: catalogData)
+        if entry.kind == .providers {
+            // Narrow dispatch by package identity/payload. The compatibility
+            // package keeps its full ProviderCatalog validation; the search
+            // catalog package must pass the typed search-catalog gate. Each
+            // payload validator is only applied to its own package, so neither
+            // gate is weakened for the other.
+            if entry.id == searchProviderPackageID,
+               let catalogData = files[searchProviderCatalogPath] {
+                _ = try SearchProviderCatalogDocument.validated(from: catalogData)
+            }
+            if let catalogData = files[providerCatalogPath] {
+                _ = try ProviderCatalogIndex.validated(from: catalogData)
+            }
         }
     }
 

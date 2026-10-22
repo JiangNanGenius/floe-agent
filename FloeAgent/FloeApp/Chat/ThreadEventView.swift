@@ -168,7 +168,7 @@ struct ThreadEventView: View {
         case .assistantText:
             AssistantMessageView(
                 text: payload["text"] ?? "",
-                isStreaming: isLive
+                isStreaming: isLive, allowsReadAloud: false
             )
 
         case .reasoning:
@@ -260,7 +260,16 @@ struct ThreadEventView: View {
             usageBody
 
         case .status:
-            statusBody
+            if let playback = VoicePlaybackReceipt.fromEventPayloadJSON(event.payloadJSON) {
+                if playback.status == .interrupted {
+                    Label("voice.conversation.playback_interrupted", systemImage: "speaker.slash")
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("thread.voice.playback_interrupted")
+                }
+            } else {
+                statusBody
+            }
 
         case .notice:
             NoticeEventView(machineMessage: payload["message"] ?? "", payload: payload)

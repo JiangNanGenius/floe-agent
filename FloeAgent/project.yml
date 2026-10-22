@@ -21,6 +21,8 @@ options:
   generateEmptyDirectories: true
 
 packages:
+  SpeechSwiftTTS:
+    path: ThirdParty/SpeechSwiftTTS
   WhisperKit:
     url: https://github.com/argmaxinc/WhisperKit.git
     revision: 1e2a163736dfa5a198e637ae44c114e1c6d5cc2d
@@ -72,6 +74,7 @@ targets:
           - Resources/Licenses
           - Resources/MindElixir
           - Resources/Whisper
+          - Resources/LocalSpeech
           - Resources/Shortcuts
           # Per-extension privacy manifests: each extension copies its own
           # PrivacyInfo.xcprivacy from here; they must never also land in the
@@ -111,6 +114,9 @@ targets:
         type: folder
         buildPhase: resources
         optional: true
+      - path: FloeApp/Resources/LocalSpeech
+        type: folder
+        buildPhase: resources
       - path: FloeApp/Resources/Whisper
         type: folder
         buildPhase: resources
@@ -248,6 +254,12 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: SpeechSwiftTTS
+        product: Qwen3TTS
+      - package: SpeechSwiftTTS
+        product: MossTTSNano
+      - package: SpeechSwiftTTS
+        product: SpeechAudioCommon
       - package: WhisperKit
         product: WhisperKit
       - framework: Vendor/PDFium/PDFium.xcframework
@@ -371,8 +383,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.46"
-        CURRENT_PROJECT_VERSION: "287"
+        MARKETING_VERSION: "1.7.47"
+        CURRENT_PROJECT_VERSION: "288"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -453,8 +465,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.46"
-        CURRENT_PROJECT_VERSION: "287"
+        MARKETING_VERSION: "1.7.47"
+        CURRENT_PROJECT_VERSION: "288"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -504,8 +516,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.46"
-        CURRENT_PROJECT_VERSION: "287"
+        MARKETING_VERSION: "1.7.47"
+        CURRENT_PROJECT_VERSION: "288"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -548,8 +560,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.46"
-        CURRENT_PROJECT_VERSION: "287"
+        MARKETING_VERSION: "1.7.47"
+        CURRENT_PROJECT_VERSION: "288"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -601,8 +613,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.46"
-        CURRENT_PROJECT_VERSION: "287"
+        MARKETING_VERSION: "1.7.47"
+        CURRENT_PROJECT_VERSION: "288"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -665,6 +677,20 @@ targets:
       - path: Tests/FloeAppTests/PiPAudioServiceTests.swift
       - path: Tests/FloeAppTests/PiPAudioPreferencesTests.swift
       - path: Tests/FloeAppTests/PiPAudioBackendAppTests.swift
+      - path: Tests/FloeAppTests/ContinuousVoicePresentationTests.swift
+      - path: Tests/FloeAppTests/ChatAutomaticReadControllerTests.swift
+      - path: Tests/FloeAppTests/ContinuousVoiceSpeechBridgeTests.swift
+      - path: Tests/FloeAppTests/FinalAnswerSpeechTests.swift
+      - path: Tests/FloeAppTests/LocalSpeechModelStoreTests.swift
+      - path: Tests/FloeAppTests/TTSSettingsServiceTests.swift
+      - path: Tests/FloeAppTests/VoiceConversationTests.swift
+      - path: Tests/FloeAppTests/VoiceConversationAudioTests.swift
+      - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
+      - path: Tests/FloeProvidersTests/ChatReasoningTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ChatModePolicyTests.swift
+      - path: Tests/FloeToolsTests/ChatToolPolicyTests.swift
+      - path: Tests/FloePersistenceTests/ChatPreferenceStoreTests.swift
+      - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
       - path: Tests/FloeCoreTests/BackgroundExecutionOptionsTests.swift
       - path: Tests/FloeCoreTests/ShareProviderIntakePolicyTests.swift
       - path: Tests/FloeAppTests/TemporaryConversationTests.swift
@@ -956,6 +982,9 @@ targets:
       - path: Tests/FloeAppTests/RunOutputDeletionLifecycleTests.swift
       - path: Tests/FloeAppTests/FloeRunFileProductionChainTests.swift
       - path: Tests/FloeAppTests/VolcengineSearchSettingsTests.swift
+      - path: Tests/FloeAppTests/WebSearchCatalogSettingsTests.swift
+      - path: Tests/FloeToolsTests/WebSearchServiceIntegrationTests.swift
+      - path: Tests/FloeSkillsTests/ContentUpdateStoreTests.swift
       - path: Tests/FloeAppTests/OfficeHighlighterAlphaTests.swift
       - path: Tests/FloeAppTests/OfficePDFExportServiceTests.swift
       - path: Tests/FloeAppTests/OfficePDFExportAcceptanceTests.swift

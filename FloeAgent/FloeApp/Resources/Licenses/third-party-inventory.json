@@ -592,6 +592,19 @@
       "noteKey": "settings.licenses.note.mlx_vendor"
     },
     {
+      "id": "speech-swift-tts",
+      "repositoryPath": "FloeApp/Resources/Licenses/SpeechSwiftTTS-LICENSE.txt",
+      "bundlePath": "Licenses/SpeechSwiftTTS-LICENSE.txt",
+      "titleKey": "settings.licenses.document.speech_swift.title",
+      "titleFallback": "Speech Swift",
+      "titleArgument": null,
+      "license": "Apache-2.0",
+      "kindKey": "settings.licenses.kind.full_text",
+      "required": true,
+      "section": "swift",
+      "noteKey": "settings.licenses.note.speech_swift_vendor"
+    },
+    {
       "id": "euclid",
       "repositoryPath": "FloeApp/Resources/Licenses/Euclid-LICENSE.txt",
       "bundlePath": "Licenses/Euclid-LICENSE.txt",
@@ -954,6 +967,15 @@
       "section": "swift",
       "noteKey": "settings.licenses.note.mlx_vendor",
       "evidence": "ThirdParty/MLXSwiftLM/LICENSE"
+    },
+    {
+      "name": "speech-swift-tts",
+      "version": "7baf2781d5c6a5d38b008a96eef3dca61c55f369",
+      "license": "Apache-2.0",
+      "source": "https://github.com/soniqo/speech-swift/tree/7baf2781d5c6a5d38b008a96eef3dca61c55f369",
+      "section": "swift",
+      "noteKey": "settings.licenses.note.speech_swift_vendor",
+      "evidence": "ThirdParty/SpeechSwiftTTS/LICENSE"
     },
     {
       "name": "euclid",
@@ -2815,11 +2837,16 @@
       "id": "mlx_vendor",
       "textKey": "settings.licenses.note.mlx_vendor",
       "fallback": "mlx-swift-lm is vendored at ThirdParty/MLXSwiftLM from upstream commit d5d8b290e601ac1bf11f24635f8f811a83b98bf8 with a minimal Floe prefill-stability patch; the complete MIT text ships in the app as Licenses/MLXSwiftLM-LICENSE.txt."
+    },
+    {
+      "id": "speech_swift_vendor",
+      "textKey": "settings.licenses.note.speech_swift_vendor",
+      "fallback": "Includes the speech-swift AudioCommon, MLXCommon, Qwen3TTS and MossTTSNano subset, with Floe session cancellation and cache-reclamation adaptations. Model weights are optional downloads."
     }
   ],
   "counts": {
-    "components": 234,
-    "documents": 46,
-    "pins": 38
+    "components": 235,
+    "documents": 47,
+    "pins": 39
   }
 }

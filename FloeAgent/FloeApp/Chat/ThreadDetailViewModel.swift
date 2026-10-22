@@ -161,6 +161,20 @@ final class ThreadDetailViewModel: ObservableObject {
     /// overwrite this explicit per-turn choice.
     private var explicitModePlanRevision: Int?
     private var isAcceptingPlan = false
+    /// True when this view already resolved the conversation's remembered
+    /// composer mode (first load) or the user selected one. Later transient
+    /// reloads keep the current RAM selection instead of re-reading a write
+    /// that may still be in flight.
+    private var hasResolvedPreferredMode = false
+    /// True when the resolved mode is authoritative: a remembered explicit
+    /// choice, or a fail-closed resolution (unreadable/unread failed) that
+    /// must keep the least-privilege Chat ceiling. Legacy conversations keep
+    /// the historical Plan auto-reconcile rule; an authoritative mode is the
+    /// user's latest intent and must never be replaced by a background path.
+    private var preferredModeIsAuthoritative = false
+    /// Monotonic identity of explicit selections: a slow first-load restore
+    /// must never overwrite a newer user toggle.
+    private var modeSelectionGeneration = 0
     /// Attachments staged in the composer.
     @Published var attachments: [AttachmentRef] = []
     /// Whether a run is currently non-terminal (drives Stop vs Send).
@@ -511,6 +525,7 @@ final class ThreadDetailViewModel: ObservableObject {
         }
         actionError = nil
         var stage = "conversationRead"
+        var preferredModeWarning: String?
         do {
             guard let conversation = try await center.conversationStore(for: conversationID)
                 .conversation(id: conversationID) else {
@@ -535,6 +550,15 @@ final class ThreadDetailViewModel: ObservableObject {
                 center.environment.browserCenter.bind(to: conversationID)
             }
             selectedProjectID = center.environment.workspaceCenter.projectWorkspaceID(for: conversationID)
+            // Restore the conversation's remembered Chat/Agent/Plan/Goal
+            // choice before the composer can send. `AgentExecutionMode.chat`
+            // and `.agent` are indistinguishable in the durable conversation
+            // record, so without this read a Home typed chat or a
+            // voice-created chat would silently reopen as a task-capable
+            // Agent on the next typed round.
+            stage = "preferredMode"
+            preferredModeWarning = await restorePreferredExecutionMode(generation: generation)
+            guard generation == loadGeneration else { return }
             stage = "runList"
             runs = try await center.runStore(for: conversationID).recentRuns(conversationID: conversationID, limit: 30)
             if let latest = runs.first {
@@ -601,6 +625,12 @@ final class ThreadDetailViewModel: ObservableObject {
             await refreshChildRuns(force: true)
             startChildRunPollingIfNeeded()
             startSessionUpdates()
+            // Publish the mode notice AFTER the run-detail load (which clears
+            // the composer error for historical failures) so an unreadable or
+            // unrestored saved mode is actually visible and actionable.
+            if let preferredModeWarning, generation == loadGeneration {
+                actionError = preferredModeWarning
+            }
             startLiveUpdates()
         } catch is CancellationError {
             return
@@ -608,6 +638,25 @@ final class ThreadDetailViewModel: ObservableObject {
             guard generation == loadGeneration else { return }
             actionError = presentableError(error, stage: stage)
         }
+    }
+
+    /// Applies the conversation's remembered composer mode exactly once per
+    /// view lifetime, before the composer can send. Temporary sessions never
+    /// touch the durable snapshot. A stale load generation or a newer explicit
+    /// selection is never overwritten; the returned notice is published only
+    /// after the rest of the load so it is not cleared by run-detail loading.
+    private func restorePreferredExecutionMode(generation: UInt64) async -> String? {
+        guard !isTemporary, !hasResolvedPreferredMode else { return nil }
+        let selectionAtEntry = modeSelectionGeneration
+        let resolution = await center.preferredExecutionMode(for: conversationID)
+        guard generation == loadGeneration, selectionAtEntry == modeSelectionGeneration else {
+            return nil
+        }
+        hasResolvedPreferredMode = true
+        agentMode = resolution.mode
+        preferredModeIsAuthoritative = resolution.isRemembered || resolution.needsRepair || resolution.readFailed
+        guard resolution.needsRepair || resolution.readFailed else { return nil }
+        return FloeL10n.l("chat.thread_detail_view_model.saved_mode_unreadable")
     }
 
     /// Selects a run and loads its persisted event thread.
@@ -1021,9 +1070,35 @@ final class ThreadDetailViewModel: ObservableObject {
         commit.commitStore()
     }
 
+    /// The composer's explicit mode selection. RAM changes immediately and,
+    /// for a durable conversation, the choice is persisted atomically so a
+    /// recreated view restores it instead of the historical Agent default.
+    /// Temporary sessions stay RAM-only (the center refuses durable writes).
     func selectAgentMode(_ mode: AgentExecutionMode) {
         explicitModePlanRevision = latestPlan.flatMap(Self.activePlanRevision)
+        let changed = agentMode != mode
         agentMode = mode
+        guard changed else { return }
+        modeSelectionGeneration &+= 1
+        hasResolvedPreferredMode = true
+        preferredModeIsAuthoritative = true
+        guard !isTemporary else { return }
+        let conversationID = conversationID
+        let selection = modeSelectionGeneration
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.center.setPreferredExecutionMode(mode, for: conversationID)
+            } catch {
+                // The visible choice is kept (the center also retains it in
+                // RAM for the next restore). Only report while this exact
+                // selection is still current: a rapid A→B toggle must never
+                // surface A's stale error over B.
+                guard self.modeSelectionGeneration == selection,
+                      self.agentMode == mode else { return }
+                self.actionError = FloeL10n.l("chat.thread_detail_view_model.mode_change_not_saved")
+            }
+        }
     }
 
     // MARK: - Temporary chat actions
@@ -1242,6 +1317,12 @@ final class ThreadDetailViewModel: ObservableObject {
     }
 
     private func reconcilePlanComposerMode() {
+        // An authoritative composer choice (restored from the durable
+        // snapshot, made in this view, or a fail-closed resolution) is the
+        // user's latest intent: an unfinished plan must not silently replace
+        // it when the thread is reopened. Legacy conversations without a
+        // saved choice keep the historical Plan restore rule exactly.
+        guard !preferredModeIsAuthoritative else { return }
         guard let plan = latestPlan,
               let revision = Self.activePlanRevision(plan),
               explicitModePlanRevision != revision else { return }
@@ -1619,6 +1700,7 @@ final class ThreadDetailViewModel: ObservableObject {
     private func startLiveUpdates() {
         liveEventTask?.cancel()
         observedServiceRunID = nil
+        liveStreamedText = ""
         guard let run = selectedRun else { return }
         liveStateName = run.state
         liveReasoningText = ""

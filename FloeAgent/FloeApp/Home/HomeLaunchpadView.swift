@@ -24,6 +24,8 @@ struct HomeLaunchpadView: View {
     @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: HomeLaunchpadViewModel
     @EnvironmentObject private var router: AppRouter
+    @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.continuousVoiceWindowID) private var voiceWindowID
     @State private var showsDraftPermissions = false
     private let designStart: Bool
     private let onTaskCreated: (@MainActor (UUID) -> Void)?
@@ -83,7 +85,7 @@ struct HomeLaunchpadView: View {
             // available height (rotation, split, dynamic type).
             .environment(\.composerHeightBudget, proxy.size.height)
         }
-        .navigationTitle(LocalizedStringKey(designStart ? "design.conversation.start_title" : "workbench.new_task"))
+        .navigationTitle(LocalizedStringKey(launchTitleKey))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.load()
@@ -95,6 +97,13 @@ struct HomeLaunchpadView: View {
             // Review-first inbound shares: refresh the app-owned queue; the
             // card only adds to THIS window's live composer on explicit Use.
             await center.environment.shareIntakeCenter.refresh()
+        }
+        .onReceive(environment.continuousVoicePresentation.$returnedDraft) { returned in
+            guard let returned, returned.windowID == voiceWindowID,
+                  returned.ownerID == viewModel.draftStorageID else { return }
+            viewModel.draft = returned.text
+            viewModel.attachments = returned.attachments
+            Task { @MainActor in environment.continuousVoicePresentation.consumeReturnedDraft(returned.id) }
         }
         .onReceive(NotificationCenter.default.publisher(for: FloeShortcutInbox.didEnqueue)) { _ in
             // A Shortcuts run just placed a draft while Home is open: update
@@ -151,7 +160,7 @@ struct HomeLaunchpadView: View {
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
 
-            Text(LocalizedStringKey(designStart ? "design.conversation.start_prompt" : "home.welcome"))
+            Text(LocalizedStringKey(launchPromptKey))
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
@@ -160,6 +169,16 @@ struct HomeLaunchpadView: View {
     }
 
     // MARK: - Composer (centered, prominent)
+
+    private var launchTitleKey: String {
+        if designStart { return "design.conversation.start_title" }
+        return viewModel.agentMode == .chat ? "chat.new.title" : "workbench.new_task"
+    }
+
+    private var launchPromptKey: String {
+        if designStart { return "design.conversation.start_prompt" }
+        return viewModel.agentMode == .chat ? "chat.new.prompt" : "home.welcome"
+    }
 
     private var composer: some View {
         VStack(spacing: 0) {
@@ -181,31 +200,62 @@ struct HomeLaunchpadView: View {
             if let error = viewModel.actionError {
                 errorBar(error)
             }
-            ThreadComposerView(
-                draft: $viewModel.draft,
-                selectedModelID: $viewModel.selectedModelID,
-                models: viewModel.availableModels,
-                modelName: viewModel.activeModelName,
-                providerConfigured: viewModel.hasConfiguredProvider,
-                isRunning: false,
-                canSend: viewModel.canSend,
-                projects: viewModel.availableProjects,
-                selectedProjectID: $viewModel.selectedProjectID,
-                executionTarget: $viewModel.executionTarget,
-                agentMode: $viewModel.agentMode,
-                attachments: $viewModel.attachments,
-                onSend: sendTask,
-                onStop: {},
-                onPermissions: { showsDraftPermissions = true },
-                approvalMode: viewModel.draftPolicy.approvalMode,
-                draftIdentity: viewModel.draftStorageID,
-                isDraftConsumedBySend: viewModel.isConsumingDraft,
-                notesDraftID: viewModel.draftConversationID
-            )
+            taskComposer
         }
     }
 
+    private var continuousVoiceAction: (() -> Void)? {
+        guard !designStart else { return nil }
+        return { openContinuousVoice() }
+    }
+
+    private var taskComposer: some View {
+        ThreadComposerView(
+            draft: $viewModel.draft,
+            selectedModelID: $viewModel.selectedModelID,
+            models: viewModel.availableModels,
+            modelName: viewModel.activeModelName,
+            providerConfigured: viewModel.hasConfiguredProvider,
+            isRunning: false,
+            canSend: viewModel.canSend,
+            projects: viewModel.availableProjects,
+            selectedProjectID: $viewModel.selectedProjectID,
+            executionTarget: $viewModel.executionTarget,
+            agentMode: $viewModel.agentMode,
+            attachments: $viewModel.attachments,
+            onSend: sendTask,
+            onStop: {},
+            onContinuousVoice: continuousVoiceAction,
+            onPermissions: { showsDraftPermissions = true },
+            approvalMode: viewModel.draftPolicy.approvalMode,
+            draftIdentity: viewModel.draftStorageID,
+            isDraftConsumedBySend: viewModel.isConsumingDraft,
+            notesDraftID: viewModel.draftConversationID
+        )
+    }
+
     // MARK: - Status strips
+
+    private func openContinuousVoice() {
+        guard let voiceWindowID,
+              let (_, model) = center.providerAndModel(modelID: viewModel.selectedModelID) else { return }
+        let request = ContinuousVoiceRequest(
+            windowID: voiceWindowID, conversationID: nil, modelID: model.id,
+            workspaceID: viewModel.selectedProjectID,
+            attachments: viewModel.attachments,
+            onConversationCreated: { id in router.openThreadFromHome(id) },
+            draftOwnerID: viewModel.draftStorageID,
+            onAttachmentsConsumed: { files in
+                let ids = Set(files.map(\.id))
+                viewModel.attachments.removeAll { ids.contains($0.id) }
+            },
+            reasoningDraftOwnerID: viewModel.draftConversationID
+        )
+        if environment.continuousVoicePresentation.present(request) {
+            environment.voiceInput.stop()
+            environment.speechService.stop()
+        }
+    }
 
     /// Compact actionable notice for queued Shortcuts drafts. It only shows
     /// when entries are actually waiting; taking a draft is explicit when

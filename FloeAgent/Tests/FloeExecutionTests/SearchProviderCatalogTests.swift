@@ -1,0 +1,605 @@
+// FloeExecutionTests — signed search-provider catalog, instance provenance,
+// reviewed catalog updates and the v1 → v2 instance migration.
+//
+// Pure and deterministic: no network, no Keychain, no app target. The bundled
+// catalog is read from the checkout so the shipped defaults are part of the
+// contract, and the staged content-hub envelope is checked for the
+// catalog-aware minimum app version (1.7.47).
+
+import Foundation
+import Testing
+@testable import FloeExecution
+
+@Suite("Search provider catalog")
+struct SearchProviderCatalogTests {
+
+    // MARK: - Fixtures
+
+    static var repoRoot: URL {
+        var candidate = URL(fileURLWithPath: #filePath)
+        if !candidate.path.hasPrefix("/") {
+            candidate = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(candidate.path)
+        }
+        while candidate.path != "/" {
+            let probe = candidate.appendingPathComponent("FloeAgent/FloeApp/Resources/SearchProviderCatalog.json")
+            if FileManager.default.fileExists(atPath: probe.path) {
+                return candidate
+            }
+            candidate.deleteLastPathComponent()
+        }
+        return candidate
+    }
+
+    static var bundledURL: URL {
+        repoRoot.appendingPathComponent("FloeAgent/FloeApp/Resources/SearchProviderCatalog.json")
+    }
+
+    static func bundledData() throws -> Data {
+        try Data(contentsOf: bundledURL)
+    }
+
+    static func bundledIndex() throws -> SearchProviderCatalogIndex {
+        try SearchProviderCatalogIndex.validated(from: bundledData())
+    }
+
+    /// Builds a catalog document with the bundled entries, a different
+    /// version and an optional mutation of the Bocha entry.
+    static func catalogIndex(
+        version: String,
+        mutateEntry: ((inout [String: Any]) -> Void)? = nil
+    ) throws -> SearchProviderCatalogIndex {
+        var object = try #require(
+            try JSONSerialization.jsonObject(with: bundledData()) as? [String: Any]
+        )
+        object["version"] = version
+        var entries = try #require(object["entries"] as? [[String: Any]])
+        if let mutateEntry {
+            mutateEntry(&entries[0])
+        }
+        object["entries"] = entries
+        return try SearchProviderCatalogIndex.validated(
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+    }
+
+    static func configuration(
+        _ kind: WebSearchProviderKind,
+        id: UUID = UUID(),
+        name: String,
+        enabled: Bool,
+        account: String,
+        endpoint: String? = nil,
+        options: [String: String] = [:],
+        priority: Int = 0
+    ) -> WebSearchProviderConfiguration {
+        WebSearchProviderConfiguration(
+            id: id,
+            kind: kind,
+            displayName: name,
+            endpoint: endpoint.flatMap(URL.init(string:)),
+            credentialAccount: account,
+            enabled: enabled,
+            priority: priority,
+            options: options
+        )
+    }
+
+    static func bochaInstance(
+        appliedVersion: String = "1.0.0",
+        overrides: Set<String> = []
+    ) -> WebSearchProviderInstance {
+        WebSearchProviderInstance(
+            configuration: configuration(
+                .bochaWeb,
+                name: "Bocha Search",
+                enabled: true,
+                account: WebSearchProviderInstance.credentialAccount(for: UUID())
+            ),
+            presetID: SearchProviderPresets.bocha,
+            appliedCatalogVersion: appliedVersion,
+            overrides: overrides,
+            catalogCredentialKeys: ["apiKey"]
+        )
+    }
+
+    /// Asserts one exact catalog-domain error without relying on a specific
+    /// error-matching overload.
+    static func expectCatalogError(
+        _ expected: SearchProviderCatalogError,
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ body: () throws -> Void
+    ) {
+        do {
+            try body()
+            Issue.record("expected \(expected)", sourceLocation: sourceLocation)
+        } catch {
+            #expect(error as? SearchProviderCatalogError == expected)
+        }
+    }
+
+    // MARK: - Bundled document
+
+    @Test("Bundled catalog maps exactly the compiled adapters with bilingual copy")
+    func bundledCatalogMatchesCompiledAdapters() throws {
+        let index = try Self.bundledIndex()
+        #expect(index.document.id == "floe.search.providers")
+        #expect(index.document.version == "1.0.0")
+        #expect(index.entries.count == 9)
+        let mapping = Dictionary(uniqueKeysWithValues: index.entries.map { ($0.presetID, $0.adapterKind) })
+        #expect(mapping == [
+            "bocha": "bochaWeb",
+            "tencent-wsa": "tencentWSA",
+            "volcengine": "volcengine",
+            "brave": "brave",
+            "tavily": "tavily",
+            "exa": "exa",
+            "google-programmable": "googleProgrammable",
+            "searxng": "searxng",
+            "custom-interface": "custom"
+        ])
+        for entry in index.entries {
+            #expect(!entry.name.isEmpty)
+            #expect(entry.name["en"]?.isEmpty == false)
+            #expect(entry.name["zh-Hans"]?.isEmpty == false)
+            #expect(entry.blurb["en"]?.isEmpty == false)
+            #expect(entry.blurb["zh-Hans"]?.isEmpty == false)
+            // The catalog never carries enablement or secrets.
+            #expect(entry.managesEndpoint != true)
+            #expect(entry.credentialFields.allSatisfy { !$0.key.isEmpty })
+            #expect(entry.credentialFields.allSatisfy { $0.label["en"]?.isEmpty == false })
+            if entry.endpointRequired {
+                #expect(entry.defaultEndpoint == nil)
+            }
+            if let endpoint = entry.defaultEndpoint {
+                #expect(endpoint.hasPrefix("https://"))
+            }
+        }
+        #expect(index.entry(presetID: "searxng")?.credentialKeys.isEmpty == true)
+        #expect(index.entry(presetID: "google-programmable")?.credentialKeys == ["apiKey", "engineId"])
+    }
+
+    @Test("Local catalog search is deterministic and bilingual")
+    func searchIsDeterministicAndLocalized() throws {
+        let index = try Self.bundledIndex()
+        #expect(index.search(query: "", localePrimary: "en").count == 9)
+        #expect(index.search(query: "brave", localePrimary: "en").map(\.presetID) == ["brave"])
+        #expect(index.search(query: "博查", localePrimary: "zh-Hans").map(\.presetID) == ["bocha"])
+        #expect(index.search(query: "  BOCHA  ", localePrimary: "en").map(\.presetID) == ["bocha"])
+        #expect(index.search(query: "no-such-provider", localePrimary: "en").isEmpty)
+    }
+
+    @Test("Structural failures reject the whole document")
+    func structuralFailuresRejectWholeDocument() throws {
+        func document(
+            schemaVersion: Int = 1,
+            id: String = "floe.search.providers",
+            version: String = "1.0.0",
+            entries: [[String: Any]] = []
+        ) -> Data {
+            let object: [String: Any] = [
+                "schemaVersion": schemaVersion,
+                "id": id,
+                "version": version,
+                "entries": entries
+            ]
+            return (try? JSONSerialization.data(withJSONObject: object)) ?? Data()
+        }
+        Self.expectCatalogError(.schemaVersionUnsupported) {
+            _ = try SearchProviderCatalogDocument.validated(from: document(schemaVersion: 2))
+        }
+        Self.expectCatalogError(.packageIdentityMismatch) {
+            _ = try SearchProviderCatalogDocument.validated(from: document(id: "other.package"))
+        }
+        Self.expectCatalogError(.emptyEntries) {
+            _ = try SearchProviderCatalogDocument.validated(from: document())
+        }
+        Self.expectCatalogError(.invalidVersion("1.0")) {
+            _ = try SearchProviderCatalogDocument.validated(from: document(version: "1.0"))
+        }
+        // Duplicate preset ids: re-use the bundled Bocha entry twice.
+        var object = try #require(try JSONSerialization.jsonObject(with: Self.bundledData()) as? [String: Any])
+        var entries = try #require(object["entries"] as? [[String: Any]])
+        entries.append(entries[0])
+        object["entries"] = entries
+        Self.expectCatalogError(.duplicatePresetID("bocha")) {
+            _ = try SearchProviderCatalogDocument.validated(
+                from: JSONSerialization.data(withJSONObject: object)
+            )
+        }
+        // Non-HTTPS default endpoints are rejected.
+        var httpObject = try #require(try JSONSerialization.jsonObject(with: Self.bundledData()) as? [String: Any])
+        var httpEntries = try #require(httpObject["entries"] as? [[String: Any]])
+        httpEntries[0]["defaultEndpoint"] = "http://api.bochaai.com/v1/web-search"
+        httpObject["entries"] = httpEntries
+        Self.expectCatalogError(.invalidEndpoint("bocha")) {
+            _ = try SearchProviderCatalogDocument.validated(
+                from: JSONSerialization.data(withJSONObject: httpObject)
+            )
+        }
+        // Oversized payloads never reach the decoder.
+        Self.expectCatalogError(.oversized) {
+            _ = try SearchProviderCatalogDocument.validated(
+                from: Data(repeating: 0x7B, count: SearchProviderCatalog.maximumDocumentBytes + 1)
+            )
+        }
+    }
+
+    @Test("Adapters this build does not compile are dropped fail-closed")
+    func unknownAdaptersFailClosed() throws {
+        var object = try #require(try JSONSerialization.jsonObject(with: Self.bundledData()) as? [String: Any])
+        var entries = try #require(object["entries"] as? [[String: Any]])
+        var future = entries[0]
+        future["presetID"] = "quantum-search"
+        future["adapterKind"] = "quantumSearch"
+        future["name"] = ["en": "Quantum", "zh-Hans": "量子"]
+        future["blurb"] = ["en": "Future brand", "zh-Hans": "未来品牌"]
+        entries.append(future)
+        object["entries"] = entries
+
+        let filtered = try SearchProviderCatalogDocument.validated(
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(filtered.entries.count == 9)
+        #expect(!filtered.entries.contains { $0.presetID == "quantum-search" })
+
+        object["entries"] = [future]
+        Self.expectCatalogError(.noUsableEntries) {
+            _ = try SearchProviderCatalogDocument.validated(
+                from: JSONSerialization.data(withJSONObject: object)
+            )
+        }
+    }
+
+    @Test("Staged content-hub package targets a catalog-aware app and matches the bundle")
+    func stagedContentHubPackageIsConsistent() throws {
+        let source = Self.repoRoot
+            .appendingPathComponent("content-hub/sources/providers/floe.search.providers")
+        let envelope = try #require(
+            try JSONSerialization.jsonObject(
+                with: try Data(contentsOf: source.appendingPathComponent("content.json"))
+            ) as? [String: Any]
+        )
+        #expect(envelope["id"] as? String == "floe.search.providers")
+        #expect(envelope["kind"] as? String == "providers")
+        #expect(envelope["version"] as? String == "1.0.0")
+        // A search catalog must never activate on an older app that does not
+        // understand the payload/flow.
+        #expect(envelope["minimumAppVersion"] as? String == "1.7.47")
+        #expect(envelope["containsScripts"] as? Bool == false)
+        #expect((envelope["releaseNotes"] as? [String: String])?["en"]?.isEmpty == false)
+        #expect((envelope["releaseNotes"] as? [String: String])?["zh-Hans"]?.isEmpty == false)
+
+        let payload = try Data(contentsOf: source.appendingPathComponent("SearchProviderCatalog.json"))
+        #expect(payload == (try Self.bundledData()), "bundled fallback and signed payload must not drift")
+        _ = try SearchProviderCatalogIndex.validated(from: payload)
+    }
+
+    // MARK: - Draft creation
+
+    @Test("Draft instances start disabled on compiled endpoints with independent accounts")
+    func draftFactoryCreatesDisabledInstances() throws {
+        let index = try Self.bundledIndex()
+
+        let braveEntry = try #require(index.entry(presetID: "brave"))
+        let brave = try #require(SearchProviderDraftFactory.draftInstance(for: braveEntry, localePrimary: "en"))
+        #expect(brave.configuration.enabled == false)
+        #expect(brave.configuration.kind == .brave)
+        // The compiled canonical endpoint (and its tunnel grant) is kept.
+        #expect(brave.configuration.endpoint == nil)
+        #expect(brave.configuration.credentialAccount ==
+                WebSearchProviderInstance.credentialAccount(for: brave.configuration.id))
+        #expect(brave.configuration.credentialAccount.hasPrefix("web-search.instance."))
+        #expect(brave.presetID == "brave")
+        #expect(brave.appliedCatalogVersion == nil)
+
+        let customEntry = try #require(index.entry(presetID: "custom-interface"))
+        let custom = try #require(SearchProviderDraftFactory.draftInstance(for: customEntry, localePrimary: "en"))
+        #expect(custom.configuration.endpoint == nil, "custom endpoints are user supplied")
+        #expect(custom.configuration.options.isEmpty)
+
+        let searxng = try #require(SearchProviderDraftFactory.draftInstance(
+            for: try #require(index.entry(presetID: "searxng")),
+            localePrimary: "en"
+        ))
+        #expect(searxng.configuration.credentialAccount.hasPrefix("web-search.instance."))
+
+        var volcengineAccountID: UUID?
+        let volcengine = try #require(SearchProviderDraftFactory.draftInstance(
+            for: try #require(index.entry(presetID: "volcengine")),
+            localePrimary: "zh-Hans",
+            volcengineCredentialAccount: { id in
+                volcengineAccountID = id
+                return VolcengineSettingsDraftAccountFormula.account(for: id, interface: .agentPlan)
+            }
+        ))
+        #expect(volcengine.configuration.options[VolcengineSearchOptions.Key.interface]
+            == VolcengineSearchInterface.agentPlan.rawValue)
+        #expect(volcengineAccountID == volcengine.configuration.id)
+        #expect(volcengine.configuration.enabled == false)
+    }
+
+    @Test("Preset identity survives adapter kinds, including legacy Bocha AI")
+    func presetIdentityMapsKinds() {
+        #expect(SearchProviderPresets.presetID(for: .bochaWeb) == "bocha")
+        #expect(SearchProviderPresets.presetID(for: .bochaAI) == "bocha")
+        #expect(SearchProviderPresets.presetID(for: .tencentWSA) == "tencent-wsa")
+        #expect(SearchProviderPresets.presetID(for: .custom) == "custom-interface")
+        #expect(SearchProviderPresets.presetID(for: .searxng) == "searxng")
+        #expect(WebSearchProviderInstance.credentialAccount(for: UUID(uuidString: "00112233-4455-6677-8899-AABBCCDDEEFF")!)
+            == "web-search.instance.00112233-4455-6677-8899-aabbccddeeff")
+    }
+
+    // MARK: - Reviewed catalog updates
+
+    @Test("Catalog updates merge only non-overridden fields and retain user state")
+    func planMergesOnlyUnoverriddenFields() throws {
+        let instance = Self.bochaInstance()
+        let renamed = try Self.catalogIndex(version: "1.1.0") { entry in
+            entry["name"] = ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"]
+            var fields = entry["optionFields"] as? [[String: Any]] ?? []
+            fields[0]["defaultValue"] = "false"
+            entry["optionFields"] = fields
+        }
+        let plan = try #require(SearchProviderUpdatePlanner.plan(
+            for: instance, in: renamed, localePrimary: "en"
+        ))
+        #expect(plan.toCatalogVersion == "1.1.0")
+        #expect(plan.fromCatalogVersion == "1.0.0")
+        #expect(plan.changes.count == 2)
+        #expect(plan.touchesHost == false)
+        #expect(plan.touchesCredentialKeys == false)
+        #expect(plan.requiresConfirmation == false)
+
+        let applied = SearchProviderUpdatePlanner.apply(
+            plan, to: instance, entry: try #require(renamed.entry(presetID: "bocha"))
+        )
+        #expect(applied.didRotateCredential == false)
+        #expect(applied.instance.configuration.displayName == "Bocha Web Search")
+        #expect(applied.instance.configuration.options["summaryEnabled"] == "false")
+        #expect(applied.instance.configuration.enabled == true)
+        #expect(applied.instance.configuration.priority == instance.configuration.priority)
+        #expect(applied.instance.configuration.credentialAccount == instance.configuration.credentialAccount)
+        #expect(applied.instance.appliedCatalogVersion == "1.1.0")
+        #expect(applied.instance.catalogCredentialKeys == ["apiKey"])
+
+        // User overrides win and produce no pending plan at all.
+        var overridden = instance
+        overridden.overrides = ["displayName", "option:summaryEnabled"]
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: overridden, in: renamed, localePrimary: "en"
+        ) == nil)
+
+        // An already reviewed version produces no plan.
+        var reviewed = instance
+        reviewed.appliedCatalogVersion = "1.1.0"
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: reviewed, in: renamed, localePrimary: "en"
+        ) == nil)
+    }
+
+    @Test("Host changes require confirmation and rotate the credential account")
+    func hostChangeRequiresConfirmationAndRotates() throws {
+        var instance = Self.bochaInstance()
+        instance.configuration.endpoint = URL(string: "https://old.example.com/search")
+        let hosted = try Self.catalogIndex(version: "1.2.0") { entry in
+            entry["managesEndpoint"] = true
+            entry["defaultEndpoint"] = "https://new.example.com/search"
+        }
+        let plan = try #require(SearchProviderUpdatePlanner.plan(
+            for: instance, in: hosted, localePrimary: "en"
+        ))
+        #expect(plan.touchesHost)
+        #expect(plan.requiresConfirmation)
+        #expect(plan.rotatesCredentialAccount)
+
+        let applied = SearchProviderUpdatePlanner.apply(
+            plan,
+            to: instance,
+            entry: try #require(hosted.entry(presetID: "bocha")),
+            rotatedCredentialAccount: "web-search.instance.fresh"
+        )
+        #expect(applied.didRotateCredential)
+        #expect(applied.instance.configuration.credentialAccount == "web-search.instance.fresh")
+        #expect(applied.instance.configuration.endpoint?.host == "new.example.com")
+        // The enabled switch and identity are retained; only the key source
+        // is rotated so an old secret can never reach the new host.
+        #expect(applied.instance.configuration.enabled)
+        #expect(applied.instance.configuration.id == instance.configuration.id)
+
+        // A catalog that does not manage endpoints never proposes one.
+        var unmanaged = instance
+        unmanaged.configuration.endpoint = nil
+        let plain = try Self.catalogIndex(version: "1.3.0") { entry in
+            entry["defaultEndpoint"] = "https://elsewhere.example.com/search"
+        }
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: unmanaged, in: plain, localePrimary: "en"
+        ) == nil)
+    }
+
+    @Test("Credential schema changes require confirmation")
+    func credentialSchemaChangeRequiresConfirmation() throws {
+        let instance = Self.bochaInstance()
+        let reauth = try Self.catalogIndex(version: "1.4.0") { entry in
+            entry["credentialFields"] = [
+                ["key": "apiKey", "required": true, "label": ["en": "API Key", "zh-Hans": "API 密钥"]],
+                ["key": "projectId", "required": true, "label": ["en": "Project", "zh-Hans": "项目"]]
+            ]
+        }
+        let plan = try #require(SearchProviderUpdatePlanner.plan(
+            for: instance, in: reauth, localePrimary: "en"
+        ))
+        #expect(plan.touchesCredentialKeys)
+        #expect(plan.requiresConfirmation)
+        #expect(plan.rotatesCredentialAccount)
+    }
+
+    @Test("Removed catalog entries never delete or change user instances")
+    func removedCatalogEntryNeverDeletesInstance() throws {
+        let instance = Self.bochaInstance()
+        var object = try #require(try JSONSerialization.jsonObject(with: Self.bundledData()) as? [String: Any])
+        object["entries"] = try #require(object["entries"] as? [[String: Any]])
+            .filter { ($0["presetID"] as? String) != "bocha" }
+        let trimmed = try SearchProviderCatalogIndex.validated(
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: instance, in: trimmed, localePrimary: "en"
+        ) == nil)
+        #expect(instance.configuration.displayName == "Bocha Search")
+    }
+
+    // MARK: - v1 → v2 migration
+
+    @Test("Migration keeps configured records and drops only provably unused presets")
+    func migrationKeepsConfiguredRecords() throws {
+        let unusedBrave = Self.configuration(
+            .brave, name: "Brave Search", enabled: false, account: "web-search.brave", priority: 0
+        )
+        let configuredBrave = Self.configuration(
+            .brave, name: "Work Brave", enabled: true,
+            account: "web-search.brave.work", priority: 1
+        )
+        let bochaWeb = Self.configuration(
+            .bochaWeb, name: "Bocha Search", enabled: false,
+            account: "web-search.bochaWeb", priority: 2
+        )
+        let bochaAI = Self.configuration(
+            .bochaAI, name: "Bocha AI Search", enabled: true,
+            account: "web-search.bochaAI", priority: 3
+        )
+        let volcenginePreset = WebSearchProviderConfiguration(
+            id: UUID(),
+            kind: .volcengine,
+            displayName: "Volcengine Web Search",
+            endpoint: nil,
+            credentialAccount: "web-search.volcengine.\(UUID().uuidString.lowercased()).agentPlan",
+            enabled: false,
+            priority: 4,
+            options: [VolcengineSearchOptions.Key.interface: VolcengineSearchInterface.agentPlan.rawValue]
+        )
+        let custom = Self.configuration(
+            .custom, name: "Custom", enabled: false, account: "web-search.custom",
+            endpoint: "https://search.example.com/api", priority: 5
+        )
+        let records = [unusedBrave, configuredBrave, bochaWeb, bochaAI, volcenginePreset, custom]
+        let credentials: Set<String> = ["web-search.brave.work", "web-search.bochaAI"]
+
+        let result = WebSearchInstanceMigration.migrate(
+            records: records,
+            hasCredential: { credentials.contains($0) }
+        )
+        #expect(result.droppedPlaceholderCount == 2)
+        #expect(result.instances.count == 3)
+        #expect(!result.instances.contains { $0.configuration.id == unusedBrave.id })
+        #expect(!result.instances.contains { $0.configuration.id == volcenginePreset.id })
+
+        let keptBrave = try #require(result.instances.first { $0.configuration.id == configuredBrave.id })
+        #expect(keptBrave.configuration.displayName == "Work Brave")
+        #expect(keptBrave.configuration.enabled)
+        #expect(keptBrave.overrides.contains("displayName"))
+        #expect(keptBrave.configuration.credentialAccount ==
+                WebSearchProviderInstance.credentialAccount(for: configuredBrave.id))
+        let braveCopy = try #require(
+            result.outcomes.first { $0.sourceIndex == 1 }?.credentialCopies.first
+        )
+        #expect(braveCopy.from == "web-search.brave.work")
+        #expect(braveCopy.to == keptBrave.configuration.credentialAccount)
+
+        let copies = result.outcomes.flatMap(\.credentialCopies)
+        #expect(copies.contains { $0.from == "web-search.bochaAI" })
+        #expect(result.instances.filter { $0.configuration.kind == .bochaWeb }.count == 1)
+        let bocha = try #require(result.instances.first { $0.configuration.kind == .bochaWeb })
+        #expect(bocha.configuration.enabled, "the enabled AI record merged into the Web instance")
+        #expect(bocha.configuration.options["summaryEnabled"] == "true")
+        #expect(bocha.configuration.credentialAccount.hasPrefix("web-search.instance."))
+
+        let keptCustom = try #require(result.instances.first { $0.configuration.kind == .custom })
+        #expect(keptCustom.overrides.contains("endpoint"))
+        #expect(keptCustom.configuration.endpoint?.host == "search.example.com")
+        #expect(keptCustom.configuration.credentialAccount.hasPrefix("web-search.instance."))
+
+        // The backup document retains every original record and outcome.
+        let backup = result.backupDocument(originalRecords: records)
+        let object = try #require(try JSONSerialization.jsonObject(with: backup) as? [String: Any])
+        #expect((object["originalRecords"] as? [Any])?.count == records.count)
+        #expect((object["outcomes"] as? [Any])?.count == records.count)
+    }
+
+    @Test("A Bocha-only AI install becomes one working Bocha Web instance")
+    func migrationConvertsBochaOnlyAIInstall() {
+        let bochaAI = Self.configuration(
+            .bochaAI, name: "Bocha AI Search", enabled: true, account: "web-search.bochaAI"
+        )
+        let result = WebSearchInstanceMigration.migrate(
+            records: [bochaAI],
+            hasCredential: { $0 == "web-search.bochaAI" }
+        )
+        #expect(result.instances.count == 1)
+        #expect(result.instances.first?.configuration.kind == .bochaWeb)
+        #expect(result.instances.first?.configuration.enabled == true)
+        #expect(result.outcomes.first?.credentialCopies.first?.from == "web-search.bochaAI")
+    }
+
+    @Test("v2 instances round-trip and v1 payloads still decode")
+    func instanceStoreRoundTripsAndV1Decodes() throws {
+        let instance = Self.bochaInstance(overrides: ["displayName"], appliedVersion: "1.0.0")
+        let data = try JSONEncoder().encode([instance])
+        let decoded = try JSONDecoder().decode([WebSearchProviderInstance].self, from: data)
+        #expect(decoded.count == 1)
+        #expect(decoded[0].configuration == instance.configuration)
+        #expect(decoded[0].overrides == ["displayName"])
+        #expect(decoded[0].presetID == "bocha")
+        #expect(decoded[0].catalogCredentialKeys == ["apiKey"])
+
+        // A v1 array (no instance metadata) keeps decoding for migration and
+        // for older builds reading the frozen legacy key.
+        let legacy = [Self.configuration(.brave, name: "Brave Search", enabled: true, account: "web-search.brave")]
+        let legacyData = try JSONEncoder().encode(legacy)
+        let legacyDecoded = try JSONDecoder().decode([WebSearchProviderConfiguration].self, from: legacyData)
+        #expect(legacyDecoded.count == 1)
+        #expect(legacyDecoded[0].kind == .brave)
+
+        // The v1 helper preserves its historical semantics (Bocha collapse),
+        // and is only used before the migration.
+        let web = Self.configuration(.bochaWeb, name: "Bocha Search", enabled: false, account: "web-search.bochaWeb")
+        let ai = Self.configuration(.bochaAI, name: "Bocha AI", enabled: true, account: "web-search.bochaAI")
+        let normalized = WebSearchSettingsCenterMirror.legacyNormalized([web, ai])
+        #expect(normalized.count == 1)
+        #expect(normalized[0].enabled)
+        #expect(normalized[0].credentialAccount == "web-search.bochaWeb")
+    }
+}
+
+// MARK: - Test-only mirrors of app/formula helpers
+
+/// The app's Volcengine editor derives per-provider accounts through
+/// `VolcengineSettingsDraft`; this mirror pins the exact string contract the
+/// FloeExecution draft factory is injected with (the app tests exercise the
+/// real helper).
+enum VolcengineSettingsDraftAccountFormula {
+    static func account(for providerID: UUID, interface: VolcengineSearchInterface) -> String {
+        "web-search.volcengine.\(providerID.uuidString.lowercased()).\(interface.rawValue)"
+    }
+}
+
+/// The app's legacy-only runtime projection is private to the app target; this
+/// mirror documents the same pre-migration semantics in the module test.
+enum WebSearchSettingsCenterMirror {
+    static func legacyNormalized(
+        _ source: [WebSearchProviderConfiguration]
+    ) -> [WebSearchProviderConfiguration] {
+        let legacyAI = source.first { $0.kind == .bochaAI }
+        var result = source.filter { $0.kind != .bochaAI }
+        if let index = result.firstIndex(where: { $0.kind == .bochaWeb }) {
+            if let legacyAI {
+                result[index].enabled = result[index].enabled || legacyAI.enabled
+                result[index].options["summaryEnabled"] = result[index].options["summaryEnabled"] ?? "true"
+            }
+            result[index].displayName = "Bocha Search"
+            result[index].credentialAccount = "web-search.bochaWeb"
+        }
+        return result
+    }
+}

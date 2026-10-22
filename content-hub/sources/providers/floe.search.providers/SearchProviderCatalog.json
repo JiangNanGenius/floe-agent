@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "id": "floe.search.providers",
+  "version": "1.0.0",
+  "entries": [
+    {
+      "presetID": "bocha",
+      "adapterKind": "bochaWeb",
+      "name": {
+        "en": "Bocha Search",
+        "zh-Hans": "博查搜索"
+      },
+      "blurb": {
+        "en": "Clean web results with optional summaries.",
+        "zh-Hans": "提供简洁的网页结果，可选摘要。"
+      },
+      "defaultEndpoint": "https://api.bochaai.com/v1/web-search",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": [
+        {
+          "key": "summaryEnabled",
+          "kind": "bool",
+          "defaultValue": "true",
+          "label": {
+            "en": "Summaries",
+            "zh-Hans": "摘要"
+          }
+        }
+      ],
+      "authNote": {
+        "en": "Bearer API key",
+        "zh-Hans": "Bearer 密钥"
+      }
+    },
+    {
+      "presetID": "tencent-wsa",
+      "adapterKind": "tencentWSA",
+      "name": {
+        "en": "Tencent Cloud WSA",
+        "zh-Hans": "腾讯云 WSA"
+      },
+      "blurb": {
+        "en": "Tencent Cloud web search API.",
+        "zh-Hans": "腾讯云网页搜索接口。"
+      },
+      "defaultEndpoint": "https://wsa.tencentcloudapi.com",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "secretId",
+          "required": true,
+          "label": {
+            "en": "SecretId",
+            "zh-Hans": "SecretId"
+          }
+        },
+        {
+          "key": "secretKey",
+          "required": true,
+          "label": {
+            "en": "SecretKey",
+            "zh-Hans": "SecretKey"
+          }
+        }
+      ],
+      "optionFields": [],
+      "authNote": {
+        "en": "SecretId + SecretKey",
+        "zh-Hans": "SecretId + SecretKey"
+      }
+    },
+    {
+      "presetID": "volcengine",
+      "adapterKind": "volcengine",
+      "name": {
+        "en": "Volcengine Web Search",
+        "zh-Hans": "火山引擎联网搜索"
+      },
+      "blurb": {
+        "en": "Agent Plan, Ark Responses and Doubao Search accounts.",
+        "zh-Hans": "Agent Plan、Ark Responses 与豆包搜索账号。"
+      },
+      "defaultEndpoint": null,
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": [],
+      "authNote": {
+        "en": "Choose the account type and key in the provider editor.",
+        "zh-Hans": "在编辑页选择账号类型与密钥。"
+      }
+    },
+    {
+      "presetID": "brave",
+      "adapterKind": "brave",
+      "name": {
+        "en": "Brave Search",
+        "zh-Hans": "Brave 搜索"
+      },
+      "blurb": {
+        "en": "Independent web index with page metadata.",
+        "zh-Hans": "独立网页索引，带页面元数据。"
+      },
+      "defaultEndpoint": "https://api.search.brave.com/res/v1/web/search",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": []
+    },
+    {
+      "presetID": "tavily",
+      "adapterKind": "tavily",
+      "name": {
+        "en": "Tavily",
+        "zh-Hans": "Tavily"
+      },
+      "blurb": {
+        "en": "Search API tuned for agent retrieval.",
+        "zh-Hans": "面向智能体检索的搜索接口。"
+      },
+      "defaultEndpoint": "https://api.tavily.com/search",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": []
+    },
+    {
+      "presetID": "exa",
+      "adapterKind": "exa",
+      "name": {
+        "en": "Exa",
+        "zh-Hans": "Exa"
+      },
+      "blurb": {
+        "en": "Semantic search over a neural web index.",
+        "zh-Hans": "基于神经网页索引的语义搜索。"
+      },
+      "defaultEndpoint": "https://api.exa.ai/search",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": []
+    },
+    {
+      "presetID": "google-programmable",
+      "adapterKind": "googleProgrammable",
+      "name": {
+        "en": "Google Programmable Search",
+        "zh-Hans": "Google 可编程搜索"
+      },
+      "blurb": {
+        "en": "Google Custom Search JSON API.",
+        "zh-Hans": "Google 自定义搜索 JSON 接口。"
+      },
+      "defaultEndpoint": "https://customsearch.googleapis.com/customsearch/v1",
+      "endpointRequired": false,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        },
+        {
+          "key": "engineId",
+          "required": true,
+          "label": {
+            "en": "Search Engine ID",
+            "zh-Hans": "搜索引擎 ID"
+          }
+        }
+      ],
+      "optionFields": []
+    },
+    {
+      "presetID": "searxng",
+      "adapterKind": "searxng",
+      "name": {
+        "en": "SearXNG",
+        "zh-Hans": "SearXNG"
+      },
+      "blurb": {
+        "en": "Your own SearXNG JSON endpoint; no key required.",
+        "zh-Hans": "你自己的 SearXNG JSON 端点，无需密钥。"
+      },
+      "defaultEndpoint": null,
+      "endpointRequired": true,
+      "credentialFields": [],
+      "optionFields": []
+    },
+    {
+      "presetID": "custom-interface",
+      "adapterKind": "custom",
+      "name": {
+        "en": "Custom Interface",
+        "zh-Hans": "自定义接口"
+      },
+      "blurb": {
+        "en": "POST {query, count} with a Bearer key; results use standard JSON fields.",
+        "zh-Hans": "以 POST {query, count} 发送，Bearer 密钥，读取标准 JSON 字段。"
+      },
+      "defaultEndpoint": null,
+      "endpointRequired": true,
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "required": true,
+          "label": {
+            "en": "API Key",
+            "zh-Hans": "API 密钥"
+          }
+        }
+      ],
+      "optionFields": [],
+      "authNote": {
+        "en": "Bearer API key",
+        "zh-Hans": "Bearer 密钥"
+      }
+    }
+  ]
+}

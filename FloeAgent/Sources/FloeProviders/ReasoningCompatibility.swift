@@ -280,4 +280,92 @@ enum ReasoningCompatibility {
         }
     }
 
+    // MARK: - Chat (fast conversation) reasoning resolution
+
+    /// True when the endpoint's official contract actually transmits a
+    /// reasoning-disable field for this provider/model family over the
+    /// selected wire protocol. Mirrors the `.disabled` mapping precedence in
+    /// `chatOptions` / `responsesEffort` / `responsesThinkingType` exactly:
+    /// DashScope/Alibaba `enable_thinking=false`, Ark/DeepSeek
+    /// `thinking.type=disabled`, and OpenAI reasoning models ONLY where
+    /// `reasoning.effort="none"` is documented (the audited 5.1–5.6 set —
+    /// families such as GPT-6 Astra / GPT-6.1 Sol do not document `none`,
+    /// and prefix heuristics must not be extended for them). The
+    /// anthropicMessages protocol has no disable wiring in any adapter, so
+    /// it reports false and `.fast` resolves to the tier path instead.
+    static func documentsDisabledReasoning(
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> Bool {
+        guard provider.kind != .local else { return false }
+        let disableable: Bool
+        if provider.kind == .alibabaStudio || isDashScope(provider) {
+            disableable = true
+        } else if provider.kind == .volcengineArk || isDeepSeek(provider: provider, model: model) {
+            disableable = true
+        } else if isOpenAIReasoningFamily(provider: provider, model: model) {
+            disableable = supportsOpenAINone(model.remoteModelID)
+        } else {
+            disableable = false
+        }
+        guard disableable else { return false }
+        switch provider.wireProtocol {
+        case .openAIChatCompletions, .openAIResponses:
+            // Both OpenAI-shaped adapters transmit the disabled branch's
+            // fields (reasoning effort "none", thinking.type, enable_thinking
+            // or the Responses thinking object).
+            return true
+        case .anthropicMessages:
+            // The Anthropic adapter maps effort only; it never sends a
+            // disable knob, so claiming one here would omit every field and
+            // silently keep the model's own default reasoning on.
+            return false
+        }
+    }
+
+    /// Resolves one conversation-local chat preference against the selected
+    /// endpoint. This is the whole product rule for fast chat:
+    ///   * `.fast` + documented disable → request-level `.disabled` policy,
+    ///     no effort tier (the disabled branch ignores the model copy).
+    ///   * `.fast` without documented disable but a protocol that actually
+    ///     transmits an effort token → the lowest supported known tier
+    ///     (`low`), never a guessed `minimal`/`none` for families that do
+    ///     not document it.
+    ///   * `.fast` on unknown/custom endpoints → `.modelDefault` with no
+    ///     tier: every reasoning field stays omitted.
+    ///   * explicit `low`…`maximum` → the clamped wire tier over
+    ///     `.modelDefault` (the same clamp the automatic helper uses, so a
+    ///     stored decision never claims a tier the endpoint lacks).
+    /// Nothing here reads or writes the stored `ModelProfile.reasoningEffort`;
+    /// callers apply the result to the run's model copy only.
+    static func resolveChatReasoning(
+        _ preference: ChatReasoningPreference,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> (policy: ProviderReasoningPolicy, level: ModelReasoningEffort?) {
+        switch preference {
+        case .fast:
+            if documentsDisabledReasoning(provider: provider, model: model) {
+                return (.disabled, nil)
+            }
+            if supportsVariableReasoningEffort(provider: provider, model: model) {
+                // Freeze the tier the endpoint actually uses: DeepSeek and
+                // Ark map low natively; every mapped family has a native or
+                // aliased `low`.
+                return (.modelDefault, clampAutomaticReasoningEffort(.low, provider: provider, model: model))
+            }
+            return (.modelDefault, nil)
+        case .low, .medium, .high, .maximum:
+            let abstract = preference.modelEffortOverride ?? .automatic
+            if abstract == .automatic { return (.modelDefault, nil) }
+            let clamped = clampAutomaticReasoningEffort(abstract, provider: provider, model: model)
+            guard supportsVariableReasoningEffort(provider: provider, model: model) else {
+                // Unknown families transmit no effort field at all: sending a
+                // stored tier would claim a setting the endpoint never
+                // receives, so the honest resolution is omission.
+                return (.modelDefault, nil)
+            }
+            return (.modelDefault, clamped)
+        }
+    }
 }

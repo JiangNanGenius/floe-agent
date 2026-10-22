@@ -883,3 +883,200 @@ public actor AutomaticReasoningEffortCoordinator {
         }
     }
 }
+
+// MARK: - Chat reasoning support (fast conversation lane)
+
+/// Public view of the conversation-local chat reasoning contract. Unlike the
+/// automatic-effort helper this never asks a second model: the resolution is
+/// a deterministic function of the frozen conversation preference and the
+/// selected endpoint, following the documented wire truth exactly — a
+/// disable knob only where the official contract documents one, otherwise
+/// the lowest supported known tier, otherwise no reasoning fields at all.
+public enum ChatReasoningSupport {
+
+    /// Resolves one frozen preference for the current target. Manual/global
+    /// stored profiles are never written; callers apply the result to the
+    /// run's model copy.
+    public static func resolve(
+        _ preference: ChatReasoningPreference,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> (policy: ProviderReasoningPolicy, level: ModelReasoningEffort?) {
+        ReasoningCompatibility.resolveChatReasoning(preference, provider: provider, model: model)
+    }
+
+    /// True when the endpoint actually transmits a documented disable field
+    /// for this family/protocol (used by qualification and the composer
+    /// honesty labels).
+    public static func supportsDocumentedDisable(
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> Bool {
+        ReasoningCompatibility.documentsDisabledReasoning(provider: provider, model: model)
+    }
+
+    /// The first durable chat decision carried by a run's own `.status`
+    /// event thread. Lives here (not in FloeCore) because `RunEventRecord`
+    /// belongs to FloeModels and Core must not import it.
+    public static func findDecision(in events: [RunEventRecord]) -> ChatReasoningDecision? {
+        for event in events where event.kind == .status {
+            if let decision = ChatReasoningDecision.decision(fromEventPayloadJSON: event.payloadJSON) {
+                return decision
+            }
+        }
+        return nil
+    }
+}
+
+/// Freezes one chat reasoning decision per run.
+///
+/// * The FIRST resolve for a run captures the conversation preference at
+///   that moment and records it durably (invisible `.status` event, payload
+///   key `chatReasoning`) through the caller-supplied recorder. Resume,
+///   retry, recovery and queued steering are continuations: they reuse the
+///   frozen preference and re-resolve it deterministically against the
+///   CURRENT target (a re-selected model re-derives the disable/tier/omit
+///   answer and the clamp; there is no helper request to duplicate).
+/// * A preference or mode switch while a run is active therefore applies to
+///   the NEXT run only.
+/// * Temporary sessions pass a RAM-backed store, so nothing here leaves
+///   memory.
+/// * The coordinator performs no async I/O of its own beyond the injected
+///   seed reader/recorder, so the freeze completes before the caller builds
+///   the run configuration.
+public actor ChatReasoningCoordinator {
+
+    public typealias SeedReader = @Sendable (UUID) async -> ChatReasoningDecision?
+    public typealias Recorder = @Sendable (UUID, ChatReasoningDecision) async -> Void
+
+    private let cacheLimit: Int
+    private let logger: FloeLogger
+    private var decisions: [UUID: ChatReasoningDecision] = [:]
+    private var recency: [UUID] = []
+    /// Run lifecycle token bumped by `cancelAndForget`. A resolve suspended
+    /// across the durable seed read must not resurrect a forgotten run.
+    private var forgottenGenerations: [UUID: UInt64] = [:]
+    private var forgottenRecency: [UUID] = []
+
+    public init(
+        cacheLimit: Int = 128,
+        logger: FloeLogger = FloeLogger(category: .providers)
+    ) {
+        self.cacheLimit = max(1, cacheLimit)
+        self.logger = logger
+    }
+
+    /// Resolves the run's effective model profile and request reasoning
+    /// policy from the frozen chat decision.
+    public func resolve(
+        runID: UUID,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        preference: ChatReasoningPreference,
+        seedReader: SeedReader? = nil,
+        recorder: Recorder? = nil
+    ) async -> (model: ModelProfile, policy: ProviderReasoningPolicy) {
+        guard !Task.isCancelled else { return (model, .modelDefault) }
+        let generation = forgottenGeneration(for: runID)
+
+        if let frozen = decisions[runID] {
+            return reuse(frozen, runID: runID, provider: provider, model: model, loggerNote: "ram")
+        }
+        if let seedReader, let seeded = await seedReader(runID) {
+            guard !Task.isCancelled, generation == forgottenGeneration(for: runID) else {
+                logger.info(
+                    "chatReasoningWriteSkipped run=\(runID.uuidString) reason=forgottenDuringSeedRead")
+                return (model, .modelDefault)
+            }
+            return reuse(seeded, runID: runID, provider: provider, model: model, loggerNote: "durable")
+        }
+
+        // Fresh round: freeze the preference as it stands right now.
+        let decision = makeDecision(preference: preference, provider: provider, model: model)
+        store(decision, runID: runID)
+        await recorder?(runID, decision)
+        logger.info(
+            "chatReasoningFrozen run=\(runID.uuidString) preference=\(preference.rawValue) disabled=\(decision.appliesDisabledPolicy) level=\(decision.level?.rawValue ?? "omit")")
+        return (decision.applied(to: model),
+                decision.appliesDisabledPolicy ? .disabled : .modelDefault)
+    }
+
+    /// Continuation path: the frozen input is the PREFERENCE; the wire
+    /// answer is derived against the current target every time
+    /// (deterministic, no request). A re-selected model re-derives the
+    /// disable/tier/omit decision and re-clamps the explicit abstract level.
+    private func reuse(
+        _ frozen: ChatReasoningDecision,
+        runID: UUID,
+        provider: ProviderProfile,
+        model: ModelProfile,
+        loggerNote: String
+    ) -> (model: ModelProfile, policy: ProviderReasoningPolicy) {
+        let resolved = makeDecision(preference: frozen.preference, provider: provider, model: model)
+        store(resolved, runID: runID)
+        logger.info(
+            "chatReasoningReused source=\(loggerNote) run=\(runID.uuidString) preference=\(frozen.preference.rawValue) disabled=\(resolved.appliesDisabledPolicy) level=\(resolved.level?.rawValue ?? "omit")")
+        return (resolved.applied(to: model),
+                resolved.appliesDisabledPolicy ? .disabled : .modelDefault)
+    }
+
+    private func makeDecision(
+        preference: ChatReasoningPreference,
+        provider: ProviderProfile,
+        model: ModelProfile
+    ) -> ChatReasoningDecision {
+        let resolution = ChatReasoningSupport.resolve(preference, provider: provider, model: model)
+        return ChatReasoningDecision(
+            preference: preference,
+            appliesDisabledPolicy: resolution.policy == .disabled,
+            level: resolution.level,
+            abstractLevel: preference.modelEffortOverride,
+            targetProviderID: provider.id,
+            targetModelID: model.id,
+            targetRemoteModelID: model.remoteModelID
+        )
+    }
+
+    /// The frozen decision for a run, if any (diagnostics/qualification).
+    public func decision(runID: UUID) -> ChatReasoningDecision? {
+        decisions[runID]
+    }
+
+    /// Drops every trace of a run so a deleted/torn-down conversation can
+    /// never be re-frozen by a late continuation read.
+    public func cancelAndForget(runID: UUID) {
+        bumpForgottenGeneration(runID: runID)
+        decisions[runID] = nil
+        recency.removeAll { $0 == runID }
+    }
+
+    public func cancelAndForget(runIDs: Set<UUID>) {
+        for runID in runIDs { cancelAndForget(runID: runID) }
+    }
+
+    // MARK: Private
+
+    private func store(_ decision: ChatReasoningDecision, runID: UUID) {
+        if decisions.updateValue(decision, forKey: runID) == nil {
+            recency.append(runID)
+        }
+        while recency.count > cacheLimit, let oldest = recency.first {
+            recency.removeFirst()
+            decisions[oldest] = nil
+        }
+    }
+
+    private func forgottenGeneration(for runID: UUID) -> UInt64 {
+        forgottenGenerations[runID] ?? 0
+    }
+
+    private func bumpForgottenGeneration(runID: UUID) {
+        forgottenGenerations[runID] = (forgottenGenerations[runID] ?? 0) + 1
+        forgottenRecency.removeAll { $0 == runID }
+        forgottenRecency.append(runID)
+        while forgottenRecency.count > cacheLimit, let oldest = forgottenRecency.first {
+            forgottenRecency.removeFirst()
+            forgottenGenerations[oldest] = nil
+        }
+    }
+}

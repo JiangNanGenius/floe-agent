@@ -25,7 +25,7 @@ public actor DatabaseManager {
     /// match the highest registered migration; every historical bump
     /// paired this constant with the new migration so that
     /// `user_version == currentSchemaVersion` after `migrate()`.
-    public static let currentSchemaVersion = 50
+    public static let currentSchemaVersion = 51
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -92,6 +92,7 @@ public actor DatabaseManager {
         V48SystemAlarms.register(into: &migrator)
         V49ChildRunCheckpoints.register(into: &migrator)
         V50ScheduleCleanupReminders.register(into: &migrator)
+        V51ChatPreferences.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {
@@ -113,9 +114,22 @@ public actor DatabaseManager {
     public func migrate() throws {
         if let queue {
             try migrator.migrate(queue)
+            try queue.write { try Self.repairPrereleaseChatSchemaVersion($0) }
         } else if let pool {
             try migrator.migrate(pool)
+            try pool.write { try Self.repairPrereleaseChatSchemaVersion($0) }
         }
+    }
+
+    /// Early v51 development builds recorded the migration without updating
+    /// user_version. Repair metadata only after GRDB confirms v51 was applied;
+    /// never replay its table creation or lower a newer database version.
+    private static func repairPrereleaseChatSchemaVersion(_ db: Database) throws {
+        let version = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
+        guard version < 51,
+              try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations WHERE identifier = ?",
+                               arguments: ["v51_chat_preferences"]) == 1 else { return }
+        try db.execute(sql: "PRAGMA user_version = 51")
     }
 
     /// Read-only access. The closure runs outside the actor's serial

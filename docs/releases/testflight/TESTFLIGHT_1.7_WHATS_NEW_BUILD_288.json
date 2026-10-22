@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "1.7.47（288）：新增聊天模式、独立思考强度和连续语音，朗读只读取最终正文。新增增强语音模型、九种音色与实时混语试听，语音输入和输出分别设置；增加在线语音服务，改进听写首次启动。联网搜索支持按需添加供应商、独立账户、测试搜索和目录更新。请重点体验连续说话、打断与恢复、朗读、语音设置和供应商添加。",
+  "en-US": "1.7.47 (288): Added Chat mode, per-conversation thinking levels and continuous voice. Read Aloud uses only the final answer. Added enhanced speech models, nine voices, live multilingual auditions and separate input/output settings. Added online speech services and improved dictation startup. Search supports add-on providers, separate accounts, test searches and catalog updates. Please try continuous speech, interruptions and resume, read aloud, voice settings and adding search providers."
+}

@@ -34,7 +34,8 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
                         switch host {
                         case "api.bochaai.com", "api.tavily.com",
                              "wsa.tencentcloudapi.com", "redirected.example.org",
-                             "open.feedcoopapi.com", "ark.cn-beijing.volces.com":
+                             "open.feedcoopapi.com", "ark.cn-beijing.volces.com",
+                             "api.search.brave.com", "search.example.com":
                             return ["93.184.216.34"]
                         default:
                             throw URLError(.cannotFindHost)
@@ -654,6 +655,142 @@ final class WebSearchServiceIntegrationTests: XCTestCase {
             URL(string: "https://api.bochaai.com/v1/web-search?x=1#f"), kind: .bochaWeb))
         // A canonical URL of one kind is not valid for a different kind.
         XCTAssertFalse(WebSearchService.requestURLIsCanonical(canonical, kind: .tavily))
+    }
+}
+
+// MARK: - Settings Test Search (frozen single provider, ephemeral credential)
+
+extension WebSearchServiceIntegrationTests {
+
+    /// The exact production entry point used by the settings Test Search:
+    /// one frozen draft, one in-memory credential, normalized results, and no
+    /// request to any other configured provider.
+    func testTestSearchUsesOnlyTheFrozenProvider() async throws {
+        MockURLProtocol.state.stub(host: "api.search.brave.com") { _ in
+            .ok(Stubs.genericResults(items: [
+                (title: "Brave result", url: "https://example.com/a", snippet: "a")
+            ]))
+        }
+        MockURLProtocol.state.stub(host: "api.bochaai.com") { _ in
+            .ok(Stubs.bochaBody(
+                name: "Bocha result", url: "https://example.com/b", snippet: "b", site: "B"
+            ))
+        }
+        var brave = provider(.brave)
+        brave.displayName = "Frozen Brave"
+        brave.priority = 5
+        let service = makeService([
+            (brave, WebSearchCredential(values: ["apiKey": "transient-key"])),
+            (provider(.bochaWeb, priority: 0), WebSearchCredential(values: ["apiKey": "other-key"]))
+        ])
+
+        let outcome = await service.testSearch(
+            configuration: brave,
+            credential: WebSearchCredential(values: ["apiKey": "transient-key"]),
+            text: "today"
+        )
+
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual(outcome.results.map(\.title), ["Brave result"])
+        XCTAssertEqual(outcome.results.map(\.provider), [.brave])
+        // Priority did not matter: only the frozen draft was contacted.
+        XCTAssertEqual(
+            MockURLProtocol.state.captured.compactMap { $0.url?.host },
+            ["api.search.brave.com"]
+        )
+        let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "X-Subscription-Token"), "transient-key")
+    }
+
+    /// A failing draft surfaces an actionable error and never falls through
+    /// to a second configured provider (settings feedback must describe the
+    /// configuration the user is editing).
+    func testTestSearchNeverFallsBackToAnotherProvider() async throws {
+        MockURLProtocol.state.stub(host: "api.search.brave.com") { _ in .status(500) }
+        MockURLProtocol.state.stub(host: "api.bochaai.com") { _ in
+            .ok(Stubs.bochaBody(
+                name: "Bocha result", url: "https://example.com/b", snippet: "b", site: "B"
+            ))
+        }
+        let brave = provider(.brave, priority: 0)
+        let service = makeService([
+            (brave, WebSearchCredential(values: ["apiKey": "k"])),
+            (provider(.bochaWeb, priority: 1), WebSearchCredential(values: ["apiKey": "k2"]))
+        ])
+
+        let outcome = await service.testSearch(
+            configuration: brave,
+            credential: WebSearchCredential(values: ["apiKey": "k"]),
+            text: "x"
+        )
+
+        XCTAssertNotNil(outcome.error)
+        XCTAssertTrue(outcome.results.isEmpty)
+        XCTAssertEqual(
+            Set(MockURLProtocol.state.captured.compactMap { $0.url?.host }),
+            ["api.search.brave.com"]
+        )
+    }
+
+    /// Whitelisted-like blank credentials never trigger a request; the UI
+    /// maps this stable reason to product copy.
+    func testTestSearchReportsNotConfiguredWithoutCredential() async {
+        let brave = provider(.brave)
+        let service = makeService([
+            (brave, WebSearchCredential(values: ["apiKey": "   "]))
+        ])
+        let outcome = await service.testSearch(
+            configuration: brave,
+            credential: WebSearchCredential(values: ["apiKey": "   "]),
+            text: "x"
+        )
+        XCTAssertEqual(outcome.error, WebSearchTestOutcome.notConfiguredReason)
+        XCTAssertTrue(MockURLProtocol.state.captured.isEmpty)
+    }
+
+    /// The static helper creates its own single-pair service and keeps the
+    /// documented custom contract (POST {query, count}, Bearer, generic JSON
+    /// results) without extra adapter surfaces.
+    func testTestSearchCustomInterfaceKeepsDocumentedContract() async throws {
+        MockURLProtocol.state.stub(host: "search.example.com") { _ in
+            .ok(Stubs.genericResults(items: [
+                (title: "Custom result", url: "https://example.com/c", snippet: "c")
+            ]))
+        }
+        let custom = provider(.custom, endpoint: URL(string: "https://search.example.com/api")!)
+        let service = makeService([
+            (custom, WebSearchCredential(values: ["apiKey": "custom-key"]))
+        ])
+
+        let outcome = await service.testSearch(
+            configuration: custom,
+            credential: WebSearchCredential(values: ["apiKey": "custom-key"]),
+            text: "q",
+            maxResults: 3
+        )
+
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual(outcome.results.map(\.title), ["Custom result"])
+        let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+        XCTAssertEqual(sent.url?.absoluteString, "https://search.example.com/api")
+        XCTAssertEqual(sent.httpMethod, "POST")
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "Authorization"), "Bearer custom-key")
+        let body = try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(Self.bodyData(of: sent))
+        ) as? [String: Any]
+        XCTAssertEqual(body?["query"] as? String, "q")
+        XCTAssertEqual(body?["count"] as? Int, 3)
+    }
+
+    /// The static helper stays offline when the draft cannot be configured.
+    func testStaticTestSearchIsOfflineWhenNotConfigured() async {
+        let outcome = await WebSearchService.searchTest(
+            configuration: provider(.brave),
+            credential: WebSearchCredential(values: [:]),
+            text: "x"
+        )
+        XCTAssertEqual(outcome.error, WebSearchTestOutcome.notConfiguredReason)
+        XCTAssertTrue(MockURLProtocol.state.captured.isEmpty)
     }
 }
 

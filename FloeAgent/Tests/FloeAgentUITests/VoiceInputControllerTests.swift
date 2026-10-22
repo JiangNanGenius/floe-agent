@@ -160,6 +160,126 @@ struct VoiceInputControllerTests {
         }
     }
 
+    private final class ReadinessCapturer: VoiceAudioCapturing, @unchecked Sendable {
+        var readyError: VoiceSessionError?
+        private(set) var stopped = false
+        init(error: VoiceSessionError? = nil) { readyError = error }
+        func start(into transcriber: any SpeechTranscribing) async throws { }
+        func waitUntilReady() async throws { if let readyError { throw readyError } }
+        func stop() { stopped = true }
+    }
+
+    private final class DeferredReadinessCapturer: VoiceAudioCapturing, @unchecked Sendable {
+        private var waiter: CheckedContinuation<Void, Error>?
+        var waiting: Bool { waiter != nil }
+        func start(into transcriber: any SpeechTranscribing) async throws { }
+        func waitUntilReady() async throws { try await withCheckedThrowingContinuation { waiter = $0 } }
+        func ready() { let value = waiter; waiter = nil; value?.resume() }
+        func stop() { let value = waiter; waiter = nil; value?.resume(throwing: CancellationError()) }
+    }
+
+    @Test("Listening begins only after real capture readiness")
+    @MainActor
+    func readinessPrecedesListening() async {
+        let capture = DeferredReadinessCapturer()
+        let controller = VoiceInputController(authorization: FakeAuthorization(), makeTranscriber: { FakeTranscriber() }, makeCapturer: { capture })
+        let task = Task { await controller.start() }
+        for _ in 0..<100 where !capture.waiting { await Task.yield() }
+        #expect(controller.state == .preparing)
+        capture.ready()
+        await task.value
+        #expect(controller.isListening)
+        await controller.stopAndWait()
+    }
+
+    @Test("Stopping during readiness cannot retry or revive the microphone")
+    @MainActor
+    func stopDuringReadinessWins() async {
+        let capture = DeferredReadinessCapturer()
+        var made = 0
+        let controller = VoiceInputController(authorization: FakeAuthorization(), makeTranscriber: { FakeTranscriber() }, makeCapturer: { made += 1; return capture })
+        let task = Task { await controller.start() }
+        for _ in 0..<100 where !capture.waiting { await Task.yield() }
+        controller.stop()
+        await task.value
+        await waitForIdle(controller)
+        #expect(made == 1)
+        #expect(controller.state == .idle)
+    }
+
+    @Test("Capture handoff completes before the recognizer is created")
+    @MainActor
+    func outputHandoffPrecedesRecognition() async {
+        var releasedOutput = false
+        var recognizerSawReleasedOutput = false
+        let controller = VoiceInputController(authorization: FakeAuthorization(), makeTranscriber: {
+            recognizerSawReleasedOutput = releasedOutput
+            return FakeTranscriber()
+        }, makeCapturer: { ReadinessCapturer() })
+        controller.prepareForCapture = { releasedOutput = true }
+        await controller.start()
+        #expect(recognizerSawReleasedOutput)
+        #expect(controller.isListening)
+        await controller.stopAndWait()
+    }
+
+    @Test("A first capture-readiness failure recovers within the same tap")
+    @MainActor
+    func firstReadinessFailureRecovers() async {
+        let auth = FakeAuthorization()
+        let first = ReadinessCapturer(error: .failure(.noAudioInput))
+        let second = ReadinessCapturer()
+        var made = 0
+        var recognizers: [FakeTranscriber] = []
+        let controller = VoiceInputController(authorization: auth, makeTranscriber: {
+            let recognizer = FakeTranscriber(); recognizers.append(recognizer); return recognizer
+        }, makeCapturer: { made += 1; return made == 1 ? first : second })
+        await controller.start()
+        #expect(controller.isListening)
+        #expect(made == 2)
+        #expect(first.stopped)
+        #expect(recognizers[0].finishCount > 0)
+        #expect(auth.microphoneRequests == 1)
+        #expect(!second.stopped)
+        controller.stop()
+        await waitForIdle(controller)
+    }
+
+    @Test("Two readiness failures end cleanly without an unbounded retry")
+    @MainActor
+    func repeatedReadinessFailureStops() async {
+        var made = 0
+        let controller = VoiceInputController(authorization: FakeAuthorization(), makeTranscriber: { FakeTranscriber() }, makeCapturer: {
+            made += 1; return ReadinessCapturer(error: .failure(.noAudioInput))
+        })
+        await controller.start()
+        #expect(made == 2)
+        #expect(controller.state == .failed(reason: .noAudioInput))
+    }
+
+    @Test("Unavailable models never enter automatic startup recovery")
+    @MainActor
+    func missingModelDoesNotRetry() async {
+        var loads = 0
+        let controller = VoiceInputController(authorization: FakeAuthorization(), makeTranscriber: {
+            loads += 1; throw VoiceSessionError.failure(.modelNotReady)
+        }, makeCapturer: { ReadinessCapturer() })
+        await controller.start()
+        #expect(loads == 1)
+        #expect(controller.state == .unavailable)
+    }
+
+    #if canImport(WhisperKit)
+    @Test("File transcription exposes the same language choices as voice input")
+    func transcriptionLanguageSchemaMatchesInput() throws {
+        let object = try #require(JSONSerialization.jsonObject(with: Data(AudioTranscribeTool.parametersJSON.utf8)) as? [String: Any])
+        let properties = try #require(object["properties"] as? [String: Any])
+        let language = try #require(properties["language"] as? [String: Any])
+        let values = try #require(language["enum"] as? [String])
+        #expect(Set(values) == Set(VoiceRecognitionLanguage.allCases.map(\.rawValue)))
+    }
+    #endif
+
     // MARK: - Tests
 
     @MainActor

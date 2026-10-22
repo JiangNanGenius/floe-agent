@@ -188,7 +188,16 @@ final class AppEnvironment: ObservableObject {
     private lazy var _memoryCenter = MemoryCenter(environment: self)
     private lazy var _memoryDreamService = MemoryDreamService(environment: self)
     private lazy var _skillDreamService = SkillDreamService(environment: self)
-    private lazy var _speechService = SpeechService()
+    private lazy var _ttsSettingsService = TTSSettingsService()
+    private var speechMemoryWarningCancellable: AnyCancellable?
+    private lazy var _localSpeechRuntime = LocalSpeechRuntime()
+    private lazy var _ttsSpeechService = TTSSpeechService(localProvider: localSpeechRuntime)
+    private lazy var _speechService: SpeechService = {
+        let service = SpeechService()
+        service.configure(settings: ttsSettingsService, speech: ttsSpeechService, localRuntime: localSpeechRuntime)
+        return service
+    }()
+    let continuousVoicePresentation = ContinuousVoicePresentation()
     private lazy var _backgroundRunCoordinator = BackgroundRunCoordinator(environment: self)
     private lazy var _mediaGenerationService = MediaGenerationService(environment: self)
     private lazy var _creativeAssetStore: CreativeAssetStore = {
@@ -290,6 +299,9 @@ final class AppEnvironment: ObservableObject {
     var memoryDreamService: MemoryDreamService { _memoryDreamService }
     var skillDreamService: SkillDreamService { _skillDreamService }
     var speechService: SpeechService { _speechService }
+    var ttsSettingsService: TTSSettingsService { _ttsSettingsService }
+    var ttsSpeechService: TTSSpeechService { _ttsSpeechService }
+    var localSpeechRuntime: LocalSpeechRuntime { _localSpeechRuntime }
     var backgroundRunCoordinator: BackgroundRunCoordinator { _backgroundRunCoordinator }
     var mediaGenerationService: MediaGenerationService { _mediaGenerationService }
     /// Design workflow adapters bound to the real editor/asset services.
@@ -427,10 +439,12 @@ final class AppEnvironment: ObservableObject {
             // never category equality (a retained `.record` category after
             // recording must not block playback forever).
             video.externalRecordingActive = { [weak self] in
-                self?.voiceInput.state.hasSession ?? false
+                guard let self else { return false }
+                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented
             }
             service.isRecordingActiveNow = { [weak self] in
-                self?.voiceInput.state.hasSession ?? false
+                guard let self else { return false }
+                return self.voiceInput.state.hasSession || self.voiceInput.state == .requestingPermission || self.continuousVoicePresentation.isPresented
             }
             service.setSessionReleaseCheck { [weak video] in
                 video?.audioSessionMayBeReleased ?? true
@@ -445,9 +459,11 @@ final class AppEnvironment: ObservableObject {
             // the whole voice-input session and resumes only while its own
             // task-PiP owner is still active.
             pipAudioRecordingCancellable = voiceInput.$state
+                .combineLatest(continuousVoicePresentation.$request)
+                .map { state, request in state.hasSession || state == .requestingPermission || request != nil }
+                .removeDuplicates()
                 .receive(on: RunLoop.main)
-                .sink { [weak service] state in
-                    let recording = state.hasSession
+                .sink { [weak service] recording in
                     Task { @MainActor [weak service] in
                         service?.handleRecordingActive(recording)
                     }
@@ -919,6 +935,18 @@ final class AppEnvironment: ObservableObject {
         OfficeMemoryCoordination.shared.install { [weak self] reason in
             guard let self else { return nil }
             return await self.shedIdleLocalModelForOffice(reason: reason)
+        }
+        speechMemoryWarningCancellable = NotificationCenter.default
+            .publisher(for: UIApplication.didReceiveMemoryWarningNotification)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.localSpeechRuntime.handleMemoryWarning()
+                }
+            }
+        voiceInput.prepareForCapture = { [weak self] in
+            guard let self else { return }
+            self.pipAudioService.handleRecordingActive(true)
+            await self.speechService.stopAndWait()
         }
     }
 

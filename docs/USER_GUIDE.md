@@ -82,7 +82,7 @@ Models that support it also carry a reasoning/thinking effort setting. With **Au
 
 ### Web search providers
 
-Settings → Web Search keeps the existing provider list and order. **Volcengine Web Search** remains in that list, off by default; enable it only if you have a Volcengine account.
+Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Content Updates**; downloaded directory updates preserve saved accounts and keys. Review available changes before applying them to an existing account.
 
 In the Volcengine editor, choose the account that matches your key:
 
@@ -405,9 +405,19 @@ See [design workflow](FLOE_DESIGN_WORKFLOW.md) and [design workflow tool contrac
 
 Tap the chat microphone, grant OS permission and wait for preparation before speaking. Check waveform response, stop, review transcription and then send. Noise, mixed languages and names may require correction.
 
-If startup remains grey/unresponsive, stop and retry once. If it fails again, record the time, device, audio route and build. Manage recognition resources in Settings; choose resources suited to your language.
+Voice input waits for microphone audio before showing that it is listening and retries a recoverable startup failure once. If it still fails, use Retry. Choose the recognition method, language and optional enhanced recognition model under **Settings → General → Voice Input**.
 
 Live input, file transcription and video subtitles are separate paths. Check text and timing after SRT/VTT/JSON export.
+
+### Chat, voice conversations and read-aloud
+
+Choose **Chat** for conversation, writing, public web search and reading files you attach. Fast answering is the default; the thinking control applies to this conversation. Switch to Agent for edits or execution.
+
+The microphone dictates an editable draft. The separate voice button starts a continuous conversation in the same chat. Mute, interrupt or end from the voice controls, expand the text history, or type and attach files while talking. Temporary chats keep their existing attachment restrictions. The Floe voice orb responds to microphone input and audio actually being played. Backgrounding or locking pauses voice; resume manually after returning.
+
+**Read aloud** reads the selected final answer. Automatic reading, when enabled, starts after the final answer is complete. Tool activity, reasoning and intermediate progress are excluded. You can pause, continue or stop playback.
+
+Under **Settings → General → Voice Output**, open **Voice** to choose an enhanced on-device, system or configured online voice. The separate play button generates a fresh preview from your editable text without changing the selection. Chinese, English, Japanese and mixed-language preview text is available. The first successful enhanced speech model download selects Vivian; later downloads preserve your choice. Manage downloads under **Voice Packs** and accounts under **Online Speech Services**. Each billing channel keeps separate credentials; failures never silently switch services. On-device speech synthesis does not make a cloud chat model offline.
 
 [↑ Back to contents](#contents)
 

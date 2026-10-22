@@ -549,6 +549,14 @@ struct VolcengineSearchEditor: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var center: WebSearchSettingsCenter
     let configuration: WebSearchProviderConfiguration
+    /// Catalog provenance for an instance created from the signed catalog.
+    /// Nil for an edit that predates catalogs; the dedicated interface and
+    /// account guards below are identical in both cases.
+    var provenance: SearchProviderCatalogProvenance?
+    /// Called after a successful save when this editor is pushed inside the
+    /// Add Provider sheet (the sheet closes; the editor's own dismiss would
+    /// only pop the navigation stack).
+    var onFinished: (() -> Void)?
 
     @State private var draft: VolcengineSettingsDraft
     @State private var credential: String
@@ -566,9 +574,16 @@ struct VolcengineSearchEditor: View {
     @State private var dataProObservation: VolcengineDataProObservation?
 
     @MainActor
-    init(center: WebSearchSettingsCenter, configuration: WebSearchProviderConfiguration) {
+    init(
+        center: WebSearchSettingsCenter,
+        configuration: WebSearchProviderConfiguration,
+        provenance: SearchProviderCatalogProvenance? = nil,
+        onFinished: (() -> Void)? = nil
+    ) {
         self.center = center
         self.configuration = configuration
+        self.provenance = provenance
+        self.onFinished = onFinished
         do {
             let loaded = try VolcengineSettingsDraft(configuration: configuration)
             let stored = center.credential(forAccount: loaded.credentialAccount)?
@@ -626,6 +641,18 @@ struct VolcengineSearchEditor: View {
                         Toggle("websearch.volcengine.authoritativeOnly", isOn: $draft.authoritativeOnly)
                     }
                 }
+
+                SearchTestSection(
+                    center: center,
+                    configuration: { try? draft.configuration() },
+                    credential: {
+                        let supplied = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !supplied.isEmpty {
+                            return WebSearchCredential(values: ["apiKey": supplied])
+                        }
+                        return center.credential(forAccount: draft.credentialAccount)
+                    }
+                )
 
                 Section {
                     Toggle("websearch.volcengine.dataPro", isOn: $draft.dataProEnabled)
@@ -775,16 +802,22 @@ struct VolcengineSearchEditor: View {
 
         Task { @MainActor in
             do {
-                let updated = try snapshot.configuration()
+                var updated = try snapshot.configuration()
+                // Saving is always allowed: a configuration without a usable
+                // key is persisted disabled instead of rejected.
                 if updated.enabled,
                    supplied.isEmpty,
                    !center.hasCredential(account: snapshot.credentialAccount) {
-                    throw VolcengineSearchSettingsError.missingCredential
+                    updated.enabled = false
                 }
                 let credentialValue: WebSearchCredential? = supplied.isEmpty
                     ? nil
                     : WebSearchCredential(values: ["apiKey": supplied])
-                try center.upsert(updated, credential: credentialValue)
+                try center.upsert(
+                    updated,
+                    credential: credentialValue,
+                    provenance: provenance
+                )
 
                 let dataProCredential: String? = supplied.isEmpty
                     ? center.credential(forAccount: snapshot.credentialAccount)?
@@ -797,7 +830,11 @@ struct VolcengineSearchEditor: View {
                 )
                 guard saveGeneration == generation else { return }
                 saving = false
-                dismiss()
+                if let onFinished {
+                    onFinished()
+                } else {
+                    dismiss()
+                }
             } catch {
                 guard saveGeneration == generation else { return }
                 saving = false

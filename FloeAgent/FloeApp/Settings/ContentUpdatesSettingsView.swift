@@ -30,6 +30,7 @@ struct ContentUpdatesSettingsView: View {
             }
             contentSections
             providerCatalogSection
+            searchProviderCatalogSection
         }
         .navigationTitle(FloeL10n.l("settings.content_updates.title"))
         .task {
@@ -269,6 +270,59 @@ struct ContentUpdatesSettingsView: View {
             Text("settings.content_updates.catalog.header")
         } footer: {
             Text("settings.content_updates.catalog.note")
+        }
+    }
+
+    // MARK: - Search provider catalog
+
+    /// State of the independently versioned signed search-provider catalog
+    /// (`floe.search.providers`). The add page's refresh button delegates to
+    /// the same owner; this section only renders the effective version and
+    /// forwards the explicit action.
+    private var searchProviderCatalogSection: some View {
+        Section {
+            if let catalog = center.searchProviderCatalog() {
+                LabeledContent("settings.content_updates.search_catalog.version") {
+                    Text("v\(catalog.version)")
+                        .font(FloeTheme.Typography.evidence)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("settings.content_updates.installed") {
+                    if let installed = center.installed[ContentUpdateCenter.searchProviderPackageID] {
+                        Text("v\(installed.version)")
+                            .font(FloeTheme.Typography.evidence)
+                    } else {
+                        Text("settings.content_updates.search_catalog.built_in")
+                            .font(FloeTheme.Typography.evidence)
+                    }
+                }
+                if let available = center.available[ContentUpdateCenter.searchProviderPackageID] {
+                    LabeledContent("settings.content_updates.available") {
+                        Text("v\(available.entry.version) \u{00B7} \(decisionText(available.decision))")
+                            .font(FloeTheme.Typography.evidence)
+                    }
+                }
+            } else {
+                Text("settings.content_updates.catalog.unavailable")
+                    .foregroundStyle(.secondary)
+            }
+            Button {
+                Task { await center.refreshSearchProviderCatalog() }
+            } label: {
+                if center.isChecking {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("settings.content_updates.catalog.refreshing")
+                    }
+                } else {
+                    Label("settings.content_updates.catalog.refresh", systemImage: "arrow.clockwise")
+                }
+            }
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .disabled(center.isChecking)
+            .accessibilityIdentifier("settings.content_updates.search_catalog.refresh")
+        } header: {
+            Text("settings.content_updates.search_catalog.header")
         }
     }
 

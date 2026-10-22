@@ -90,28 +90,48 @@ final class VolcengineSearchSettingsTests: XCTestCase {
     // MARK: - Preset / legacy compatibility
 
     func testPresetsDefaultToAgentPlanButStayDisabled() throws {
+        // Fresh installs no longer auto-create placeholder presets: the list
+        // stays empty until the user adds a provider from the signed catalog.
         let center = makeCenter()
-        let volcengine = try XCTUnwrap(center.providers.first { $0.kind == .volcengine })
-        XCTAssertFalse(volcengine.enabled)
+        XCTAssertTrue(center.providers.isEmpty)
+        XCTAssertNil(defaults.data(forKey: WebSearchSettingsCenter.defaultsKey))
+
+        // A catalog pick still defaults Volcengine to the Agent Plan account
+        // and stays disabled.
+        let entry = SearchProviderCatalogEntry(
+            presetID: "volcengine",
+            adapterKind: "volcengine",
+            name: ["en": "Volcengine Web Search", "zh-Hans": "火山引擎联网搜索"],
+            blurb: ["en": "Search", "zh-Hans": "搜索"],
+            defaultEndpoint: nil,
+            endpointRequired: false,
+            credentialFields: [],
+            optionFields: []
+        )
+        let draft = try XCTUnwrap(SearchProviderDraftFactory.draftInstance(
+            for: entry,
+            localePrimary: "en",
+            volcengineCredentialAccount: { id in
+                VolcengineSettingsDraft.perProviderCredentialAccount(
+                    for: id, interface: .agentPlan
+                )
+            }
+        ))
+        XCTAssertFalse(draft.configuration.enabled)
         XCTAssertEqual(
-            volcengine.credentialAccount,
+            draft.configuration.options[VolcengineSearchOptions.Key.interface],
+            VolcengineSearchInterface.agentPlan.rawValue
+        )
+        XCTAssertEqual(
+            draft.configuration.credentialAccount,
             VolcengineSettingsDraft.perProviderCredentialAccount(
-                for: volcengine.id,
-                interface: .agentPlan
+                for: draft.configuration.id, interface: .agentPlan
             )
         )
         XCTAssertNotEqual(
-            volcengine.credentialAccount,
+            draft.configuration.credentialAccount,
             VolcengineSettingsDraft.agentPlanCredentialAccount
         )
-        XCTAssertEqual(
-            volcengine.options[VolcengineSearchOptions.Key.interface],
-            VolcengineSearchInterface.agentPlan.rawValue
-        )
-        // Existing ordering: Bocha stays first and Volcengine stays third.
-        XCTAssertEqual(center.providers.first?.kind, .bochaWeb)
-        XCTAssertEqual(volcengine.priority, 2)
-        XCTAssertEqual(center.providers.filter { $0.kind == .volcengine }.count, 1)
     }
 
     func testLegacyRecordWithoutInterfaceKeepsItsExactContract() throws {
@@ -178,12 +198,12 @@ final class VolcengineSearchSettingsTests: XCTestCase {
 
     func testInterfaceSwitchKeepsOtherCredentialsAndPersists() throws {
         let center = makeCenter()
-        let preset = try XCTUnwrap(center.providers.first { $0.kind == .volcengine })
+        let providerID = UUID()
         let legacyAccount = "web-search.volcengine.legacy-account-\(UUID().uuidString)"
         let legacy = volcengineConfiguration(
             interface: nil,
             endpoint: URL(string: "https://search.example.com/api"),
-            id: preset.id,
+            id: providerID,
             credentialAccount: legacyAccount
         )
         try center.upsert(
@@ -202,7 +222,7 @@ final class VolcengineSearchSettingsTests: XCTestCase {
         XCTAssertEqual(
             agent.credentialAccount,
             VolcengineSettingsDraft.perProviderCredentialAccount(
-                for: preset.id,
+                for: providerID,
                 interface: .agentPlan
             )
         )
@@ -230,7 +250,7 @@ final class VolcengineSearchSettingsTests: XCTestCase {
         XCTAssertEqual(
             ark.credentialAccount,
             VolcengineSettingsDraft.perProviderCredentialAccount(
-                for: preset.id,
+                for: providerID,
                 interface: .arkResponses
             )
         )
@@ -300,7 +320,12 @@ final class VolcengineSearchSettingsTests: XCTestCase {
 
     func testKeychainWriteFailureDoesNotPublishEnabledConfiguration() throws {
         let center = makeCenter()
-        let original = try XCTUnwrap(center.providers.first { $0.kind == .volcengine })
+        let originalID = UUID()
+        try center.upsert(
+            volcengineConfiguration(interface: .agentPlan, enabled: false, id: originalID),
+            credential: nil
+        )
+        let original = try XCTUnwrap(center.providers.first { $0.id == originalID })
         var changed = original
         changed.options[VolcengineSearchOptions.Key.interface] =
             VolcengineSearchInterface.arkResponses.rawValue

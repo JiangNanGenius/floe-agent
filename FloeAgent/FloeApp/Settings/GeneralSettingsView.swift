@@ -16,8 +16,8 @@ struct GeneralSettingsView: View {
     /// Optional content-update center. Present when the settings center hosts
     /// this view; other call sites remain valid without it.
     var contentUpdates: ContentUpdateCenter?
-    @AppStorage(VoiceRecognitionLanguage.defaultsKey)
-    private var voiceLanguage = VoiceRecognitionLanguage.automatic.rawValue
+    @AppStorage(VoiceRecognitionPreferences.methodKey) private var voiceMethod = VoiceRecognitionPreferences.Method.automatic.rawValue
+    @EnvironmentObject private var speechSettings: TTSSettingsService
     /// Scene foldable capability snapshot. A plain environment value with an
     /// unknown default: isolated hosts never crash, and ordinary devices
     /// never see the foldable row.
@@ -51,17 +51,13 @@ struct GeneralSettingsView: View {
 
             }
 
-            Section("settings.general_settings_view.voice_input") {
-                NavigationLink("settings.general_settings_view.whisper_speech_recognition") { WhisperSettingsView() }
-                Picker("settings.general_settings_view.recognition_language", selection: $voiceLanguage) {
-                    Text("settings.general_settings_view.automatic").tag(VoiceRecognitionLanguage.automatic.rawValue)
-                    Text("settings.general.language.zh_hans").tag(VoiceRecognitionLanguage.simplifiedChinese.rawValue)
-                    Text("settings.general_settings_view.text").tag(VoiceRecognitionLanguage.traditionalChinese.rawValue)
-                    Text("English").tag(VoiceRecognitionLanguage.english.rawValue)
+            Section {
+                NavigationLink { SpeechInputSettingsView() } label: {
+                    LabeledContent("voice.input.title", value: VoiceRecognitionPreferences.title(VoiceRecognitionPreferences.Method(rawValue: voiceMethod) ?? .automatic))
                 }
-                Text("settings.general_settings_view.when_automatic_recognition_has_no_result")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                NavigationLink { TTSSettingsView() } label: {
+                    LabeledContent("settings.voice.title", value: speechSettings.voiceDisplayName(for: speechSettings.snapshot) ?? SpeechVoiceNames.current(speechSettings.snapshot))
+                }
             }
 
             Section("settings.general_settings_view.input_while_running") {
@@ -82,9 +78,6 @@ struct GeneralSettingsView: View {
                     get: { center.verifyFinalAnswer },
                     set: { value in Task { await center.setVerifyFinalAnswer(value) } }
                 ))
-                Text("settings.general_settings_view.when_on_an_extra_self_check")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             if let contentUpdates {

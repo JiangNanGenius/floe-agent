@@ -24,7 +24,10 @@ import AppIntents
 final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         RuntimeDiagnostics.shared.start()
-        Task { await WhisperModelStore.shared.restoreInstallation() }
+        Task {
+            await WhisperModelStore.shared.restoreInstallation()
+            await LocalSpeechModelStore.shared.restoreInstallation()
+        }
         return true
     }
 
@@ -164,6 +167,7 @@ struct FloeAgentApp: App {
                 .environmentObject(router)
                 .environmentObject(environment.voiceInput)
                 .environmentObject(environment.speechService)
+                .environmentObject(environment.ttsSettingsService)
                 .environmentObject(environment.designEntryState)
                 .task {
                     #if DEBUG
@@ -336,6 +340,7 @@ struct RootView: View {
     @State private var pendingEntry: QueuedEntry?
     @State private var entryNavigationReady = false
     @State private var entryNotice: String?
+    @State private var continuousVoiceActive = false
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -542,6 +547,14 @@ struct RootView: View {
                 entryNavigationReady = true
             }
         }
+        .environment(\.continuousVoiceWindowID, sceneID)
+        .onReceive(environment.continuousVoicePresentation.$request) { request in
+            continuousVoiceActive = request != nil
+        }
+        .modifier(ContinuousVoiceRootModifier(
+            presentation: environment.continuousVoicePresentation,
+            environment: environment, windowID: sceneID
+        ))
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             // The durable list is SQLite-only by design; the ACTIVE temporary
             // session is additionally available, so a reload during a
@@ -571,10 +584,26 @@ struct RootView: View {
         }
         .onChange(of: router.workbenchSelection) { _, selection in
             environment.previewCenter.select(router.selectedConversationID)
+            if let voice = environment.continuousVoicePresentation.request,
+               voice.windowID == sceneID {
+                if case .conversation(let selectedID) = selection,
+                   selectedID == environment.continuousVoicePresentation.activeConversationID {
+                    // Home's first utterance may create and select its own
+                    // conversation without closing the stable voice surface.
+                } else {
+                    environment.continuousVoicePresentation.dismiss(voice.id)
+                }
+            }
             guard case .conversation(let id) = selection,
                   let request = environment.browserCenter.consumePendingPanelRequest(for: id),
                   request.show else { return }
             router.showInspector(.browser)
+        }
+        .onChange(of: router.selection) { _, destination in
+            guard destination != .home,
+                  let voice = environment.continuousVoicePresentation.request,
+                  voice.windowID == sceneID else { return }
+            environment.continuousVoicePresentation.dismiss(voice.id)
         }
         .onReceive(NotificationCenter.default.publisher(for: .floeOpenConversation)) { notification in
             if let id = notification.userInfo?["conversationID"] as? UUID {
@@ -614,6 +643,7 @@ struct RootView: View {
             // NavigationLinks appear enabled while their taps are dropped.
             SettingsRootView(environment: environment)
                 .environmentObject(router)
+                .environment(\.continuousVoiceActive, continuousVoiceActive)
                 .presentationSizing(.page)
         }
         .fullScreenCover(item: $router.presentedDesignPage) { request in

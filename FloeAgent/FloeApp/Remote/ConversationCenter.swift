@@ -1128,6 +1128,31 @@ final class ConversationCenter: ObservableObject {
     /// without resubmitting a helper request.
     private let automaticReasoningEffortCoordinator = AutomaticReasoningEffortCoordinator()
 
+    /// One frozen chat reasoning decision per fast-conversation run: the
+    /// conversation-local preference (default `.fast`) is captured at the
+    /// run's FIRST chat ingress, recorded as an invisible `.status` event and
+    /// reused by every continuation/recovery without a second decision. A
+    /// preference or mode switch mid-run applies to the NEXT run only. Task
+    /// modes never consult this coordinator, and the automatic-effort
+    /// classifier never runs for `.chat` runs.
+    private let chatReasoningCoordinator = ChatReasoningCoordinator()
+
+    /// Explicit composer-mode choices whose durable write has not landed yet.
+    /// RAM only, never a second persistence store: the next
+    /// `preferredExecutionMode(for:)` read retries the atomic field write and
+    /// still answers the user's choice until it sticks, so a failed write can
+    /// never silently reopen the conversation as Agent. Temporary sessions
+    /// never leave this map (the write path is a no-op for them).
+    private var pendingPreferredExecutionModes: [UUID: AgentExecutionMode] = [:]
+    /// Latest explicit selection remains authoritative after its write settles.
+    private var latestPreferredExecutionModes: [UUID: AgentExecutionMode] = [:]
+
+    /// Ordered per-conversation write gates: rapid mode toggles persist in
+    /// selection order, so the LAST choice wins instead of a slower earlier
+    /// write landing afterwards.
+    private var preferredExecutionModeWriteGates: [UUID: Task<Void, Never>] = [:]
+    private var preferredExecutionModeWriteGenerations: [UUID: UInt64] = [:]
+
     /// Deterministic test seams for the launch pipeline. Each hook fires at
     /// one suspension point so tests can interleave End/Keep with a send
     /// without sleeps. Never set in production.
@@ -1894,6 +1919,12 @@ final class ConversationCenter: ObservableObject {
         // RAM-only personal-query snapshots never outlive their session.
         await PersonalToolCursorStore.shared.revoke(fallbackRunIDs: temporaryRunIDs)
         await automaticReasoningEffortCoordinator.cancelAndForget(runIDs: temporaryRunIDs)
+        // The session's frozen chat decisions are RAM-only too, and the
+        // temporary conversation's preference draft never becomes durable:
+        // drop both with the session (an adopted Keep conversation owns its
+        // next run's decision fresh).
+        await chatReasoningCoordinator.cancelAndForget(runIDs: temporaryRunIDs)
+        ChatReasoningDraftStore.shared.removeDrafts(for: Set([id]).union(temporaryRunIDs))
         // The RAM draft never enters the durable bucket; make sure no stale
         // durable entry survives either.
         ComposerDraftStore.shared.setTemporaryDraftExcluded(id, false)
@@ -2018,6 +2049,11 @@ final class ConversationCenter: ObservableObject {
         // work: cancel it and drop its RAM decision so a late helper can never
         // touch a replacement session or another round.
         await automaticReasoningEffortCoordinator.cancelAndForget(runIDs: Set(ownedRunIDs))
+        // Same ownership rule for frozen chat decisions and the temporary
+        // preference draft: both are session work, and neither may survive
+        // End/Keep to shadow a replacement session or the promoted thread.
+        await chatReasoningCoordinator.cancelAndForget(runIDs: Set(ownedRunIDs))
+        ChatReasoningDraftStore.shared.removeDrafts(for: [id])
         // ---- Cancellation dispatch: still before any keep settlement. ----
         // The explicit service cancel is what closes the run service's own
         // unstructured runtime work; task cancellation alone does not.
@@ -2636,6 +2672,390 @@ final class ConversationCenter: ObservableObject {
         return record.executionBackend == .linuxVM && record.state != .deleting
     }
 
+    // MARK: - Conversation-local chat reasoning preference
+
+    /// Composer-facing read for a durable conversation or a draft/temporary
+    /// owner identity. Never writes; a transfer only happens through the
+    /// launch-frozen ingress below. Absent state decodes to `.fast` — chat
+    /// only, never a global model setting.
+    func chatReasoningPreference(for conversationID: UUID) async -> ChatReasoningPreference {
+        await chatReasoningPreference(
+            for: conversationID,
+            isTemporary: isTemporaryConversation(conversationID),
+            transferringDraft: false
+        )
+    }
+
+    /// Composer-facing save. Ordinary durable conversations write the
+    /// reasoning field through the schema-51 store with an ATOMIC field
+    /// update, so a concurrently saved execution mode (or any other field)
+    /// is preserved rather than replaced by a stale whole snapshot. The
+    /// foreign key still makes a write for a missing conversation fail
+    /// closed. Draft identities (a Home or Notes launch slot whose
+    /// pre-generated conversation id only becomes a real row at the atomic
+    /// launch) and temporary sessions stay in the RAM draft store; a draft
+    /// value transfers to durable storage exactly once, at the FIRST
+    /// chat-round freeze, never before the conversation FK exists.
+    func setChatReasoningPreference(
+        _ preference: ChatReasoningPreference,
+        for conversationID: UUID
+    ) async throws {
+        if isTemporaryConversation(conversationID) {
+            ChatReasoningDraftStore.shared.setDraft(preference, for: conversationID)
+            return
+        }
+        let store = SQLiteChatPreferenceStore(database: environment.database)
+        let durableConversation = try await conversationStore(for: conversationID)
+            .conversation(id: conversationID)
+        if durableConversation == nil {
+            ChatReasoningDraftStore.shared.setDraft(preference, for: conversationID)
+            return
+        }
+        try await store.updateChatReasoning(preference, conversationID: conversationID)
+    }
+
+    /// Internal resolution used by both the composer surface and the launch
+    /// pipeline. `transferringDraft` is true ONLY at a fresh-round chat
+    /// ingress (`automaticReasoningEffortIngress == .freshRound`): the exact
+    /// atomic-launch moment when the conversation row provably exists and the
+    /// run's reasoning decision is about to freeze. A durable snapshot always
+    /// wins over a stale draft at that moment. The transfer NEVER erases a
+    /// chosen value silently: when the durable read or write fails, the draft
+    /// is restored to RAM (the next fresh-round ingress retries; a
+    /// continuation read still answers the draft) and only a fixed redacted
+    /// warning is logged — the current run still uses the picked value.
+    func chatReasoningPreference(
+        for conversationID: UUID,
+        isTemporary: Bool,
+        transferringDraft: Bool
+    ) async -> ChatReasoningPreference {
+        if isTemporary {
+            // Temporary sessions are RAM-only by contract: the getter answers
+            // the session's draft value (or `.fast`) and never consults or
+            // writes SQLite, and `transferringDraft` never applies.
+            return ChatReasoningDraftStore.shared.draft(for: conversationID) ?? .defaultValue
+        }
+        let store = SQLiteChatPreferenceStore(database: environment.database)
+        if transferringDraft, let draft = ChatReasoningDraftStore.shared.takeDraft(for: conversationID) {
+            let durable: ChatConversationPreferences?
+            do {
+                durable = try await store.preferences(conversationID: conversationID)
+            } catch {
+                // An unreadable store cannot be proven to hold no snapshot;
+                // restoring the draft keeps the user's choice authoritative
+                // for this run and every later ingress.
+                ChatReasoningDraftStore.shared.setDraft(draft, for: conversationID)
+                FloeLogger(category: .persistence).warning(
+                    "chatPreferenceTransferReadFailed conversation=\(conversationID.uuidString)"
+                )
+                return draft
+            }
+            if let durable, let storedReasoning = durable.chatReasoning {
+                // The conversation already froze an explicit reasoning choice
+                // (for example the voice copy lost the race against an earlier
+                // freeze): it wins, and the stale draft is consumed either way
+                // so it can never shadow later rounds.
+                return storedReasoning
+            }
+            // Atomic transfer: the launch pipeline reached this point only
+            // after the durable conversation/run transaction committed, so
+            // the FK exists and the write cannot create a fake row. A durable
+            // snapshot may already exist ONLY because the first accepted round
+            // seeded its execution mode; that row never chose a reasoning
+            // level, so the picked draft still transfers into the reasoning
+            // FIELD (never a whole-snapshot write, which would erase the
+            // seeded mode). A write failure must never fail the launch, but it
+            // also must never discard the setting: restore the draft and retry
+            // at the next fresh round instead of letting a later run default
+            // to `.fast`.
+            do {
+                try await store.updateChatReasoning(draft, conversationID: conversationID)
+            } catch {
+                ChatReasoningDraftStore.shared.setDraft(draft, for: conversationID)
+                FloeLogger(category: .persistence).warning(
+                    "chatPreferenceTransferPersistFailed conversation=\(conversationID.uuidString)"
+                )
+            }
+            return draft
+        }
+        if let draft = ChatReasoningDraftStore.shared.draft(for: conversationID) {
+            // Draft slot that is not durable yet (Home/Notes before launch)
+            // or was restored after a failed transfer: the composer and any
+            // continuation ingress show exactly what the user picked.
+            return draft
+        }
+        let saved = try? await store.preferences(conversationID: conversationID)
+        return saved?.effectiveChatReasoning ?? .defaultValue
+    }
+
+    // MARK: - Conversation-local composer execution mode
+
+    /// What a (re)created thread composer starts with. Chat and Agent share
+    /// one durable `ConversationMode`, so the record's own mode can never
+    /// distinguish "Chat with read-only tools" from a task-capable Agent;
+    /// the conversation-local snapshot is the only honest authority.
+    struct PreferredExecutionModeResolution: Equatable, Sendable {
+        /// The mode to apply to the composer now.
+        var mode: AgentExecutionMode
+        /// True when the resolution is authoritative: a remembered explicit
+        /// choice (durable snapshot or not-yet-landed RAM choice) OR a
+        /// fail-closed resolution that must keep the least-privilege Chat
+        /// ceiling. Legacy conversations (no evidence at all) keep the
+        /// historical Agent default and their Plan reconcile behavior.
+        var isRemembered: Bool
+        /// True when a saved choice exists but its raw value is unreadable.
+        /// The resolver fails closed to `.chat` (never Agent authority) and
+        /// the composer shows one concise actionable notice.
+        var needsRepair: Bool
+        /// True when the durable read itself failed. A failed read cannot
+        /// prove a legacy row, so the resolver fails closed to `.chat` and
+        /// the composer shows the same notice; an explicit Agent choice
+        /// remains available to the user.
+        var readFailed: Bool
+
+        static let legacyDefaultAgent = PreferredExecutionModeResolution(
+            mode: .agent, isRemembered: false, needsRepair: false, readFailed: false)
+    }
+
+    /// Durable read used when a thread view loads, BEFORE its composer can
+    /// send. Temporary sessions answer the legacy RAM state and never touch
+    /// SQLite. The newest RAM choice (recorded synchronously by the selection
+    /// entrypoint, including while its durable write is still in flight) wins,
+    /// so a second view created mid-write cannot read the older durable mode;
+    /// its retry is queued through the SAME serialized write chain with the
+    /// same generation fence. Any read that cannot prove "legacy absence"
+    /// fails closed to `.chat` (never Agent authority) with a notice.
+    func preferredExecutionMode(for conversationID: UUID) async -> PreferredExecutionModeResolution {
+        if isTemporaryConversation(conversationID) {
+            // RAM-only by contract: no read, no write, no fake row.
+            return .legacyDefaultAgent
+        }
+        let store = SQLiteChatPreferenceStore(database: environment.database)
+        if let latest = latestPreferredExecutionModes[conversationID] {
+            if pendingPreferredExecutionModes[conversationID] != nil {
+                enqueuePreferredModeRetry(latest, conversationID: conversationID)
+            }
+            return PreferredExecutionModeResolution(
+                mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+        }
+        let state: ChatPreferencesReadState
+        do {
+            state = try await store.preferencesState(conversationID: conversationID)
+        } catch {
+            if let latest = latestPreferredExecutionModes[conversationID] {
+                if pendingPreferredExecutionModes[conversationID] != nil {
+                    enqueuePreferredModeRetry(latest, conversationID: conversationID)
+                }
+                return PreferredExecutionModeResolution(
+                    mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+            }
+            FloeLogger(category: .persistence).warning(
+                "chatPreferredModeReadFailed conversation=\(conversationID.uuidString)"
+            )
+            return PreferredExecutionModeResolution(
+                mode: .chat, isRemembered: true, needsRepair: false, readFailed: true)
+        }
+        // A newer selection may start AND finish during the durable read.
+        // Its settled RAM value still wins even after pending is cleared.
+        if let latest = latestPreferredExecutionModes[conversationID] {
+            if pendingPreferredExecutionModes[conversationID] != nil {
+                enqueuePreferredModeRetry(latest, conversationID: conversationID)
+            }
+            return PreferredExecutionModeResolution(
+                mode: latest, isRemembered: true, needsRepair: false, readFailed: false)
+        }
+        return resolution(for: state, conversationID: conversationID)
+    }
+
+    /// Maps one durable read to the composer contract. A row that exists but
+    /// cannot be decoded, or whose stored raw value is not a recognized mode,
+    /// is corrupt data rather than legacy absence and fails closed to Chat.
+    private func resolution(
+        for state: ChatPreferencesReadState,
+        conversationID: UUID
+    ) -> PreferredExecutionModeResolution {
+        switch state {
+        case .absent:
+            // No row: genuinely legacy data with no remembered choice.
+            return .legacyDefaultAgent
+        case .unreadable:
+            // A row exists but cannot be decoded. It may hold an explicit
+            // Chat choice, so this is not legacy absence.
+            FloeLogger(category: .persistence).warning(
+                "chatPreferredModeUnreadable conversation=\(conversationID.uuidString)"
+            )
+            return PreferredExecutionModeResolution(
+                mode: .chat, isRemembered: true, needsRepair: true, readFailed: false)
+        case .snapshot(let snapshot):
+            guard let raw = snapshot.preferredExecutionMode else {
+                // A snapshot written before this field existed: legacy data.
+                return .legacyDefaultAgent
+            }
+            guard let mode = AgentExecutionMode(rawValue: raw) else {
+                // A present-but-unknown value is corrupt data, not a legacy
+                // row. Fail closed; Agent authority needs a conscious choice.
+                FloeLogger(category: .persistence).warning(
+                    "chatPreferredModeUnreadable conversation=\(conversationID.uuidString)"
+                )
+                return PreferredExecutionModeResolution(
+                    mode: .chat, isRemembered: true, needsRepair: true, readFailed: false)
+            }
+            return PreferredExecutionModeResolution(
+                mode: mode, isRemembered: true, needsRepair: false, readFailed: false)
+        }
+    }
+
+    /// Saves the user's explicit composer-mode choice. Temporary sessions are
+    /// RAM-only (the caller's published value is the session's truth and no
+    /// durable row may exist). The newest choice is published to RAM BEFORE
+    /// any await so a view created during the write restores it, and durable
+    /// writes are serialized per conversation with a generation fence: a
+    /// rapid Agent↔Chat toggle persists the LAST selection, and a stale retry
+    /// can never overwrite a newer one. Field updates keep the reasoning
+    /// preference intact. On failure the choice stays in RAM for the next read
+    /// and the error is rethrown so the composer shows one actionable notice.
+    func setPreferredExecutionMode(
+        _ mode: AgentExecutionMode,
+        for conversationID: UUID
+    ) async throws {
+        if isTemporaryConversation(conversationID) { return }
+        let generation = (preferredExecutionModeWriteGenerations[conversationID] ?? 0) &+ 1
+        preferredExecutionModeWriteGenerations[conversationID] = generation
+        // Synchronous, before any suspension: a recreated view read while the
+        // write is in flight must answer this choice, not the older durable
+        // mode.
+        latestPreferredExecutionModes[conversationID] = mode
+        pendingPreferredExecutionModes[conversationID] = mode
+        let write = enqueuePreferredModeWrite(
+            mode, conversationID: conversationID, generation: generation)
+        do {
+            try await write.value
+        } catch {
+            // Only the current generation owns the pending slot; a newer
+            // selection has already replaced it and reports its own outcome.
+            if preferredExecutionModeWriteGenerations[conversationID] == generation {
+                pendingPreferredExecutionModes[conversationID] = mode
+            }
+            throw error
+        }
+    }
+
+    /// Queues one RAM choice on the per-conversation ordered write chain and
+    /// returns its task. The generation fence runs AFTER earlier writes settle
+    /// and BEFORE this write: a choice superseded meanwhile is skipped, so an
+    /// older retry can neither overwrite nor clear a newer choice.
+    private func enqueuePreferredModeWrite(
+        _ mode: AgentExecutionMode,
+        conversationID: UUID,
+        generation: UInt64
+    ) -> Task<Void, Error> {
+        let previous = preferredExecutionModeWriteGates[conversationID]
+        let write = Task { @MainActor [self] in
+            await previous?.value
+            guard preferredExecutionModeWriteGenerations[conversationID] == generation,
+                  pendingPreferredExecutionModes[conversationID] == mode else { return }
+            try await persistPreferredExecutionMode(mode, conversationID: conversationID)
+            if preferredExecutionModeWriteGenerations[conversationID] == generation,
+               pendingPreferredExecutionModes[conversationID] == mode {
+                pendingPreferredExecutionModes[conversationID] = nil
+                // Settled chain: drop our gate so a long-lived conversation
+                // does not retain every completed write task. A newer
+                // generation already replaced this slot and is left intact.
+                preferredExecutionModeWriteGates[conversationID] = nil
+            }
+        }
+        preferredExecutionModeWriteGates[conversationID] = Task { @MainActor [write] in
+            _ = try? await write.value
+        }
+        return write
+    }
+
+    /// Fire-and-forget retry for a RAM choice whose durable write has not
+    /// landed. It rides the same ordered chain and generation fence, so it is
+    /// a no-op once a newer choice exists.
+    private func enqueuePreferredModeRetry(
+        _ mode: AgentExecutionMode,
+        conversationID: UUID
+    ) {
+        guard let generation = preferredExecutionModeWriteGenerations[conversationID] else { return }
+        _ = enqueuePreferredModeWrite(
+            mode, conversationID: conversationID, generation: generation)
+    }
+
+    /// One atomic field write; shared by the explicit choice path and the
+    /// first-round seed.
+    private func persistPreferredExecutionMode(
+        _ mode: AgentExecutionMode,
+        conversationID: UUID
+    ) async throws {
+        let store = SQLiteChatPreferenceStore(database: environment.database)
+        try await store.updatePreferredExecutionMode(
+            mode.rawValue, conversationID: conversationID)
+    }
+
+    /// The fast-chat tool ceiling for the run's actually offered descriptors:
+    /// the `ChatToolPolicy` two-family set (public web trio + bound-file
+    /// reads when the run has frozen associated resources), narrowed by
+    /// provider readiness exactly like `temporaryToolCeiling` — an
+    /// unconfigured provider-backed search is never advertised. `web.fetch`
+    /// needs no provider and always stays. Pure and injectable for the
+    /// App-host suite.
+    nonisolated static func chatToolCeiling(
+        offeredDescriptors: [ToolCatalog.Descriptor],
+        hasResourceContext: Bool,
+        webSearchAvailable: (String) -> Bool = { WebSearchSettingsCenter.toolIsAvailable($0) }
+    ) -> Set<String> {
+        var ceiling = ChatToolPolicy.allowedToolNames(
+            from: offeredDescriptors, hasResourceContext: hasResourceContext)
+        for name in TemporaryChatToolPolicy.providerBackedWebSearchToolNames
+        where !webSearchAvailable(name) {
+            ceiling.remove(name)
+        }
+        return ceiling
+    }
+
+    /// True when this run already carries a frozen chat reasoning decision
+    /// in its durable `.status` thread. The decision is recorded before the
+    /// run's first provider request, so reading the earliest bounded page is
+    /// sufficient: a run that has one is a fast-chat run and its
+    /// continuation must NOT fall through the historical `.chat → .agent`
+    /// resume remap without fast semantics.
+    nonisolated static func hasFrozenChatReasoning(
+        runID: UUID,
+        runStore: any RunStore
+    ) async -> Bool {
+        guard let events = try? await runStore.events(
+            runID: runID, afterSequence: 0, limit: 32) else { return false }
+        return ChatReasoningSupport.findDecision(in: events) != nil
+    }
+
+    /// The newest durable `voicePlayback` `.status` receipt from at most the
+    /// 3 most recent OTHER runs of this conversation, matching each receipt
+    /// to the run that produced it. The current run is excluded; temporary
+    /// sessions route through their own RAM store, so nothing temporary is
+    /// read from disk. A write-cadence mismatch from the voice lane is
+    /// tolerated: the reader takes the newest valid receipt of either status
+    /// and returns nil when there is none.
+    nonisolated static func latestVoicePlaybackReceipt(
+        excluding currentRunID: UUID,
+        conversationID: UUID,
+        runStore: any RunStore,
+        recentRunLimit: Int = 3
+    ) async -> VoicePlaybackReceipt? {
+        guard let recentRuns = try? await runStore.recentRuns(
+            conversationID: conversationID, limit: max(1, recentRunLimit)) else { return nil }
+        for record in recentRuns where record.id != currentRunID {
+            guard let events = try? await runStore.recentEvents(
+                runID: record.id, limit: 64) else { continue }
+            for event in events.reversed() where event.kind == .status {
+                guard let receipt = VoicePlaybackReceipt.fromEventPayloadJSON(event.payloadJSON),
+                      receipt.runID == record.id else { continue }
+                return receipt
+            }
+        }
+        return nil
+    }
+
     /// Resolves the run's effective model for the automatic reasoning-effort
     /// contract: one bounded auxiliary-model decision per fresh round, frozen
     /// on the run, reused by resume/retry (re-clamped for a re-selected
@@ -2760,25 +3180,75 @@ final class ConversationCenter: ObservableObject {
         // enforced here — at the service that builds the real request — not
         // in the UI.
         let effectiveExecutionMode: AgentExecutionMode = isTemporary ? .agent : executionMode
+        // Fast-chat ingress is the REQUESTED mode, kept distinct from the
+        // temporary runtime remap above. An explicitly requested `.chat`
+        // turn (typed or voice-driven) resolves its reasoning and prompt
+        // through the conversation-local chat path even when the session is
+        // temporary and still runs with `.agent` runtime semantics under the
+        // stricter public-web-only temporary ceiling; ordinary temporary
+        // `.agent` turns are completely unaffected.
+        let requestedChatMode = executionMode == .chat
         let conversationStore = self.conversationStore(for: conversationID)
         let runStore = self.runStore(for: conversationID)
         let runningInputStore = self.runningInputStore(for: conversationID)
-        // Automatic reasoning effort: at most one auxiliary-model decision per
-        // fresh round, frozen on this run's model profile; resume/retry reuse
-        // the frozen abstract choice (re-clamped for a re-selected target)
-        // and never submit a second request. Manual selections and protocols
-        // that cannot transmit an effort value pass through before any helper
-        // route is considered.
-        let model = await resolvedAutomaticReasoningEffortModel(
-            runID: runID,
-            provider: provider,
-            model: model,
-            goal: memoryQuery,
-            attachments: currentUserAttachments,
-            isTemporary: isTemporary,
-            ingress: automaticReasoningEffortIngress,
-            runStore: runStore
-        )
+        // Reasoning ingress. A fast-chat run NEVER enters the automatic
+        // effort classifier: its setting is the conversation-local chat
+        // preference (default `.fast`), resolved against the endpoint's
+        // documented reasoning contract and FROZEN for this run and every
+        // continuation. Task modes (.agent/.plan/.goal) keep the existing
+        // per-fresh-round auxiliary decision and global semantics.
+        var resolvedModel = model
+        var chatReasoningPolicy: ProviderReasoningPolicy = .modelDefault
+        if requestedChatMode {
+            let preference = await chatReasoningPreference(
+                for: conversationID,
+                isTemporary: isTemporary,
+                transferringDraft: automaticReasoningEffortIngress == .freshRound
+            )
+            let chatResolution = await chatReasoningCoordinator.resolve(
+                runID: runID,
+                provider: provider,
+                model: resolvedModel,
+                preference: preference,
+                seedReader: { runID in
+                    // Post-process-death recovery reads the run's own durable
+                    // event thread; temporary stores are RAM-backed here, so
+                    // nothing temporary is ever re-read from disk.
+                    guard let events = try? await runStore.events(
+                        runID: runID, afterSequence: 0, limit: 32) else { return nil }
+                    return ChatReasoningSupport.findDecision(in: events)
+                },
+                recorder: { runID, decision in
+                    // Invisible `.status` record (no state/reason key, so the
+                    // timeline never renders a row). Carries no user text.
+                    _ = try? await runStore.appendEvent(
+                        runID: runID,
+                        kind: .status,
+                        payloadJSON: decision.payloadJSON()
+                    )
+                }
+            )
+            resolvedModel = chatResolution.model
+            chatReasoningPolicy = chatResolution.policy
+        } else {
+            // Automatic reasoning effort: at most one auxiliary-model decision
+            // per fresh round, frozen on this run's model profile; resume/
+            // retry reuse the frozen abstract choice (re-clamped for a re-
+            // selected target) and never submit a second request. Manual
+            // selections and protocols that cannot transmit an effort value
+            // pass through before any helper route is considered.
+            resolvedModel = await resolvedAutomaticReasoningEffortModel(
+                runID: runID,
+                provider: provider,
+                model: resolvedModel,
+                goal: memoryQuery,
+                attachments: currentUserAttachments,
+                isTemporary: isTemporary,
+                ingress: automaticReasoningEffortIngress,
+                runStore: runStore
+            )
+        }
+        let model = resolvedModel
         let conversationHistory = isTemporary
             ? conversationHistory
             : (try? await environment.intelligenceStore.applyingCompactions(conversationHistory, conversationID: conversationID)) ?? conversationHistory
@@ -3011,6 +3481,57 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = (allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))).intersection(temporaryCeiling)
         }
+        // Fast chat: the narrow ceiling applies to ORDINARY `.chat` runs only.
+        // A temporary session keeps the stricter public-web-only ceiling
+        // untouched above — chat mode changes only reasoning and prompt there.
+        // This intersection is LAST, at the same position the temporary
+        // ceiling occupies: user capability toggles, task policy, provider
+        // ceilings and skills still only narrow further.
+        let chatFastMode = requestedChatMode && !isTemporary
+        var chatResourceCeiling: ChatToolPolicy.ResourceContext? = nil
+        if chatFastMode {
+            // Frozen associated-resource proof: this round's staged copies
+            // under the resolved task root PLUS the conversation's durable
+            // attachment records (earlier rounds' files stay in the same
+            // root — the importer skips existing copies). No resolved task
+            // workspace ⇒ no bound paths ⇒ the ceiling fails CLOSED to the
+            // public web family alone; there is no scratch root and no
+            // workspace.searchFiles expansion.
+            var boundPaths: [String] = []
+            if runWorkspaceRoot != nil {
+                boundPaths = workspaceAttachmentPaths
+                let durableAttachments = (try? await conversationStore
+                    .attachments(conversationID: conversationID)) ?? []
+                for attachment in durableAttachments {
+                    let basename = (attachment.displayName as NSString).lastPathComponent
+                    guard !basename.isEmpty, basename != ".", basename != ".." else { continue }
+                    boundPaths.append("Attachments/\(attachment.id.uuidString)/\(basename)")
+                }
+            }
+            let context = ChatToolPolicy.ResourceContext(
+                conversationID: conversationID, boundRelativePaths: boundPaths)
+            if !context.isEmpty {
+                chatResourceCeiling = context
+            }
+            let ceiling = Self.chatToolCeiling(
+                offeredDescriptors: availableDescriptors,
+                hasResourceContext: chatResourceCeiling != nil)
+            allowedToolNames = (allowedToolNames
+                ?? Set(availableDescriptors.map(\.name))).intersection(ceiling)
+        }
+        // Voice playback evidence for the next ordinary chat turn: newest
+        // receipt from ≤3 recent OTHER runs of THIS conversation. Ordinary
+        // and temporary chat reads only the store routed for its own session,
+        // so nothing temporary is ever read from disk. Task modes never see
+        // it (the fast envelope is chat-only).
+        var priorVoicePlayback: VoicePlaybackReceipt? = nil
+        if requestedChatMode {
+            priorVoicePlayback = await Self.latestVoicePlaybackReceipt(
+                excluding: runID,
+                conversationID: conversationID,
+                runStore: runStore
+            )
+        }
         let credentials = resolveCredentials(for: provider)
         let forceInitialCompaction = consumeManualCompaction(conversationID: conversationID)
         // Canvas Drawing Assistant binding: when this conversation is the
@@ -3102,7 +3623,8 @@ final class ConversationCenter: ObservableObject {
             toolsEnabled: effectiveExecutionMode.toolsEnabled,
             // Use the runtime's unbounded default. Progress/timeout guards,
             // rather than an arbitrary lifetime call count, stop stuck tasks.
-            verifyFinalAnswer: environment.settingsCenter.verifyFinalAnswer,
+            // Fast chat never runs the task-pipeline self-review hop.
+            verifyFinalAnswer: requestedChatMode ? false : environment.settingsCenter.verifyFinalAnswer,
             forceInitialCompaction: forceInitialCompaction,
             maxProviderRetries: runSurface == .canvas ? 1 : 5,
             unchangedToolOutcomeLimit: runSurface == .canvas ? 2 : 3,
@@ -3128,6 +3650,19 @@ final class ConversationCenter: ObservableObject {
             // wrapper/alias/batch call cannot widen the descriptor-derived
             // ceiling. The flag travels with the immutable configuration.
             temporaryReadOnly: isTemporary,
+            // Fast-chat authority for the runtime. The flag (and with it the
+            // brief conversational envelope and the verify-pass skip) covers
+            // every REQUESTED `.chat` turn, including voice-driven temporary
+            // ones; the ChatToolPolicy ceiling itself is only ever narrowed
+            // for ordinary runs (a temporary session keeps the stricter
+            // public-web-only ceiling above, and with a nil resource context
+            // the chat ceiling can never exceed it anyway). `chatResourceCeiling`
+            // is the frozen exact-path proof built at launch; `reasoningPolicy`
+            // is the run's frozen chat resolution (`.modelDefault` for every
+            // task mode).
+            chatFastMode: requestedChatMode,
+            chatResourceCeiling: chatResourceCeiling,
+            reasoningPolicy: chatReasoningPolicy,
             // Explicit execution environment for the run and its delegated
             // children (see `runBoundExecutionEnvironmentID`). A temporary
             // chat or a fresh task has no such container and stays nil.
@@ -3270,7 +3805,9 @@ final class ConversationCenter: ObservableObject {
                     : nil,
                 projectInstructions: runSurface == .ordinary
                     ? WorkspaceContextBriefing.projectInstructions(rootURL: taskRootLease?.url)
-                    : nil
+                    : nil,
+                // Fast-chat voice context only; ignored by task-mode envelopes.
+                priorVoicePlayback: priorVoicePlayback
             ),
             personalizationProvider: Self.livePersonalizationProvider(
                 isTemporary: isTemporary,
@@ -3868,6 +4405,19 @@ final class ConversationCenter: ObservableObject {
         /// Trusted explicit environment binding frozen on the schedule.
         executionEnvironmentID: String? = nil,
         designLaunchBinding: DesignLaunchBinding? = nil,
+        /// Conversation-local chat preference ownership for a launcher whose
+        /// new conversation identity FRESHLY differs from the composer's
+        /// preference owner (the deferred voice Home path: the driver passes
+        /// `HomeVM.draftConversationID` while the conversation gets a fresh
+        /// UUID). Before the first chat-round reasoning freeze, the picked
+        /// value is COPIED (never moved) from this RAM draft owner into the
+        /// new conversation's own draft slot; the durable write still happens
+        /// exactly once at the atomic first-round freeze, and the Home slot
+        /// keeps its draft because Home is not reset by a voice send (a later
+        /// typed send from the same slot carries the same preference). A
+        /// typed Home send already passes `newConversationID == owner`, so it
+        /// leaves this nil.
+        chatReasoningDraftOwnerID: UUID? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
         let ingress = SecretIngressScanner.scan(goal)
@@ -3965,6 +4515,42 @@ final class ConversationCenter: ObservableObject {
             }
             await environment.designEntryState.refresh(
                 conversationID: prepared.conversation.id, environment: environment)
+        }
+        // Seed the FIRST accepted round's Chat choice now that the
+        // conversation FK exists and before navigation/provider I/O. Both
+        // `AgentExecutionMode.chat` and `.agent` persist as the record's
+        // `ConversationMode.chat`, so without this durable snapshot a Home
+        // typed chat or a newly created voice chat would reopen in the thread
+        // view's historical Agent default and silently gain task behavior on
+        // the next typed round. Only `.chat` is seeded: legacy agent/plan/goal
+        // reopen semantics stay exactly as before, and every later explicit
+        // mode choice persists through `setPreferredExecutionMode`. A failed
+        // seed keeps the choice in RAM (retried by the next
+        // `preferredExecutionMode(for:)` read) and never fails the accepted
+        // launch.
+        if executionMode == .chat {
+            do {
+                try await setPreferredExecutionMode(.chat, for: prepared.conversation.id)
+            } catch {
+                FloeLogger(category: .persistence).warning(
+                    "chatPreferredModeSeedFailed conversation=\(prepared.conversation.id.uuidString)"
+                )
+            }
+        }
+        // Voice-path chat preference ownership: copy (never move) the picked
+        // draft into the freshly created conversation's own RAM slot BEFORE
+        // the deferred run can resolve its frozen reasoning, so a chosen
+        // low/medium/high/maximum can never silently fall to `.fast` simply
+        // because the voice launcher minted a different conversation UUID.
+        // No SQLite row is written here: durability still happens exactly
+        // once at the atomic first-chat-round freeze (conversation FK now
+        // exists because `prepareRunLaunch` committed), and the Home draft
+        // slot keeps its value for any unsent draft. If launch fails before
+        // the freeze, the conversation's draft slot simply carries the value
+        // for a later resume/continuation read.
+        if let chatReasoningDraftOwnerID, chatReasoningDraftOwnerID != prepared.conversation.id,
+           let draft = ChatReasoningDraftStore.shared.draft(for: chatReasoningDraftOwnerID) {
+            ChatReasoningDraftStore.shared.setDraft(draft, for: prepared.conversation.id)
         }
         // Navigation must not wait for auxiliary visual analysis. The launch
         // transaction above already made the conversation/run durable, so
@@ -5291,6 +5877,9 @@ final class ConversationCenter: ObservableObject {
         ))
         clearFrozenTemporaryRun(runID: runID)
         await automaticReasoningEffortCoordinator.cancelAndForget(runID: runID)
+        // A failed launch's frozen chat decision is dead too; forget it so a
+        // reused run identity can never resurrect a stale preference.
+        await chatReasoningCoordinator.cancelAndForget(runID: runID)
         publishSession(conversationID)
         environment.backgroundRunCoordinator.didFinish(
             runID: runID,
@@ -6157,6 +6746,20 @@ final class ConversationCenter: ObservableObject {
         await automaticReasoningEffortCoordinator.cancelAndForget(
             runIDs: durableRunIDs.union(services.map(\.runID)).union(taskRunIDs)
         )
+        // The chat lane follows the same deletion rule: frozen chat decisions
+        // are forgotten before the tasks are awaited, and the RAM preference
+        // drafts die with their conversations (the durable rows themselves
+        // follow the schema-51 FK cascade).
+        await chatReasoningCoordinator.cancelAndForget(
+            runIDs: durableRunIDs.union(services.map(\.runID)).union(taskRunIDs)
+        )
+        ChatReasoningDraftStore.shared.removeDrafts(for: conversationIDs)
+        for conversationID in conversationIDs {
+            latestPreferredExecutionModes[conversationID] = nil
+            pendingPreferredExecutionModes[conversationID] = nil
+            preferredExecutionModeWriteGenerations[conversationID] = nil
+            preferredExecutionModeWriteGates[conversationID] = nil
+        }
         let tasks = taskRunIDs.compactMap { runTasks[$0] }
         for task in tasks {
             _ = await task.value
@@ -6427,10 +7030,22 @@ final class ConversationCenter: ObservableObject {
         ).build(conversationID: record.conversationID)
         let current = assembled.last(where: { $0.role == "user" })
         let history = current.map { item in assembled.filter { $0.id != item.id } } ?? assembled
-        let mode: AgentExecutionMode = switch restoredConversationMode {
+        // A persisted `.chat` run resumes as `.agent` by the historical
+        // mapping (chat never carried a durable fast-chat decision before
+        // this lane). But an ordinary fast chat run records a frozen
+        // `chatReasoning` `.status` event at launch; if that marker exists
+        // this IS a fast-chat run and must resume with `.chat` semantics
+        // (brief envelope, fast reasoning reuse, chat ceiling) rather than
+        // silently degrading to the full task agent. Task-mode runs never
+        // carry the marker, so this only re-routes genuine fast chats.
+        var mode: AgentExecutionMode = switch restoredConversationMode {
         case .plan: .plan
         case .goal: .goal
         case .chat: .agent
+        }
+        if restoredConversationMode == .chat,
+           await Self.hasFrozenChatReasoning(runID: record.id, runStore: routedRunStore) {
+            mode = .chat
         }
         FloeLogger(category: .runtime).info(
             "runResumePrepared run=\(record.id.uuidString) conversation=\(record.conversationID.uuidString) originalState=\(record.state) providerKind=\(String(describing: provider.kind)) checkpoint=\(checkpoint == nil ? "fallback" : "loaded") checkpointFormat=\(checkpoint?.formatVersion ?? 0) checkpointMessages=\(checkpoint?.messages.count ?? 0) durableMessages=\(assembled.count) pendingCalls=\(checkpoint?.pendingToolCalls.count ?? 0) pendingResults=\(checkpoint?.pendingToolResults.count ?? 0)"
