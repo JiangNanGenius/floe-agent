@@ -14,5 +14,6 @@
     <string name="linux_environment_continue">继续</string>
     <string name="linux_environment_prepare">准备环境</string>
     <string name="linux_environment_tools_pending">终端任务暂不可用。</string>
+    <string name="linux_environment_tools_ready">终端任务已可用。</string>
     <string name="linux_environment_local_network">允许局域网访问</string>
 </resources>

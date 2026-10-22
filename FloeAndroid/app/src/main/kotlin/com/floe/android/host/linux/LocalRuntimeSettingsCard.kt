@@ -22,7 +22,8 @@ import io.github.robinpcrd.cupertino.section.SectionItem
 @Composable
 fun LocalRuntimeSettingsCard() {
     val context = LocalContext.current
-    val host = (context.applicationContext as FloeApplication).linuxSetup
+    val app = context.applicationContext as FloeApplication
+    val host = app.linuxSetup
     var visible by rememberSaveable { mutableStateOf(false) }
     val state by host.state.collectAsState()
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -98,8 +99,16 @@ fun LocalRuntimeSettingsCard() {
                         FloeCapsuleAction(label = stringResource(R.string.linux_environment_local_network),
                             onClick = { host.requestLocalNetworkAccess() })
                     }
-                    FloeText(stringResource(R.string.linux_environment_tools_pending), style = Floe.typography.metadata,
-                        color = Floe.colors.secondaryLabel)
+                    // Truthful task-execution state: ONE bounded observation
+                    // of the ORIGINAL readiness authority per open (no idle
+                    // polling); unproven stays the honest pending copy.
+                    var taskReady by remember { mutableStateOf(false) }
+                    LaunchedEffect(state.phase) {
+                        taskReady = app.linuxTaskExecutionReady()
+                    }
+                    FloeText(stringResource(if (taskReady) R.string.linux_environment_tools_ready
+                        else R.string.linux_environment_tools_pending),
+                        style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 }
             }
         }

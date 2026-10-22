@@ -14,5 +14,6 @@
     <string name="linux_environment_continue">Continue</string>
     <string name="linux_environment_prepare">Prepare environment</string>
     <string name="linux_environment_tools_pending">Local task execution is not ready yet.</string>
+    <string name="linux_environment_tools_ready">Local task execution is ready.</string>
     <string name="linux_environment_local_network">Allow local network access</string>
 </resources>

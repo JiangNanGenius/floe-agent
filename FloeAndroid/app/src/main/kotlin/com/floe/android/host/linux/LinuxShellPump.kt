@@ -468,7 +468,20 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         fun reply(status: String, reason: String?): JSONObject =
             JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
                 .put("runID", runID).put("conversationID", conversationID)
-                .also { if (status != "ready") it.put("reason", (reason ?: status).take(32)) }
+                .also {
+                    if (status != "ready") {
+                        it.put("reason", (reason ?: status).take(32))
+                        // G03-R3 bounded diagnostic (Main steers 2026-10-23):
+                        // the typed stage token rides the EXISTING refusal
+                        // vocabulary into the readiness controller so the
+                        // real device failure is observable without logs.
+                        // The token is tagged with THIS pump's captured
+                        // accepted epoch: a late callback from an old Root
+                        // can never surface under a newer generation.
+                        // Recording qualifies nothing.
+                        readiness?.recordPreflightStage(acceptedEpoch, reason ?: status)
+                    }
+                }
         val controller = readiness
         // Exact canonical identities, closed request shape, epoch match.
         // Anything else is a typed unavailable — a malformed request can
@@ -481,6 +494,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             !isCanonicalUUID(runID) || !isCanonicalUUID(conversationID) ||
             (environmentID != null && !ENVIRONMENT_ID.matches(environmentID))
         ) {
+            readiness?.recordPreflightStage(acceptedEpoch, "request_invalid")
             complete(claim, 0, JSONObject().put("status", "unavailable")
                 .put("rootEpoch", acceptedEpoch).put("reason", "request_invalid")); return
         }
@@ -606,7 +620,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         fun reply(status: String, reason: String?): JSONObject =
             JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
                 .put("runID", runID).put("conversationID", conversationID)
-                .also { if (status != "ready") it.put("reason", (reason ?: status).take(32)) }
+                .also {
+                    if (status != "ready") {
+                        it.put("reason", (reason ?: status).take(32))
+                        // Same bounded diagnostic recording as the dispatch
+                        // lane's reply builder (closed tokens only, tagged
+                        // with this claim's captured accepted epoch).
+                        controller.recordPreflightStage(acceptedEpoch, reason ?: status)
+                    }
+                }
         if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) {
             // The cancel was already proven settled (this call carries the
             // real same-request outcome); a failed channel close still keeps

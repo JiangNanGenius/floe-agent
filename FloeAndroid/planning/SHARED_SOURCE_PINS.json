@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Explicit Android shared-source qualification snapshots while iOS evolves independently. Review and qualify the corresponding shared type/API changes before replacing these pins.",
+  "qualifiedAndroidBase": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+  "iosIntegrationParent": "bcc50a0122365c5837d02b1a7b1e57cabd186115",
+  "pins": [
+    {
+      "path": "FloeAndroid/shared/Sources/FloeCore/LayoutDisplay.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAndroid/shared/Sources/FloeCore/LayoutDisplay.swift",
+      "sha256": "b756578472a27ee3cfbd3f79c6d299f5c5a38342255c175a4ad94e6da2497515"
+    },
+    {
+      "path": "FloeAndroid/shared/Sources/FloeAgentRuntime/AgentPromptComposer.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAgent/Sources/FloeAgentRuntime/AgentPromptComposer.swift",
+      "sha256": "d64f8af04ea9be3cdf5c95c727c8ca751bd81fc856140bf7f4bb2fb013eca808"
+    },
+    {
+      "path": "FloeAndroid/shared/Sources/FloeAndroidWebTools/WebRetrievalModels.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAgent/Sources/FloeExecution/WebRetrievalModels.swift",
+      "sha256": "2963a7ef0f880f4c8b533f3ec280e31f9fe04ad0beca852e5d2504a13d67b298"
+    },
+    {
+      "path": "FloeAndroid/shared/Sources/FloeProviders/AutomaticReasoningEffort.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAgent/Sources/FloeProviders/AutomaticReasoningEffort.swift",
+      "sha256": "68c867b6a39b7d1a75337afd1658e60c7b946774eb14231c3841bc6e29f53fd9"
+    },
+    {
+      "path": "FloeAndroid/shared/Sources/FloeProviders/ReasoningCompatibility.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAgent/Sources/FloeProviders/ReasoningCompatibility.swift",
+      "sha256": "fb0c3d9095378b8aec450448a7e14ba74a5bf80f9af5b08fca46c355d009ac9e"
+    },
+    {
+      "path": "FloeAndroid/shared/Sources/FloeSkills/ContentPackageCodec.swift",
+      "sourceCommit": "8e7857b0253b9c3c5e5301c73173cbde27c68fc1",
+      "sourcePath": "FloeAgent/Sources/FloeSkills/ContentPackageCodec.swift",
+      "sha256": "eee8e17bbbd3ff28f431df558c2329f9edcd37228ff366222be0278e15fc676e"
+    }
+  ]
+}

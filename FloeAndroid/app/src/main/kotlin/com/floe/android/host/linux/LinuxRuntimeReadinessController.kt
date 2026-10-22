@@ -177,7 +177,17 @@ class LinuxRuntimeReadinessController(
             try {
                 ingressPrerequisites(target)
             } catch (failure: Exception) {
-                invalidateInternal(target, refusalOf(failure))
+                val code = refusalOf(failure)
+                invalidateInternal(target, code)
+                // G03-R3 retry completion (Main steer 2026-10-23): the
+                // install-verified transition is the fresh-install path's
+                // ONLY automatic re-arm; one transient failure (e.g. the
+                // runtime service still cold-binding) must not leave the
+                // generation dead until an accidental app restart. ONE
+                // bounded, owned, cancellable attempt set re-measures from
+                // FRESH proof — no idle poller, no auto-restore; every
+                // attempt still refuses on any real drift.
+                scheduleFreshIngress(target, code)
                 return@withLock false
             }
             prerequisiteFactsLive(target, acceptedEpoch)
@@ -406,12 +416,80 @@ class LinuxRuntimeReadinessController(
      *  [invalidateForEpoch] is the callback-safe form: a stale pump/reconcile
      *  observer that no longer owns the current generation can NEVER drop a
      *  newer Root's facts through the global native invalidate. */
+    /**
+     * G03-R3 bounded diagnostic (Main-authorized observability, 2026-10-23;
+     * Main reviews r3-workspace-critical-activation-review + closed-token +
+     * epoch-tag steers): the LAST typed preflight stage token recorded by
+     * the pump's `host.workspacePreflight` lane, TAGGED with the generation
+     * it was recorded for. A late callback from an OLD Root can never
+     * overwrite or surface under a NEWER generation (write-side epoch match
+     * AND read-side filter). CLOSED vocabulary only ([closedStageToken]):
+     * known stage/refusal tokens pass through; anything else maps to the
+     * fixed `redacted` token — arbitrary text (paths, digests, keys,
+     * prompts, commands) is never truncated-and-passed-through.
+     * Diagnostic-only: recording a token qualifies nothing and gates
+     * nothing; every admission condition is unchanged.
+     */
+    @Volatile private var lastPreflightStage: Pair<Long, String>? = null
+
+    fun recordPreflightStage(epoch: Long, token: String) {
+        // Stale-generation recordings are REFUSED at the write side: only
+        // the CURRENT bound generation may own the visible stage token.
+        if (epoch <= 0 || bound?.epoch != epoch) return
+        closedStageToken(token)?.let { lastPreflightStage = epoch to it }
+    }
+
+    /** Read-only diagnostic summary for the Diagnostics & About surface:
+     * composed ONLY from the existing readiness status authority (the same
+     * `floe_linux_readiness_status` read [activateAndVerify] consults) plus
+     * the epoch-tagged recorded preflight stage. `ready` only when all
+     * seven facts are live at the exact bound epoch; otherwise an explicit
+     * total cause branch, the closed-filtered ingress refusal and the
+     * closed-filtered stage — never a raw value, never a throwing path.
+     * Must be called OFF the main thread. */
+    fun diagnosticSnapshot(): String {
+        val epoch = bound?.epoch ?: 0L
+        if (epoch <= 0) return "lane:unbound"
+        return diagnosticStage(statusObject(), epoch, stageForEpoch(lastPreflightStage, epoch))
+    }
+
+    /**
+     * Read-only observation of the ACTUAL Core ingress for the CURRENT bound
+     * generation (the Settings surface authority). Runs ONE bounded native
+     * status read (the SAME `floe_linux_readiness_status` path
+     * [activateAndVerify] consults) — it writes nothing, re-ingests nothing,
+     * never polls by itself and must be called OFF the main thread. True
+     * only when Core's own status authority reports all seven facts live at
+     * the exact bound epoch; install status or reply strings NEVER count.
+     */
+    fun liveTaskExecutionReady(): Boolean {
+        val epoch = bound?.epoch ?: return false
+        if (epoch <= 0) return false
+        val status = statusObject() ?: return false
+        return ReadinessSnapshot.allSevenLiveAt(ReadinessSnapshot.from(status), epoch)
+    }
+
     fun invalidate(reason: String) {
         invalidateInternal(bound, reason)
     }
 
+    /**
+     * Callback-safe fenced invalidation for ONE accepted epoch (pump /
+     * reconcile observers). G03-R3 retry completion (Main steer 2026-10-23):
+     * the Core first-use hook's frozen promise — "the next ordinary run
+     * re-issues its own bounded request" — only holds if a preflight-stage
+     * fence can recover from LIVE measurements without an accidental app
+     * restart: Core's dispatch gate reads the five prerequisite facts, so a
+     * fenced generation that never re-ingresses never dispatches again and
+     * exec.shell stays honestly unqualified until process death. This
+     * schedules the SAME bounded owned attempt set used after binder loss
+     * (fresh proof only; no auto-restore; drift still refuses). The global
+     * [invalidate] (install actually changed) deliberately stays event-only.
+     */
     fun invalidateForEpoch(acceptedEpoch: Long, reason: String) {
-        invalidateInternal(bound?.takeIf { it.epoch == acceptedEpoch }, reason)
+        val target = bound?.takeIf { it.epoch == acceptedEpoch } ?: return
+        invalidateInternal(target, reason)
+        scheduleFreshIngress(target, reason)
     }
 
     /** Root stop (Application Stopped observation): facts fall, session ends,
@@ -576,6 +654,135 @@ class LinuxRuntimeReadinessController(
         internal fun parse(bytes: ByteArray): JSONObject? = runCatching {
             JSONObject(String(bytes, Charsets.UTF_8))
         }.getOrNull()
+
+        /** The fixed token for anything outside the closed vocabulary. */
+        internal const val REDACTED = "redacted"
+
+        /**
+         * CLOSED diagnostic vocabulary (Main review 2026-10-23): membership,
+         * NOT length, is the bound. Only tokens enumerated from the actual
+         * producers may pass through; every other value — including
+         * arbitrary exception text, runtime reason strings, paths, hex
+         * digests or keys that happen to be printable ASCII — maps to the
+         * fixed `redacted` token. Empty stays null (nothing recorded).
+         * Sources: LinuxShellPump preflight replies, this controller's
+         * ingest/activation codes, the Core `LinuxReadinessIngress` refusal
+         * codes and the runtime `RuntimeWorkspacePreflight` reason strings.
+         */
+        internal val KNOWN_STAGE_TOKENS: Set<String> = setOf(
+            // Pump preflight lane (reply/status vocabulary).
+            "request_invalid", "run_or_epoch_stopped", "prerequisites_unverified",
+            "caller_stopped", "dispatch_unknown", "preflight_cancelled",
+            "runtime_busy", "workspace_unresolved", "close_retained",
+            "mapping_unsynced", "evidence_incomplete", "preflight_aborted",
+            "preflight_failed", "runtime_unavailable", "cancelled", "unavailable",
+            // Controller ingest/activation codes.
+            "generationStopped", "nativeUnavailable", "nativeUnparsable",
+            "epoch_unbound", "peer_unanchored", "peer_anchor_mismatch",
+            "receipt_malformed", "activation_unreachable", "activation_unparsable",
+            "activation_refused", "status_unreadable", "facts_not_all_live",
+            "invalidEpoch", "epochNotBound", "readinessNotIngressed",
+            // Controller live-measurement refusals (refusalOf vocabulary).
+            "peerUnmeasurable", "peerProofMalformed", "engineProtocolUnsupported",
+            "engineIdentityUnreported", "workloadNotSingle", "rootfsUnverified",
+            "exchangeFailed", "ingress_failed", "peer_boundary_drift",
+            "engine_identity_lost", "peer_generation_drift", "rootfs_drift",
+            "transport_lost", "preflight_peer_retired",
+            // Core LinuxReadinessIngress refusal codes (lastRefusal values).
+            "epochZero", "epochNotLive", "mailboxClosed", "noLiveAuthority",
+            "admissionSuspended", "uidNotDistinct", "certificateMalformed",
+            "identityTokenMalformed", "peerBoundaryConflict", "peerNotAnchored",
+            "peerBinderMismatch", "mailboxEpochMismatch", "rootfsReceiptMalformed",
+            "rootfsVersionMalformed", "workspaceAuthorityNotInstalled",
+            "workspaceEngineNotInstalled", "mappingReceiptUnreadBack",
+            "mappingReceiptEpochMismatch", "mappingReceiptNotSynced",
+            "mappingReceiptTreeUnsafe", "mappingReceiptScanTruncated",
+            "leaseReceiptMalformed", "leaseWithoutLiveMailbox",
+            "contractTokenMalformed", "engineIdentityMalformed", "hostInvalidate",
+            // Runtime RuntimeWorkspacePreflight reason strings.
+            "aborted", "identityNotCanonical", "leaseRunMismatch", "lease_retained",
+            "mapping_conflict", "mirror_empty", "mirror_refused", "preflightBusy",
+            "preflightFieldsInvalid", "quiescence_lost", "quiescence_unproven",
+            "unexpected",
+        )
+
+        /** The `invalidated:<kind>` lastRefusal shape is closed too: only
+         * the frozen ABI kind names (or `all`) may follow the prefix. */
+        internal val KNOWN_INVALIDATED_KINDS: Set<String> =
+            setOf("all") + ReadinessSnapshot.ALL_SEVEN.mapNotNull { ReadinessSnapshot.kindFor(it) }
+
+        internal fun closedStageToken(text: String): String? {
+            if (text.isEmpty()) return null
+            if (text in KNOWN_STAGE_TOKENS) return text
+            if (text.startsWith("invalidated:") &&
+                text.removePrefix("invalidated:") in KNOWN_INVALIDATED_KINDS
+            ) {
+                return text
+            }
+            return REDACTED
+        }
+
+        /** Pure diagnostic composition (Main-authorized bounded stage
+         * surface). TOTAL — every branch returns, none throws (Main review
+         * 2026-10-23: all-fields-true with an epoch/anchor/suspension or
+         * accepted-record mismatch must NOT hit a `first{}` NoSuchElementException):
+         * `ready` | `lane:unbound` | `status:unreadable` |
+         * `<cause>|refusal:<closed>|stage:<closed>` where cause is one of
+         * `epochMismatch`, `peerUnanchored`, `suspended`, `missing:<fact>`,
+         * `unaccepted:<kind>` or the defensive `factsNotAllLive`. Nothing
+         * here qualifies anything — it only NAMES the honest current stage. */
+        /** JSON adapter over the pure core (org.json is not JVM-testable;
+         * the decision itself lives in the snapshot overload below). */
+        internal fun diagnosticStage(status: JSONObject?, epoch: Long, lastStage: String?): String {
+            if (epoch <= 0) return "lane:unbound"
+            if (status == null) return "status:unreadable"
+            return diagnosticStage(ReadinessSnapshot.from(status),
+                status.optString("lastRefusal"), epoch, lastStage)
+        }
+
+        /** Pure decision core — TOTAL, never throws (Main review
+         * 2026-10-23: all-fields-true with an epoch/anchor/suspension or
+         * accepted-record mismatch must NOT hit a `first{}`
+         * NoSuchElementException). */
+        internal fun diagnosticStage(snapshot: ReadinessSnapshot?, lastRefusal: String?,
+                                     epoch: Long, lastStage: String?): String {
+            if (epoch <= 0) return "lane:unbound"
+            if (snapshot == null) return "status:unreadable"
+            if (ReadinessSnapshot.allSevenLiveAt(snapshot, epoch)) return "ready"
+            val cause = when {
+                snapshot.liveEpoch != epoch -> "epochMismatch"
+                !snapshot.peerAnchored -> "peerUnanchored"
+                snapshot.suspendedEpoch == epoch -> "suspended"
+                else -> {
+                    val missingField =
+                        ReadinessSnapshot.ALL_SEVEN.firstOrNull { snapshot.fields[it] != true }
+                    if (missingField != null) {
+                        "missing:$missingField"
+                    } else {
+                        // Derived fields all true and epoch/anchor/suspension
+                        // fine: the live predicate failed on an ACCEPTED-fact
+                        // record (absent, not live, or bound to another
+                        // epoch). Name that honestly; never throw.
+                        val unacceptedKind = ReadinessSnapshot.ALL_SEVEN.firstNotNullOfOrNull { name ->
+                            val kind = ReadinessSnapshot.kindFor(name) ?: return@firstNotNullOfOrNull name
+                            val boundFact = snapshot.accepted[kind]
+                            if (boundFact == null || !boundFact.second || boundFact.first != epoch) kind else null
+                        }
+                        if (unacceptedKind != null) "unaccepted:$unacceptedKind"
+                        else "factsNotAllLive"
+                    }
+                }
+            }
+            val refusal = closedStageToken(lastRefusal ?: "") ?: ""
+            val stage = closedStageToken(lastStage ?: "") ?: ""
+            return "$cause|refusal:$refusal|stage:$stage"
+        }
+
+        /** Epoch-tagged stage visibility: a recorded stage is surfaced ONLY
+         * under the generation it was captured for — a late old-Root
+         * callback can never pollute a newer generation's reading. */
+        internal fun stageForEpoch(record: Pair<Long, String>?, epoch: Long): String? =
+            record?.takeIf { it.first == epoch }?.second
 
         /** The live engine PROCESS generation token, measured from the peer's
          *  own authenticated status (or preflight result) reply. Returns null

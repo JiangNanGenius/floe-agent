@@ -36,6 +36,7 @@ import com.floe.android.feature.conversation.PlanCriterionRowUi
 import com.floe.android.feature.conversation.PlanDetailUi
 import com.floe.android.feature.conversation.PlanRiskRowUi
 import com.floe.android.feature.conversation.PlanSectionRowUi
+import com.floe.android.feature.conversation.ProjectOptionUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunEventKindUi
 import com.floe.android.feature.conversation.RunEventUi
@@ -255,6 +256,17 @@ class ThreadProjectionBuilder internal constructor(
     var goalAvailabilityRaw: String? = null
         private set
 
+    /**
+     * Additive `conversation.get.workspace` projection (workspace-core
+     * batch 2026-10-23): the REAL durable ownership binding of THIS thread,
+     * decoded only from the native page member. An absent/null member is an
+     * honest unbound (a temporary session never carries one, and a header
+     * before its first durable launch has no ownership row) — never a
+     * first-workspace guess or a RAM reconstruction.
+     */
+    internal var workspace: ConversationWire.WorkspaceBindingUi? = null
+        private set
+
     /** Per-run post-run review/continuation registry activity ("none"/
      * "active"/"stopping") read ONLY from an actual `run.snapshot` page.
      * A run the pages never mention has NO entry — never assumed. */
@@ -339,6 +351,10 @@ class ThreadProjectionBuilder internal constructor(
         goal = reply.goal
         planAvailabilityRaw = reply.planAvailabilityRaw
         goalAvailabilityRaw = reply.goalAvailabilityRaw
+        // The CURRENT page is the whole truth (same rule as plan/goal): an
+        // absent member clears the binding — a moved/deleted ownership row is
+        // never shadow-projected from an older page.
+        workspace = reply.workspace
     }
 
     /**
@@ -965,8 +981,11 @@ class ThreadProjectionBuilder internal constructor(
             pendingApprovals = approvals,
             pendingInputs = pendingInputs.values.toList(),
             models = models,
-            projects = emptyList(),
-            boundWorkspaceId = null,
+            // The ONE honest projection: at most the thread's OWN bound
+            // workspace (never the first project, never an empty placeholder
+            // hiding a real durable row).
+            projects = workspace?.let { listOf(ProjectOptionUi(it.id, it.name)) }.orEmpty(),
+            boundWorkspaceId = workspace?.id,
             approvalMode = policyApprovalMode,
             usage = null,
             contextUsage = null,
@@ -1090,7 +1109,16 @@ internal object ConversationWire {
          * Null = a legacy round-1 reply without the members. */
         val planAvailabilityRaw: String? = null,
         val goalAvailabilityRaw: String? = null,
+        /** Additive workspace-core projection: the real durable ownership
+         * binding. A missing/null member decodes to null — the honest
+         * unbound. */
+        val workspace: WorkspaceBindingUi? = null,
     )
+
+    /** One honest conversation workspace binding (native `{workspaceID,
+     * name,kind}` read shape). Missing identity or name is a null decode —
+     * the App never binds a guessed workspace. */
+    data class WorkspaceBindingUi(val id: String, val name: String, val kind: String)
 
     class RunSummary(
         val runID: String,
@@ -1232,7 +1260,19 @@ internal object ConversationWire {
             goal = decodeGoalSummary(root["goal"] as? JsonObject),
             planAvailabilityRaw = root.string("planAvailability"),
             goalAvailabilityRaw = root.string("goalAvailability"),
+            workspace = decodeWorkspaceBinding(root["workspace"] as? JsonObject),
         )
+    }
+
+    /** The additive `conversation.get.workspace` member (approved read
+     * shape): `{workspaceID,name,kind}`. A foreign/partial object without
+     * its real identity or name decodes to null — the projection then shows
+     * the honest unbound instead of binding a guessed workspace. */
+    fun decodeWorkspaceBinding(obj: JsonObject?): WorkspaceBindingUi? {
+        if (obj == null) return null
+        val id = obj.string("workspaceID") ?: return null
+        val name = obj.string("name") ?: return null
+        return WorkspaceBindingUi(id = id, name = name.take(120), kind = obj.string("kind") ?: "")
     }
 
     /** The additive `conversation.get.plan` summary (approved read map):

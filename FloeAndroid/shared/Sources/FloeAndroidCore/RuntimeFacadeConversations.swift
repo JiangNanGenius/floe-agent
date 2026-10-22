@@ -1615,6 +1615,31 @@ public struct ConversationMessagePageReply: Sendable, Equatable {
     }
 }
 
+/// workspace-core batch (2026-10-23, additive): the honest `conversation.get`
+/// projection of the ONE real durable ownership binding, read through the
+/// ORIGINAL WorkspaceStore authority (ownership row -> workspace row). nil is
+/// the honest "unbound" (a temporary session, or an ordinary header whose
+/// first durable launch has not committed its ownership row yet). Never a
+/// first-workspace scan, never a reconstructed name.
+public struct ConversationWorkspaceWire: Sendable, Equatable {
+    public let workspaceID: UUID
+    public let name: String
+    public let kind: String
+
+    public init(record: WorkspaceRecord) {
+        self.workspaceID = record.id
+        // Bounded display name: `establishCanonicalOwnership` already writes
+        // trimmed prefixes; this guard keeps a legacy/renamed row from
+        // widening the wire beyond the same bound.
+        self.name = String(record.name.prefix(120))
+        self.kind = record.kind.rawValue
+    }
+
+    public var wireObject: [String: Any] {
+        ["workspaceID": workspaceID.uuidString, "name": name, "kind": kind]
+    }
+}
+
 /// The honest `conversation.get` field set: the ConversationSessionSnapshot
 /// fields (:704-718) MINUS live run state (eventsByRun/pendingApprovals —
 /// RB4 durable-event/live channel), minus the UI-coalescing `revision: Int`
@@ -1665,6 +1690,10 @@ public struct ConversationSessionReply: Sendable, Equatable {
     /// durable row resolves. Authoritative rows and counters are untouched.
     public let planAvailability: String
     public let goalAvailability: String
+    /// workspace-core batch (additive): the real durable ownership binding.
+    /// nil = honestly unbound (temporary session, or no ownership row
+    /// committed yet). Never a first-workspace guess.
+    public let workspace: ConversationWorkspaceWire?
 
     public init(conversationID: UUID, resourceID: String, revision: String,
                 title: String, createdAtRaw: String, updatedAtRaw: String,
@@ -1680,7 +1709,8 @@ public struct ConversationSessionReply: Sendable, Equatable {
                 plan: ConversationPlanWire? = nil,
                 goal: ConversationGoalWire? = nil,
                 planAvailability: String = "absent",
-                goalAvailability: String = "absent") {
+                goalAvailability: String = "absent",
+                workspace: ConversationWorkspaceWire? = nil) {
         self.conversationID = conversationID
         self.resourceID = resourceID
         self.revision = revision
@@ -1703,6 +1733,7 @@ public struct ConversationSessionReply: Sendable, Equatable {
         self.goal = goal
         self.planAvailability = planAvailability
         self.goalAvailability = goalAvailability
+        self.workspace = workspace
     }
 
     public var wireObject: [String: Any] {
@@ -1740,6 +1771,10 @@ public struct ConversationSessionReply: Sendable, Equatable {
         // by the SAME snapshot builder that dropped the summaries.
         object["planAvailability"] = planAvailability
         object["goalAvailability"] = goalAvailability
+        // workspace-core batch: explicit NSNull for an unbound header — the
+        // boxed-Optional lesson (archivedAt) applies: strict designValue
+        // refuses unknown values, so absence travels as real JSON null.
+        object["workspace"] = workspace?.wireObject ?? NSNull()
         return object
     }
 }
@@ -2845,6 +2880,15 @@ public actor FacadeConversationDomain {
         let allPending = (try await runningInputStore.pending(conversationID: conversationID))
             .map(PendingUserInputWire.init(input:))
         let taskPolicy = try await workspaceStore.taskPolicy(conversationID: conversationID)
+        // workspace-core batch (additive read): the ACTUAL ownership row
+        // through the ORIGINAL store authority. An absent row stays nil
+        // (honest unbound); there is no first-workspace scan and no fallback
+        // to a guessed or reconstructed workspace.
+        var workspaceWire: ConversationWorkspaceWire?
+        if let boundWorkspaceID = try await workspaceStore.workspaceID(conversationID: conversationID),
+           let boundRecord = try await workspaceStore.workspace(id: boundWorkspaceID) {
+            workspaceWire = ConversationWorkspaceWire(record: boundRecord)
+        }
 
         // goal-core batch (2026-10-21): the plan/goal READ lane over the
         // SAME original intelligence store the durable services write — this
@@ -2896,7 +2940,8 @@ public actor FacadeConversationDomain {
                 plan: planWire,
                 goal: goalWire,
                 planAvailability: planWire != nil ? "projected" : (planTrimmed ? "trimmed" : "absent"),
-                goalAvailability: goalWire != nil ? "projected" : (goalTrimmed ? "trimmed" : "absent")
+                goalAvailability: goalWire != nil ? "projected" : (goalTrimmed ? "trimmed" : "absent"),
+                workspace: workspaceWire
             )
         }
 

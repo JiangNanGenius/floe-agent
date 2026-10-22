@@ -41,7 +41,7 @@
     <string name="voice_unavailable">此版本尚未提供语音输入。没有录制任何内容。</string>
     <string name="attach_unavailable">文件附件将在后续版本提供。没有添加任何文件。</string>
     <string name="reasoning_unavailable">推理强度将随模型配置一起开放，当前不可用。</string>
-    <string name="projects_runtime_pending">项目会随任务一起创建，将在后续版本开放。</string>
+    <string name="projects_runtime_pending">每个任务都会自动创建自己的工作区，随任务启动完成。</string>
     <string name="target_note">任务在本机运行。远程执行可能随后续更新提供。</string>
     <string name="permissions_runtime_pending">任务权限策略将在后续版本开放后配置。</string>
     <string name="conversation_runtime_pending">对话将在任务能力开放后打开。</string>
@@ -51,6 +51,7 @@
     <string name="settings_general">通用</string>
     <string name="settings_providers">模型与供应商</string>
     <string name="settings_diagnostics">诊断与关于</string>
+    <string name="diagnostics_local_task_execution">本地任务执行</string>
     <string name="day_night_theme">日间与夜间主题</string>
     <string name="theme_auto">自动</string>
     <string name="theme_light">日间</string>
@@ -73,7 +74,7 @@
     <string name="distribution">发行渠道</string>
     <string name="full_distribution">GitHub 完整版</string>
     <string name="play_distribution">Google Play</string>
-    <string name="foundation_stage_note">本构建是视觉基础版本。任务执行、模型调用与工作区仍待后续开放。</string>
+    <string name="foundation_stage_note">本构建已支持使用你自己的服务商进行真实流式对话，并可安装设备端 Linux 环境。本地任务执行在环境检查通过后可用。</string>
     <string name="component_preview_section">组件预览</string>
     <string name="component_preview_note">打开一个带明确标注的合成界面,展示对话、工具、审批与检查器示例。仅调试版本可见。</string>
     <string name="component_preview_open">打开组件预览</string>

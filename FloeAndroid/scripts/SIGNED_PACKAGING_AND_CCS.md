@@ -4,6 +4,11 @@ Build interfaces and verification boundaries only. Credential values, keys and
 private device data must never enter build scripts or public release material.
 The release owner runs signing, artifact inspection, device acceptance and publication.
 
+Explicit Android snapshots of shared Swift files are recorded with their source
+commit and digest in [SHARED_SOURCE_PINS.json](../planning/SHARED_SOURCE_PINS.json).
+Integrate and qualify the corresponding shared types and APIs before updating
+these pins; keep newer independent iOS changes intact during Android delivery.
+
 ## 1. Release signing interface (outer and child, one identity)
 
 Both `:app` and `:runtimeapp` read the identical five-entry interface from
@@ -104,10 +109,23 @@ divergent per-module constants are structurally impossible again.
   full-flavor-only, `REQUEST_INSTALL_PACKAGES` remains `app/src/full` only,
   and the existing channel-exclusion checks apply unchanged.
 
-Offline verification tools (Main, existing, unchanged): `scripts/check-apk.py
---require-identical-signer` for core/component signer equality,
-`scripts/prepare-stage-release.py` for the formal certificate/publishing
-binding.
+`scripts/check-apk.py` compares the Full and Play application channels. For
+the Full application's embedded component, extract the exact
+`assets/linux-runtime/runtime.apk`, verify its embedded SHA-256 sidecar,
+and run SDK `apksigner verify --print-certs` on both APKs. Both must carry
+the approved certificate and matching version; check each package identity
+and non-debuggable manifest independently. `scripts/prepare-stage-release.py`
+provides the formal certificate/publishing binding.
+
+Release packaging strips debug symbols from ordinary shared libraries. Bind
+each saved producer to the actual AGP merged input, then verify that NDK
+`llvm-strip --strip-unneeded` produces exactly the bytes in AGP's stripped
+output and the APK. Retain the unstripped producer for symbols. The PRoot
+executable pair is deliberately exempt from stripping and must match its
+original producer digests byte for byte. Every ELF load segment still needs
+16 KiB alignment. The outer application's mapped libraries also need stored,
+16 KiB-aligned ZIP entries; the runtime component uses package-manager
+extraction (`extractNativeLibs=true`).
 
 ### Invocation sketch (Main)
 

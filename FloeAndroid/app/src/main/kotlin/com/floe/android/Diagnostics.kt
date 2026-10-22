@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.bridge.SwiftCore
@@ -68,6 +69,57 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                         FloePrimaryAction(
                             label = stringResource(R.string.retry),
                             onClick = { attempt++ },
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                            enabled = true,
+                        )
+                    },
+                )
+            }
+        }
+        // G03-R3 bounded read-only local-task-execution stage (Main-authorized
+        // observability, 2026-10-23): the honest stage token composed ONLY
+        // from the ORIGINAL readiness authority — a CLOSED vocabulary (known
+        // stage/refusal tokens or the fixed `redacted`), epoch-tagged so a
+        // late old-Root callback never surfaces under the current generation.
+        // Never paths/keys/prompts/commands. The Retry action is ONE bounded
+        // user-initiated fresh re-ingress through the SAME authorized
+        // primitive the verified install transition uses — no idle polling,
+        // no qualification shortcut; it re-measures live proof and refuses on
+        // any real drift.
+        val app = LocalContext.current.applicationContext as FloeApplication
+        var stage by remember { mutableStateOf<String?>(null) }
+        var stageAttempt by remember { mutableIntStateOf(0) }
+        LaunchedEffect(stageAttempt) {
+            if (stageAttempt > 0) {
+                withContext(Dispatchers.IO) { app.retryLinuxTaskExecutionIngress() }
+            }
+            stage = withContext(Dispatchers.IO) { app.linuxTaskExecutionDiagnostic() }
+        }
+        FloeSettingsSectionCard(title = stringResource(R.string.diagnostics_local_task_execution)) {
+            FloeValueRow(
+                title = stringResource(R.string.diagnostics_local_task_execution),
+                value = when (stage) {
+                    null -> stringResource(R.string.checking)
+                    "ready" -> stringResource(R.string.linux_environment_tools_ready)
+                    else -> stringResource(R.string.unavailable)
+                },
+            )
+            val shown = stage
+            if (shown != null && shown != "ready") {
+                SectionItem(
+                    title = {
+                        FloeText(
+                            shown,
+                            style = Floe.typography.metadata,
+                            color = colors.secondaryLabel,
+                        )
+                    },
+                )
+                SectionItem(
+                    title = {
+                        FloePrimaryAction(
+                            label = stringResource(R.string.retry),
+                            onClick = { stageAttempt++ },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                             enabled = true,
                         )

@@ -41,7 +41,7 @@
     <string name="voice_unavailable">Voice input is not available in this version. Nothing was recorded.</string>
     <string name="attach_unavailable">File attachments arrive in a future update. No file was added.</string>
     <string name="reasoning_unavailable">Reasoning effort is configured with your model provider and is not available yet.</string>
-    <string name="projects_runtime_pending">Projects are created together with tasks and arrive in a future update.</string>
+    <string name="projects_runtime_pending">Each task gets its own workspace, created automatically when the task starts.</string>
     <string name="target_note">Tasks run on this device. Remote execution may come with a later update.</string>
     <string name="permissions_runtime_pending">Task permission policies become configurable in a future update.</string>
     <string name="conversation_runtime_pending">Conversations open once task capabilities are available.</string>
@@ -51,6 +51,7 @@
     <string name="settings_general">General</string>
     <string name="settings_providers">Model &amp; Provider</string>
     <string name="settings_diagnostics">Diagnostics &amp; About</string>
+    <string name="diagnostics_local_task_execution">Local task execution</string>
     <string name="day_night_theme">Day &amp; Night Theme</string>
     <string name="theme_auto">Auto</string>
     <string name="theme_light">Day</string>
@@ -73,7 +74,7 @@
     <string name="distribution">Distribution</string>
     <string name="full_distribution">GitHub Full</string>
     <string name="play_distribution">Google Play</string>
-    <string name="foundation_stage_note">This build is the visual foundation. Task execution, model calls and workspaces are still to come.</string>
+    <string name="foundation_stage_note">This build supports real streaming conversations with your own providers, and can install the on-device Linux environment. Local task execution becomes available once its environment checks pass.</string>
     <string name="component_preview_section">Component preview</string>
     <string name="component_preview_note">Opens a clearly labelled screen of synthetic thread, tool, approval and inspector samples. Debug builds only.</string>
     <string name="component_preview_open">Open component preview</string>

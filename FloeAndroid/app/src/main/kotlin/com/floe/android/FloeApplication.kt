@@ -187,21 +187,28 @@ class FloeApplication : Application() {
         var started = false
         state.collect { capability ->
             runtimeHost?.onBootstrapCapability(capability)
-            if (!started && capability is RuntimeBootstrapCapability.OwnedStoreReady) {
+            if (capability is RuntimeBootstrapCapability.OwnedStoreReady) {
+                // G03-R3 lane binding (Main steer 2026-10-23): the Linux
+                // lanes follow the ACCEPTED native root epoch for the whole
+                // process life. A mid-session root generation replacement
+                // (a later OwnedStoreReady with a DIFFERENT epoch) must not
+                // leave the old mailbox binding fenced forever; the rebind
+                // runs through each lane's own stop/drain contract and
+                // fails closed when a drain is unproven.
+                val firstStart = !started
                 started = true
-                runtimeHost?.start()
+                if (firstStart) runtimeHost?.start()
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val epoch = runtimeHost?.nativeRootEpoch()
-                    if (epoch != null) {
-                        // Cleanup remains available independently of model admission.
-                        runCatching { linuxCleanup.start(epoch) }
-                        try {
-                            linuxShell.start(epoch)
-                            linuxReadiness.start(epoch)
-                        } catch (_: Exception) {
-                            // Existing cloud tasks remain available.
-                        }
-                    }
+                    if (epoch != null && epoch > 0) startLinuxLanes(epoch)
+                }
+                if (!firstStart) {
+                    // Root generation replacement: re-arm the two owned
+                    // observers for the NEW accepted generation (cancel any
+                    // survivor first — the jobs are owned by this scope, and
+                    // the Stopped branch normally cancelled them already).
+                    foregroundObservation?.cancel()
+                    localRuntimeObservation?.cancel()
                 }
                 foregroundObservation = hostScope.launch(Dispatchers.IO) {
                     var observed = 0L
@@ -254,7 +261,83 @@ class FloeApplication : Application() {
         }
     }
 
+    /**
+     * Bind (or rebind) the three Linux host lanes to [epoch]. Independent
+     * starts: a shell-bind refusal can never silently skip the readiness
+     * ingress (the old shared try/catch let one lane's transient failure
+     * kill the other — a restart-resistant dead lane). A refused pump bind
+     * retries in ONE bounded owned attempt set (no idle poller); after a
+     * late bind the readiness facts re-ingress ONCE from fresh proof so the
+     * mailboxEpoch fact can pass its live cross-check. An old generation is
+     * fenced only through its own stop/drain contract; an unproven drain
+     * keeps the fenced old binding (fail closed — the new generation's
+     * Linux capability stays honestly unqualified, ordinary chat untouched).
+     */
+    private suspend fun startLinuxLanes(epoch: Long) {
+        val previous = linuxShell.boundNativeEpoch
+        if (previous == epoch) return
+        if (previous != 0L) {
+            linuxReadiness.stop(previous)
+            val cleanupDrained = runCatching { linuxCleanup.drainAndStop(previous) }.getOrDefault(false)
+            val shellDrained = runCatching { linuxShell.stopAndDrain(previous) }.getOrDefault(false)
+            if (!cleanupDrained || !shellDrained) return
+        }
+        // Cleanup remains available independently of model admission.
+        runCatching { linuxCleanup.start(epoch) }
+        val shellBound = runCatching { linuxShell.start(epoch) }.isSuccess
+        // Existing cloud tasks remain available whatever happens here.
+        runCatching { linuxReadiness.start(epoch) }
+        if (!shellBound) {
+            hostScope.launch(Dispatchers.IO) {
+                repeat(LINUX_LANE_START_ATTEMPTS) {
+                    kotlinx.coroutines.delay(LINUX_LANE_START_BACKOFF_MILLIS)
+                    if (linuxShell.boundNativeEpoch == epoch) return@launch
+                    if (runtimeHost?.nativeRootEpoch() != epoch) return@launch
+                    if (runCatching { linuxShell.start(epoch) }.isSuccess) {
+                        runCatching { linuxReadiness.onInstallVerified(epoch) }
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
+
+    /** Bounded read-only diagnostic for Diagnostics & About: the honest
+     * current local-task-execution stage token from the ORIGINAL readiness
+     * authority (closed vocabulary; never paths/keys/prompts/commands). */
+    internal suspend fun linuxTaskExecutionDiagnostic(): String =
+        if (!::linuxReadiness.isInitialized) "lane:unbound"
+        else kotlinx.coroutines.withContext(Dispatchers.IO) { linuxReadiness.diagnosticSnapshot() }
+
+    /** User-initiated bounded retry from the Diagnostics surface: ONE fresh
+     * full prerequisite re-ingress for the CURRENT accepted epoch (the SAME
+     * authorized primitive the verified install transition uses). Never
+     * fabricates qualification; every attempt re-measures live proof and
+     * refuses on any real drift. */
+    internal suspend fun retryLinuxTaskExecutionIngress(): Boolean =
+        if (!::linuxReadiness.isInitialized) false
+        else kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val epoch = linuxShell.boundNativeEpoch
+            if (epoch <= 0) false else linuxReadiness.onInstallVerified(epoch)
+        }
+
+    /** Trusted-host read for the Settings local-environment card: the
+     * ACTUAL seven-fact qualification of the CURRENT accepted root epoch,
+     * observed through the ORIGINAL readiness ingress authority (one bounded
+     * native status read off the main thread; no idle polling, no install-
+     * status shortcut, no test flag). False whenever nothing is proven. */
+    internal suspend fun linuxTaskExecutionReady(): Boolean =
+        if (!::linuxReadiness.isInitialized) false
+        else kotlinx.coroutines.withContext(Dispatchers.IO) { linuxReadiness.liveTaskExecutionReady() }
+
     fun reconcileForegroundOnResume() {
         hostScope.launch(Dispatchers.IO) { runtimeHost?.runForeground?.reconcileAgentRuns() }
+    }
+
+    companion object {
+        /** Bounded lane-start retry doctrine: the SAME 12x5s shape the
+         * readiness controller's owned re-ingress uses. No idle poller. */
+        private const val LINUX_LANE_START_ATTEMPTS = 12
+        private const val LINUX_LANE_START_BACKOFF_MILLIS = 5_000L
     }
 }
