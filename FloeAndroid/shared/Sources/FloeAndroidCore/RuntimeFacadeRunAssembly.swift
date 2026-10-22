@@ -395,6 +395,16 @@ extension FacadeRunDomain {
             toolsEnabled: toolsEnabled,
             temporary: temporary,
             environmentID: environmentID)
+        if !temporary {
+            // Original persisted conversation/workspace ownership selects this
+            // root. No App-root, first-project or temporary-directory fallback.
+            configuration.workspaceRootURL = await LinuxWorkspaceAuthority.trustedWorkspaceRoot(
+                runID: runID, conversationID: conversationID)
+            // PRoot is not a VM; retain the conservative approval class.
+            configuration.outstandingDependencies = {
+                await RuntimeFacadeJobBindings.shared.outstandingRunDependencies(runID: runID)
+            }
+        }
         if !temporary, let checklist = bundle.taskChecklist {
             // Same original provider used by iOS. Temporary runs never
             // receive a durable checklist or inherit one from the owner.

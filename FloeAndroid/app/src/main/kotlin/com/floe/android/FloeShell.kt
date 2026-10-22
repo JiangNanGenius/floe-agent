@@ -177,6 +177,7 @@ private fun FloeShellContent(
         AttachmentPickerEffect(runtimeHost)
         SkillsFolderPickerEffect(runtimeHost)
         LocalNetworkPermissionEffect(runtimeHost)
+        com.floe.android.host.BackgroundTaskPermissionEffect(runtimeHost)
         LaunchedEffect(runtimeHost) {
             // ONE serial consumer for host navigation. Collecting (instead of
             // keying a LaunchedEffect on the value) means clearing the

@@ -1,5 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <permission android:name="${applicationId}.permission.LINUX_RUNTIME" android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.LINUX_RUNTIME" />
+    <queries>
+        <package android:name="com.floe.agent.runtime" />
+        <package android:name="com.floe.agent.runtime.dev" />
+        <package android:name="com.floe.agent.runtime.full" />
+        <package android:name="com.floe.agent.runtime.full.dev" />
+    </queries>
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Android 17 (API 37) local-network reach for user-launched LOCAL
          MCP/provider hops (MAIN_ANDROID37_LAN_PERMISSION_DECISION_20261021).

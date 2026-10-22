@@ -4,6 +4,7 @@
 **/.cxx/
 local.properties
 core/swiftbridge/src/main/jniLibs/
+core/linuxauthoritybridge/src/main/jniLibs/
 core/linuxruntime/src/main/jniLibs/
 shared/.swiftpm/
 shared/.build/

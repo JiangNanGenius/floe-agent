@@ -65,6 +65,18 @@ class RuntimeHost internal constructor(
     private var observationJob: Job? = null
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     private val configProjectionRefreshed = java.util.concurrent.atomic.AtomicBoolean(false)
+    /** Application-owned foreground adapter; absent in pure controller fixtures. */
+    internal var runForeground: RunForegroundBinding? = null
+
+    internal enum class BackgroundAvailability { NOTIFICATIONS_BLOCKED, SYSTEM_UNAVAILABLE }
+    internal val backgroundAvailabilityNotice = MutableStateFlow<BackgroundAvailability?>(null)
+    private val backgroundNoticeReported = java.util.concurrent.atomic.AtomicBoolean()
+    internal fun reportBackgroundUnavailable(failure: com.floe.android.runlifecycle.RunForegroundFailure) {
+        if (backgroundNoticeReported.compareAndSet(false, true)) {
+            backgroundAvailabilityNotice.value = if (failure is com.floe.android.runlifecycle.RunForegroundFailure.NotificationsBlocked)
+                BackgroundAvailability.NOTIFICATIONS_BLOCKED else BackgroundAvailability.SYSTEM_UNAVAILABLE
+        }
+    }
 
     /**
      * G02 minimal readiness adapter (additive delta): polls the narrow

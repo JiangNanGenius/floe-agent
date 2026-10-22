@@ -508,6 +508,7 @@ private fun SettingsSectionContent(
     when (section) {
         FloeSettingsSection.GENERAL -> {
             GeneralSettingsPage(themeMode, onThemeModeChange)
+            com.floe.android.host.linux.LocalRuntimeSettingsCard()
             if (runtimeHost != null) {
                 SettingsHostPages.DefaultsPage(runtimeHost.settings)
             }

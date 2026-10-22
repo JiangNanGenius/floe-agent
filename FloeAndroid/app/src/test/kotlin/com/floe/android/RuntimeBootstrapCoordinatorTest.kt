@@ -510,6 +510,28 @@ class RuntimeBootstrapCoordinatorTest {
     // MARK: - Shutdown / accepted-owner proof
 
     @Test
+    fun testUnresolvedLocalRuntimeRetainsNativeRootUntilActualDrain() = runBlocking {
+        val native = FakeNative().apply { stopStatus = -207 }
+        val exchange = FakeExchange()
+        exchange.enqueue { request -> gatewayResponse(request.requestId()) }
+        exchange.enqueue(effectPageResponder(acceptedEffectJson(), 1))
+        val gateway = MutableStateFlow<SecretGatewayCapability>(SecretGatewayCapability.Ready)
+        val subject = coordinator(native, exchange, gateway)
+        subject.bootstrap()
+        var drained = false
+        var checks = 0
+        subject.localRuntimeDrain = { checks++; drained }
+        assertFalse(subject.shutdown())
+        assertTrue(native.stopEpochs.isEmpty())
+        assertEquals(RuntimeBootstrapCapability.OwnedStoreReady, subject.capability.value)
+        drained = true
+        assertTrue(subject.shutdown())
+        assertEquals(2, checks)
+        assertEquals(listOf(1L), native.stopEpochs.toList())
+        assertEquals(RuntimeBootstrapCapability.Stopped, subject.capability.value)
+    }
+
+    @Test
     fun testShutdownNotInstalledCountsAsStoppedWithoutNativeCall() = runBlocking {
         val native = FakeNative()
         val exchange = FakeExchange()

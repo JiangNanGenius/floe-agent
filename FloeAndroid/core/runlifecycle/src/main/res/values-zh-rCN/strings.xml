@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="floe_run_foreground_channel">Floe 任务</string>
+    <string name="floe_run_foreground_channel_description">在 Floe 任务运行时显示进度，并允许你停止任务。</string>
+    <string name="floe_run_foreground_title">Floe 正在工作</string>
+    <string name="floe_run_foreground_agent_run">正在处理你的任务…</string>
+    <string name="floe_run_foreground_install">正在准备本地环境…</string>
+    <string name="floe_run_foreground_session">本地会话运行中…</string>
+    <string name="floe_run_foreground_job">任务运行中…</string>
+    <string name="floe_run_foreground_multiple">多个任务运行中…</string>
+    <string name="floe_run_foreground_stop">停止</string>
+</resources>

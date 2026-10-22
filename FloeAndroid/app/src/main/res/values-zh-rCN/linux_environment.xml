@@ -1,0 +1,18 @@
+<resources>
+    <string name="linux_environment_title">本地环境</string>
+    <string name="linux_environment_open">设置</string>
+    <string name="linux_environment_description">下载 Linux 环境，用于终端和本地任务。</string>
+    <string name="linux_environment_loading">正在检查环境…</string>
+    <string name="linux_environment_component">安装运行组件后继续。</string>
+    <string name="linux_environment_component_installing">正在安装运行组件…</string>
+    <string name="linux_environment_setup">请启用本地任务和通知后继续。</string>
+    <string name="linux_environment_install_needed">请先下载 Linux 环境。</string>
+    <string name="linux_environment_installing">正在准备环境…</string>
+    <string name="linux_environment_installed">环境已安装</string>
+    <string name="linux_environment_stopping">正在停止安装…</string>
+    <string name="linux_environment_failed">暂时无法准备环境，请检查网络和剩余空间后重试。</string>
+    <string name="linux_environment_continue">继续</string>
+    <string name="linux_environment_prepare">准备环境</string>
+    <string name="linux_environment_tools_pending">终端任务暂不可用。</string>
+    <string name="linux_environment_local_network">允许局域网访问</string>
+</resources>

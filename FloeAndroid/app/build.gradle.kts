@@ -1,6 +1,33 @@
 import java.util.Properties
+import java.security.MessageDigest
 
 plugins { alias(libs.plugins.android.application); alias(libs.plugins.kotlin.compose) }
+
+abstract class BundleLinuxRuntimeComponent : DefaultTask() {
+    @get:InputDirectory
+    abstract val apkDirectory: DirectoryProperty
+    @get:OutputDirectory
+    abstract val assetDirectory: DirectoryProperty
+
+    @TaskAction fun bundle() {
+        val apk = apkDirectory.get().asFile.listFiles { file -> file.extension == "apk" }
+            ?.singleOrNull() ?: error("Expected one matching runtime APK")
+        val output = assetDirectory.get().asFile.resolve("linux-runtime")
+        output.mkdirs()
+        val digest = MessageDigest.getInstance("SHA-256")
+        apk.inputStream().use { input ->
+            output.resolve("runtime.apk").outputStream().use { stream ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count); stream.write(buffer, 0, count)
+                }
+            }
+        }
+        output.resolve("runtime.apk.sha256").writeText(digest.digest().joinToString("") { "%02x".format(it) } + "\n")
+    }
+}
 
 // --- Pinned development debug signing identity -------------------------------
 // AGP's implicit debug keystore resolves from $ANDROID_USER_HOME, else
@@ -50,6 +77,7 @@ android {
         }
     }
     compileSdk = 37
+    ndkVersion = "30.0.16248370"
     defaultConfig {
         applicationId = "com.floe.agent"
         minSdk = 28
@@ -72,11 +100,32 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging { jniLibs { useLegacyPackaging = false } }
 }
+
+// GitHub has one public APK asset. The separate-UID execution component is
+// inside that APK and installed only after the user's explicit OS consent.
+// Play consumes its component through the Store and never embeds an installer.
+androidComponents.onVariants { variant ->
+    if (variant.productFlavors.any { it.second == "full" }) {
+        val type = requireNotNull(variant.buildType)
+        val capitalType = type.replaceFirstChar { it.uppercase() }
+        val name = variant.name.replaceFirstChar { it.uppercase() }
+        val bundle = tasks.register<BundleLinuxRuntimeComponent>("bundle${name}LinuxRuntime") {
+            dependsOn(":runtimeapp:assembleFull$capitalType")
+            apkDirectory.set(project(":runtimeapp").layout.buildDirectory.dir("outputs/apk/full/$type"))
+            assetDirectory.set(layout.buildDirectory.dir("generated/runtimeComponent/${variant.name}"))
+        }
+        variant.sources.assets?.addGeneratedSourceDirectory(bundle, BundleLinuxRuntimeComponent::assetDirectory)
+    }
+}
+
 dependencies {
     implementation(project(":core:contracts"))
     implementation(project(":core:credentials"))
     implementation(project(":core:designsystem"))
     implementation(project(":core:swiftbridge"))
+    implementation(project(":core:runtimeipc"))
+    implementation(project(":core:workspacebridge"))
+    implementation(project(":core:runlifecycle"))
     // G02 App host binding: the real provider/conversation/integrations
     // components the Application-owned host binds to the shared runtime.
     implementation(project(":feature:conversation"))

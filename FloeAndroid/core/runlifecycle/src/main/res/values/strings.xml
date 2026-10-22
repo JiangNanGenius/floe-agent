@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Core Agent foreground notification copy. Concise, user-facing EN;
+     Simplified Chinese aligned in values-zh-rCN. No internal terms. -->
+<resources>
+    <string name="floe_run_foreground_channel">Floe tasks</string>
+    <string name="floe_run_foreground_channel_description">Shows progress while a Floe task is running and lets you stop it.</string>
+    <string name="floe_run_foreground_title">Floe is working</string>
+    <string name="floe_run_foreground_agent_run">Working on your task…</string>
+    <string name="floe_run_foreground_install">Setting up the local environment…</string>
+    <string name="floe_run_foreground_session">Local session running…</string>
+    <string name="floe_run_foreground_job">Task running…</string>
+    <string name="floe_run_foreground_multiple">Several tasks running…</string>
+    <string name="floe_run_foreground_stop">Stop</string>
+</resources>

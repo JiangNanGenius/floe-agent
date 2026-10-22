@@ -1672,13 +1672,60 @@ class ConversationHostController internal constructor(
         }
     }
 
+    private class ForegroundLaunch {
+        val operationID = java.util.UUID.randomUUID().toString()
+        val stop = java.util.concurrent.atomic.AtomicBoolean()
+        val runID = java.util.concurrent.atomic.AtomicReference<String?>()
+    }
+
+    /** Keep the explicit user-launch start window across native admission. */
+    private fun withLaunchProtection(
+        conversationID: String,
+        isCurrent: () -> Boolean,
+        abandoned: () -> Unit,
+        dispatch: (ForegroundLaunch) -> Unit,
+    ) {
+        val launch = ForegroundLaunch()
+        val foreground = host.runForeground
+        if (foreground == null) { dispatch(launch); return }
+        host.scope.launch(host.ioDispatcher) {
+            try {
+                foreground.agentLaunchProvisional(launch.operationID,
+                    com.floe.android.runlifecycle.RunStopHandler {
+                        launch.stop.set(true)
+                        launch.runID.get()?.let { runID ->
+                            host.scope.launch(host.ioDispatcher) { cancelRunFromNotification(conversationID, runID) }
+                        }
+                    })
+            } catch (failure: kotlinx.coroutines.CancellationException) {
+                abandoned()
+                throw failure
+            }
+            if (launch.stop.get() || !isCurrent()) {
+                foreground.agentLaunchDefinitelyNotAdmitted(launch.operationID)
+                abandoned()
+            } else dispatch(launch)
+        }
+    }
+
+    private fun admitForegroundLaunch(launch: ForegroundLaunch, conversationID: String, runID: String) {
+        launch.runID.set(runID)
+        host.scope.launch(host.ioDispatcher) {
+            host.runForeground?.agentLaunchAdmitted(launch.operationID, conversationID, runID)
+            if (launch.stop.get()) cancelRunFromNotification(conversationID, runID)
+            host.runForeground?.reconcileAgentRuns()
+        }
+    }
+
     private fun launchRun(
         request: RunLaunchRequest,
         entry: ConversationFlowHolderEntry,
         correlation: LaunchCorrelation,
         revision: HostRevision?,
+        foregroundLaunch: ForegroundLaunch? = null,
     ) {
         if (revision == null) {
+            foregroundLaunch?.let { host.runForeground?.agentLaunchDefinitelyNotAdmitted(it.operationID) }
             settleLaunchFailure(entry, correlation, "revision_unavailable")
             return
         }
@@ -1689,13 +1736,38 @@ class ConversationHostController internal constructor(
         val providerId = request.providerId?.takeIf { it.isNotBlank() }
         val modelId = request.modelId?.takeIf { it.isNotBlank() }
         if (providerId == null || modelId == null) {
+            foregroundLaunch?.let { host.runForeground?.agentLaunchDefinitelyNotAdmitted(it.operationID) }
             settleLaunchFailure(entry, correlation, "model_unavailable")
             return
         }
         val stagedHandles = host.attachments.launchHandles(
             ConversationSessionToken(request.conversationId, request.sessionEpoch), request.attachments)
         if (stagedHandles == null) {
+            foregroundLaunch?.let { host.runForeground?.agentLaunchDefinitelyNotAdmitted(it.operationID) }
             settleLaunchFailure(entry, correlation, host.attachments.failureMessage("stage_refused"))
+            return
+        }
+        val foreground = host.runForeground
+        if (foreground != null && foregroundLaunch == null) {
+            val launch = ForegroundLaunch()
+            host.scope.launch(host.ioDispatcher) {
+                try {
+                    foreground.agentLaunchProvisional(launch.operationID,
+                        com.floe.android.runlifecycle.RunStopHandler {
+                            launch.stop.set(true)
+                            launch.runID.get()?.let { runID ->
+                                host.scope.launch(host.ioDispatcher) { cancelRunFromNotification(request.conversationId, runID) }
+                            }
+                        })
+                } catch (failure: kotlinx.coroutines.CancellationException) {
+                    settleLaunchFailure(entry, correlation, "cancelled")
+                    throw failure
+                }
+                if (launch.stop.get() || !ownCurrentEntry(entry, request.conversationId, request.sessionEpoch)) {
+                    foreground.agentLaunchDefinitelyNotAdmitted(launch.operationID)
+                    settleLaunchFailure(entry, correlation, "cancelled")
+                } else launchRun(request, entry, correlation, revision, launch)
+            }
             return
         }
         // The frozen run.start terminal is an identifier-only `accepted`; the
@@ -1705,6 +1777,14 @@ class ConversationHostController internal constructor(
         val preparedRunID = java.util.concurrent.atomic.AtomicReference<String?>(null)
         fun acceptPrepared(prepared: ConversationWire.Prepared) {
             if (!preparedRunID.compareAndSet(null, prepared.runID)) return
+            foregroundLaunch?.let { launch ->
+                launch.runID.set(prepared.runID)
+                host.scope.launch(host.ioDispatcher) {
+                    foreground?.agentLaunchAdmitted(launch.operationID, request.conversationId, prepared.runID)
+                    if (launch.stop.get()) cancelRunFromNotification(request.conversationId, prepared.runID)
+                    foreground?.reconcileAgentRuns() // a short run may already have settled
+                }
+            }
             launchOutcomeListeners.remove(correlation.launchGeneration)?.invoke(true, null)
             entry.builder.applyPrepared(prepared)
             entry.holder.applyLaunchPrepared(correlation)
@@ -1759,6 +1839,9 @@ class ConversationHostController internal constructor(
                     }
                 }
                 is HostOperationOutcome.Rejected -> {
+                    if (preparedRunID.get() == null) foregroundLaunch?.let {
+                        foreground?.agentLaunchDefinitelyNotAdmitted(it.operationID)
+                    }
                     launchCorrelations.remove(correlation.launchGeneration.toString())
                     preparedRunID.get()?.let { eventPumps.remove(it)?.close() }
                     entry.holder.applyLaunchFailure(correlation, outcome.code)
@@ -1920,6 +2003,7 @@ class ConversationHostController internal constructor(
         // rebound/retired holder can never mutate the resumed projection.
         if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
         if (currentRunStreamGeneration(conversationId, runID) != streamGeneration) return
+        if (ConversationWire.isTerminalFrame(frame)) host.runForeground?.agentRunSettled(runID)
         entry.builder.applyRunEvent(frame)
         entry.holder.applyHostSnapshot(entry.builder.build())
         if (ConversationWire.isTerminalFrame(frame)) {
@@ -2119,8 +2203,11 @@ class ConversationHostController internal constructor(
         correlationPrefix: String,
         payloadFor: (state: String) -> JsonObject,
         onCompleted: (HostOperationOutcome.Completed) -> Unit = { },
+        onDefinitelyNotAdmitted: () -> Unit = { },
+        mayDispatch: () -> Boolean = { true },
     ) {
         fun submit(state: String, revision: Revision, isRetry: Boolean) {
+            if (!mayDispatch()) { onDefinitelyNotAdmitted(); return }
             host.trackOperation(
                 HostCommandRequest(
                     command = command,
@@ -2144,10 +2231,12 @@ class ConversationHostController internal constructor(
                                 ) {
                                     submit(freshState, freshRevision, true)
                                 } else {
+                                    onDefinitelyNotAdmitted()
                                     surfaceError(entry, outcome.code)
                                 }
                             }
                         } else {
+                            onDefinitelyNotAdmitted()
                             surfaceError(entry, outcome.code)
                         }
                     }
@@ -2168,6 +2257,7 @@ class ConversationHostController internal constructor(
             if (applied && freshState != null && freshRevision != null) {
                 submit(freshState, freshRevision, false)
             } else {
+                onDefinitelyNotAdmitted()
                 surfaceError(entry, "snapshot_unavailable")
             }
         }
@@ -2196,6 +2286,37 @@ class ConversationHostController internal constructor(
         return true
     }
 
+    /** Notification ownership is independent of the currently visible holder. */
+    internal fun cancelRunFromNotification(conversationID: String, runID: String): Boolean {
+        val ownerEpoch = host.nativeRootEpoch() ?: return false
+        if (!admitted()) return false
+        fun readAndCancel(retried: Boolean) {
+            if (host.nativeRootEpoch() != ownerEpoch) return
+            host.trackOperation(HostCommandRequest(
+                command = "run.snapshot", scope = HostScope.TaskExecution(conversationID, runID),
+                stateful = false, correlationID = client().correlationID("notify-snapshot"),
+            )) { outcome ->
+                if (host.nativeRootEpoch() != ownerEpoch || outcome !is HostOperationOutcome.Completed) return@trackOperation
+                val page = ConversationWire.decodeSnapshotPage(outcome.value) ?: return@trackOperation
+                if (page.runID != runID) return@trackOperation
+                if (page.isTerminal) {
+                    host.runForeground?.agentRunSettled(runID)
+                    return@trackOperation
+                }
+                host.trackOperation(HostCommandRequest(
+                    command = "run.cancel", scope = HostScope.TaskExecution(conversationID, runID),
+                    stateful = true, correlationID = client().correlationID("notify-cancel"),
+                    revision = HostRevision(page.revision.resourceID, page.revision.version),
+                    payload = JsonObject(mapOf("expectedState" to JsonPrimitive(page.durableState))),
+                )) { cancelled ->
+                    if (!retried && cancelled is HostOperationOutcome.Rejected && host.nativeRootEpoch() == ownerEpoch) readAndCancel(true)
+                }
+            }
+        }
+        readAndCancel(false)
+        return true // actual request only; terminal proof settles the lease
+    }
+
     override fun retryRun(session: ConversationSessionToken, runId: String): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
@@ -2205,6 +2326,10 @@ class ConversationHostController internal constructor(
         ) {
             return false
         }
+        withLaunchProtection(session.conversationId,
+            isCurrent = { ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) },
+            abandoned = { surfaceError(entry, "cancelled") },
+        ) { foregroundLaunch ->
         dispatchRunStateControl(
             entry = entry,
             runID = runId,
@@ -2213,7 +2338,12 @@ class ConversationHostController internal constructor(
             payloadFor = { state ->
                 JsonObject(mapOf("expectedState" to JsonPrimitive(state)))
             },
+            onDefinitelyNotAdmitted = {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+            },
+            mayDispatch = { !foregroundLaunch.stop.get() && ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) },
             onCompleted = {
+                admitForegroundLaunch(foregroundLaunch, session.conversationId, runId)
                 // A REAL accepted run.retry re-opens the SAME durable run id
                 // as a NEW stream incarnation. Only here may the closed-tail
                 // guard be lifted; the generation fences every callback or
@@ -2261,6 +2391,7 @@ class ConversationHostController internal constructor(
                 }
             },
         )
+        }
         return true
     }
 
@@ -2589,7 +2720,16 @@ class ConversationHostController internal constructor(
         execution: PlanRecommendationUi?,
         modelId: String,
         providerId: String,
+        foregroundLaunch: ForegroundLaunch? = null,
     ) {
+        if (foregroundLaunch == null) {
+            withLaunchProtection(session.conversationId,
+                isCurrent = { ownCurrentEntry(entry, session.conversationId, session.sessionEpoch) },
+                abandoned = { settlePlanAccept(entry, session, accepted = false, code = "cancelled") },
+            ) { launch -> acceptPlanWithFreshRevision(entry, session, planId, planRevision,
+                planDigest, execution, modelId, providerId, launch) }
+            return
+        }
         host.trackOperation(
             HostCommandRequest(
                 command = "conversation.get",
@@ -2599,6 +2739,7 @@ class ConversationHostController internal constructor(
             ),
         ) { outcome ->
             if (outcome !is HostOperationOutcome.Completed) {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
                 settlePlanAccept(entry, session, accepted = false, code = "revision_unavailable")
                 return@trackOperation
             }
@@ -2610,7 +2751,13 @@ class ConversationHostController internal constructor(
                 current.holder.session.sessionEpoch != session.sessionEpoch ||
                 current.holder.retired
             ) {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
                 settlePlanAccept(entry, session, accepted = false, code = "revision_unavailable")
+                return@trackOperation
+            }
+            if (foregroundLaunch.stop.get()) {
+                host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
+                settlePlanAccept(entry, session, accepted = false, code = "cancelled")
                 return@trackOperation
             }
             current.builder.applySession(reply)
@@ -2641,6 +2788,7 @@ class ConversationHostController internal constructor(
                     if (frame.kind == "prepared") {
                         ConversationWire.preparedFromEffect(frame.detail)?.let { prepared ->
                             if (acceptedRunID.compareAndSet(null, prepared.runID)) {
+                                admitForegroundLaunch(foregroundLaunch, session.conversationId, prepared.runID)
                                 applyPlanAcceptPrepared(current, prepared)
                             }
                         }
@@ -2655,6 +2803,7 @@ class ConversationHostController internal constructor(
                         if (accepted == true && runID != null &&
                             acceptedRunID.compareAndSet(null, runID)
                         ) {
+                            admitForegroundLaunch(foregroundLaunch, session.conversationId, runID)
                             // Forward-compatible value reply (the actual
                             // producer carries identities in the effect).
                             applyPlanAcceptPrepared(
@@ -2674,8 +2823,10 @@ class ConversationHostController internal constructor(
                             code = if (acceptedRunID.get() == null) "reply_malformed" else null,
                         )
                     }
-                    is HostOperationOutcome.Rejected ->
+                    is HostOperationOutcome.Rejected -> {
+                        if (acceptedRunID.get() == null) host.runForeground?.agentLaunchDefinitelyNotAdmitted(foregroundLaunch.operationID)
                         settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
+                    }
                     is HostOperationOutcome.Failed ->
                         settlePlanAccept(entry, session, accepted = false, code = outcome2.code)
                     HostOperationOutcome.Cancelled ->

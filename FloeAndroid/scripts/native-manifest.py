@@ -41,6 +41,7 @@ BUILD_INPUTS = (
     "FloeAndroid/scripts/configure-swift-sdk.py",
     "FloeAndroid/toolchains.lock.json",
     "FloeAndroid/core/swiftbridge/build.gradle.kts",
+    "FloeAndroid/core/linuxauthoritybridge/build.gradle.kts",
 )
 
 # Actual compiled C/C++/header/modulemap inputs of the vendored C targets
@@ -254,19 +255,20 @@ def collect_resolved_inputs(root: Path, resolved_inputs: dict,
 
 
 def collect_native_inputs(root: Path, native_inputs: dict) -> None:
-    cpp_dir = root / "FloeAndroid/core/swiftbridge/src/main/cpp"
-    if not cpp_dir.is_dir():
-        raise ManifestError("JNI/CMake directory missing: %s"
-                            % repo_relative(root, cpp_dir))
-
     candidates = set()
-    for path in cpp_dir.rglob("*"):
-        if path.name == "CMakeLists.txt" or path.suffix in NATIVE_SUFFIXES:
-            if not path.is_file():
-                raise ManifestError(
-                    "native input is unreadable or a broken symlink: %s"
-                    % repo_relative(root, path))
-            candidates.add(path)
+    for module in ("swiftbridge", "linuxauthoritybridge"):
+        cpp_dir = root / f"FloeAndroid/core/{module}/src/main/cpp"
+        if not cpp_dir.is_dir():
+            raise ManifestError("JNI/CMake directory missing: %s" % repo_relative(root, cpp_dir))
+        module_inputs = set()
+        for path in cpp_dir.rglob("*"):
+            if path.name == "CMakeLists.txt" or path.suffix in NATIVE_SUFFIXES:
+                if not path.is_file():
+                    raise ManifestError("native input is unreadable or a broken symlink: %s" % repo_relative(root, path))
+                module_inputs.add(path)
+        if not module_inputs:
+            raise ManifestError("no JNI/CMake inputs found under %s" % repo_relative(root, cpp_dir))
+        candidates.update(module_inputs)
     if not candidates:
         raise ManifestError("no JNI/CMake inputs found under %s"
                             % repo_relative(root, cpp_dir))
@@ -278,7 +280,7 @@ def collect_native_inputs(root: Path, native_inputs: dict) -> None:
         add_required_file(root, relative, native_inputs)
 
 
-def collect_libraries(output: Path) -> dict:
+def collect_libraries(output: Path, product_library: str = "libFloeAndroidCore.so") -> dict:
     if not output.is_dir():
         raise ManifestError("native output directory missing: %s" % output)
     libraries = {}
@@ -289,8 +291,8 @@ def collect_libraries(output: Path) -> dict:
         libraries[path.name] = sha256_file(path)
     if not libraries:
         raise ManifestError("no packaged .so libraries found in %s" % output)
-    if "libFloeAndroidCore.so" not in libraries:
-        raise ManifestError("libFloeAndroidCore.so missing from %s" % output)
+    if product_library not in libraries:
+        raise ManifestError("%s missing from %s" % (product_library, output))
     return libraries
 
 
@@ -321,7 +323,7 @@ def require_anchors(root: Path) -> None:
         raise ManifestError("required input(s) missing: %s" % ", ".join(missing))
 
 
-def build_manifest(root: Path, output: Path) -> dict:
+def build_manifest(root: Path, output: Path, product_library: str = "libFloeAndroidCore.so") -> dict:
     require_anchors(root)
     lock_path = root / "FloeAndroid/toolchains.lock.json"
     if not lock_path.is_file():
@@ -347,10 +349,11 @@ def build_manifest(root: Path, output: Path) -> dict:
     collect_native_inputs(root, native_inputs)
     collect_security_corpus(root, resources)
     collect_resolved_inputs(root, resolved_inputs, resolved_pins)
-    libraries = collect_libraries(output)
+    libraries = collect_libraries(output, product_library)
 
     return {
         "schemaVersion": 1,
+        "productLibrary": product_library,
         "abi": "arm64-v8a",
         "swift": lock["swift"],
         "ndk": lock["ndk"],
@@ -405,6 +408,9 @@ def main(argv=None) -> int:
                              "(default: OUTPUT/../native-manifest.json)")
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT,
                         help=argparse.SUPPRESS)
+    parser.add_argument("--library", default="libFloeAndroidCore.so",
+                        choices=("libFloeAndroidCore.so", "libFloeAndroidLinuxAuthority.so"),
+                        help="exact Swift product required in this output")
     args = parser.parse_args(argv)
 
     if args.manifest is not None and not args.check:
@@ -413,7 +419,7 @@ def main(argv=None) -> int:
     root = args.root.resolve()
     output = args.output.resolve()
     try:
-        computed = build_manifest(root, output)
+        computed = build_manifest(root, output, args.library)
     except (ManifestError, OSError) as exc:
         print("native-manifest: FAIL %s" % exc, file=sys.stderr)
         return 1

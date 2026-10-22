@@ -18,7 +18,10 @@ let strictSettings: [SwiftSetting] = [
 let package = Package(
     name: "FloeAndroidCore",
     platforms: [.macOS(.v15)],
-    products: [.library(name: "FloeAndroidCore", type: .dynamic, targets: ["FloeAndroidCore"])],
+    products: [
+        .library(name: "FloeAndroidCore", type: .dynamic, targets: ["FloeAndroidCore"]),
+        .library(name: "FloeAndroidLinuxAuthority", type: .dynamic, targets: ["FloeAndroidLinuxAuthority"]),
+    ],
     dependencies: [
         // Pinned EXACT revision (immutable commit, no floating version or
         // tag lookup at build time): 95ba0316a9b733e92bb6b071255ff46263bbe7dc
@@ -73,6 +76,21 @@ let package = Package(
         // and supplies the explicit trusted root + selected backend.
         .target(name: "FloeEnvironments", dependencies: [
             "FloeCore", "FloeTools",
+        ], swiftSettings: strictSettings),
+        .target(name: "FloeAndroidLinuxAuthority", dependencies: [
+            "FloeEnvironments", "FloeCore", "FloeTools",
+        ], swiftSettings: strictSettings),
+        .target(name: "FloeAndroidShellTools", dependencies: [
+            "FloeCore", "FloeTools", "FloeSecurity",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .target(name: "FloeAndroidWorkspaceTools", dependencies: [
+            "FloeCore", "FloeTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .target(name: "FloeAndroidJobTools", dependencies: [
+            "FloeCore", "FloeModels", "FloeTools", "FloePersistence", "FloeAndroidShellTools",
+            .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         // D1 minimal web.search/web.fetch closure (Main decisions
         // 2026-10-18; runtime-facade-contract D1/RB-6): exactly the five
@@ -142,7 +160,7 @@ let package = Package(
             // D1 web closure: included in the actual native .so so the
             // qualified original tools/service link before the facade
             // registers them (dependency only; NO service registration here).
-            "FloeAndroidWebTools",
+            "FloeAndroidWebTools", "FloeAndroidShellTools", "FloeAndroidJobTools", "FloeAndroidWorkspaceTools",
             // G03-R1 environment authority: links the original registry/
             // coordinator/lease authority into the product .so (dependency
             // only; NO ToolEnvironmentRouting registration, NO backend
@@ -161,6 +179,24 @@ let package = Package(
             // C APIs directly (import GRDBSQLite); the amalgamation itself was
             // already compiled into the product library through GRDB.
             "GRDB", "GRDBSQLite",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidShellToolsTests", dependencies: [
+            "FloeAndroidShellTools", "FloeAndroidCore", "FloeCore", "FloeTools",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        .testTarget(name: "FloeAndroidJobToolsTests", dependencies: [
+            "FloeAndroidJobTools", "FloeAndroidShellTools", "FloeCore", "FloeModels", "FloeTools", "FloePersistence",
+            .product(name: "Crypto", package: "swift-crypto"),
+        ], swiftSettings: strictSettings),
+        // G03-R2 workspace transfer suites (job-4d35db884ec64d95 cohort, per
+        // Main's dependency note): the engine/path suites run on the REAL
+        // host filesystem in temporary directories; the grant-proof suites
+        // exercise the module's own HMAC/Crypto surface. FloeAndroidCore is
+        // NOT required (the 15 authored engine/path tests never import it);
+        // the trusted-selector path is qualified on device in R3.
+        .testTarget(name: "FloeAndroidWorkspaceToolsTests", dependencies: [
+            "FloeAndroidWorkspaceTools", "FloeCore", "FloeTools",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeAndroidCoreTests", dependencies: [

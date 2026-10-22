@@ -150,6 +150,16 @@ public enum AndroidRuntimeBootstrap {
     /// production; it never changes a lifecycle decision by itself.
     nonisolated(unsafe) internal static var failedBootstrapDrainGateForTesting:
         (@Sendable () async -> Void)?
+    /// Test-only ATTACH GATE override for focused host cohorts that compose
+    /// one domain (for example the Linux shell ledger) without driving the
+    /// full root/owner admission sequence. When set, `ownedWorkAttachAllowed`
+    /// returns this predicate INSTEAD of the generation check; the registry
+    /// still mints/consumes REAL receipts and every production path leaves
+    /// this nil. `resetForTesting` clears it. It never fabricates work: the
+    /// tokens, attach accounting and exact-token detach semantics are the
+    /// unchanged production ones.
+    nonisolated(unsafe) internal static var ownedWorkAttachGateOverrideForTesting:
+        ((UInt64) -> RuntimeFacadeCode?)?
 
     private static var shutdownDrainTimeoutMillis: Int {
         shutdownDrainTimeoutMillisOverride ?? 10_000
@@ -603,6 +613,7 @@ public enum AndroidRuntimeBootstrap {
                                               epoch: UInt64,
                                               correlation: String,
                                               timeoutMillis: Int) async -> Bool {
+        if let jobs = G03JobLifecycle.current, jobs.epoch == epoch { await jobs.requestStopAll() }
         let deadline = DispatchTime.now().uptimeNanoseconds
             &+ UInt64(max(0, timeoutMillis)) &* 1_000_000
         while DispatchTime.now().uptimeNanoseconds < deadline {
@@ -699,6 +710,8 @@ public enum AndroidRuntimeBootstrap {
         gen.mailbox.retireAfterDrain(excludingCorrelation: correlation)
         await G02RuntimeComposition.shared.beginRetirement(epoch: gen.epoch)
         await gen.owner.close()
+        _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: gen.epoch)
         RuntimeRetiredEffectRegistry.shared.stagePending(generation: gen.epoch,
@@ -808,7 +821,11 @@ public enum AndroidRuntimeBootstrap {
     /// real owned store committed, and no attach after a stop/retirement was
     /// requested. `domainNotBound` keeps the ordinary-runtime barrier honest.
     static func ownedWorkAttachAllowed(epoch: UInt64) -> RuntimeFacadeCode? {
-        withStateLock {
+        let override = withStateLock { ownedWorkAttachGateOverrideForTesting }
+        if let override {
+            return override(epoch)
+        }
+        return withStateLock {
             guard let live = generation, live.epoch == epoch else {
                 return .notInstalled
             }
@@ -893,6 +910,8 @@ public enum AndroidRuntimeBootstrap {
         await G02RuntimeComposition.shared.beginRetirement(epoch: gen.epoch)
         // The real database close happens BEFORE this job's single terminal.
         await gen.owner.close()
+        _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: epoch)
         RuntimeRetiredEffectRegistry.shared.stagePending(generation: epoch,
@@ -976,6 +995,8 @@ public enum AndroidRuntimeBootstrap {
         gen.mailbox.retireAfterDrain(excludingCorrelation: job.correlationID)
         await G02RuntimeComposition.shared.beginRetirement(epoch: gen.epoch)
         await gen.owner.close()
+        _ = await RuntimeFacadeJobBindings.shared.retire(epoch: gen.epoch)
+        BackgroundJobOutputSpoolRoot.unbind(epoch: gen.epoch)
         gen.content.retireAll()
         RuntimeOwnedWorkRegistry.shared.finishGeneration(epoch: gen.epoch)
         RuntimeRetiredEffectRegistry.shared.stagePending(generation: gen.epoch,
@@ -1093,6 +1114,7 @@ public enum AndroidRuntimeBootstrap {
             retiredAnchors.removeAll()
             shutdownDrainTimeoutMillisOverride = nil
             failedBootstrapDrainGateForTesting = nil
+            ownedWorkAttachGateOverrideForTesting = nil
             return value
         }
         RuntimeFacadeBridge.uninstallAllForTesting()
@@ -1285,7 +1307,11 @@ public final class RuntimeOwnedWorkRegistry: @unchecked Sendable {
             return .invalidIdentity
         }
         lock.lock()
-        defer { lock.unlock() }
+        var changed = false
+        defer {
+            lock.unlock()
+            if changed { RunForegroundChange.notifyOwnedWorkChanged() }
+        }
         guard entries.count < Limits.maximumLiveWork else {
             return .rejected(.receiptSaturated)
         }
@@ -1312,6 +1338,7 @@ public final class RuntimeOwnedWorkRegistry: @unchecked Sendable {
         guard let token else { return .rejected(.internal) }
         entries[token.receipt] = token
         order.append(token.receipt)
+        changed = true
         return .attached(token)
     }
 
@@ -1320,10 +1347,15 @@ public final class RuntimeOwnedWorkRegistry: @unchecked Sendable {
     @discardableResult
     public func detach(_ token: RuntimeOwnedWorkToken) -> Bool {
         lock.lock()
-        defer { lock.unlock() }
+        var changed = false
+        defer {
+            lock.unlock()
+            if changed { RunForegroundChange.notifyOwnedWorkChanged() }
+        }
         guard entries[token.receipt] == token else { return false }
         entries.removeValue(forKey: token.receipt)
         order.removeAll { $0 == token.receipt }
+        changed = true
         return true
     }
 
