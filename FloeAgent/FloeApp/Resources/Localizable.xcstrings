@@ -92541,7 +92541,7 @@
         }
       }
     },
-    "Continue subagent": {
+    "workbench.task_inspector_views.continue_subagent": {
       "localizations": {
         "en": {
           "stringUnit": {

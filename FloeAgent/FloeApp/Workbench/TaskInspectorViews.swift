@@ -998,7 +998,7 @@ struct ChildAgentDetailView: View {
                                 Button {
                                     Task { await resumeChild() }
                                 } label: {
-                                    Label(String(localized: "Continue subagent"), systemImage: "play.fill")
+                                    Label(String(localized: "workbench.task_inspector_views.continue_subagent"), systemImage: "play.fill")
                                 }
                                 .disabled(isResuming || !hasLiveParent)
                                 .frame(minHeight: FloeTheme.minimumTarget)
