@@ -64,9 +64,14 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
             # (with its producer build_office_browser_resources and
             # qualify_office_mobile -> prepare_office_native_sources). A
             # missing dependency must fail this fixture loudly, never silently
-            # skip the gate.
+            # skip the gate. Since 5e6ac0fa the preflight also executes
+            # verify_apple_upload_metadata.py (stdlib-only imports), so this
+            # tuple stages that helper plus the three checked-in checkout-root
+            # inputs it reads alongside project.yml: Floe.entitlements,
+            # Info.plist and InfoPlist.xcstrings.
             for name in ("project.yml", "scripts/release_preflight.sh",
                          "scripts/validate_localization_catalog.py",
+                         "scripts/verify_apple_upload_metadata.py",
                          "scripts/audit_native_runtime_free.py",
                          "scripts/check_application_pins.py",
                          "scripts/resolved_pins.py",
@@ -83,6 +88,9 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                          "scripts/qualify_office_mobile.py",
                          "scripts/prepare_office_native_sources.py",
                          "scripts/office_real_simulator/sim_paths.py",
+                         "FloeApp/Entitlements/Floe.entitlements",
+                         "FloeApp/Resources/Info.plist",
+                         "FloeApp/Resources/InfoPlist.xcstrings",
                          "FloeAgent.xcodeproj/project.pbxproj", "FloeScreenShare/Info.plist",
                          "FloeApp/Resources/Localizable.xcstrings"):
                 target = app / name
