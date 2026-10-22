@@ -2,6 +2,8 @@
 package com.floe.android.host.linux
 
 import android.content.Context
+import com.floe.android.runtimeipc.RuntimeExecutionTrace
+import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import com.floe.android.bridge.LinuxShellNative
 import com.floe.android.runlifecycle.ForegroundLease
 import com.floe.android.runlifecycle.OperationKind
@@ -61,6 +63,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val settlementLock = Mutex()
         private var settledProof: String? = null
         val stop = AtomicBoolean()
+        private val tracedStopTargets = ConcurrentHashMap.newKeySet<Stage>()
         @Volatile var sessionID: String? = null
 
         suspend fun exchange(operation: String, payload: JSONObject = JSONObject(), requestID: String = UUID.randomUUID().toString()): JSONObject {
@@ -78,6 +81,8 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         }
 
         suspend fun requestStop() {
+            val stopStage = if (sessionID == null) Stage.PUMP_STOP_REQUEST else Stage.PUMP_STOP_SESSION
+            if (tracedStopTargets.add(stopStage)) RuntimeExecutionTrace.mark(stopStage)
             stop.set(true)
             val target = sessionID?.let { JSONObject().put("sessionID", it) }
                 ?: JSONObject().put("requestID", controlID)
@@ -229,10 +234,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         var handedToWatcher = false
         try {
             // Ownership is registered BEFORE any IPC may start a process.
+            RuntimeExecutionTrace.mark(Stage.PUMP_REGISTER)
             owned.lease = foreground.acquireOperation(owned.controlID, OperationKind.LOCAL_EXECUTION,
                 RunStopHandler { scope.launch(Dispatchers.IO) { owned.requestStop() } })
             work[owned.controlID] = owned
+            RuntimeExecutionTrace.mark(Stage.PUMP_OWNED)
             if (admissionClosed.get() || owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) error("Caller stopped before admission")
+            RuntimeExecutionTrace.mark(Stage.PUMP_GRANT)
             val grant = CoreWorkspaceGrant.create(context, acceptedEpoch, payload.getString("runID"),
                 trustedCallID = callID?.takeIf { it.startsWith("jobs.") },
                 isOwned = WorkspaceOwnershipProbe {
@@ -242,13 +250,18 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 }, authority = CoreWorkspaceNativeAuthority()) ?: error("Owned workspace unavailable")
             owned.workspaceGrant = grant
             check(grant.projectID == payload.getString("projectID"))
+            RuntimeExecutionTrace.mark(Stage.PUMP_GRANT_READY)
             // A transport failure may follow accepted dispatch. Never replay it.
             possiblyAdmitted = true
+            RuntimeExecutionTrace.mark(Stage.PUMP_DISPATCH)
             val response = owned.exchange("shell.start", payload, owned.controlID)
+            RuntimeExecutionTrace.mark(Stage.PUMP_REQUEST_ACCEPTED)
             val started = awaitReceipt(owned, response) {
                 if (LinuxShellNative.shouldStop(claim) != 0) owned.requestStop()
             }
+            RuntimeExecutionTrace.mark(Stage.PUMP_RECEIPT_RETURNED)
             owned.sessionID = started.getString("sessionID")
+            RuntimeExecutionTrace.mark(Stage.PUMP_SESSION_READY)
             if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) {
                 owned.requestStop()
                 handedToWatcher = true
@@ -259,6 +272,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             handedToWatcher = true
             scope.launch(Dispatchers.IO) { watch(owned) }
         } catch (failure: Exception) {
+            RuntimeExecutionTrace.mark(if (failure is AdmissionRefused) Stage.PUMP_ADMISSION_REFUSED else Stage.PUMP_START_EXCEPTION)
             if (failure is AdmissionRefused) possiblyAdmitted = false
             if (!possiblyAdmitted) {
                 if (work.containsKey(owned.controlID)) owned.finish(JSONObject().put("state", "quiescent"))
@@ -277,11 +291,20 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     private suspend fun watch(owned: OwnedSession, failedStartClaim: Long? = null) {
         // This service-owned reconciliation outlives views and native waiters.
         withContext(NonCancellable) {
+            RuntimeExecutionTrace.mark(Stage.PUMP_WATCH_ENTER)
+            val emittedStages = mutableSetOf<Stage>()
             while (true) {
                 try {
                     if (owned.stop.get()) owned.requestStop()
                     if (owned.sessionID == null) {
                         val receipt = owned.exchange("request.status", JSONObject().put("requestID", owned.controlID))
+                        val stage = when (receipt.optString("state")) {
+                            "completed" -> Stage.PUMP_WATCH_COMPLETED
+                            "failed" -> Stage.PUMP_WATCH_FAILED
+                            "queued", "running" -> Stage.PUMP_WATCH_WAITING
+                            else -> Stage.PUMP_WATCH_UNKNOWN
+                        }
+                        if (emittedStages.add(stage)) RuntimeExecutionTrace.mark(stage)
                         if (receipt.optString("state") == "completed") {
                             owned.sessionID = receipt.getJSONObject("result").getString("sessionID")
                         }
@@ -292,6 +315,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                             .put("cursor", 0).put("maxBytes", 1))
                         if (page.getBoolean("leaseReleased")) {
                             owned.finish(terminalProof(page))
+                            RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
                             failedStartClaim?.let { complete(it, 1, JSONObject().put("code", "runtime_start_stopped")) }
                             return@withContext
                         }
@@ -302,10 +326,14 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     awaitReceipt(owned, owned.exchange("install.status"))
                     if (!owned.exchange("status").getBoolean("active")) {
                         owned.finish(JSONObject().put("state", "quiescent"))
+                        RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
                         failedStartClaim?.let { complete(it, 1, JSONObject().put("code", "runtime_start_interrupted")) }
                         return@withContext
                     }
-                } catch (_: Exception) { /* unresolved means retain, never replay */ }
+                } catch (_: Exception) {
+                    if (emittedStages.add(Stage.PUMP_WATCH_EXCEPTION)) RuntimeExecutionTrace.mark(Stage.PUMP_WATCH_EXCEPTION)
+                    /* unresolved means retain, never replay */
+                }
                 delay(1_000)
             }
         }

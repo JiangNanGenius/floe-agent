@@ -3,6 +3,8 @@ package com.floe.android.runtime
 
 import android.content.Context
 import android.os.IBinder
+import com.floe.android.runtimeipc.RuntimeExecutionTrace
+import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import com.floe.android.runtimeipc.RuntimeWire
 import org.json.JSONObject
 import java.util.concurrent.ArrayBlockingQueue
@@ -55,6 +57,8 @@ class RuntimeKernel(context: Context) {
     fun isExecuting(): Boolean = operations?.isExecuting() == true
 
     fun exchange(request: RuntimeWire.Request, workspaceGrant: IBinder?, foregroundAllowed: () -> Boolean): JSONObject {
+        val traceStart = request.operation == "shell.start"
+        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
         if (request.operation == "status") return JSONObject()
             .put("protocol", RuntimeWire.VERSION).put("foreground", foregroundAllowed())
             .put("active", hasOwnedWork()).put("stopping", stopping.get())
@@ -116,6 +120,7 @@ class RuntimeKernel(context: Context) {
                 // Exclusive single-workload admission: an unrelated busy
                 // workload A makes a NEW preflight REFUSE before any state
                 // is written; nothing about A is touched or cancelled.
+                if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_ADMISSION_CHECK)
                 check(!hasOwnedWork()) { "Runtime already owns work" }
             }
             while (receipts.size >= 64) {
@@ -129,19 +134,25 @@ class RuntimeKernel(context: Context) {
             if (request.operation == "shell.start") pendingShellID.set(request.id)
             if (request.operation == RuntimeWire.PREFLIGHT) pendingPreflightID.set(request.id)
         }
+        if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_QUEUED)
         try {
             executor.execute {
+                if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTOR_ENTER)
                 update(request.id, JSONObject().put("state", "running"))
                 try {
                     check(!stopping.get() && (metadataOnly || cleanupLane || foregroundAllowed()))
                     // All native loading, disk work and real command admission
                     // happen on this owned IO thread, never on Binder/Main.
                     val runtime = operations ?: LinuxRuntimeOperations(context).also { operations = it }
+                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
                     check(!stopping.get() && (metadataOnly || cleanupLane || foregroundAllowed()))
+                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
                     val result = runtime.execute(request, workspaceGrant) { stopping.get() || (!metadataOnly && !foregroundAllowed()) }
+                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
                     update(request.id, JSONObject().put("state", "completed").put("result", result))
                 } catch (_: Exception) {
+                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_EXCEPTION)
                     // Never reflect command lines, paths, output or native error
                     // descriptions into Android system logs or generic notices.
                     update(request.id, JSONObject().put("state", "failed").put("code", "operation_failed"))
@@ -150,6 +161,7 @@ class RuntimeKernel(context: Context) {
                     pendingShellID.compareAndSet(request.id, null)
                     pendingPreflightID.compareAndSet(request.id, null)
                     count.decrementAndGet()
+                    if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_REQUEST_RETURNED)
                     if (!hasOwnedWork()) stopping.set(false)
                     onChanged?.invoke(stopping.get())
                 }

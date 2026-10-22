@@ -4,6 +4,8 @@ package com.floe.android.runtime
 import android.content.Context
 import android.os.Process
 import android.os.SystemClock
+import com.floe.android.runtimeipc.RuntimeExecutionTrace
+import com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage
 import android.util.Base64
 import com.floe.android.linuxruntime.*
 import com.floe.android.linuxruntime.install.*
@@ -192,10 +194,13 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
     }
 
     private fun start(payload: JSONObject, workspaceGrant: android.os.IBinder, cancelled: () -> Boolean): JSONObject {
+        RuntimeExecutionTrace.mark(Stage.OPS_START_ENTER)
         fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd", "env", "rows", "columns", "timeoutSeconds", "stdinDelivery"))
         check(heldLease.get() == null && installID.get() == null)
         cancelPreparation.set(false)
+        RuntimeExecutionTrace.mark(Stage.OPS_RECOVER)
         recover()
+        RuntimeExecutionTrace.mark(Stage.OPS_CONFIGURE)
         configure()
         val command = payload.getString("command")
         require(command.isNotBlank() && command.toByteArray(Charsets.UTF_8).size <= 16_384 && '\u0000' !in command)
@@ -229,7 +234,9 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         // path; "pipe" only re-describes THIS guest launch's stdin.
         val stdinDelivery = payload.optString("stdinDelivery", "pty")
         require(stdinDelivery in setOf("pty", "pipe")) { "stdinDelivery invalid" }
+        RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRE)
         val lease = authority.acquire(payload)
+        RuntimeExecutionTrace.mark(Stage.OPS_ACQUIRED)
         heldLease.set(lease)
         var child: Running? = null
         var preparedScratch: File? = null
@@ -240,16 +247,20 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             val writable = ownedPath(descriptor.getString("writableLayer"))
             val layers = descriptor.getJSONArray("orderedLayers")
             val ordered = (0 until layers.length()).map { ownedPath(layers.getString(it)) }
+            RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZE)
             LinuxRootfsMaterializer().prepare(LinuxRootfsMaterializer.Plan(lease.environmentID,
                 descriptor.getString("baseRevision"), writable, ordered)) { cancelPreparation.get() || cancelled() }
             check(!cancelPreparation.get() && !cancelled())
+            RuntimeExecutionTrace.mark(Stage.OPS_MATERIALIZED)
             val workspace = ownedPath(descriptor.getString("workspaceRoot"))
             val workspaceSession = RuntimeWorkspaceSession(context, workspaceGrant,
                 payload.getString("projectID"), payload.getString("runID"), workspace)
             preparedWorkspace = workspaceSession
+            RuntimeExecutionTrace.mark(Stage.OPS_IMPORT)
             val imported = workspaceSession.importBeforeLaunch(WorkspaceCancelSignal {
                 cancelPreparation.get() || cancelled()
             })
+            RuntimeExecutionTrace.mark(Stage.OPS_IMPORTED)
             check(imported.skippedCount == 0) { "Workspace snapshot contains unsupported entries" }
             check(!cancelPreparation.get() && !cancelled())
             val scratchParent = File(root, "Scratch").apply { check(mkdirs() || isDirectory) }
@@ -259,6 +270,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             java.nio.file.Files.write(File(scratch, ".floe-owner").toPath(), lease.id.toByteArray(Charsets.UTF_8),
                 java.nio.file.StandardOpenOption.CREATE_NEW, java.nio.file.StandardOpenOption.WRITE)
             preparedScratch = scratch
+            RuntimeExecutionTrace.mark(Stage.OPS_BUILD_SPEC)
             val spec = PRootLaunchSpec(File(context.applicationInfo.nativeLibraryDir), writable, scratch,
                 "/workspace" + (if (cwd == ".") "" else "/$cwd"), "/home/floe", "/tmp",
                 listOf(LinuxBind(workspace, "/workspace"), LinuxBind(File("/dev"), "/dev"), LinuxBind(File("/proc"), "/proc")) +
@@ -269,7 +281,9 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                         mapOf("FLOE_ENVIRONMENT_ID" to lease.environmentID), rows, columns,
                     stdinDelivery = if (stdinDelivery == "pipe") StdinDelivery.OneShotPipe
                     else StdinDelivery.PtyInput)
+            RuntimeExecutionTrace.mark(Stage.OPS_SPEC_READY)
             val terminal = AtomicReference<WorkloadTerminal?>()
+            RuntimeExecutionTrace.mark(Stage.OPS_SPAWN)
             when (val outcome = supervisor.start(spec, LeaseToken(lease.id, descriptor.getString("runID"))) { terminal.set(it) }) {
                 is StartOutcome.Refused -> error("Linux process was not admitted")
                 is StartOutcome.Abandoned -> {
@@ -279,13 +293,16 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                     error("Linux process launch failed")
                 }
                 is StartOutcome.Accepted -> {
+                    RuntimeExecutionTrace.mark(Stage.OPS_SPAWN_ACCEPTED)
                     safeToAbandon = false
                     child = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(), scratch,
                         workspaceSession, imported)
                     running.set(child)
                     authority.started(lease, outcome.job.rootBirth)
+                    RuntimeExecutionTrace.mark(Stage.OPS_BIND_STARTED)
                     val owned = checkNotNull(child)
                     pumpExecutor.execute {
+                        RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENTER)
                         try {
                             while (owned.job.stateNow != JobState.TERMINATED) {
                                 if (cancelPreparation.get() || cancelled()) owned.job.requestCancel("user-stop")
@@ -293,14 +310,20 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                                 val pumped = owned.job.pump()
                                 if (pumped is PumpOutcome.Blocked || pumped is PumpOutcome.QuiescePending || pumped is PumpOutcome.ReadFailed) break
                             }
+                            RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENDED)
                             owned.terminal.set(terminal.get())
                             finish(owned)
-                        } catch (_: Exception) { owned.nativeReleaseFailed = true }
+                            RuntimeExecutionTrace.mark(Stage.OPS_FINISH_RETURNED)
+                        } catch (_: Exception) {
+                            RuntimeExecutionTrace.mark(Stage.OPS_PUMP_EXCEPTION)
+                            owned.nativeReleaseFailed = true
+                        }
                     }
                     return JSONObject().put("sessionID", lease.id).put("environmentID", lease.environmentID)
                 }
             }
         } catch (failure: Exception) {
+            RuntimeExecutionTrace.mark(Stage.OPS_START_EXCEPTION)
             if (safeToAbandon) {
                 runCatching { preparedWorkspace?.close() }
                 RuntimeNetworkConfiguration.release() // real use ended before spawn
