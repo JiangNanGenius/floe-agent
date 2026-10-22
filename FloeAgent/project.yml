@@ -686,6 +686,11 @@ targets:
       - path: Tests/FloeAppTests/VoiceConversationTests.swift
       - path: Tests/FloeAppTests/VoiceConversationAudioTests.swift
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
+      - path: Tests/FloeProvidersTests/ChatReasoningTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ChatModePolicyTests.swift
+      - path: Tests/FloeToolsTests/ChatToolPolicyTests.swift
+      - path: Tests/FloePersistenceTests/ChatPreferenceStoreTests.swift
+      - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
       - path: Tests/FloeCoreTests/BackgroundExecutionOptionsTests.swift
       - path: Tests/FloeCoreTests/ShareProviderIntakePolicyTests.swift
       - path: Tests/FloeAppTests/TemporaryConversationTests.swift
@@ -978,6 +983,8 @@ targets:
       - path: Tests/FloeAppTests/FloeRunFileProductionChainTests.swift
       - path: Tests/FloeAppTests/VolcengineSearchSettingsTests.swift
       - path: Tests/FloeAppTests/WebSearchCatalogSettingsTests.swift
+      - path: Tests/FloeToolsTests/WebSearchServiceIntegrationTests.swift
+      - path: Tests/FloeSkillsTests/ContentUpdateStoreTests.swift
       - path: Tests/FloeAppTests/OfficeHighlighterAlphaTests.swift
       - path: Tests/FloeAppTests/OfficePDFExportServiceTests.swift
       - path: Tests/FloeAppTests/OfficePDFExportAcceptanceTests.swift

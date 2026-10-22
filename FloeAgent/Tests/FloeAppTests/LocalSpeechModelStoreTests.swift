@@ -14,7 +14,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let bytes = Data("verified-model".utf8)
         let model = fixture(bytes)
         let downloader = DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: bytes)
-        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: defaults, downloader: downloader)
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: downloader)
         await store.beginInstallation(model)
         try await waitForCompletion(store)
         let installed = await store.isInstalled(model)
@@ -44,7 +44,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let bytes = Data("model".utf8), model = fixture(Data("model".utf8))
         let downloader = DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: bytes, delays: true)
-        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: defaults, downloader: downloader)
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: downloader)
         await store.beginInstallation(model)
         await store.cancelInstallation()
         try await waitForCompletion(store)
@@ -60,7 +60,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let bytes = Data("verified-model".utf8)
         let model = fixture(bytes)
-        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: defaults, downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: bytes))
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: bytes))
         await store.beginInstallation(model)
         try await waitForCompletion(store)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(model)) as? [String: Any])

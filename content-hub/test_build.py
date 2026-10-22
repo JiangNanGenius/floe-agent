@@ -21,6 +21,7 @@ EXPECTED_IDS = {
     "floe.templates.report",
     "floe.providers.compatibility",
     "floe.models.catalog-metadata",
+    "floe.search.providers",
 }
 
 # Staged packages: sources and deterministic package bytes are committed, but
@@ -28,7 +29,7 @@ EXPECTED_IDS = {
 # index.json/index.sig once; until then the existing published signature must
 # stay byte-identical (never replace it with an unsigned index). When the
 # staged package is signed, move its id into EXPECTED_IDS.
-STAGED_IDS = {"floe.search.providers"}
+STAGED_IDS = set()
 
 SEARCH_CATALOG_ADAPTERS = {
     "bocha": "bochaWeb",

@@ -50,8 +50,31 @@ public enum ChatReasoningPreference: String, Sendable, Codable, CaseIterable, Ha
 public struct ChatConversationPreferences: Sendable, Codable, Hashable {
     public var chatReasoning: ChatReasoningPreference?
 
-    public init(chatReasoning: ChatReasoningPreference? = nil) {
+    /// The composer execution mode the user last chose for THIS conversation,
+    /// stored as the stable raw value of the App's `AgentExecutionMode`
+    /// ("agent" / "chat" / "plan" / "goal"). FloeCore deliberately owns no
+    /// App type: it only carries the string, while the App validates it.
+    ///
+    /// Semantics every reader must honor:
+    /// - `nil` (legacy row / never chosen) = no explicit choice was saved;
+    ///   such conversations keep the historical Agent default.
+    /// - A recognized raw value is an explicit user choice and must be
+    ///   restored, never replaced by a background path.
+    /// - A present but unrecognized value is NOT legacy data: it must fail
+    ///   closed to the least-privilege chat ceiling (with one actionable
+    ///   notice), never silently fall back to Agent authority.
+    ///
+    /// A snapshot write from a writer that intentionally changes another
+    /// field must merge atomically (`ChatPreferenceStore` field updates) so
+    /// this value and `chatReasoning` can never erase each other.
+    public var preferredExecutionMode: String?
+
+    public init(
+        chatReasoning: ChatReasoningPreference? = nil,
+        preferredExecutionMode: String? = nil
+    ) {
         self.chatReasoning = chatReasoning
+        self.preferredExecutionMode = preferredExecutionMode
     }
 
     public var effectiveChatReasoning: ChatReasoningPreference {

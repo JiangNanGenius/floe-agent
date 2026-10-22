@@ -4,6 +4,7 @@ import XCTest
 
 @MainActor
 final class ChatAutomaticReadControllerTests: XCTestCase {
+    @MainActor
     private final class Sink {
         var texts: [String] = []
         var finishes = 0

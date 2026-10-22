@@ -64,7 +64,7 @@ final class TTSSettingsServiceTests: XCTestCase {
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         let model = LocalSpeechModel(id: "synthetic-qwen", title: "Synthetic", engine: "qwen3TTS", repository: "test/model", revision: revision, license: "Apache-2.0", languages: ["zh"], voices: [.init(id: "vivian", name: "Vivian", languages: ["zh"])], files: [.init(path: "weights.bin", url: URL(string: "https://huggingface.co/test/model/resolve/\(revision)/weights.bin")!, sha256: hash, byteCount: Int64(bytes.count))], tokenizerRelativePath: "tokenizer", minimumMemoryBytes: nil)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
-        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: defaults, downloader: InstallDownloadFixture(root: root, bytes: bytes, delay: delay))
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: name)!, downloader: InstallDownloadFixture(root: root, bytes: bytes, delay: delay))
         let settings = TTSSettingsService(defaults: defaults, keychain: KeychainStore(service: name, synchronizable: false), modelStore: store)
         return Fixture(root: root, name: name, defaults: defaults, model: model, store: store, settings: settings)
     }

@@ -279,7 +279,7 @@ private final class VoiceRig {
     let log = VoiceEventLog()
     private(set) var stacks: [VoiceTestStack] = []
     var pendingActivateFailure: VoiceConversationFailure?
-    let coordinator: VoiceConversationCoordinator
+    private(set) var coordinator: VoiceConversationCoordinator! = nil
 
     init(speechNormalizer: @escaping @Sendable (String) -> String = { $0 },
          timing: VoiceConversationCoordinator.Timing = .init()) {

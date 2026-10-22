@@ -30,8 +30,8 @@ struct ContinuousVoiceSpeechBridgeTests {
         }
         func endUnit(_ unit: VoiceConversationSpeechUnit) { endedUnits += 1 }
         func endRoundAudio(_ token: VoiceConversationRoundToken) { endedRounds += 1 }
-        func pause() {}
-        func resume() {}
+        func pauseOutput() {}
+        func resumeOutput() {}
         func stopNow() { stops += 1 }
     }
 

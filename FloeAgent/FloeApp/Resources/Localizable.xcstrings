@@ -95342,6 +95342,38 @@
           }
         }
       }
+    },
+    "chat.thread_detail_view_model.mode_change_not_saved": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't save the mode change. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "模式更改未能保存，请重试。"
+          }
+        }
+      }
+    },
+    "chat.thread_detail_view_model.saved_mode_unreadable": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't read the saved mode for this chat. It stays in Chat; choose Agent to allow editing and execution."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取此对话已保存的模式，将保持“聊天”模式；如需编辑与执行，请选择“智能体”。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
