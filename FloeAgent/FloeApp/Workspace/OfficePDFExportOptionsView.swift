@@ -887,6 +887,13 @@ struct OfficePDFExportOptionsView: View {
                 observe("export.preview.generationCancelled", ["token": String(token)])
             }
             catch {
+                // Native conversion may finish cancellation with its own
+                // error type. The cancelled owner remains authoritative and
+                // must not publish an ordinary error or refresh a torn-down source.
+                if Task.isCancelled || cancellation.isCancelled {
+                    observe("export.preview.generationCancelled", ["token": String(token)])
+                    return
+                }
                 // Content-free error family only; the user-facing message
                 // keeps its existing mapping below.
                 observe("export.preview.generationError",

@@ -478,7 +478,15 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             try await wait("explicit Cancel B dismissed the options sheet") {
                 window.rootViewController?.presentedViewController == nil
             }
-            try await Task.sleep(for: .seconds(2))
+            // The UI dismisses immediately; the native conversion finishes
+            // asynchronously. Observe its real terminal event before checking
+            // that no late artifact or ordinary error was published.
+            try await wait("cancelled render B reached its actual terminal state") {
+                ownerEvents(for: session, since: postedB).contains {
+                    $0.at >= cancelBAt && ["export.preview.generationCancelled",
+                        "export.preview.generationFenced"].contains($0.stage)
+                }
+            }
             let b = ownerEvents(for: session, since: postedB)
             attachStages(b, "request-b-window.json")
             let abandonB = try XCTUnwrap(b.first {
