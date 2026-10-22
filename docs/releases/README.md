@@ -11,7 +11,7 @@
 | [builds/](builds/) | 专项构建记录 | 2 |
 | [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 25 |
 
-最近交付：[1.7.45（286）交付记录](testflight/BUILD_286_DELIVERY.md)、[发布说明](notes/RELEASE_NOTES_1.7.45_BUILD_286.md)。[1.7.46（287）本地资格检查](testflight/BUILD_287_LOCAL_VERIFICATION.md)已完成，分发状态仍独立核验。历史构建保留各自的原始交付记录。
+最近交付：[1.7.46（287）交付记录](testflight/BUILD_287_DELIVERY.md)、[本地资格](testflight/BUILD_287_LOCAL_VERIFICATION.md)、[发布说明](notes/RELEASE_NOTES_1.7.46_BUILD_287.md)。内部 Floe QA 可安装，publictest1 等待审核，稳定无签名 Release／同次 Feather 已完成核验；历史构建保留各自的原始记录。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 
