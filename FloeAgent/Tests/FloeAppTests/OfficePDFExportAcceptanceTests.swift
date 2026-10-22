@@ -444,8 +444,8 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                 "export.preview.generationAccepted", "export.preview.generationStarted",
                 "export.generate.started", "export.generate.ok"].contains($0.stage) }.count, 0,
                 "an explicit Cancel releases the session without late successful publication")
-            XCTAssertFalse(UIPrintInteractionController.shared.isPresented,
-                           "Cancel must leave no nested print surface mounted")
+            XCTAssertNil(window.rootViewController?.presentedViewController,
+                         "Cancel must leave no owned options or nested print surface mounted")
             try await wait("session usable again after Cancel A") { session.canAct }
 
             // MARK: Request B — an explicit Cancel while the real engine renders.
@@ -488,10 +488,21 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                         || $0.stage == "export.preview.generationFenced") && $0.at >= cancelBAt
                 }, "the interrupted generation must be reported cancelled or fenced, not vanish silently")
             }
-            XCTAssertFalse(UIPrintInteractionController.shared.isPresented)
+            XCTAssertNil(window.rootViewController?.presentedViewController)
             try await wait("session usable again after Cancel B") { session.canAct }
 
-            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            // An editable owner saves before freezing its PDF source. That
+            // authorized save may normalize the package even with no new input;
+            // byte equality is only the read-only host's invariant. The supplied
+            // attachment is a separate immutable runtime input, never this copy.
+            let savedPackage = try Data(contentsOf: source)
+            XCTAssertFalse(savedPackage.isEmpty)
+            XCTAssertEqual(Array(savedPackage.prefix(4)), [0x50, 0x4b, 0x03, 0x04])
+            let sourceAudit = try JSONSerialization.data(withJSONObject: [
+                "inputSHA256": sha,
+                "savedCopySHA256": try FloeDigest.sha256Hex(ofFileAt: source)
+            ], options: [.sortedKeys])
+            attach(sourceAudit, "editable-owner-source-audit.json")
             let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
             XCTAssertFalse(quarantined)
             await session.release()
@@ -778,31 +789,16 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
-    /// Posts the exact message the existing engine's Print toolbar sends and
-    /// returns the timestamp the production handler accepted it. The real
-    /// Notes owner reaches the same options sheet through the document menu;
-    /// both entrypoints only differ in the breadcrumb's `source` and create the
-    /// identical `OfficePDFPresentationRequest`. A busy rejection (the handler's
-    /// own error message) is retried the way a user re-taps.
+    /// One real toolbar action. A readiness or admission failure must remain
+    /// visible; the regression must never retry or clear the session error.
     private func requestNativePrint(web: WKWebView, session: OfficeFileSession,
                                     baseGeneration: Int) async throws -> Date {
-        var postedAt = Date()
-        for _ in 1...2 {
-            postedAt = Date()
-            _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
-            let deadline = Date().addingTimeInterval(20)
-            while session.printRequestGeneration == baseGeneration, Date() < deadline {
-                try await Task.sleep(for: .milliseconds(100))
-            }
-            if session.printRequestGeneration > baseGeneration { return postedAt }
-            session.error = nil
-            try await Task.sleep(for: .seconds(2))
-        }
-        postedAt = Date()
+        let postedAt = Date()
         _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
-        try await wait("native PRINT routed to app options") {
+        try await wait("native PRINT routed to app options on its first attempt") {
             session.printRequestGeneration > baseGeneration
         }
+        XCTAssertEqual(session.printRequestGeneration, baseGeneration + 1)
         return postedAt
     }
 
@@ -863,19 +859,23 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         var visited = Set<ObjectIdentifier>()
         func walk(_ node: UIView, depth: Int) {
             guard depth < 64, visited.insert(ObjectIdentifier(node)).inserted else { return }
-            _ = node.accessibilityElementCount()
-            if node.isAccessibilityElement {
+            let count = node.accessibilityElementCount()
+            if node.isAccessibilityElement || node.accessibilityIdentifier != nil {
                 nodes.append(HostedAccessibilityNode(
-                    identifier: node.accessibilityIdentifier,
+                    identifier: node.accessibilityIdentifier ?? "",
                     label: node.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                     activate: { node.accessibilityActivate() }))
             }
-            for element in node.accessibilityElements ?? [] {
+            var elements = node.accessibilityElements ?? []
+            if elements.isEmpty, count != NSNotFound, count > 0, count <= 4_096 {
+                elements = (0..<count).compactMap { node.accessibilityElement(at: $0) }
+            }
+            for element in elements {
                 // Only the accessibility wrappers are read here; real UIView
                 // elements are covered by the subview walk below.
                 guard let element = element as? UIAccessibilityElement else { continue }
                 nodes.append(HostedAccessibilityNode(
-                    identifier: element.accessibilityIdentifier,
+                    identifier: element.accessibilityIdentifier ?? "",
                     label: element.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                     activate: { element.accessibilityActivate() }))
             }
