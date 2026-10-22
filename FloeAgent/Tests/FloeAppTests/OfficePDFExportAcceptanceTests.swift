@@ -268,6 +268,243 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    /// Real-owner regression for the exact path commit e8 repaired.
+    ///
+    /// Main's ordinary editable Notes owner trace (private
+    /// office-preview-runtime/diagnostic-actual-print-02.jsonl) shows what the
+    /// read-only `testNativeToolbarPrint…` host cannot reach: after the engine's
+    /// PRINT opens the shared options sheet on an editable session, SwiftUI
+    /// transiently remounts the sheet content into a fresh state container
+    /// (two `export.options.loadBegin` breadcrumbs with different `view` ids)
+    /// while the first preparation is still in flight. On the previous commit
+    /// (source 542) the disappearing child ran `abandon(disappear)` → `dismiss()`,
+    /// so the parent wrote the presentation binding nil and recorded
+    /// `export.prepare.cancelRequested`; the second container then died on
+    /// `noSource` — no preview, no Print. At e8 a transient disappearance is
+    /// teardown-only, the second consumer records `export.prepare.joined`, one
+    /// `export.prepare.ok` lands, and the automatic generation is accepted with
+    /// the sheet still mounted. Explicit Cancel (and delivery completion) remain
+    /// the only child paths allowed to dismiss.
+    ///
+    /// This test hosts the same production owner surfaces the Notes workspace
+    /// uses (OfficeDocumentEditorView + OfficeFileSession + the pinned native
+    /// controller), opened EDITABLE like the failing document, and drives the
+    /// exact native PRINT toolbar message. Two explicit Cancels fence dismissal
+    /// ownership: one after the accepted automatic preview (nothing may publish
+    /// late), and one while a real pinned-engine render is in flight (the
+    /// interrupted generation is cancelled or fenced, never published after the
+    /// dismissal). Opt-in fixture semantics, window/session cleanup and the
+    /// read-only test above are unchanged.
+    func testEditableOwnerPrintSurvivesTransientRemountAndCancelFencesLatePublication() async throws {
+        let (source, sha, root) = try input()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive }))
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        let environment = AppEnvironment.preview()
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            OfficeDocumentEditorView(relativePath: "provided.xlsx", session: session,
+                                     onSaved: nil, requestsEditingOnAppear: true)
+                .environmentObject(environment)
+        })
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        do {
+            await session.open(source)
+            // The failing surface is never a read-only preview: the production
+            // edit handler must have acknowledged the editable session and the
+            // owner-autosave must be idle before Print is meaningful.
+            try await wait("editable owner acknowledged") {
+                !session.readOnly && session.documentActionsReady && session.canAct
+                    && OfficeStageRecorder.shared.events.contains {
+                        $0.session == session.stageTraceSessionID
+                            && $0.stage == "edit.acknowledged" && $0.detail["readOnly"] == "false"
+                    }
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await wait("actual Office tiles painted") {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+                    && ((Int(facts["decodedTiles"] ?? "") ?? 0) > 0 || facts["vectorRendering"] == "1")
+            }
+            XCTAssertTrue(native.responds(to: NSSelectorFromString("setOnPrintRequested:")))
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+
+            // MARK: Request A — remount survival through the accepted preview.
+            let postedA = try await requestNativePrint(web: web, session: session,
+                                                       baseGeneration: session.printRequestGeneration)
+            try await wait("options sheet mounted (request A)") {
+                window.rootViewController?.presentedViewController != nil
+            }
+            try await wait("request A preparation settled") {
+                ownerEvents(for: session, since: postedA).contains {
+                    $0.stage == "export.prepare.ok" || $0.stage == "export.prepare.refused"
+                }
+            }
+            try await wait("automatic preview accepted without any Generate tap (request A)") {
+                ownerEvents(for: session, since: postedA).contains {
+                    $0.stage == "export.preview.generationAccepted"
+                }
+            }
+            // Snapshot the whole pre-Cancel window. This session's print
+            // lifecycle emits far fewer events than the recorder's process cap,
+            // so the window is complete, and every breadcrumb below carries this
+            // session's own correlation id.
+            let a = ownerEvents(for: session, since: postedA)
+            let prepareOK = try XCTUnwrap(a.first { $0.stage == "export.prepare.ok" },
+                                          "The native Print on the editable owner must prepare without refusing: \(a.filter { $0.stage == "export.prepare.refused" }.first?.detail ?? [:])")
+            XCTAssertEqual(a.filter { $0.stage == "export.prepare.started" }.count, 1,
+                           "one modal request owns exactly one producer")
+            XCTAssertEqual(a.filter { $0.stage == "export.prepare.refused" }.count, 0)
+            let loadBegins = a.filter { $0.stage == "export.options.loadBegin" }
+            XCTAssertFalse(loadBegins.isEmpty)
+            XCTAssertEqual(Set(loadBegins.compactMap { $0.detail["view"] }).count, loadBegins.count,
+                           "each loadBegin must name its own fresh state container")
+            let joined = a.filter { $0.stage == "export.prepare.joined" }
+            if loadBegins.count > 1 {
+                // The transient fresh-container remount happened in this host
+                // (as in Main's device trace): the second consumer must JOIN the
+                // same in-flight preparation, never start a second producer and
+                // never see a parent cancellation across the remount.
+                XCTAssertEqual(joined.count, loadBegins.count - 1)
+                XCTAssertGreaterThanOrEqual(joined.first?.at ?? .distantFuture, loadBegins[1].at)
+                XCTAssertLessThanOrEqual(joined.last?.at ?? .distantPast, prepareOK.at)
+                XCTAssertEqual(a.filter {
+                    $0.stage == "export.options.teardown" && $0.detail["source"] == "disappear"
+                }.count, loadBegins.count - 1,
+                "a transient remount tears down only the leaving container's own preview work")
+            } else {
+                XCTAssertEqual(joined.count, 0)
+            }
+            // The 542 failure signature must be absent before any explicit
+            // dismissal: a disappearing child called abandon("disappear"),
+            // dismissed itself, and the parent then wrote the binding nil and
+            // cancelled the still-live preparation.
+            XCTAssertEqual(a.filter { $0.stage == "export.options.abandon" }.count, 0,
+                           "Original-failure evidence: no child abandonment may precede an explicit dismissal")
+            XCTAssertEqual(a.filter { $0.stage == "export.sheet.bindingSet" && $0.detail["nil"] == "true" }.count, 0,
+                           "the parent presentation binding must survive the transient remount")
+            XCTAssertEqual(a.filter { $0.stage == "export.prepare.cancelRequested" }.count, 0,
+                           "no cancelled parent before an explicit dismissal")
+            XCTAssertTrue(a.contains { $0.stage == "export.options.loaded"
+                && $0.detail["view"] == loadBegins.last?.detail["view"] })
+            XCTAssertNotNil(window.rootViewController?.presentedViewController,
+                            "the options sheet must stay mounted through the accepted automatic preview")
+
+            // Actual artifact and page evidence. The automatic generation is the
+            // default print of the verified frozen source; the direct baseline
+            // test above proves this exact fixture prints two horizontal A4
+            // slices, and Main's device trace measured 2 pages for this first
+            // automatic token. A different count means the automatic path
+            // silently changed scope, not that the private fixture grew.
+            let generateOK = try XCTUnwrap(a.first { $0.stage == "export.generate.ok" })
+            let pages = try XCTUnwrap(Int(generateOK.detail["pages"] ?? ""))
+            let bytes = try XCTUnwrap(Int(generateOK.detail["bytes"] ?? ""))
+            XCTAssertEqual(pages, 2)
+            XCTAssertGreaterThan(bytes, 4_096)
+            let sheetViewA = try XCTUnwrap(window.rootViewController?.presentedViewController?.view)
+            try await wait("accepted artifact surfaced in the dock (request A)") {
+                Self.accessibilityNodes(in: sheetViewA).contains { $0.identifier == "office.pdf.inlinePreview" }
+            }
+            let measured = Self.accessibilityNodes(in: sheetViewA)
+                .first { $0.identifier == "office.pdf.measuredPages" }
+            XCTAssertNotNil(measured, "the dock must show the page count measured from the actual PDF")
+            XCTAssertTrue(measured?.label.contains(String(pages)) ?? false,
+                          "the visible measured count must equal the generated page count")
+            attachWindow(window, "editable-owner-print-accepted-request-a")
+
+            // Explicit Cancel on the delivered-idle sheet: this is the child's
+            // own dismissal, so the parent's nil write and any cancellation must
+            // come AFTER the abandon, and nothing may publish afterwards.
+            let cancelAAt = Date()
+            try await activateToolbarButton(in: window, labels: ["取消", "Cancel"])
+            try await wait("explicit Cancel A dismissed the options sheet") {
+                window.rootViewController?.presentedViewController == nil
+            }
+            // Give any leaked debounce/pending consumer the chance to publish:
+            // the renderer debounces 550 ms and one render needs seconds.
+            try await Task.sleep(for: .seconds(2))
+            let aFull = ownerEvents(for: session, since: postedA)
+            attachStages(aFull, "request-a-window.json")
+            let abandonA = try XCTUnwrap(aFull.first {
+                $0.stage == "export.options.abandon" && $0.detail["source"] == "cancelButton"
+            }, "the Cancel toolbar button must run the sheet's own explicit abandon")
+            XCTAssertGreaterThanOrEqual(abandonA.at, cancelAAt)
+            let firstNil = aFull.first { $0.stage == "export.sheet.bindingSet" && $0.detail["nil"] == "true" }
+            XCTAssertNotNil(firstNil, "the explicit dismissal must write the parent presentation binding nil")
+            XCTAssertGreaterThanOrEqual(firstNil?.at ?? .distantPast, abandonA.at)
+            if let firstCancel = aFull.first(where: { $0.stage == "export.prepare.cancelRequested" }) {
+                XCTAssertGreaterThanOrEqual(firstCancel.at, abandonA.at,
+                    "request cancellation belongs to the explicit dismissal only")
+            }
+            XCTAssertEqual(aFull.filter { $0.at > abandonA.at && [
+                "export.preview.generationAccepted", "export.preview.generationStarted",
+                "export.generate.started", "export.generate.ok"].contains($0.stage) }.count, 0,
+                "an explicit Cancel releases the session without late successful publication")
+            XCTAssertFalse(UIPrintInteractionController.shared.isPresented,
+                           "Cancel must leave no nested print surface mounted")
+            try await wait("session usable again after Cancel A") { session.canAct }
+
+            // MARK: Request B — an explicit Cancel while the real engine renders.
+            let postedB = try await requestNativePrint(web: web, session: session,
+                                                       baseGeneration: session.printRequestGeneration)
+            try await wait("options sheet mounted (request B)") {
+                window.rootViewController?.presentedViewController != nil
+            }
+            try await wait("automatic render running (request B)") {
+                ownerEvents(for: session, since: postedB).contains { $0.stage == "export.generate.started" }
+            }
+            // The pinned engine needs seconds for this workbook; cancelling well
+            // inside that window means any late completion must hit the accept
+            // fence instead of publishing into a dismissed sheet.
+            try await Task.sleep(for: .milliseconds(600))
+            let cancelBAt = Date()
+            try await activateToolbarButton(in: window, labels: ["取消", "Cancel"])
+            try await wait("explicit Cancel B dismissed the options sheet") {
+                window.rootViewController?.presentedViewController == nil
+            }
+            try await Task.sleep(for: .seconds(2))
+            let b = ownerEvents(for: session, since: postedB)
+            attachStages(b, "request-b-window.json")
+            let abandonB = try XCTUnwrap(b.first {
+                $0.stage == "export.options.abandon" && $0.detail["source"] == "cancelButton"
+            })
+            XCTAssertGreaterThanOrEqual(abandonB.at, cancelBAt)
+            XCTAssertEqual(b.filter { $0.stage == "export.options.abandon"
+                && $0.detail["source"] != "cancelButton" }.count, 0,
+                "again no child may abandon on a disappearance")
+            XCTAssertEqual(b.filter { ($0.stage == "export.sheet.bindingSet" && $0.detail["nil"] == "true"
+                || $0.stage == "export.prepare.cancelRequested") && $0.at < abandonB.at }.count, 0,
+                "again no cancelled parent before the explicit dismissal")
+            let acceptedB = b.filter { $0.stage == "export.preview.generationAccepted" }
+            XCTAssertEqual(acceptedB.filter { $0.at > abandonB.at }.count, 0,
+                "a render interrupted by the explicit Cancel must never publish afterwards")
+            if acceptedB.isEmpty {
+                XCTAssertTrue(b.contains {
+                    ($0.stage == "export.preview.generationCancelled"
+                        || $0.stage == "export.preview.generationFenced") && $0.at >= cancelBAt
+                }, "the interrupted generation must be reported cancelled or fenced, not vanish silently")
+            }
+            XCTAssertFalse(UIPrintInteractionController.shared.isPresented)
+            try await wait("session usable again after Cancel B") { session.canAct }
+
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha)
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            await session.release()
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            // Preserve the first failure, as the read-only host test does, before
+            // release can report a secondary WebKit removal error.
+            XCTFail("Editable-owner print remount regression failed: \(error)")
+            await session.release()
+            return
+        }
+    }
+
     func testPreparationCancellationAndOwnershipRemainFenced() async throws {
         let (source, sha, root) = try input()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -530,6 +767,138 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
         XCTAssertTrue(condition(), description)
         if !condition() { throw CocoaError(.coderInvalidValue) }
+    }
+
+    /// The durable owner-stage events of exactly one Office session inside one
+    /// print request, ordered by record time. Content-free by the recorder's
+    /// own contract; the per-container `view` ids are the remount evidence.
+    private func ownerEvents(for session: OfficeFileSession, since: Date) -> [OfficeStageEvent] {
+        OfficeStageRecorder.shared.events.filter {
+            $0.session == session.stageTraceSessionID && $0.at >= since
+        }
+    }
+
+    /// Posts the exact message the existing engine's Print toolbar sends and
+    /// returns the timestamp the production handler accepted it. The real
+    /// Notes owner reaches the same options sheet through the document menu;
+    /// both entrypoints only differ in the breadcrumb's `source` and create the
+    /// identical `OfficePDFPresentationRequest`. A busy rejection (the handler's
+    /// own error message) is retried the way a user re-taps.
+    private func requestNativePrint(web: WKWebView, session: OfficeFileSession,
+                                    baseGeneration: Int) async throws -> Date {
+        var postedAt = Date()
+        for _ in 1...2 {
+            postedAt = Date()
+            _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
+            let deadline = Date().addingTimeInterval(20)
+            while session.printRequestGeneration == baseGeneration, Date() < deadline {
+                try await Task.sleep(for: .milliseconds(100))
+            }
+            if session.printRequestGeneration > baseGeneration { return postedAt }
+            session.error = nil
+            try await Task.sleep(for: .seconds(2))
+        }
+        postedAt = Date()
+        _ = try await web.evaluateJavaScript("(() => { window.webkit.messageHandlers.lok.postMessage('PRINT'); return true; })()")
+        try await wait("native PRINT routed to app options") {
+            session.printRequestGeneration > baseGeneration
+        }
+        return postedAt
+    }
+
+    /// Drives the presented options sheet's Cancel toolbar button through its
+    /// real action path: first the accessibility activation SwiftUI wires to the
+    /// production Button action, then — if the bridge has not vended the element
+    /// yet — a genuine touch-up-inside delivered to the hosted control carrying
+    /// the same visible title. Nothing reaches into view state or calls the
+    /// sheet directly, so a broken explicit-dismissal path cannot pass by
+    /// construction.
+    private func activateToolbarButton(in window: UIWindow, labels: Set<String>) async throws {
+        let sheet = try XCTUnwrap(window.rootViewController?.presentedViewController,
+                                  "the options sheet must be presented before an explicit Cancel")
+        let deadline = Date().addingTimeInterval(30)
+        while Date() < deadline {
+            for node in Self.accessibilityNodes(in: sheet.view) where labels.contains(node.label) {
+                if node.activate() { return }
+            }
+            for control in Self.uiButtons(in: sheet.view) where labels.contains(control.title) {
+                control.button.sendActions(for: .touchUpInside)
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw CocoaError(.featureUnsupported, userInfo: [
+            NSLocalizedDescriptionKey: "the explicit Cancel control must be reachable in the presented options sheet"])
+    }
+
+    /// Content-free lifecycle evidence for Main: the exact stage window an
+    /// assertion set consumed, including every per-container `view` id.
+    private func attachStages(_ events: [OfficeStageEvent], _ name: String) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
+        guard let data = try? encoder.encode(events) else { return }
+        let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.json")
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private struct HostedAccessibilityNode {
+        let identifier: String
+        let label: String
+        let activate: @MainActor () -> Bool
+    }
+
+    private struct HostedButton {
+        let title: String
+        let button: UIButton
+    }
+
+    /// Collects the accessibility nodes a hosted tree vends. The element count
+    /// is queried on every container first: SwiftUI builds its assistive tree
+    /// lazily, and this test is the client. UIAccessibilityElement wrappers are
+    /// read directly; plain UIView elements are covered by the subview walk.
+    private static func accessibilityNodes(in view: UIView) -> [HostedAccessibilityNode] {
+        var nodes: [HostedAccessibilityNode] = []
+        var visited = Set<ObjectIdentifier>()
+        func walk(_ node: UIView, depth: Int) {
+            guard depth < 64, visited.insert(ObjectIdentifier(node)).inserted else { return }
+            _ = node.accessibilityElementCount()
+            if node.isAccessibilityElement {
+                nodes.append(HostedAccessibilityNode(
+                    identifier: node.accessibilityIdentifier,
+                    label: node.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    activate: { node.accessibilityActivate() }))
+            }
+            for element in node.accessibilityElements ?? [] {
+                // Only the accessibility wrappers are read here; real UIView
+                // elements are covered by the subview walk below.
+                guard let element = element as? UIAccessibilityElement else { continue }
+                nodes.append(HostedAccessibilityNode(
+                    identifier: element.accessibilityIdentifier,
+                    label: element.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    activate: { element.accessibilityActivate() }))
+            }
+            for sub in node.subviews { walk(sub, depth: depth + 1) }
+        }
+        walk(view, depth: 0)
+        return nodes
+    }
+
+    private static func uiButtons(in view: UIView) -> [HostedButton] {
+        var found: [HostedButton] = []
+        var visited = Set<ObjectIdentifier>()
+        func walk(_ node: UIView, depth: Int) {
+            guard depth < 64, visited.insert(ObjectIdentifier(node)).inserted else { return }
+            if let button = node as? UIButton {
+                let title = (button.title(for: .normal) ?? button.accessibilityLabel ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                found.append(HostedButton(title: title, button: button))
+            }
+            for sub in node.subviews { walk(sub, depth: depth + 1) }
+        }
+        walk(view, depth: 0)
+        return found
     }
 
     private func attach(_ url: URL, _ name: String) {
