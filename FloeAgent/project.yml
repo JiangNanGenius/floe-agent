@@ -809,7 +809,7 @@ targets:
       - path: Tests/FloeSkillsTests/SkillOriginResolverTests.swift
       - path: Tests/FloeAppTests/SkillOriginTests.swift
       - path: Tests/FloeCoreTests/FoldableLayoutTests.swift
-      - path: Tests/FloeAppTests/FoldableLayoutTests.swift
+      - path: Tests/FloeAppTests/FoldableSceneLayoutTests.swift
       - path: Tests/FloeAppTests/FoldablePreferencesTests.swift
       # Task-lifecycle round (2026-10-15): the B/C/D/primary module suites run
       # INSIDE the existing App test bundle (no new target, no cold whole-SPM
