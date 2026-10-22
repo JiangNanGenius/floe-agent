@@ -45,7 +45,22 @@ class FloeApplication : Application() {
     lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
         private set
     private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
+    // G03-R3: app-owned Core->runtime-UID workspace-copy cleanup pump. It is
+    // bound at the SAME actual accepted native Root epoch as the shell pump
+    // and stays serviceable while shell/model admission is fenced.
+    private lateinit var linuxCleanup: com.floe.android.host.linux.LinuxRuntimeCleanupPump
+    // R3 trusted-host readiness authority: binds the seven live facts to the
+    // ACTUAL accepted native epoch; the shell pump consults it BEFORE any
+    // first-use workspace preflight dispatch (never a boolean override).
+    private lateinit var linuxReadiness: com.floe.android.host.linux.LinuxRuntimeReadinessController
     private var foregroundObservation: kotlinx.coroutines.Job? = null
+    /** G03-R3: Application-owned observer of the EXISTING LocalRuntimeSetupHost
+     *  state authority (verified install lifecycle). Event-driven only — the
+     *  StateFlow itself is the callback source; no idle poller, no network,
+     *  no FGS/wakelock/PiP/model work. Cancelled by the root stop observation
+     *  like every other owned job, so late emissions cannot revive a stopped
+     *  or replaced generation. */
+    private var localRuntimeObservation: kotlinx.coroutines.Job? = null
     // Created in onCreate AFTER attach; no property initializer reads Context.
     private lateinit var gatewayCapability: MutableStateFlow<SecretGatewayCapability>
 
@@ -86,6 +101,12 @@ class FloeApplication : Application() {
         super.onCreate()
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
+        linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
+        // The controller receives the APPLICATION-owned scope only to run
+        // BOUNDED, cancellable re-ingress attempts triggered by REAL
+        // lifecycle events (verified install completion, binder loss).
+        linuxReadiness = com.floe.android.host.linux.LinuxRuntimeReadinessController(this, hostScope)
+        linuxShell.readiness = linuxReadiness
         // Attached boundary: this is now safe to read applicationContext.
         // The capability flow itself is data-only and published as Loading
         // before the dispatcher's off-main bootstrap starts.
@@ -107,7 +128,16 @@ class FloeApplication : Application() {
         )
         this.runtimeCoordinator = runtimeCoordinator
         runtimeCoordinator.localRuntimeDrain = {
-            linuxShell.stopAndDrain(linuxShell.boundNativeEpoch)
+            // Retirement ordering (host contract): the shell/jobs mailbox is
+            // drained FIRST so Core owned-work/CoreIO really settles, THEN
+            // the cleanup pump services remaining runtime-UID wipe
+            // obligations over the still-open signed channel. A retained
+            // obligation keeps the drain retryable and never strands the
+            // shutdown silently — the durable V36 retry + settlement trigger
+            // remain the lifecycle authority.
+            linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
+                (linuxCleanup.boundNativeEpoch == 0L ||
+                    linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch))
         }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.
@@ -161,10 +191,16 @@ class FloeApplication : Application() {
                 started = true
                 runtimeHost?.start()
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
-                    try { runtimeHost?.nativeRootEpoch()?.let { epoch -> linuxShell.start(epoch) } }
-                    catch (_: Exception) {
-                        // Local capability remains unqualified; the existing
-                        // cloud runtime and its readiness observer stay live.
+                    val epoch = runtimeHost?.nativeRootEpoch()
+                    if (epoch != null) {
+                        // Cleanup remains available independently of model admission.
+                        runCatching { linuxCleanup.start(epoch) }
+                        try {
+                            linuxShell.start(epoch)
+                            linuxReadiness.start(epoch)
+                        } catch (_: Exception) {
+                            // Existing cloud tasks remain available.
+                        }
                     }
                 }
                 foregroundObservation = hostScope.launch(Dispatchers.IO) {
@@ -175,10 +211,44 @@ class FloeApplication : Application() {
                         observed = changed
                     }
                 }
+                // G03-R3 fresh-install / live-loss wiring (REAL events from the
+                // EXISTING setup authority only): the actual LocalRuntimeSetupHost
+                // verified install transition drives a bounded fresh prerequisite
+                // re-ingress for the CURRENT accepted root epoch, and leaving the
+                // installed state (component/rootfs actually changed) falls ALL
+                // facts NOW — even after prior qualification, which the old
+                // preflight-call-only check could miss for an already-qualified
+                // Core. The StateFlow is the event source; no polling loop.
+                localRuntimeObservation = hostScope.launch(Dispatchers.Default) {
+                    var previous: String? = null
+                    linuxSetup.state.collect { value ->
+                        val current = if (value.phase == com.floe.android.host.linux.LocalRuntimeSetupHost.Phase.INSTALLED)
+                            com.floe.android.host.linux.LinuxRuntimeReadinessController.INSTALL_PHASE
+                            else value.phase.name.lowercase()
+                        val decision = com.floe.android.host.linux.LinuxRuntimeReadinessController
+                            .lifecycleChange(previous, current)
+                        previous = current
+                        if (decision == com.floe.android.host.linux.LinuxRuntimeReadinessController
+                                .LifecycleChange.NONE
+                        ) return@collect
+                        val epoch = linuxShell.boundNativeEpoch
+                        if (epoch <= 0) return@collect
+                        when (decision) {
+                            com.floe.android.host.linux.LinuxRuntimeReadinessController
+                                .LifecycleChange.REINGRESS -> linuxReadiness.onInstallVerified(epoch)
+                            com.floe.android.host.linux.LinuxRuntimeReadinessController
+                                .LifecycleChange.INVALIDATE -> linuxReadiness.invalidate("install_changed")
+                            com.floe.android.host.linux.LinuxRuntimeReadinessController
+                                .LifecycleChange.NONE -> Unit
+                        }
+                    }
+                }
             } else if (capability is RuntimeBootstrapCapability.Stopped) {
                 // The coordinator published this only after actual native
                 // owner/store drain, including the local-runtime gate.
                 foregroundObservation?.cancel()
+                localRuntimeObservation?.cancel()
+                linuxReadiness.stop(linuxShell.boundNativeEpoch)
                 kotlinx.coroutines.withContext(Dispatchers.IO) { runtimeHost?.runForeground?.releaseAllForShutdown() }
             }
         }

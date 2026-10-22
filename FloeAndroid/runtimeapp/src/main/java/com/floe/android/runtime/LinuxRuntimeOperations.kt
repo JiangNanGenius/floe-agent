@@ -30,14 +30,32 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
     private val installer = RootfsInstaller(File(root, "Installer"))
     private val authority = LinuxAuthorityClient(context)
     private val supervisor: RuntimeWorkSupervisor
+    private val census: ProcCensus
     private val cancelPreparation = AtomicBoolean()
     private val installID = AtomicReference<String?>()
+    // R3 first-use preflight ownership (kernel admission already serializes
+    // this with install/shell work through hasOwnedWork()).
+    private val activePreflightID = AtomicReference<String?>()
+    private val preflightCancelled = AtomicBoolean()
+    // The ACTUAL verified published-revision archive digest, set only after
+    // the ORIGINAL installer manifest verification succeeds in configure().
+    // Never minted from a string; absent (null) means NOT installed-proof.
+    @Volatile private var rootfsReceiptDigest: String? = null
     private val progress = AtomicReference(JSONObject().put("phase", "not_installed"))
     private val pumpExecutor = java.util.concurrent.ThreadPoolExecutor(1, 1, 30,
         java.util.concurrent.TimeUnit.SECONDS, java.util.concurrent.ArrayBlockingQueue(1)) {
             Thread(it, "floe-linux-pty")
         }.apply { allowCoreThreadTimeOut(true) }
     private val heldLease = AtomicReference<LinuxAuthorityClient.Lease?>()
+    // G03-R3 cleanup lane receiver (job-7e9db10b801940c2). Constructed after
+    // the supervisor; consumes ONLY the typed `runtimeWorkspaceCopies.clear`
+    // control and never runs during an admitted workload (the kernel executes
+    // it on the same single control thread; the receiver re-probes busy).
+    private val workspaceCleanup by lazy {
+        RuntimeWorkspaceCleanup(context, authority, supervisor) {
+            installID.get() != null || heldLease.get() != null || running.get() != null
+        }
+    }
 
     private class Running(val lease: LinuxAuthorityClient.Lease, val job: SupervisedPtyJob,
                           val deadline: Long, val scratch: File,
@@ -62,7 +80,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             pair.runtime, runtime.signatureSha256.first(), Process.myUid(), Process.myPid(), reader)
         val boundary = (result as? BoundaryCheck.Accepted)?.boundary ?: error("Runtime UID boundary unavailable")
         val signals = PosixSignalBoundary()
-        val census = ProcCensus(boundary, LinuxProcReader, signals)
+        census = ProcCensus(boundary, LinuxProcReader, signals)
         val quiescer = RuntimeUidQuiescer(boundary, census, signals)
         supervisor = RuntimeWorkSupervisor(boundary, DefaultLinuxRuntimeBackend(), census, signals, quiescer)
         val handshake = authority.handshake()
@@ -72,9 +90,11 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             System.currentTimeMillis(), 24L * 60 * 60 * 1000)
         installer.sweepStaleWorkspace(maxAgeMs = 0)
         LinuxRootfsMaterializer().restoreMissingLayersBeforeRegistry(File(root, "Environments/Containers"))
+        RuntimeNetworkConfiguration.sweepStaleSocketDirs(context)
+        RuntimeNetworkConfiguration.installGuestResolverAssets(context) // fail-closed signed-asset staging
         if (revisionDirectory.exists()) {
             configure()
-            progress.set(JSONObject().put("phase", "installed").put("baseRevision", revision))
+            progress.set(installedProgress())
         }
     }
 
@@ -98,9 +118,14 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "environment.list" -> { fields(request.payload, emptySet()); configure(); authority.list() }
         "shell.start" -> start(request.payload, checkNotNull(workspaceGrant), cancelled)
+        "workspace.preflight" -> preflight(request, checkNotNull(workspaceGrant), cancelled)
         "shell.poll" -> poll(request.payload)
         "shell.input" -> input(request.payload)
         "shell.resize" -> resize(request.payload)
+        // G03-R3: the scoped runtime-UID workspace-copy wipe. The receiver
+        // returns a TYPED cleared/refused result (never throws for a refusal
+        // — an honest retention keeps the Core obligation retryable).
+        "runtimeWorkspaceCopies.clear" -> workspaceCleanup.execute(request)
         else -> throw IllegalArgumentException("Unknown runtime operation")
     }
 
@@ -123,7 +148,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             }
             check(!cancelPreparation.get() && !cancelled())
             configure()
-            progress.set(JSONObject().put("phase", "installed").put("requestID", request.id).put("baseRevision", revision))
+            progress.set(installedProgress(requestID = request.id))
             return JSONObject(progress.get().toString())
         } catch (failure: Exception) {
             progress.set(JSONObject().put("phase", if (cancelPreparation.get()) "cancelled" else "failed")
@@ -136,10 +161,38 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         val manifest = installer.verifyPublishedRevision(revisionDirectory)
         check(manifest.archiveSha256 == catalog.archiveSha256 && manifest.catalogId == catalog.catalogId)
         authority.configure(File(revisionDirectory, "rootfs"), revision)
+        // Published revision verification PASSED: this is the genuine
+        // rootfs receipt the trusted host may ingest.
+        rootfsReceiptDigest = manifest.archiveSha256
+    }
+
+    /** Honest installed snapshot: the receipt fields appear ONLY after a
+     *  real verifyPublishedRevision pass; a mere directory presence never
+     *  qualifies them. */
+    private fun installedProgress(requestID: String? = null): JSONObject {
+        val value = JSONObject().put("phase", "installed").put("baseRevision", revision)
+        rootfsReceiptDigest?.let { value.put("rootfsReceiptDigest", it).put("rootfsVersion", revision) }
+        requestID?.let { value.put("requestID", it) }
+        return value
+    }
+
+    /** First-use NON-EXECUTING workspace preflight (R3). Same single-slot
+     *  serialization as shell/install; the helper itself can spawn nothing. */
+    private fun preflight(request: RuntimeWire.Request, grant: android.os.IBinder,
+                          cancelled: () -> Boolean): JSONObject {
+        check(activePreflightID.compareAndSet(null, request.id)) { "preflightBusy" }
+        preflightCancelled.set(false)
+        try {
+            return RuntimeWorkspacePreflight.execute(
+                PreflightHarness(context, authority, supervisor, census,
+                    ensureConfigured = { recover(); configure() },
+                    ownedPath = ::ownedPath, heldLease = heldLease, installID = installID),
+                request.payload, grant) { cancelled() || preflightCancelled.get() }
+        } finally { activePreflightID.compareAndSet(request.id, null) }
     }
 
     private fun start(payload: JSONObject, workspaceGrant: android.os.IBinder, cancelled: () -> Boolean): JSONObject {
-        fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd", "env", "rows", "columns", "timeoutSeconds"))
+        fields(payload, setOf("projectID", "runID", "conversationID", "environmentID", "command", "cwd", "env", "rows", "columns", "timeoutSeconds", "stdinDelivery"))
         check(heldLease.get() == null && installID.get() == null)
         cancelPreparation.set(false)
         recover()
@@ -167,6 +220,15 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         require(rows in 1..512 && columns in 1..512)
         val seconds = payload.optDouble("timeoutSeconds", 600.0)
         require(seconds.isFinite() && seconds in 0.05..86_400.0)
+        // Stdin delivery is explicit and platform-owned: the peer-verified
+        // core host adapter (the same platform code path that already owns
+        // command/env/lease fields) sends "pipe" only for one-shot job runs
+        // and omits the field for interactive PTY input. The value set is
+        // closed and unknown values refuse the start, so no model or
+        // environment string can pick a descriptor mode or an execution
+        // path; "pipe" only re-describes THIS guest launch's stdin.
+        val stdinDelivery = payload.optString("stdinDelivery", "pty")
+        require(stdinDelivery in setOf("pty", "pipe")) { "stdinDelivery invalid" }
         val lease = authority.acquire(payload)
         heldLease.set(lease)
         var child: Running? = null
@@ -200,11 +262,13 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             val spec = PRootLaunchSpec(File(context.applicationInfo.nativeLibraryDir), writable, scratch,
                 "/workspace" + (if (cwd == ".") "" else "/$cwd"), "/home/floe", "/tmp",
                 listOf(LinuxBind(workspace, "/workspace"), LinuxBind(File("/dev"), "/dev"), LinuxBind(File("/proc"), "/proc")) +
-                    listOfNotNull(RuntimeNetworkConfiguration.resolverBind(context, scratch)),
+                    RuntimeNetworkConfiguration.prepareBinds(context, scratch),
                 RunOwnership(lease.environmentID, descriptor.getString("runID"), descriptor.getString("projectContainerID"), writable.path),
                 emulateGuestRoot = true).command(listOf("/bin/sh", "-lc", command),
                     guestVariables(descriptor, writable, ordered) + extraEnvironment +
-                        mapOf("FLOE_ENVIRONMENT_ID" to lease.environmentID), rows, columns)
+                        mapOf("FLOE_ENVIRONMENT_ID" to lease.environmentID), rows, columns,
+                    stdinDelivery = if (stdinDelivery == "pipe") StdinDelivery.OneShotPipe
+                    else StdinDelivery.PtyInput)
             val terminal = AtomicReference<WorkloadTerminal?>()
             when (val outcome = supervisor.start(spec, LeaseToken(lease.id, descriptor.getString("runID"))) { terminal.set(it) }) {
                 is StartOutcome.Refused -> error("Linux process was not admitted")
@@ -239,6 +303,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         } catch (failure: Exception) {
             if (safeToAbandon) {
                 runCatching { preparedWorkspace?.close() }
+                RuntimeNetworkConfiguration.release() // real use ended before spawn
                 authority.abandonUnstarted(lease)
                 heldLease.compareAndSet(lease, null)
                 preparedScratch?.let { cleanupScratch(it, lease.id) }
@@ -312,6 +377,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             owned.nativeReleaseFailed = false
             owned.finished.set(true); completed.set(owned)
             heldLease.compareAndSet(owned.lease, null); running.compareAndSet(owned, null)
+            RuntimeNetworkConfiguration.release() // the owned session's real resolver use has ended
             owned.cleanupDeferred = !cleanupScratch(owned.scratch, owned.lease.id)
         }
     }
@@ -355,6 +421,13 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             } }
             .also { result -> (owned.terminal.get() as? WorkloadTerminal.Cancelled)?.let { result.put("stopReason", it.reason) } }
             .also { result -> owned.job.exitResult?.let { result.put("exitCode", it.exitCode).put("termSig", it.termSig).put("waitErrno", it.waitErrno) } }
+            // Additive honest stdin facts for one-shot pipe sessions only
+            // (counts and descriptor state, never stdin content).
+            .also { result -> owned.job.stdinStatus()
+                .takeIf { it.delivery == StdinDelivery.OneShotPipe }
+                ?.let { s -> result.put("stdin", JSONObject().put("delivery", "pipe")
+                    .put("acceptedBytes", s.acceptedBytes).put("eof", s.eofDelivered)
+                    .also { e -> s.lastErrno?.let { e.put("lastErrno", it) } }) } }
     }
 
     private fun input(payload: JSONObject): JSONObject {
@@ -365,10 +438,50 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         require(encoded.length <= 22_000)
         val bytes = Base64.decode(encoded, Base64.NO_WRAP)
         require(bytes.size <= 16_384)
-        return when (val result = owned.job.writeStdin(bytes)) {
-            is StdinWrite.Complete -> JSONObject().put("acceptedBytes", result.bytes)
-            is StdinWrite.Partial -> JSONObject().put("acceptedBytes", result.bytes).put("partial", true)
-            is StdinWrite.Failed -> JSONObject().put("acceptedBytes", result.bytesAlreadyWritten).put("errno", result.errno)
+        if (bytes.isEmpty() && owned.job.stdinDelivery == StdinDelivery.OneShotPipe) {
+            // EMPTY PAGE ON A ONE-SHOT PIPE SESSION = REAL EOF COMMAND: close
+            // the owned stdin write end. Zero bytes can never be confused
+            // with stdin data (unlike an EOT byte, which is ordinary data in
+            // raw mode). This is distinct from process exit and output drain:
+            // the shared PTY master stays open. On PTY-delivery sessions an
+            // empty page remains the unchanged no-op.
+            return when (val eof = owned.job.requestStdinEof()) {
+                is StdinEof.Closed -> JSONObject().put("acceptedBytes", 0)
+                    .put("stdinEof", if (eof.idempotent) "closed-idempotent" else "closed")
+                is StdinEof.Failed -> JSONObject().put("acceptedBytes", 0)
+                    .put("stdinEof", "failed").put("errno", eof.errno)
+                is StdinEof.Rejected -> JSONObject().put("acceptedBytes", 0)
+                    .put("stdinEof", "rejected").put("reason", eof.reason)
+            }
+        }
+        // Feed one <=16 KiB wire page through the bounded stdin pump in
+        // maxStdinChunkBytes chunks so a valid wire page is never refused
+        // wholesale. acceptedBytes is the progress cursor: the caller re-sends
+        // only the remainder after Partial/Failed, so bytes are never
+        // duplicated and never silently dropped.
+        var accepted = 0
+        var partial = false
+        var errno: Int? = null
+        while (accepted < bytes.size) {
+            val take = minOf(owned.job.maxStdinChunkBytes, bytes.size - accepted)
+            when (val result = owned.job.writeStdin(bytes, accepted, take)) {
+                is StdinWrite.Complete -> accepted += result.bytes
+                is StdinWrite.Partial -> {
+                    accepted += result.bytes
+                    partial = true
+                    errno = result.errno
+                    break
+                }
+                is StdinWrite.Failed -> {
+                    accepted += result.bytesAlreadyWritten
+                    errno = result.errno
+                    break
+                }
+            }
+        }
+        return JSONObject().put("acceptedBytes", accepted).also {
+            if (partial) it.put("partial", true)
+            if (errno != null) it.put("errno", errno)
         }
     }
 
@@ -385,6 +498,11 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         if (request.operation == "install.cancel") {
             fields(request.payload, setOf("requestID"))
             require(request.payload.getString("requestID") == installID.get())
+        } else if (request.operation == RuntimeWire.PREFLIGHT_CANCEL) {
+            // Target-scoped: cancels ONLY the matching own preflight request;
+            // an unrelated workload is never touched by this path.
+            fields(request.payload, setOf("requestID"))
+            require(request.payload.getString("requestID") == activePreflightID.get())
         } else {
             fields(request.payload, setOf("sessionID"))
             require(request.payload.getString("sessionID") == heldLease.get()?.id)
@@ -394,6 +512,15 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
     override fun stopOwnedWork(request: RuntimeWire.Request?) {
         // Recheck at execution time; a stale cancellation never stops a new task.
         if (request != null) validateCancellation(request)
+        if (request?.operation == RuntimeWire.PREFLIGHT_CANCEL ||
+            (request == null && activePreflightID.get() != null)
+        ) {
+            // A preflight has NO process: authority.cancel (the started-lease
+            // path) does not apply. Flag the owning thread; it performs the
+            // real recoverable abort and the no-children lease release itself.
+            preflightCancelled.set(true)
+            return
+        }
         cancelPreparation.set(true)
         if (request?.operation == "install.cancel") return
         val owned = running.get() ?: run {

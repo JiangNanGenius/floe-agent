@@ -328,14 +328,29 @@ public actor CapabilitiesDomain {
                 source: source, temporaryCeilingIncluded: false)
         }
         // Backend routing honesty: linuxGuest/remoteHost families need the
-        // G03 resolved environment/jobs. Never usable in G02.
+        // G03 resolved environment/jobs. G03-R3: the linuxGuest leg reads
+        // the SAME live readiness authority that gates dispatch and
+        // registration (`RuntimeFacadeLinuxBindings.isCapabilityQualified`
+        // over `LinuxReadinessIngress`), so qualification and ordinary
+        // route discovery can never disagree. remoteHost stays unresolved.
         let decision = CapabilityExecutionRouter.decision(for: descriptor.name)
         switch decision.backend {
-        case .linuxGuest, .remoteHost:
+        case .remoteHost:
             return FacadeToolAvailabilityItem(
                 descriptor: descriptor, availability: .notImplemented,
                 prerequisites: [.init(kind: "g03Environment", reason: "backendUnresolved")],
                 source: source, temporaryCeilingIncluded: false)
+        case .linuxGuest:
+            guard RuntimeFacadeLinuxBindings.shared.isCapabilityQualified else {
+                return FacadeToolAvailabilityItem(
+                    descriptor: descriptor, availability: .notImplemented,
+                    prerequisites: [.init(kind: "g03Environment",
+                                          reason: "linuxGuestUnqualified")],
+                    source: source, temporaryCeilingIncluded: false)
+            }
+            // Live-qualified AND present in the registry (the registry
+            // already filtered runner availability) — continue with the
+            // ordinary overlay checks below.
         case .nativeApple:
             break // compiled native path — continue with the overlay checks.
         @unknown default:

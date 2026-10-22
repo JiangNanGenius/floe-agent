@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "protocol": "Floe guest system DNS bridge v1",
+  "authority": "Main frozen cross-language interface; changes require coordinated version change, not unilateral edits",
+  "transport": "AF_UNIX SOCK_STREAM, filesystem namespace, one request and one response per connection",
+  "guestSocketPath": "/run/floe-dns/s",
+  "bindContract": "Runtime creates short private0700 per-work socket directory under its own filesDir, listens at s, binds that directory only at /run/floe-dns. Keep real host sun_path below108 bytes. No abstract socket, network port or model-controlled host path.",
+  "callerAuth": "Runtime checks accepted LocalSocket.peerCredentials.uid == android.os.Process.myUid(); private filesystem directory also excludes other Android UIDs. Guest helper is same runtime UID. No provider/Core secret or unauthenticated network relay.",
+  "frame": {
+    "magicHex": "46444e31",
+    "headerBytes": 6,
+    "dnsLength": "unsigned16 big endian",
+    "dnsPayloadMinBytes": 12,
+    "dnsPayloadMaxBytes": 4096,
+    "request": "magic + DNS message length + raw DNS message",
+    "response": "same framing + raw DNS response",
+    "connection": "exactly one transaction, then close; malformed/multiple/oversized frames refused"
+  },
+  "deadlines": {
+    "queryTotalMillis": 3500,
+    "clock": "monotonic absolute deadline covering connect/write/read",
+    "inflightMax": 8,
+    "buffers": "bounded; no unbounded task/socket queue"
+  },
+  "dnsPolicy": "Android handler uses current active Network and public system resolver for each query. API>=29 DnsResolver.rawQuery flags0, separate cancellation/deadline. API28 needs system Network.getAllByName for A/AAAA rather than raw plaintext fallback. Offline returns bounded failure while local commands work; ongoing owned queries follow actual system network/PrivateDNS changes. No public/raw/base-image resolver fallback.",
+  "guestAbi": {
+    "soname": "libnss_floe.so.2",
+    "guestLibraryPath": "/usr/lib/aarch64-linux-gnu/libnss_floe.so.2",
+    "target": "aarch64-linux-gnu glibc, NOT Android bionic",
+    "glibcFloor": "2.28 or lower-compatible floor supported by pinned existing toolchain; actual rootfs Debian bookworm2.36",
+    "pageAlignmentMin": 16384,
+    "nsswitchHosts": "files floe; no dns tail fallback",
+    "requiredExports": [
+      "_nss_floe_gethostbyname_r",
+      "_nss_floe_gethostbyname2_r",
+      "_nss_floe_gethostbyname3_r",
+      "_nss_floe_gethostbyname4_r"
+    ],
+    "scope": "normal getaddrinfo-backed Python/Node HTTP/npm/apt traffic. Direct Node c-ares/dnspython/raw DNS sockets do not become NSS users; document that limitation precisely instead of claiming universal interception."
+  },
+  "assetContract": {
+    "library": "guest-resolver/libnss_floe.so.2",
+    "digest": "guest-resolver/libnss_floe.so.2.sha256",
+    "manifest": "guest-resolver/manifest.json",
+    "location": "signed runtime APK assets; Main copies verified producer output into runtimeapp/src/main/assets/guest-resolver at final integration. Kotlin owner stages immutable-asset bytes safely, verifies SHA/source-manifest bounds and binds helper into guest. Source/manifest missing never becomes ready.",
+    "manifestSchema": {
+      "schemaVersion": 1,
+      "protocol": "floe-guest-dns-v1",
+      "library": "libnss_floe.so.2",
+      "target": "aarch64-linux-gnu",
+      "glibcFloor": "2.28",
+      "soname": "libnss_floe.so.2",
+      "sourceTreeSha256": "64 lowercase hex",
+      "sources": [
+        {
+          "path": "safe module-relative source file path, sorted UTF8",
+          "sha256": "64 lowercase hex",
+          "bytes": "nonnegative integer"
+        }
+      ],
+      "toolchain": {
+        "name": "zig",
+        "version": "actual pinned version",
+        "archiveSha256": "actual pinned archive64hex"
+      },
+      "binary": {
+        "name": "libnss_floe.so.2",
+        "sha256": "64 lowercase hex",
+        "bytes": "integer1..4194304"
+      },
+      "minimumLoadAlignment": 16384,
+      "exports": [
+        "_nss_floe_gethostbyname2_r",
+        "_nss_floe_gethostbyname3_r",
+        "_nss_floe_gethostbyname4_r",
+        "_nss_floe_gethostbyname_r"
+      ]
+    },
+    "manifestRules": "Deterministic JSON; no volatile timestamps/private host paths. Source list bounded<=64, each path<=256 bytes/no absolute or traversal, manifest<=65536 bytes. sourceTreeSha256 = SHA256 of sorted UTF8 lines \"<sha256>  <path>\\n\" for public module inputs (exclude generated outputs). Runtime verifies schema/protocol/library/target/soname/size/sha+matching sidecar; source file hashes/protocol bindings are final producer+CCS validation, not model flags."
+  },
+  "ownership": "Guest-helper worker owns only this module+its producer/CCS support. Facilities owner owns Android handler/verification/install/lifecycle/NSS bind+power; no shared writes. Main owns actual final C/native/APK builds and signed assets. No dependent jobs queued.",
+  "noClaims": "Source contract only; no compiled helper or working App/device proof yet.",
+  "id": "floe-guest-dns-v1"
+}

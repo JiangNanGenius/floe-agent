@@ -8,6 +8,7 @@ import com.floe.android.runlifecycle.OperationKind
 import com.floe.android.runlifecycle.RunForegroundController
 import com.floe.android.runlifecycle.RunStopHandler
 import com.floe.android.runtimeipc.RuntimeConnection
+import com.floe.android.runtimeipc.RuntimePeerProof
 import com.floe.android.workspacebridge.CoreWorkspaceGrant
 import com.floe.android.workspacebridge.WorkspaceOwnershipProbe
 import kotlinx.coroutines.*
@@ -39,6 +40,12 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         @Volatile var lease: ForegroundLease? = null
     }
     private val jobForeground = ConcurrentHashMap<String, OwnedJobForeground>()
+    /** R3 first-use NON-EXECUTING workspace preflights (one per real run). */
+    private val preflights = ConcurrentHashMap<String, OwnedPreflight>()
+    /** App-owned live readiness controller. Set by Application BEFORE
+     *  [start]; a null controller means no preflight can ever qualify
+     *  (fail closed), never a boolean bypass. */
+    @Volatile var readiness: LinuxRuntimeReadinessController? = null
     val boundNativeEpoch: Long get() = epoch.get()
 
     fun requestSessionStop(sessionID: String) {
@@ -134,12 +141,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         admissionClosed.set(true)
         LinuxShellNative.suspendAdmission(expectedEpoch)
         work.values.forEach { owned -> scope.launch(Dispatchers.IO) { owned.requestStop() } }
+        // Target-scoped: cancels ONLY this host's own preflight requests.
+        // Unrelated shell/job work on the runtime side is never touched.
+        preflights.values.forEach { owned -> scope.launch(Dispatchers.IO) { owned.requestCancel() } }
     }
 
     suspend fun stopAndDrain(expectedEpoch: Long, budgetMillis: Long = 15_000): Boolean {
         stop(expectedEpoch)
         val drained = withTimeoutOrNull(budgetMillis) {
-            while (work.isNotEmpty()) delay(100)
+            while (work.isNotEmpty() || preflights.isNotEmpty()) delay(100)
             // Job/shell processors must consume real release proofs before
             // their mailbox is fenced and the original root can close.
             com.floe.android.bridge.JobsNative.drain(10_000) == 1 && LinuxShellNative.drain(10_000) == 1
@@ -169,6 +179,13 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             }
             if (operation == "host.shellSettlement") {
                 complete(claim, 0, settlement(payload, acceptedEpoch)); return
+            }
+            if (operation == "host.workspacePreflight") {
+                // R3 first-use NON-EXECUTING preflight (Main amendment
+                // r3-first-use-blocking-makeService-hook-v1). Handled BEFORE
+                // the shell admission gates: it never starts a shell and no
+                // command can cross this session.
+                preflight(claim, payload, acceptedEpoch); return
             }
             if (operation == "shell.start") {
                 check(!admissionClosed.get())
@@ -292,6 +309,459 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 delay(1_000)
             }
         }
+    }
+
+    // MARK: - R3 first-use NON-EXECUTING workspace preflight
+    // (Main amendment r3-first-use-blocking-makeService-hook-v1; the frozen
+    // Core sequence 1-9 with the real grant/lease/index evidence.)
+
+    private class PreflightUncertain(val reason: String) : IllegalStateException(reason)
+
+    private inner class OwnedPreflight(
+        val controlID: String, val nativeEpoch: Long, val runID: String,
+        val conversationID: String, val environmentID: String?,
+    ) {
+        lateinit var lease: ForegroundLease
+        var client: RuntimeConnection? = null
+        var workspaceGrant: CoreWorkspaceGrant? = null
+        val connectionLock = Mutex()
+        val stop = AtomicBoolean()
+        /** True once a request may have crossed the wire. Uncertain claims
+         *  are retired ONLY by an authenticated same-request terminal or a
+         *  proven peer-generation retirement — never by a time budget. */
+        val dispatchedRemote = AtomicBoolean()
+        private val grantClosed = AtomicBoolean()
+        val reconcileStarted = AtomicBoolean()
+        /** The runtime PROCESS generation this claim was actually dispatched
+         *  to (measured anchored identity). Reconciliation compares against
+         *  it; it never trusts an unmeasured string. */
+        @Volatile var dispatchedPeerToken: String? = null
+
+        suspend fun exchange(operation: String, payload: JSONObject, requestID: String = controlID): JSONObject {
+            val connection = connectionLock.withLock {
+                client ?: RuntimeConnection(context, lease.runtimePermit, workspaceGrant).also {
+                    try { it.connect().get(15, TimeUnit.SECONDS); client = it }
+                    catch (failure: Exception) { it.close(); throw failure }
+                }
+            }
+            try { return result(connection.exchange(operation, payload, requestID)) }
+            catch (failure: Exception) {
+                connectionLock.withLock { if (client === connection) { client = null; connection.close() } }
+                throw failure
+            }
+        }
+
+        /** Target-scoped cancel for THIS preflight request only (the original
+         *  control UUID travels as the wire request id). It never stops an
+         *  unrelated shell/job workload A. A cancel REQUEST is never treated
+         *  as settlement: the owned reconciliation still has to observe the
+         *  same request's real terminal (or proven retirement) before any
+         *  ownership release. */
+        suspend fun requestCancel() {
+            stop.set(true)
+            try { exchange("workspace.preflight.cancel", JSONObject().put("requestID", controlID)) }
+            catch (_: Exception) { /* receipt/watch retains ownership */ }
+        }
+
+        /** Close proof channels in Main's order: authenticated connection,
+         *  then the drained Core-side grant close, then the foreground lease.
+         *  Only a FAILED drained GRANT close RETAINS ownership (returns false;
+         *  the grant and map entry stay exactly as claimed) so a swallowed
+         *  close can never be followed by an ingest. Callers retry through
+         *  the owned reconciliation. Idempotent: already-closed channels are
+         *  not re-run.
+         *
+         *  ACTUAL ForegroundLease contract (Main API review, core/runlifecycle
+         *  ForegroundLease.kt): close() returns whether THIS close removed the
+         *  registration from the refcounted owned set (last lease) — NOT a
+         *  per-holder success flag; false is also normal for an already-closed
+         *  lease, another holder or a newer same-id registration, and the
+         *  service stops itself when the set empties. A stale object can never
+         *  touch a newer registration (the registry generation check owns
+         *  that). So this lease's discharge is proven by its own idempotent
+         *  CAS `isClosed`, NEVER by the refcount boolean: close this lease
+         *  exactly once and never retain the claimed map entry on a false
+         *  return that already discharged our contribution. */
+        suspend fun settle(): Boolean {
+            connectionLock.withLock { client?.close(); client = null }
+            val grant = workspaceGrant
+            if (grant != null && !grantClosed.get()) {
+                if (!runCatching { grant.close() }.isSuccess) return false
+                grantClosed.set(true)
+                workspaceGrant = null
+            }
+            if (::lease.isInitialized && !lease.isClosed) lease.close()
+            preflights.remove(controlID, this)
+            return true
+        }
+    }
+
+    /**
+     * Owned, cancellable reconciliation for a CLAIMED preflight round trip
+     * whose settlement is still uncertain (unknown receipt, transport loss,
+     * caller cancellation). Reuses the pump's existing OwnedSession `watch`
+     * ownership pattern: a service-owned job that outlives the caller and
+     * the mailbox claim, makes bounded individual polls, and releases
+     * ownership ONLY on an authenticated SAME-request terminal or a PROVEN
+     * peer/process retirement. It never ingests, activates, re-qualifies
+     * (the claim was already answered honestly unavailable/cancelled or is
+     * lost), and never fabricates a terminal from a budget. A failed channel
+     * close is retried on the next bounded poll; until then the ORIGINAL
+     * grant + foreground lease + mailbox claim stay retained.
+     */
+    private fun reconcilePreflightOwnership(owned: OwnedPreflight) {
+        if (!owned.reconcileStarted.compareAndSet(false, true)) return
+        scope.launch(Dispatchers.IO) {
+            while (preflights[owned.controlID] === owned) {
+                if (!owned.dispatchedRemote.get()) {
+                    // Nothing crossed the wire: only the LOCAL channel close
+                    // remains; a failed close keeps the entry claimed.
+                    owned.settle()
+                } else {
+                    var state: String? = null
+                    var identity: String? = null
+                    try {
+                        state = owned.exchange("request.status", JSONObject().put("requestID", owned.controlID)).optString("state")
+                        if (state == "unknown" && owned.dispatchedPeerToken != null) {
+                            // Kernel receipts are in-memory per process: a
+                            // SUCCESSFUL exchange answering "unknown" for a
+                            // token we stamped is itself a new-generation
+                            // signal. Compare the measured identity — only a
+                            // DIFFERENT generation proves the original peer/
+                            // process retired (and its successor ran the
+                            // ORIGINAL recover()/census at service init).
+                            identity = runCatching {
+                                LinuxRuntimeReadinessController.processIdentity(
+                                    owned.exchange("status", JSONObject()))
+                            }.getOrNull()
+                        }
+                    } catch (_: Exception) {
+                        // Transport loss alone proves nothing; only a
+                        // DIFFERENT measured generation on a fresh
+                        // authenticated connection proves the original peer
+                        // is retired (and its successor ran the ORIGINAL
+                        // recover()/census at init).
+                        runCatching {
+                            identity = LinuxRuntimeReadinessController.processIdentity(
+                                owned.exchange("status", JSONObject()))
+                        }
+                    }
+                    if (isPreflightTerminalReceipt(state) || isPeerRetirementProven(owned.dispatchedPeerToken, identity)) {
+                        if (isPeerRetirementProven(owned.dispatchedPeerToken, identity))
+                            runCatching { readiness?.invalidateForEpoch(owned.nativeEpoch, "preflight_peer_retired") }
+                        owned.settle() // false: channels retained; retried next bounded poll
+                    } else if (owned.stop.get()) {
+                        runCatching { owned.requestCancel() } // ONLY the matching control cancel
+                    }
+                }
+                delay(1_000)
+            }
+        }
+    }
+
+    private suspend fun preflight(claim: Long, request: JSONObject, acceptedEpoch: Long) {
+        val runID = request.optString("runID")
+        val conversationID = request.optString("conversationID")
+        val environmentID = request.optString("environmentID").takeIf { it.isNotEmpty() }
+        val allowedKeys = setOf("runID", "conversationID", "rootEpoch") +
+            if (environmentID != null) setOf("environmentID") else emptySet()
+        fun reply(status: String, reason: String?): JSONObject =
+            JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
+                .put("runID", runID).put("conversationID", conversationID)
+                .also { if (status != "ready") it.put("reason", (reason ?: status).take(32)) }
+        val controller = readiness
+        // Exact canonical identities, closed request shape, epoch match.
+        // Anything else is a typed unavailable — a malformed request can
+        // never be retried into qualification. The refusal echoes ONLY the
+        // pump's own accepted epoch (untrusted request strings are never
+        // reflected back).
+        if (acceptedEpoch <= 0 || controller == null ||
+            request.keys().asSequence().toSet() != allowedKeys ||
+            request.optLong("rootEpoch") != acceptedEpoch ||
+            !isCanonicalUUID(runID) || !isCanonicalUUID(conversationID) ||
+            (environmentID != null && !ENVIRONMENT_ID.matches(environmentID))
+        ) {
+            complete(claim, 0, JSONObject().put("status", "unavailable")
+                .put("rootEpoch", acceptedEpoch).put("reason", "request_invalid")); return
+        }
+        if (admissionClosed.get() || LinuxShellNative.shouldStop(claim) != 0) {
+            complete(claim, 0, reply("cancelled", "run_or_epoch_stopped")); return
+        }
+        if (controller.boundEpoch != acceptedEpoch || !controller.prerequisitesLive(acceptedEpoch)) {
+            // Fast typed skip for an unconfigured/unproven peer: the Core
+            // hook continues with ordinary non-Linux tools; no failed user
+            // call and no bootstrap attempt.
+            complete(claim, 0, reply("unavailable", "prerequisites_unverified")); return
+        }
+        val owned = OwnedPreflight(UUID.randomUUID().toString(), acceptedEpoch, runID, conversationID, environmentID)
+        var registered = false
+        var dispatched = false
+        try {
+            // Foreground/work ownership is registered BEFORE any IPC or file IO.
+            owned.lease = foreground.acquireOperation(owned.controlID, OperationKind.LOCAL_EXECUTION,
+                RunStopHandler { scope.launch(Dispatchers.IO) { owned.requestCancel() } })
+            preflights[owned.controlID] = owned
+            registered = true
+            if (admissionClosed.get() || owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0)
+                error("caller_stopped")
+            // The ORIGINAL grant ABI mints from the accepted Root + the
+            // ORIGINAL run/conversation/workspace ownership rows. A run that
+            // is not actually active/owned yields NO grant (null) — a typed
+            // unavailable, never a synthetic session.
+            val grant = CoreWorkspaceGrant.create(context, acceptedEpoch, runID, trustedCallID = null,
+                isOwned = WorkspaceOwnershipProbe {
+                    epoch.get() == acceptedEpoch && preflights[owned.controlID] === owned && !owned.lease.isClosed
+                }, authority = CoreWorkspaceNativeAuthority())
+                ?: error("workspace_unresolved")
+            owned.workspaceGrant = grant
+            // Stamp the claim with the ACTUAL anchored generation it is being
+            // dispatched to; reconciliation later proves retirement ONLY by
+            // a different measured generation, never by an elapsed budget.
+            owned.dispatchedPeerToken = controller.anchoredProcessToken(acceptedEpoch)
+            val payload = JSONObject().put("projectID", grant.projectID).put("runID", runID)
+                .put("conversationID", conversationID)
+                .also { if (environmentID != null) it.put("environmentID", environmentID) }
+            // Explicit pre-queue refusals (busy) are retryable with the SAME
+            // control UUID; a transport loss is uncertain, and the kernel's
+            // per-request dedupe makes a same-ID re-send a receipt read, not
+            // a blind side-effect replay. No different-ID replay ever occurs.
+            var first: JSONObject? = null
+            var attempt = 0
+            while (first == null && attempt < 6) {
+                attempt += 1
+                if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0)
+                    error("caller_stopped")
+                try {
+                    first = owned.exchange("workspace.preflight", payload)
+                    dispatched = true; owned.dispatchedRemote.set(true)
+                } catch (failure: AdmissionRefused) {
+                    if (attempt >= 6) error("runtime_busy") else delay(1_000)
+                } catch (failure: Exception) {
+                    dispatched = true; owned.dispatchedRemote.set(true)
+                    if (attempt >= 6) throw failure else delay(500)
+                }
+            }
+            val outcome = awaitPreflightReceipt(owned, checkNotNull(first)) {
+                if (LinuxShellNative.shouldStop(claim) != 0) owned.requestCancel()
+            }
+            settlePreflight(claim, owned, controller, outcome, acceptedEpoch, runID, conversationID)
+        } catch (failure: PreflightUncertain) {
+            // Timeout, cancellation, transport loss and an unknown receipt
+            // are NOT actual retirement of the claimed remote IO. Answer THIS
+            // claim honestly ONCE (a late terminal releases ownership only
+            // and never re-qualifies), then retain the ORIGINAL grant +
+            // foreground + mailbox claim and hand the entry to its own
+            // cancellable reconciliation until the SAME request settles on
+            // the peer or peer/process retirement is actually proven.
+            val code = boundedToken(failure.reason)
+            if (LinuxShellNative.isLive(claim) == 1 && LinuxShellNative.shouldStop(claim) == 0)
+                complete(claim, 0, reply(if (code in CANCEL_CODES) "cancelled" else "unavailable", code))
+            if (code !in CANCEL_CODES && registered) controller.invalidateForEpoch(acceptedEpoch, "preflight_$code".take(48))
+            reconcilePreflightOwnership(owned)
+        } catch (failure: Exception) {
+            // Uncertain or aborted round trip: KEEP ownership (grant, lease,
+            // receipt) until the original request actually settles on the
+            // peer; then settle channels and report honestly.
+            val cancelled = failure is kotlinx.coroutines.CancellationException
+            if (dispatched) {
+                // Claimed remote IO may still run: never drop it on budget,
+                // transport loss or caller cancellation.
+                val code = if (cancelled) "caller_stopped" else boundedCode(failure)
+                if (LinuxShellNative.isLive(claim) == 1 && LinuxShellNative.shouldStop(claim) == 0)
+                    complete(claim, 0, reply(
+                        if (cancelled || code in CANCEL_CODES) "cancelled" else "unavailable", code))
+                // An explicit never-accepted busy refusal does NOT invalidate
+                // facts (nothing broke); everything else fences the
+                // generation until a fresh full re-ingest.
+                if (code != "runtime_busy" && code !in CANCEL_CODES && registered)
+                    controller.invalidateForEpoch(acceptedEpoch, "preflight_$code".take(48))
+                reconcilePreflightOwnership(owned)
+            } else {
+                // Nothing crossed the wire: only local channel closure can
+                // remain, and a FAILED close still retains ownership.
+                if (!owned.settle()) reconcilePreflightOwnership(owned)
+                val code = boundedCode(failure)
+                if (code != "runtime_busy" && code !in CANCEL_CODES && registered)
+                    controller.invalidateForEpoch(acceptedEpoch, "preflight_$code".take(48))
+                complete(claim, 0, reply(if (code in CANCEL_CODES) "cancelled" else "unavailable", code))
+            }
+            if (cancelled) throw failure
+        }
+    }
+
+    /** Verify → ingest → activate → typed complete. Called ONLY with an
+     *  authenticated SAME-request terminal receipt (never a fabricated
+     *  unknown/budget outcome). Each branch either closes the owned channels
+     *  for real (a failed drained close RETAINS them for the owned
+     *  reconciliation) or hands them to reconciliation; only REAL evidence
+     *  from the grant's captured Core-side EXPORT_FINISH receipt plus the
+     *  runtime's original lease proof can produce a "ready" reply. A lost or
+     *  already-answered claim NEVER re-qualifies (late success is settled for
+     *  ownership release only and discarded for readiness). */
+    private suspend fun settlePreflight(
+        claim: Long, owned: OwnedPreflight,
+        controller: LinuxRuntimeReadinessController, outcome: JSONObject,
+        acceptedEpoch: Long, runID: String, conversationID: String,
+    ) {
+        fun reply(status: String, reason: String?): JSONObject =
+            JSONObject().put("status", status).put("rootEpoch", acceptedEpoch)
+                .put("runID", runID).put("conversationID", conversationID)
+                .also { if (status != "ready") it.put("reason", (reason ?: status).take(32)) }
+        if (owned.stop.get() || LinuxShellNative.shouldStop(claim) != 0) {
+            // The cancel was already proven settled (this call carries the
+            // real same-request outcome); a failed channel close still keeps
+            // the entry claimed for the owned reconciliation to retry.
+            if (!owned.settle()) reconcilePreflightOwnership(owned)
+            complete(claim, 0, reply("cancelled", "preflight_cancelled")); return
+        }
+        if (outcome.optString("status") != "ready") {
+            val reason = boundedToken(outcome.optString("reason", "preflight_aborted"))
+            if (!owned.settle()) reconcilePreflightOwnership(owned)
+            // A target-scoped CANCELLATION of this own preflight is not a
+            // generation failure: ordinary facts stay live and unrelated
+            // conversations keep their qualification.
+            if (reason !in CANCEL_CODES) controller.invalidateForEpoch(acceptedEpoch, "preflight_$reason".take(48))
+            complete(claim, 0, reply(if (reason in CANCEL_CODES) "cancelled" else "unavailable", reason))
+            return
+        }
+        val leaseProofDigest = outcome.optString("leaseProofDigest")
+        val sessionToken = LinuxRuntimeReadinessController.processIdentity(outcome)
+        val peerProof = runCatching { owned.client?.currentPeerProof() }.getOrNull()
+        // The ONLY accepted file-sync evidence: the actual Core-owned
+        // terminal EXPORT_FINISH reply captured by THIS grant (result
+        // "synced", terminal marker, this session key, current epoch).
+        val receiptBytes = owned.workspaceGrant?.exportReceipt()
+        val sessionKey = owned.workspaceGrant?.sessionKey
+        // Drained grant close precedes ingest (session_close ordering). A
+        // FAILED close RETAINS ownership: never swallow it and still ingest
+        // this round trip; the owned reconciliation retries the close while
+        // the caller stays honestly unqualified.
+        if (!owned.settle()) {
+            controller.invalidateForEpoch(acceptedEpoch, "preflight_close_retained")
+            reconcilePreflightOwnership(owned)
+            complete(claim, 0, reply("unavailable", "close_retained")); return
+        }
+        val indexDigest = mappingIndexDigest(receiptBytes, sessionKey)
+        if (indexDigest == null) {
+            controller.invalidateForEpoch(acceptedEpoch, "preflight_mapping")
+            complete(claim, 0, reply("unavailable", "mapping_unsynced")); return
+        }
+        if (peerProof == null || sessionToken == null ||
+            !RuntimePeerProof.isHex64(leaseProofDigest)
+        ) {
+            controller.invalidateForEpoch(acceptedEpoch, "preflight_evidence")
+            complete(claim, 0, reply("unavailable", "evidence_incomplete")); return
+        }
+        val ingressed = controller.ingestMappingAndLease(acceptedEpoch, indexDigest, leaseProofDigest,
+            sessionToken, peerProof.peerUid, peerProof.certificateDigest, peerProof.packageVersion)
+        if (ingressed.state == LinuxRuntimeReadinessController.Activation.REFUSED) {
+            controller.invalidateForEpoch(acceptedEpoch, "preflight_${ingressed.code}".take(48))
+            complete(claim, 0, reply("unavailable", boundedToken(ingressed.code))); return
+        }
+        val activated = controller.activateAndVerify(acceptedEpoch)
+        if (activated.state != LinuxRuntimeReadinessController.Activation.READY) {
+            controller.invalidateForEpoch(acceptedEpoch, "preflight_${activated.code}".take(48))
+            complete(claim, 0, reply("unavailable", boundedToken(activated.code))); return
+        }
+        // All seven live facts + activation were re-read from Core's own
+        // status authority above; the reply echoes ONLY the measured digests.
+        complete(claim, 0, reply("ready", null)
+            .put("workspaceIndexDigest", indexDigest)
+            .put("leaseProofDigest", leaseProofDigest)
+            .put("shellRegistered", true))
+    }
+
+    /**
+     * A `completed` or `failed` receipt for THIS control UUID is an actual
+     * authenticated same-request terminal and settles normally. An `unknown`
+     * receipt (no kernel record) and a caller stop are NOT settlements: they
+     * raise [PreflightUncertain], which keeps the ORIGINAL grant + foreground
+     * + claim owned and hands them to [reconcilePreflightOwnership]. A cancel
+     * REQUEST is never settlement — only the same request's later real
+     * terminal (or proven retirement) releases it.
+     */
+    private suspend fun awaitPreflightReceipt(owned: OwnedPreflight, first: JSONObject,
+                                             onWaiting: suspend () -> Unit): JSONObject {
+        when (first.optString("state")) {
+            "completed" -> return first.getJSONObject("result")
+            "failed" -> return JSONObject().put("status", "aborted")
+                .put("reason", boundedToken(first.optString("code", "preflight_failed")))
+            "unknown" -> throw PreflightUncertain("dispatch_unknown")
+            "queued", "running" -> Unit
+            else -> return first
+        }
+        val id = first.getString("requestID")
+        while (true) {
+            if (owned.stop.get()) throw PreflightUncertain("preflight_cancelled")
+            val value = owned.exchange("request.status", JSONObject().put("requestID", id))
+            when (value.getString("state")) {
+                "completed" -> return value.getJSONObject("result")
+                "failed" -> return JSONObject().put("status", "aborted")
+                    .put("reason", boundedToken(value.optString("code", "preflight_failed")))
+                "unknown" -> throw PreflightUncertain("dispatch_unknown")
+            }
+            onWaiting(); delay(250)
+        }
+    }
+
+    /** Parse the grant's captured native EXPORT_FINISH reply (companion so
+     *  the decision is unit-testable with boundary fixtures). Honest ONLY
+     *  for result=="synced", the same sessionKey, a terminal recovery block
+     *  and a well-formed index digest. Anything else is no proof. */
+    internal fun mappingIndexDigest(receiptBytes: ByteArray?, sessionKey: String?): String? {
+        if (receiptBytes == null || sessionKey == null) return null
+        val reply = runCatching {
+            JSONObject(Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(receiptBytes)).toString())
+        }.getOrNull() ?: return null
+        if (reply.optBoolean("ok") != true || reply.optString("result") != "synced") return null
+        val recovery = reply.optJSONObject("recovery") ?: return null
+        if (recovery.optString("sessionKey") != sessionKey) return null
+        val digest = recovery.optString("indexDigest")
+        return digest.takeIf { RuntimePeerProof.isHex64(it) }
+    }
+
+    companion object {
+        internal val ENVIRONMENT_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+        /** Own-request cancellations: settle + typed "cancelled"; they do NOT
+         *  invalidate the generation's other facts or unrelated work. */
+        internal val CANCEL_CODES = setOf("cancelled", "preflight_cancelled", "caller_stopped")
+
+        /**
+         * The ACTUAL canonical Core identity grammar: Swift `UUID.uuidString`
+         * and the CoreWorkspaceGrant exact echoes are UPPER-CASE 8-4-4-4-12
+         * hex. The previous `UUID.fromString(text).toString() == text` Java
+         * idiom accepted ONLY lowercase and rejected every real Core run
+         * containing A-F (a digit-only fixture passes both grammars and
+         * therefore misses the bug; meaningful fixtures use hex letters).
+         * Java-generated lowercase runtime CONTROL request IDs are a separate
+         * grammar that RuntimeWire itself validates — untouched here. Core
+         * run/conversation bytes are echoed back exactly as received.
+         */
+        internal fun isCanonicalUUID(text: String): Boolean = try {
+            java.util.UUID.fromString(text).toString().uppercase() == text
+        } catch (_: IllegalArgumentException) { false }
+
+        /** Only the SAME request's real kernel terminal settles a claimed
+         *  preflight. `unknown`, `queued`, `running`, missing replies and
+         *  elapsed budgets are explicitly NOT retirement. */
+        internal fun isPreflightTerminalReceipt(state: String?): Boolean =
+            state == "completed" || state == "failed"
+
+        /** Peer/process retirement is PROVEN only by a DIFFERENT measured
+         *  runtime process generation than the one the request was actually
+         *  dispatched to (the new generation performed its own ORIGINAL
+         *  recover()/census sweep at init). A missing or equal identity
+         *  proves nothing and must retain the claim. */
+        internal fun isPeerRetirementProven(dispatchedToken: String?, currentIdentity: String?): Boolean =
+            dispatchedToken != null && currentIdentity != null && currentIdentity != dispatchedToken
+
+        internal fun boundedCode(failure: Exception): String =
+            failure.message?.takeIf { it.isNotEmpty() && it.length <= 32 &&
+                it.all { c -> c.code in 0x21..0x7e } } ?: "preflight_failed"
+
+        internal fun boundedToken(text: String): String =
+            text.takeIf { it.isNotEmpty() && it.length <= 32 && it.all { c -> c.code in 0x21..0x7e } }
+                ?: "preflight_failed"
     }
 
     private suspend fun jobOwnership(claim: Long, query: JSONObject, acceptedEpoch: Long): JSONObject {

@@ -189,6 +189,11 @@ class RunForegroundController private constructor(
      *  status string or a model answer. */
     fun isForegroundConfirmed(): Boolean = RunForegroundState.foreground.value
 
+    /** Honest live read of the owned-work CPU wake (diagnostics for
+     *  Main's reporting only; the wake itself is owned by the service +
+     *  coordinator, never by this controller or any view). */
+    fun isCpuWakeHeld(): Boolean = OwnedWorkWakeCoordinator.isCpuWakeHeld()
+
     private fun preflightNotifications(): RunForegroundFailure? {
         if (Build.VERSION.SDK_INT >= 33 &&
             appContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=

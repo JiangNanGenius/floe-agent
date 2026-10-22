@@ -272,6 +272,8 @@ public actor RuntimeFacadePrivacy {
         var deletedPersistedGrants = 0
         var deletedInMemoryGrants = 0
         var workspaceDirectories = PrivacyWorkspaceDirectoryCleanup()
+        var runtimeHandoffAwaiting = 0
+        var runtimeHandoffSettled = 0
 
         defer {
             if let spoolDescriptor {
@@ -391,8 +393,29 @@ public actor RuntimeFacadePrivacy {
                             // Deferred/failed outcomes keep their typed
                             // per-item collector entry (recorded above via
                             // postCommitFailure) and the durable V36 row.
-                            workspaceDirectories.deferred += 1
+                            // R3: when the DIRECTORY effect was actually
+                            // achieved but the lifecycle defers for the
+                            // transfer purge or the runtime ACK, count the
+                            // directory truth and the open obligation
+                            // separately — never re-claim an untouched dir.
+                            if let effect = result.directoryEffect {
+                                switch effect {
+                                case .removed: workspaceDirectories.removed += 1
+                                case .absent: workspaceDirectories.absent += 1
+                                }
+                                workspaceDirectories.deferred += 1
+                            } else {
+                                workspaceDirectories.deferred += 1
+                            }
                         case nil:
+                            break
+                        }
+                        switch result.runtimeHandoff {
+                        case .queued, .retrying, .unavailable:
+                            runtimeHandoffAwaiting += 1
+                        case .settled:
+                            runtimeHandoffSettled += 1
+                        case .notApplicable, nil:
                             break
                         }
                     } catch PrivacyDomainError.notFound {
@@ -523,6 +546,8 @@ public actor RuntimeFacadePrivacy {
                 remaining: remaining,
                 remainingFailure: remainingFailure,
                 workspaceDirectories: workspaceDirectories,
+                runtimeHandoffAwaiting: runtimeHandoffAwaiting,
+                runtimeHandoffSettled: runtimeHandoffSettled,
                 paused: pausedForRetirement)
         } catch {
             if let fence, let fenceOwner = globalFence {
@@ -540,6 +565,8 @@ public actor RuntimeFacadePrivacy {
         remaining: PrivacyHistoryRemaining?,
         remainingFailure: String?,
         workspaceDirectories: PrivacyWorkspaceDirectoryCleanup,
+        runtimeHandoffAwaiting: Int = 0,
+        runtimeHandoffSettled: Int = 0,
         paused: Bool
     ) throws -> PrivacyHistoryClearReport {
         let page = try collector.finish(reportStore: reportStore, now: clock())
@@ -548,6 +575,11 @@ public actor RuntimeFacadePrivacy {
         // collector entries AND force `partial=true` through the collector,
         // so a clear with refused/removal-failed directories can never
         // report full success.
+        var directories = workspaceDirectories
+        if runtimeHandoffAwaiting > 0 || runtimeHandoffSettled > 0 {
+            directories.runtimeHandoffAwaiting = runtimeHandoffAwaiting
+            directories.runtimeHandoffSettled = runtimeHandoffSettled
+        }
         return PrivacyHistoryClearReport(
             enumerated: enumerated,
             deleted: deleted,
@@ -555,7 +587,7 @@ public actor RuntimeFacadePrivacy {
             partial: collector.total > 0 || remainingFailure != nil || paused,
             remaining: remaining,
             remainingFailure: remainingFailure,
-            workspaceDirectories: workspaceDirectories,
+            workspaceDirectories: directories,
             failurePage: page)
     }
 
@@ -569,6 +601,12 @@ public actor RuntimeFacadePrivacy {
         var postCommitFailure: String?
         /// Truthful owned-directory cleanup effect for THIS conversation.
         var workspaceCleanup: ConversationPrivateWorkspaceCleanup.Outcome?
+        /// REAL filesystem directory effect (present whenever the sequence
+        /// reached the port), so a lifecycle deferred for the R3 runtime
+        /// handoff still counts the directory truth separately.
+        var directoryEffect: PrivateTaskDirectoryRemoval?
+        /// G03-R3 additive truth of the runtime-UID cleanup handoff.
+        var runtimeHandoff: ConversationRuntimeCleanupHandoff?
     }
 
     private func deleteEnumeratedConversation(
@@ -658,6 +696,8 @@ public actor RuntimeFacadePrivacy {
                 postCommitFailure = "deletionFenceSettlementUnavailable"
             }
             var workspaceCleanup: ConversationPrivateWorkspaceCleanup.Outcome?
+            var directoryEffect: PrivateTaskDirectoryRemoval?
+            var runtimeHandoff: ConversationRuntimeCleanupHandoff?
             if let capturedTask {
                 // The SAME authoritative ownership/lifecycle sequence as
                 // conversation.delete (ConversationPrivateWorkspaceCleanup):
@@ -666,12 +706,20 @@ public actor RuntimeFacadePrivacy {
                 // captured path string. Removed/absent/deferred/failed stay
                 // distinct and failures stay typed (the opaque
                 // `privateWorkspaceCleanupUnavailable` era is over).
-                let outcome = await ConversationPrivateWorkspaceCleanup.perform(
+                let report = await ConversationPrivateWorkspaceCleanup.performDetailed(
                     workspaceStore: workspaceStore,
                     cleaning: workspaceCleaning,
                     workspaceID: capturedTask.workspaceID,
-                    relativePath: capturedTask.relativePath)
+                    relativePath: capturedTask.relativePath,
+                    // The privacy clear's OWN accepted host epoch + the
+                    // enumerated conversation identity bind the R3 scope
+                    // (never a guessed generation).
+                    rootEpoch: epoch,
+                    conversationID: conversationID)
+                let outcome = report.outcome
                 workspaceCleanup = outcome
+                directoryEffect = report.directoryEffect
+                runtimeHandoff = report.runtimeHandoff
                 if case .deferred(let reason) = outcome {
                     postCommitFailure = postCommitFailure ?? reason
                 } else if case .failed(let reason) = outcome {
@@ -680,7 +728,9 @@ public actor RuntimeFacadePrivacy {
             }
             return ConversationDeletionResult(deleted: true,
                                               postCommitFailure: postCommitFailure,
-                                              workspaceCleanup: workspaceCleanup)
+                                              workspaceCleanup: workspaceCleanup,
+                                              directoryEffect: directoryEffect,
+                                              runtimeHandoff: runtimeHandoff)
         } catch {
             if !committed {
                 _ = await lifecycle.abortDeletionFence(fence)

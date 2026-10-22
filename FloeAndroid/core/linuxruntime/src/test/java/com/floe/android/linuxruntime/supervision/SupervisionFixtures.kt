@@ -8,6 +8,7 @@ import com.floe.android.linuxruntime.PtySession
 import com.floe.android.linuxruntime.RunOwnership
 import com.floe.android.linuxruntime.SpawnError
 import com.floe.android.linuxruntime.SpawnOutcome
+import com.floe.android.linuxruntime.StdinDelivery
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -163,13 +164,14 @@ class FakePackageReader(
     override fun packagesForUid(uid: Int): List<String>? = uidOwners[uid]
 }
 
-/** Scripted PTY transport handle. */
+/** Scripted PTY transport handle (optionally owning a one-shot stdin pipe). */
 class FakePty(
     override val pid: Int,
     override val creationIdentity: String,
     override val executable: String,
     override val argv: List<String>,
     override val ownership: RunOwnership,
+    override val stdinDelivery: StdinDelivery = StdinDelivery.PtyInput,
 ) : PtySession {
     sealed class ReadStep {
         data class Data(val bytes: ByteArray) : ReadStep()
@@ -189,6 +191,32 @@ class FakePty(
     var closeMasterCalls = 0
     var resizeCalls = 0
     val cancelled = CountDownLatch(1)
+
+    // One-shot stdin pipe scripting. This models the DESCRIPTOR ACCOUNTING
+    // (accepted ranges, close ownership, post-close EBADF), not a kernel pipe:
+    // real short-write/EAGAIN/EPIPE behavior needs the device-side native
+    // checks owned by Main.
+    val stdinPipeWrites = mutableListOf<ByteArray>()
+    val stdinPipeResults = ArrayDeque<Int>()
+    var stdinPipeCloseCalls = 0
+    var stdinPipeOpen = true
+
+    override fun writeStdinPipe(data: ByteArray, offset: Int, length: Int): Int {
+        if (stdinDelivery != StdinDelivery.OneShotPipe) return -95 /* ENOTSUP */
+        if (!stdinPipeOpen) return -9 /* EBADF: write end closed, like DefaultPtySession */
+        val scripted = if (stdinPipeResults.isEmpty()) length else stdinPipeResults.removeFirst()
+        if (scripted < 0) return scripted
+        val accepted = minOf(scripted, length)
+        if (accepted > 0) stdinPipeWrites += data.copyOfRange(offset, offset + accepted)
+        return accepted
+    }
+
+    override fun closeStdinPipe(): Int {
+        if (stdinDelivery != StdinDelivery.OneShotPipe) return 0 /* no pipe held */
+        stdinPipeCloseCalls++
+        stdinPipeOpen = false
+        return 0
+    }
 
     private var repeatPoll: ExitResult? = null
 
@@ -225,6 +253,9 @@ class FakePty(
 
     override fun cancel(): ExitResult? {
         cancelCalls++
+        // Mirrors the real transport: lifecycle stop owns the stdin write end
+        // and releases it before kill/reap so no descriptor outlives a session.
+        closeStdinPipe()
         cancelled.countDown()
         return cancelResult
     }
@@ -296,20 +327,30 @@ fun ownership(taskId: String = "task-1") = RunOwnership(
     environmentId = "env-1", taskId = taskId, projectId = "proj-1", writeLayer = "session",
 )
 
-fun launchSpec(taskId: String = "task-1") = LaunchSpec(
+fun launchSpec(
+    taskId: String = "task-1",
+    stdinDelivery: StdinDelivery = StdinDelivery.PtyInput,
+) = LaunchSpec(
     executable = "/system/bin/sh",
     argv = listOf("/system/bin/sh", "-p"),
     env = mapOf("PATH" to "/usr/bin"),
     workingDir = null,
     ownership = ownership(taskId),
+    stdinDelivery = stdinDelivery,
 )
 
-fun fakePty(pid: Int = 5100, ticks: Long = 900_000L, task: String = "task-1"): FakePty = FakePty(
+fun fakePty(
+    pid: Int = 5100,
+    ticks: Long = 900_000L,
+    task: String = "task-1",
+    stdinDelivery: StdinDelivery = StdinDelivery.PtyInput,
+): FakePty = FakePty(
     pid = pid,
     creationIdentity = "$pid:$ticks",
     executable = "/system/bin/sh",
     argv = listOf("/system/bin/sh", "-p"),
     ownership = ownership(task),
+    stdinDelivery = stdinDelivery,
 )
 
 /** Builds a job the way the supervisor would, for focused lifecycle checks. */

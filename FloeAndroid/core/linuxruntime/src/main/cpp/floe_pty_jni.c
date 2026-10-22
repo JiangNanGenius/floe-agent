@@ -132,13 +132,23 @@ Java_com_floe_android_linuxruntime_PosixBridge_ptsName(JNIEnv *env, jclass clazz
     return (*env)->NewStringUTF(env, name);
 }
 
-JNIEXPORT jint JNICALL
-Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
-    JNIEnv *env, jclass clazz,
+// Spawn a child on the PTY slave. When stdinPipe is 1 the child's stdin is
+// instead the READ end of a real pipe (stdout/stderr stay on the PTY): the
+// parent receives the write end through *stdinWriteOut, nonblocking, and
+// closing THAT descriptor delivers a REAL EOF to the child exactly after the
+// bytes already written. An EOT byte over the PTY never stands in for that:
+// in raw/no-VEOF processing it is ordinary data, and in canonical mode it is
+// line-state-dependent. Returns pid >= 0 on success; -errno on a real
+// launch/spawn failure (a pending Java exception may accompany the host-side
+// precondition failures, exactly like spawnOnPty). stdinWriteOut is only set
+// on success; every failure path owns and closes both pipe ends here.
+static jint pty_spawn(
+    JNIEnv *env,
     jint masterFd, jint slaveFd,
     jstring executable, jobjectArray argv, jobjectArray envp,
-    jstring workingDir, jint timeoutMs) {
-    (void)clazz;
+    jstring workingDir, jint timeoutMs,
+    int stdinPipe, jint *stdinWriteOut) {
+    if (stdinWriteOut) *stdinWriteOut = -1;
 
     struct rlimit fdLimit;
     if (getrlimit(RLIMIT_NOFILE, &fdLimit) != 0)
@@ -203,10 +213,21 @@ Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
         goto fail_release;
     }
 
+    // One-shot stdin pipe: O_CLOEXEC both ends, so the exec'd guest never
+    // inherits the WRITE end; only fd 0 (the dup2'd read end) crosses exec.
+    int stdinPipeFds[2] = { -1, -1 };
+    if (stdinPipe && pipe2(stdinPipeFds, O_CLOEXEC) != 0) {
+        failure_errno = errno;
+        close(errPipe[0]); close(errPipe[1]);
+        if (workingDir && cwd) free((void *)cwd);
+        goto fail_release;
+    }
+
     pid_t pid = fork();
     if (pid < 0) {
         failure_errno = errno;
         close(errPipe[0]); close(errPipe[1]);
+        if (stdinPipe) { close(stdinPipeFds[0]); close(stdinPipeFds[1]); }
         if (workingDir && cwd) free((void *)cwd);
         goto fail_release;
     }
@@ -216,11 +237,24 @@ Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
         close(errPipe[0]);
         if (setsid() < 0) goto child_fail;
         if (ioctl(slaveFd, TIOCSCTTY, 0) != 0) goto child_fail;
-        if (dup2(slaveFd, STDIN_FILENO) < 0) goto child_fail;
+        // One-shot mode puts the pipe read end on fd 0; PTY mode keeps the
+        // slave on all three stdio descriptors (unchanged interactive input,
+        // resize and ISIG signal semantics ride the PTY as before).
+        int stdinDup = stdinPipe
+            ? dup2(stdinPipeFds[0], STDIN_FILENO)
+            : dup2(slaveFd, STDIN_FILENO);
+        if (stdinDup < 0) goto child_fail;
         if (dup2(slaveFd, STDOUT_FILENO) < 0) goto child_fail;
         if (dup2(slaveFd, STDERR_FILENO) < 0) goto child_fail;
         if (slaveFd > STDERR_FILENO) close(slaveFd);
         if (masterFd > STDERR_FILENO) close(masterFd);
+        if (stdinPipe) {
+            if (stdinPipeFds[0] > STDERR_FILENO) close(stdinPipeFds[0]);
+            // Dropping the child's copy of the write end is what makes the
+            // parent's close the ONLY EOF source: no in-guest holder can
+            // keep stdin open past the supplied bytes.
+            if (stdinPipeFds[1] > STDERR_FILENO) close(stdinPipeFds[1]);
+        }
         if (mark_inherited_fds_cloexec((int)fdLimit.rlim_cur) != 0) goto child_fail;
         if (cwd && chdir(cwd) != 0) goto child_fail;
         execve(exe, (char *const *)cargv, (char *const *)cenvp);
@@ -234,6 +268,7 @@ Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
 
     // ---- parent ----
     close(errPipe[1]);
+    if (stdinPipe) close(stdinPipeFds[0]); // the read end belongs to the child
     int childErr = 0;
     ssize_t n = 0;
     struct pollfd pfd = { errPipe[0], POLLIN | POLLHUP, 0 };
@@ -282,6 +317,7 @@ Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
         // The child wrote this errno then immediately _exit'ed. Retain its
         // wait ownership through reap, just as startup-timeout cleanup does.
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (stdinPipe) close(stdinPipeFds[1]);
         return -childErr;
     }
     if (n < 0) {
@@ -290,7 +326,24 @@ Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
         kill(pid, SIGKILL);
         int status;
         while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+        if (stdinPipe) close(stdinPipeFds[1]);
         return -(childErr ? childErr : EIO);
+    }
+    if (stdinPipe) {
+        // Startup succeeded: hand the session a NONBLOCKING write end so a
+        // pump page can never wedge the control thread waiting on a reader.
+        // The flag lives on the write-side open file description only; the
+        // child's fd 0 (read side) keeps blocking read semantics.
+        int flags = fcntl(stdinPipeFds[1], F_GETFL, 0);
+        if (flags < 0 || fcntl(stdinPipeFds[1], F_SETFL, flags | O_NONBLOCK) < 0) {
+            int e = errno;
+            kill(pid, SIGKILL);
+            int status;
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+            close(stdinPipeFds[1]);
+            return -e;
+        }
+        if (stdinWriteOut) *stdinWriteOut = stdinPipeFds[1];
     }
     return (jint)pid;
 
@@ -300,6 +353,77 @@ fail_release:
     free(cargv); free(cenvp); free(jargv); free(jenvp);
     free((void *)exe);
     return -failure_errno;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPty(
+    JNIEnv *env, jclass clazz,
+    jint masterFd, jint slaveFd,
+    jstring executable, jobjectArray argv, jobjectArray envp,
+    jstring workingDir, jint timeoutMs) {
+    (void)clazz;
+    return pty_spawn(env, masterFd, slaveFd, executable, argv, envp,
+                     workingDir, timeoutMs, 0, NULL);
+}
+
+// One-shot launch with a descriptor-owned stdin pipe. Returns a 2-int array:
+// success {pid, stdinWriteFd} — the write end is nonblocking and its close is
+// the ONLY EOF source for the child's stdin; failure {-errno, -1}. A pending
+// Java exception (host-side precondition) yields NULL like spawnOnPty.
+JNIEXPORT jintArray JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_spawnOnPtyStdinPipe(
+    JNIEnv *env, jclass clazz,
+    jint masterFd, jint slaveFd,
+    jstring executable, jobjectArray argv, jobjectArray envp,
+    jstring workingDir, jint timeoutMs) {
+    (void)clazz;
+    jint stdinWriteFd = -1;
+    jint r = pty_spawn(env, masterFd, slaveFd, executable, argv, envp,
+                       workingDir, timeoutMs, 1, &stdinWriteFd);
+    if ((*env)->ExceptionCheck(env)) {
+        if (r >= 0 && stdinWriteFd >= 0) close(stdinWriteFd); // nothing can use it
+        return NULL;
+    }
+    jintArray out = (*env)->NewIntArray(env, 2);
+    if (!out) {
+        if (r >= 0 && stdinWriteFd >= 0) close(stdinWriteFd);
+        return NULL;
+    }
+    jint vals[2] = { r, stdinWriteFd };
+    (*env)->SetIntArrayRegion(env, out, 0, 2, vals);
+    return out;
+}
+
+// Bounded write into the one-shot stdin pipe's write end. EINTR is retried
+// inside the syscall loop; a full pipe fails with -EAGAIN (never blocks the
+// JNI thread). Returns bytes accepted (may be partial) or -errno if nothing
+// was accepted: -11 EAGAIN, -32 EPIPE (child closed its stdin), -9 EBADF.
+// EPIPE surfaces as an error, not a signal: the Android runtime process runs
+// with SIGPIPE ignored by ART, so a reader-less write returns -32 here.
+JNIEXPORT jint JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_writeStdinPipe(
+    JNIEnv *env, jclass clazz, jint fd, jbyteArray data, jint offset, jint length) {
+    (void)clazz;
+    if (fd < 0) return -EINVAL;
+    jsize avail = (*env)->GetArrayLength(env, data);
+    if (offset < 0 || length < 0 || offset > avail || length > avail - offset) return -EINVAL;
+    if (length == 0) return 0;
+    jbyte *buf = (*env)->GetByteArrayElements(env, data, NULL);
+    if (!buf) return -ENOMEM;
+    ssize_t total = 0;
+    while (total < length) {
+        ssize_t n = write(fd, (char *)buf + offset + total, (size_t)(length - total));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            int e = errno;
+            (*env)->ReleaseByteArrayElements(env, data, buf, JNI_ABORT);
+            return total > 0 ? (jint)total : -e;
+        }
+        if (n == 0) break;
+        total += n;
+    }
+    (*env)->ReleaseByteArrayElements(env, data, buf, JNI_ABORT);
+    return (jint)total;
 }
 
 JNIEXPORT jint JNICALL
@@ -466,6 +590,15 @@ Java_com_floe_android_linuxruntime_PosixBridge_writeMaster(
     }
     (*env)->ReleaseByteArrayElements(env, data, buf, JNI_ABORT);
     return (jint)total;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_floe_android_linuxruntime_PosixBridge_setFdNonBlocking(JNIEnv *env, jclass clazz, jint fd) {
+    (void)env; (void)clazz;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -errno;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -errno;
+    return 0;
 }
 
 JNIEXPORT jint JNICALL

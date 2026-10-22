@@ -60,7 +60,10 @@ final class LinuxShellConversationDeletionTests: XCTestCase {
         // bound generation. Bind strictly above the CURRENT shared epoch.
         let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
         XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
-        bindings.setQualificationFields(LinuxShellQualificationFields(allFalse: false))
+        // G03-R3: no wholesale-override setter exists (the allTrue seam was
+        // removed). This suite exercises the ledger/deletion legs over the
+        // INJECTED test readiness predicate; capability qualification is
+        // covered by the R3 ingress regression instead.
         let components = try XCTUnwrap(bindings.components)
 
         let runA = UUID(); let convA = UUID()
@@ -159,7 +162,10 @@ final class LinuxShellConversationDeletionTests: XCTestCase {
                              journal: ShellOperationJournal(rootURL: root))
         let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
         XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
-        bindings.setQualificationFields(LinuxShellQualificationFields(allFalse: false))
+        // G03-R3: no wholesale-override setter exists (the allTrue seam was
+        // removed). This suite exercises the ledger/deletion legs over the
+        // INJECTED test readiness predicate; capability qualification is
+        // covered by the R3 ingress regression instead.
         let components = try XCTUnwrap(bindings.components)
 
         let context = ToolContext(runID: UUID(), toolCallID: "unbound-call",

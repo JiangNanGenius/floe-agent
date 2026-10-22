@@ -5,6 +5,7 @@ import com.floe.android.linuxruntime.ExitResult
 import com.floe.android.linuxruntime.LaunchSpec
 import com.floe.android.linuxruntime.PtySession
 import com.floe.android.linuxruntime.RunOwnership
+import com.floe.android.linuxruntime.StdinDelivery
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -119,12 +120,37 @@ sealed class CancelOutcome {
     data class Rejected(val reason: String) : CancelOutcome()
 }
 
-/** stdin write accounting over the PTY master (partial writes are normal). */
+/** stdin write accounting (partial writes are normal; errno is never hidden). */
 sealed class StdinWrite {
     data class Complete(val bytes: Int) : StdinWrite()
     data class Partial(val bytes: Int, val requested: Int, val retries: Int, val errno: Int?) : StdinWrite()
     data class Failed(val errno: Int, val bytesAlreadyWritten: Int) : StdinWrite()
 }
+
+/**
+ * Result of the one-shot EOF command
+ * ([SupervisedPtyJob.requestStdinEof]). Real descriptor EOF is an event of
+ * the STDIN PIPE, distinct from the process exiting and from output drain:
+ * closing the write end must never close the shared PTY master.
+ */
+sealed class StdinEof {
+    /** Write end closed by THIS or a previous EOF command (idempotent). */
+    data class Closed(val acceptedBytesBeforeClose: Int, val idempotent: Boolean) : StdinEof()
+
+    /** close() itself failed; the fd stays owned and the command is retryable. */
+    data class Failed(val errno: Int) : StdinEof()
+
+    /** This session's delivery is not a one-shot pipe, or lifecycle owns it. */
+    data class Rejected(val reason: String) : StdinEof()
+}
+
+/** Bounded one-shot stdin accounting surfaced honestly in engine polls. */
+data class StdinStatus(
+    val delivery: StdinDelivery,
+    val acceptedBytes: Int,
+    val eofDelivered: Boolean,
+    val lastErrno: Int?,
+)
 
 /**
  * What the credential-bearing lease authority may conclude about one lease.
@@ -197,6 +223,19 @@ class SupervisedPtyJob internal constructor(
 
     @Volatile
     private var drainOwner: Thread? = null
+
+    // One-shot stdin pipe accounting (PTY-delivery sessions never touch these;
+    // the descriptor itself is owned by the transport session).
+    private val stdinLock = ReentrantLock()
+
+    @Volatile
+    private var stdinAcceptedBytes: Int = 0
+
+    @Volatile
+    private var stdinEofDelivered: Boolean = false
+
+    @Volatile
+    private var stdinLastErrno: Int? = null
 
     /**
      * Birth of the root child. The supervisor's verified identity wins; otherwise
@@ -448,15 +487,76 @@ class SupervisedPtyJob internal constructor(
     /** Whole-UID census view for the owner's diagnostics (no signal side effects). */
     fun inspectCensus(): CensusSnapshot = census.snapshot()
 
+    /** The stdin descriptor choice carried by this job's explicit [LaunchSpec]. */
+    val stdinDelivery: StdinDelivery get() = spec.stdinDelivery
+
+    /** Largest [writeStdin] chunk this job accepts; callers page larger payloads. */
+    val maxStdinChunkBytes: Int get() = policy.maxWriteChunkBytes
+
+    /** Honest bounded stdin accounting for engine polls (never output bytes). */
+    fun stdinStatus(): StdinStatus =
+        StdinStatus(spec.stdinDelivery, stdinAcceptedBytes, stdinEofDelivered, stdinLastErrno)
+
     /**
      * stdin write with bounded partial-write retries. A short write is reported,
      * never silently retried forever, and an errno is never turned into success.
+     * Routing is descriptor-level: [StdinDelivery.PtyInput] writes the PTY
+     * master exactly as before (terminal input keeps tty semantics);
+     * [StdinDelivery.OneShotPipe] writes the owned nonblocking pipe write end,
+     * where real EOF can only come from [requestStdinEof]/lifecycle close —
+     * an EOT byte here is ordinary stdin DATA, never an EOF emulation.
      */
     fun writeStdin(data: ByteArray, offset: Int = 0, length: Int = data.size): StdinWrite {
         require(length in 0..policy.maxWriteChunkBytes) {
             "chunk exceeds maxWriteChunkBytes=${policy.maxWriteChunkBytes}"
         }
         if (length == 0) return StdinWrite.Complete(0)
+        return accountStdin(
+            if (spec.stdinDelivery == StdinDelivery.OneShotPipe)
+                writeStdinPipeBounded(data, offset, length)
+            else
+                writePtyStdinBounded(data, offset, length)
+        )
+    }
+
+    /**
+     * Deliver REAL EOF for a one-shot pipe session by closing the owned write
+     * end. Exactly-once at the descriptor level (idempotent at the command
+     * level); this is NOT an exit and NOT an output drain: the shared PTY
+     * master stays open, and a child that has not read yet simply sees EOF on
+     * its next read. Refused for PTY delivery and in every non-RUNNING state
+     * — a lifecycle close is reported, never re-labelled as a delivered
+     * command.
+     */
+    fun requestStdinEof(): StdinEof {
+        if (spec.stdinDelivery != StdinDelivery.OneShotPipe) {
+            return StdinEof.Rejected(
+                "stdin delivery is ${spec.stdinDelivery.name.lowercase()}, not one-shot pipe",
+            )
+        }
+        val observed = state
+        if (observed != JobState.RUNNING) {
+            // Cancelling/retained/terminated sessions already (or about to)
+            // own the descriptor through the stop/terminal lifecycle: an EOF
+            // command there would mislabel a lifecycle close as delivered
+            // stdin, so it refuses instead.
+            return StdinEof.Rejected(
+                "job is ${observed.name.lowercase()}; lifecycle owns the stdin descriptor",
+            )
+        }
+        stdinLock.withLock {
+            if (stdinEofDelivered) return StdinEof.Closed(stdinAcceptedBytes, idempotent = true)
+            val rc = session.closeStdinPipe()
+            if (rc < 0) {
+                stdinLastErrno = -rc
+                return StdinEof.Failed(-rc)
+            }
+            stdinEofDelivered = true
+            return StdinEof.Closed(stdinAcceptedBytes, idempotent = false)
+        }
+    }
+
+    private fun writePtyStdinBounded(data: ByteArray, offset: Int, length: Int): StdinWrite {
         var sent = 0
         var retries = 0
         var lastErrno: Int? = null
@@ -480,6 +580,51 @@ class SupervisedPtyJob internal constructor(
             else StdinWrite.Partial(sent, length, retries, errno)
         }
         return StdinWrite.Complete(sent)
+    }
+
+    // One-shot pipe write: the native call already retried EINTR and never
+    // blocks on a reader, so EAGAIN/0 mean "no progress right now" and are
+    // retried ONLY inside this bounded budget. EPIPE (child closed stdin) and
+    // any other errno are honest failures; accepted bytes are kept.
+    private fun writeStdinPipeBounded(data: ByteArray, offset: Int, length: Int): StdinWrite {
+        var sent = 0
+        var retries = 0
+        var lastErrno: Int? = null
+        while (sent < length) {
+            val rc = session.writeStdinPipe(data, offset + sent, length - sent)
+            if (rc > 0) {
+                sent += rc
+                continue
+            }
+            if (rc == 0 || rc == -11 /* EAGAIN */) {
+                if (retries >= policy.maxStdinWriteRetries) {
+                    return StdinWrite.Partial(sent, length, retries, lastErrno ?: 11)
+                }
+                retries++
+                clock.sleep(policy.stdinRetryDelayMs)
+                continue
+            }
+            val errno = if (rc < 0) -rc else 5 /* defensive EIO; never fake success */
+            lastErrno = errno
+            return if (sent == 0) StdinWrite.Failed(errno, 0)
+            else StdinWrite.Partial(sent, length, retries, errno)
+        }
+        return StdinWrite.Complete(sent)
+    }
+
+    private fun accountStdin(result: StdinWrite): StdinWrite {
+        when (result) {
+            is StdinWrite.Complete -> stdinAcceptedBytes += result.bytes
+            is StdinWrite.Partial -> {
+                stdinAcceptedBytes += result.bytes
+                result.errno?.let { stdinLastErrno = it }
+            }
+            is StdinWrite.Failed -> {
+                stdinAcceptedBytes += result.bytesAlreadyWritten
+                stdinLastErrno = result.errno
+            }
+        }
+        return result
     }
 
     /** Terminal size change; refused once the master is closed (post-terminal). */
@@ -521,6 +666,13 @@ class SupervisedPtyJob internal constructor(
      */
     private fun enterTerminalPhase(reason: String, cancelled: Boolean, exit: ExitResult): PumpOutcome {
         if (cancelled) lastCancelReason = reason
+        // Lifecycle ownership of the one-shot stdin write end: once a session
+        // enters its terminal phase (natural exit or cancelled stop), the
+        // descriptor must not outlive it. This close is an OWNERSHIP release,
+        // not an EOF command: [stdinStatus] still reports eofDelivered=false
+        // unless the owner actually asked for EOF beforehand, and it never
+        // touches the shared PTY master needed for the leftover output drain.
+        if (spec.stdinDelivery == StdinDelivery.OneShotPipe) session.closeStdinPipe()
         run {
             if (!cancelled) drainLeftoverOutput()
             val proof = quiescer.quiesce(reason)

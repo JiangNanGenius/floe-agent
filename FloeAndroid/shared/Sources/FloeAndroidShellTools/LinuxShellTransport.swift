@@ -23,8 +23,11 @@
 //   cwd workspace-relative, env optional object (<=32 entries, key regex
 //   [A-Za-z_][A-Za-z0-9_]{0,63}, no PROOT_*/FLOE_* keys, no HOME/TMPDIR
 //   override because the authority owns them, no NUL, <=32 KiB total
-//   key+value bytes), rows/columns, timeoutSeconds. Returns
-//   sessionID (the engine lease id) and environmentID.
+//   key+value bytes), rows/columns, timeoutSeconds, and the optional
+//   platform-owned `stdinDelivery` closed set "pty"|"pipe" (ABSENT means
+//   "pty"; a null is never sent; an unknown value refuses the start before
+//   the lease is acquired — only the trusted one-shot run adapter may set
+//   "pipe"). Returns sessionID (the engine lease id) and environmentID.
 // * `shell.poll` payload sessionID, cursor, maxBytes<=16384 returns base64
 //   MERGED PTY output, cursor, gapBytes, more, droppedBytes, state,
 //   leaseReleased, cancelled, stopReason (fixed service code:
@@ -35,7 +38,18 @@
 //   output, stderr empty, never a fabricated split). A CANCELLED remote is
 //   not an exited process: the stop reason decides the honest outcome and
 //   ownership stays until `leaseReleased` proves the real stop.
-// * Stdin rides base64 chunks <=16 KiB with acceptedBytes/partial results.
+// * Stdin rides base64 pages <=16 KiB with acceptedBytes/partial results.
+//   Delivery has TWO engine descriptor modes chosen only by the platform
+//   `stdinDelivery` start field: "pty" (default; interactive input where
+//   the canonical-mode Ctrl-D 0x04 byte is the line discipline's EOF, the
+//   unchanged legacy path) and "pipe" (one-shot job runs: the child's fd0
+//   is a dedicated pipe while stdout/stderr stay on the PTY slave; the
+//   ONLY EOF source is the engine closing the write end, commanded by an
+//   EMPTY `shell.input` page whose reply carries
+//   `stdinEof:"closed"|"closed-idempotent"|"failed"|"rejected"`; a 0x04
+//   byte in pipe stdin is ordinary DATA, never an EOF emulation; and EOF
+//   is NOT an exit — settlement still requires `leaseReleased` with the
+//   real terminal fields).
 // * Component selection, paths, leases and native completion are NOT
 //   caller/model fields; the engine's runtime-UID authority owns them.
 // * Only the EXPLICIT caller `env` map rides this wire (validated against
@@ -53,6 +67,25 @@ import Foundation
 import FloeCore
 
 // MARK: - Typed requests and replies
+
+/// The engine's closed `shell.start` `stdinDelivery` value set
+/// (`LinuxRuntimeOperations.start`: absent key defaults to "pty", unknown
+/// values refuse the start BEFORE the lease is acquired). Only the trusted
+/// platform Swift adapter selects a mode; no model, env or tool string can.
+public enum LinuxShellStdinDelivery: String, Sendable, Equatable {
+    /// Legacy interactive reality: the child's stdin is the PTY slave;
+    /// canonical-mode input, Ctrl-D (0x04) is the line discipline's EOF,
+    /// Ctrl-C (0x03) raises SIGINT. Interactive `openSession` stays here
+    /// (the request field is nil so the wire key is OMITTED entirely).
+    case pty
+    /// Descriptor-level one-shot pipe: the child's fd0 is a dedicated pipe
+    /// read end while stdout/stderr remain on the PTY slave. The only EOF
+    /// source is the engine-side close of the write end, commanded by one
+    /// empty `shell.input` page (`stdinEof` reply). A 0x04 byte is ordinary
+    /// stdin data here — never an EOF emulation. EOF is not an exit and
+    /// never releases the lease.
+    case pipe
+}
 
 public struct LinuxShellStartRequest: Sendable, Equatable {
     /// Stable project identity derived from the TRUSTED canonical ORIGINAL
@@ -83,11 +116,17 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
     public var columns: Int
     public var timeoutSeconds: Double
     public var hostToolCallID: String?
+    /// Engine stdin delivery mode for this start. nil OMITS the wire key so
+    /// the engine defaults to the legacy "pty" input path — interactive
+    /// `openSession` MUST stay nil. Only the trusted platform one-shot run
+    /// adapter sets `.pipe`; it is never model-, env- or string-selected.
+    public var stdinDelivery: LinuxShellStdinDelivery?
 
     public init(projectID: UUID, runID: UUID, conversationID: UUID?,
                 environmentID: String?, command: String, cwd: String,
                 environment: [String: String] = [:],
-                rows: Int, columns: Int, timeoutSeconds: Double, hostToolCallID: String? = nil) {
+                rows: Int, columns: Int, timeoutSeconds: Double, hostToolCallID: String? = nil,
+                stdinDelivery: LinuxShellStdinDelivery? = nil) {
         self.projectID = projectID
         self.runID = runID
         self.conversationID = conversationID
@@ -99,6 +138,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
         self.columns = columns
         self.timeoutSeconds = timeoutSeconds
         self.hostToolCallID = hostToolCallID
+        self.stdinDelivery = stdinDelivery
     }
 
     /// The engine's own `shell.start` env bounds (authoritative source:
@@ -254,15 +294,31 @@ public struct LinuxShellInputRequest: Sendable, Equatable {
 public struct LinuxShellInputReply: Sendable, Equatable {
     public var acceptedBytes: Int
     /// Engine ring/watermark backpressure: partial acceptance, retry later.
+    /// Never applies to the EOF command page (zero bytes are not data).
     public var partial: Bool
-    /// Non-zero when the engine's stdin write failed (StdinWrite.Failed);
+    /// Non-zero when the engine's stdin write failed (StdinWrite.Failed), or
+    /// the close failed on an EOF command (`stdinEof == "failed"`);
     /// `acceptedBytes` keeps what was already written. Never a silent success.
     public var errnoCode: Int32?
+    /// Additive engine EOF state carried ONLY by the reply to an EMPTY
+    /// `shell.input` page on a one-shot pipe session
+    /// (`LinuxRuntimeOperations.input`): "closed" | "closed-idempotent" |
+    /// "failed" | "rejected". nil on data pages and on replies from a
+    /// transport that has not decoded the field (unknown-key tolerance
+    /// stays; the value is never invented).
+    public var stdinEof: String?
+    /// The engine's bounded rejection reason when `stdinEof == "rejected"`
+    /// (additive `reason` key on the same reply, e.g. the job already left
+    /// RUNNING and the lifecycle owns the write end). nil otherwise.
+    public var stdinEofReason: String?
 
-    public init(acceptedBytes: Int, partial: Bool = false, errnoCode: Int32? = nil) {
+    public init(acceptedBytes: Int, partial: Bool = false, errnoCode: Int32? = nil,
+                stdinEof: String? = nil, stdinEofReason: String? = nil) {
         self.acceptedBytes = acceptedBytes
         self.partial = partial
         self.errnoCode = errnoCode
+        self.stdinEof = stdinEof
+        self.stdinEofReason = stdinEofReason
     }
 }
 

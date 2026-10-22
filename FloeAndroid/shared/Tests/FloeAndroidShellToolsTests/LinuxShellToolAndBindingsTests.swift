@@ -9,10 +9,18 @@
 // identities only — no model dispatch, no durable job store, no device.
 import XCTest
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Android)
+import Android
+#endif
 import FloeCore
 import FloeTools
 @testable import FloeAndroidCore
 import FloeAndroidShellTools
+import FloeAndroidWorkspaceTools
 
 final class LinuxShellToolMirrorTests: XCTestCase {
 
@@ -124,7 +132,68 @@ final class RuntimeFacadeLinuxBindingsTests: XCTestCase {
     override func tearDown() {
         AndroidRuntimeBootstrap.ownedWorkAttachGateOverrideForTesting = nil
         RuntimeOwnedWorkRegistry.shared.removeAllForTesting()
+        LinuxReadinessIngress.shared.resetForTesting()
+        LinuxWorkspaceAuthority.resetPurgeAuthoritiesForTesting()
         super.tearDown()
+    }
+
+    /// Ingest the COMPLETE trusted fact set for `epoch` through the ONE
+    /// production ingress path (the mapping fact is backed by a REAL
+    /// terminal-index file under the explicit trusted test root, exactly
+    /// like production receipts — never a flag, never an override).
+    private func ingestAllRealFactsForTesting(epoch: UInt64, root: URL) throws {
+        LinuxWorkspaceAuthority.storageRootOverrideForTesting = root.standardizedFileURL.path
+        LinuxWorkspaceAuthority.rootEpochAuthorityForTesting = { epoch }
+        // Install through the production wrapper so the ORIGINAL engine
+        // serves the same accepted transfer root the receipt is read from
+        // (first install wins; the override then keeps this suite's tree
+        // authoritative for the lookup).
+        if let rootToken = RuntimeStorageRoot(validatingAbsoluteDirectory:
+                                                root.standardizedFileURL.path) {
+            _ = LinuxWorkspaceAuthority.install(storageRoot: rootToken)
+        }
+        // One terminal-marked engine session + durable index under the
+        // accepted transfer root (the ORIGINAL WorkspaceOwnerMarker shape).
+        let sessionKey = String(repeating: "a", count: 32)
+        let transferRoot = root.standardizedFileURL.path + "/WorkspaceTransfers"
+        let sessionDir = transferRoot + "/sessions/" + sessionKey
+        try FileManager.default.createDirectory(atPath: sessionDir, withIntermediateDirectories: true)
+        let marker = WorkspaceOwnerMarker(sessionKey: sessionKey, grantID: String(repeating: "f", count: 16),
+                                          projectID: UUID().uuidString, runID: UUID().uuidString,
+                                          rootEpoch: epoch,
+                                          createdAtSeconds: Int64(Date().timeIntervalSince1970))
+        try marker.writeDurable(to: sessionDir + "/owner.json")
+        try marker.markTerminal(at: sessionDir + "/owner.json")
+        let indexBytes = Data(("{\"record\":\"terminalIndex\",\"sessionKey\":\"" + sessionKey + "\",\"result\":\"synced\",\"partial\":false}").utf8)
+        try indexBytes.write(to: URL(fileURLWithPath: sessionDir + "/index.json"))
+        let receiptDigest = FloeDigest.sha256Hex(indexBytes)
+        let cert = FloeDigest.sha256Hex(Data("peer-cert".utf8))
+        let binder = "peer-binder-1"
+        func mustAccept(_ outcome: LinuxReadinessIngressOutcome) throws {
+            guard case .accepted = outcome else {
+                throw NSError(domain: "ingest", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "\(outcome)"])
+            }
+        }
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .runtimeUidBoundary(runtimeUID: Int32(getuid()) + 1, certificateDigest: cert,
+                                 packageVersion: "0.1.0-test", binderIdentity: binder),
+            rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .engineConnected(binderIdentity: binder, engineProtocolVersion: "rw-v1"),
+            rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(.mailboxEpoch, rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .rootfsInstalled(receiptDigest: FloeDigest.sha256Hex(Data("rootfs".utf8)),
+                             rootfsVersion: "bookworm-1"), rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .workspaceMappingSynced(receiptDigest: receiptDigest), rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .leaseAuthorityQualified(receiptDigest: FloeDigest.sha256Hex(Data("lease".utf8))),
+            rootEpoch: epoch))
+        try mustAccept(LinuxReadinessIngress.shared.ingest(
+            .singleWorkloadAcknowledged(contractVersion: "single-workload-1"),
+            rootEpoch: epoch))
     }
 
     func testDefaultsFailClosed() async {
@@ -153,8 +222,7 @@ final class RuntimeFacadeLinuxBindingsTests: XCTestCase {
             return FakeLinuxShellTransport.page(session: session, cursor: cursor + 4, text: "",
                                                 state: .terminated, released: true, exit: 0)
         }
-        let readiness = LinuxShellInjectedReadiness { true }
-        let fields = LinuxShellQualificationFields(allFalse: false)
+        let readiness = LinuxShellLiveReadiness.makeInjected()
         _ = bindings.compose(transport: transport, coordinator: coordinator,
                              rootProvider: { root }, readiness: readiness,
                              journal: ShellOperationJournal(rootURL: root))
@@ -163,9 +231,15 @@ final class RuntimeFacadeLinuxBindingsTests: XCTestCase {
         // later class member (same authoritative rule production `bind` uses).
         let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
         XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
-        bindings.setQualificationFields(fields)
-        // The composed capability is the AND of every real field — nothing
-        // forces it from "installed" or temporary-chat state here.
+        // G03-R3 false->real transition through the ONLY trusted path:
+        // composed + epoch-bound is STILL unqualified with zero ingested
+        // facts (there is no wholesale setter any more)...
+        XCTAssertFalse(bindings.isCapabilityQualified)
+        // ...and turns true ONLY after every real fact is ingested for this
+        // generation (runtime-UID boundary + engine identity + the live
+        // mailbox epoch + rootfs receipt + an engine terminal-index digest
+        // Core reads back + lease receipt + the single-workload contract).
+        try ingestAllRealFactsForTesting(epoch: epoch, root: root)
         XCTAssertTrue(bindings.isCapabilityQualified)
 
         let runID = UUID()
@@ -201,7 +275,8 @@ final class RuntimeFacadeLinuxBindingsTests: XCTestCase {
                              journal: ShellOperationJournal(rootURL: root))
         let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
         XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
-        bindings.setQualificationFields(LinuxShellQualificationFields(allFalse: false))
+        // (R3: no qualification override — the cancellation/lease legs read
+        // the ledger, not capability advertisement.)
         let runID = UUID()
         // The ledger now requires the ORIGINAL conversation binding at
         // admission (fail closed without it); supply it like the run lane does.

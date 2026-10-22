@@ -48,6 +48,51 @@ PRoot upstream docs list `PROOT_LOADER` as the supported env override; the
 standalone loader payload (`libproot_loader.so`) comes from the same
 pinned source and carries the same obligations as `libproot.so`.
 
+## Corresponding-source production tooling (G03-R3)
+
+The distributable complete-corresponding-source archive for the shipped
+`libproot.so`/`libproot_loader.so` payloads is produced by
+`FloeAndroid/scripts/produce-corresponding-source.py` (offline tests:
+`FloeAndroid/scripts/tests/test_produce_corresponding_source.py`). It accepts
+the *frozen* recipe tree (`native-build/`), the final native-payloads
+`provenance.json`, the byte-exact pinned upstream archives from the producer
+cache, the license texts under `licenses/` and `FloeAndroid/licenses/`, and
+optionally the talloc relink objects from the producer's `build/` export; it
+fails closed unless the recomputed recipe-tree hash, the pinned patch hash,
+the producer-script pins and the cached upstream bytes all agree with the
+provenance of the run that produced the *shipped* payloads. The final archive
+must be executed against final frozen inputs after all source lanes are
+terminal; an archive bound to a moving working tree is never a final legal
+offer. Publication stays with the release owner.
+
+## Guest DNS resolver helper — `libnss_floe.so.2` (G03-R3 source package)
+
+| Component | Terms (verified) | Where it lands | Build/source boundary |
+| --- | --- | --- | --- |
+| `native-build/guest-resolver/libnss_floe.c` + `nss-floe.map` | Floe-authored, MPL-2.0 (`SPDX-License-Identifier: MPL-2.0`). Self-contained glibc NSS module; contains **no third-party code** | guest rootfs `/usr/lib/aarch64-linux-gnu/libnss_floe.so.2` (staged by the facilities lane from verified signed-APK assets) | compiled **only** by `guest-resolver/build-guest-resolver.sh` at `--target=aarch64-linux-gnu.2.28` (never an Android bionic target); exports exactly the four `_nss_floe_gethostbyname*_r` ABI entry points via the version script; SONAME `libnss_floe.so.2`; every `PT_LOAD` ≥ 16 KiB aligned |
+| glibc public headers (bundled in the pinned Zig 0.14.1: `lib/libc/include/generic-glibc/`, per-arch overlays) | LGPL-2.1-or-later **with the glibc header exception**; used at compile time. The ABI facts relied on (`enum nss_status` values, `struct gaih_addrtuple` member order, the `TRYAGAIN`+`ERANGE`+`NETDB_INTERNAL` buffer-growth protocol, and the caller-buffer/real-pointer `gethostbyname4_r` tuple convention) were verified from the pinned header copy and glibc 2.28-vs-2.36 header/source comparisons, not memory | build-time inputs only; no header text is copied into the module | the producer emits nothing into the source tree; outputs bind through `manifest.json` |
+| Zig 0.14.1 (`zig cc`) as the module compiler; NDK `ld.lld`/`llvm-readelf` as linker/inspector | as existing rows above (MIT; SDK-terms host tools; the same pinned cache/URL/sha as `native-build/PINS.md` — the guest producer refuses on pin divergence) | host tools only; the produced `.so` **links against nothing** at build time (zero `DT_NEEDED`, no glibc version-tagged imports): the guest's already-loaded glibc resolves its stable symbol references when glibc `dlopen`s the module | deterministic (`-ffile-prefix-map`, `--build-id=sha1`, fixed flags); measured byte-identical across repeated scratch runs on 2026-10-22 — the authoritative producer run, asset staging and device acceptance remain Main's steps |
+
+Scope limits (product truth, not a legal statement): the module intercepts the
+guest glibc NSS path only — `getaddrinfo`/`gethostbyname` traffic such as
+Python, Node `dns.lookup`, curl, apt/pip/npm. NSS-bypassing clients (Node
+c-ares/`dns.resolve*`, dnspython, `dig`, raw DNS sockets) never call it, and
+numeric literals are short-circuited before NSS; the package intentionally
+does not expand into a PRoot syscall redirector. There is no fallback
+resolver, no host-network path and no fabricated positive record inside the
+module: any failure is an honest NSS refusal. The earlier pre-frozen
+loopback/nonce draft has been retired from the product source tree; only
+the canonical filesystem-socket module is shipped.
+
+Corresponding-source: the helper is MPL-2.0 Floe-owned, but its public
+source/protocol/producer and the producer `manifest.json` (source hashes,
+`sourceTreeSha256`, toolchain pin, binary hash — frozen schema in
+`native-build/guest-resolver/PROTOCOL.json`) can additionally be bundled
+into the GPL offer archive via
+`produce-corresponding-source.py --guest-resolver-dir … --guest-resolver-manifest …`
+(all-or-none; without those flags the proot/talloc archive is bit-for-bit
+unchanged from the original recipe bindings).
+
 ## Gradle-resolved library dependency (G03-R2 installer)
 
 | Component | Terms (verified from the primary source) | Where it lands | Obligations |

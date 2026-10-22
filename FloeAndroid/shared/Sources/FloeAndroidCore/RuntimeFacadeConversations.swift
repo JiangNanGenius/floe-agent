@@ -686,6 +686,10 @@ public protocol ConversationCredentialDeletionDraining: Sendable {
 /// directory after the owning task stopped) was already satisfied, so the
 /// caller counts it as absorbed — never as a removal and never as a
 /// failure. Only an actually-removed owned directory reports `.removed`.
+/// (G03-R3: the lifecycle OUTCOME still distinguishes an owning queue
+/// finalization — a `.queueAuthority` pass completing a removal a prior
+/// owned pass performed reports `.removed` there — while this per-attempt
+/// effect keeps the raw filesystem truth.)
 public enum PrivateTaskDirectoryRemoval: Sendable, Equatable {
     case removed
     case absent
@@ -731,9 +735,20 @@ public protocol ConversationOwnedWorkspaceCleaning: Sendable {
 ///   2. the host-filesystem port removes only the bounded owned directory
 ///      (non-following ancestor/final validation; nothing is inferred from
 ///      `fileExists` or path strings);
-///   3. only after the REAL filesystem success, the durable V36 row is
+///   3. only after the REAL filesystem success, the ORIGINAL Core-side
+///      Linux transfer/recovery copies for the SAME proven target are purged
+///      (G03-R3: `LinuxWorkspaceAuthority.purgeTargetOwnedTransferState` —
+///      marker/ledger-proven ownership only, unknown/foreign/live owners
+///      preserved, durable pending tombstone stands until every half
+///      settles), and the typed runtime-UID cleanup handoff
+///      (`LinuxRuntimeCleanupLane`) is requested for the COMPLETE proven
+///      target-project scope;
+///   4. only when BOTH halves settle — the durable V36 row is
 ///      completed with an exact `workspace_id + relative_path` condition, so
-///      a replaced queue binding is never erased.
+///      a replaced queue binding is never erased. An awaiting/refused
+///      runtime receipt DEFERS (retains) the row: the lifecycle requires
+///      the real ACK and never fabricates success because a Core callback
+///      was requested.
 /// Every non-success outcome RETAINS the durable queue row: the next
 /// launch sweep (`retryPendingLocalWorkspaceCleanup`) or an explicit retry
 /// completes recovery. Nothing here ever touches project repositories,
@@ -741,7 +756,55 @@ public protocol ConversationOwnedWorkspaceCleaning: Sendable {
 /// selected SAF documents or exported user files — a privateTask workspace
 /// is created ONLY under the managed root and its lifetime is owned by its
 /// conversation.
+/// The additive truth of the typed runtime-UID cleanup handoff for ONE
+/// deleted target. Nothing here ever claims the runtime half cleared
+/// without a REAL settled receipt read back from the ORIGINAL lane.
+public enum ConversationRuntimeCleanupHandoff: Sendable, Equatable {
+    /// The target had no Core-side grant/transfer activity and no pending
+    /// tombstone: nothing can exist on the runtime UID through this bridge
+    /// (the runtime lane's own census owns out-of-bridge state).
+    case notApplicable
+    /// The obligation is durably owned (V36 row + Core tombstone + lane
+    /// record) and awaits the real receipt. Carries the lane request id.
+    case queued(requestID: String)
+    /// A real cleared receipt settled for the exact scope.
+    case settled(receiptDigest: String)
+    /// The runtime refused; the obligation RETAINS and stays retryable.
+    case retrying(reason: String)
+    /// The handoff could not be queued/proven (saturation, unknown scope,
+    /// evicted record): the caller retains every durable record.
+    case unavailable(reason: String)
+
+    public var wireToken: String {
+        switch self {
+        case .notApplicable: return "notApplicable"
+        case .queued: return "awaitingReceipt"
+        case .settled: return "settled"
+        case .retrying: return "retrying"
+        case .unavailable: return "unavailable"
+        }
+    }
+}
+
 public enum ConversationPrivateWorkspaceCleanup {
+    /// Detailed result: the directory/queue OUTCOME plus the additive
+    /// runtime-handoff truth (legacy callers read `.outcome`).
+    /// `directoryEffect` is the REAL filesystem effect when the sequence
+    /// reached it — deferred/failed lifecycle outcomes still report the
+    /// directory truth honestly (removed vs never-removed).
+    public struct Report: Sendable, Equatable {
+        public var outcome: Outcome
+        public var runtimeHandoff: ConversationRuntimeCleanupHandoff
+        public var directoryEffect: PrivateTaskDirectoryRemoval?
+        public init(outcome: Outcome,
+                    runtimeHandoff: ConversationRuntimeCleanupHandoff = .notApplicable,
+                    directoryEffect: PrivateTaskDirectoryRemoval? = nil) {
+            self.outcome = outcome
+            self.runtimeHandoff = runtimeHandoff
+            self.directoryEffect = directoryEffect
+        }
+    }
+
     public enum Outcome: Sendable, Equatable {
         /// The owned directory existed and was removed; its exact durable
         /// queue binding was completed.
@@ -759,13 +822,34 @@ public enum ConversationPrivateWorkspaceCleanup {
         case failed(String)
     }
 
+    /// Legacy shape (pre-R3 callers and tests): directory + queue lifecycle
+    /// only, no Linux transfer phase.
     public static func perform(
         workspaceStore: SQLiteWorkspaceStore,
         cleaning: (any ConversationOwnedWorkspaceCleaning)?,
         workspaceID: UUID,
         relativePath: String
     ) async -> Outcome {
-        guard let cleaning else { return .deferred("workspaceCleaningUnbound") }
+        await performDetailed(workspaceStore: workspaceStore, cleaning: cleaning,
+                              workspaceID: workspaceID, relativePath: relativePath,
+                              rootEpoch: nil, conversationID: nil).outcome
+    }
+
+    /// The FULL R3 sequence. `rootEpoch`/`conversationID` come ONLY from
+    /// the actual lifecycle authority (fence/privacy generation, or the
+    /// ORIGINAL native readback in the owned startup sweep); nil values
+    /// keep the legacy behavior for callers without Linux authority.
+    public static func performDetailed(
+        workspaceStore: SQLiteWorkspaceStore,
+        cleaning: (any ConversationOwnedWorkspaceCleaning)?,
+        workspaceID: UUID,
+        relativePath: String,
+        rootEpoch: UInt64?,
+        conversationID: UUID?
+    ) async -> Report {
+        guard let cleaning else {
+            return Report(outcome: .deferred("workspaceCleaningUnbound"))
+        }
 
         let admission: SQLiteWorkspaceStore.PrivateTaskRetirementAdmission
         do {
@@ -773,20 +857,20 @@ public enum ConversationPrivateWorkspaceCleanup {
                 workspaceID: workspaceID,
                 expectedRelativePath: relativePath)
         } catch let error as ConversationDomainError {
-            return .failed(error.wireReason ?? error.wireCode)
+            return Report(outcome: .failed(error.wireReason ?? error.wireCode))
         } catch {
-            return .failed("cleanupThrew")
+            return Report(outcome: .failed("cleanupThrew"))
         }
 
         switch admission {
         case .deferredSurvivors:
-            return .deferred("workspaceOwnershipSurvivors")
+            return Report(outcome: .deferred("workspaceOwnershipSurvivors"))
         case .deferredOwnershipChanged:
-            return .deferred("workspaceOwnershipChanged")
+            return Report(outcome: .deferred("workspaceOwnershipChanged"))
         case .deferredQueueConflict:
-            return .deferred("workspaceCleanupQueueConflict")
+            return Report(outcome: .deferred("workspaceCleanupQueueConflict"))
         case .deferredUnknownOwnership:
-            return .deferred("workspaceOwnershipUnknown")
+            return Report(outcome: .deferred("workspaceOwnershipUnknown"))
         case .rowRetired, .queueAuthority:
             break
         }
@@ -796,17 +880,90 @@ public enum ConversationPrivateWorkspaceCleanup {
             removal = try await cleaning.removePrivateTaskDirectory(
                 relativePath: relativePath)
         } catch let error as ConversationDomainError {
-            return .failed(error.wireReason ?? error.wireCode)
+            return Report(outcome: .failed(error.wireReason ?? error.wireCode))
         } catch {
             // The durable cleanup row REMAINS; the next launch sweep (or an
             // explicit retryPendingLocalWorkspaceCleanup) completes
             // recovery. Process-death recoverable by construction.
-            return .failed("cleanupThrew")
+            return Report(outcome: .failed("cleanupThrew"))
         }
 
-        // Completion is conditional AND after the real success: a replaced
-        // binding is left intact (false), and a completion write failure is
-        // reported as a deferred lifecycle, never as a fake removal.
+        // ---- G03-R3 step 3: Core transfer/recovery purge + runtime handoff.
+        var handoff: ConversationRuntimeCleanupHandoff = .notApplicable
+        if let rootEpoch, let conversationID,
+           LinuxWorkspaceAuthority.effectiveStorageRootPath() != nil {
+            switch LinuxWorkspaceAuthority.purgeTargetOwnedTransferState(
+                conversationID: conversationID,
+                expectedRelativePath: relativePath,
+                rootEpoch: rootEpoch) {
+            case .refused(let code):
+                switch code {
+                case "authorityNotInstalled", "epochUnprovable", "epochStale",
+                     "epochUnbound", "pendingPurgeLedgerUnwritable",
+                     "pendingPurgeLedgerUnreadable", "transferRootUnsafe",
+                     "sessionsTreeUnsafe":
+                    // Transient or unprovable authority: RETAIN the durable
+                    // row; the same owned retry completes when proven.
+                    return Report(outcome: .deferred("transferPurge.\(code)"),
+                                  runtimeHandoff: .unavailable(reason: code),
+                                  directoryEffect: removal)
+                default:
+                    return Report(outcome: .failed("transferPurge.\(code)"),
+                                  runtimeHandoff: .unavailable(reason: code),
+                                  directoryEffect: removal)
+                }
+            case .retained(let report, let reason):
+                // Unsettled Core copies: START the runtime half anyway (the
+                // lane dedups so retry is single-shot) and retain the row.
+                let ticket = requestRuntimeCleanup(report: report, conversationID: conversationID,
+                                                   relativePath: relativePath, lifecycleEpoch: rootEpoch)
+                return Report(outcome: .deferred("transferPurge.\(reason)"), runtimeHandoff: ticket,
+                              directoryEffect: removal)
+            case .completed(let report):
+                if report.provenTotal == 0 && !report.ledgerCoreSettled {
+                    handoff = .notApplicable
+                } else {
+                    switch requestRuntimeCleanup(report: report, conversationID: conversationID,
+                                                 relativePath: relativePath,
+                                                 lifecycleEpoch: rootEpoch) {
+                    case .settled(let digest):
+                        guard let project = report.provenProjectID,
+                              let scopeEpoch = report.provenTargetEpoch,
+                              LinuxWorkspaceAuthority.settleTargetPurgeLedger(
+                                  conversationID: conversationID, projectID: project,
+                                  rootEpoch: scopeEpoch) else {
+                            // Real ACK but the tombstone could not close:
+                            // retain (an idempotent retry settles it).
+                            return Report(outcome: .deferred("runtimeCleanupTombstoneUnsettled"),
+                                          runtimeHandoff: .settled(receiptDigest: digest),
+                                          directoryEffect: removal)
+                        }
+                        handoff = .settled(receiptDigest: digest)
+                    case .unavailable(let reason):
+                        return Report(outcome: .deferred("runtimeCleanupHandoff.\(reason)"),
+                                      runtimeHandoff: .unavailable(reason: reason),
+                                      directoryEffect: removal)
+                    case .queued(let requestID):
+                        return Report(outcome: .deferred("runtimeCleanupAwaitingReceipt"),
+                                      runtimeHandoff: .queued(requestID: requestID),
+                                      directoryEffect: removal)
+                    case .retrying(let reason):
+                        return Report(outcome: .deferred("runtimeCleanupRetrying"),
+                                      runtimeHandoff: .retrying(reason: reason),
+                                      directoryEffect: removal)
+                    case .notApplicable:
+                        return Report(outcome: .deferred("runtimeCleanupAwaitingReceipt"),
+                                      runtimeHandoff: .queued(requestID: ""),
+                                      directoryEffect: removal)
+                    }
+                }
+            }
+        }
+
+        // ---- step 4: conditional queue completion ONLY after BOTH halves
+        // settled above: a replaced binding is left intact (false), and a
+        // completion write failure is reported as a deferred lifecycle,
+        // never as a fake removal.
         do {
             let completed = try await workspaceStore.finishLocalCleanup(
                 workspaceID: workspaceID,
@@ -817,16 +974,76 @@ public enum ConversationPrivateWorkspaceCleanup {
                 // rather than reporting a fully completed lifecycle.
                 let pending = try await workspaceStore.pendingLocalCleanup()
                 if pending.contains(where: { $0.workspaceID == workspaceID }) {
-                    return .deferred("workspaceCleanupQueueUnsettled")
+                    return Report(outcome: .deferred("workspaceCleanupQueueUnsettled"),
+                                  runtimeHandoff: handoff, directoryEffect: removal)
                 }
             }
         } catch {
-            return .deferred("workspaceCleanupQueueUnsettled")
+            return Report(outcome: .deferred("workspaceCleanupQueueUnsettled"),
+                          runtimeHandoff: handoff, directoryEffect: removal)
         }
 
         switch removal {
-        case .removed: return .removed
-        case .absent: return .absent
+        case .removed: return Report(outcome: .removed, runtimeHandoff: handoff,
+                                     directoryEffect: .removed)
+        case .absent:
+            // `.queueAuthority` is the FINALIZING pass of an already-retired
+            // owned cleanup: the durable V36 row proves the content existed
+            // under this exact scope when a prior owned pass (or the
+            // launch-owned sweep after process death) committed the
+            // retirement, and the directory now reads absent — the removal
+            // THIS lifecycle owns has completed. The honest finalization
+            // claim is `.removed`, never the "nothing was ever there"
+            // `.absent` absorbed-claim (which would under-report a completed
+            // private-content removal in the additive accounting). A FRESH
+            // retirement that finds no directory (`.rowRetired` + absent,
+            // the legacy no-op shape) stays `.absent`. The per-attempt
+            // `directoryEffect` keeps the raw filesystem truth and the
+            // frozen wire mapping of both outcomes is unchanged.
+            switch admission {
+            case .queueAuthority:
+                return Report(outcome: .removed, runtimeHandoff: handoff,
+                              directoryEffect: .absent)
+            default:
+                return Report(outcome: .absent, runtimeHandoff: handoff,
+                              directoryEffect: .absent)
+            }
+        }
+    }
+
+    /// Build and enqueue the runtime-UID cleanup request for the COMPLETE
+    /// proven target scope. Scope identity comes ONLY from the purge
+    /// report's marker/ledger-proven bindings — never from a caller echo,
+    /// a guessed path or a first-project scan.
+    private static func requestRuntimeCleanup(
+        report: LinuxWorkspacePurgeReport, conversationID: UUID,
+        relativePath: String, lifecycleEpoch: UInt64
+    ) -> ConversationRuntimeCleanupHandoff {
+        guard let project = report.provenProjectID,
+              let scopeEpoch = report.provenTargetEpoch else {
+            return .unavailable(reason: "scopeUnproven")
+        }
+        _ = lifecycleEpoch // the ledger's recorded epoch (scopeEpoch) is the stable identity
+        let scope = LinuxRuntimeCleanupScope(
+            conversationID: conversationID, projectID: project, targetEpoch: scopeEpoch,
+            workspaceRelativePath: relativePath,
+            evidenceSessionKeys: report.provenSessionKeys,
+            evidenceTruncated: report.provenSessionKeys.count > 16 || report.entriesTruncated,
+            provenTotal: report.provenTotal)
+        guard let requestID = LinuxRuntimeCleanupLane.shared.request(scope: scope) else {
+            return .unavailable(reason: "handoffSaturated")
+        }
+        switch LinuxRuntimeCleanupLane.shared.state(requestID: requestID) {
+        case .settled(let digest):
+            return .settled(receiptDigest: digest)
+        case .queued, .claimed:
+            return .queued(requestID: requestID)
+        case .retrying(let reason):
+            return .retrying(reason: reason)
+        case .unknown:
+            // Bounded ring eviction lost the settled record: re-derive a
+            // fresh obligation on the next owned retry (idempotent).
+            return .unavailable(reason: "handoffEvicted")
         }
     }
 }
@@ -2020,18 +2237,26 @@ public struct ConversationDeleteReply: Sendable, Equatable {
     /// honestly (the row is already committed; the guard/authority outcome
     /// remains diagnosable and recoverable).
     public let fenceSettlement: ConversationDeletionFenceSettlement
+    /// G03-R3 additive truth of the typed runtime-UID cleanup handoff for
+    /// this target. `.notApplicable`/`.settled` mean no cross-UID work is
+    /// open; `.queued`/`.retrying`/`.unavailable` mean the PRODUCT cleanup
+    /// is NOT complete — no consumer may present this deletion as a full
+    /// cross-UID wipe while an obligation awaits its real receipt.
+    public let runtimeCleanup: ConversationRuntimeCleanupHandoff
 
     public init(conversationID: UUID, quiescence: ConversationQuiescenceReport,
                 workspaceCleanup: ConversationDeleteCleanupStatus,
                 credentialDrain: ConversationCredentialDrainStatus,
                 contentHandlesReleased: Int,
-                fenceSettlement: ConversationDeletionFenceSettlement) {
+                fenceSettlement: ConversationDeletionFenceSettlement,
+                runtimeCleanup: ConversationRuntimeCleanupHandoff = .notApplicable) {
         self.conversationID = conversationID
         self.quiescence = quiescence
         self.workspaceCleanup = workspaceCleanup
         self.credentialDrain = credentialDrain
         self.contentHandlesReleased = contentHandlesReleased
         self.fenceSettlement = fenceSettlement
+        self.runtimeCleanup = runtimeCleanup
     }
 
     public var wireObject: [String: Any] {
@@ -2071,6 +2296,17 @@ public struct ConversationDeleteReply: Sendable, Equatable {
             object["credentialDeferred"] = summary.deferredCount ?? NSNull()
         case .deferredUnbound:
             object["credentialDrain"] = "deferredQueueRetained"
+        }
+        object["runtimeCleanupHandoff"] = runtimeCleanup.wireToken
+        switch runtimeCleanup {
+        case .queued(let requestID):
+            if !requestID.isEmpty { object["runtimeCleanupRequestID"] = requestID }
+        case .settled(let digest):
+            object["runtimeCleanupReceiptDigest"] = digest
+        case .retrying(let reason), .unavailable(let reason):
+            object["runtimeCleanupReason"] = reason
+        case .notApplicable:
+            break
         }
         return object
     }
@@ -3358,8 +3594,12 @@ public actor FacadeConversationDomain {
             // Cancellation from here on cannot un-delete; every status below
             // stays truthful and the durable queues are recoverable.
             var cleanupStatus: ConversationDeleteCleanupStatus = .none
+            var runtimeCleanup: ConversationRuntimeCleanupHandoff = .notApplicable
             if let captured = capturedPrivateTask {
-                cleanupStatus = await cleanupOwnedPrivateWorkspace(captured)
+                let effects = await cleanupOwnedPrivateWorkspace(captured, conversationID: conversationID,
+                                                                 rootEpoch: hostEpoch)
+                cleanupStatus = effects.status
+                runtimeCleanup = effects.runtimeHandoff
             }
 
             var credentialStatus: ConversationCredentialDrainStatus = .deferredUnbound
@@ -3380,7 +3620,8 @@ public actor FacadeConversationDomain {
                                            workspaceCleanup: cleanupStatus,
                                            credentialDrain: credentialStatus,
                                            contentHandlesReleased: released,
-                                           fenceSettlement: fenceSettlement)
+                                           fenceSettlement: fenceSettlement,
+                                           runtimeCleanup: runtimeCleanup)
         } catch {
             // CH-R3: every pre-commit exit (throw, cancellation, stale,
             // drain failure, expected-row CAS refusal) settles the EXACT
@@ -3429,29 +3670,50 @@ public actor FacadeConversationDomain {
         }
     }
 
-    private func cleanupOwnedPrivateWorkspace(_ captured: (workspaceID: UUID, relativePath: String)) async
-        -> ConversationDeleteCleanupStatus
+    private func cleanupOwnedPrivateWorkspace(_ captured: (workspaceID: UUID, relativePath: String),
+                                              conversationID: UUID, rootEpoch: UInt64) async
+        -> (status: ConversationDeleteCleanupStatus,
+            runtimeHandoff: ConversationRuntimeCleanupHandoff)
     {
         // The ONE shared ownership/lifecycle sequence (see
         // ConversationPrivateWorkspaceCleanup): identical facts drive
-        // conversation.delete and privacy.history.clear.
-        switch await ConversationPrivateWorkspaceCleanup.perform(
+        // conversation.delete and privacy.history.clear, including the
+        // R3 transfer purge + runtime-UID handoff (the lifecycle's REAL
+        // hostEpoch/conversation identity bind the scope).
+        let report = await ConversationPrivateWorkspaceCleanup.performDetailed(
             workspaceStore: workspaceStore,
             cleaning: workspaceCleaning,
             workspaceID: captured.workspaceID,
-            relativePath: captured.relativePath) {
+            relativePath: captured.relativePath,
+            rootEpoch: rootEpoch,
+            conversationID: conversationID)
+        switch report.outcome {
         case .removed, .absent:
             // `.absent` is reported as `.removed` on this frozen wire: the
             // reply's contract is "the private workspace has no on-disk
             // remnants", which an already-absent owned directory satisfies
             // truthfully. The removed/absent distinction is surfaced only by
-            // the additive privacy history-clear accounting.
-            return .removed
+            // the additive privacy history-clear accounting. A settled
+            // runtime receipt keeps `.removed` truthful; an open obligation
+            // is visible ONLY through the additive runtimeCleanup field.
+            return (status: .removed, runtimeHandoff: report.runtimeHandoff)
         case .deferred(let reason):
-            return .deferredQueueRetained(reason)
+            return (status: .deferredQueueRetained(reason), runtimeHandoff: report.runtimeHandoff)
         case .failed(let reason):
-            return .failed(reason)
+            return (status: .failed(reason), runtimeHandoff: report.runtimeHandoff)
         }
+    }
+
+    /// Exact-shape parse for the durable queue path: ONLY the canonical
+    /// `PrivateTasks/<conversation uuid>` owned shape yields an identity
+    /// (the admission transaction already re-validated the binding; this is
+    /// the scope bind for the R3 transfer purge, never a guess).
+    private static func privateTaskConversationID(fromRelativePath relativePath: String) -> UUID? {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false)
+        guard components.count == 2, components[0] == "PrivateTasks",
+              let uuid = UUID(uuidString: String(components[1])),
+              relativePath == "PrivateTasks/\(uuid.uuidString)" else { return nil }
+        return uuid
     }
 
     /// Bootstrap/launch retry mirror of
@@ -3471,15 +3733,33 @@ public actor FacadeConversationDomain {
     ) async -> [String: String] {
         var failures: [String: String] = [:]
         guard workspaceCleaning != nil else { return failures }
+        // R3: the owned sweep runs under a REAL generation (G02Composition
+        // roots it inside the install), so the ORIGINAL native readback is
+        // the trusted scope epoch; the conversation identity is the exact
+        // store-validated `PrivateTasks/<uuid>` shape — never a guess.
+        let scopeEpoch = LinuxWorkspaceAuthority.liveNativeRootEpoch() ?? context.hostEpoch
         do {
             let pending = try await workspaceStore.pendingLocalCleanup()
             for item in pending {
                 guard shouldContinue(), !Task.isCancelled else { break }
-                switch await ConversationPrivateWorkspaceCleanup.perform(
+                let scopedConversation = Self.privateTaskConversationID(fromRelativePath: item.relativePath)
+                let report = await ConversationPrivateWorkspaceCleanup.performDetailed(
                     workspaceStore: workspaceStore,
                     cleaning: workspaceCleaning,
                     workspaceID: item.workspaceID,
-                    relativePath: item.relativePath) {
+                    relativePath: item.relativePath,
+                    rootEpoch: scopedConversation == nil ? nil : scopeEpoch,
+                    conversationID: scopedConversation)
+                // The sweep acts on the REAL lifecycle outcome (the same
+                // `report.outcome` the deletion/privacy sequence reads). The
+                // deferred PROOF, the durable V36 row and the pending-purge
+                // tombstone retention belong to performDetailed itself: a
+                // deferred/failed outcome keeps BOTH durable records standing
+                // and the additive runtimeHandoff (queued/settled obligation)
+                // stays observable through floe_linux_runtime_cleanup_status.
+                // This map carries only the typed reason strings — never a
+                // fabricated settlement or completion.
+                switch report.outcome {
                 case .removed, .absent:
                     continue
                 case .deferred("workspaceOwnershipSurvivors"):

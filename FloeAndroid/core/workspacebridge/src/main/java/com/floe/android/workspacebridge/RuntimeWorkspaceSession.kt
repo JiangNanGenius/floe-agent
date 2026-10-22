@@ -58,6 +58,11 @@ class RuntimeWorkspaceSession(
     private var journalDirectory: File? = null
     private var imported = false
     private var exportSettled = false
+    /** R3 preflight precommit guard input: the ACTUAL imported baseline
+     *  representation (kind/size/contained link target per relative path),
+     *  recorded from the same staged entries that were swapped into the
+     *  destination. Memory-only, session-scoped, never a second pipeline. */
+    private val importedBaseline = HashMap<String, WorkspaceMirrorEntry>()
 
     init {
         val packages = RuntimePackages.forRuntime(context.packageName)
@@ -222,6 +227,11 @@ class RuntimeWorkspaceSession(
             throw WorkspaceBridgeException("importFailed", failure)
         }
         imported = true
+        // Record the faithful representation of the imported baseline BEFORE
+        // any later export decision (the R3 preflight precommit guard).
+        for (entry in staged) {
+            importedBaseline[entry.path] = WorkspaceMirrorEntry(entry.kind, entry.size, entry.linkTarget, entry.digest)
+        }
         val outcome = requireNotNull(swapOutcome) { "swap outcome missing after acknowledged import" }
         val conflicts = outcomeConflicts(swap, journal)
         stageRoot.deleteRecursivelySafe()
@@ -252,11 +262,41 @@ class RuntimeWorkspaceSession(
 
     // MARK: - Export
 
-    fun exportAfterQuiescence(cancel: WorkspaceCancelSignal): WorkspaceExportOutcome {
+    /**
+     * `faithfulMirror` is the R3 preflight-only mode (default OFF keeps the
+     * ORIGINAL shell-export semantics untouched, including legitimate
+     * deletions). When ON, the guest tree is walked and checked against the
+     * recorded imported baseline BEFORE `EXPORT_BEGIN`: a missing baseline
+     * entry (deletion plan) or a changed representation is refused with a
+     * recoverable failure that never reached any Core commit. The existing
+     * applied-plan honesty check remains the post-commit second layer; this
+     * is the same pipeline, not a parallel workspace mechanism.
+     */
+    fun exportAfterQuiescence(cancel: WorkspaceCancelSignal, faithfulMirror: Boolean = false): WorkspaceExportOutcome {
         val key = sessionKey ?: return WorkspaceExportOutcome.RecoverableFailure("noSession", false, null)
         val view = budgets ?: return WorkspaceExportOutcome.RecoverableFailure("budgetsMissing", false, key)
         if (!imported) return WorkspaceExportOutcome.RecoverableFailure("importPending", false, key)
         if (exportSettled) return WorkspaceExportOutcome.RecoverableFailure("exportSettled", false, key)
+        // PRECOMMIT faithful mirror: the walk + baseline check run BEFORE
+        // EXPORT_BEGIN so an unfaithful mirror never reaches ANY Core commit
+        // (v1 checked honesty only after EXPORT_FINISH had applied the
+        // transaction, which is too late to refuse a deletion/empty plan).
+        var prewalked: List<GuestEntry>? = null
+        if (faithfulMirror) {
+            val walked = walkGuestTree(view)
+                ?: return WorkspaceExportOutcome.RecoverableFailure("budgetExceeded", false, key)
+            val mirrored = walked.associate { entry ->
+                val digest = if (entry.kind == "file" && importedBaseline.containsKey(entry.path)) {
+                    digestOfFile(File(destination, entry.path))
+                        ?: return WorkspaceExportOutcome.RecoverableFailure("mirror_unreadable", false, key)
+                } else ""
+                entry.path to WorkspaceMirrorEntry(entry.kind, entry.size, entry.linkTarget, digest)
+            }
+            faithfulMirrorViolation(importedBaseline.toMap(), mirrored)?.let {
+                return WorkspaceExportOutcome.RecoverableFailure(it, false, key)
+            }
+            prewalked = walked
+        }
         try {
             requireOk(transact(WorkspaceBridgeWire.EXPORT_BEGIN, JSONObject()).first, "exportBeginUnavailable")
         } catch (failure: WorkspaceBridgeException) {
@@ -264,9 +304,11 @@ class RuntimeWorkspaceSession(
         }
         var sequence = 0L
         try {
-            val entries = walkGuestTree(view) ?: run {
-                abortOnce("budgetExceeded")
-                return WorkspaceExportOutcome.RecoverableFailure("budgetExceeded", true, key)
+            val entries = prewalked ?: run {
+                walkGuestTree(view) ?: run {
+                    abortOnce("budgetExceeded")
+                    return WorkspaceExportOutcome.RecoverableFailure("budgetExceeded", true, key)
+                }
             }
             for (entry in entries) {
                 if (cancel.shouldCancel()) {
@@ -601,7 +643,45 @@ class RuntimeWorkspaceSession(
     private fun File.deleteRecursivelySafe() { deleteWorkspaceTreeNoFollow() }
 
     companion object {
+        /**
+         * Precommit faithful-mirror decision (pure and boundary-testable):
+         * EVERY imported baseline entry must still be represented in the
+         * guest tree with the same kind (a file keeps its byte size, a
+         * symlink keeps its contained target). A missing baseline entry is
+         * the headline forbidden case — an applied plan would delete Core
+         * content (including the empty mirror of a non-empty baseline) — so
+         * it must be refused BEFORE any commit. Independent guest-side
+         * ADDITIONS are legitimate (the ORIGINAL import never touched them)
+         * and stay permitted, exactly like the unchanged shell semantics.
+         */
+        fun faithfulMirrorViolation(baseline: Map<String, WorkspaceMirrorEntry>,
+                                    guest: Map<String, WorkspaceMirrorEntry>): String? {
+            var deleted = false
+            var unfaithful = false
+            for ((path, expected) in baseline) {
+                val actual = guest[path]
+                if (actual == null) { deleted = true; continue }
+                if (actual.kind != expected.kind ||
+                    (expected.kind == "file" && (actual.size != expected.size || actual.sha256 != expected.sha256)) ||
+                    (expected.kind == "symlink" && actual.linkTarget != expected.linkTarget)
+                ) unfaithful = true
+            }
+            return when {
+                deleted -> "deletion_plan"
+                unfaithful -> "mirror_unfaithful"
+                else -> null
+            }
+        }
+
         private val liveSessions = ConcurrentHashMap<String, Boolean>()
+
+        /** G03-R3 cleanup gate: true while a session key has an OPEN runtime
+         * -side transfer session. A scoped wipe must DEFER (never delete)
+         *  under a live grant; recovery journals are only wiped when their
+         *  key is provably not live. */
+        fun isLiveSessionKey(sessionKey: String): Boolean =
+            sessionKey.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX)) &&
+                liveSessions.containsKey(sessionKey)
 
         /** Sweep STALE runtime-side transfer journals ONLY: acknowledged,
          *  zero open preserves, valid marker, session key outside the live
@@ -634,6 +714,12 @@ class RuntimeWorkspaceSession(
         }
     }
 }
+
+/** One recorded baseline/guest representation used by the R3 precommit
+ *  faithful-mirror guard (kind + byte size for files + contained symlink
+ *  target). Deliberately path-keyed and relative-only: no Core absolute
+ *  path, no second transfer machinery. */
+data class WorkspaceMirrorEntry(val kind: String, val size: Long, val linkTarget: String?, val sha256: String = "")
 
 /** Cheap liveness check WITHOUT allocating a binder callback: false once the
  *  Core grant object is gone; close/ownership then follows Main's pump rules. */

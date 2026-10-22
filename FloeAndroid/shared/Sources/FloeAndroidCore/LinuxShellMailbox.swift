@@ -639,6 +639,14 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         if let environmentID = request.environmentID, !environmentID.isEmpty {
             payload["environmentID"] = environmentID
         }
+        // G03-R3 stdin EOF (job-c012c50e636f4fbb contract, forwarded by Main
+        // 2026-10-22): the trusted caller's explicit one-shot delivery mode
+        // rides as the engine's closed-set token. nil OMITS the key (never
+        // null); the applied Kotlin defaults an absent key to "pty", so
+        // interactive paths are byte-for-byte unchanged.
+        if let stdinDelivery = request.stdinDelivery {
+            payload["stdinDelivery"] = stdinDelivery.rawValue
+        }
         // Explicit caller env rides UNCHANGED (bounds already validated by
         // the backend against the engine rules; re-checked here so no call
         // path can smuggle an out-of-bound map past the typed seam). The
@@ -736,7 +744,13 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
         }
         return LinuxShellInputReply(acceptedBytes: accepted,
                                     partial: (object["partial"] as? Bool) ?? false,
-                                    errnoCode: Self.int32Value(object["errno"]))
+                                    errnoCode: Self.int32Value(object["errno"]),
+                                    // G03-R3 stdin EOF additive decode (tolerant
+                                    // optional casts: data pages and pre-field
+                                    // engines simply omit these keys; the value
+                                    // is never invented here).
+                                    stdinEof: object["stdinEof"] as? String,
+                                    stdinEofReason: object["reason"] as? String)
     }
 
     public func shellResize(_ request: LinuxShellResizeRequest) async throws -> LinuxShellResizeReply {

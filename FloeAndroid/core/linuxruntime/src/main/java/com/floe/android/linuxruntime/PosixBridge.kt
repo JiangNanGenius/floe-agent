@@ -38,8 +38,41 @@ object PosixBridge {
         timeoutMs: Int,
     ): Int
 
+    /**
+     * One-shot launch where the child's stdin is a REAL pipe (stdout/stderr
+     * stay on the PTY slave). Returns {pid, stdinWriteFd} on success or
+     * {-errno, -1} on failure; a host-side precondition failure throws as in
+     * [spawnOnPty]. The write end is nonblocking and descriptor-owned by the
+     * caller session: closing it is the only source of real EOF for the
+     * child's stdin — no EOT byte, no shell redirection. The child drops its
+     * inherited copy of the write end before exec, so no guest process can
+     * hold stdin open past the supplied bytes. Every spawn-failure path in
+     * the native layer closes both pipe ends before returning.
+     */
+    external fun spawnOnPtyStdinPipe(
+        masterFd: Int,
+        slaveFd: Int,
+        executable: String,
+        argv: Array<String>,
+        envp: Array<String>,
+        workingDir: String?,
+        timeoutMs: Int,
+    ): IntArray
+
+    /**
+     * Bounded write to a one-shot stdin pipe write end. Retries EINTR inside
+     * the kernel-call loop only; never blocks waiting for a reader. Returns
+     * bytes accepted (may be partial) or -errno when nothing was accepted
+     * (-11 EAGAIN pipe full, -32 EPIPE child closed stdin, -9 EBADF closed).
+     */
+    external fun writeStdinPipe(fd: Int, data: ByteArray, offset: Int, length: Int): Int
+
     /** Set winsize on the PTY master. Returns 0 or -errno. */
     external fun setWinsize(masterFd: Int, rows: Int, cols: Int): Int
+
+    /** Set O_NONBLOCK on an owned fd's open file description; 0 or -errno.
+     * Uses bionic fcntl so callers do not need API 30's Os.fcntlInt. */
+    external fun setFdNonBlocking(fd: Int): Int
 
     /** waitpid(pid) without hanging: {state, code, extra}; state 0=running,1=exited,2=signaled,3=error(extra=errno). */
     external fun pollWaitPid(pid: Int): IntArray

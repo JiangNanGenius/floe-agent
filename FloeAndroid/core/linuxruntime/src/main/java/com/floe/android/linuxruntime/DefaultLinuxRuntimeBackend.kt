@@ -31,14 +31,30 @@ class DefaultLinuxRuntimeBackend(
         val pair = PosixBridge.openPty()
         val masterFd = pair[0]
         val slaveFd = pair[1]
-        val pid = try {
+        val pipeStdin = spec.stdinDelivery == StdinDelivery.OneShotPipe
+        // pid >= 0 on success; stdinWriteFd is the owned write end, only ever
+        // >= 0 together with a successful pipe-mode spawn. Any thrown host
+        // failure means the native layer never handed an fd back.
+        class Raw(val pid: Int, val stdinWriteFd: Int)
+        val raw = try {
             val sizeResult = PosixBridge.setWinsize(masterFd, spec.rows, spec.cols)
-            if (sizeResult < 0) sizeResult else {
+            if (sizeResult < 0) Raw(sizeResult, -1) else {
                 val env = spec.env.entries.map { "${it.key}=${it.value}" }.toTypedArray()
-                PosixBridge.spawnOnPty(
-                    masterFd, slaveFd, spec.executable,
-                    spec.argv.toTypedArray(), env, spec.workingDir, timeoutMs.toInt(),
-                )
+                if (pipeStdin) {
+                    val r = PosixBridge.spawnOnPtyStdinPipe(
+                        masterFd, slaveFd, spec.executable,
+                        spec.argv.toTypedArray(), env, spec.workingDir, timeoutMs.toInt(),
+                    )
+                    Raw(r[0], r[1])
+                } else {
+                    Raw(
+                        PosixBridge.spawnOnPty(
+                            masterFd, slaveFd, spec.executable,
+                            spec.argv.toTypedArray(), env, spec.workingDir, timeoutMs.toInt(),
+                        ),
+                        -1,
+                    )
+                }
             }
         } catch (failure: Throwable) {
             PosixBridge.closeFd(masterFd)
@@ -46,20 +62,25 @@ class DefaultLinuxRuntimeBackend(
         } finally {
             PosixBridge.closeFd(slaveFd)
         }
-        if (pid < 0) {
+        if (raw.pid < 0) {
+            // Defense in depth: the native contract already closes both pipe
+            // ends on every failure path; an unexpected positive fd here is
+            // still owned and closed, never leaked into the session table.
+            if (raw.stdinWriteFd >= 0) PosixBridge.closeFd(raw.stdinWriteFd)
             PosixBridge.closeFd(masterFd)
-            val errno = -pid
+            val errno = -raw.pid
             return SpawnOutcome.Failed(SpawnError(errno, errnoName(errno)))
         }
-        val startTicks = PosixBridge.procStartTime(pid)
+        val startTicks = PosixBridge.procStartTime(raw.pid)
         return SpawnOutcome.Spawned(
             DefaultPtySession(
-                pid = pid,
-                creationIdentity = "$pid:$startTicks",
+                pid = raw.pid,
+                creationIdentity = "${raw.pid}:$startTicks",
                 executable = spec.executable,
                 argv = spec.argv,
                 ownership = spec.ownership,
                 masterFd = masterFd,
+                stdinWriteFd = raw.stdinWriteFd,
             ),
         )
     }
@@ -71,14 +92,33 @@ class DefaultLinuxRuntimeBackend(
         override val argv: List<String>,
         override val ownership: RunOwnership,
         private val masterFd: Int,
+        private val stdinWriteFd: Int = -1,
     ) : PtySession {
         // Lifecycle lock serializes poll/wait/cancel against ECHILD races and
         // PID-reuse windows; fd closure is tracked independently.
         private val lifecycleLock = ReentrantLock(true)
         private val ioLock = ReentrantLock(true)
+        private val stdinLock = ReentrantLock(true)
         private val masterClosed = AtomicBoolean(false)
+        private val stdinClosed = AtomicBoolean(false)
         private var exit: ExitResult? = null
         private var waitErrno = 0
+
+        override val stdinDelivery: StdinDelivery
+            get() = if (stdinWriteFd >= 0) StdinDelivery.OneShotPipe else StdinDelivery.PtyInput
+
+        override fun writeStdinPipe(data: ByteArray, offset: Int, length: Int): Int =
+            stdinLock.withLock {
+                if (stdinWriteFd < 0) return@withLock -95 /* ENOTSUP: PTY delivery */
+                if (stdinClosed.get()) return@withLock -9 /* EBADF: EOF already delivered */
+                PosixBridge.writeStdinPipe(stdinWriteFd, data, offset, length)
+            }
+
+        override fun closeStdinPipe(): Int = stdinLock.withLock {
+            if (stdinWriteFd < 0) return@withLock 0 /* no pipe: idempotent no-op */
+            if (stdinClosed.compareAndSet(false, true)) PosixBridge.closeFd(stdinWriteFd)
+            else 0 /* already closed: idempotent success */
+        }
 
         override fun read(capacity: Int, timeoutMs: Long): ByteArray? = ioLock.withLock {
             require(capacity in 1..(1 shl 20))
@@ -121,6 +161,11 @@ class DefaultLinuxRuntimeBackend(
 
         override fun cancel(): ExitResult? {
             lifecycleLock.withLock {
+                // Release owned stdin write-end FIRST: a killed child (or any
+                // group member that survives the SIGKILL window) sees real EOF
+                // instead of a dangling write end, and no session-cancelling
+                // path can leave the descriptor open behind the lease.
+                closeStdinPipe()
                 var last = exit
                 if (last == null) {
                     last = decode(PosixBridge.pollWaitPid(pid))

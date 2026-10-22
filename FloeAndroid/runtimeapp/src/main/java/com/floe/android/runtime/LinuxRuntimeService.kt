@@ -10,6 +10,7 @@ import com.floe.android.runtimeipc.RuntimeControlBinder
 import com.floe.android.runtimeipc.RuntimeForegroundPermit
 import com.floe.android.runtimeipc.RuntimePackages
 import com.floe.android.runtimeipc.RuntimePeerVerifier
+import com.floe.android.runtimeipc.RuntimeWire
 import java.util.IdentityHashMap
 
 /** Bound to Core's real foreground work. Intents never admit or restore commands. */
@@ -32,7 +33,13 @@ class LinuxRuntimeService : Service() {
         super.onCreate()
         RuntimePeerVerifier(this).verifyPeer(RuntimePackages.forRuntime(packageName).core)
         control = RuntimeControlBinder(this) { request, permit, workspaceGrant ->
-            val admitsWork = request.operation == "install.start" || request.operation == "shell.start"
+            // R3: the first-use NON-EXECUTING workspace preflight is real
+            // foreground-owned work (file IO under an owned grant), so its
+            // permit is retained exactly like install/shell admission: loss
+            // of the owning foreground stops it, and ownership survives the
+            // stop request until the helper actually settles.
+            val admitsWork = request.operation == "install.start" || request.operation == "shell.start" ||
+                request.operation == RuntimeWire.PREFLIGHT
             if (admitsWork) {
                 check(RuntimeForegroundPermit.isActive(this, permit)) { "Foreground operation is not active" }
             }

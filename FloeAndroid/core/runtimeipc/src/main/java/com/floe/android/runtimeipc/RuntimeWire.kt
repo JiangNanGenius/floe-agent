@@ -13,8 +13,21 @@ object RuntimeWire {
     const val MAX_JSON_BYTES = 65_536
     // Parcel strings are UTF-16; leave bounded space for the interface token.
     const val MAX_PARCEL_BYTES = MAX_JSON_BYTES * 2 + 1_024
+    // G03-R3 additive v1: `runtimeWorkspaceCopies.clear` is the trusted-host
+    // cleanup control (typed Core->runtime-UID workspace-copy wipe lane). It
+    // is NOT a model tool and never appears in any model-facing catalog.
+    const val CLEANUP = "runtimeWorkspaceCopies.clear"
+    // G03-R3 additive: the two workspace preflight controls are dedicated
+    // AUTHENTICATED internal host controls for the first-use NON-EXECUTING
+    // round trip (grant-bound file mirroring only). They are NOT
+    // shell.start, never carry a command, and never appear in any model
+    // tool catalog. (Merge note for Main: union with the cleanup lane's
+    // `runtimeWorkspaceCopies.clear` when both land on the same live file.)
+    const val PREFLIGHT = "workspace.preflight"
+    const val PREFLIGHT_CANCEL = "workspace.preflight.cancel"
     val operations = setOf("status", "request.status", "install.start", "install.cancel", "install.status",
-        "environment.list", "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel")
+        "environment.list", "shell.start", "shell.poll", "shell.input", "shell.resize", "shell.cancel",
+        CLEANUP, PREFLIGHT, PREFLIGHT_CANCEL)
 
     data class Request(val id: String, val operation: String, val payload: JSONObject)
 

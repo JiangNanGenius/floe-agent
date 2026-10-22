@@ -429,11 +429,23 @@ public struct PrivacyWorkspaceDirectoryCleanup: Sendable, Equatable, Codable {
     public var removed: Int
     public var absent: Int
     public var deferred: Int
+    /// G03-R3 ADDITIVE (nil on reports produced before this field existed):
+    /// conversations whose runtime-UID workspace-copy cleanup obligation is
+    /// open (queued / retrying / unavailable). The directory may already be
+    /// gone; the PRODUCT wipe is not complete until the real receipt lands.
+    public var runtimeHandoffAwaiting: Int?
+    /// Conversations whose runtime cleanup received a REAL settled cleared
+    /// receipt inside this clear.
+    public var runtimeHandoffSettled: Int?
 
-    public init(removed: Int = 0, absent: Int = 0, deferred: Int = 0) {
+    public init(removed: Int = 0, absent: Int = 0, deferred: Int = 0,
+                runtimeHandoffAwaiting: Int? = nil,
+                runtimeHandoffSettled: Int? = nil) {
         self.removed = removed
         self.absent = absent
         self.deferred = deferred
+        self.runtimeHandoffAwaiting = runtimeHandoffAwaiting
+        self.runtimeHandoffSettled = runtimeHandoffSettled
     }
 }
 

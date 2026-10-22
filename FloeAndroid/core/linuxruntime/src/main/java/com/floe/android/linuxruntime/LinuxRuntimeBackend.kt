@@ -51,6 +51,25 @@ data class RunOwnership(
 
 data class SpawnError(val errno: Int, val message: String)
 
+/**
+ * How one launch delivers the child's STDIN descriptor. Explicit and
+ * platform-owned: the caller code (never a model/env string) selects it, and
+ * it only chooses the child's stdin descriptor layout inside the same guest
+ * launch — it never selects a host interpreter or any other execution path.
+ */
+enum class StdinDelivery {
+    /** Child stdin is the PTY slave: explicit terminal input. This is the
+     * unchanged interactive path (canonical line editing, VEOF/EOT tty
+     * semantics belong to THIS mode and only to it). */
+    PtyInput,
+
+    /** Child stdin is a one-shot pipe whose write end the session owns.
+     * Closing that descriptor delivers a REAL EOF exactly after the supplied
+     * bytes; nil/empty stdin means close-before-any-write, never an EOT hack,
+     * and stdout/stderr/resize/ISIG semantics still ride the PTY. */
+    OneShotPipe,
+}
+
 sealed class SpawnOutcome {
     data class Spawned(val session: PtySession) : SpawnOutcome()
     data class Failed(val error: SpawnError) : SpawnOutcome()
@@ -96,6 +115,26 @@ interface PtySession {
      */
     fun write(data: ByteArray, offset: Int = 0, length: Int = data.size): Int
 
+    /** The stdin descriptor this session actually owns (default: PTY input). */
+    val stdinDelivery: StdinDelivery get() = StdinDelivery.PtyInput
+
+    /**
+     * One-shot stdin pipe write ([StdinDelivery.OneShotPipe] sessions only).
+     * Nonblocking; returns bytes accepted (may be partial) or -errno:
+     * -11 EAGAIN (pipe full — reader has not consumed yet), -32 EPIPE (child
+     * closed stdin), -9 EBADF (write end already closed). A PTY-delivery
+     * session honestly refuses with -95 (ENOTSUP): its stdin rides [write].
+     */
+    fun writeStdinPipe(data: ByteArray, offset: Int = 0, length: Int = data.size - offset): Int =
+        -95 /* ENOTSUP */
+
+    /**
+     * Close the one-shot stdin write end: REAL descriptor EOF for the child,
+     * exactly after the bytes already accepted. Idempotent; returns 0 or
+     * -errno. No-op success on a PTY-delivery session (it holds no pipe).
+     */
+    fun closeStdinPipe(): Int = 0
+
     /** Request terminal size change. Returns false if the master fd is closed. */
     fun resize(rows: Int, cols: Int): Boolean
 
@@ -109,9 +148,11 @@ interface PtySession {
     fun awaitExit(timeoutMs: Long): ExitResult?
 
     /**
-     * Cancel this session: verify the creation identity (PID-reuse guard),
-     * SIGKILL the owned process group, reap the child, then close the PTY
-     * master. Idempotent. The owned handle is retained until quiescence.
+     * Cancel this session: release any owned one-shot stdin write end (real
+     * EOF, so no descriptor survives a cancelled session), verify the
+     * creation identity (PID-reuse guard), SIGKILL the owned process group,
+     * reap the child, then close the PTY master. Idempotent. The owned handle
+     * is retained until quiescence.
      */
     fun cancel(): ExitResult?
 
@@ -131,6 +172,8 @@ data class LaunchSpec(
     val ownership: RunOwnership,
     val rows: Int = 24,
     val cols: Int = 80,
+    /** Explicit, platform-owned stdin descriptor choice (default: unchanged PTY input). */
+    val stdinDelivery: StdinDelivery = StdinDelivery.PtyInput,
 ) {
     init {
         require(executable.isNotEmpty() && '\u0000' !in executable) { "executable invalid" }

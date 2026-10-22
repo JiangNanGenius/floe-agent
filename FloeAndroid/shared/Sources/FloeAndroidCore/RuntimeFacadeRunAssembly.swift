@@ -284,6 +284,84 @@ extension FacadeRunDomain {
 // MARK: - The real native service assembly (RUN-S1 repair)
 
 extension FacadeRunDomain {
+
+    /// G03-R3 FIRST-USE await (Main amendment FIRST_USE_HOST_OPERATION_CONTRACT
+    /// v1). Trusted INTERNAL host work over the ORIGINAL `LinuxShellMailbox`
+    /// (no new Core ABI, no model route, no parallel mailbox): operation
+    /// `host.workspacePreflight` carries the REAL active run/conversation
+    /// identity, the accepted root epoch and the admitted environment id
+    /// (OMITTED when nil, never null). The host performs the NON-EXECUTING
+    /// import/faithful-mirror export preflight on the ORIGINAL grant/lease
+    /// authorities, ingests the real mapping + lease facts, calls
+    /// `floe_linux_readiness_activate_registration`, and answers
+    /// `{status: ready|unavailable|cancelled, rootEpoch, runID,
+    ///  conversationID, workspaceIndexDigest?, leaseProofDigest?,
+    ///  shellRegistered?, reason?}`.
+    /// Core accepts `ready` ONLY after re-reading its OWN live state (mapping
+    /// + lease derived true, `isCapabilityQualified` true, the exec.shell
+    /// descriptor actually registered) — never from reply strings alone.
+    /// Preconditions are the FIVE transport/rootfs/workload facts (mapping +
+    /// lease are what preflight PRODUCES, so they must not gate it); with no
+    /// configured/verified peer this returns instantly so ordinary non-Linux
+    /// chat is never delayed, and temporary contexts never reach here.
+    /// A claimed-but-unsettled request keeps its mailbox ticket owned (the
+    /// existing expireWaiter discipline: timeout/cancellation never detaches
+    /// claimed IO and never fabricates drain); every refusal, malformed or
+    /// unverified outcome is INERT and RETAINED — the next ordinary run
+    /// re-issues its own bounded request. No blind replay, no global cancel,
+    /// no fake run, no first-project/temp-root guessing.
+    func linuxWorkspaceFirstUsePreflight(runID: UUID, conversationID: UUID,
+                                         environmentID: String?) async {
+        let bindings = RuntimeFacadeLinuxBindings.shared
+        guard bindings.components != nil,
+              let epoch = LinuxReadinessIngress.liveAcceptedEpoch(),
+              bindings.boundNativeEpoch == epoch else { return }
+        let before = LinuxReadinessIngress.shared.derivedFields()
+        guard before.runtimeUidBoundaryVerified, before.engineConnected,
+              before.mailboxEpochBound, before.rootfsQualified,
+              before.singleWorkloadContractAcknowledged else { return }
+        if before.workspaceMappingSynced && before.leaseAuthorityQualified { return }
+        var request: [String: Any] = [
+            "runID": runID.uuidString,
+            "conversationID": conversationID.uuidString,
+            "rootEpoch": epoch,
+        ]
+        if let environmentID, !environmentID.isEmpty {
+            request["environmentID"] = environmentID
+        }
+        guard JSONSerialization.isValidJSONObject(request),
+              let payload = try? JSONSerialization.data(withJSONObject: request,
+                                                        options: [.sortedKeys]) else { return }
+        let reply: Data
+        do {
+            reply = try await LinuxShellMailbox.shared.submit(
+                operation: "host.workspacePreflight", payload: payload,
+                timeoutMillis: LinuxShellMailboxLimits.startBudgetMillis)
+        } catch {
+            return // notBound/hostFenced/budget/cancelled: ticket retained, unqualified
+        }
+        guard reply.count <= LinuxShellMailboxLimits.maximumFrameBytes,
+              let object = try? JSONSerialization.jsonObject(with: reply) as? [String: Any],
+              (object["status"] as? String) == "ready",
+              (object["rootEpoch"] as? NSNumber)?.uint64Value == epoch,
+              (object["runID"] as? String) == runID.uuidString,
+              (object["conversationID"] as? String) == conversationID.uuidString,
+              let indexDigest = object["workspaceIndexDigest"] as? String,
+              indexDigest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              let leaseDigest = object["leaseProofDigest"] as? String,
+              leaseDigest.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil,
+              (object["shellRegistered"] as? Bool) == true else {
+            return // unavailable / cancelled / malformed: inert, retained
+        }
+        // NO echo success: verify Core's OWN live qualification + registration.
+        let after = LinuxReadinessIngress.shared.derivedFields()
+        guard after.workspaceMappingSynced, after.leaseAuthorityQualified,
+              bindings.isCapabilityQualified,
+              ToolRunnerRegistry.shared.descriptor(named: "exec.shell") != nil else {
+            return
+        }
+    }
+
     /// Constructs the ORIGINAL `ConversationRunService` for one prepared
     /// run. Every store argument comes from the run's IMMUTABLE operational
     /// bundle (ordinary = the owner durable bundle; temporary = RB5's
@@ -308,6 +386,21 @@ extension FacadeRunDomain {
         environmentID: String?
     ) async throws -> ConversationRunService {
         let temporary = bundle.identity == .temporary
+        // G03-R3 FIRST-USE boundary: the ORDINARY run awaits the trusted host
+        // workspace preflight BEFORE the configuration, tool-ceiling and
+        // service snapshots below, so ordinary route discovery reads the REAL
+        // post-preflight qualification state instead of racing the App
+        // `prepared` effect (Main amendment FIRST_USE_HOST_OPERATION_CONTRACT
+        // v1). Temporary sessions skip entirely (frozen RAM-only public-web
+        // ceiling); an unconfigured peer or an already qualified mapping+lease
+        // pair returns instantly, so non-Linux chat is never delayed and a
+        // refused/unsettled preflight simply keeps this run's Linux discovery
+        // honestly unqualified — never a failed run, never assumed success.
+        if !temporary {
+            await linuxWorkspaceFirstUsePreflight(runID: runID,
+                                                  conversationID: conversationID,
+                                                  environmentID: environmentID)
+        }
         // The persisted task policy row was committed by the ORIGINAL
         // prepare (or an earlier turn); the service policy is rebuilt from
         // THAT truth, never from envelope/model text. A TEMPORARY session

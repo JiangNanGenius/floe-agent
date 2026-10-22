@@ -357,6 +357,12 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         }
     }
 
+    /// G03-R3 (job-3d39b56695c44bd2): a REAL cleared runtime-cleanup receipt
+    /// for a retained V36 row re-drives the SAME owned sweep once (event,
+    /// not poll). The trigger is generation-bound (lane rebind drops it) and
+    /// the re-drive re-attaches its owned token exactly like the launch
+    /// sweep, so retirement still waits for the real work.
+    ///
     /// The ONE real bootstrap/root-lifecycle retry of the durable
     /// `local_workspace_cleanup` queue (G02-R7 gap 3).
     ///
@@ -374,34 +380,52 @@ public final class G02RuntimeComposition: @unchecked Sendable {
     ///   touching a newer generation's root.
     /// * One-shot: called exactly once from the owned install. No UI
     ///   action, no polling, no detached/unowned task, no duplicate call.
+    ///   The only later re-drive is the lane's REAL cleared-receipt event
+    ///   (G03-R3), which runs the SAME owned token/ fence path once.
     private func runPrivateWorkspaceCleanupSweepOnce(
         composition: G02InstalledComposition,
         gen: AndroidRuntimeBootstrap.Generation
     ) async {
-        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: gen.epoch,
-                                                           owner: gen.owner) else {
-            return
-        }
-        let registry = RuntimeOwnedWorkRegistry.shared
-        let ownerID = "cleanup-sweep:\(gen.epoch):\(UUID().uuidString)"
-        guard case .attached(let token) = registry.attach(
-            epoch: gen.epoch, kind: .conversation, ownerID: ownerID) else {
-            return
-        }
-        defer { registry.detach(token) }
-        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: gen.epoch,
-                                                           owner: gen.owner) else {
-            return
-        }
-        // Capture only Sendable values for the per-item fence closure; the
+        // Capture only Sendable values for the shared owned sweep; the
         // `Generation` struct itself is never captured.
         let epoch = gen.epoch
         let owner = gen.owner
-        _ = await composition.conversationDomain
-            .retryPendingLocalWorkspaceCleanup(shouldContinue: {
-                AndroidRuntimeBootstrap.bootstrapStillCurrent(
-                    epoch: epoch, owner: owner)
-            })
+        let domain = composition.conversationDomain
+        await Self.runOwnedPrivateWorkspaceCleanupSweep(domain: domain, epoch: epoch, owner: owner)
+        // Event-driven finalization for retained R3 rows (see doc above).
+        LinuxRuntimeCleanupLane.shared.installSettlementTrigger(epoch: epoch) {
+            Task {
+                await Self.runOwnedPrivateWorkspaceCleanupSweep(
+                    domain: domain, epoch: epoch, owner: owner)
+            }
+        }
+    }
+
+    /// The owned sweep body shared by the launch one-shot and the
+    /// settlement re-drive: REAL owned-work token, exact root/epoch fence,
+    /// rows that cannot finish stay durably queued.
+    private static func runOwnedPrivateWorkspaceCleanupSweep(
+        domain: FacadeConversationDomain,
+        epoch: UInt64,
+        owner: AndroidRuntimeStoreOwner
+    ) async {
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: owner) else {
+            return
+        }
+        let registry = RuntimeOwnedWorkRegistry.shared
+        let ownerID = "cleanup-sweep:\(epoch):\(UUID().uuidString)"
+        guard case .attached(let token) = registry.attach(
+            epoch: epoch, kind: .conversation, ownerID: ownerID) else {
+            return
+        }
+        defer { registry.detach(token) }
+        guard AndroidRuntimeBootstrap.bootstrapStillCurrent(epoch: epoch, owner: owner) else {
+            return
+        }
+        _ = await domain.retryPendingLocalWorkspaceCleanup(shouldContinue: {
+            AndroidRuntimeBootstrap.bootstrapStillCurrent(
+                epoch: epoch, owner: owner)
+        })
     }
 
     /// Rolls back the self-installing lanes of a FAILED build for the exact
@@ -551,6 +575,12 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         clearFences()
         AttachmentStagingFacade.uninstallAllForTesting()
         RunDomainFacade.uninstall()
+        // G03-R3 lanes owned by THIS composition's G02DomainServices build:
+        // the workspace authority install slot and the live readiness
+        // ingress. Same producer-ownership reset discipline; production
+        // never reaches this path.
+        LinuxWorkspaceAuthority.resetInstallationForTesting()
+        LinuxReadinessIngress.shared.resetForTesting()
         lock.lock()
         mode = .ordinaryProduct
         lock.unlock()

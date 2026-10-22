@@ -37,11 +37,18 @@
 //   HOME/TMPDIR keys, no NUL, <=32 KiB combined bytes). A breach fails
 //   closed locally instead of silently dropping entries; the Main process
 //   environment and stored credentials are never injected here.
-// * PTY stdin reality (documented platform delta versus the ios_system
-//   pipe): interactive input and one-shot stdin ride `shell.input` base64
-//   chunks (<=16 KiB with acceptedBytes/partial). On the PTY the
-//   canonical-mode Ctrl-D (0x04) byte is the EOF path, matching the
-//   documented exchange contract.
+// * Stdin reality (two engine descriptor modes; documented platform delta
+//   versus the ios_system pipe): interactive input keeps the legacy PTY
+//   path — `openSession` omits `stdinDelivery`, so the engine defaults to
+//   "pty" and the canonical-mode Ctrl-D (0x04) byte stays the line
+//   discipline's EOF for exchange sessions. One-shot `run` selects the
+//   trusted `stdinDelivery:"pipe"` start: data rides `shell.input` base64
+//   pages (<=16 KiB with acceptedBytes/partial cursor) and stdin ALWAYS
+//   ends with exactly one EMPTY page commanding the engine's descriptor
+//   close (`stdinEof closed|closed-idempotent|failed|rejected`) —
+//   including nil/empty stdin. A 0x04 byte in pipe stdin is ordinary data;
+//   the deleted EOT emulation must never return. EOF is NOT an exit: the
+//   lease releases only on `leaseReleased` with the real terminal.
 // * Signals: INT rides the PTY 0x03 byte (the line discipline raises
 //   SIGINT for the foreground group — the faithful PTY equivalent of the
 //   original cooperative interrupt). TERM and KILL both map to the ONE
@@ -229,7 +236,12 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             rows: 24,
             columns: 80,
             timeoutSeconds: request.timeout,
-            hostToolCallID: request.toolCallID
+            hostToolCallID: request.toolCallID,
+            // Trusted one-shot adapter ONLY: the engine re-describes this
+            // job's stdin as a dedicated pipe (stdout/stderr stay on the
+            // PTY slave) whose sole EOF is the descriptor close commanded
+            // below. Interactive `openSession` never sets this.
+            stdinDelivery: .pipe
         )
         let reply: LinuxShellStartReply
         do {
@@ -249,8 +261,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                                    exitCode: nil, termSig: nil, stopRequested: false)
         sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
 
-        // Optional stdin rides PTY input after start (documented delta; the
-        // engine command inherits the PTY stdin; EOT byte = canonical EOF).
+        // One-shot pipe stdin: explicit caller data rides <=16 KiB
+        // shell.input pages first (accepted/partial cursor preserved by
+        // writeInput), then EXACTLY ONE trailing EMPTY page commands the
+        // real descriptor EOF — ALWAYS, including nil/empty stdin, which is
+        // precisely the baseline hang defect. The old EOT (0x04) emulation
+        // is deleted: on a pipe it is ordinary data, not EOF. EOF is not an
+        // exit and never releases the lease: the poll loop below still
+        // settles only on the engine's `leaseReleased` terminal proof.
         var stdinFailureNote: String?
         if let stdin = request.stdin, !stdin.isEmpty {
             let outcome = await writeInput(sessionKey: holdKey, data: Data(stdin.utf8),
@@ -259,10 +277,10 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
             if let code = outcome.errnoCode {
                 stdinFailureNote = "stdin write incomplete after \(outcome.accepted) accepted bytes (engine/local code \(code))"
-            } else {
-                _ = await writeInput(sessionKey: holdKey, data: Data([0x04]),
-                                     cancellation: cancellation)  // EOT (PTY EOF)
             }
+        }
+        if let eofNote = await sendStdinEof(sessionKey: holdKey) {
+            stdinFailureNote = stdinFailureNote.map { "\($0); \(eofNote)" } ?? eofNote
         }
 
         var merged = Data()
@@ -440,6 +458,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             rows: request.rows,
             columns: request.columns,
             timeoutSeconds: configuration.interactiveEngineDeadline
+            // stdinDelivery intentionally UNSET: an interactive session
+            // rides the legacy PTY input path (engine default "pty"). The
+            // wire key is omitted entirely (never null), so canonical
+            // Ctrl-D/Ctrl-C semantics, exchange paging and R1/R2 session
+            // contracts are byte-identical to before.
         )
         let reply: LinuxShellStartReply
         do {
@@ -646,11 +669,24 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
 
     // MARK: - Internals
 
-    /// Writes bytes in engine-bounded base64 pages with bounded backpressure
-    /// retries. Returns honestly how many bytes were ACCEPTED; a failed
-    /// write surfaces the engine errno instead of pretending success.
-    /// Local codes: -2 backpressure ceiling, -3 transport failure,
-    /// -1 unknown session key (nothing was written).
+    /// Writes DATA bytes in engine-bounded base64 pages with bounded
+    /// backpressure retries. Returns honestly how many bytes were ACCEPTED;
+    /// a failed write surfaces the engine errno instead of pretending
+    /// success. Local codes: -2 backpressure ceiling, -3 transport failure,
+    /// -4 no-progress data reply, -1 unknown session key (nothing was
+    /// written).
+    /// Engine reply vocabulary (applied SupervisedPtyJob/LinuxRuntime
+    /// Operations pump + stdin-eof-patch CONTRACT): `acceptedBytes` is the
+    /// progress cursor and `errno` rides on `partial` replies too. EAGAIN
+    /// (11) means "no room right now" after the engine's OWN bounded retry
+    /// budget: the caller must re-send only the remainder from the cursor
+    /// under this loop's own budget — never duplicating, never silently
+    /// dropping the tail. Any other non-zero errno (EPIPE 32, EBADF 9, …)
+    /// is an honest terminal failure with accepted bytes kept accounted.
+    /// This loop is for stdin DATA only: the one-shot EOF command routes
+    /// through `sendStdinEof`, because its `acceptedBytes == 0 && !partial`
+    /// no-progress guard exists for data pages and would misfire on the
+    /// EOF page (whose reply legitimately accepts zero bytes).
     private func writeInput(sessionKey: String, data: Data,
                             cancellation: CancellationToken?) async -> StdinOutcome {
         guard let engine = sessions[sessionKey]?.engine else {
@@ -672,13 +708,17 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                     let reply = try await transport.shellInput(request)
                     chunkPos += reply.acceptedBytes
                     sent += reply.acceptedBytes
-                    if let code = reply.errnoCode, code != 0 {
+                    if let code = reply.errnoCode, code != 0, code != 11 {
+                        // EPIPE/EBADF/etc: honest terminal failure; the
+                        // accepted cursor stays reported so the note counts
+                        // real bytes. EAGAIN (11) is NOT terminal here — it
+                        // is the engine's "retry the remainder later" cursor.
                         return StdinOutcome(accepted: sent, errnoCode: code)
                     }
-                    if reply.acceptedBytes == 0 && !reply.partial {
+                    if reply.acceptedBytes == 0 && !reply.partial && reply.errnoCode != 11 {
                         return StdinOutcome(accepted: sent, errnoCode: -4)  // no-progress guard
                     }
-                    if reply.partial {
+                    if reply.partial || reply.errnoCode == 11 {
                         retries += 1
                         if retries > configuration.stdinWriteRetries {
                             return StdinOutcome(accepted: sent, errnoCode: -2)
@@ -693,6 +733,48 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             }
         }
         return StdinOutcome(accepted: sent, errnoCode: nil)
+    }
+
+    /// Commands the one-shot pipe descriptor EOF: exactly ONE EMPTY
+    /// `shell.input` page (zero bytes are the intentional EOF command,
+    /// never stdin data). Deliberately bypasses `writeInput`'s paging loop.
+    /// Returns nil only when the engine CONFIRMED the close
+    /// (`closed`/`closed-idempotent`); every other answer yields an honest
+    /// note — never an invented delivery success. The command never waits
+    /// for output, never releases the lease and never substitutes an exit:
+    /// a command that already terminated is reported as rejected by the
+    /// engine (its lifecycle owns the write end), and the real terminal
+    /// evidence still settles through the poll loop's `leaseReleased` proof.
+    private func sendStdinEof(sessionKey: String) async -> String? {
+        guard let engine = sessions[sessionKey]?.engine else {
+            return "stdin EOF not sent (session record is gone; nothing was closed)"
+        }
+        do {
+            let reply = try await transport.shellInput(
+                LinuxShellInputRequest(sessionID: engine.engineSessionID,
+                                       bytes: Data()))
+            switch reply.stdinEof {
+            case "closed", "closed-idempotent":
+                return nil
+            case "failed":
+                let errnoText = reply.errnoCode.map { " errno=\($0)" } ?? ""
+                return "stdin EOF close failed at the engine\(errnoText)"
+            case "rejected":
+                // Not RUNNING (the command already exited or a stop owns
+                // it) or not a pipe session: the engine lifecycle closes
+                // the write end, and that close is never re-labelled as a
+                // delivered EOF command. The outcome below stays honest.
+                let reason = reply.stdinEofReason ?? reply.errnoCode.map { "errno=\($0)" }
+                let reasonText = reason.map { " reason=\($0)" } ?? ""
+                return "stdin EOF was not accepted as a command (engine rejected\(reasonText)); the lifecycle owns the descriptor"
+            case .some(let raw):
+                return "stdin EOF reply unknown (stdinEof='\(raw)'); no delivery was assumed"
+            case nil:
+                return "stdin EOF unconfirmed (reply carried no stdinEof state); no delivery was assumed"
+            }
+        } catch {
+            return "stdin EOF request failed (\(describeTransportError(error)))"
+        }
     }
 
     /// Bounded wait for the single engine slot (mirrors the original

@@ -36,12 +36,19 @@ data class PRootLaunchSpec(
         })
     }
 
-    /** No shell quoting: each command argument remains a separate argv entry. */
+    /**
+     * No shell quoting: each command argument remains a separate argv entry.
+     * [stdinDelivery] is the explicit, platform-owned stdin descriptor choice
+     * (see [StdinDelivery]); the default preserves the existing PTY-input
+     * launch byte-for-byte. One-shot callers pass [StdinDelivery.OneShotPipe];
+     * nothing here consults model/env strings to pick a mode or an interpreter.
+     */
     fun command(
         argv: List<String>,
         environment: Map<String, String> = emptyMap(),
         rows: Int = 24,
         cols: Int = 80,
+        stdinDelivery: StdinDelivery = StdinDelivery.PtyInput,
     ): LaunchSpec {
         require(argv.isNotEmpty() && argv[0].startsWith("/")) {
             "Pass an explicit absolute guest executable"
@@ -73,6 +80,7 @@ data class PRootLaunchSpec(
             workingDir = rootfs.absolutePath,
             ownership = ownership,
             rows = rows, cols = cols,
+            stdinDelivery = stdinDelivery,
         )
     }
 }

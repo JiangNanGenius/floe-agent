@@ -3,11 +3,17 @@
     <!-- Core-owned Agent foreground lifecycle. These merge into the Core App
          at build time; the runtime component keeps NO foreground permission
          of its own (bound-only, importance inherited from its foreground
-         Core client). WAKE_LOCK is deliberately NOT requested: no permanent
-         or idle wakelock; FGS priority is the accepted mechanism. -->
+         Core client). WAKE_LOCK is used ONLY through OwnedWorkWakeCoordinator:
+         one PARTIAL wake bound to the REAL owned-operation set (acquired
+         only after a confirmed startForeground, released only when the
+         settled work closes its last lease). No permanent or idle wakelock,
+         no timeout hold, no PiP, no START_STICKY resurrection and no
+         battery-exemption request. FGS priority alone is not CPU-wake
+         ownership with the screen off. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application>
         <!-- Nonexported: the system and this app only. It starts or promotes

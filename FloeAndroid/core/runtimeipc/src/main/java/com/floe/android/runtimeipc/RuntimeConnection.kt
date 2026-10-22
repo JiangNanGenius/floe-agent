@@ -26,7 +26,19 @@ class RuntimeConnection(
     private var pending: CompletableFuture<Unit>? = null
     private var bound = false
     private var closed = false
+    private var generation = 0L
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /**
+     * G03-R3 additive trusted-host observer (Main merge region): invoked
+     * once per ACTUAL loss of a live binder endpoint — peer death, service
+     * disconnect, binding death or null binding — and NEVER for an
+     * intentional local [close]. Observation only: it grants no permission,
+     * relaxes no admission, and the readiness controller re-checks that the
+     * callback belongs to its current generation before acting, so a late
+     * callback can never revive a stopped or replaced root.
+     */
+    @Volatile var onPeerLost: (() -> Unit)? = null
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, service: IBinder) {
@@ -38,6 +50,7 @@ class RuntimeConnection(
                     check(service.interfaceDescriptor == RuntimeWire.DESCRIPTOR)
                     service.linkToDeath({ disconnected() }, 0)
                     endpoint = service
+                    generation += 1
                     pending?.complete(Unit)
                 } catch (failure: Exception) {
                     pending?.completeExceptionally(failure)
@@ -99,10 +112,27 @@ class RuntimeConnection(
         } finally { data.recycle(); result.recycle() }
     }
 
+    /**
+     * G03-R3: the CURRENT authenticated peer facts for a live connection
+     * (real peer UID, installed package version, actual signing-chain digest,
+     * endpoint generation token). Trusted-host receipt stamping ONLY — the
+     * measurement re-runs the same `RuntimePeerVerifier` admission and never
+     * relaxes it; a closed/disconnected/changed peer returns null (an
+     * "unknown", never a placeholder). Call off the main thread.
+     */
+    fun currentPeerProof(): RuntimePeerProof? {
+        val binder = synchronized(this) { if (closed) return null; endpoint ?: return null }
+        return RuntimePeerProof.measure(context, binder, synchronized(this) { generation })
+    }
+
     @Synchronized private fun disconnected() {
+        val hadLiveEndpoint = endpoint != null
         endpoint = null
         pending?.completeExceptionally(IllegalStateException("Runtime disconnected; work is not replayed"))
         pending = null
+        // Observation only, fired for a REAL loss of a live endpoint (not for
+        // the intentional local close(), which sets `closed` first).
+        if (hadLiveEndpoint && !closed) runCatching { onPeerLost?.invoke() }
     }
 
     @Synchronized override fun close() {

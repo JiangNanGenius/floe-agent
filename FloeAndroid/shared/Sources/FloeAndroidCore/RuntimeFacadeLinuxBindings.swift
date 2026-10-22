@@ -33,17 +33,25 @@
 //   (the backend issues it on its cancellation channel) and the ledger
 //   worker stays attached until `leaseReleased` is observed. EOF != exit.
 //
-// Readiness truthfulness (frozen defaults):
-// * Until Main injects an explicit readiness predicate over the ACTUAL
-//   capabilities (dedicated runtime UID verified, engine connected, mailbox
-//   epoch bound, rootfs qualified, Core->engine WORKSPACE MAPPING SYNC
-//   qualified, lease authority qualified), `isCapabilityQualified` is FALSE
-//   and every exec.shell dispatch fails closed inside the backend with
-//   preparation guidance — never a host-interpreter fallback.
+// Readiness truthfulness (G03-R3: trusted live ingress, fail-closed):
+// * Until the trusted host INGESTS every real fact for the live generation
+//   through `LinuxReadinessIngress` (dedicated runtime UID distinct from
+//   Core's own + package cert digest + version + binder identity, engine
+//   connected identity, the LIVE mailbox epoch cross-checked against the
+//   original mailbox bind, rootfs install receipt, workspace mapping proven
+//   ONLY by a terminal-index digest Core reads back from the ORIGINAL
+//   engine tree, lease authority, and the acknowledged single-workload
+//   contract), `isCapabilityQualified` is FALSE and every exec.shell
+//   dispatch fails closed inside the backend with preparation guidance —
+//   never a host-interpreter fallback. The old wholesale-override setter
+//   and the allTrue initializer are GONE (R3 review).
 // * "installed" or "connected" alone NEVER qualifies; the engine workspace
 //   is physically distinct from the Core workspace and file exchange is
-//   Main integration work, so workspaceMappingSynced stays false until Main
-//   supplies the real mapping/sync.
+//   Main integration work, so workspaceMappingSynced stays false until the
+//   real mapping receipt exists on the engine tree.
+// * Stale epoch, invalidation, failed map or stop fence dispatch AND
+//   discovery coherently (one live predicate); the cleanup lane and the
+//   mailbox poller stay usable until real settlement.
 // * Temporary chat NEVER forces this true (the existing tool ceiling and
 //   capability overrides stay authoritative).
 // * `runtimeConfiguration` is NOT altered here: the exact wiring points are
@@ -53,38 +61,50 @@ import FloeCore
 import FloeTools
 import FloeAndroidShellTools
 
-// MARK: - Readiness (explicitly injected; default fail closed)
+// MARK: - Readiness (trusted live ingress; default fail closed)
 
 /// Closed capability fields for running Linux shell work. Every field
-/// defaults FALSE; a field turns true only when Main's own qualification
-/// evidence (not this file) proves it. These fields are DIAGNOSTICS — the
-/// single authority is `isQualifiedForLinuxShell` below, which ANDs them
-/// with the injected predicate.
+/// defaults FALSE and the members are NOT settable from outside this
+/// module's ingress authority: since G03-R3 the ONLY way a field turns
+/// true is a real per-generation ingestion through
+/// `LinuxReadinessIngress.shared.ingest(_:rootEpoch:)` (trusted host JNI
+/// over the actual package distinct-UID/certificate/version/binder
+/// identity, the live mailbox epoch, rootfs installation, engine-receipt
+/// read back workspace mapping/lease authority, and the acknowledged
+/// single-workload contract). The compiled default stays FALSE until
+/// those real host facts exist. These fields are DIAGNOSTICS — the
+/// single authority is `isCapabilityQualified` below, which ANDs them
+/// with the injected predicate (in production that predicate is the SAME
+/// live ingress authority; see `LinuxShellLiveReadiness`).
 public struct LinuxShellQualificationFields: Sendable, Equatable {
-    public var runtimeUidBoundaryVerified: Bool
-    public var engineConnected: Bool
-    public var mailboxEpochBound: Bool
-    public var rootfsQualified: Bool
+    public internal(set) var runtimeUidBoundaryVerified: Bool
+    public internal(set) var engineConnected: Bool
+    public internal(set) var mailboxEpochBound: Bool
+    public internal(set) var rootfsQualified: Bool
     /// The honest gate for workspace visibility: the engine workspace and
     /// the ORIGINAL Core workspace are physically different trees; file
     /// import/export mapping/sync is Main-owned integration. FALSE keeps
-    /// shell work unqualified regardless of install/connect state.
-    public var workspaceMappingSynced: Bool
-    public var leaseAuthorityQualified: Bool
+    /// shell work unqualified regardless of install/connect state. The
+    /// ingress ONLY accepts this fact from a terminal-index receipt Core
+    /// reads back from the ORIGINAL engine tree — never from a flag.
+    public internal(set) var workspaceMappingSynced: Bool
+    public internal(set) var leaseAuthorityQualified: Bool
     /// One active local workload globally is the engine's CURRENT contract
     /// (RuntimeKernel/LinuxRuntimeOperations); a multi-workload engine would
     /// be an engine change first, and this field must not be flipped by the
     /// App alone.
-    public var singleWorkloadContractAcknowledged: Bool
+    public internal(set) var singleWorkloadContractAcknowledged: Bool
 
-    public init(allFalse: Bool = true) {
-        self.runtimeUidBoundaryVerified = !allFalse
-        self.engineConnected = !allFalse
-        self.mailboxEpochBound = !allFalse
-        self.rootfsQualified = !allFalse
-        self.workspaceMappingSynced = !allFalse
-        self.leaseAuthorityQualified = !allFalse
-        self.singleWorkloadContractAcknowledged = !allFalse
+    /// Compiled default: every field FALSE. There is deliberately NO
+    /// allTrue initializer (the R3 review removed the bulk override).
+    public init() {
+        self.runtimeUidBoundaryVerified = false
+        self.engineConnected = false
+        self.mailboxEpochBound = false
+        self.rootfsQualified = false
+        self.workspaceMappingSynced = false
+        self.leaseAuthorityQualified = false
+        self.singleWorkloadContractAcknowledged = false
     }
 
     public var allFieldsTrue: Bool {
@@ -135,7 +155,6 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     private var componentsStorage: LinuxShellComponents?
     private var coordinatorStorage: FacadeToolWorkCoordinator?
     private var readinessStorage: LinuxShellReadiness = LinuxShellInjectedReadiness.unconfigured
-    private var fieldsStorage = LinuxShellQualificationFields()
     private var boundEpoch: UInt64 = 0
     /// RAM-only shell-scoped view over the reused coordinator ledger:
     /// worker.id -> (runID, callID?, recordedAt). This is NOT a job store;
@@ -226,22 +245,37 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         return componentsStorage
     }
 
+    /// The live derived qualification fields (diagnostics + the single
+    /// authority every gate reads). There is NO setter: values come only
+    /// from trusted per-generation ingestion through
+    /// `LinuxReadinessIngress` (see the struct docs above).
     public var qualificationFields: LinuxShellQualificationFields {
-        stateLock.lock(); defer { stateLock.unlock() }
-        return fieldsStorage
-    }
-
-    public func setQualificationFields(_ fields: LinuxShellQualificationFields) {
-        stateLock.lock(); fieldsStorage = fields; stateLock.unlock()
+        LinuxReadinessIngress.shared.derivedFields()
     }
 
     /// Stop new execution while keeping the receipt/proof channel alive
     /// for actual cleanup. Closing the mailbox first would strand jobs.
+    /// REAL admission fence (Main review 2026-10-22): the generation is
+    /// MARKED suspended inside the readiness authority — late callbacks
+    /// cannot re-ingest facts while the old Root/mailbox stays bound only
+    /// for cleanup/proof drain. Positive readiness returns ONLY via an
+    /// explicit `resumeAdmissions` for the same live epoch or a strictly
+    /// newer accepted generation, and always needs full re-ingestion.
     public func suspendAdmissions(epoch: UInt64) -> Bool {
         withState {
             guard epoch != 0, boundEpoch == epoch else { return false }
-            fieldsStorage = LinuxShellQualificationFields()
-            return true
+            return LinuxReadinessIngress.shared.suspendAdmissions(epoch: epoch)
+        }
+    }
+
+    /// The legitimate same-generation re-admission (trusted host lifecycle;
+    /// mirrored by `floe_linux_readiness_resume_admissions`). Never restores
+    /// facts by itself: the host must re-ingest real evidence afterwards.
+    @discardableResult
+    public func resumeAdmissions(epoch: UInt64) -> Bool {
+        withState {
+            guard epoch != 0, boundEpoch == epoch else { return false }
+            return LinuxReadinessIngress.shared.resumeAdmissions(epoch: epoch)
         }
     }
 
@@ -251,17 +285,21 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     }
 
     /// The ONLY truthful capability answer for `localLinuxGuestEnvironment`
-    /// style gating: composed + mailbox epoch bound + every qualification
-    /// field + the injected live predicate. Defaults false. Temporary chat,
-    /// "installed" or "connected" alone NEVER satisfy it.
+    /// style gating: composed + mailbox epoch bound + every TRUSTED
+    /// INGESTED field + the injected live predicate. Defaults false.
+    /// Temporary chat, "installed" or "connected" alone NEVER satisfy it.
+    /// Production's injected predicate IS the same live ingress authority
+    /// (`LinuxShellLiveReadiness.makeInjected()` in the G02 composition),
+    /// so qualification, dispatch and ordinary route discovery read ONE
+    /// live predicate.
     public var isCapabilityQualified: Bool {
         stateLock.lock()
         let composed = componentsStorage != nil
         let epoch = boundEpoch
         let readiness = readinessStorage
-        let fields = fieldsStorage
         stateLock.unlock()
-        return composed && epoch != 0 && fields.allFieldsTrue
+        return composed && epoch != 0
+            && LinuxReadinessIngress.shared.derivedFields().allFieldsTrue
             && readiness.isQualifiedForLinuxShell
     }
 
@@ -286,15 +324,24 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     }
 
     /// Generation fence entry (trusted host): marks the mailbox closed so
-    /// every waiter receives the typed `hostFenced` result, and signals the
+    /// every waiter receives the typed `hostFenced` result, INVALIDATES
+    /// every readiness fact (the next generation must re-ingest real
+    /// evidence; nothing stays qualified across a fence), and signals the
     /// shell ledger workers for `epoch` to accelerate cooperative
     /// cancellation. Owned workers are NOT ended here: their remote leases
-    /// stay owned until `reconcileLedger()` proves the real release.
+    /// stay owned until `reconcileLedger()` proves the real release. The
+    /// runtime-cleanup lane and the mailbox poller are deliberately NOT
+    /// closed: the cleanup/proof channel stays available until real
+    /// settlement.
     public func fenceGeneration(epoch: UInt64) {
         let coordinator: FacadeToolWorkCoordinator? = withState {
             guard epoch != 0, boundEpoch == epoch else { return nil }
             boundEpoch = 0
             LinuxShellMailbox.shared.close()
+            // Exact-generation fence only: an old generation's fence must
+            // never strip the CURRENT generation's live facts (the reads
+            // re-verify the epoch anyway, this removal is hygiene).
+            LinuxReadinessIngress.shared.invalidate(nil, reason: "generationFenced")
             return coordinatorStorage
         }
         guard let coordinator, epoch != 0 else { return }
@@ -552,13 +599,12 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         stateLock.lock()
         let composed = componentsStorage != nil
         let epoch = boundEpoch
-        let ledgerCount = ledgerIndex.count
-        let fields = fieldsStorage
         stateLock.unlock()
+        let fields = LinuxReadinessIngress.shared.derivedFields()
         let object: [String: Any] = [
             "composed": composed,
             "epochBound": epoch != 0,
-            "ledgerWorkers": ledgerCount,
+            "ledgerWorkers": withState { ledgerIndex.count },
             "qualified": isCapabilityQualified,
             "fields": [
                 "runtimeUidBoundaryVerified": fields.runtimeUidBoundaryVerified,
@@ -617,6 +663,14 @@ public func floeLinuxShellFenceGeneration(_ epoch: UInt64) -> Int32 {
 @_cdecl("floe_linux_shell_suspend_admission")
 public func floeLinuxShellSuspendAdmission(_ epoch: UInt64) -> Int32 {
     RuntimeFacadeLinuxBindings.shared.suspendAdmissions(epoch: epoch) ? 0 : -105
+}
+
+/// Explicit legitimate re-admission for the SAME still-live generation
+/// (trusted host only). Clears the suspend mark; readiness then requires
+/// full re-ingestion of real facts — this call alone never re-qualifies.
+@_cdecl("floe_linux_shell_resume_admission")
+public func floeLinuxShellResumeAdmission(_ epoch: UInt64) -> Int32 {
+    RuntimeFacadeLinuxBindings.shared.resumeAdmissions(epoch: epoch) ? 0 : -105
 }
 
 private final class LinuxShellDrainResult: @unchecked Sendable {

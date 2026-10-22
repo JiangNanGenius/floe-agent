@@ -1,0 +1,12 @@
+/* Export exactly the four NSS entry points required by the frozen
+ * guestAbi contract; everything else in the module is internal.
+ * SPDX-License-Identifier: MPL-2.0 */
+{
+  global:
+    _nss_floe_gethostbyname_r;
+    _nss_floe_gethostbyname2_r;
+    _nss_floe_gethostbyname3_r;
+    _nss_floe_gethostbyname4_r;
+  local:
+    *;
+};

@@ -1,0 +1,48 @@
+{
+ "binary": {
+  "bytes": 25568,
+  "name": "libnss_floe.so.2",
+  "sha256": "ec15b5b2fbafc4a4c044deb370c27032a77281075c060999110096014881d550"
+ },
+ "exports": [
+  "_nss_floe_gethostbyname2_r",
+  "_nss_floe_gethostbyname3_r",
+  "_nss_floe_gethostbyname4_r",
+  "_nss_floe_gethostbyname_r"
+ ],
+ "glibcFloor": "2.28",
+ "library": "libnss_floe.so.2",
+ "minimumLoadAlignment": 16384,
+ "protocol": "floe-guest-dns-v1",
+ "schemaVersion": 1,
+ "soname": "libnss_floe.so.2",
+ "sourceTreeSha256": "67ce9d6e7c040665c3c2594f2a9a545236ed75601621b6d3137f6019ecf88a26",
+ "sources": [
+  {
+   "bytes": 5042,
+   "path": "PROTOCOL.json",
+   "sha256": "5ab0d51084437999bb533fd8c444e7c708a041ad52d83c98d506fb6ee1dd7b7b"
+  },
+  {
+   "bytes": 17773,
+   "path": "build-guest-resolver.sh",
+   "sha256": "682e34598e09155e195228891f1a124137e229d6804503fd8674805f1b8bdce3"
+  },
+  {
+   "bytes": 36190,
+   "path": "libnss_floe.c",
+   "sha256": "89e154dceff33d0c6e73973947b8dcc56e262022ae2ff7035261d281f15e3551"
+  },
+  {
+   "bytes": 329,
+   "path": "nss-floe.map",
+   "sha256": "ceb0bb4f4e4c94473954fe6350e26d87a4ad199ba847221197ddc829c3ef77e3"
+  }
+ ],
+ "target": "aarch64-linux-gnu",
+ "toolchain": {
+  "archiveSha256": "39f3dc5e79c22088ce878edc821dedb4ca5a1cd9f5ef915e9b3cc3053e8faefa",
+  "name": "zig",
+  "version": "0.14.1"
+ }
+}

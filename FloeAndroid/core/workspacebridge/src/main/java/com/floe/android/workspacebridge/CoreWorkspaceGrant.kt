@@ -274,7 +274,7 @@ class CoreWorkspaceGrant private constructor(
         try {
             runCatching { authority.abort(sessionKey, "grant-close") }
             ioGate.awaitDrained()
-            authority.closeSession(sessionKey)
+            check(authority.closeSession(sessionKey) == 0) { "workspace session close failed" }
         } finally {
             Binder.restoreCallingIdentity(identity)
         }

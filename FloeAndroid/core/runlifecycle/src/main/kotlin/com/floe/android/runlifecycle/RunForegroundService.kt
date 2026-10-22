@@ -44,6 +44,13 @@ import android.os.Looper
  *  * The service stops PROMPTLY once every actual operation has settled
  *    (owned set empty). It never runs just because the App exists or a
  *    future schedule/approval is waiting.
+ *  * CURRENT-instance ownership (Main review round 4): every
+ *    end/denial/confirm/sync/stop path carries this instance and is
+ *    fenced by RunForegroundState's locked ownership. A replaced or
+ *    destroyed instance whose callback arrives late cannot clear a
+ *    newer live instance's foreground truth, stamp or listener, and
+ *    cannot arm a denial; the CURRENT instance's real destroy still
+ *    ends protection truthfully in one atomic step.
  *  * Small icon reuses the installed Floe app icon asset
  *    ([Context.getApplicationInfo] .icon): no Apple SF assets, no Material
  *    redesign.
@@ -51,17 +58,39 @@ import android.os.Looper
 class RunForegroundService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
-    private var listenerInstalled = false
+    @Volatile private var wakeHandleCandidate: CpuWakeHandle? = null
+
+    /** Applies the real-work wake rule for this instance against the ACTUAL
+     *  framework state. Never invents protection: [OwnedWorkWakeCoordinator]
+     *  only acquires while foreground is confirmed AND owned work is live,
+     *  and only releases once the owned set settled empty. The candidate is
+     *  built on the APPLICATION context (a per-instance Context could leak
+     *  into the process-canonical wake), and the coordinator keeps exactly
+     *  ONE process wake object: this instance either installs it or adopts
+     *  the wake already held by the process — a recreated instance can
+     *  neither strand the old WakeLock nor stack a second one. */
+    private fun syncWake() {
+        val candidate = wakeHandleCandidate
+            ?: PowerManagerWakeHandle(applicationContext).also { wakeHandleCandidate = it }
+        OwnedWorkWakeCoordinator.sync(this, candidate,
+            foregroundConfirmed = RunForegroundState.foreground.value,
+            ownedEmpty = !RunForegroundState.hasHeldWork())
+    }
 
     override fun onCreate() {
         super.onCreate()
+        // The settle watch lives in the companion (process lifetime): the
+        // wake's release at REAL settlement must survive every instance's
+        // teardown, when the per-instance listener is already gone.
+        OwnedWorkWakeCoordinator.installSettleWatch(settleWatch)
         ensureChannel()
-        // Identity-fenced listener: only this instance's callback; a
-        // retiring instance can never clear a newer instance's listener.
+        // Identity-fenced listener AND atomic current-owner transfer:
+        // from this bind only this instance's guarded calls can mutate
+        // the shared truth; a retiring instance can never clear a newer
+        // instance's listener or protection.
         RunForegroundState.bindServiceListener(this) {
             handler.post { syncWithOwnedState() }
         }
-        listenerInstalled = true
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -71,7 +100,7 @@ class RunForegroundService : Service() {
         // ownership is TRANSIENT and process-local by design. The intent
         // argument is NEVER read (no command/owner/task extras authority).
         if (!hasChannel()) {
-            RunForegroundState.reportDenial(
+            RunForegroundState.reportServiceDenial(this,
                 RunForegroundFailure.Unavailable("core-channel-unrecognized")
             )
             stopSelf(startId)
@@ -81,7 +110,7 @@ class RunForegroundService : Service() {
             // Started/promoted with NO already-registered owned work:
             // never manufacture foreground from nothing. Whoever is
             // waiting learns this through the bounded confirm window.
-            RunForegroundState.reportDenial(
+            RunForegroundState.reportServiceDenial(this,
                 RunForegroundFailure.Unavailable("no-owned-work-at-start")
             )
             stopSelf(startId)
@@ -89,8 +118,8 @@ class RunForegroundService : Service() {
         }
         val block = blockedReason()
         if (block != null) {
-            RunForegroundState.reportDenial(block)
-            RunForegroundState.markForegroundEnded()
+            RunForegroundState.reportServiceDenial(this, block)
+            RunForegroundState.endForeground(this)
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -100,14 +129,25 @@ class RunForegroundService : Service() {
         return START_NOT_STICKY
     }
 
-    /** Called from the owned-set listener and after attach re-renders. */
+    /** Called from the owned-set listener and after attach re-renders.
+     *  A post from the listener can outlive this instance's role: the
+     *  FIRST fence is the ACTUAL current ownership check, and every
+     *  shared mutation below (stop-when-idle, promote, denial) re-fences
+     *  under the state's decision lock, so no check/act window exists
+     *  for a replaced instance's late callback. */
     private fun syncWithOwnedState() {
-        if (RunForegroundState.stopWhenIdle {
+        if (!RunForegroundState.isCurrentService(this)) return
+        if (RunForegroundState.stopWhenIdle(this) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
-            }) return
+            }) {
+            syncWake()
+            return
+        }
         if (RunForegroundState.foreground.value) {
             promote()
+        } else {
+            syncWake()
         }
         // If not foreground while work IS owned, a pending onStartCommand
         // from the acquirer is responsible; a dead promotion path was
@@ -115,17 +155,20 @@ class RunForegroundService : Service() {
     }
 
     /** Builds and applies the notification and calls startForeground.
-     *  Returns true ONLY after an ACTUAL startForeground success, which
-     *  is the single source of the shared foreground truth flag. */
+     *  Returns true ONLY after an ACTUAL startForeground success that
+     *  the CURRENT ownership fence accepted — the single source of the
+     *  shared foreground truth flag. A success arriving after this
+     *  instance was replaced retires its own notification instead of
+     *  claiming the truth or the stamp for the newer service. */
     private fun promote(): Boolean {
         val stamp = RunForegroundState.currentStamp
         val notification = try {
             buildNotification(stamp)
         } catch (failure: Exception) {
-            RunForegroundState.reportDenial(
+            RunForegroundState.reportServiceDenial(this,
                 RunForegroundFailure.Unavailable("notification-build-failed")
             )
-            RunForegroundState.markForegroundEnded()
+            RunForegroundState.endForeground(this)
             return false
         }
         return try {
@@ -134,20 +177,33 @@ class RunForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-            RunForegroundState.markForegroundConfirmed()
-            RunForegroundState.appliedStamp = stamp
+            if (!RunForegroundState.confirmForeground(this, stamp)) {
+                // This instance was REPLACED while the startForeground
+                // call was in flight: a dead instance never claims or
+                // stamps the shared truth. Retire OUR OWN notification
+                // honestly and stop; the newer live instance owns the
+                // protection from here.
+                runCatching {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                return false
+            }
+            // Wake ownership follows the CONFIRMED service, never the mere
+            // intent to start one.
+            syncWake()
             true
         } catch (failure: IllegalStateException) {
-            RunForegroundState.reportDenial(
+            RunForegroundState.reportServiceDenial(this,
                 RunForegroundFailure.StartDenied("start-foreground-refused")
             )
-            RunForegroundState.markForegroundEnded()
+            RunForegroundState.endForeground(this)
             false
         } catch (failure: SecurityException) {
-            RunForegroundState.reportDenial(
+            RunForegroundState.reportServiceDenial(this,
                 RunForegroundFailure.StartDenied("foreground-type-permission-missing")
             )
-            RunForegroundState.markForegroundEnded()
+            RunForegroundState.endForeground(this)
             false
         }
     }
@@ -260,15 +316,30 @@ class RunForegroundService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        if (listenerInstalled) {
-            RunForegroundState.unbindServiceListener(this)
-            listenerInstalled = false
-        }
-        // Honest end of protection: permits answer 0 while foreground is
-        // not real. Registrations are NOT cancelled here (binder death /
-        // service teardown never equals lease release); Main's runtime
-        // linkToDeath path requests a REAL process stop on its side.
-        RunForegroundState.markForegroundEnded()
+        // Atomic ownership-fenced retirement (Main review round 4):
+        // the CURRENT instance's real destroy ends listener, ownership,
+        // applied stamp and the foreground truth in ONE fenced step —
+        // permits then answer 0 while foreground is not real, honestly.
+        // A REPLACED instance destroyed late changes NOTHING: the newer
+        // live instance's protection, stamp and listener stay intact,
+        // because the shared truth belongs to the ACTUAL current owner,
+        // not to whichever destroy callback arrives. Registrations are
+        // NOT cancelled here (binder death / service teardown never
+        // equals lease release); Main's runtime linkToDeath path
+        // requests a REAL process stop on its side.
+        RunForegroundState.retireService(this)
+        // A dying instance never drops the CPU wake while real work is
+        // still owned: the coordinator KEEPS the process-canonical wake
+        // (a newer instance adopts it, a stale instance can neither strand
+        // nor stack it), and it releases only when the owned set has
+        // ACTUALLY settled — even if this was the last instance, the
+        // companion settle watch rechecks the real owned set and applies
+        // the release at real settlement. The truth it syncs against is
+        // now the REAL current state: a stale retire above left a newer
+        // confirmation untouched, so this instance's late sync can only
+        // KEEP (work owned) or truthfully RELEASE (settled empty) — it
+        // can no longer release-under-a-false-flag the newer service set.
+        syncWake()
         super.onDestroy()
     }
 
@@ -281,5 +352,34 @@ class RunForegroundService : Service() {
         /** Only used as the notification tap target; the class name is
          *  the stable Core launcher activity, never a command source. */
         private const val MAIN_ACTIVITY = "com.floe.android.MainActivity"
+
+        /** Bounded settle-latency of the process wake watch when it is
+         *  the ONLY observer left (every service instance already
+         *  destroyed while real work was still owned). Cheap truth reads
+         *  only, and the chain cancels itself the moment the wake is not
+         *  held — it never runs for an idle process. */
+        private const val SETTLE_CHECK_MS = 1_000L
+        private val settleHandler = Handler(Looper.getMainLooper())
+        private val settleRecheck = Runnable {
+            OwnedWorkWakeCoordinator.syncFromProcessWatch(
+                foregroundConfirmed = RunForegroundState.foreground.value,
+                ownedEmpty = !RunForegroundState.hasHeldWork(),
+            )
+        }
+        /** One pending recheck at a time (removeCallbacks coalesces a
+         *  live instance's syncs and the watch into at most one flight).
+         *  Every ACQUIRE/KEEP re-arms, every RELEASE/IDLE cancels: a
+         *  self-stopping chain, alive exactly while the real wake is held,
+         *  owned by the companion — not by any service instance. */
+        private val settleWatch = object : SettleWatch {
+            override fun scheduleSettledCheck() {
+                settleHandler.removeCallbacks(settleRecheck)
+                settleHandler.postDelayed(settleRecheck, SETTLE_CHECK_MS)
+            }
+
+            override fun cancelSettledCheck() {
+                settleHandler.removeCallbacks(settleRecheck)
+            }
+        }
     }
 }

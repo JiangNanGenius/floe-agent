@@ -266,15 +266,16 @@ public final class G02InstalledComposition: @unchecked Sendable {
         // Actual UID/rootfs/workspace qualification controls advertisement;
         // installation or source presence does not enable exec.shell.
         let workspaceAuthorityInstalled = LinuxWorkspaceAuthority.install(storageRoot: cluster.identity.root)
+        // G03-R3: the frozen-false compiled seam is REPLACED by the trusted
+        // live readiness authority. Still fails closed: nothing is qualified
+        // until the host ingests every real fact for THIS generation (and
+        // workspaceAuthorityInstalled gates the transfer half). The same
+        // authority answers dispatch AND route discovery.
+        _ = workspaceAuthorityInstalled
         RuntimeFacadeLinuxBindings.shared.compose(
             coordinator: toolWork,
             rootProvider: { nil },
-            readiness: LinuxShellInjectedReadiness {
-                let bindings = RuntimeFacadeLinuxBindings.shared
-                let epoch = bindings.boundNativeEpoch
-                return workspaceAuthorityInstalled && epoch > 0 && G02NativeRootEpoch.readback() == epoch
-                    && bindings.qualificationFields.allFieldsTrue
-            })
+            readiness: LinuxShellLiveReadiness.makeInjected())
         if let shell = RuntimeFacadeLinuxBindings.shared.components,
            let spool = BackgroundJobOutputSpoolRoot.url() {
             let owner = G03JobLifecycle(epoch: epoch)
