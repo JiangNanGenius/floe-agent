@@ -11,7 +11,9 @@ review rounds all seven IDs were resolved for the G01 representative foundation
 (`ship`). That acceptance covers those representative pages only. Whole-product
 visual parity and full CJK IME/TalkBack are not claimed. That G01 evidence did not
 cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
-G01 and G02 code-stage handoff and cleanup are closed; G03 is next. Current
+G01 and G02 code-stage handoff and cleanup are closed. G03-R1 execution
+qualification and G03-R2 environment, jobs and workspace source integration
+are complete; product App qualification belongs to G03-R3. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
@@ -45,6 +47,20 @@ Linux, IDE, Office, system control and automatic updates remain later targets.
 See [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md) and
 [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
 Later targets are a backlog, not prequeued worker tasks.
+
+G03-R2 uses a separate-UID Linux runtime component; Core retains credentials,
+conversation storage and the original persistent-job authority. PRoot provides
+Linux compatibility, not a security sandbox. Workspace transfer and foreground
+service wiring are source-stage work; model execution remains unavailable until
+product qualification. Current Full/Play App and runtime Kotlin compilation,
+15 foreground-lifecycle tests and 16 workspace JVM tests passed. Host Swift 6
+object compilation and all 111 selected tests passed (19 workspace, 61 shell,
+31 job tests), with original failures retained. Both Android ARM64 shared
+libraries and JNI consumers also compiled and linked with 16 KiB alignment;
+the runtime authority excludes the full Core backend. Actual App qualification
+is pending; these checks built no new
+product APK and made no paid App-provider calls. G03-R3 consumes the frozen batch
+for product integration and the next Android Alpha.
 
 ## Layout and ownership
 
@@ -123,13 +139,19 @@ python3 FloeAndroid/scripts/check-plan.py
 python3 FloeAndroid/scripts/check-fixtures.py --check
 python3 FloeAndroid/scripts/check-settings-domain.py --check
 python3 FloeAndroid/fixtures/generate.py --check
-# Host policy/protocol tests (use a distinct scratch path from Android builds):
+# Optional full shared host suite; run only when the changed boundary requires it.
+# Routine iteration uses affected cohorts and reuses unchanged evidence.
+# Keep host scratch separate from Android builds:
 "$FLOE_SWIFT_BIN/swift" test --build-system native --package-path FloeAndroid/shared \
   --scratch-path "$FLOE_ANDROID_CACHE_ROOT/swift-host-native" --jobs 6
 # Pin the device; never use a bare adb when several are attached:
 adb -s DEVICE_SERIAL install -r /absolute/path/to/app-full-debug.apk
 SH
 ```
+
+Complete a coherent source batch before integrated compilation and affected
+behavior checks. Do not rerun the full host/device matrix after every small fix,
+and do not use paid provider calls for deterministic local execution checks.
 
 The plan, fixture and generator checks are read-only. G01 evidence combines them
 with the five-APK artifact checks, host tests and real JNI/device smoke; a green

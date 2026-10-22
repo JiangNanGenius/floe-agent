@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Core-owned Agent foreground lifecycle. These merge into the Core App
+         at build time; the runtime component keeps NO foreground permission
+         of its own (bound-only, importance inherited from its foreground
+         Core client). WAKE_LOCK is deliberately NOT requested: no permanent
+         or idle wakelock; FGS priority is the accepted mechanism. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <!-- Nonexported: the system and this app only. It starts or promotes
+             ALREADY-registered owned work held in the transient in-process
+             registry; it never accepts commands, owners or task ids from
+             Intent extras (the Intent below is data-free by construction). -->
+        <service
+            android:name=".RunForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="user-initiated AI agent runs, durable jobs, environment installation and local sessions with visible progress and stop; no idle keep-alive" />
+        </service>
+
+        <!-- Immutable stop PendingIntent target only; exported=false means
+             only same-app PendingIntent broadcasts reach it. It carries a
+             notification stamp used solely to fence stale cancellation; it
+             grants no command authority. -->
+        <receiver
+            android:name=".RunForegroundStopReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

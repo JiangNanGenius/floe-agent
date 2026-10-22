@@ -756,3 +756,115 @@ originals, including that missing model. All 13 environment object files
 were produced for `aarch64-unknown-linux-android28`; this was not a full
 App rebuild and did not repeat the device cohort. Initial minimal-host
 resource setup and accidental system-compiler failures were retained.
+
+
+## G03-R2 shell, jobs and lifecycle integration (2026-10-22, implementation)
+
+This section describes source ownership and platform deltas. It does not
+claim a qualified native library, product APK or device behavior. The
+integration uses the immutable public-main originals plus Android overlays;
+the occupied older iOS checkout is not the qualification source.
+
+`FloeAndroidShellTools` retains six original relative links:
+`DesignGuestWriteGate`, `SessionExpiryScheduler`, `ShellCommandPolicy`,
+`ShellInputValidation`, `ShellOperationJournal`, and `ShellOutputSanitizer`.
+Its narrow mirrors retain the original service/session/tool contract:
+`LocalShellBackend`, `LocalShellService`, `LocalShellTool`,
+`ShellSessionCenter`, `ShellSessionTools`, and `ShellToolRegistration`.
+The Android mirrors omit Apple-only guest-shape/backend references and
+carry the real original run, conversation, environment and tool-call
+identities into the typed Android transport. The additional tool-call
+identity is Core-private correlation metadata and is removed before the
+runtime command payload. `AndroidLinuxShellBackend` and
+`LinuxShellTransport` are Android-owned. They admit only the resolved
+Linux backend; uncertain transport, cancellation and caller timeout retain
+ownership until actual stop/release proof. A host interpreter is never a
+fallback. The single workload gate also covers detached reconciliation.
+
+`FloeAndroidJobTools/NativeJobHandlers` is an original relative link.
+`BackgroundJobService` is a narrow original mirror with additive observation
+and cancellation of its actual owned processor tasks. The original durable
+store, runtime-issued submission provenance, terminal state writes and
+dependency resolution remain authoritative. `BackgroundJobTools` requires
+an explicit trusted output root and permits composition without tool
+advertisement; it does not expose unfinished execution. Android-owned
+`JobLiveWork` and `ExecShellJobRunner` bind processor lifetime to actual
+Root/foreground ownership and require remote settlement proof before
+terminalizing a shell job. An awaited independent task carries stop
+reconciliation after cancellation of the processor's caller.
+
+`FloePersistence/RunLifecycleRetention` is now a narrow mirror of the
+original file: only the canonical spool-root resolver changes. The accepted
+native Root binds an explicit directory and epoch; writer and retention
+consume that same resolver. Unbinding follows actual native store close
+for that epoch. There is no process-global Application Support fallback.
+The original retention transaction and ownership checks stay intact.
+
+Core-owned composition in `RuntimeFacadeLinuxBindings`,
+`RuntimeFacadeJobBindings`, `G03JobLifecycle`, `LinuxShellJobSettlement`,
+`LinuxShellMailbox` and `RunForegroundProjection` reuses the existing
+accepted Root, database, conversation deletion fence and runtime work
+registry. Job processors acquire their actual foreground protection before
+target execution; original terminal callbacks retain ownership through
+output/dependency writes. Root retirement first suspends new admission,
+then leaves the proof channel available until real job and shell cleanup
+has drained. A stop request, notification click, Binder death, PTY EOF or
+reaped root PID alone never releases the environment.
+
+Model shell/job advertisement remains disabled until the actual independent
+workspace exchange and runtime capability are qualified. API/JNI binding,
+object compilation and App acceptance are separately recorded in the
+current progress document; historical component checks do not cover later
+source changes automatically.
+
+A configured shell work-tracking hook now fails closed when original Root
+ownership is refused; omitting the hook retains standalone module behavior.
+The product composition advertises only qualified `exec.shell` at this stage.
+Interactive `shell.*` implementations remain reusable source, pending their
+IDE/session ownership integration, and are not advertised merely because
+an engine can start a PTY. Process exit and Core file-save receipt are distinct:
+a zero command exit cannot produce a successful tool result while workspace
+save is conflicted or unknown. The trusted host confirms file status from the
+Core grant's actual export receipt and drains entered Core file callbacks
+before completing the native poll/job proof.
+
+
+### G03-R2 remote-advance link audit (2026-10-22, job-4d35db884ec64d95)
+
+Origin/main advanced 6b76ede0 → 12e36ba7b41d24634526ea55568fe88e4de26745
+(parallel iOS merge; the Android diff from 6b76 is empty). All 268 per-file
+original links were independently re-verified against the 12e36 blobs
+(`git cat-file` byte compare, 264 identical). Exactly four linked targets
+changed upstream and are handled as follows:
+
+| Link | Handling |
+| --- | --- |
+| `FloeAgentRuntime/DelegateTool.swift` | refreshed to the 12e36 blob: additive `runner(for:)` getter over the existing live-run map; no new platform surface. |
+| `FloeAgentRuntime/ChildToolDiscovery.swift` | refreshed to the 12e36 blob: additive bounded durable-checkpoint snapshot of the child's OWN selection; resume re-derives the offered universe from the CURRENT parent ceiling. |
+| `FloeSkills/OfficialBundledSkills.generated.swift` | refreshed to the 12e36 blob: generated skill-catalog asset/markdown revision only (floe-office 1.4.0→1.5.0 exact-text guidance). |
+| `FloePersistence/TaskScheduleStore.swift` | **pinned Android regular mirror at the OLD 6b76 blob `b9e261f9dbc9dc1bd2fa416f0fb5a3c2386dc035`** (git-blob verified; file is no longer a symlink). The 12e36 version adds cleanup-reminder SQL whose GRDB/schema dependencies are NOT part of the Android R2 package; porting them (or unrelated iOS schedule/migration work) into R2 is out of scope. The mirror preserves the exact previously-qualified bytes; the iOS original was never written through. |
+
+### G03-R2 shell ledger ↔ conversation-deletion lifetime (2026-10-22, job-4d35db884ec64d95, coordinator steer)
+
+A detached `exec.shell` may outlive its parent run. `ledgerIndex` retains
+settled dispatches while engine leases or claimed `shell.start` tickets
+remain, but the ORIGINAL `RunDomainDeletionLifecycle.drainOwnedWork` loop
+previously only saw run ownership (empty once the parent is terminal) and
+durable-job tokens. The contract is now closed with the EXISTING
+authorities, no new stores:
+
+* admission requires the ORIGINAL `ToolContext.conversationID`; without it
+  the tracking hook returns nil and `LocalShellService` refuses dispatch
+  (fail closed, no workspace guessing);
+* every ledger worker attaches a REAL `RuntimeOwnedWorkRegistry` receipt
+  (kind `.tool`, owner `linux-shell:<conversation>:<run>`, durable-job lane
+  precedent) before dispatch and detaches it exactly once only on the
+  proven release — never on cancel/timeout/EOF;
+* target-only surface `tokensForConversation(_:epoch:)` and
+  `drainConversationTick(conversationID:epoch:)` mirror the durable-job
+  shape and run INSIDE the original fence loop; unrelated conversations and
+  global counts never block a target drain;
+* the ledger end predicate became run-scoped
+  (`LinuxShellMailbox.hasLiveTickets(runID:)` + `ownedSessions(runID:)`),
+  while process retirement (`isDrained()`) keeps the conservative global
+  view.

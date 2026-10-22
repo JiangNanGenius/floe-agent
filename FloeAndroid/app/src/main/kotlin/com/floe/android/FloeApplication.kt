@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 
 /**
  * Application owner for the product-UID credential gateway, the RB-1 native
@@ -41,6 +42,10 @@ import kotlinx.coroutines.launch
  *  * onTerminate is never used as a shutdown/cleanup signal.
  */
 class FloeApplication : Application() {
+    lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
+        private set
+    private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
+    private var foregroundObservation: kotlinx.coroutines.Job? = null
     // Created in onCreate AFTER attach; no property initializer reads Context.
     private lateinit var gatewayCapability: MutableStateFlow<SecretGatewayCapability>
 
@@ -79,6 +84,8 @@ class FloeApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
+        linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
         // Attached boundary: this is now safe to read applicationContext.
         // The capability flow itself is data-only and published as Loading
         // before the dispatcher's off-main bootstrap starts.
@@ -99,6 +106,9 @@ class FloeApplication : Application() {
             capabilityState = runtimeState,
         )
         this.runtimeCoordinator = runtimeCoordinator
+        runtimeCoordinator.localRuntimeDrain = {
+            linuxShell.stopAndDrain(linuxShell.boundNativeEpoch)
+        }
         runtimeCoordinator.start()
         // G02 App host binding: data-only creation; commands stay off-main.
         // The privacy-clear confirmation issuer stays with the coordinator
@@ -109,6 +119,19 @@ class FloeApplication : Application() {
             gatewayCapability = capability,
             bootstrapCapability = runtimeState,
         ).also { host ->
+            host.runForeground = com.floe.android.host.RunForegroundBinding(
+                controller = com.floe.android.runlifecycle.RunForegroundController.forApplication(this),
+                nativeSnapshot = com.floe.android.host.RunForegroundNativeSnapshotSource {
+                    com.floe.android.runlifecycle.RunForegroundWire.parse(
+                        com.floe.android.bridge.RunForegroundNative.snapshot())
+                },
+                cancelAgentRun = { conversationID, runID ->
+                    hostScope.launch(Dispatchers.IO) { host.conversations.cancelRunFromNotification(conversationID, runID) }
+                    true
+                },
+                releaseLocalSession = { sessionID -> linuxShell.requestSessionStop(sessionID) },
+                onUnavailable = { _, failure -> host.reportBackgroundUnavailable(failure) },
+            )
             host.privacyConfirmationIssuer = { expectedEpoch, operation,
                                                digest, invocation, action ->
                 runtimeCoordinator.issuePrivacyConfirmation(
@@ -137,7 +160,31 @@ class FloeApplication : Application() {
             if (!started && capability is RuntimeBootstrapCapability.OwnedStoreReady) {
                 started = true
                 runtimeHost?.start()
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    try { runtimeHost?.nativeRootEpoch()?.let { epoch -> linuxShell.start(epoch) } }
+                    catch (_: Exception) {
+                        // Local capability remains unqualified; the existing
+                        // cloud runtime and its readiness observer stay live.
+                    }
+                }
+                foregroundObservation = hostScope.launch(Dispatchers.IO) {
+                    var observed = 0L
+                    while (kotlinx.coroutines.currentCoroutineContext().isActive) {
+                        val changed = com.floe.android.bridge.RunForegroundNative.waitChange(observed, 1_000)
+                        if (changed != observed) runtimeHost?.runForeground?.nativeOwnedWorkChanged()
+                        observed = changed
+                    }
+                }
+            } else if (capability is RuntimeBootstrapCapability.Stopped) {
+                // The coordinator published this only after actual native
+                // owner/store drain, including the local-runtime gate.
+                foregroundObservation?.cancel()
+                kotlinx.coroutines.withContext(Dispatchers.IO) { runtimeHost?.runForeground?.releaseAllForShutdown() }
             }
         }
+    }
+
+    fun reconcileForegroundOnResume() {
+        hostScope.launch(Dispatchers.IO) { runtimeHost?.runForeground?.reconcileAgentRuns() }
     }
 }

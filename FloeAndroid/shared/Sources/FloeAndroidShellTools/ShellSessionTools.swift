@@ -1,0 +1,298 @@
+// FloeAndroidShellTools — Android platform mirror of the ORIGINAL
+// FloeAgent/Sources/FloeExecution/Tools/ShellSessionTools.swift.
+// Every statement is byte-equal to the original except ONE additive line:
+//   S1 (owner threading, job-1bd4fcce5eca4856): `ShellOpenTool.execute`
+//      passes `conversationID: context.conversationID` into the session
+//      center (mirror delta in ShellSessionCenter.swift A1). The value is
+//      the runtime-issued identity from the trusted ToolContext; it is
+//      never model-supplied and never inferred from session text. All
+//      ownership, expiry, bounded-exchange, signal and denial semantics —
+//      including the DesignGuestWriteGate barriers (ORIGINAL per-file link
+//      in this module) — are byte-equal.
+//
+// FloeExecution — Interactive local shell tools (shell.*).
+// Session semantics intentionally mirror ssh.shellOpen/shellExchange/
+// shellClose: a run-scoped sessionID, bounded exchanges, sliding expiry.
+// shell.signal adds Ctrl-C/TERM/KILL control for interactive programs.
+
+import Foundation
+import FloeCore
+import FloeTools
+
+public struct ShellOpenTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var command: String?
+        public var cwd: String?
+        public var env: [String: String]?
+        public var columns: Int?
+        public var rows: Int?
+
+        public init(command: String? = nil, cwd: String? = nil, env: [String: String]? = nil, columns: Int? = nil, rows: Int? = nil) {
+            self.command = command
+            self.cwd = cwd
+            self.env = env
+            self.columns = columns
+            self.rows = rows
+        }
+    }
+
+    public static let name = "shell.open"
+    public static let toolDescription =
+        "Open an interactive local shell session for programs that read input over time (an interactive sh prompt, a script that asks questions, a REPL-like tool). Defaults to the interactive sh. Continue with shell.exchange (feed input, read output), then shell.close. At most 4 sessions; sessions expire after 30 idle minutes. Use exec.shell for one-shot commands and jobs.submit for background work."
+    public static let parametersJSON = #"""
+    {"type":"object","properties":{
+      "command":{"type":"string","description":"Program to run interactively (default: interactive sh)"},
+      "cwd":{"type":"string","description":"Workspace-relative working directory"},
+      "env":{"type":"object","additionalProperties":{"type":"string"}},
+      "columns":{"type":"integer","minimum":20,"maximum":500},
+      "rows":{"type":"integer","minimum":5,"maximum":200}},
+     "additionalProperties":false}
+    """#
+    public static let riskLabels: Set<RiskLabel> = [
+        .executesLocalCode, .readsFiles, .writesFiles, .deletesFiles, .networkAccess
+    ]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+
+    private let center: ShellSessionCenter
+
+    public init(center: ShellSessionCenter) {
+        self.center = center
+    }
+
+    public func validate(_ args: Arguments) throws {
+        try ShellInputValidation.validate(command: args.command ?? "", cwd: args.cwd ?? ".", environment: args.env ?? [:])
+        if let cwd = args.cwd {
+            guard !cwd.hasPrefix("/"), !cwd.hasPrefix("~"), !cwd.split(separator: "/").contains("..") else {
+                throw FloeError.validationFailed("cwd must be a workspace-relative path without '..'")
+            }
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Design original-write barrier: an interactive session is arbitrary
+        // input over time and can reach the frozen original through the
+        // workspace share. Open is refused while this run owns frozen
+        // originals, before any PTY exists.
+        if let denial = DesignGuestWriteGate.arbitraryCodeDenial(context: context) {
+            return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
+        }
+        guard let root = context.workspaceRootURL else {
+            throw FloeError.validationFailed("A workspace root is required for shell sessions")
+        }
+        let result = try await center.open(
+            command: args.command ?? "",
+            cwd: args.cwd ?? ".",
+            environment: args.env ?? [:],
+            columns: args.columns ?? 80,
+            rows: args.rows ?? 24,
+            runID: context.runID,
+            rootURL: root,
+            cancellation: context.cancellation,
+            toolEnvironment: context.environment,
+            clientSessionID: context.clientSessionID,
+            conversationID: context.conversationID   // S1 (see file header)
+        )
+        var text = "status=ok sessionID=\(result.sessionID) alive=\(result.alive)"
+        if !result.initialOutput.isEmpty { text += "\noutput:\n\(result.initialOutput)" }
+        return ToolExecutionOutput(digesting: text, exitStatus: 0)
+    }
+}
+
+public struct ShellExchangeTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var sessionID: String
+        public var input: String?
+        public var waitMs: Int?
+        public var maxBytes: Int?
+
+        public init(sessionID: String, input: String? = nil, waitMs: Int? = nil, maxBytes: Int? = nil) {
+            self.sessionID = sessionID
+            self.input = input
+            self.waitMs = waitMs
+            self.maxBytes = maxBytes
+        }
+    }
+
+    public static let name = "shell.exchange"
+    public static let toolDescription =
+        "Send input to an open shell session and read new output. Input is written to the session's stdin as-is; end a command with a newline (\"\\n\") to execute it. Send exactly \"\\u0003\" for Ctrl-C (cooperative interrupt) and exactly \"\\u0004\" to close stdin (EOF). waitMs bounds how long to collect output (default 2000, max 30000). The response reports whether the program is still alive, its exit code once it exits, and cumulative bytesRead/bytesWritten so 'wrote nothing' stays distinguishable from 'already drained'."
+    public static let parametersJSON = #"""
+    {"type":"object","properties":{
+      "sessionID":{"type":"string"},
+      "input":{"type":"string","description":"Input bytes written as-is; end with \\n to run a command; exactly \\u0003 = Ctrl-C, exactly \\u0004 = EOF"},
+      "waitMs":{"type":"integer","minimum":50,"maximum":30000},
+      "maxBytes":{"type":"integer","minimum":1,"maximum":262144}},
+     "required":["sessionID"],"additionalProperties":false}
+    """#
+    public static let riskLabels: Set<RiskLabel> = [.executesLocalCode, .networkAccess]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+
+    private let center: ShellSessionCenter
+
+    public init(center: ShellSessionCenter) {
+        self.center = center
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard !args.sessionID.isEmpty else { throw FloeError.validationFailed("sessionID is required") }
+        if let input = args.input, input.utf8.count > 64 * 1024 {
+            throw FloeError.validationFailed("input exceeds 64 KiB")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        // Design original-write barrier: exchanged input is arbitrary shell
+        // input; while this run owns frozen originals only strictly read-only
+        // lines reach the session.
+        if let input = args.input,
+           let denial = DesignGuestWriteGate.evaluate(
+               interactiveInput: input, context: context
+           ) {
+            return ToolExecutionOutput(digesting: denial.message, exitStatus: 126)
+        }
+        let result: ShellExchangeResult
+        do {
+            result = try await center.exchange(
+                sessionID: args.sessionID,
+                input: args.input,
+                waitMs: args.waitMs ?? 2_000,
+                maxBytes: args.maxBytes ?? 64 * 1024,
+                runID: context.runID,
+                cancellation: context.cancellation,
+                clientSessionID: context.clientSessionID
+            )
+        } catch is ShellSessionCenter.OwnerMismatch {
+            // A sibling client's session (same run, different runtime-issued
+            // client identity): an explicit denial, with no backend dispatch
+            // and never the other client's output. 126 is the documented
+            // "blocked" status for the shell.* family.
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID)
+                hint=This interactive session was opened by another client (the parent run or a sibling subagent). Open your own session with shell.open and use its sessionID.
+                """,
+                exitStatus: 126
+            )
+        }
+        var text = "status=ok sessionID=\(args.sessionID) alive=\(result.alive)"
+        if let exitCode = result.exitCode { text += " exitCode=\(exitCode)" }
+        // Cumulative counters distinguish "the program wrote nothing" from
+        // "output was written and already drained", so a short exchange is
+        // never mistaken for a broken channel.
+        text += " bytesRead=\(result.bytesRead) bytesWritten=\(result.bytesWritten) outputBytes=\(result.output.utf8.count)"
+        if result.output.isEmpty && result.alive {
+            text += result.bytesRead == 0
+                ? "\nnote=no-output-yet (the program is alive and has written nothing)"
+                : "\nnote=no-new-output (earlier output was already drained)"
+        }
+        if !result.output.isEmpty { text += "\noutput:\n\(result.output)" }
+        return ToolExecutionOutput(digesting: text, exitStatus: result.alive ? 0 : (result.exitCode ?? 0))
+    }
+}
+
+public struct ShellCloseTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var sessionID: String
+        public init(sessionID: String) { self.sessionID = sessionID }
+    }
+
+    public static let name = "shell.close"
+    public static let toolDescription = "Close an interactive local shell session opened with shell.open. Safe to call more than once."
+    public static let parametersJSON = #"{"type":"object","properties":{"sessionID":{"type":"string"}},"required":["sessionID"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+
+    private let center: ShellSessionCenter
+
+    public init(center: ShellSessionCenter) {
+        self.center = center
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard !args.sessionID.isEmpty else { throw FloeError.validationFailed("sessionID is required") }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let outcome = await center.close(
+            sessionID: args.sessionID,
+            runID: context.runID,
+            clientSessionID: context.clientSessionID
+        )
+        switch outcome {
+        case .applied:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) closed=true", exitStatus: 0)
+        case .notFound:
+            // Idempotent close: the session is already gone for this client.
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) closed=true note=session-already-gone", exitStatus: 0)
+        case .ownerMismatch:
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID)
+                hint=This interactive session belongs to another client (the parent run or a sibling subagent); nothing was closed.
+                """,
+                exitStatus: 126
+            )
+        }
+    }
+}
+
+public struct ShellSignalTool: AgentTool {
+    public struct Arguments: Decodable, Sendable {
+        public var sessionID: String
+        public var signal: String
+        public init(sessionID: String, signal: String) {
+            self.sessionID = sessionID
+            self.signal = signal
+        }
+    }
+
+    public static let name = "shell.signal"
+    public static let toolDescription = "Send INT, TERM or KILL to a running interactive shell session without closing it."
+    public static let parametersJSON = #"{"type":"object","properties":{"sessionID":{"type":"string"},"signal":{"type":"string","enum":["INT","TERM","KILL"]}},"required":["sessionID","signal"],"additionalProperties":false}"#
+    public static let riskLabels: Set<RiskLabel> = [.executesLocalCode]
+    public static let isSideEffecting = true
+    public static let toolEffect: ToolEffect = .mutating
+
+    private let center: ShellSessionCenter
+
+    public init(center: ShellSessionCenter) {
+        self.center = center
+    }
+
+    public func validate(_ args: Arguments) throws {
+        guard !args.sessionID.isEmpty else { throw FloeError.validationFailed("sessionID is required") }
+        guard ShellSignal(rawValue: args.signal.uppercased()) != nil else {
+            throw FloeError.validationFailed("signal must be INT, TERM or KILL")
+        }
+    }
+
+    public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        let signal = ShellSignal(rawValue: args.signal.uppercased()) ?? .interrupt
+        let outcome = await center.signal(
+            sessionID: args.sessionID,
+            signal: signal,
+            runID: context.runID,
+            clientSessionID: context.clientSessionID
+        )
+        switch outcome {
+        case .applied:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) signal=\(signal.rawValue)", exitStatus: 0)
+        case .notFound:
+            return ToolExecutionOutput(digesting: "status=ok sessionID=\(args.sessionID) signal=\(signal.rawValue) note=session-already-gone", exitStatus: 0)
+        case .ownerMismatch:
+            // Cross-client signal is the cross-cancel class: refuse before the
+            // backend sees it, so a sibling's KILL can never hit this client's
+            // process group.
+            return ToolExecutionOutput(
+                digesting: """
+                status=denied reason=session-owner-mismatch sessionID=\(args.sessionID) signal=\(signal.rawValue)
+                hint=This interactive session belongs to another client (the parent run or a sibling subagent); nothing was signaled.
+                """,
+                exitStatus: 126
+            )
+        }
+    }
+}

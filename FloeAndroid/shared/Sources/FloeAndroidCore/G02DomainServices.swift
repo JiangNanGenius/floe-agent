@@ -180,6 +180,9 @@ public final class G02InstalledComposition: @unchecked Sendable {
         let epoch = gen.epoch
         let database = cluster.database
         let rootURL = URL(fileURLWithPath: cluster.identity.root.path)
+        guard BackgroundJobOutputSpoolRoot.bind(
+            root: rootURL.appendingPathComponent("Floe/JobOutputs", isDirectory: true), epoch: epoch
+        ) else { return nil }
 
         // 1. RB2 model/provider configuration facade. Every port receives
         //    the REAL shared coordinator/registry/epoch/sink — never nil to
@@ -258,6 +261,32 @@ public final class G02InstalledComposition: @unchecked Sendable {
         //    unavailable-rewriter stand-in) and the public-hub transport
         //    factory owns ONE shared HTTP service (single-session doctrine).
         let toolWork = FacadeToolWorkCoordinator()
+        // Linux transport is composed over the same owned-work coordinator.
+        // A missing ToolContext workspace never falls back to the App root.
+        // Actual UID/rootfs/workspace qualification controls advertisement;
+        // installation or source presence does not enable exec.shell.
+        let workspaceAuthorityInstalled = LinuxWorkspaceAuthority.install(storageRoot: cluster.identity.root)
+        RuntimeFacadeLinuxBindings.shared.compose(
+            coordinator: toolWork,
+            rootProvider: { nil },
+            readiness: LinuxShellInjectedReadiness {
+                let bindings = RuntimeFacadeLinuxBindings.shared
+                let epoch = bindings.boundNativeEpoch
+                return workspaceAuthorityInstalled && epoch > 0 && G02NativeRootEpoch.readback() == epoch
+                    && bindings.qualificationFields.allFieldsTrue
+            })
+        if let shell = RuntimeFacadeLinuxBindings.shared.components,
+           let spool = BackgroundJobOutputSpoolRoot.url() {
+            let owner = G03JobLifecycle(epoch: epoch)
+            guard RuntimeFacadeJobBindings.shared.compose(database: database, shell: shell,
+                transport: MailboxLinuxShellTransport(), settlementGate: LinuxShellJobSettlement.gate,
+                outputRootURL: spool, onTerminal: { await owner.terminal($0) }, processorOwnership: owner),
+                let jobs = RuntimeFacadeJobBindings.shared.register() else { return nil }
+            owner.bind(jobs)
+            G03JobLifecycle.install(owner)
+            do { _ = try await RuntimeFacadeJobBindings.shared.reconcileInterruptedOnLaunch() }
+            catch { return nil }
+        }
         let ownedWorkLifecycle = ConfigOwnedWorkLifecycle(
             registry: RuntimeOwnedWorkRegistry.shared,
             epochProvider: G02CompositionEpochProvider())

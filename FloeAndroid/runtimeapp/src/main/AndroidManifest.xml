@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <uses-permission android:name="${floeCorePackage}.permission.LINUX_RUNTIME" />
+    <queries><package android:name="${floeCorePackage}" /></queries>
+    <application android:name=".RuntimeApplication" android:label="@string/runtime_name"
+        android:allowBackup="false" android:usesCleartextTraffic="false" android:supportsRtl="true">
+        <activity android:name=".RuntimeAccessActivity" android:exported="true"
+            android:permission="${floeCorePackage}.permission.LINUX_RUNTIME"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight" />
+        <service android:name=".LinuxRuntimeService" android:exported="true"
+            android:permission="${floeCorePackage}.permission.LINUX_RUNTIME" />
+    </application>
+</manifest>

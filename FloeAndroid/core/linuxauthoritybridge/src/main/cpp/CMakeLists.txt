@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.22.1)
+project(floe_linux_authority_bridge LANGUAGES CXX)
+add_library(floe_linux_authority_jni SHARED floe_linux_authority_jni.cpp)
+target_compile_features(floe_linux_authority_jni PRIVATE cxx_std_17)
+target_link_libraries(floe_linux_authority_jni PRIVATE dl)
+target_link_options(floe_linux_authority_jni PRIVATE "-Wl,-z,max-page-size=16384")

@@ -492,6 +492,9 @@ class RuntimeBootstrapCoordinator internal constructor(
      * Without accepted-start proof this coordinator never calls native stop,
      * so it cannot stop another instance's owner.
      */
+    /** Application transport cleanup; false retains the accepted native owner. */
+    @Volatile var localRuntimeDrain: (suspend () -> Boolean)? = null
+
     suspend fun shutdown(): Boolean {
         if (ownerProofInvalid) return false
         // Fence every late bootstrap publication first; then wait for any
@@ -508,6 +511,11 @@ class RuntimeBootstrapCoordinator internal constructor(
         if (epoch == null || token == null) {
             publishStopped()
             return true
+        }
+        if (localRuntimeDrain?.invoke() == false) {
+            // A requested stop is not remote-process quiescence. Keep the
+            // original root/database owner open so a later drain can finish.
+            return false
         }
         val stopReceipt = try {
             native.runtimeOwnerStop(epoch, token)

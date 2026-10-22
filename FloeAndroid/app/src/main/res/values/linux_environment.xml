@@ -1,0 +1,18 @@
+<resources>
+    <string name="linux_environment_title">Local environment</string>
+    <string name="linux_environment_open">Set up</string>
+    <string name="linux_environment_description">Download Linux for terminal and local tasks.</string>
+    <string name="linux_environment_loading">Checking environment…</string>
+    <string name="linux_environment_component">Install the runtime component to continue.</string>
+    <string name="linux_environment_component_installing">Installing runtime component…</string>
+    <string name="linux_environment_setup">Enable local tasks and notifications to continue.</string>
+    <string name="linux_environment_install_needed">Download the Linux environment to continue.</string>
+    <string name="linux_environment_installing">Preparing environment…</string>
+    <string name="linux_environment_installed">Environment installed</string>
+    <string name="linux_environment_stopping">Stopping installation…</string>
+    <string name="linux_environment_failed">Could not prepare the environment. Check your connection and available storage, then try again.</string>
+    <string name="linux_environment_continue">Continue</string>
+    <string name="linux_environment_prepare">Prepare environment</string>
+    <string name="linux_environment_tools_pending">Local task execution is not ready yet.</string>
+    <string name="linux_environment_local_network">Allow local network access</string>
+</resources>

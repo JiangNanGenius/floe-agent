@@ -4082,6 +4082,19 @@ public actor RunDomainDeletionLifecycle: ConversationDeletionLifecycle {
         // Snapshot target ownership BEFORE cancellation so every exact
         // token that gets detached during the window is reportable.
         let owned = await domain.owners(conversationID: fence.conversationID)
+        let jobs = G03JobLifecycle.current.flatMap { $0.epoch == fence.epoch ? $0 : nil }
+        var jobEvidence = Set(await jobs?.tokensForConversation(fence.conversationID) ?? [])
+        // G03-R2 deletion-lifetime contract (coordinator steer 20261022): a
+        // detached exec.shell whose parent run already went terminal lives
+        // in the shell ledger, NOT in `owned`. Its REAL registry receipt and
+        // exact conversation binding (captured from the ORIGINAL
+        // ToolContext at dispatch admission) are authoritative remaining
+        // work: deletion must not erase the workspace while a retained
+        // shell/Core export callback is still running. Target-only: the
+        // ledger's other conversations never enter this view.
+        let shell = RuntimeFacadeLinuxBindings.shared
+        var shellEvidence = Set(shell.tokensForConversation(fence.conversationID,
+                                                            epoch: fence.epoch))
         var cancelled = 0
         for ownership in owned {
             if ownership.phase == .handedOff,
@@ -4110,7 +4123,16 @@ public actor RunDomainDeletionLifecycle: ConversationDeletionLifecycle {
             let pendingLaunches = remaining.contains {
                 $0.phase == .admitting || $0.phase == .prepared
             }
-            if !liveTokensPending, !feedsPending, !pendingLaunches, remaining.isEmpty {
+            if let jobs {
+                jobEvidence.formUnion(await jobs.tokensForConversation(fence.conversationID))
+            }
+            shellEvidence.formUnion(shell.tokensForConversation(fence.conversationID,
+                                                                epoch: fence.epoch))
+            let jobsDrained = await jobs?.drainConversationTick(fence.conversationID) ?? true
+            let shellDrained = await shell.drainConversationTick(conversationID: fence.conversationID,
+                                                                 epoch: fence.epoch)
+            if !liveTokensPending, !feedsPending, !pendingLaunches, remaining.isEmpty,
+               jobsDrained, shellDrained {
                 break
             }
             if Task.isCancelled {
@@ -4125,7 +4147,7 @@ public actor RunDomainDeletionLifecycle: ConversationDeletionLifecycle {
         let evidenceTokens = await domain.drainEvidenceTokens(
             conversationID: fence.conversationID)
         var observations: [ConversationOwnedWorkObservation] = []
-        for token in evidenceTokens {
+        for token in Set(evidenceTokens).union(jobEvidence).union(shellEvidence) {
             observations.append(ConversationOwnedWorkObservation(
                 conversationID: fence.conversationID,
                 token: token,

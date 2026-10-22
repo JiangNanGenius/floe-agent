@@ -24,6 +24,8 @@ data class PRootLaunchSpec(
     val guestTemporaryDirectory: String,
     val binds: List<LinuxBind>,
     val ownership: RunOwnership,
+    /** Guest UID 0 for apt/dpkg; never grants Android root or another UID. */
+    val emulateGuestRoot: Boolean = false,
 ) {
     init {
         require(listOf(nativeLibraryDirectory, rootfs, scratch).all {
@@ -53,6 +55,7 @@ data class PRootLaunchSpec(
         val proot = File(nativeLibraryDirectory, "libproot.so").absolutePath
         val loader = File(nativeLibraryDirectory, "libproot_loader.so").absolutePath
         val arguments = mutableListOf(proot, "--kill-on-exit", "-r", rootfs.absolutePath)
+        if (emulateGuestRoot) arguments += "-0"
         for (bind in binds) arguments += listOf("-b", "${bind.host.absolutePath}:${bind.guest}")
         arguments += listOf("-w", guestWorkingDirectory)
         arguments += argv

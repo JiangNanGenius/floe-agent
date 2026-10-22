@@ -363,4 +363,9 @@
     <string name="home_attachment_import_failed">Couldn’t import the attachment. Select it again to retry.</string>
     <string name="attachment_import_failed_notice">Couldn’t import the attachment. Try again.</string>
     <string name="attachment_import_too_large_notice">Choose an attachment smaller than 128 MB.</string>
+    <string name="background_task_notice_title">Background tasks unavailable</string>
+    <string name="background_task_notifications_notice">Enable notifications to use background tasks. Keep Floe open for this task.</string>
+    <string name="background_task_system_notice">Background protection is unavailable. Keep Floe open for this task.</string>
+    <string name="background_task_notifications_enable">Enable notifications</string>
+    <string name="background_task_keep_open">Continue</string>
 </resources>

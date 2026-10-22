@@ -47,3 +47,9 @@ children (lifecycle control, not a sandbox claim).
 PRoot upstream docs list `PROOT_LOADER` as the supported env override; the
 standalone loader payload (`libproot_loader.so`) comes from the same
 pinned source and carries the same obligations as `libproot.so`.
+
+## Gradle-resolved library dependency (G03-R2 installer)
+
+| Component | Terms (verified from the primary source) | Where it lands | Obligations |
+| --- | --- | --- | --- |
+| XZ for Java 1.12 (`org.tukaani:xz`) | 0BSD (SPDX header and `licenses/license` in the published POM; upstream `COPYING` at tag v1.12). Verified 2026-10-22 against repo1.maven.org; jar/pom SHA-256 pinned in `FloeAndroid/gradle/verification-metadata.xml` | `:core:linuxruntime` JVM classpath only (streaming XZ decode in `install/`); no transitive dependencies | Retain `licenses/xz-0BSD-LICENSE` (exact upstream text) with binary materials; note the multi-release `META-INF/versions/9` layout for D8 during App integration |
