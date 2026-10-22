@@ -74,7 +74,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。最近已核验交付为 [1.7.45（286）](releases/testflight/BUILD_286_DELIVERY.md)，内部、外部送审和稳定无签名 Release／Feather 分别记录。1.7.46（287）已完成[本地资格检查](releases/testflight/BUILD_287_LOCAL_VERIFICATION.md)，安装包及分发另行回查；此前版本与正式审核保留各自历史记录。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。最近已核验交付为 [1.7.46（287）](releases/testflight/BUILD_287_DELIVERY.md)：内部 Floe QA 可安装，现有 publictest1 已送审并等待 Apple 审核，稳定无签名 Release 与同次 Feather 已交付；[本地资格记录](releases/testflight/BUILD_287_LOCAL_VERIFICATION.md)保留测试和验收边界。此前版本与正式审核保留各自历史记录。
 
 ## 历史研究（结论以现行代码为准）
 
