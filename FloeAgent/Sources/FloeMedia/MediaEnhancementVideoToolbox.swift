@@ -1,5 +1,6 @@
 import Foundation
 import FloeCore
+import FloeTools
 #if canImport(AVFoundation)
 import AVFoundation
 import CoreImage
@@ -75,82 +76,170 @@ final class MediaPixelBufferStore: @unchecked Sendable {
     }
 }
 
-/// BGRA <-> RGhA (half float RGBA) conversion plus EXIF orientation through
-/// one shared Core Image context. VTFrameProcessor requires RGhA; the decoder/
-/// encoder work in BGRA.
+/// Immutable end-to-end format decision, captured before any engine/reader is
+/// created. No shared mutable color space can race actor reentrancy.
+struct MediaEnhancementFormat: @unchecked Sendable {
+    let hdr: Bool
+    let alpha: Bool
+    let workingSpace: CGColorSpace
+    let encodedSpace: CGColorSpace
+    let transfer: String?
+    let primaries: String?
+    let matrix: String?
+    var workingPixelFormat: OSType { hdr ? MediaImageBridge.rgbaHalf : MediaImageBridge.bgra }
+    var readerPixelFormat: OSType { hdr ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange : MediaImageBridge.bgra }
+    var writerPixelFormat: OSType { readerPixelFormat }
+    var codec: AVVideoCodecType { alpha ? .hevcWithAlpha : (hdr ? .hevc : .h264) }
+
+    init(source: MediaSourceDescriptor, mode: MediaEnhancementMode, output: URL) throws {
+        hdr = source.isHDR
+        alpha = source.hasAlpha
+        transfer = source.transferFunction
+        primaries = source.colorPrimary
+        matrix = source.colorMatrix
+        if hdr && mode != .quality {
+            throw FloeError.invalidConfiguration("This engine accepts SDR RGB8 only; HDR preservation requires mode=quality on a supported native processor")
+        }
+        if hdr && alpha && !source.isImage {
+            throw FloeError.invalidConfiguration("Combined HDR and alpha video encoding is not supported by this pipeline")
+        }
+        if alpha {
+            let allowed = source.isImage ? ["png", "tif", "tiff"] : ["mov"]
+            guard allowed.contains(output.pathExtension.lowercased()) else {
+                throw FloeError.invalidConfiguration("Alpha requires PNG/TIFF for images or HEVC with alpha in MOV for video")
+            }
+        }
+        if hdr && source.isImage {
+            guard ["tif", "tiff"].contains(output.pathExtension.lowercased()) else {
+                throw FloeError.invalidConfiguration("High precision images require floating-point TIFF output")
+            }
+        }
+        if hdr && !source.isImage {
+            guard primaries == (kCVImageBufferColorPrimaries_ITU_R_2020 as String),
+                  transfer == (kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ as String) ||
+                  transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String) else {
+                throw FloeError.invalidConfiguration("HDR video requires explicit BT.2020 primaries and PQ or HLG transfer")
+            }
+        }
+        let workingName = hdr ? CGColorSpace.extendedLinearITUR_2020 : CGColorSpace.sRGB
+        let encodedName: CFString = hdr
+            ? (transfer == (kCVImageBufferTransferFunction_ITU_R_2100_HLG as String)
+               ? CGColorSpace.itur_2100_HLG : CGColorSpace.itur_2100_PQ)
+            : CGColorSpace.sRGB
+        guard let working = CGColorSpace(name: workingName), let encoded = CGColorSpace(name: encodedName) else {
+            throw FloeError.invalidConfiguration("The requested color space is unavailable")
+        }
+        workingSpace = working
+        encodedSpace = encoded
+    }
+
+    var videoColorProperties: [String: Any] {
+        guard hdr else { return [:] }
+        return [AVVideoColorPrimariesKey: primaries!, AVVideoTransferFunctionKey: transfer!,
+                AVVideoYCbCrMatrixKey: matrix ?? (kCVImageBufferYCbCrMatrix_ITU_R_2020 as String)]
+    }
+
+    var description: String {
+        "pixelContract=\(hdr ? "linear-half" : "RGB8") alpha=\(alpha ? "independent-plane" : "opaque")"
+    }
+}
+
+/// One request owns its context and immutable working space. Decoder YUV
+/// attachments are interpreted by Core Image; half buffers explicitly carry
+/// the linear working space. HDR is converted to PQ/HLG only at the writer.
 final class MediaImageBridge: @unchecked Sendable {
     static let bgra = kCVPixelFormatType_32BGRA
     static let rgbaHalf = kCVPixelFormatType_64RGBAHalf
-
     let cicontext: CIContext
     let colorSpace: CGColorSpace
 
-    init() {
+    init(colorSpace: CGColorSpace? = nil) {
+        self.colorSpace = colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let options: [CIContextOption: Any] = [.cacheIntermediates: false, .workingColorSpace: self.colorSpace]
+        #if canImport(Metal)
         if let device = MTLCreateSystemDefaultDevice() {
-            cicontext = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
-        } else {
-            cicontext = CIContext(options: [.cacheIntermediates: false])
-        }
-        colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            cicontext = CIContext(mtlDevice: device, options: options)
+        } else { cicontext = CIContext(options: options) }
+        #else
+        cicontext = CIContext(options: options)
+        #endif
     }
 
-    /// Renders `source` into `destination` (already allocated with matching
-    /// dimensions), optionally applying an EXIF orientation.
-    func render(source: CVPixelBuffer, destination: CVPixelBuffer, exifOrientation: UInt32 = 1) throws {
-        var image = CIImage(cvPixelBuffer: source, options: [.colorSpace: colorSpace])
-        if exifOrientation != 1 {
-            image = image.oriented(forExifOrientation: Int32(exifOrientation))
+    func image(_ buffer: CVPixelBuffer) -> CIImage {
+        // Internal RGB buffers are in this request's space. YUV decoder
+        // buffers retain their own primaries/transfer/matrix attachments.
+        if CVPixelBufferGetPixelFormatType(buffer) == Self.rgbaHalf || CVPixelBufferGetPixelFormatType(buffer) == Self.bgra {
+            return CIImage(cvPixelBuffer: buffer, options: [.colorSpace: colorSpace])
         }
-        let width = CVPixelBufferGetWidth(destination)
-        let height = CVPixelBufferGetHeight(destination)
+        return CIImage(cvPixelBuffer: buffer)
+    }
+
+    func render(source: CVPixelBuffer, destination: CVPixelBuffer, exifOrientation: UInt32 = 1,
+                outputSpace: CGColorSpace? = nil) throws {
+        var input = image(source)
+        if exifOrientation != 1 { input = input.oriented(forExifOrientation: Int32(exifOrientation)) }
+        try render(image: input, destination: destination, outputSpace: outputSpace)
+    }
+
+    func render(image: CIImage, destination: CVPixelBuffer, outputSpace: CGColorSpace? = nil) throws {
+        let width = CVPixelBufferGetWidth(destination), height = CVPixelBufferGetHeight(destination)
         let extent = image.extent
         guard extent.width > 0, extent.height > 0 else { throw FloeError.validationFailed("Frame image has an empty extent") }
-        let scaled = extent.width != CGFloat(width) || extent.height != CGFloat(height)
-            ? image.transformed(by: CGAffineTransform(scaleX: CGFloat(width) / extent.width, y: CGFloat(height) / extent.height))
-            : image
-        cicontext.render(
-            scaled,
-            to: destination,
-            bounds: CGRect(x: 0, y: 0, width: width, height: height),
-            colorSpace: colorSpace
-        )
+        let normalized = image.transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
+        let scaled = normalized.transformed(by: CGAffineTransform(scaleX: CGFloat(width) / extent.width, y: CGFloat(height) / extent.height))
+        cicontext.render(scaled, to: destination, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: outputSpace ?? colorSpace)
     }
 
-    func bgraToHalfRGBA(_ source: CVPixelBuffer, store: MediaPixelBufferStore) throws -> CVPixelBuffer {
-        let destination = try store.makeBuffer(
-            format: Self.rgbaHalf,
-            width: CVPixelBufferGetWidth(source),
-            height: CVPixelBufferGetHeight(source)
-        )
+    static func extendedAttributes(_ attributes: [String: Any]) -> [String: Any] {
+        attributes.filter { $0.key.contains("ExtendedPixels") }
+    }
+
+    func bgraToHalfRGBA(_ source: CVPixelBuffer, store: MediaPixelBufferStore,
+                        extraAttributes: [String: Any]? = nil) throws -> CVPixelBuffer {
+        let destination = try store.makeBuffer(format: Self.rgbaHalf, width: CVPixelBufferGetWidth(source),
+            height: CVPixelBufferGetHeight(source), extraAttributes: extraAttributes)
         try render(source: source, destination: destination)
         return destination
-    }
-
-    /// Bi-planar video-range YUV (the format the low-latency processors accept).
-    func makeVideoRange420(width: Int, height: Int, store: MediaPixelBufferStore) throws -> CVPixelBuffer {
-        try store.makeBuffer(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, width: width, height: height)
     }
 
     func toVideoRange420(_ source: CVPixelBuffer, store: MediaPixelBufferStore,
                          extraAttributes: [String: Any]? = nil) throws -> CVPixelBuffer {
-        let destination = try store.makeBuffer(
-            format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-            width: CVPixelBufferGetWidth(source),
-            height: CVPixelBufferGetHeight(source),
-            extraAttributes: extraAttributes
-        )
+        let destination = try store.makeBuffer(format: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            width: CVPixelBufferGetWidth(source), height: CVPixelBufferGetHeight(source), extraAttributes: extraAttributes)
         try render(source: source, destination: destination)
         return destination
     }
 
-    func halfRGBAToBGRA(_ source: CVPixelBuffer, store: MediaPixelBufferStore) throws -> CVPixelBuffer {
-        let destination = try store.makeBuffer(
-            format: Self.bgra,
-            width: CVPixelBufferGetWidth(source),
-            height: CVPixelBufferGetHeight(source)
-        )
-        try render(source: source, destination: destination)
+    /// RGB-only engines see straight color with alpha=1, so translucent edges
+    /// are not darkened by feeding premultiplied RGB into an opaque model.
+    func opaqueColor(_ source: CVPixelBuffer, store: MediaPixelBufferStore) throws -> CVPixelBuffer {
+        let destination = try store.makeBuffer(format: CVPixelBufferGetPixelFormatType(source),
+            width: CVPixelBufferGetWidth(source), height: CVPixelBufferGetHeight(source))
+        try render(image: image(source).unpremultiplyingAlpha().settingAlphaOne(in: image(source).extent), destination: destination)
         return destination
+    }
+
+    /// Alpha never passes through an RGB-only model. Interpolation uses the
+    /// same actual phase as RGB; SR resizes the source plane. The color kernel
+    /// emits premultiplied RGBA in the request's precision.
+    func restoreAlpha(color: CVPixelBuffer, current: CVPixelBuffer, next: CVPixelBuffer? = nil,
+                      phase: Float = 0, destination: CVPixelBuffer) throws {
+        guard let kernel = CIColorKernel(source: """
+        kernel vec4 floeAlpha(__sample color, __sample first, __sample second, float phase) {
+            float a = mix(first.a, second.a, phase);
+            vec3 rgb = color.a > 0.000001 ? color.rgb / color.a : vec3(0.0);
+            return vec4(rgb * a, a);
+        }
+        """) else { throw FloeError.internalError("Alpha compositing kernel is unavailable") }
+        let bounds = CGRect(x: 0, y: 0, width: CVPixelBufferGetWidth(destination), height: CVPixelBufferGetHeight(destination))
+        func resized(_ buffer: CVPixelBuffer) -> CIImage {
+            let input = image(buffer)
+            return input.transformed(by: CGAffineTransform(scaleX: bounds.width / input.extent.width, y: bounds.height / input.extent.height))
+        }
+        guard let output = kernel.apply(extent: bounds, arguments: [resized(color), resized(current), resized(next ?? current), phase]) else {
+            throw FloeError.internalError("Could not restore the alpha plane")
+        }
+        try render(image: output, destination: destination)
     }
 }
 
@@ -169,7 +258,7 @@ protocol MediaInterpolationEngine: AnyObject, Sendable {
     var name: String { get }
     var interpolatedPerPair: Int { get }
     func prepare() throws -> [String]
-    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer]) throws
+    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer], cancellation: CancellationToken?) throws
     func teardown()
 }
 
@@ -179,7 +268,7 @@ protocol MediaSuperResolutionEngine: AnyObject, Sendable {
     var outputWidth: Int { get }
     var outputHeight: Int { get }
     func prepare() throws -> [String]
-    func scale(current: CVPixelBuffer, output: CVPixelBuffer) throws
+    func scale(current: CVPixelBuffer, output: CVPixelBuffer, cancellation: CancellationToken?) throws
     func teardown()
 }
 
@@ -204,7 +293,8 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
     private let store: MediaPixelBufferStore
     private let lock = NSLock()
     private var processor: VTFrameProcessor?
-    private var submissions = 0
+    private var sourceAttributes: [String: Any]?
+    private var destinationAttributes: [String: Any]?
 
     init(width: Int, height: Int, framesPerPair: Int, quality: MediaEnhancementQuality,
          bridge: MediaImageBridge, store: MediaPixelBufferStore) {
@@ -234,6 +324,11 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
         ) else {
             throw FloeError.invalidConfiguration("Frame rate conversion does not accept \(width)x\(height) source frames")
         }
+        guard configuration.supportedPixelFormats.contains(MediaImageBridge.rgbaHalf) else {
+            throw FloeError.invalidConfiguration("VT quality interpolation does not support half-float RGBA on this device")
+        }
+        sourceAttributes = MediaImageBridge.extendedAttributes(configuration.sourcePixelBufferAttributes)
+        destinationAttributes = MediaImageBridge.extendedAttributes(configuration.destinationPixelBufferAttributes)
         let processor = VTFrameProcessor()
         do {
             try processor.startSession(configuration: configuration)
@@ -245,31 +340,31 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
         return ["engine=\(name) prioritization=\(quality.vtPrioritizationIsQuality ? "quality" : "normal") formats=\(formats.joined(separator: ","))"]
     }
 
-    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer]) throws {
+    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer], cancellation: CancellationToken?) throws {
+        try cancellation?.throwIfCancelled()
         guard let processor = lock.withLock({ self.processor }) else {
             throw FloeError.internalError("Frame rate conversion session was not started")
         }
         guard phases.count == outputs.count, !outputs.isEmpty else {
             throw FloeError.internalError("Interpolation requires one destination per phase")
         }
-        let halfCurrent = try bridge.bgraToHalfRGBA(current, store: store)
-        let halfNext = try bridge.bgraToHalfRGBA(next, store: store)
+        let halfCurrent = try bridge.bgraToHalfRGBA(current, store: store, extraAttributes: sourceAttributes)
+        let halfNext = try bridge.bgraToHalfRGBA(next, store: store, extraAttributes: sourceAttributes)
         let stamp = CMTime(value: 1, timescale: 1)
         guard let sourceFrame = VTFrameProcessorFrame(buffer: halfCurrent, presentationTimeStamp: .zero),
               let nextFrame = VTFrameProcessorFrame(buffer: halfNext, presentationTimeStamp: stamp) else {
             throw FloeError.internalError("Could not wrap interpolation frames")
         }
         let destinations = try outputs.enumerated().map { index, _ -> VTFrameProcessorFrame in
-            let half = try store.makeBuffer(format: MediaImageBridge.rgbaHalf, width: width, height: height)
-            guard let frame = VTFrameProcessorFrame(buffer: half, presentationTimeStamp: CMTime(value: Int64(index + 1), timescale: 10)) else {
+            let half = try store.makeBuffer(format: MediaImageBridge.rgbaHalf, width: width, height: height, extraAttributes: destinationAttributes)
+            guard let frame = VTFrameProcessorFrame(buffer: half, presentationTimeStamp: CMTime(seconds: Double(phases[index]), preferredTimescale: 1_000_000)) else {
                 throw FloeError.internalError("Could not allocate an interpolation destination")
             }
             return frame
         }
-        let mode: VTFrameRateConversionParameters.SubmissionMode = lock.withLock {
-            defer { submissions += 1 }
-            return submissions == 0 ? .random : .sequential
-        }
+        // Each invocation is an independent normalized 0...1 source pair,
+        // including chunks of one VFR gap; those clocks are not sequential.
+        let mode: VTFrameRateConversionParameters.SubmissionMode = .random
         guard let parameters = VTFrameRateConversionParameters(
             sourceFrame: sourceFrame,
             nextFrame: nextFrame,
@@ -280,7 +375,7 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
         ) else {
             throw FloeError.validationFailed("Frame rate conversion rejected the interpolation request")
         }
-        try runVideoToolboxProcessSynchronously { completion in
+        try runVideoToolboxProcessSynchronously(cancellation: cancellation) { completion in
             processor.process(parameters: parameters, completionHandler: completion)
         }
         for (index, frame) in destinations.enumerated() {
@@ -301,6 +396,7 @@ final class VideoToolboxInterpolationEngine: MediaInterpolationEngine, @unchecke
 /// running on the pipeline's dedicated worker queue.
 @available(iOS 26.0, macOS 15.4, *)
 func runVideoToolboxProcessSynchronously(
+    cancellation: CancellationToken? = nil,
     _ body: (@escaping @Sendable (any VTFrameProcessorParameters, (any Error)?) -> Void) -> Void
 ) throws {
     let semaphore = DispatchSemaphore(value: 0)
@@ -309,7 +405,10 @@ func runVideoToolboxProcessSynchronously(
         errorBox.store(error)
         semaphore.signal()
     }
+    // Keep resources alive until the native completion; cancellation is
+    // observed immediately after this bounded native submission completes.
     semaphore.wait()
+    try cancellation?.throwIfCancelled()
     if let error = errorBox.error {
         throw FloeError.internalError("VideoToolbox frame processing failed: \(error.localizedDescription)")
     }
@@ -374,7 +473,8 @@ final class VideoToolboxLowLatencyInterpolationEngine: MediaInterpolationEngine,
         return ["engine=\(name) formats=\(formats.joined(separator: ","))"]
     }
 
-    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer]) throws {
+    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer], cancellation: CancellationToken?) throws {
+        try cancellation?.throwIfCancelled()
         guard let processor = lock.withLock({ self.processor }) else {
             throw FloeError.internalError("Low-latency interpolation session was not started")
         }
@@ -403,7 +503,7 @@ final class VideoToolboxLowLatencyInterpolationEngine: MediaInterpolationEngine,
         ) else {
             throw FloeError.validationFailed("Low-latency interpolation rejected the request")
         }
-        try runVideoToolboxProcessSynchronously { completion in
+        try runVideoToolboxProcessSynchronously(cancellation: cancellation) { completion in
             processor.process(parameters: parameters, completionHandler: completion)
         }
         try bridge.render(source: output420, destination: outputs[0])
@@ -446,6 +546,8 @@ final class VideoToolboxSuperResolutionEngine: MediaSuperResolutionEngine, @unch
     private let store: MediaPixelBufferStore
     private let lock = NSLock()
     private var processor: VTFrameProcessor?
+    private var sourceAttributes: [String: Any]?
+    private var destinationAttributes: [String: Any]?
     private var previousSource: CVPixelBuffer?
     private var previousOutput: CVPixelBuffer?
     private var submissions = 0
@@ -480,6 +582,11 @@ final class VideoToolboxSuperResolutionEngine: MediaSuperResolutionEngine, @unch
         ) else {
             throw FloeError.invalidConfiguration("VT super resolution does not accept \(width)x\(height) frames at \(scaleFactor)x")
         }
+        guard configuration.supportedPixelFormats.contains(MediaImageBridge.rgbaHalf) else {
+            throw FloeError.invalidConfiguration("VT quality super resolution does not support half-float RGBA on this device")
+        }
+        sourceAttributes = MediaImageBridge.extendedAttributes(configuration.sourcePixelBufferAttributes)
+        destinationAttributes = MediaImageBridge.extendedAttributes(configuration.destinationPixelBufferAttributes)
         switch configuration.configurationModelStatus {
         case .ready:
             break
@@ -498,15 +605,16 @@ final class VideoToolboxSuperResolutionEngine: MediaSuperResolutionEngine, @unch
         return ["engine=\(name) model=ready scale=\(scaleFactor)"]
     }
 
-    func scale(current: CVPixelBuffer, output: CVPixelBuffer) throws {
+    func scale(current: CVPixelBuffer, output: CVPixelBuffer, cancellation: CancellationToken?) throws {
+        try cancellation?.throwIfCancelled()
         guard let processor = lock.withLock({ self.processor }) else {
             throw FloeError.internalError("Super resolution session was not started")
         }
-        let halfSource = try bridge.bgraToHalfRGBA(current, store: store)
+        let halfSource = try bridge.bgraToHalfRGBA(current, store: store, extraAttributes: sourceAttributes)
         guard let sourceFrame = VTFrameProcessorFrame(buffer: halfSource, presentationTimeStamp: .zero) else {
             throw FloeError.internalError("Could not wrap the super-resolution source frame")
         }
-        let halfOutput = try store.makeBuffer(format: MediaImageBridge.rgbaHalf, width: outputWidth, height: outputHeight)
+        let halfOutput = try store.makeBuffer(format: MediaImageBridge.rgbaHalf, width: outputWidth, height: outputHeight, extraAttributes: destinationAttributes)
         guard let destinationFrame = VTFrameProcessorFrame(buffer: halfOutput, presentationTimeStamp: .zero) else {
             throw FloeError.internalError("Could not allocate the super-resolution destination")
         }
@@ -523,7 +631,7 @@ final class VideoToolboxSuperResolutionEngine: MediaSuperResolutionEngine, @unch
         ) else {
             throw FloeError.validationFailed("VT super resolution rejected the request")
         }
-        try runVideoToolboxProcessSynchronously { completion in
+        try runVideoToolboxProcessSynchronously(cancellation: cancellation) { completion in
             processor.process(parameters: parameters, completionHandler: completion)
         }
         lock.withLock {
@@ -586,7 +694,8 @@ final class VideoToolboxLowLatencySuperResolutionEngine: MediaSuperResolutionEng
         return ["engine=\(name) scale=\(scaleFactor)"]
     }
 
-    func scale(current: CVPixelBuffer, output: CVPixelBuffer) throws {
+    func scale(current: CVPixelBuffer, output: CVPixelBuffer, cancellation: CancellationToken?) throws {
+        try cancellation?.throwIfCancelled()
         guard let processor = lock.withLock({ self.processor }) else {
             throw FloeError.internalError("Low-latency super resolution session was not started")
         }
@@ -600,7 +709,7 @@ final class VideoToolboxLowLatencySuperResolutionEngine: MediaSuperResolutionEng
             throw FloeError.internalError("Could not allocate the low-latency super-resolution destination")
         }
         let parameters = VTLowLatencySuperResolutionScalerParameters(sourceFrame: sourceFrame, destinationFrame: destinationFrame)
-        try runVideoToolboxProcessSynchronously { completion in
+        try runVideoToolboxProcessSynchronously(cancellation: cancellation) { completion in
             processor.process(parameters: parameters, completionHandler: completion)
         }
         try bridge.render(source: output420, destination: output)
@@ -684,7 +793,8 @@ final class MetalFXSpatialSuperResolutionEngine: MediaSuperResolutionEngine, @un
         return ["engine=\(name) spatialUpscale=\(width)x\(height)->\(outputWidth)x\(outputHeight)"]
     }
 
-    func scale(current: CVPixelBuffer, output: CVPixelBuffer) throws {
+    func scale(current: CVPixelBuffer, output: CVPixelBuffer, cancellation: CancellationToken?) throws {
+        try cancellation?.throwIfCancelled()
         let scaler = try lock.withLock { () throws -> MTLFXSpatialScaler in
             guard let scaler else { throw FloeError.internalError("MetalFX scaler was not created") }
             return scaler
@@ -714,6 +824,7 @@ final class MetalFXSpatialSuperResolutionEngine: MediaSuperResolutionEngine, @un
         scaler.encode(commandBuffer: commandBuffer)
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        try cancellation?.throwIfCancelled()
         if let error = commandBuffer.error {
             throw FloeError.internalError("MetalFX command failed: \(error.localizedDescription)")
         }

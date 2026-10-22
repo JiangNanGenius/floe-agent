@@ -357,4 +357,49 @@ struct ChildToolDiscovery: Sendable {
     var listableDescriptors: [ToolCatalog.Descriptor] {
         offered + [ToolDiscovery.descriptor, ToolDiscovery.listDescriptor]
     }
+
+    // MARK: - Durable checkpoint snapshot (S7 audit17)
+
+    /// Bounded snapshot of the child's OWN discovery selection. The offered
+    /// universe is deliberately NOT persisted: it is re-derived from the
+    /// CURRENT parent's effective ceiling at resume and intersected with the
+    /// stored names, so a resumed child can never carry a schema the current
+    /// parent does not offer (no permission inference from persisted data).
+    struct Snapshot: Sendable, Equatable, Codable {
+        var loadedNames: [String]
+        var priorityNames: [String]
+        var revision: Int
+    }
+
+    func snapshot() -> Snapshot {
+        Snapshot(loadedNames: loaded, priorityNames: priority, revision: revision)
+    }
+
+    /// Names the checkpoint carried that the CURRENT parent's offered
+    /// universe no longer contains. They are dropped by the restore
+    /// intersection and MUST be surfaced to the model as an explicit note
+    /// (never silently): a definition the parent no longer offers is not
+    /// loadable, and the child must learn that instead of guessing.
+    private(set) var restoredDrops: [String] = []
+
+    /// Restores the child's own selection against the CURRENT parent's
+    /// offered universe. The pinned seed is always re-established first; the
+    /// remaining persisted names are intersected with the offered universe in
+    /// their persisted order. The caller then runs one `load(_:maxBytes:)`
+    /// pass (empty request) so the wire-byte budget is re-fitted under the
+    /// current parent's schema allowance — its eviction receipt reports every
+    /// further drop through the existing explicit-notice path.
+    init(restoring snapshot: Snapshot, descriptors: [ToolCatalog.Descriptor], seedNames: Set<String>) {
+        self.init(descriptors: descriptors, seedNames: seedNames)
+        let available = Set(offeredByName.keys)
+        let keptLoaded = snapshot.loadedNames.filter { available.contains($0) }
+        self.restoredDrops = snapshot.loadedNames.filter { !available.contains($0) }
+        let pinnedSet = Set(pinned)
+        self.loaded = pinned + keptLoaded.filter { !pinnedSet.contains($0) }
+        let keptPriority = snapshot.priorityNames.filter {
+            available.contains($0) && !pinnedSet.contains($0)
+        }
+        self.priority = pinned + keptPriority
+        self.revision = snapshot.revision
+    }
 }

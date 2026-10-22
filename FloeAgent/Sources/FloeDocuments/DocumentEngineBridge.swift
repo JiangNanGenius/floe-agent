@@ -45,6 +45,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     private var scopedSessions: Set<UUID> = []
     private var sessions: [UUID: DocumentSession] = [:]
     private var savedDigests: [UUID: String] = [:]
+    private var savedWorkingDigests: [UUID: String] = [:]
     private var manifests: [UUID: DocumentRecoveryManifest] = [:]
     private var recoveryLeases: [UUID: DocumentRecoveryLease] = [:]
     private var exports: [UUID: DocumentExportSnapshot] = [:]
@@ -82,6 +83,9 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             if let coordinationError { throw coordinationError }
             if let copyError { throw copyError }
             let session = DocumentSession(id: id, originalURL: url, workingURL: working, recoveryURL: recovery)
+            if url.pathExtension.lowercased() == "pptx" {
+                try fileManager.copyItem(at: working, to: chartBaselineURL(session))
+            }
             let manifest = DocumentRecoveryManifest(id: id,
                 originalBookmark: try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil),
                 displayName: url.lastPathComponent, fileExtension: url.pathExtension,
@@ -90,6 +94,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             manifests[id] = manifest
             recoveryLeases[id] = lease
             savedDigests[id] = manifest.committedDigest
+            savedWorkingDigests[id] = manifest.workingSavedDigest ?? manifest.committedDigest
             sessions[id] = session
             if scoped { scopedSessions.insert(id) }
             return session
@@ -104,10 +109,12 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         guard sessions[session.id] == session, let expectedDigest = savedDigests[session.id] else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
-        let newDigest = try Self.digest(session.workingURL)
+        let workingDigest = try Self.digest(session.workingURL)
         // Preserve the user's edit before attempting any writeback. The engine
         // must finish writing its private copy before invoking this method.
-        try preserveRecoveryCopy(session, expectedDigest: newDigest)
+        try preserveRecoveryCopy(session, expectedDigest: workingDigest)
+        try preserveChartWorkbookFormatting(in: session.recoveryURL, for: session)
+        let newDigest = try Self.digest(session.recoveryURL)
         try OfficeNativeSaveValidation.validate(session.recoveryURL)
         guard var manifest = manifests[session.id] else {
             throw FloeError.validationFailed("Document recovery record is unavailable")
@@ -116,6 +123,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         // terminates after replacement, resumption can reconcile this digest.
         manifest.committedDigest = expectedDigest
         manifest.pendingDigest = newDigest
+        manifest.pendingWorkingDigest = workingDigest
         manifest.updatedAt = Date()
         try manifest.write(to: session.workingURL.deletingLastPathComponent())
         manifests[session.id] = manifest
@@ -144,9 +152,17 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         }
         if let coordinationError { throw coordinationError }
         if let replacementError { throw replacementError }
+        // The coordinated replacement is already committed. Adopt its actual
+        // digests in memory even if subsequent baseline/journal maintenance
+        // fails; retain the pending journal and recovery copy and report that
+        // failure, but never trap this process on the old source CAS digest.
         savedDigests[session.id] = newDigest
+        savedWorkingDigests[session.id] = workingDigest
+        if session.workingURL.pathExtension.lowercased() == "pptx" { try replaceChartBaseline(session, from: session.recoveryURL) }
         manifest.committedDigest = newDigest
+        manifest.workingSavedDigest = workingDigest
         manifest.pendingDigest = nil
+        manifest.pendingWorkingDigest = nil
         manifest.updatedAt = Date()
         try manifest.write(to: session.workingURL.deletingLastPathComponent())
         manifests[session.id] = manifest
@@ -171,6 +187,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             guard try Self.digest(copy) == expected else {
                 throw FloeError.validationFailed("Editor is still writing; finish the edit before exporting")
             }
+            try preserveChartWorkbookFormatting(in: copy, for: session)
             try OfficeNativeSaveValidation.validate(copy)
             let snapshot = DocumentExportSnapshot(id: id, fileURL: copy)
             exports[id] = snapshot
@@ -232,7 +249,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     }
 
     public func hasUncommittedWorkingCopy(_ session: DocumentSession) throws -> Bool {
-        guard sessions[session.id] == session, let saved = savedDigests[session.id] else {
+        guard sessions[session.id] == session, let saved = savedWorkingDigests[session.id] ?? savedDigests[session.id] else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
         return try Self.digest(session.workingURL) != saved
@@ -366,8 +383,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
                 }
                 // Never adopt an unrelated external revision as our baseline.
                 if coordinationError == nil, current == intended {
-                    manifest.committedDigest = intended
-                    manifest.pendingDigest = nil
+                    manifest.reconcileCommittedPending(currentDigest: intended)
                 }
             }
             if stale {
@@ -377,6 +393,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             try manifest.write(to: directory)
             sessions[id] = session
             savedDigests[id] = manifest.committedDigest
+            savedWorkingDigests[id] = manifest.workingSavedDigest ?? manifest.committedDigest
             manifests[id] = manifest
             recoveryLeases[id] = lease
             if scoped { scopedSessions.insert(id) }
@@ -423,12 +440,12 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// generations may be newer than workingURL when engine persistence failed.
     public func close(_ session: DocumentSession) async {
         guard sessions[session.id] == session else { return }
-        let clean = (try? Self.digest(session.workingURL)).map { $0 == savedDigests[session.id] } ?? false
+        let clean = (try? Self.digest(session.workingURL)).map { $0 == (savedWorkingDigests[session.id] ?? savedDigests[session.id]) } ?? false
         let directory = session.workingURL.deletingLastPathComponent()
         let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         // Conservatively retain native generations, recovery files, and unknown
         // sidecars. The editor must settle them before ordinary cleanup is safe.
-        let ownedNames: Set<String> = [session.workingURL.lastPathComponent, DocumentRecoveryManifest.fileName, DocumentRecoveryLease.fileName]
+        let ownedNames: Set<String> = [session.workingURL.lastPathComponent, chartBaselineURL(session).lastPathComponent, DocumentRecoveryManifest.fileName, DocumentRecoveryLease.fileName]
         let onlyWorkingCopy = entries.map { $0.allSatisfy { ownedNames.contains($0.lastPathComponent) } } ?? false
         if clean && onlyWorkingCopy { retire(directory) }
         release(session)
@@ -444,6 +461,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         if scopedSessions.remove(session.id) != nil { session.originalURL.stopAccessingSecurityScopedResource() }
         sessions[session.id] = nil
         savedDigests[session.id] = nil
+        savedWorkingDigests[session.id] = nil
         manifests[session.id] = nil
         recoveryLeases[session.id] = nil
         recoveryVersionsBySession[session.id] = nil
@@ -457,6 +475,49 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             try fileManager.moveItem(at: directory, to: retired)
             try fileManager.removeItem(at: retired)
         } catch { /* Retain anything that could not be cleaned up safely. */ }
+    }
+
+    /// A native format export is a stable private snapshot, never the live
+    /// engine-owned workingURL. Used by native PPTX export as well as save and
+    /// prepareExport; the immutable baseline survives external source changes.
+    public func preserveChartWorkbookFormatting(in exportedURL: URL, for session: DocumentSession) throws {
+        guard sessions[session.id] == session else { throw FloeError.validationFailed("Document session is closed or belongs to another workspace") }
+        guard exportedURL.pathExtension.lowercased() == "pptx", session.workingURL.pathExtension.lowercased() == "pptx" else { return }
+        guard exportedURL.standardizedFileURL != session.workingURL.standardizedFileURL else { throw FloeError.validationFailed("Chart formatting requires a stable export or recovery snapshot") }
+        try requireRegularCopy(exportedURL)
+        let baseline = chartBaselineURL(session)
+        // Old retained sessions predate the baseline. A matching original may
+        // seed it, but an unrelated external revision can never be adopted.
+        if !fileManager.fileExists(atPath: baseline.path) {
+            var coordinationError: NSError?, readError: Error?
+            let stage = baseline.deletingLastPathComponent().appendingPathComponent(".chart-seed-\(UUID())")
+            defer { try? fileManager.removeItem(at: stage) }
+            NSFileCoordinator().coordinate(readingItemAt: session.originalURL, options: [], error: &coordinationError) { source in
+                do {
+                    guard try Self.digest(source) == savedDigests[session.id] else { throw OfficeDocumentError.revisionConflict }
+                    try fileManager.copyItem(at: source, to: stage)
+                    guard try Self.digest(stage) == savedDigests[session.id],
+                          try Self.digest(source) == savedDigests[session.id] else { throw OfficeDocumentError.revisionConflict }
+                } catch { readError = error }
+            }
+            if let coordinationError { throw coordinationError }
+            if let readError { throw readError }
+            try fileManager.moveItem(at: stage, to: baseline)
+        }
+        _ = try OfficeEmbeddedWorkbookPreservation.preserve(originalURL: baseline, savedURL: exportedURL)
+    }
+
+    private func chartBaselineURL(_ session: DocumentSession) -> URL {
+        session.workingURL.deletingLastPathComponent().appendingPathComponent("chart-format-baseline.pptx")
+    }
+    private func replaceChartBaseline(_ session: DocumentSession, from source: URL) throws {
+        let baseline = chartBaselineURL(session)
+        let staged = baseline.deletingLastPathComponent().appendingPathComponent(".chart-baseline-\(UUID())")
+        defer { try? fileManager.removeItem(at: staged) }
+        try fileManager.copyItem(at: source, to: staged)
+        guard try Self.digest(staged) == Self.digest(source) else { throw OfficeDocumentError.revisionConflict }
+        if fileManager.fileExists(atPath: baseline.path) { _ = try fileManager.replaceItemAt(baseline, withItemAt: staged) }
+        else { try fileManager.moveItem(at: staged, to: baseline) }
     }
 
     private func preserveRecoveryCopy(_ session: DocumentSession, expectedDigest: String) throws {

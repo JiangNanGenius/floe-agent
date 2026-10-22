@@ -364,6 +364,12 @@ final class OfficeFileSession: ObservableObject {
     /// The document-bound owner transaction installed by the Notes surface;
     /// it survives a same-session remount so the new generation inherits it.
     private var autosaveOwner: OfficeAutosaveOwner?
+    /// Fence snapshot taken at the last successful `preparePDFExport` return.
+    /// Read ONLY by the export refusal breadcrumbs so a later refusal can say
+    /// which prepare generation it compares against. Never gates anything.
+    private var lastExportPrepareFence: PassiveExitFence?
+    private let pdfPreparation = OfficePDFPreparationCoordinator<OfficePDFExportPreparation>()
+
     /// True when this mounted editable session has a Notes autosave owner:
     /// explicit saves then run the serialized flush -> draft -> Notes CAS
     /// promotion transaction instead of only flushing the engine copy.
@@ -689,19 +695,156 @@ final class OfficeFileSession: ObservableObject {
         inkApplyOutcome = nil
     }
 
-    /// Commit completed live edits, then freeze the exact saved source for
-    /// the pre-generation options form. No source page setup is rewritten.
-    func preparePDFExport() async throws -> OfficePDFExportPreparation {
+    /// Claims the session's existing external-refresh reservation for one PDF
+    /// preparation and fails closed with the truthful reason. A replaced mounted
+    /// surface (open generation, controller instance or working copy) is a real
+    /// source change; a session that is merely held by another in-flight
+    /// operation is busy and stays retryable — it must never be reported as a
+    /// changed document. Both refusals record the same content-free breadcrumb,
+    /// now with the `claim` discriminator. Nothing here retries, saves, swallows
+    /// a failure or relaxes a generation/owner/CAS/cancellation fence.
+    private func claimPDFExportWindow(fence: PassiveExitFence) throws {
+        guard passiveExitFenceIsCurrent(fence) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence)
+                            .merging(["claim": "staleSurface"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        guard beginExternalRefresh(resigningFirstResponder: false) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "begin", fence: fence)
+                            .merging(["claim": "busy"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sessionBusy
+        }
+    }
+
+    /// Commit completed live edits, then freeze the exact saved source for the
+    /// pre-generation options form. No source page setup is rewritten.
+    ///
+    /// Reservation order (the Build 32 instrumented traces named both failure
+    /// classes): the readiness proof and the read-only claim share one
+    /// main-actor turn; the editable path runs its serialized save transaction
+    /// BEFORE claiming (the coordinator requires the session to read `.ready`,
+    /// so the reservation is never held across it); the current-part metadata
+    /// read and the frozen byte copy both happen under the one claimed
+    /// reservation, released exactly once at return — including on a refusal or
+    /// a cancellation.
+    func preparePDFExport(cancellation: CancellationToken? = nil) async throws -> OfficePDFExportPreparation {
+        let fence = capturePassiveExitFence()
+        return try await pdfPreparation.run(request: cancellation,
+            isCurrent: { [weak self] in self?.passiveExitFenceIsCurrent(fence) == true },
+            producer: { [weak self] in
+                guard let self else { throw CancellationError() }
+                // A visible modal can land while a previously admitted cover
+                // or save still owns the editor. Wait for admission, without
+                // starting/retrying a save or accepting a replacement owner.
+                if let cancellation {
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(20))
+                    var recordedWait = false
+                    while self.phase == .ready, !self.canAct {
+                        try Task.checkCancellation()
+                        if cancellation.isCancelled { throw CancellationError() }
+                        guard self.passiveExitFenceIsCurrent(fence) else {
+                            throw OfficePDFExportScreenError.sourceChanged
+                        }
+                        guard ContinuousClock.now < deadline else {
+                            throw OfficePDFExportScreenError.sessionBusy
+                        }
+                        if !recordedWait {
+                            self.recordStage("export.prepare.waiting")
+                            recordedWait = true
+                        }
+                        try await Task.sleep(for: .milliseconds(50))
+                    }
+                    if recordedWait { self.recordStage("export.prepare.admitted") }
+                }
+                return try await self.performPDFExportPreparation()
+            },
+            observe: { [weak self] event in self?.recordStage("export.prepare." + event) })
+    }
+
+    func cancelPDFExportPreparation(cancellation: CancellationToken? = nil) {
+        pdfPreparation.cancel(request: cancellation)
+    }
+
+    private func performPDFExportPreparation() async throws -> OfficePDFExportPreparation {
+        try Task.checkCancellation()
         guard canAct, documentActionsReady, let controller, let currentSession = session else {
             throw FloeError.validationFailed(OfficeInkText.t("文档尚未就绪，请稍后重试。", "The document is not ready. Try again shortly."))
         }
         let fence = capturePassiveExitFence()
+        // Exactly one reservation for this whole preparation, released once at
+        // return — including on a thrown refusal or a cancellation.
+        var reserved = false
+        defer { if reserved { endExternalRefresh() } }
+        if readOnly {
+            // Read-only preparation takes that reservation in the SAME
+            // main-actor turn as the readiness proof above. Build 32's actual
+            // trace showed this preparation refusing at its own begin guard
+            // with canAct=false/operating=true while genFence=genNow, ctlSame
+            // and pathSame stayed intact: the previous order yielded at the
+            // current-part JavaScript read between the proof and the claim, so
+            // a competing holder could reserve the session inside that window
+            // and the refusal then read as a changed document. Nothing is
+            // awaited between the proof and this claim any more.
+            try Task.checkCancellation()
+            try claimPDFExportWindow(fence: fence)
+            reserved = true
+        }
         let activePen = readOnly ? false : await hasActivePenContact()
         guard !activePen else {
             throw FloeError.validationFailed(OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again."))
         }
-        // Read the editor's own part before saving. A missing current part
-        // hides Current Sheet; it never becomes a first-sheet fallback.
+        if !readOnly {
+            // A cancelled or remounted load must never flush the engine or
+            // dispatch a promotion it will not use.
+            try Task.checkCancellation()
+            if autosaveActive {
+                // The save transaction deliberately runs with NO reservation
+                // held: the coordinator's own serialization requires the session
+                // to read `.ready`, so a reservation here would make every
+                // explicit export save defer.
+                let proof = await requestAutosaveTransaction(reason: "pdfExport")
+                guard proof.isCommittedState, proof.dirtyAfterTransaction == false else {
+                    if proof.outcome == .deferred {
+                        // A deferred transaction never started: another
+                        // operation owns the editor right now, or a pen contact
+                        // is live. Report that truthfully instead of claiming a
+                        // save that failed to finish; the retained dirty state
+                        // stays owned by the coordinator's own recheck. This
+                        // still refuses: no retry, no skipped save.
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "autosaveDeferred", fence: fence)
+                                        .merging([
+                                            "claim": "busy",
+                                            "outcome": proof.outcome.rawValue,
+                                            "reason": proof.reason ?? "none",
+                                            "retryScheduled": proof.retryScheduled ? "true" : "false"
+                                        ]) { _, latest in latest })
+                        throw FloeError.validationFailed(proof.error ?? (proof.reason == "autosave.penActive"
+                            ? OfficeInkText.t("请抬笔后重试。", "Lift the pen and try again.")
+                            : OfficeInkText.t("文档正忙，请稍后重试。", "The document is busy. Try again shortly.")))
+                    }
+                    throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
+                }
+            } else {
+                guard await saveInPlace() else {
+                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
+                }
+            }
+            // Claim only after the save settled, so the current-part read and
+            // the frozen byte copy both describe the same committed bytes.
+            try Task.checkCancellation()
+            try claimPDFExportWindow(fence: fence)
+            reserved = true
+        }
+        // Read the editor's own part only now: under the reservation this
+        // preparation already owns, and after any editable save has settled.
+        // The Build 32 editable trace showed this metadata yield running BEFORE
+        // the save transaction, where a competing holder could make that
+        // transaction defer and the options screen then reported a save that had
+        // actually completed. A missing current part hides Current Sheet; it
+        // never becomes a first-sheet fallback.
         var selectedPart: Int?
         if let web = OfficeExplicitSaveBridge.findWebView(in: controller.view) {
             let value = try? await web.evaluateJavaScript("""
@@ -715,22 +858,7 @@ final class OfficeFileSession: ObservableObject {
             """)
             if let number = value as? NSNumber { selectedPart = number.intValue }
         }
-        if !readOnly {
-            if autosaveActive {
-                let proof = await requestAutosaveTransaction(reason: "pdfExport")
-                guard proof.isCommittedState, proof.dirtyAfterTransaction == false else {
-                    throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
-                }
-            } else {
-                guard await saveInPlace() else {
-                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
-                }
-            }
-        }
-        guard passiveExitFenceIsCurrent(fence), beginExternalRefresh(resigningFirstResponder: false) else {
-            throw OfficePDFExportScreenError.sourceChanged
-        }
-        defer { endExternalRefresh() }
+        try Task.checkCancellation()
         let quiescentBefore = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard quiescentBefore else {
             throw FloeError.validationFailed(OfficeInkText.t("文档仍在编辑，请稍后重试。", "The document is still being edited. Try again shortly."))
@@ -759,6 +887,8 @@ final class OfficeFileSession: ObservableObject {
         try Task.checkCancellation()
         let quiescentAfter = readOnly ? true : await verifyQuiescentForExternalRewrite()
         guard passiveExitFenceIsCurrent(fence), quiescentAfter else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "afterCopy", fence: fence))
             throw OfficePDFExportScreenError.sourceChanged
         }
         let sheets: [OfficeRegionWorkbookSheet]
@@ -770,7 +900,13 @@ final class OfficeFileSession: ObservableObject {
             sheets = []
         }
         try Task.checkCancellation()
-        guard passiveExitFenceIsCurrent(fence) else { throw OfficePDFExportScreenError.sourceChanged }
+        guard passiveExitFenceIsCurrent(fence) else {
+            recordStage("export.prepare.refused",
+                        exportRefusalFacts(stage: "prepare", guardAt: "afterSheets", fence: fence))
+            throw OfficePDFExportScreenError.sourceChanged
+        }
+        recordStage("export.prepare.ok", ["stage": "prepare"])
+        lastExportPrepareFence = fence
         let activeName = selectedPart.flatMap { index in sheets.first(where: { $0.index == index && $0.isVisible })?.name }
         return OfficePDFExportPreparation(
             sourceURL: copyURL, sourceSHA256: sha, fileExtension: ext,
@@ -799,9 +935,24 @@ final class OfficeFileSession: ObservableObject {
                 "请检查工作表、单元格区域和 PDF 页码。", "Check the sheet, cell range and PDF pages."))
         }
         try cancellation.throwIfCancelled()
-        guard await source.isCurrent(), let controller,
-              beginExternalRefresh(resigningFirstResponder: false) else {
+        let surfaceCurrent = await source.isCurrent()
+        guard surfaceCurrent, let controller else {
+            recordStage("export.generate.refused",
+                        exportRefusalFacts(stage: "generate", guardAt: "begin",
+                                           fence: lastExportPrepareFence)
+                            .merging(["claim": "staleSurface"]) { _, latest in latest })
             throw OfficePDFExportScreenError.sourceChanged
+        }
+        guard beginExternalRefresh(resigningFirstResponder: false) else {
+            // The frozen source is still current — the session is only held by
+            // another in-flight operation. This is busy, not a changed
+            // document: the options view keeps the prepared source and a new
+            // generation can be attempted once the holder settles.
+            recordStage("export.generate.refused",
+                        exportRefusalFacts(stage: "generate", guardAt: "begin",
+                                           fence: lastExportPrepareFence)
+                            .merging(["claim": "busy"]) { _, latest in latest })
+            throw OfficePDFExportScreenError.sessionBusy
         }
         defer { endExternalRefresh() }
         do {
@@ -825,10 +976,21 @@ final class OfficeFileSession: ObservableObject {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             guard self.controller === controller, await source.isCurrent() else {
+                recordStage("export.generate.refused",
+                            exportRefusalFacts(stage: "generate", guardAt: "afterNativeExport", fence: lastExportPrepareFence))
                 throw OfficePDFExportScreenError.sourceChanged
             }
             let exportedName = source.displayName.isEmpty ? "Document.pdf" : source.displayName + ".pdf"
             let delivery = source.lease.directory.appendingPathComponent(exportedName)
+            // Preview regeneration replaces the leased slot: the previous
+            // preview file is fenced stale output (the options view never
+            // presents share/print while a generation runs), so removing it
+            // before copying the newly verified bytes is required cleanup,
+            // not an overwrite of foreign content. The source document is
+            // never a destination on any path.
+            if FileManager.default.fileExists(atPath: delivery.path) {
+                try FileManager.default.removeItem(at: delivery)
+            }
             // Unique leased directory, with the same no-overwrite rule as the
             // backend. Re-measure after giving the file its user-facing name.
             let producedURL = result.pdfURL, producedSHA = result.pdfSHA256
@@ -841,9 +1003,22 @@ final class OfficeFileSession: ObservableObject {
             try cancellation.throwIfCancelled()
             try Task.checkCancellation()
             guard self.controller === controller, await source.isCurrent() else {
+                recordStage("export.generate.refused",
+                            exportRefusalFacts(stage: "generate", guardAt: "afterDelivery", fence: lastExportPrepareFence))
                 throw OfficePDFExportScreenError.sourceChanged
             }
-            return OfficePDFPreparedDelivery(url: delivery, lease: source.lease)
+            // The service child only carried the produced PDF; the leased
+            // delivery now holds the verified bytes. Remove the child so a
+            // regenerate cycle never accumulates duplicate copies, with the
+            // same quarantine retention as the error path.
+            let producedDirectory = producedURL.deletingLastPathComponent()
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: producedDirectory)
+            }
+            return OfficePDFPreparedDelivery(
+                url: delivery, lease: source.lease,
+                pageCount: result.pageCount, byteCount: result.byteCount,
+                pdfSHA256: producedSHA)
         } catch {
             if await OfficeAutomaticExecutionGate.shared.isQuarantined {
                 // The service retained a native session that did not close.
@@ -871,6 +1046,12 @@ final class OfficeFileSession: ObservableObject {
         // The shipped host is pinned separately. A selector capability check keeps old hosts
         // functional until the newly compiled host is qualified, without rewriting its headers.
         let output = try await Self.exportNativeDocument(controller: controller, format: format)
+        if format == "pptx", let workspace, let session,
+           session.originalURL.pathExtension.lowercased() == "pptx" {
+            // The engine owns workingURL while open. Preserve workbook styling
+            // only in this completed, independent export snapshot.
+            try await workspace.preserveChartWorkbookFormatting(in: output, for: session)
+        }
         if format == "pdf" {
             guard let pdf = CGPDFDocument(output as CFURL), pdf.numberOfPages > 0 else { throw CocoaError(.fileReadCorruptFile) }
         } else if ["docx", "pptx", "xlsx"].contains(format) {
@@ -883,7 +1064,8 @@ final class OfficeFileSession: ObservableObject {
     /// canvas. Hold the existing input/operation fence through export and
     /// check the working copy and engine before and after. Do not re-save:
     /// another serialization could change the package being identified.
-    func exportCommittedCoverPDF(expectedSHA256: String) async throws -> URL {
+    func exportCommittedCoverPDF(expectedSHA256: String, savedSourceURL: URL? = nil) async throws -> URL {
+        try Task.checkCancellation()
         guard exportFormats.contains("pdf"), let controller,
               let workingURL = session?.workingURL, beginExternalRefresh(resigningFirstResponder: false) else {
             throw CocoaError(.featureUnsupported)
@@ -924,8 +1106,32 @@ final class OfficeFileSession: ObservableObject {
             recordStage("cover.refused", ["reason": "source-changed"])
             throw CocoaError(.fileWriteFileExists)
         }
-        let output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        try Task.checkCancellation()
+        let output: URL
+        #if canImport(FloeOfficeNative)
+        let ext = workingURL.pathExtension.lowercased()
+        if OfficePDFExportService.capability(forExtension: ext)?.savedIsolatedExport == true {
+            // A committed cover is a saved-file derivative. A temporary print
+            // session can leave the live engine's global focus window disposed;
+            // exporting that live view again can fault inside PDFFilter. Keep
+            // the existing ownership/input fence, but convert an exact saved
+            // copy through the same isolated service as Print/PDF export.
+            recordStage("cover.export.started", ["route": "savedCopy"])
+            output = try await Self.exportSavedCoverPDF(
+                sourceURL: savedSourceURL ?? workingURL, formatExtension: ext,
+                expectedSHA256: expectedSHA256,
+                exportsDirectory: workingURL.deletingLastPathComponent()
+                    .appendingPathComponent("exports", isDirectory: true))
+        } else {
+            // Do not relabel legacy packages as a qualified OOXML input.
+            recordStage("cover.export.started", ["route": "liveLegacy"])
+            output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        }
+        #else
+        output = try await Self.exportNativeDocument(controller: controller, format: "pdf")
+        #endif
         do {
+            try Task.checkCancellation()
             let after = try await Task.detached(priority: .userInitiated) {
                 try FloeDigest.sha256Hex(ofFileAt: workingURL)
             }.value
@@ -936,12 +1142,81 @@ final class OfficeFileSession: ObservableObject {
                                                 "sameBytes": String(after == before)])
                 throw CocoaError(.fileWriteFileExists)
             }
+            recordStage("cover.export.ok")
             return output
         } catch {
             try? FileManager.default.removeItem(at: output)
             throw error
         }
     }
+
+    #if canImport(FloeOfficeNative)
+    /// The Notes resource may have a digest-only filename. Give its verified
+    /// copy the real extension without weakening the export service's identity
+    /// checks. Only the final PDF survives; quarantine retains owned recovery
+    /// inputs when the native service could not close safely.
+    private static func exportSavedCoverPDF(sourceURL: URL, formatExtension: String,
+                                            expectedSHA256: String,
+                                            exportsDirectory: URL) async throws -> URL {
+        try Task.checkCancellation()
+        let identity = UUID().uuidString
+        let owned = exportsDirectory.appendingPathComponent("cover-\(identity)", isDirectory: true)
+        let source = owned.appendingPathComponent("source.\(formatExtension)")
+        let output = exportsDirectory.appendingPathComponent("cover-\(identity).pdf")
+        let cancellation = CancellationToken()
+        var preserveForRecovery = false
+        var completed = false
+        defer {
+            if !preserveForRecovery { try? FileManager.default.removeItem(at: owned) }
+            if !completed { try? FileManager.default.removeItem(at: output) }
+        }
+        do {
+            try await withTaskCancellationHandler {
+                try cancellation.throwIfCancelled()
+                try await Task.detached(priority: .userInitiated) {
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: sourceURL) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try FileManager.default.createDirectory(at: owned, withIntermediateDirectories: true)
+                    try FileManager.default.copyItem(at: sourceURL, to: source)
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: source) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                }.value
+                try Task.checkCancellation()
+                let plan = OfficePDFPrintPlan(scope: formatExtension == "xlsx"
+                                              ? .allVisibleSheets : .documentSettings)
+                let result = try await OfficePDFExportService.export(.init(
+                    sourceURL: source, sourceSHA256: expectedSHA256,
+                    formatExtension: formatExtension, plan: plan,
+                    ownedDirectory: owned, cancellation: cancellation))
+                try Task.checkCancellation()
+                let produced = result.pdfURL, digest = result.pdfSHA256
+                try await Task.detached(priority: .userInitiated) {
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: sourceURL) == expectedSHA256 else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                    try FileManager.default.copyItem(at: produced, to: output)
+                    try cancellation.throwIfCancelled()
+                    guard try FloeDigest.sha256Hex(ofFileAt: output) == digest else {
+                        throw CocoaError(.fileReadCorruptFile)
+                    }
+                }.value
+                try Task.checkCancellation()
+            } onCancel: {
+                cancellation.cancel()
+            }
+            completed = true
+            return output
+        } catch {
+            preserveForRecovery = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            throw error
+        }
+    }
+    #endif
 
     private static func exportNativeDocument(controller: UIViewController, format: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
@@ -2601,8 +2876,37 @@ final class OfficeFileSession: ObservableObject {
             && session?.workingURL.path == fence.workingCopyPath
     }
 
+    /// Content-free fields separating the causes folded into the single
+    /// `OfficePDFExportScreenError.sourceChanged` message: a session held by a
+    /// transient operation (canAct false), a replaced mounted surface (fence
+    /// stale), or a byte/identity refusal observed through `isCurrent`.
+    /// Diagnostics only; never changes control flow, fences or copy.
+    func exportRefusalFacts(stage: String, guardAt: String,
+                                    fence: PassiveExitFence?) -> [String: String] {
+        var facts: [String: String] = [
+            "stage": stage,
+            "guard": guardAt,
+            "phase": String(describing: phase),
+            "canAct": canAct ? "true" : "false",
+            "operating": operating ? "true" : "false",
+            "released": released ? "true" : "false",
+            "releaseRequested": releaseRequested ? "true" : "false",
+            "readOnly": readOnly ? "true" : "false",
+        ]
+        if let fence {
+            facts["genFence"] = String(fence.generation)
+            facts["genNow"] = String(openGeneration.current)
+            facts["ctlSame"] = (controller.map { ObjectIdentifier($0) } == fence.controllerID) ? "true" : "false"
+            facts["pathSame"] = (session?.workingURL.path == fence.workingCopyPath) ? "true" : "false"
+        } else {
+            facts["fence"] = "none"
+        }
+        return facts
+    }
+
     /// View removal never deletes an unsettled edit or pretends it was saved.
     func release() async {
+        cancelPDFExportPreparation()
         // Terminal from here on: a queued/replayed intent must never re-open
         // a working copy on this session.
         released = true
@@ -3750,7 +4054,7 @@ struct OfficeDocumentEditorView: View {
     @State private var confirmingClose = false
     @State private var comparingVersions = false
     @State private var convertedExport: OfficeConvertedExport?
-    @State private var pdfExportPurpose: OfficePDFExportPurpose?
+    @State private var pdfExportRequest: OfficePDFPresentationRequest?
     @State private var export: DocumentExportSnapshot?
     @State private var savedCopyNotice = false
     @State private var exportSucceeded = false
@@ -3880,16 +4184,24 @@ struct OfficeDocumentEditorView: View {
                 }
             }
             .sheet(item: $convertedExport) { OfficeConvertedExportShareSheet(url: $0.url) }
-            .sheet(item: $pdfExportPurpose) { purpose in
-                OfficePDFExportOptionsView(purpose: purpose,
-                    prepare: { try await session.preparePDFExport() },
+            .sheet(item: Binding(
+                get: { pdfExportRequest },
+                set: { next in
+                    if let previous = pdfExportRequest, previous.id != next?.id {
+                        previous.cancellation.cancel()
+                        session.cancelPDFExportPreparation(cancellation: previous.cancellation)
+                    }
+                    pdfExportRequest = next
+                })) { request in
+                OfficePDFExportOptionsView(purpose: request.purpose,
+                    prepare: { try await session.preparePDFExport(cancellation: request.cancellation) },
                     export: { prepared, choices, cancellation in
                         try await session.exportConfiguredPDF(prepared, choices: choices, cancellation: cancellation)
                     })
             }
             .onChange(of: session.printRequestGeneration) { _, _ in
-                guard pdfExportPurpose == nil else { return }
-                pdfExportPurpose = .printDocument
+                guard pdfExportRequest == nil else { return }
+                pdfExportRequest = .init(purpose: .printDocument)
             }
             .sheet(isPresented: $comparingVersions) { OfficeConflictReviewView(session: session) }
             .sheet(isPresented: $choosingWorkspaceAttachment) {
@@ -4094,7 +4406,7 @@ struct OfficeDocumentEditorView: View {
                     ForEach(session.exportFormats, id: \.self) { format in
                         Button(format.uppercased()) {
                             if format == "pdf" {
-                                pdfExportPurpose = .export
+                                pdfExportRequest = .init(purpose: .export)
                                 return
                             }
                             Task {
@@ -4107,7 +4419,7 @@ struct OfficeDocumentEditorView: View {
             }
             if session.exportFormats.contains("pdf") {
                 Button(OfficeInkText.t("打印…", "Print…"), systemImage: "printer") {
-                    pdfExportPurpose = .printDocument
+                    pdfExportRequest = .init(purpose: .printDocument)
                 }
                 .accessibilityIdentifier("office.editor.print")
             }

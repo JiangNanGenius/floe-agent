@@ -555,6 +555,17 @@ struct OfficeArchive {
             guard total <= maximumTotalBytes else { throw OfficeDocumentError.packageTooLarge }
             try output.addFloeEntry(path: entry.path, data: bytes)
         }
+        // Bounded semantic preparations may introduce required OOXML parts
+        // (e.g. numbering.xml). Existing members retain the same path; added
+        // paths pass the same archive safety and size checks.
+        for path in replacements.keys.filter({ !paths.contains($0) }).sorted() {
+            guard Self.isSafe(path: path), let bytes = replacements[path], bytes.count <= Int(maximumMemberBytes) else {
+                throw OfficeDocumentError.unsafeEntry(path)
+            }
+            total += bytes.count
+            guard total <= maximumTotalBytes else { throw OfficeDocumentError.packageTooLarge }
+            try output.addFloeEntry(path: path, data: bytes)
+        }
         let mutationLock = ManagedFileMutationLock.shared
         mutationLock.lock(); defer { mutationLock.unlock() }
         try verify(temporary)

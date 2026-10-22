@@ -106,7 +106,10 @@ public struct MediaCapabilities: Sendable, Codable {
         )
         var notes: [String] = [
             "Parameters are never defaulted; read this capability report and pass explicit values.",
-            "Native frame processors are unavailable on Simulator; values below are probed on the running device only."
+            "Native frame processors are unavailable on Simulator; values below are probed on the running device only.",
+            "HDR requires quality mode, runtime half-RGBA support, BT.2020 PQ/HLG source and HEVC Main10 writer support; each request negotiates and reopens its actual output.",
+            "CoreML v1, lowLatency and MetalFX use SDR RGB8. SDR alpha is transported separately; output requires PNG/TIFF image or HEVC-with-alpha MOV. Combined HDR+alpha video is unavailable; high precision images require TIFF.",
+            "Native support flags do not qualify every dimension, pixel format, codec or container combination."
         ]
         #if !targetEnvironment(simulator)
         if #available(iOS 26.0, macOS 15.4, *) {

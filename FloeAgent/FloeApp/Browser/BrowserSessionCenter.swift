@@ -1,140 +1,97 @@
-// FloeApp — owns visible WKWebView sessions independently of SwiftUI views.
+// FloeApp — service-owned browser sessions for concurrent tasks.
+//
+// BrowserSessionCenter is the durable owner of handoff receipts, the panel
+// request route and the *visible* projection. Execution itself lives in one
+// independent BrowserTaskSession per trusted conversation, so a background
+// task keeps operating its own tabs while another task's panel is on screen.
 
 #if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
 import Foundation
 import SwiftUI
 import WebKit
-import CryptoKit
 import FloeCore
 
 @MainActor
 final class BrowserSessionCenter: NSObject, ObservableObject {
-    enum SurfaceState: Equatable {
-        case unbound
-        case ready
-        case loading
-        case failed(String)
-        case needsUser(String)
-    }
-    struct VisualFallbackEvidence {
-        var documentID: String
-        var sha256: String
-        var capturedAt: Date
-        var pixelWidth: Int
-        var pixelHeight: Int
-        var viewportWidth: Double
-        var viewportHeight: Double
-        var revision: Int
-        var visualTextRegions: [VisualTextRegion]
-    }
-    struct Tab: Identifiable {
-        let id: UUID
-        let webView: WKWebView
-        var documentID: String
-        var revision: Int
-        var nextEventSequence: Int
-        var events: [BrowserProtocolEvent]
-        var visualFallbackEvidence: VisualFallbackEvidence?
-    }
+    typealias Tab = BrowserTaskSession.Tab
+    typealias VisualFallbackEvidence = BrowserTaskSession.VisualFallbackEvidence
+    typealias SurfaceState = BrowserTaskSession.SurfaceState
 
-    @Published private(set) var sessionID = UUID()
-    @Published private(set) var tabs: [Tab] = []
-    @Published private(set) var activeTabID: UUID?
-    @Published private(set) var isUserControlling = false
-    @Published var addressText = ""
-    var isEditingAddress = false
     struct Handoff: Codable, Equatable {
         let id: UUID
         let conversationID: UUID
         let runID: UUID?
         let sessionID: UUID
-        let tabID: UUID?
+        var tabID: UUID?
         var returning: Bool
         var pageAddress: String? = nil
-    }
-    @Published private(set) var handoff: Handoff?
-    @Published private(set) var returningControl = false
-    @Published private(set) var handoffError: String?
-    @Published private(set) var handoffNeedsContinue = false
-    @Published private(set) var handoffNotified = false
-    var handoffRun: ((UUID) -> UUID?)?
-    var deliverHandoff: ((Handoff, Bool) async throws -> Bool)?
-    private var handoffs: [UUID: Handoff] = [:]
-    private var deliveringHandoffs = Set<UUID>()
-    private var knownRunIDs: [UUID: UUID] = [:]
-    func recordOwnerRun(conversationID: UUID, runID: UUID) { knownRunIDs[conversationID] = runID }
-    private var handoffURL: URL { artifactDirectory.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json") }
-
-    private let durableHandoffs: Bool
-    private func persistHandoffs() throws {
-        guard durableHandoffs else { return }
-        try FileManager.default.createDirectory(at: handoffURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try JSONEncoder().encode(Array(handoffs.values)).write(to: handoffURL, options: .atomic)
-    }
-
-    func returnToAgent(continueTask: Bool = false) async {
-        guard !returningControl, var event = handoff, let deliverHandoff else { return }
-        guard deliveringHandoffs.insert(event.id).inserted else { return }
-        returningControl = true
-        handoffError = nil
-        defer { returningControl = false; deliveringHandoffs.remove(event.id) }
-        do {
-            let firstReturn = !event.returning
-            event.returning = true
-            // Never persist credentials, fragments or query parameters from the page.
-            if firstReturn, var address = activeWebView?.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) {
-                address.user = nil; address.password = nil; address.query = nil; address.fragment = nil
-                event.pageAddress = address.url?.absoluteString
-            }
-            handoffs[event.conversationID] = event
-            try persistHandoffs()
-            // Invalidate every pre-takeover element/document reference.
-            for index in tabs.indices {
-                tabs[index].documentID = UUID().uuidString
-                tabs[index].visualFallbackEvidence = nil
-            }
-            let needsContinue = try await deliverHandoff(event, continueTask)
-            // Keep the durable outbox until a later takeover replaces it. On app
-            // recovery the input store decides whether this ID was consumed.
-            handoffs[event.conversationID] = event
-            if var saved = taskSessions[event.conversationID] {
-                saved.isUserControlling = false
-                taskSessions[event.conversationID] = saved
-            }
-            try persistHandoffs()
-            guard conversationID == event.conversationID else { return }
-            handoff = event
-            handoffNotified = !needsContinue
-            handoffNeedsContinue = needsContinue
-            isUserControlling = false
-            surfaceState = .ready
-        } catch {
-            if conversationID == event.conversationID { handoffError = error.localizedDescription }
-        }
     }
     struct PanelRequest: Equatable {
         let id = UUID()
         let conversationID: UUID
         let show: Bool
     }
+
+    /// The conversation whose browser the UI currently projects. Binding is a
+    /// presentation choice only; it never moves execution between sessions.
+    @Published private(set) var conversationID: UUID?
     @Published private(set) var presentationRequest: PanelRequest?
-    @Published private(set) var surfaceState: SurfaceState = .unbound
+    /// Route state for the panel request of each task. `presentationRequest`
+    /// is the latest emitted request (the app's onChange route); this map
+    /// keeps earlier owners' requests so one task's request cannot erase
+    /// another's pending human-interaction prompt.
+    @Published private(set) var pendingPanelRequests: [UUID: PanelRequest] = [:]
+    @Published private(set) var handoff: Handoff?
+    @Published private(set) var returningControl = false
+    @Published private(set) var handoffError: String?
+    @Published private(set) var handoffNeedsContinue = false
+    @Published private(set) var handoffNotified = false
 
-    private struct TaskSession {
-        var sessionID: UUID
-        var tabs: [Tab]
-        var activeTabID: UUID?
-        var isUserControlling: Bool
-        var addressText: String
-    }
-    private var taskSessions: [UUID: TaskSession] = [:]
-    private(set) var conversationID: UUID?
+    var handoffRun: ((UUID) -> UUID?)?
+    var deliverHandoff: ((Handoff, Bool) async throws -> Bool)?
+    /// Set by AppEnvironment so an explicit owner release also stops that
+    /// owner's local preview server. The coordinator is owned by the
+    /// environment (not this center), and preview records are task-owned;
+    /// stopping them belongs to the same lifecycle event as the browser.
+    var ownerReleaseHook: ((UUID) -> Void)?
 
-    private let maxTabs = 6
-    private let maxEventsPerTab = 256
-    private let protocolVersion = "FloeBrowser/1.0"
-    private let contentWorld = WKContentWorld.world(name: "org.floeagent.browser.agent")
+    private let durableHandoffs: Bool
     private let artifactDirectory: URL
+    private let sessionConfiguration: BrowserTaskSessionConfiguration
+    private let store = BrowserTaskSessionStore(maximumSessions: 128)
+    private var unboundSessionID = UUID()
+
+    private var handoffs: [UUID: Handoff] = [:]
+    private var deliveringHandoffs = Set<UUID>()
+    private var deliveredHandoffIDs = Set<UUID>()
+    private var knownRunIDs: [UUID: UUID] = [:]
+    private var handoffNeedsContinueByConversation: [UUID: Bool] = [:]
+
+    /// Lifecycle fence for one browser-owning task. `generation` is bumped on
+    /// every release and every explicit trusted reactivation; a session
+    /// records the generation it was created under, so a completion from an
+    /// older session/generation can never authorize work after the owner
+    /// moved on. The tombstone is permanent while retained: neither elapsed
+    /// time nor registry pressure re-authorizes a released owner's tool
+    /// callbacks to recreate a browser — recreation requires explicit trusted
+    /// reactivation (a UI restore or a newly admitted run), and a late call
+    /// from a cancelled run is refused by its ToolContext cancellation
+    /// regardless of retention. The registry is bounded; on FIFO eviction the
+    /// runtime's run cancellation remains the second fence.
+    private struct OwnerFence {
+        var generation: Int
+        var releasedAt: Date
+        var isReleased: Bool
+    }
+    private var ownerFences: [UUID: OwnerFence] = [:]
+    private var ownerFenceOrder: [UUID] = []
+    private let maximumOwnerFences = 512
+    private static var didRunArtifactSweep = false
+
+    private var handoffURL: URL {
+        artifactDirectory.deletingLastPathComponent().appendingPathComponent("BrowserHandoffs.json")
+    }
+    private var protocolVersion: String { sessionConfiguration.protocolVersion }
 
     init(durableHandoffs: Bool = true) {
         self.durableHandoffs = durableHandoffs
@@ -144,506 +101,383 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             appropriateFor: nil,
             create: true
         )) ?? FileManager.default.temporaryDirectory
-        artifactDirectory = support
+        let artifacts = support
             .appendingPathComponent("FloeAgent", isDirectory: true)
             .appendingPathComponent("BrowserArtifacts", isDirectory: true)
+        artifactDirectory = artifacts
+        sessionConfiguration = BrowserTaskSessionConfiguration(
+            protocolVersion: "FloeBrowser/1.0",
+            contentWorld: WKContentWorld.world(name: "org.floeagent.browser.agent"),
+            artifactDirectory: artifacts,
+            maximumTabs: 6,
+            maximumEventsPerTab: 256
+        )
         super.init()
-        cleanupArtifacts()
+        // Durable handoff persistence and shared-artifact retention are owned
+        // by exactly one service instance per process. Task sessions never
+        // write handoff receipts or prune screenshots, and ephemeral preview
+        // centers (durableHandoffs: false) must not delete another owner's
+        // evidence.
+        if durableHandoffs, !Self.didRunArtifactSweep {
+            Self.didRunArtifactSweep = true
+            cleanupArtifacts()
+        }
         if durableHandoffs, let data = try? Data(contentsOf: handoffURL),
            let saved = try? JSONDecoder().decode([Handoff].self, from: data) {
             handoffs = Dictionary(saved.map { ($0.conversationID, $0) }, uniquingKeysWith: { _, latest in latest })
         }
     }
 
-    /// Binds the visible WebKit surface to one durable task. Tabs and page
-    /// state are kept independently in memory, so switching tasks never
-    /// leaks one task's browser into another.
+    // MARK: - Visible projection
+
+    /// The session the UI shows, or nil when no task is bound.
+    var visibleSession: BrowserTaskSession? {
+        conversationID.flatMap { store.session(for: $0) }
+    }
+
+    var sessionID: UUID { visibleSession?.sessionID ?? unboundSessionID }
+    var tabs: [Tab] { visibleSession?.tabs ?? [] }
+    var activeTabID: UUID? { visibleSession?.activeTabID }
+    var isUserControlling: Bool { visibleSession?.isUserControlling ?? false }
+    var surfaceState: SurfaceState { visibleSession?.surfaceState ?? .unbound }
+    var addressText: String {
+        get { visibleSession?.addressText ?? "" }
+        set { visibleSession?.addressText = newValue }
+    }
+    var isEditingAddress: Bool {
+        get { visibleSession?.isEditingAddress ?? false }
+        set { visibleSession?.isEditingAddress = newValue }
+    }
+    var activeWebView: WKWebView? { visibleSession?.activeWebView }
+    var technicalAddress: String? { visibleSession?.technicalAddress }
+    var isDisplayingLocalPreview: Bool { visibleSession?.isDisplayingLocalPreview ?? false }
+
+    /// Binds the visible surface to one task. Tabs stay owned by their task
+    /// session; unbinding a view never stops another task's WebViews.
     func bind(to newConversationID: UUID?) {
-        guard newConversationID != conversationID else { return }
-        if let conversationID {
-            taskSessions[conversationID] = TaskSession(
-                sessionID: sessionID,
-                tabs: tabs,
-                activeTabID: activeTabID,
-                isUserControlling: isUserControlling,
-                addressText: addressText
-            )
+        if newConversationID == conversationID,
+           newConversationID.map({ store.session(for: $0) != nil }) ?? true {
+            return
         }
         conversationID = newConversationID
-        isEditingAddress = false
-        handoff = newConversationID.flatMap { handoffs[$0] }
-        handoffNeedsContinue = handoff?.returning == true
         handoffError = nil
-        handoffNotified = false
-        if let newConversationID, let saved = taskSessions[newConversationID] {
-            sessionID = saved.sessionID
-            tabs = saved.tabs
-            activeTabID = saved.activeTabID
-            isUserControlling = saved.isUserControlling
-            addressText = saved.addressText
-            surfaceState = saved.isUserControlling
-                ? .needsUser("User takeover is active") : .ready
+        if let newConversationID {
+            // A human explicitly reopening an archived or restored task is a
+            // trusted reactivation: it lifts the release fence and may create
+            // a fresh session. A late tool callback can never do this.
+            if let session = try? restoreSession(for: newConversationID) {
+                if session.surfaceState == .unbound { session.surfaceState = .ready }
+                if session.isUserControlling { session.surfaceState = .needsUser("User takeover is active") }
+                session.isEditingAddress = false
+            }
+            refreshHandoffProjection(for: newConversationID)
         } else {
-            sessionID = UUID()
-            tabs.forEach { $0.webView.stopLoading() }
-            tabs = []
-            activeTabID = nil
-            isUserControlling = false
-            addressText = ""
-            if newConversationID != nil {
-                _ = createTab()
-                surfaceState = .ready
-            } else {
-                surfaceState = .unbound
-            }
+            unboundSessionID = UUID()
+            handoff = nil
+            handoffNeedsContinue = false
+            handoffNotified = false
         }
     }
 
-    /// Called from the original runtime's state stream, including after cold
-    /// recovery. No visible browser rebinding and no implicit task restart.
-    func recoverHandoff(conversationID: UUID, runID: UUID) async {
-        guard let event = handoffs[conversationID], event.returning, event.runID == runID,
-              let deliverHandoff, deliveringHandoffs.insert(event.id).inserted else { return }
-        defer { deliveringHandoffs.remove(event.id) }
-        do {
-            let needsContinue = try await deliverHandoff(event, false)
-            if self.conversationID == conversationID {
-                handoffNeedsContinue = needsContinue
-                handoffNotified = !needsContinue
-                handoffError = nil
-                isUserControlling = false
-            }
-        } catch {
-            if self.conversationID == conversationID { handoffError = error.localizedDescription }
+    // MARK: - Task session resolution
+
+    /// Current lifecycle generation of one owner. Bumped on every release and
+    /// every explicit trusted reactivation; sessions are stamped with the
+    /// generation they were created under.
+    func generation(for conversationID: UUID) -> Int {
+        ownerFences[conversationID]?.generation ?? 0
+    }
+
+    /// Resolves the independent session for a trusted task, creating it on
+    /// first use. Model input never reaches this decision: callers pass the
+    /// conversationID from a runtime-issued ToolContext. A released owner is
+    /// refused here permanently (no elapsed-time or pressure re-authorization);
+    /// only `restoreSession(for:)` or a newly admitted owner run may reactivate.
+    @discardableResult
+    func taskSession(for conversationID: UUID) throws -> BrowserTaskSession {
+        if let existing = store.session(for: conversationID) { return existing }
+        if isReleaseFenced(conversationID) {
+            throw FloeError.validationFailed("This task's browser session was released")
+        }
+        return try makeSession(for: conversationID)
+    }
+
+    /// Explicit trusted reactivation used by the visible UI (`bind(to:)`): a
+    /// human reopened this task, so the release fence lifts and a fresh
+    /// session of the next generation may be created. Never callable from a
+    /// tool path.
+    @discardableResult
+    func restoreSession(for conversationID: UUID) throws -> BrowserTaskSession {
+        if let existing = store.session(for: conversationID) { return existing }
+        liftReleaseFence(for: conversationID)
+        return try makeSession(for: conversationID)
+    }
+
+    private func makeSession(for conversationID: UUID) throws -> BrowserTaskSession {
+        makeRoomForSession()
+        let session = BrowserTaskSession(
+            conversationID: conversationID,
+            generation: generation(for: conversationID),
+            configuration: sessionConfiguration,
+            host: self
+        )
+        try store.insert(session)
+        _ = session.createTab()
+        session.surfaceState = .ready
+        return session
+    }
+
+    func session(for conversationID: UUID) -> BrowserTaskSession? {
+        store.session(for: conversationID)
+    }
+
+    var activeTaskSessionCount: Int { store.count }
+
+    func handoff(for conversationID: UUID) -> Handoff? {
+        handoffs[conversationID]
+    }
+
+    /// Capacity pressure may release only a session that has been idle for
+    /// hours, is not visible, not user-controlled, not executing and holds no
+    /// pending handoff. An active owner is never discarded silently.
+    private func makeRoomForSession() {
+        guard store.count >= store.maximumSessions else { return }
+        let cutoff = Date().addingTimeInterval(-6 * 60 * 60)
+        for session in store.sessionsByLeastRecentActivity() {
+            guard store.count >= store.maximumSessions else { break }
+            guard session.conversationID != conversationID,
+                  !session.isUserControlling,
+                  session.activeExecutionCount == 0,
+                  session.lastActivityAt < cutoff,
+                  handoffs[session.conversationID] == nil else { continue }
+            store.release(session.conversationID)?.release()
         }
     }
 
-    func recoverHandoff() async {
-        guard handoff?.returning == true else { return }
-        await returnToAgent()
-    }
-
-    func discard(conversationID: UUID) {
-        if self.conversationID == conversationID { bind(to: nil) }
-        handoffs.removeValue(forKey: conversationID)
-        try? persistHandoffs()
-        taskSessions.removeValue(forKey: conversationID)?.tabs.forEach {
-            $0.webView.stopLoading()
+    private func fenceReleasedOwner(_ conversationID: UUID) {
+        let generation = (ownerFences[conversationID]?.generation ?? 0) + 1
+        if ownerFences[conversationID] == nil {
+            ownerFenceOrder.append(conversationID)
+        }
+        ownerFences[conversationID] = OwnerFence(generation: generation, releasedAt: Date(), isReleased: true)
+        while ownerFenceOrder.count > maximumOwnerFences || ownerFences.count > maximumOwnerFences {
+            let evicted = ownerFenceOrder.removeFirst()
+            ownerFences.removeValue(forKey: evicted)
         }
     }
 
-    var activeWebView: WKWebView? {
-        guard let activeTabID else { return nil }
-        return tabs.first(where: { $0.id == activeTabID })?.webView
+    private func liftReleaseFence(for conversationID: UUID) {
+        guard ownerFences[conversationID] != nil else { return }
+        let generation = ownerFences[conversationID]!.generation + 1
+        ownerFences[conversationID] = OwnerFence(generation: generation, releasedAt: Date(), isReleased: false)
+    }
+
+    /// A release-fenced owner can never regain a browser through a tool
+    /// callback. There is deliberately no time expiry: retention is bounded,
+    /// and after FIFO eviction the cancelled run's ToolContext cancellation is
+    /// the remaining fence, so time or pressure alone never re-authorizes.
+    private func isReleaseFenced(_ conversationID: UUID) -> Bool {
+        ownerFences[conversationID]?.isReleased == true
+    }
+
+    // MARK: - Visible-session operations
+
+    func navigateFromAddressBar() {
+        visibleSession?.navigateFromAddressBar()
+    }
+
+    func refreshVisibleAddress() {
+        visibleSession?.refreshVisibleAddress()
     }
 
     @discardableResult
     func createTab() -> UUID? {
-        guard tabs.count < maxTabs else { return nil }
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .default()
-        configuration.preferences.isElementFullscreenEnabled = true
-        configuration.userContentController.addUserScript(WKUserScript(
-            source: Self.protocolProbeSource,
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: true,
-            in: contentWorld
-        ))
-        // Give off-screen/task-owned tabs a real viewport before SwiftUI
-        // presents them. A zero-sized WKWebView makes every DOM node appear
-        // invisible and breaks semantic observation during background work.
-        let webView = WKWebView(
-            frame: CGRect(x: 0, y: 0, width: 1_024, height: 768),
-            configuration: configuration
-        )
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
-        let id = UUID()
-        tabs.append(Tab(
-            id: id,
-            webView: webView,
-            documentID: UUID().uuidString,
-            revision: 0,
-            nextEventSequence: 1,
-            events: [],
-            visualFallbackEvidence: nil
-        ))
-        activeTabID = id
-        appendEvent(tabID: id, method: "Target.targetCreated")
-        return id
+        visibleSession?.createTab()
     }
 
     func activate(_ id: UUID) {
-        guard tabs.contains(where: { $0.id == id }) else { return }
-        activeTabID = id
-        refreshVisibleAddress()
-        appendEvent(tabID: id, method: "Target.targetActivated")
+        visibleSession?.activate(id)
     }
 
     func close(_ id: UUID) {
-        guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        tabs[index].webView.stopLoading()
-        tabs.remove(at: index)
-        if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id }
-    }
-
-    func navigateFromAddressBar() {
-        if let currentURL = activeWebView?.url,
-           Self.isLocalPreview(currentURL),
-           addressText == Self.visibleAddress(for: activeWebView) {
-            activeWebView?.reload()
-            return
-        }
-        let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
-        guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID), let activeWebView else { return }
-        activeWebView.load(URLRequest(url: url))
-    }
-
-    /// The title never replaces the navigable address, including loopback pages.
-    var technicalAddress: String? { activeWebView?.url?.absoluteString }
-
-    var isDisplayingLocalPreview: Bool {
-        activeWebView?.url.map(Self.isLocalPreview) ?? false
-    }
-
-    func refreshVisibleAddress() {
-        guard !isEditingAddress else { return }
-        addressText = Self.visibleAddress(for: activeWebView)
-    }
-
-    private static func visibleAddress(for webView: WKWebView?) -> String {
-        webView?.url?.absoluteString ?? ""
-    }
-
-    private static func isLocalPreview(_ url: URL) -> Bool {
-        guard url.scheme?.lowercased() == "http" else { return false }
-        return url.host == "127.0.0.1" || url.host?.lowercased() == "localhost"
+        visibleSession?.close(id)
     }
 
     func takeControl(runID: UUID? = nil) {
-        guard let conversationID else { return }
-        if handoff == nil || handoff?.returning == true {
-            let event = Handoff(id: UUID(), conversationID: conversationID,
-                runID: runID ?? handoffRun?(conversationID) ?? knownRunIDs[conversationID], sessionID: sessionID,
-                tabID: activeTabID, returning: false)
-            handoff = event
-            handoffs[conversationID] = event
-            do { try persistHandoffs() } catch { handoffError = error.localizedDescription }
-        }
-        handoffNeedsContinue = false
-        handoffNotified = false
-        isUserControlling = true
-        surfaceState = .needsUser("Browser control is yours; the task can continue other work.")
-    }
-    func requestUserInteraction(reason: String, tabID: UUID?, runID: UUID? = nil) throws {
-        guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
-        if let tabID {
-            guard tabs.contains(where: { $0.id == tabID }) else { throw FloeError.notFound("Unknown browser tab") }
-            guard !isUserControlling || activeTabID == tabID else { throw FloeError.validationFailed("The user controls the current tab") }
-            activate(tabID)
-        }
-        takeControl(runID: runID)
-        surfaceState = .needsUser(reason)
-        presentationRequest = PanelRequest(conversationID: conversationID, show: true)
+        guard let session = visibleSession else { return }
+        beginUserControl(
+            for: session,
+            runID: runID,
+            reason: "Browser control is yours; the task can continue other work."
+        )
     }
 
+    /// Visible-session form retained for the UI and existing callers.
+    func requestUserInteraction(reason: String, tabID: UUID?, runID: UUID? = nil) throws {
+        guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
+        try requestUserInteraction(reason: reason, tabID: tabID, runID: runID, in: conversationID)
+    }
+
+    /// Opens the panel of the exact owning task. A background task's request
+    /// carries its own conversationID; the app only routes it when that task
+    /// is the selected one, so another task's panel is never replaced.
+    func requestUserInteraction(
+        reason: String,
+        tabID: UUID?,
+        runID: UUID? = nil,
+        in conversationID: UUID
+    ) throws {
+        // Handoff is not a way to conjure a browser for a task that has none:
+        // the task must already own a session with a navigated page. This also
+        // keeps a forged/absent owner from opening a panel.
+        guard let session = store.session(for: conversationID) else {
+            throw FloeError.validationFailed(
+                "This task's browser is not open; navigate before requesting user interaction"
+            )
+        }
+        if let tabID {
+            guard session.tabs.contains(where: { $0.id == tabID }) else {
+                throw FloeError.notFound("Unknown browser tab")
+            }
+            guard !session.isUserControlling || session.activeTabID == tabID else {
+                throw FloeError.validationFailed("The user controls the current tab")
+            }
+            session.activate(tabID)
+        }
+        beginUserControl(for: session, runID: runID, reason: reason)
+        let request = PanelRequest(conversationID: conversationID, show: true)
+        pendingPanelRequests[conversationID] = request
+        presentationRequest = request
+    }
+
+    func pendingPanelRequest(for conversationID: UUID) -> PanelRequest? {
+        pendingPanelRequests[conversationID]
+    }
+
+    /// Reads and clears one owner's pending panel request. The app calls this
+    /// when the user explicitly selects the owning conversation, so a
+    /// background task's request is presented exactly once and never steals
+    /// the panel of another selected task.
+    func consumePendingPanelRequest(for conversationID: UUID) -> PanelRequest? {
+        pendingPanelRequests.removeValue(forKey: conversationID)
+    }
+
+    /// Visible-session form retained for the UI and existing callers.
     func requestPanelDismissal() throws {
         guard let conversationID else { throw FloeError.validationFailed("No task browser is active") }
-        guard !isUserControlling else { throw FloeError.validationFailed("Wait for the user to return browser control before closing their panel") }
+        try requestPanelDismissal(conversationID: conversationID)
+    }
+
+    /// Closes only the calling task's panel. A different task's visible panel
+    /// is never dismissed by this call.
+    func requestPanelDismissal(conversationID: UUID) throws {
+        guard let session = store.session(for: conversationID) else {
+            throw FloeError.validationFailed("This task's browser is not open")
+        }
+        guard !session.isUserControlling else {
+            throw FloeError.validationFailed("Wait for the user to return browser control before closing their panel")
+        }
+        guard self.conversationID == conversationID else {
+            throw FloeError.validationFailed("This task's browser panel is not visible; no panel was closed")
+        }
+        pendingPanelRequests.removeValue(forKey: conversationID)
         presentationRequest = PanelRequest(conversationID: conversationID, show: false)
     }
 
-    func execute(_ command: BrowserCommand) async -> BrowserResult {
-        guard command.version == 1 else {
-            return failure(command, status: .failed, code: "version", "Unsupported browser protocol version")
-        }
-        guard command.sessionID == sessionID else {
-            return failure(command, status: .stale, code: "session", "Browser session is no longer active")
-        }
-        if isUserControlling {
-            switch command.action {
-            case .protocolInfo, .observe, .listTabs, .events:
-                break
-            default:
-                return failure(command, status: .needsUser, code: "takeover", "The user currently controls the browser")
-            }
-        }
+    // MARK: - Execution
 
-        switch command.action {
-        case .protocolInfo:
+    /// Visible-session execution retained for LocalPreview, design capture and
+    /// the existing protocol tests. Tools use the explicit owner overload.
+    func execute(_ command: BrowserCommand) async -> BrowserResult {
+        if let session = visibleSession {
+            return await session.execute(command)
+        }
+        guard command.sessionID == unboundSessionID else {
             return BrowserResult(
                 requestID: command.requestID,
-                status: .ok,
-                protocolVersion: protocolVersion
+                status: .stale,
+                message: "Browser session is no longer active",
+                error: BrowserFailure(code: "session", message: "Browser session is no longer active")
             )
-        case .create:
-            guard let id = createTab() else {
-                return failure(command, status: .blocked, code: "tab-limit", "The six-tab limit was reached")
-            }
-            return await observeResult(command, tabID: id, cursor: nil)
-        case .listTabs:
-            return await observeResult(command, tabID: command.tabID ?? activeTabID, cursor: nil)
-        case .activateTab(let id):
-            activate(id)
-            return await observeResult(command, tabID: id, cursor: nil)
-        case .closeTab(let id):
-            close(id)
-            return await observeResult(command, tabID: activeTabID, cursor: nil)
-        case .takeover:
-            takeControl()
-            return failure(command, status: .needsUser, code: "takeover", "Browser control was handed to the user")
-        default:
-            break
         }
+        guard command.action == .protocolInfo else {
+            return BrowserResult(
+                requestID: command.requestID,
+                status: .stale,
+                message: "No task browser is active",
+                error: BrowserFailure(code: "owner", message: "No task browser is active")
+            )
+        }
+        return BrowserResult(
+            requestID: command.requestID,
+            status: .ok,
+            protocolVersion: protocolVersion
+        )
+    }
 
-        guard let tabID = command.tabID ?? activeTabID,
-              let index = tabs.firstIndex(where: { $0.id == tabID }) else {
-            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
-        }
-        let tab = tabs[index]
-        if let expected = command.expectedDocumentID, expected != tab.documentID {
-            return failure(command, status: .stale, code: "document", "The page changed; observe it again")
-        }
-
+    /// Runs a command against the calling task's own session. The session is
+    /// selected from the runtime-issued owner, never from command contents.
+    func execute(_ command: BrowserCommand, in conversationID: UUID) async -> BrowserResult {
         do {
-            switch command.action {
-            case .navigate(let value):
-                let url = try BrowserURLPolicy.validate(value, conversationID: conversationID)
-                tab.webView.load(URLRequest(url: url))
-            case .back:
-                tab.webView.goBack()
-            case .forward:
-                tab.webView.goForward()
-            case .reload:
-                tab.webView.reload()
-            case .observe(let cursor):
-                return await observeResult(command, tabID: tabID, cursor: cursor)
-            case .screenshot:
-                let artifact = try await saveSnapshot(of: tab.webView)
-                let visualTextRegions = try recognizeVisualText(in: artifact)
-                var result = await observeResult(command, tabID: tabID, cursor: nil)
-                result.page?.screenshotArtifact = artifact
-                result.page?.visualTextRegions = visualTextRegions
-                if let page = result.page,
-                   let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
-                    tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
-                        documentID: tabs[currentIndex].documentID,
-                        sha256: artifact.sha256.lowercased(),
-                        capturedAt: Date(),
-                        pixelWidth: artifact.pixelWidth,
-                        pixelHeight: artifact.pixelHeight,
-                        viewportWidth: page.viewportWidth,
-                        viewportHeight: page.viewportHeight,
-                        revision: page.revision,
-                        visualTextRegions: visualTextRegions
-                    )
-                }
-                return result
-            case .click(let requestedTarget):
-                let target: BrowserTarget
-                if case .visualText(let reference) = requestedTarget {
-                    let evidence = try validateVisualFallback(command, in: tab)
-                    guard let region = evidence.visualTextRegions.first(where: { $0.reference == reference }) else {
-                        throw BrowserPolicyError.blocked(
-                            "The visual text reference is absent or stale; capture a new browser screenshot"
-                        )
-                    }
-                    target = .point(x: Double(region.centerX), y: Double(region.centerY))
-                } else {
-                    target = requestedTarget
-                }
-                if case .point(let x, let y) = target {
-                    let evidence = try validateVisualFallback(command, in: tab)
-                    guard x >= 0, y >= 0,
-                          x < Double(evidence.pixelWidth),
-                          y < Double(evidence.pixelHeight) else {
-                        throw BrowserPolicyError.blocked(
-                            "Visual click coordinates are outside the referenced screenshot"
-                        )
-                    }
-                    let cssTarget = BrowserTarget.point(
-                        x: x / Double(evidence.pixelWidth) * evidence.viewportWidth,
-                        y: y / Double(evidence.pixelHeight) * evidence.viewportHeight
-                    )
-                    try await perform(
-                        target: cssTarget,
-                        in: tab,
-                        operation: "click",
-                        text: nil,
-                        submit: false,
-                        visualFallbackReason: command.visualFallbackReason
-                    )
-                    // Synthetic WebKit pointer dispatch is not proof that the
-                    // intended visual target accepted the action. Capture the
-                    // viewport again and require an observable state change.
-                    try? await Task.sleep(for: .milliseconds(250))
-                    let postArtifact = try await saveSnapshot(of: tab.webView)
-                    let postVisualTextRegions = try recognizeVisualText(in: postArtifact)
-                    var result = await observeResult(command, tabID: tabID, cursor: nil)
-                    result.page?.screenshotArtifact = postArtifact
-                    result.page?.visualTextRegions = postVisualTextRegions
-                    let changed = result.page.map {
-                        $0.documentID != evidence.documentID
-                            || $0.revision > evidence.revision
-                            || postArtifact.sha256.lowercased() != evidence.sha256
-                    } ?? false
-                    if let page = result.page,
-                       let currentIndex = tabs.firstIndex(where: { $0.id == tabID }) {
-                        tabs[currentIndex].visualFallbackEvidence = VisualFallbackEvidence(
-                            documentID: page.documentID,
-                            sha256: postArtifact.sha256.lowercased(),
-                            capturedAt: Date(),
-                            pixelWidth: postArtifact.pixelWidth,
-                            pixelHeight: postArtifact.pixelHeight,
-                            viewportWidth: page.viewportWidth,
-                            viewportHeight: page.viewportHeight,
-                            revision: page.revision,
-                            visualTextRegions: postVisualTextRegions
-                        )
-                    }
-                    if changed {
-                        result.message = "Visual click produced an observable page change; the returned screenshot is post-click evidence."
-                    } else {
-                        let message = "Visual click produced no observable page change; the target was not confirmed. Use the returned post-click screenshot to choose a different point or hand control to the user."
-                        result.status = .failed
-                        result.message = message
-                        result.error = BrowserFailure(code: "no-observable-effect", message: message)
-                    }
-                    return result
-                }
-                try await perform(
-                    target: target,
-                    in: tab,
-                    operation: "click",
-                    text: nil,
-                    submit: false,
-                    visualFallbackReason: command.visualFallbackReason
-                )
-            case .type(let target, let text, let submit):
-                guard text.utf8.count <= 16 * 1024 else {
-                    throw BrowserPolicyError.blocked("Browser input exceeds 16 KiB")
-                }
-                try await perform(
-                    target: target,
-                    in: tab,
-                    operation: "type",
-                    text: text,
-                    submit: submit,
-                    visualFallbackReason: nil
-                )
-            case .scroll(let x, let y):
-                _ = try await tab.webView.callAsyncJavaScript(
-                    "window.scrollBy(dx, dy); return true;",
-                    arguments: ["dx": x, "dy": y],
-                    in: nil,
-                    contentWorld: contentWorld
-                )
-                appendEvent(tabID: tabID, method: "Input.dispatchMouseEvent", detail: "scroll")
-            case .wait(let condition):
-                return await waitResult(command, tabID: tabID, condition: condition)
-            case .events(let afterSequence, let limit):
-                return await eventsResult(
-                    command,
-                    tabID: tabID,
-                    afterSequence: afterSequence,
-                    limit: limit
-                )
-            case .protocolInfo, .create, .listTabs, .activateTab, .closeTab, .takeover:
-                break
-            }
-            return await observeResult(command, tabID: tabID, cursor: nil)
-        } catch BrowserInteractionError.needsUser(let message) {
-            takeControl()
-            surfaceState = .needsUser(message)
-            return failure(command, status: .needsUser, code: "takeover", message)
-        } catch BrowserInteractionError.stale(let message) {
-            return failure(command, status: .stale, code: "document", message)
-        } catch let error as BrowserPolicyError {
-            return failure(command, status: .blocked, code: "policy", error.localizedDescription)
+            let session = try taskSession(for: conversationID)
+            return await session.execute(command)
         } catch {
-            return failure(command, status: .failed, code: "webkit", error.localizedDescription)
+            let message = error.localizedDescription
+            return BrowserResult(
+                requestID: command.requestID,
+                status: .stale,
+                message: message,
+                error: BrowserFailure(code: "session", message: message)
+            )
         }
     }
 
-    /// CDP-shaped, allowlisted dispatch surface for integrations that prefer
-    /// method/params requests over Floe's typed BrowserAction enum.
     func executeProtocol(_ request: FloeBrowserProtocolCommand) async -> FloeBrowserProtocolResponse {
-        let action: BrowserAction
-        let documentID = request.documentID
-        switch request.method {
-        case .getVersion:
-            action = .protocolInfo
-        case .getTargets, .getDocument:
-            action = request.method == .getTargets ? .listTabs : .observe(cursor: nil)
-        case .createTarget:
-            action = .create
-        case .activateTarget:
-            guard let targetID = request.targetID else {
-                return protocolFailure(request, "Target.activateTarget requires targetID")
-            }
-            action = .activateTab(targetID)
-        case .closeTarget:
-            guard let targetID = request.targetID else {
-                return protocolFailure(request, "Target.closeTarget requires targetID")
-            }
-            action = .closeTab(targetID)
-        case .navigate:
-            guard let url = request.url, !url.isEmpty else {
-                return protocolFailure(request, "Page.navigate requires url")
-            }
-            action = .navigate(url: url)
-        case .reload:
-            action = .reload
-        case .captureScreenshot:
-            action = .screenshot
-        case .waitForLoad:
-            action = .wait(.load)
-        case .waitForDOM:
-            action = .wait(.domContentLoaded)
-        case .waitForIdle:
-            action = .wait(.idle(milliseconds: min(5_000, max(100, request.timeoutMilliseconds ?? 500))))
-        case .dispatchMouseEvent:
-            if let ref = request.ref, let documentID {
-                action = .click(.element(ref: ref, documentID: documentID))
-            } else if let x = request.x, let y = request.y,
-                      x.isFinite, y.isFinite, x >= 0, y >= 0,
-                      request.screenshotSHA256?.isEmpty == false,
-                      request.fallbackReason?.isEmpty == false {
-                action = .click(.point(x: x, y: y))
-            } else {
-                return protocolFailure(request, "Coordinate Input.dispatchMouseEvent requires documentID, a fresh screenshotSHA256, and fallbackReason")
-            }
-        case .insertText:
-            guard let ref = request.ref, !ref.isEmpty,
-                  let documentID, !documentID.isEmpty,
-                  let text = request.text, text.utf8.count <= 16 * 1024 else {
-                return protocolFailure(request, "Input.insertText requires ref, documentID, and bounded text")
-            }
-            action = .type(
-                .element(ref: ref, documentID: documentID),
-                text: text,
-                submit: request.submit ?? false
-            )
-        case .getEvents:
-            action = .events(
-                afterSequence: request.afterSequence,
-                limit: min(100, max(1, request.limit ?? 50))
+        if let session = visibleSession {
+            return await session.executeProtocol(request)
+        }
+        // A detached center still answers parameter validation truthfully, but
+        // cannot dispatch because no task owns a browser session.
+        if request.method == .activateTarget, request.targetID == nil {
+            return protocolFailure(request, "Target.activateTarget requires targetID")
+        }
+        if request.method == .closeTarget, request.targetID == nil {
+            return protocolFailure(request, "Target.closeTarget requires targetID")
+        }
+        if request.method == .getVersion, request.sessionID == unboundSessionID {
+            return FloeBrowserProtocolResponse(
+                id: request.id,
+                protocolVersion: protocolVersion,
+                result: BrowserResult(requestID: UUID(), status: .ok, protocolVersion: protocolVersion)
             )
         }
-        let command = BrowserCommand(
-            requestID: UUID(),
-            sessionID: request.sessionID,
-            tabID: request.targetID,
-            expectedDocumentID: documentID,
-            timeoutMilliseconds: min(30_000, max(250, request.timeoutMilliseconds ?? 15_000)),
-            visualEvidenceSHA256: request.screenshotSHA256,
-            visualFallbackReason: request.fallbackReason,
-            action: action
-        )
-        return FloeBrowserProtocolResponse(
+        return protocolUnavailable(request, "No task browser is active")
+    }
+
+    func executeProtocol(
+        _ request: FloeBrowserProtocolCommand,
+        in conversationID: UUID
+    ) async -> FloeBrowserProtocolResponse {
+        guard let session = try? taskSession(for: conversationID) else {
+            return protocolUnavailable(request, "This task's browser session is not active")
+        }
+        return await session.executeProtocol(request)
+    }
+
+    private func protocolUnavailable(
+        _ request: FloeBrowserProtocolCommand,
+        _ message: String
+    ) -> FloeBrowserProtocolResponse {
+        FloeBrowserProtocolResponse(
             id: request.id,
             protocolVersion: protocolVersion,
-            result: await execute(command)
+            result: BrowserResult(
+                requestID: UUID(),
+                status: .stale,
+                message: message,
+                error: BrowserFailure(code: "session", message: message),
+                protocolVersion: protocolVersion
+            )
         )
     }
 
@@ -664,560 +498,195 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
         )
     }
 
-    private func perform(
-        target: BrowserTarget,
-        in tab: Tab,
-        operation: String,
-        text: String?,
-        submit: Bool,
-        visualFallbackReason: String?
-    ) async throws {
-        let script = """
-        const protocol = globalThis.__floeProtocol;
-        if (!protocol) return {status:'stale'};
-        return protocol.perform(operation, target, documentID, text, submit, visualFallbackReason);
-        """
-        let targetObject: [String: Any]
-        switch target {
-        case .element(let ref, let documentID):
-            targetObject = ["kind": "element", "ref": ref, "documentID": documentID]
-        case .point(let x, let y):
-            targetObject = ["kind": "point", "x": x, "y": y]
-        case .visualText:
-            throw BrowserPolicyError.blocked(
-                "Visual text references must be resolved from fresh screenshot evidence"
-            )
-        }
-        let value = try await tab.webView.callAsyncJavaScript(
-            script,
-            arguments: [
-                "operation": operation,
-                "target": targetObject,
-                "documentID": tab.documentID,
-                "text": text ?? "",
-                "submit": submit,
-                "visualFallbackReason": visualFallbackReason ?? ""
-            ],
-            in: nil,
-            contentWorld: contentWorld
-        )
-        let status = (value as? [String: Any])?["status"] as? String
-        if status == "needsUser" { throw BrowserInteractionError.needsUser("Sensitive input requires user takeover") }
-        if status == "stale" { throw BrowserInteractionError.stale("The target is stale; observe the page again") }
-        if status == "structured" {
-            let ref = (value as? [String: Any])?["ref"] as? String ?? "unknown"
-            throw BrowserPolicyError.blocked(
-                "A structured target (\(ref)) is available at these coordinates; use browser.click"
-            )
-        }
-        if status != "ok" { throw BrowserPolicyError.blocked("The target cannot accept this action") }
-        appendEvent(
-            tabID: tab.id,
-            method: operation == "click" ? "Input.dispatchMouseEvent" : "Input.insertText"
-        )
+    // MARK: - Handoff receipts
+
+    /// The runtime admits one authorized run for this task. That is explicit
+    /// lifecycle evidence the owner is active again: it lifts the release
+    /// fence (without creating a session) so the new run's own tool calls may
+    /// create one. A late callback from an earlier, cancelled run is still
+    /// refused by its ToolContext cancellation before any session is created.
+    func recordOwnerRun(conversationID: UUID, runID: UUID) {
+        knownRunIDs[conversationID] = runID
+        liftReleaseFence(for: conversationID)
     }
 
-    private func validateVisualFallback(
-        _ command: BrowserCommand,
-        in tab: Tab
-    ) throws -> VisualFallbackEvidence {
-        guard let reason = command.visualFallbackReason,
-              ["noStructuredTarget", "insufficientStructuredInformation"].contains(reason) else {
-            throw BrowserPolicyError.blocked(
-                "Coordinate fallback requires a reason that structured information is absent or insufficient"
-            )
-        }
-        guard let expectedDigest = command.visualEvidenceSHA256?.lowercased(),
-              expectedDigest.count == 64,
-              expectedDigest.allSatisfy(\.isHexDigit),
-              let evidence = tab.visualFallbackEvidence,
-              evidence.documentID == tab.documentID,
-              evidence.sha256 == expectedDigest,
-              evidence.pixelWidth > 0,
-              evidence.pixelHeight > 0,
-              evidence.viewportWidth > 0,
-              evidence.viewportHeight > 0,
-              Date().timeIntervalSince(evidence.capturedAt) <= 120 else {
-            throw BrowserPolicyError.blocked(
-                "Coordinate fallback requires a fresh screenshot from the current page"
-            )
-        }
-        return evidence
+    /// The recorded owner run, used to attribute durable work (page capture,
+    /// handoff receipts) to the actual admitted run instead of a newer one.
+    func recordedOwnerRun(for conversationID: UUID) -> UUID? {
+        knownRunIDs[conversationID]
     }
 
-    private func observeResult(_ command: BrowserCommand, tabID: UUID?, cursor: Int?) async -> BrowserResult {
-        guard let tabID, let tab = tabs.first(where: { $0.id == tabID }) else {
-            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
-        }
-        do {
-            await collectProbeEvents(tabID: tabID)
-            let start = max(0, cursor ?? 0)
-            let pageSize = 40
-            let probe = try await semanticSnapshot(
-                in: tab.webView,
-                documentID: tab.documentID,
-                cursor: start,
-                limit: pageSize
-            )
-            if let index = tabs.firstIndex(where: { $0.id == tabID }) {
-                tabs[index].revision = max(tabs[index].revision, probe.revision)
-            }
-            let snapshot = PageSnapshot(
-                documentID: tab.documentID,
-                revision: max(tab.revision, probe.revision),
-                url: tab.webView.url?.absoluteString ?? "",
-                title: tab.webView.title ?? "",
-                isLoading: tab.webView.isLoading,
-                viewportWidth: probe.viewportWidth,
-                viewportHeight: probe.viewportHeight,
-                scrollX: Double(tab.webView.scrollView.contentOffset.x),
-                scrollY: Double(tab.webView.scrollView.contentOffset.y),
-                tabs: tabSnapshots(),
-                nodes: probe.nodes,
-                nextCursor: probe.nextCursor,
-                screenshotArtifact: nil
-            )
-            return BrowserResult(requestID: command.requestID, status: .ok, page: snapshot)
-        } catch {
-            return failure(command, status: .failed, code: "observe", error.localizedDescription)
-        }
-    }
-
-    private func semanticSnapshot(
-        in webView: WKWebView,
-        documentID: String,
-        cursor: Int,
-        limit: Int
-    ) async throws -> ProbeSnapshot {
-        let script = """
-        const protocol = globalThis.__floeProtocol;
-        if (!protocol) return {
-          revision:0,
-          viewportWidth:Math.max(1, Number(window.innerWidth) || 1),
-          viewportHeight:Math.max(1, Number(window.innerHeight) || 1),
-          nodes:[],
-          nextCursor:null
-        };
-        return protocol.snapshot(documentID, cursor, limit);
-        """
-        let value = try await webView.callAsyncJavaScript(
-            script,
-            arguments: ["documentID": documentID, "cursor": cursor, "limit": limit],
-            in: nil,
-            contentWorld: contentWorld
-        )
-        guard JSONSerialization.isValidJSONObject(value as Any) else {
-            return ProbeSnapshot(
-                revision: 0,
-                viewportWidth: max(1, webView.bounds.width),
-                viewportHeight: max(1, webView.bounds.height),
-                nodes: [],
-                nextCursor: nil
-            )
-        }
-        let data = try JSONSerialization.data(withJSONObject: value as Any)
-        return try JSONDecoder().decode(ProbeSnapshot.self, from: data)
-    }
-
-    private func eventsResult(
-        _ command: BrowserCommand,
-        tabID: UUID,
-        afterSequence: Int?,
-        limit: Int
-    ) async -> BrowserResult {
-        await collectProbeEvents(tabID: tabID)
-        guard let tab = tabs.first(where: { $0.id == tabID }) else {
-            return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
-        }
-        let floor = max(0, afterSequence ?? 0)
-        let available = tab.events.filter { $0.sequence > floor }
-        let boundedLimit = min(100, max(1, limit))
-        let selected = Array(available.prefix(boundedLimit))
-        return BrowserResult(
-            requestID: command.requestID,
-            status: .ok,
-            events: selected,
-            nextEventSequence: selected.last?.sequence ?? afterSequence,
-            protocolVersion: protocolVersion
-        )
-    }
-
-    private func waitResult(
-        _ command: BrowserCommand,
-        tabID: UUID,
-        condition: BrowserWaitCondition
-    ) async -> BrowserResult {
-        let timeout = min(30_000, max(250, command.timeoutMilliseconds))
-        let deadline = Date().addingTimeInterval(Double(timeout) / 1_000)
-        repeat {
-            guard let tab = tabs.first(where: { $0.id == tabID }) else {
-                return failure(command, status: .stale, code: "tab", "Browser tab is no longer available")
-            }
-            await collectProbeEvents(tabID: tabID)
-            if case .documentChanged(let oldDocumentID) = condition,
-               tab.documentID != oldDocumentID {
-                appendEvent(tabID: tabID, method: "Runtime.waitConditionSatisfied")
-                return await observeResult(command, tabID: tabID, cursor: nil)
-            }
-            do {
-                let state = try await probeState(
-                    in: tab.webView,
-                    documentID: tab.documentID,
-                    condition: condition
-                )
-                let satisfied: Bool
-                switch condition {
-                case .load:
-                    // `readyState` is the page-world lifecycle signal that
-                    // corresponds to CDP's load event. WKWebView.isLoading
-                    // may lag for loadHTMLString and late subresources.
-                    satisfied = state.readyState == "complete"
-                case .domContentLoaded:
-                    satisfied = state.readyState == "interactive" || state.readyState == "complete"
-                case .selector:
-                    satisfied = state.selectorFound
-                case .text:
-                    satisfied = state.textFound
-                case .documentChanged:
-                    satisfied = false
-                case .idle(let milliseconds):
-                    satisfied = !tab.webView.isLoading
-                        && state.idleMilliseconds >= Double(min(5_000, max(100, milliseconds)))
-                }
-                if satisfied {
-                    appendEvent(tabID: tabID, method: "Runtime.waitConditionSatisfied")
-                    return await observeResult(command, tabID: tabID, cursor: nil)
-                }
-            } catch {
-                // Document-start script injection and the isolated content
-                // world can briefly race navigation commit. Treat that as a
-                // not-yet-satisfied wait and retry until the bounded deadline.
-                if Date() >= deadline {
-                    return failure(command, status: .failed, code: "probe", error.localizedDescription)
-                }
-            }
-            try? await Task.sleep(for: .milliseconds(100))
-        } while Date() < deadline && !Task.isCancelled
-        if Task.isCancelled {
-            return failure(command, status: .failed, code: "cancelled", "Browser wait was cancelled")
-        }
-        return failure(command, status: .timeout, code: "timeout", "Browser wait condition timed out")
-    }
-
-    private func probeState(
-        in webView: WKWebView,
-        documentID: String,
-        condition: BrowserWaitCondition
-    ) async throws -> ProbeState {
-        var selector = ""
-        var text = ""
-        switch condition {
-        case .selector(let value): selector = String(value.prefix(512))
-        case .text(let value): text = String(value.prefix(512))
-        default: break
-        }
-        let value = try await webView.callAsyncJavaScript(
-            """
-            const protocol = globalThis.__floeProtocol;
-            if (!protocol) return {readyState:'loading', selectorFound:false, textFound:false, idleMilliseconds:0, revision:0};
-            return protocol.status(documentID, selector, text);
-            """,
-            arguments: ["documentID": documentID, "selector": selector, "text": text],
-            in: nil,
-            contentWorld: contentWorld
-        )
-        guard JSONSerialization.isValidJSONObject(value as Any) else {
-            throw BrowserPolicyError.blocked("The browser probe returned an invalid status")
-        }
-        let data = try JSONSerialization.data(withJSONObject: value as Any)
-        return try JSONDecoder().decode(ProbeState.self, from: data)
-    }
-
-    private func collectProbeEvents(tabID: UUID) async {
-        guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        do {
-            let value = try await tab.webView.callAsyncJavaScript(
-                "return globalThis.__floeProtocol ? globalThis.__floeProtocol.drainEvents(documentID) : [];",
-                arguments: ["documentID": tab.documentID],
-                in: nil,
-                contentWorld: contentWorld
-            )
-            guard JSONSerialization.isValidJSONObject(value as Any) else { return }
-            let data = try JSONSerialization.data(withJSONObject: value as Any)
-            let events = try JSONDecoder().decode([ProbeEvent].self, from: data)
-            for event in events {
-                appendEvent(
-                    tabID: tabID,
-                    method: event.method,
-                    detail: event.detail,
-                    revision: event.revision
-                )
-            }
-        } catch {
-            // A navigation may replace the JS world between lookup and call.
-            // Native lifecycle events still describe that transition.
-        }
-    }
-
-    private func appendEvent(
-        tabID: UUID,
-        method: String,
-        detail: String? = nil,
-        revision: Int? = nil
+    private func beginUserControl(
+        for session: BrowserTaskSession,
+        runID: UUID?,
+        reason: String?
     ) {
-        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let sequence = tabs[index].nextEventSequence
-        tabs[index].nextEventSequence += 1
-        tabs[index].events.append(BrowserProtocolEvent(
-            sequence: sequence,
-            timestamp: Date(),
-            tabID: tabID,
-            documentID: tabs[index].documentID,
-            method: method,
-            detail: detail.map { String($0.prefix(512)) },
-            revision: revision
-        ))
-        if tabs[index].events.count > maxEventsPerTab {
-            tabs[index].events.removeFirst(tabs[index].events.count - maxEventsPerTab)
+        let owner = session.conversationID
+        // Only the owner's CURRENT, unreleased session may initiate user
+        // control. A session from an older generation (released, then
+        // reactivated) is fenced here: its late delegate callbacks can never
+        // hand control or rewrite the durable receipt for a newer session.
+        guard store.session(for: owner) === session, !session.isReleased else { return }
+        let existing = handoffs[owner]
+        let existingWasDelivered = existing.map { deliveredHandoffIDs.contains($0.id) } ?? false
+        // A failed delivery leaves the receipt marked returning but undelivered;
+        // taking control again must keep that exact receipt for a later retry.
+        if existing == nil
+            || existing?.sessionID != session.sessionID
+            || (existing?.returning == true && existingWasDelivered) {
+            if let existing { deliveredHandoffIDs.remove(existing.id) }
+            let event = Handoff(
+                id: UUID(),
+                conversationID: owner,
+                runID: runID ?? handoffRun?(owner) ?? knownRunIDs[owner],
+                sessionID: session.sessionID,
+                tabID: session.activeTabID,
+                returning: false
+            )
+            handoffs[owner] = event
+            do { try persistHandoffs() } catch {
+                if conversationID == owner { handoffError = error.localizedDescription }
+            }
+        } else if var updated = handoffs[owner], updated.tabID != session.activeTabID {
+            // Keep the same durable receipt while the user takes control of
+            // another tab in this task's own browser.
+            updated.tabID = session.activeTabID
+            handoffs[owner] = updated
+            try? persistHandoffs()
         }
-        if let revision {
-            tabs[index].revision = max(tabs[index].revision, revision)
+        session.setUserControlling(true)
+        if let reason { session.surfaceState = .needsUser(reason) }
+        handoffNeedsContinueByConversation[owner] = false
+        guard conversationID == owner else { return }
+        handoff = handoffs[owner]
+        handoffNeedsContinue = false
+        handoffNotified = false
+        handoffError = nil
+    }
+
+    func returnToAgent(continueTask: Bool = false) async {
+        guard !returningControl, let event = handoff, let deliverHandoff else { return }
+        guard deliveringHandoffs.insert(event.id).inserted else { return }
+        returningControl = true
+        handoffError = nil
+        defer { returningControl = false; deliveringHandoffs.remove(event.id) }
+        do {
+            let firstReturn = !event.returning
+            var updated = event
+            updated.returning = true
+            // Only the exact session that produced this receipt may donate its
+            // page address or have its document references invalidated.
+            let ownerSession = store.session(for: event.conversationID).flatMap {
+                $0.sessionID == event.sessionID ? $0 : nil
+            }
+            // Never persist credentials, fragments or query parameters from the page.
+            if firstReturn,
+               let ownerSession,
+               var address = ownerSession.activeWebView?.url.flatMap({
+                   URLComponents(url: $0, resolvingAgainstBaseURL: false)
+               }) {
+                address.user = nil; address.password = nil; address.query = nil; address.fragment = nil
+                updated.pageAddress = address.url?.absoluteString
+            }
+            handoffs[event.conversationID] = updated
+            try persistHandoffs()
+            // Invalidate every pre-takeover element/document reference of the
+            // exact task that returned control.
+            ownerSession?.invalidateDocumentsForHandoff()
+            let needsContinue = try await deliverHandoff(updated, continueTask)
+            deliveredHandoffIDs.insert(event.id)
+            // Keep the durable outbox until a later takeover replaces it. On app
+            // recovery the input store decides whether this ID was consumed.
+            handoffs[event.conversationID] = updated
+            handoffNeedsContinueByConversation[event.conversationID] = needsContinue
+            pendingPanelRequests.removeValue(forKey: event.conversationID)
+            ownerSession?.setUserControlling(false)
+            try persistHandoffs()
+            guard conversationID == event.conversationID else { return }
+            handoff = updated
+            handoffNotified = !needsContinue
+            handoffNeedsContinue = needsContinue
+        } catch {
+            if conversationID == event.conversationID { handoffError = error.localizedDescription }
         }
     }
 
-    /// Runs in a named isolated content world at document start. It maintains
-    /// stable per-document node references and a small lifecycle/DOM queue,
-    /// but deliberately exposes no arbitrary JavaScript evaluation endpoint.
-    private static let protocolProbeSource = #"""
-    (() => {
-      if (globalThis.__floeProtocol) return;
-      let documentID = '';
-      let revision = 0;
-      let nextRef = 1;
-      let lastMutation = performance.now();
-      const references = new WeakMap();
-      const nodesByRef = new Map();
-      const events = [];
-      const selector = 'a,button,input,textarea,select,[role],[contenteditable="true"],[onclick],summary,label,h1,h2,h3,p';
-
-      const push = (method, detail = null) => {
-        events.push({method, detail, revision});
-        if (events.length > 128) events.splice(0, events.length - 128);
-      };
-      const setDocument = id => {
-        if (id && documentID !== id) documentID = id;
-      };
-      const roots = () => {
-        const result = [document];
-        const visit = root => {
-          let all = [];
-          try { all = Array.from(root.querySelectorAll('*')); } catch (_) {}
-          for (const el of all) {
-            if (el.shadowRoot) { result.push(el.shadowRoot); visit(el.shadowRoot); }
-            if ((el.tagName || '').toLowerCase() === 'iframe') {
-              try { if (el.contentDocument) { result.push(el.contentDocument); visit(el.contentDocument); } } catch (_) {}
+    /// Called from the original runtime's state stream, including after cold
+    /// recovery. Targets the exact recorded task/run and never rebinds or
+    /// restarts another task.
+    func recoverHandoff(conversationID: UUID, runID: UUID) async {
+        guard let event = handoffs[conversationID], event.returning, event.runID == runID,
+              let deliverHandoff, deliveringHandoffs.insert(event.id).inserted else { return }
+        defer { deliveringHandoffs.remove(event.id) }
+        do {
+            let needsContinue = try await deliverHandoff(event, false)
+            deliveredHandoffIDs.insert(event.id)
+            handoffNeedsContinueByConversation[conversationID] = needsContinue
+            pendingPanelRequests.removeValue(forKey: conversationID)
+            if let ownerSession = store.session(for: conversationID),
+               ownerSession.sessionID == event.sessionID {
+                ownerSession.setUserControlling(false)
             }
-          }
-        };
-        visit(document);
-        return result;
-      };
-      const visible = el => {
-        try {
-          const rect = el.getBoundingClientRect();
-          const style = getComputedStyle(el);
-          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-        } catch (_) { return false; }
-      };
-      const ensureRef = el => {
-        let ref = references.get(el);
-        if (!ref) {
-          if (nodesByRef.size >= 2048) {
-            for (const [key, node] of nodesByRef) if (!node?.isConnected) nodesByRef.delete(key);
-            while (nodesByRef.size >= 2048) nodesByRef.delete(nodesByRef.keys().next().value);
-          }
-          ref = `n${nextRef++}`;
-          references.set(el, ref);
-          nodesByRef.set(ref, el);
+            guard self.conversationID == conversationID else { return }
+            handoff = event
+            handoffNeedsContinue = needsContinue
+            handoffNotified = !needsContinue
+            handoffError = nil
+        } catch {
+            if self.conversationID == conversationID { handoffError = error.localizedDescription }
         }
-        return ref;
-      };
-      const findByRef = ref => {
-        const found = nodesByRef.get(ref);
-        return found?.isConnected ? found : null;
-      };
-      const allNodes = () => {
-        const seen = new Set();
-        const output = [];
-        for (const root of roots()) {
-          let candidates = [];
-          try { candidates = Array.from(root.querySelectorAll(selector)); } catch (_) {}
-          for (const el of candidates) {
-            if (seen.has(el) || !visible(el)) continue;
-            seen.add(el);
-            output.push(el);
-            if (output.length >= 400) return output;
-          }
-        }
-        return output;
-      };
-      const serialize = el => {
-        const rect = el.getBoundingClientRect();
-        const type = (el.type || '').toLowerCase();
-        const role = el.getAttribute('role') || (el.tagName || '').toLowerCase();
-        const password = type === 'password' || (el.autocomplete || '').toLowerCase() === 'current-password';
-        return {
-          ref: ensureRef(el), role,
-          name: String(el.getAttribute('aria-label') || el.title || '').slice(0, 300),
-          text: password ? '' : String(el.innerText || el.textContent || '').trim().slice(0, 500),
-          value: password ? null : (el.value == null ? null : String(el.value).slice(0, 500)),
-          state: {disabled: !!el.disabled, checked: !!el.checked, selected: !!el.selected},
-          bounds: {x:rect.x, y:rect.y, width:rect.width, height:rect.height}
-        };
-      };
-      const snapshot = (id, cursor, limit) => {
-        setDocument(id);
-        const nodes = allNodes();
-        const start = Math.max(0, Number(cursor) || 0);
-        const count = Math.min(50, Math.max(1, Number(limit) || 40));
-        const end = Math.min(nodes.length, start + count);
-        return {
-          revision,
-          viewportWidth: Math.max(1, Number(window.innerWidth) || 1),
-          viewportHeight: Math.max(1, Number(window.innerHeight) || 1),
-          nodes: nodes.slice(start, end).map(serialize),
-          nextCursor: end < nodes.length ? end : null
-        };
-      };
-      const perform = (operation, target, expectedDocumentID, text, submit, visualFallbackReason) => {
-        setDocument(expectedDocumentID);
-        if (target.kind === 'element' && target.documentID !== documentID) return {status:'stale'};
-        const el = target.kind === 'element'
-          ? findByRef(target.ref)
-          : document.elementFromPoint(Number(target.x), Number(target.y));
-        if (!el || !el.isConnected) return {status:'stale'};
-        if (operation === 'click') {
-          if (target.kind === 'point' && visualFallbackReason === 'noStructuredTarget') {
-            let structured = null;
-            try { structured = el.closest(selector); } catch (_) {}
-            const structuredTag = String((structured && structured.tagName) || '').toLowerCase();
-            // A canvas can be observable as one structured DOM node while
-            // containing many visual-only controls. browser.click on the
-            // canvas ref cannot address those internal targets, so preserve
-            // coordinate fallback for this exact boundary.
-            if (structured && visible(structured) && structuredTag !== 'canvas') {
-              return {status:'structured', ref:ensureRef(structured)};
-            }
-          }
-          // A fresh screenshot point is already viewport-relative. Scrolling
-          // its hit element before dispatch changes the coordinate and was
-          // the main source of intermittent misses on long pages.
-          if (target.kind === 'element') {
-            el.scrollIntoView({block:'center', inline:'center'});
-          }
-          const rect = el.getBoundingClientRect();
-          const x = target.kind === 'point' ? Number(target.x) : rect.x + rect.width / 2;
-          const y = target.kind === 'point' ? Number(target.y) : rect.y + rect.height / 2;
-          for (const type of ['pointerover','pointerenter','pointerdown','pointerup']) {
-            try { el.dispatchEvent(new PointerEvent(type, {bubbles:true, cancelable:true, clientX:x, clientY:y, pointerType:'mouse', isPrimary:true})); } catch (_) {}
-          }
-          if (target.kind === 'point') {
-            // HTMLElement.click() manufactures a click at (0,0), which is
-            // unusable for canvas hit-testing. Preserve the evidence-backed
-            // viewport coordinates on the actual click event.
-            el.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window}));
-          } else {
-            el.click();
-          }
-          return {status:'ok'};
-        }
-        const tag = (el.tagName || '').toLowerCase();
-        const inputType = (el.type || '').toLowerCase();
-        if (inputType === 'password' || (el.autocomplete || '').toLowerCase() === 'current-password') return {status:'needsUser'};
-        if (!(tag === 'input' || tag === 'textarea' || el.isContentEditable)) return {status:'blocked'};
-        el.focus();
-        if (el.isContentEditable) {
-          el.textContent = text;
-        } else {
-          const prototype = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-          const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-          if (setter) setter.call(el, text); else el.value = text;
-        }
-        try { el.dispatchEvent(new InputEvent('beforeinput', {bubbles:true, inputType:'insertText', data:text})); } catch (_) {}
-        el.dispatchEvent(new Event('input', {bubbles:true}));
-        el.dispatchEvent(new Event('change', {bubbles:true}));
-        if (submit) {
-          el.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', code:'Enter', bubbles:true}));
-          if (el.form?.requestSubmit) el.form.requestSubmit();
-          el.dispatchEvent(new KeyboardEvent('keyup', {key:'Enter', code:'Enter', bubbles:true}));
-        }
-        return {status:'ok'};
-      };
-      const status = (id, query, expectedText) => {
-        setDocument(id);
-        let selectorFound = false;
-        if (query) {
-          for (const root of roots()) {
-            try { if (root.querySelector(query)) { selectorFound = true; break; } } catch (_) {}
-          }
-        }
-        const bodyText = expectedText ? String(document.body?.innerText || '') : '';
-        return {
-          readyState: document.readyState,
-          selectorFound,
-          textFound: !!expectedText && bodyText.includes(expectedText),
-          idleMilliseconds: Math.max(0, performance.now() - lastMutation),
-          revision
-        };
-      };
-      const drainEvents = id => { setDocument(id); return events.splice(0, events.length); };
-
-      new MutationObserver(records => {
-        if (!records.length) return;
-        revision += 1;
-        lastMutation = performance.now();
-        push('DOM.documentUpdated');
-      }).observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
-      document.addEventListener('DOMContentLoaded', () => push('Page.domContentEventFired'), {once:true});
-      addEventListener('load', () => push('Page.loadEventFired'), {once:true});
-      addEventListener('hashchange', () => push('Page.navigatedWithinDocument'));
-      addEventListener('popstate', () => push('Page.navigatedWithinDocument'));
-      globalThis.__floeProtocol = {snapshot, perform, status, drainEvents};
-      push('Runtime.executionContextCreated');
-    })();
-    """#
-
-    private func saveSnapshot(of webView: WKWebView) async throws -> BrowserArtifactReference {
-        let image = try await webView.takeSnapshot(configuration: nil)
-        guard let data = image.jpegData(compressionQuality: 0.78) else {
-            throw BrowserPolicyError.blocked("The viewport could not be encoded")
-        }
-        guard data.count <= 8 * 1024 * 1024 else {
-            throw BrowserPolicyError.blocked("The viewport snapshot exceeds 8 MiB")
-        }
-        try FileManager.default.createDirectory(at: artifactDirectory, withIntermediateDirectories: true)
-        let id = UUID()
-        let name = "\(id.uuidString).jpg"
-        try data.write(to: artifactDirectory.appendingPathComponent(name), options: .atomic)
-        let digest = FloeDigest.sha256Hex(data)
-        return BrowserArtifactReference(
-            id: id,
-            relativePath: "BrowserArtifacts/\(name)",
-            mimeType: "image/jpeg",
-            byteCount: data.count,
-            sha256: digest,
-            pixelWidth: image.cgImage?.width ?? Int(image.size.width * image.scale),
-            pixelHeight: image.cgImage?.height ?? Int(image.size.height * image.scale)
-        )
     }
 
-    private func recognizeVisualText(in artifact: BrowserArtifactReference) throws -> [VisualTextRegion] {
-        let filename = (artifact.relativePath as NSString).lastPathComponent
-        return try VisualTextRecognizer.recognize(
-            imageData: Data(contentsOf: artifactDirectory.appendingPathComponent(filename)),
-            pixelWidth: artifact.pixelWidth,
-            pixelHeight: artifact.pixelHeight
+    func recoverHandoff() async {
+        guard handoff?.returning == true else { return }
+        await returnToAgent()
+    }
+
+    /// Releases exactly one task's WebViews, documents, evidence and pending
+    /// handoff. Late callbacks for this owner are fenced — permanently while
+    /// the tombstone is retained, and afterwards by the cancelled run's own
+    /// ToolContext cancellation; other tasks keep their sessions and any
+    /// visible panel. Only an explicit UI restore or a newly admitted run may
+    /// reactivate this owner.
+    func discard(conversationID: UUID) {
+        fenceReleasedOwner(conversationID)
+        ownerReleaseHook?(conversationID)
+        if self.conversationID == conversationID {
+            self.conversationID = nil
+            unboundSessionID = UUID()
+            handoff = nil
+            handoffNeedsContinue = false
+            handoffNotified = false
+            handoffError = nil
+        }
+        if presentationRequest?.conversationID == conversationID {
+            presentationRequest = nil
+        }
+        pendingPanelRequests.removeValue(forKey: conversationID)
+        if let event = handoffs[conversationID] { deliveredHandoffIDs.remove(event.id) }
+        handoffs.removeValue(forKey: conversationID)
+        try? persistHandoffs()
+        handoffNeedsContinueByConversation.removeValue(forKey: conversationID)
+        knownRunIDs.removeValue(forKey: conversationID)
+        store.release(conversationID)?.release()
+    }
+
+    private func refreshHandoffProjection(for conversationID: UUID) {
+        let event = handoffs[conversationID]
+        handoff = event
+        let needsContinue = handoffNeedsContinueByConversation[conversationID]
+            ?? (event?.returning == true)
+        handoffNeedsContinue = event != nil && needsContinue
+        handoffNotified = event?.returning == true && !handoffNeedsContinue
+    }
+
+    private func persistHandoffs() throws {
+        guard durableHandoffs else { return }
+        try FileManager.default.createDirectory(
+            at: handoffURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
         )
+        try JSONEncoder().encode(Array(handoffs.values)).write(to: handoffURL, options: .atomic)
     }
 
     /// Screenshot evidence is ephemeral. Keep a bounded recent set and
@@ -1240,144 +709,11 @@ final class BrowserSessionCenter: NSObject, ObservableObject {
             try? manager.removeItem(at: file.0)
         }
     }
-
-    private func tabSnapshots() -> [BrowserTabSnapshot] {
-        tabs.map {
-            BrowserTabSnapshot(
-                id: $0.id,
-                url: $0.webView.url?.absoluteString ?? "",
-                title: $0.webView.title ?? "",
-                isActive: $0.id == activeTabID
-            )
-        }
-    }
-
-    private func failure(
-        _ command: BrowserCommand,
-        status: BrowserResult.Status,
-        code: String,
-        _ message: String
-    ) -> BrowserResult {
-        BrowserResult(
-            requestID: command.requestID,
-            status: status,
-            message: message,
-            error: BrowserFailure(code: code, message: message)
-        )
-    }
 }
 
-private struct ProbeSnapshot: Decodable {
-    var revision: Int
-    var viewportWidth: Double
-    var viewportHeight: Double
-    var nodes: [BrowserNode]
-    var nextCursor: Int?
-}
-
-private struct ProbeState: Decodable {
-    var readyState: String
-    var selectorFound: Bool
-    var textFound: Bool
-    var idleMilliseconds: Double
-    var revision: Int
-}
-
-private struct ProbeEvent: Decodable {
-    var method: String
-    var detail: String?
-    var revision: Int?
-}
-
-private enum BrowserInteractionError: Error {
-    case needsUser(String)
-    case stale(String)
-}
-
-extension BrowserSessionCenter: WKNavigationDelegate, WKUIDelegate {
-    private func owner(of webView: WKWebView) -> UUID? {
-        if tabs.contains(where: { $0.webView === webView }) { return conversationID }
-        return taskSessions.first(where: { $0.value.tabs.contains(where: { $0.webView === webView }) })?.key
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        decidePolicyFor navigationAction: WKNavigationAction
-    ) async -> WKNavigationActionPolicy {
-        guard let url = navigationAction.request.url else {
-            return .cancel
-        }
-        // WebKit uses its own blank document while `loadHTMLString` commits.
-        // It is not a tool-addressable URL and must remain available for
-        // local fixtures/previews; all external navigations still pass the
-        // normal http/https/private-network policy below.
-        if url.absoluteString == "about:blank" { return .allow }
-        guard (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: owner(of: webView))) != nil else {
-            return .cancel
-        }
-        return .allow
-    }
-
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
-        appendEvent(tabID: tabID, method: "Page.frameStartedLoading")
-        surfaceState = .loading
-    }
-
-    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
-        tabs[index].documentID = UUID().uuidString
-        tabs[index].revision = 0
-        tabs[index].visualFallbackEvidence = nil
-        appendEvent(
-            tabID: tabs[index].id,
-            method: "Page.frameNavigated"
-        )
-    }
-
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        guard let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
-        appendEvent(tabID: tabs[index].id, method: "Page.loadEventFired")
-        if tabs[index].id == activeTabID { refreshVisibleAddress() }
-        surfaceState = isUserControlling ? .needsUser("User takeover is active") : .ready
-        objectWillChange.send()
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFailProvisionalNavigation navigation: WKNavigation!,
-        withError error: any Error
-    ) {
-        guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
-        let nsError = error as NSError
-        appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
-        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        didFail navigation: WKNavigation!,
-        withError error: any Error
-    ) {
-        guard let tabID = tabs.first(where: { $0.webView === webView })?.id else { return }
-        let nsError = error as NSError
-        appendEvent(tabID: tabID, method: "Network.loadingFailed", detail: "\(nsError.domain):\(nsError.code)")
-        surfaceState = .failed("\(nsError.localizedDescription) (\(nsError.code))")
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        createWebViewWith configuration: WKWebViewConfiguration,
-        for navigationAction: WKNavigationAction,
-        windowFeatures: WKWindowFeatures
-    ) -> WKWebView? {
-        guard let id = createTab(),
-              let created = tabs.first(where: { $0.id == id })?.webView else { return nil }
-        if let url = navigationAction.request.url,
-           (try? BrowserURLPolicy.validate(url.absoluteString, conversationID: owner(of: webView))) != nil {
-            created.load(URLRequest(url: url))
-        }
-        return created
+extension BrowserSessionCenter: BrowserTaskSessionHost {
+    func browserSessionRequestedUserControl(_ session: BrowserTaskSession, reason: String) {
+        beginUserControl(for: session, runID: nil, reason: reason)
     }
 }
 #endif

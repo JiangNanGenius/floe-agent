@@ -12,6 +12,55 @@
 	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Floe Note</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.floeagent.note</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Floe Canvas</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.floeagent.canvas</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>PDF and Office documents</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.adobe.pdf</string>
+				<string>org.openxmlformats.wordprocessingml.document</string>
+				<string>org.openxmlformats.spreadsheetml.sheet</string>
+				<string>org.openxmlformats.presentationml.presentation</string>
+				<string>com.microsoft.word.doc</string>
+				<string>com.microsoft.excel.xls</string>
+				<string>com.microsoft.powerpoint.ppt</string>
+				<string>org.oasis-open.opendocument.text</string>
+				<string>org.oasis-open.opendocument.spreadsheet</string>
+				<string>org.oasis-open.opendocument.presentation</string>
+				<string>public.rtf</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -24,17 +73,36 @@
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>org.floeagent.ios.routes</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>floe</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>FLOEGitHubOAuthClientID</key>
 	<string>$(FLOE_GITHUB_OAUTH_CLIENT_ID)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>NFCReaderUsageDescription</key>
+	<string>Floe reads a nearby NFC tag when you request a scan.</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Floe schedules the alarms and timers you create in the app.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSAppleMusicUsageDescription</key>
+	<string>Floe finds and plays items from your media library when you request them.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Floe uses Bluetooth only when you ask it to connect to a nearby BLE serial device.</string>
 	<key>NSBonjourServices</key>
@@ -50,8 +118,12 @@
 	<string>Floe accesses calendars only when you ask the agent to read or edit events.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Floe opens the camera only when you choose to capture an image for a task.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Floe reads the contacts you ask it to find.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Floe uses Face ID only to confirm when you enable unrestricted task access or unlock protected settings.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Floe reads the Health data you request after you authorize access.</string>
 	<key>NSHomeKitUsageDescription</key>
 	<string>Floe accesses your Home only when you enable Home tools and request an automation action.</string>
 	<key>NSLocalNetworkUsageDescription</key>
@@ -68,6 +140,8 @@
 	<string>Floe accesses reminders only when you ask the agent to read or edit them.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Floe converts your speech into text for the message composer.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

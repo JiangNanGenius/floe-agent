@@ -28,7 +28,7 @@ ALLOWED = {
 }
 REJECTED = {"GPL", "GPL-2.0", "GPL-3.0", "LGPL", "LGPL-2.1", "LGPL-3.0", "AGPL-3.0", "S-Lab", "CC-BY-NC", "CC-BY-NC-4.0"}
 HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
-STATUSES = {"ready", "pending-assets", "license-check", "excluded"}
+STATUSES = {"ready", "pending-assets", "pending-qualification", "license-check", "excluded"}
 
 
 def main() -> int:
@@ -70,6 +70,23 @@ def main() -> int:
                     errors.append(f"{identifier}: file sha256 must be 64 hex characters")
                 if not isinstance(file.get("sizeBytes"), int) or file["sizeBytes"] <= 0:
                     errors.append(f"{identifier}: file sizeBytes must be a positive integer")
+        elif status == "pending-qualification":
+            prepared = model.get("preparedAssets", {})
+            if model.get("files"):
+                errors.append(f"{identifier}: pending qualification cannot expose downloadable files")
+            if not prepared.get("version") or not HEX64.fullmatch(prepared.get("manifestSHA256", "")):
+                errors.append(f"{identifier}: pending qualification needs an exact prepared version/manifest")
+            paths = set()
+            for file in prepared.get("files", []):
+                path = file.get("path", "")
+                if not path or path.startswith("/") or "\\" in path or any(p in ("", ".", "..") for p in path.split("/")) or path in paths:
+                    errors.append(f"{identifier}: invalid prepared member path")
+                paths.add(path)
+                if file.get("url") or not file.get("assetName") or not HEX64.fullmatch(file.get("sha256", "")) or not isinstance(file.get("sizeBytes"), int) or file["sizeBytes"] <= 0:
+                    errors.append(f"{identifier}: prepared bytes need asset name/hash/size and no assumed URL")
+            if not {"manifest.json", "contract.json", "LICENSE.txt", "PROVENANCE.json", "DISTRIBUTION.json"}.issubset(paths):
+                errors.append(f"{identifier}: incomplete prepared runtime/notices")
+            warnings.append(f"{identifier}: exact assets prepared; qualification and publication pending")
         elif status == "license-check":
             warnings.append(f"{identifier}: awaiting license confirmation")
         else:

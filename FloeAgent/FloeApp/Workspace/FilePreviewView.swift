@@ -335,8 +335,9 @@ struct FilePreviewView: View {
 
     /// The initiating task conversation (explicit preview binding, else the
     /// router's selected chat when it belongs to this workspace). Used for
-    /// workbench ownership — NOT for the Drawing Assistant chat, which is
-    /// drawing-specific to avoid cross-file context bleed.
+    /// workbench ownership and for the explicit "preview website" action —
+    /// NOT for the Drawing Assistant chat, which is drawing-specific to avoid
+    /// cross-file context bleed.
     private var engineeringConversationID: UUID? {
         guard let id = conversationID ?? router.selectedConversationID,
               center.workspaceID(for: id) == center.currentWorkspace?.id else { return nil }
@@ -1160,15 +1161,39 @@ struct FilePreviewView: View {
     }
 
     private func startWebPreview() {
-        guard let root = center.currentRootURL else { return }
+        // The preview belongs to the file's own task, never to whichever task
+        // happens to be visible in the browser panel. A file opened outside a
+        // task of this workspace has no preview owner and is refused instead
+        // of borrowing an unrelated session.
+        guard let workspaceID = center.currentWorkspace?.id,
+              let owner = engineeringConversationID,
+              let root = center.currentRootURL else {
+            previewError = OfficeInkText.t(
+                "请在这个文件所属的任务中打开以预览网页",
+                "Open this file from its task to preview the website"
+            )
+            return
+        }
         Task {
             do {
                 _ = try await environment.previewCenter.start(
                     root: root,
                     relativeRoot: nil,
-                    entry: relativePath
+                    entry: relativePath,
+                    owner: owner
                 )
+                // The start can outlive the user's route. Only project its
+                // result while this view's task and workspace are still the
+                // selected ones; a late completion never selects or opens a
+                // different task's browser.
+                guard !Task.isCancelled,
+                      router.selectedConversationID == owner,
+                      center.currentWorkspace?.id == workspaceID,
+                      center.workspaceID(for: owner) == workspaceID else { return }
+                environment.previewCenter.select(owner)
                 router.showInspector(.browser)
+            } catch FloeError.cancelled {
+            } catch is CancellationError {
             } catch {
                 previewError = error.localizedDescription
             }

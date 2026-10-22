@@ -1,6 +1,89 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "NSAlarmKitUsageDescription": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe schedules the alarms and timers you create in the app."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 为你创建系统闹钟和计时器。"
+        }
+      }
+    }
+  },
+    "NSHealthShareUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe reads the Health data you request after you authorize access."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 会在你授权后读取你请求的健康数据。"
+          }
+        }
+      }
+    },
+    "NFCReaderUsageDescription": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe reads a nearby NFC tag when you request a scan."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 会在你请求扫描时读取附近的 NFC 标签。"
+          }
+        }
+      }
+    },
+    "NSContactsUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe reads the contacts you ask it to find."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 会读取你请求查找的联系人。"
+          }
+        }
+      }
+    },
+    "NSAppleMusicUsageDescription": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe finds and plays items from your media library when you request them."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Floe 会按你的要求查找和播放媒体库中的内容。"
+          }
+        }
+      }
+    },
     "NSMicrophoneUsageDescription" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Floe uses the microphone only while you dictate a message." } },

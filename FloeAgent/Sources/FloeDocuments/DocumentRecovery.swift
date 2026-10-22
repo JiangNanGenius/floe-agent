@@ -31,6 +31,8 @@ struct DocumentRecoveryManifest: Codable, Sendable {
     var fileExtension: String
     var committedDigest: String
     var pendingDigest: String?
+    var workingSavedDigest: String?
+    var pendingWorkingDigest: String?
     var updatedAt: Date
 
     static func read(from directory: URL) throws -> Self {
@@ -46,10 +48,21 @@ struct DocumentRecoveryManifest: Codable, Sendable {
               value.fileExtension.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) }),
               validDigest(value.committedDigest),
               value.pendingDigest.map(validDigest) ?? true,
+              value.workingSavedDigest.map(validDigest) ?? true,
+              value.pendingWorkingDigest.map(validDigest) ?? true,
               !value.originalBookmark.isEmpty else {
             throw FloeError.validationFailed("Unsupported document recovery record")
         }
         return value
+    }
+    /// Only called after a coordinated read proved the original equals the
+    /// journaled intended bytes. Preserve the separate raw working baseline.
+    mutating func reconcileCommittedPending(currentDigest: String) {
+        guard let pendingDigest, pendingDigest == currentDigest else { return }
+        committedDigest = pendingDigest
+        workingSavedDigest = pendingWorkingDigest ?? pendingDigest
+        self.pendingDigest = nil
+        pendingWorkingDigest = nil
     }
     func write(to directory: URL) throws {
         let data = try JSONEncoder().encode(self)

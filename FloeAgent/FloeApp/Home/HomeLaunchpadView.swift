@@ -92,6 +92,9 @@ struct HomeLaunchpadView: View {
             // specific handoff receipt is verified on disk beside the placed
             // text, and keeps every other entry safely queued.
             await viewModel.acceptShortcutInbox()
+            // Review-first inbound shares: refresh the app-owned queue; the
+            // card only adds to THIS window's live composer on explicit Use.
+            await center.environment.shareIntakeCenter.refresh()
         }
         .onReceive(NotificationCenter.default.publisher(for: FloeShortcutInbox.didEnqueue)) { _ in
             // A Shortcuts run just placed a draft while Home is open: update
@@ -160,6 +163,12 @@ struct HomeLaunchpadView: View {
 
     private var composer: some View {
         VStack(spacing: 0) {
+            if !designStart {
+                ShareIntakeCard(
+                    center: center.environment.shareIntakeCenter,
+                    destination: viewModel
+                )
+            }
             if viewModel.showsShortcutInboxBanner {
                 shortcutInboxBar
             }

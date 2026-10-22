@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Prepare pinned Office binaries at build time, never from the running app."""
+"""Prepare pinned Office binaries at build time, never from the running app.
+
+The normal download first tries the pinned GitHub Actions artifact.  When that
+short-lived artifact has expired, the same pinned bytes are recovered from the
+immutable component release tagged ``office-native-host-<archive sha256>`` and
+verified against the tracked lock before the normal staged install runs.
+"""
 import argparse
 import hashlib
 import office_compiled_lifecycle as compiled_lifecycle
 import json
 from pathlib import Path, PurePosixPath
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -33,6 +40,9 @@ def browser_resources_module(*, required):
 ROOT = Path(__file__).resolve().parent.parent
 LOCK = ROOT / 'ThirdParty/Collabora/engine.lock.json'
 FRAMEWORK = 'FloeOfficeNative.framework'
+ARTIFACT_NAME = 'OfficeNativeHost.zip'
+MAX_ARCHIVE_ENTRIES = 100000
+MAX_EXTRACT_BYTES = 2 * 1024 * 1024 * 1024
 
 
 def digest(path):
@@ -476,7 +486,23 @@ def verify_installed(folder, lock, pin):
             'runID': pin['runID'], 'archiveSHA256': pin['archiveSHA256']}
 
 
-def install(archive, destination, lock_path=LOCK):
+def component_recovery_module():
+    try:
+        import office_component_recovery as module
+    except ModuleNotFoundError as failure:
+        raise ValueError(
+            'office_component_recovery.py must ship beside the Office bootstrap '
+            'scripts for an expired-actions artifact recovery') from failure
+    return module
+
+
+def _cancelled(cancel_check):
+    if cancel_check is not None:
+        cancel_check()
+
+
+def install(archive, destination, lock_path=LOCK, *, expected_executable_uuid=None,
+            cancel_check=None):
     lock, pin = checked_lock(lock_path)
     archive, destination = Path(archive), Path(destination)
     if destination.exists() or destination.is_symlink():
@@ -486,22 +512,109 @@ def install(archive, destination, lock_path=LOCK):
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=destination.parent, prefix='.office-host-') as temporary:
         stage = Path(temporary)
+        _cancelled(cancel_check)
         with zipfile.ZipFile(archive) as source:
             seen = set()
-            for item in source.infolist():
+            total = 0
+            entries = source.infolist()
+            if len(entries) > MAX_ARCHIVE_ENTRIES:
+                raise ValueError('Office archive has too many entries')
+            for index, item in enumerate(entries):
+                if index % 128 == 0:
+                    _cancelled(cancel_check)
                 name = relative(item.filename)
                 if name.parts[0] != 'OfficeNativeHost' or item.filename in seen:
                     raise ValueError('Unexpected Office archive root or duplicate entry')
+                if item.flag_bits & 0x1:
+                    raise ValueError('Office archive contains an encrypted entry')
                 seen.add(item.filename)
+                total += item.file_size
+                if total > MAX_EXTRACT_BYTES:
+                    raise ValueError('Office archive expands beyond its accepted size')
                 mode = item.external_attr >> 16
                 if stat.S_ISLNK(mode) or (stat.S_IFMT(mode) not in (0, stat.S_IFREG, stat.S_IFDIR)):
                     raise ValueError('Office archive contains a link or special file')
             source.extractall(stage)
         prepared = stage / 'OfficeNativeHost'
         result = verify_installed(prepared, lock, pin)
+        if expected_executable_uuid is not None:
+            actual = component_recovery_module().macho_uuid(
+                prepared / FRAMEWORK / 'FloeOfficeNative')
+            if actual != str(expected_executable_uuid).upper():
+                raise ValueError('Native Office executable UUID differs from its qualified symbol binding')
+        _cancelled(cancel_check)
         (prepared / FRAMEWORK / 'FloeOfficeNative').chmod(0o755)
         prepared.rename(destination)
     return result
+
+
+def download_actions_artifact(pin, temporary, *, runner=subprocess.run, timeout=600):
+    """Fetch the pinned Actions artifact into a private staging directory."""
+    temporary = Path(temporary)
+    runner(['gh', 'run', 'download', pin['runID'], '--repo', 'JiangNanGenius/floe-agent',
+            '--name', pin['artifactName'], '--dir', str(temporary)],
+           check=True, timeout=timeout)
+    archive = temporary / ARTIFACT_NAME
+    if not archive.is_file():
+        raise ValueError('The Actions artifact did not provide ' + ARTIFACT_NAME)
+    return archive
+
+
+def fetch_pinned_archive(lock, pin, temporary, *, actions_runner=subprocess.run,
+                         release_runner=subprocess.run, attempts=3,
+                         sleep=time.sleep, cancel_check=None, release_only=False,
+                         artifact_only=False, repository=None):
+    """Recover the exact pinned archive from the live transport or the durable one.
+
+    The Actions artifact is tried first so existing builds keep their current
+    behaviour.  When it has expired (or the GitHub API/network cannot provide
+    it), the immutable component release derived from the pinned archive hash is
+    tried.  Both transports deliver bytes that must equal the pin, and the
+    component path additionally verifies the release descriptor, the host
+    executable UUID against the descriptor's PRIVATE dSYM binding and the
+    public licensing archive.  The private dSYM/signing bytes are never
+    downloaded or published; the returned transport summary records
+    ``symbolsVerified: False`` so no caller can read metadata as actual symbol
+    qualification.  A failure in either transport is never retried into a
+    weaker check, and the returned transport identity is recorded by the
+    caller.
+    """
+    failures = []
+    if not release_only:
+        for attempt in range(attempts):
+            _cancelled(cancel_check)
+            # A failed download may leave a partial ZIP. Retry in a fresh
+            # subdirectory; signature/digest/install failures are never retried
+            # or bypassed.
+            attempt_directory = Path(temporary) / f'actions-{attempt + 1}'
+            attempt_directory.mkdir()
+            try:
+                archive = download_actions_artifact(pin, attempt_directory,
+                                                    runner=actions_runner)
+                _cancelled(cancel_check)
+                return archive, {'kind': 'actions-artifact', 'runID': pin['runID']}
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+                    ValueError, OSError) as failure:
+                failures.append(f"actions artifact: {failure}")
+                shutil.rmtree(attempt_directory, ignore_errors=True)
+                _cancelled(cancel_check)
+                if attempt + 1 < attempts:
+                    print(f'Office artifact download interrupted; retry {attempt + 2}/{attempts}')
+                    sleep(min(5 * (attempt + 1), 15))
+    if artifact_only:
+        raise ValueError('Native Office artifact download failed: ' + '; '.join(failures))
+    module = component_recovery_module()
+    try:
+        archive, transport = module.recover_into(
+            Path(temporary), lock, pin, repository=repository,
+            runner=release_runner, cancel_check=cancel_check)
+        return archive, transport
+    except (ValueError, OSError, subprocess.CalledProcessError,
+            subprocess.TimeoutExpired) as failure:
+        failures.append(f'component release: {failure}')
+    raise ValueError(
+        'Native Office host is unavailable from both transports; no weaker '
+        'download or rebuild was accepted. ' + '; '.join(failures))
 
 
 def write_project_inputs(folder, output, project_root=ROOT, lock_path=LOCK):
@@ -552,7 +665,13 @@ def main():
     parser.add_argument('--archive', type=Path, help='Use an already downloaded, hash-locked archive')
     parser.add_argument('--destination', type=Path)
     parser.add_argument('--verify-only', action='store_true')
+    parser.add_argument('--release-only', action='store_true',
+                        help='Skip the Actions artifact and recover the immutable component release')
+    parser.add_argument('--artifact-only', action='store_true',
+                        help='Require the original Actions artifact (no durable fallback)')
     args = parser.parse_args()
+    if args.release_only and args.artifact_only:
+        parser.error('--release-only and --artifact-only are mutually exclusive')
     lock, pin = checked_lock(LOCK)
     destination = args.destination or ROOT / 'Vendor/Office' / pin['runID'] / 'OfficeNativeHost'
 
@@ -568,23 +687,16 @@ def main():
     if args.archive:
         finish(install(args.archive, destination))
         return
-    # gh uses the developer's existing login or the CI job's read-only token.
-    # Credentials never enter the command, artifact, or application resources.
-    for attempt in range(3):
-        # A failed download may leave a partial ZIP. Retry in a fresh directory;
-        # signature/digest/install failures are never retried or bypassed.
-        with tempfile.TemporaryDirectory(prefix='floe-office-download-') as temporary:
-            try:
-                subprocess.run(['gh', 'run', 'download', pin['runID'], '--repo', 'JiangNanGenius/floe-agent',
-                                '--name', pin['artifactName'], '--dir', temporary], check=True, timeout=600)
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-                if attempt == 2:
-                    raise
-                print(f'Office artifact download interrupted; retry {attempt + 2}/3')
-                time.sleep(5 * (attempt + 1))
-                continue
-            finish(install(Path(temporary) / 'OfficeNativeHost.zip', destination))
-            return
+    # Credentials never enter the command, artifact, or application resources:
+    # `gh` uses the developer's existing login or the CI job's read-only token.
+    with tempfile.TemporaryDirectory(prefix='floe-office-download-') as temporary:
+        archive, transport = fetch_pinned_archive(
+            lock, pin, temporary, release_only=args.release_only,
+            artifact_only=args.artifact_only)
+        result = install(archive, destination,
+                         expected_executable_uuid=transport.get('executableUUID'))
+    result['transport'] = transport
+    finish(result)
 
 
 if __name__ == '__main__':

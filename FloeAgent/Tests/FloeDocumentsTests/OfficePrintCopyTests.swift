@@ -659,6 +659,300 @@ struct OfficePrintCopyTests {
         }
     }
 
+    // MARK: - Selected sheets (build 285 preview round)
+
+    @Test("selected-sheets copy keeps exactly the chosen tabs printable")
+    func selectedSheetsCopyKeepsExactlyTheChosenTabs() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let sourceBytes = try Data(contentsOf: source)
+        let destination = root.appendingPathComponent("copy-selected.xlsx")
+
+        let plan = OfficePDFPrintPlan(scope: .sheets(names: ["Data", "Summary"]))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: sourceSHA,
+                                                   plan: plan)
+        // Printed names follow the workbook's own tab order, not the
+        // request's spelling order.
+        #expect(copyPlan.printedSheetNames == ["Summary", "Data"])
+        #expect(copyPlan.suppressedSheetNames == ["Hidden"])
+        #expect(copyPlan.printAreaReference == nil)
+        #expect(copyPlan.preservedDocumentPrintArea == false)
+        #expect(copyPlan.removedPrintAreas == 1)
+        #expect(copyPlan.preservedPrintTitles == 1)
+        #expect(copyPlan.madeTargetVisible == false)
+        let reopened = try Archive(url: destination, accessMode: .read)
+        let workbook = try xmlString(reopened, "xl/workbook.xml")
+        // An explicitly chosen, already-visible tab stays printable: both
+        // requested tabs are kept visible inside the copy, the active tab is
+        // the first chosen tab in tab order, and the already-veryHidden tab
+        // is untouched.
+        #expect(workbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\"/>"))
+        #expect(workbook.contains("<sheet name=\"Data\" sheetId=\"2\" r:id=\"rId2\"/>"))
+        #expect(workbook.contains("state=\"veryHidden\""))
+        #expect(workbook.contains("activeTab=\"0\""))
+        #expect(!workbook.contains("'Data'!$B$2:$C$3"))
+        #expect(workbook.contains("'Data'!$1:$1"))
+        // Selection-scoped suppression coverage: choosing only one of the
+        // two previously-visible tabs hides the other inside the copy only,
+        // moves the active tab to the chosen one, and still leaves the
+        // veryHidden tab untouched, print areas cleared and print titles kept.
+        let onlyData = root.appendingPathComponent("copy-only-data.xlsx")
+        let onlyCopy = try OfficePrintCopy.prepare(
+            sourceURL: source, destinationURL: onlyData, expectedSHA256: sourceSHA,
+            plan: OfficePDFPrintPlan(scope: .sheets(names: ["Data"])))
+        #expect(onlyCopy.printedSheetNames == ["Data"])
+        #expect(onlyCopy.suppressedSheetNames == ["Summary", "Hidden"])
+        #expect(onlyCopy.printAreaReference == nil)
+        #expect(onlyCopy.removedPrintAreas == 1)
+        #expect(onlyCopy.preservedPrintTitles == 1)
+        #expect(onlyCopy.madeTargetVisible == false)
+        #expect(onlyCopy.setActiveTab == true)
+        let onlyWorkbook = try xmlString(try Archive(url: onlyData, accessMode: .read),
+                                         "xl/workbook.xml")
+        #expect(onlyWorkbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\" state=\"hidden\"/>"))
+        #expect(onlyWorkbook.contains("state=\"veryHidden\""))
+        #expect(onlyWorkbook.contains("activeTab=\"1\""))
+        #expect(!onlyWorkbook.contains("'Data'!$B$2:$C$3"))
+        #expect(onlyWorkbook.contains("'Data'!$1:$1"))
+        // The source is unchanged and the copy keeps the drawing/ink member
+        // byte-for-byte (the full-content semantics the pagination fix needs).
+        #expect(try Data(contentsOf: source) == sourceBytes)
+        let archive = try Archive(url: source, accessMode: .read)
+        #expect(try member(reopened, "xl/drawings/drawing1.xml")
+                == member(archive, "xl/drawings/drawing1.xml"))
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
+    @Test("selected-sheets can resurrect an explicitly chosen hidden tab in the copy")
+    func selectedSheetsCanIncludeHiddenTab() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-hidden.xlsx")
+
+        let plan = OfficePDFPrintPlan(scope: .sheets(names: ["Hidden"]))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: nil,
+                                                   plan: plan)
+        #expect(copyPlan.printedSheetNames == ["Hidden"])
+        #expect(copyPlan.suppressedSheetNames == ["Summary", "Data"])
+        #expect(copyPlan.madeTargetVisible == true)
+        #expect(copyPlan.setActiveTab == true)
+        let workbook = try xmlString(try Archive(url: destination, accessMode: .read),
+                                     "xl/workbook.xml")
+        // The chosen veryHidden tab is visible inside the copy only; its
+        // `state` member is gone there while the source stays untouched.
+        #expect(workbook.contains("<sheet name=\"Hidden\" sheetId=\"3\" r:id=\"rId3\"/>"))
+        #expect(!workbook.contains("veryHidden"))
+        #expect(workbook.contains("activeTab=\"2\""))
+    }
+
+    @Test("selected-sheets refuses unknown, duplicate and empty selections without writing")
+    func selectedSheetsRefusals() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+
+        #expect(throws: OfficePDFPlanError.duplicateSheetName(name: "Data")) {
+            try OfficePDFPrintPlan(scope: .sheets(names: ["Data", "Data"]))
+                .validate(forExtension: "xlsx")
+        }
+        #expect(throws: OfficePDFPlanError.emptySheetSelection) {
+            try OfficePDFPrintPlan(scope: .sheets(names: []))
+                .validate(forExtension: "xlsx")
+        }
+        let unknownDestination = root.appendingPathComponent("refused-unknown.xlsx")
+        #expect(throws: OfficePrintCopyError.unknownSheet(
+            requested: "Missing", available: ["Summary", "Data", "Hidden"])) {
+            _ = try OfficePrintCopy.prepare(sourceURL: source,
+                                            destinationURL: unknownDestination,
+                                            expectedSHA256: sourceSHA,
+                                            plan: OfficePDFPrintPlan(scope: .sheets(names: ["Missing"])))
+        }
+        #expect(FileManager.default.fileExists(atPath: unknownDestination.path) == false)
+    }
+
+    // MARK: - Document print area scope
+
+    @Test("print-area scope re-emits the target sheet's own saved area verbatim")
+    func printAreaScopeKeepsSheetsOwnArea() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let destination = root.appendingPathComponent("copy-printarea.xlsx")
+
+        let plan = OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "Data"))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: sourceSHA,
+                                                   plan: plan)
+        #expect(copyPlan.printedSheetNames == ["Data"])
+        #expect(copyPlan.printAreaReference == "'Data'!$B$2:$C$3")
+        #expect(copyPlan.preservedDocumentPrintArea == true)
+        let workbook = try xmlString(try Archive(url: destination, accessMode: .read),
+                                     "xl/workbook.xml")
+        #expect(workbook.contains("'Data'!$B$2:$C$3"))
+        // Print titles stay for the document-print-area mode.
+        #expect(workbook.contains("'Data'!$1:$1"))
+        // Other tabs are suppressed inside the copy only.
+        #expect(workbook.contains("<sheet name=\"Summary\" sheetId=\"1\" r:id=\"rId1\" state=\"hidden\"/>"))
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+    }
+
+    @Test("print-area scope without its own area truthfully prints full content")
+    func printAreaScopeFallsBackToFullContent() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-printarea-none.xlsx")
+
+        let plan = OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "Summary"))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: nil,
+                                                   plan: plan)
+        // Summary declares no area: the copy declares none either (it never
+        // adopts Data's area) and the sheet prints its full content.
+        #expect(copyPlan.printAreaReference == nil)
+        #expect(copyPlan.preservedDocumentPrintArea == false)
+        let workbook = try xmlString(try Archive(url: destination, accessMode: .read),
+                                     "xl/workbook.xml")
+        #expect(!workbook.contains("'Data'!$B$2:$C$3"))
+    }
+
+    // MARK: - Exact scale and fit-pages
+
+    @Test("exact scale writes fitToPage=0 plus scale and drops stale fit attributes")
+    func exactScaleMembers() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-scale.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: "B2:C3"),
+            pageSetup: OfficePDFPageSetup(scalePercent: 85))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: nil,
+                                                   plan: plan)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains("<pageSetUpPr fitToPage=\"0\"/>"))
+        #expect(worksheet.contains("scale=\"85\""))
+        #expect(!worksheet.contains("scale=\"100\""))
+        #expect(!worksheet.contains("fitToWidth="))
+        #expect(!worksheet.contains("fitToHeight="))
+        #expect(copyPlan.appliedPageSetup.scalePercent == 85)
+    }
+
+    @Test("fit-to-pages writes both dimensions with fitToPage=1 and drops scale")
+    func fitPagesMembers() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let destination = root.appendingPathComponent("copy-fitpages.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(fitPages: OfficePDFFitPages(width: 2, height: 3)))
+        _ = try OfficePrintCopy.prepare(sourceURL: source,
+                                        destinationURL: destination,
+                                        expectedSHA256: nil,
+                                        plan: plan)
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains("<pageSetUpPr fitToPage=\"1\"/>"))
+        #expect(worksheet.contains("fitToWidth=\"2\""))
+        #expect(worksheet.contains("fitToHeight=\"3\""))
+        #expect(!worksheet.contains("scale="))
+    }
+
+    @Test("scaling conflicts and out-of-range values are refused before any copy")
+    func scalingRefusals() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+
+        #expect(throws: OfficePDFPlanError.conflictingScalingControls) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(
+                fit: .fitToOnePage, scalePercent: 85)).validate(forExtension: "xlsx")
+        }
+        #expect(throws: OfficePDFPlanError.conflictingScalingControls) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(
+                scalePercent: 85,
+                fitPages: OfficePDFFitPages(width: 1, height: 1)))
+                .validate(forExtension: "xlsx")
+        }
+        #expect(throws: OfficePDFPlanError.scalePercentOutOfRange(
+            requested: 5, minimum: 10, maximum: 400)) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(scalePercent: 5))
+                .validate(forExtension: "xlsx")
+        }
+        #expect(throws: OfficePDFPlanError.fitPagesOutOfRange(
+            requested: OfficePDFFitPages(width: 0, height: 1), maximum: 99)) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(
+                fitPages: OfficePDFFitPages(width: 0, height: 1)))
+                .validate(forExtension: "xlsx")
+        }
+        let destination = root.appendingPathComponent("refused-scale.xlsx")
+        #expect(throws: (any Error).self) {
+            _ = try OfficePrintCopy.prepare(
+                sourceURL: source, destinationURL: destination, expectedSHA256: nil,
+                plan: OfficePDFPrintPlan(
+                    scope: .sheet(name: "Data", cellRange: nil),
+                    pageSetup: OfficePDFPageSetup(scalePercent: 401)))
+        }
+        #expect(FileManager.default.fileExists(atPath: destination.path) == false)
+    }
+
+    @Test("non-workbook formats refuse the new scopes and scaling controls")
+    func newScopesRefuseNonWorkbookFormats() {
+        #expect(throws: OfficePDFPlanError.unsupportedScope(format: "docx")) {
+            try OfficePDFPrintPlan(scope: .sheets(names: ["A", "B"]))
+                .validate(forExtension: "docx")
+        }
+        #expect(throws: OfficePDFPlanError.unsupportedScope(format: "ods")) {
+            try OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "Sheet1"))
+                .validate(forExtension: "ods")
+        }
+        #expect(throws: OfficePDFPlanError.unsupportedPageSetup(format: "pptx")) {
+            try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(scalePercent: 100))
+                .validate(forExtension: "pptx")
+        }
+    }
+
+    @Test("the extended plan contract round-trips through Codable")
+    func extendedPlanCodableRoundTrip() throws {
+        let plans = [
+            OfficePDFPrintPlan(scope: .sheets(names: ["Data", "It''s Tab"])),
+            OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "Data")),
+            OfficePDFPrintPlan(scope: .sheet(name: "Data", cellRange: nil),
+                               pageSetup: OfficePDFPageSetup(scalePercent: 60)),
+            OfficePDFPrintPlan(scope: .allVisibleSheets,
+                               pageSetup: OfficePDFPageSetup(
+                                   fitPages: OfficePDFFitPages(width: 2, height: 3))),
+        ]
+        let roundTrip = try JSONEncoder().encode(plans)
+        let decoded = try JSONDecoder().decode([OfficePDFPrintPlan].self, from: roundTrip)
+        #expect(decoded == plans)
+    }
+
     // MARK: - Plan / page range
 
     @Test("page range parse is strict and normalizes order and duplicates")

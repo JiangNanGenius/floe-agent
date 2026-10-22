@@ -325,6 +325,13 @@ struct RootView: View {
     /// environment the notification came from.
     @State private var presentedExecutionEnvironment = false
     @State private var focusedLinuxEnvironmentID: String?
+    private struct QueuedEntry: Identifiable {
+        let id = UUID()
+        let route: FloeAppEntryRoute
+    }
+    @State private var pendingEntry: QueuedEntry?
+    @State private var entryNavigationReady = false
+    @State private var entryNotice: String?
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -387,11 +394,40 @@ struct RootView: View {
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
-        .overlay(alignment: .top) { foregroundBanner }
+        .overlay(alignment: .top) {
+            VStack(spacing: 8) {
+                DocumentIntakeBanner(center: environment.documentIntakeCenter, sceneID: sceneID)
+                if let entryNotice {
+                    HStack {
+                        Text(entryNotice).font(.subheadline)
+                        Spacer(minLength: 8)
+                        Button("action.done") { self.entryNotice = nil }
+                            .frame(minHeight: 44)
+                    }
+                    .padding(.horizontal, 12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                }
+                foregroundBanner
+            }
+        }
+        .onOpenURL { handleEntryURL($0) }
+        .task(id: "\(entryNavigationReady)-\(pendingEntry?.id.uuidString ?? "none")") {
+            await deliverPendingEntry()
+        }
+        .onReceive(environment.documentIntakeCenter.$presentation) { _ in
+            presentPendingDocument()
+        }
+        .onChange(of: entryNavigationReady) { _, ready in
+            if ready { presentPendingDocument() }
+        }
         .onAppear {
+            configureDocumentRouting()
+            DocumentIntakeRoutingRegistry.shared.setActive(scenePhase == .active, sceneID: sceneID)
             GitHubActionsJobCenter.shared.scenePhaseChanged(active: scenePhase == .active, sceneID: sceneID)
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
+            DocumentIntakeRoutingRegistry.shared.setActive(newPhase == .active, sceneID: sceneID)
             router.handleScenePhase(
                 newPhase,
                 sceneID: sceneID,
@@ -421,6 +457,7 @@ struct RootView: View {
             }
         }
         .onDisappear {
+            DocumentIntakeRoutingRegistry.shared.setActive(false, sceneID: sceneID)
             // A full-screen editor can cover this view while its scene is
             // still active. View disappearance alone must not pause cloud jobs.
             if scenePhase != .active {
@@ -440,6 +477,7 @@ struct RootView: View {
             Self.importCanvasSyncPreferenceFromCloud()
         }
         .task(id: environment.persistenceReady) {
+            entryNavigationReady = false
             guard environment.persistenceReady else { return }
             Self.importCanvasSyncPreferenceFromCloud()
             NSUbiquitousKeyValueStore.default.synchronize()
@@ -452,6 +490,12 @@ struct RootView: View {
             await environment.workspaceCenter.reload()
             router.reconcileOnLaunch(environment: environment)
             await environment.conversationCenter.reload()
+            // Publish the first widget snapshot only after launch recovery
+            // and history reload; the center observes real changes after this.
+            environment.widgetSnapshotCenter.start(
+                observing: environment.conversationCenter
+            )
+            entryNavigationReady = true
             await environment.settingsCenter.load()
             await environment.conversationCenter.resumeSafeRunsAfterForeground()
             await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()
@@ -477,9 +521,19 @@ struct RootView: View {
         }
         .onChange(of: environment.browserCenter.presentationRequest) { _, request in
             guard let request, request.conversationID == router.selectedConversationID else { return }
-            if request.show { router.showInspector(.browser) }
+            if request.show {
+                _ = environment.browserCenter.consumePendingPanelRequest(for: request.conversationID)
+                router.showInspector(.browser)
+            }
             else if router.inspectorRoute?.content == .browser,
                     router.inspectorRoute?.conversationID == request.conversationID { router.hideInspector() }
+        }
+        .onChange(of: router.workbenchSelection) { _, selection in
+            environment.previewCenter.select(router.selectedConversationID)
+            guard case .conversation(let id) = selection,
+                  let request = environment.browserCenter.consumePendingPanelRequest(for: id),
+                  request.show else { return }
+            router.showInspector(.browser)
         }
         .onReceive(NotificationCenter.default.publisher(for: .floeOpenConversation)) { notification in
             if let id = notification.userInfo?["conversationID"] as? UUID {
@@ -602,6 +656,104 @@ struct RootView: View {
         }
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.locale, resolvedLocale)
+    }
+
+    private func configureDocumentRouting() {
+        // AppRouter is shared across scenes; the registry checks the exact
+        // originating scene and its separate Notes document identity.
+        environment.documentIntakeCenter.setRoutingEligibility { [weak router] presentation in
+            guard let router else { return false }
+            return DocumentIntakeRoutingRegistry.shared.canPresent(
+                presentation, currentRoute: DocumentIntakeRouteSnapshot(router: router))
+        }
+    }
+
+    private func handleEntryURL(_ url: URL) {
+        do {
+            let route = try FloeAppEntryRoute.parse(url)
+            if case .externalFile(let file) = route {
+                // Acquire the provider scope in this callback, not after boot.
+                configureDocumentRouting()
+                DocumentIntakeRoutingRegistry.shared.setActive(scenePhase == .active, sceneID: sceneID)
+                if let eventID = environment.documentIntakeCenter.submit(file, sceneID: sceneID) {
+                    DocumentIntakeRoutingRegistry.shared.capture(
+                        DocumentIntakeRouteSnapshot(router: router), sceneID: sceneID, eventID: eventID)
+                }
+            } else {
+                pendingEntry = QueuedEntry(route: route)
+                entryNotice = nil
+            }
+        } catch {
+            entryNotice = FloeL10n.l("app.entry.invalid_link")
+        }
+    }
+
+    private func deliverPendingEntry() async {
+        guard entryNavigationReady, environment.persistenceReady,
+              let entry = pendingEntry else { return }
+        let selection = router.workbenchSelection
+        do {
+            switch entry.route {
+            case .newTask:
+                router.startNewTask()
+            case .task(let id):
+                let record = try await environment.conversationStore.conversation(id: id)
+                try Task.checkCancellation()
+                guard pendingEntry?.id == entry.id else { return }
+                guard router.workbenchSelection == selection else {
+                    pendingEntry = nil
+                    return
+                }
+                guard let record, record.archivedAt == nil, record.purpose == .ordinary else {
+                    entryNotice = FloeL10n.l("app.entry.task_unavailable")
+                    break
+                }
+                router.openConversation(id)
+            case .shareInbox(let id):
+                await environment.shareIntakeCenter.refresh()
+                try Task.checkCancellation()
+                guard pendingEntry?.id == entry.id else { return }
+                guard router.workbenchSelection == selection else {
+                    pendingEntry = nil
+                    return
+                }
+                if let id, !environment.shareIntakeCenter.pending.contains(where: { $0.id == id }) {
+                    entryNotice = FloeL10n.l("app.entry.share_unavailable")
+                } else {
+                    router.startNewTask()
+                }
+            case .externalFile:
+                break
+            }
+        } catch is CancellationError {
+            if pendingEntry?.id == entry.id, router.workbenchSelection != selection {
+                pendingEntry = nil
+            }
+            return
+        } catch {
+            if pendingEntry?.id == entry.id, router.workbenchSelection == selection {
+                entryNotice = FloeL10n.l("app.entry.open_failed")
+            }
+        }
+        if pendingEntry?.id == entry.id { pendingEntry = nil }
+    }
+
+    private func presentPendingDocument() {
+        guard entryNavigationReady,
+              let presentation = environment.documentIntakeCenter.takePresentation(sceneID: sceneID)
+        else { return }
+        if presentation.kind == .floeCanvas {
+            guard let canvasID = presentation.canvasID else { return }
+            guard presentedCanvasWorkspace == nil,
+                  !router.presentsCanvas || router.presentedCanvasID == canvasID else {
+                environment.documentIntakeCenter.deferPresentation(presentation)
+                return
+            }
+            router.presentRoutedCanvas(canvasID)
+        } else {
+            environment.documentIntakeCenter.presentNotes(presentation)
+            router.openMore(.notes)
+        }
     }
 
     private static func importCanvasSyncPreferenceFromCloud() {

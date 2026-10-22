@@ -565,7 +565,11 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
         return warnings + ["engine=\(name) tile=\(loaded.contract.tileSize) prepared"]
     }
 
-    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer]) throws {
+    func interpolate(current: CVPixelBuffer, next: CVPixelBuffer, phases: [Float], outputs: [CVPixelBuffer], cancellation: CancellationToken?) throws {
+        guard phases.count == outputs.count, !phases.isEmpty,
+              phases.allSatisfy({ $0.isFinite && $0 > 0 && $0 < 1 }) else {
+            throw FloeError.validationFailed("Interpolation requires one interior phase per output")
+        }
         let tile = loaded.contract.tileSize
         guard width >= 1, height >= 1 else { throw FloeError.internalError("invalid interpolation target") }
         let tileStride = max(1, tile - quality.tileOverlap)
@@ -574,6 +578,7 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
             timestep[0] = NSNumber(value: phase)
             for originY in stride(from: 0, to: height, by: tileStride) {
                 for originX in stride(from: 0, to: width, by: tileStride) {
+                    try cancellation?.throwIfCancelled()
                     let coreWidth = min(tileStride, width - originX)
                     let coreHeight = min(tileStride, height - originY)
                     let padLeft = min(quality.tileOverlap, originX)
@@ -590,6 +595,7 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
                         "timestep": MLFeatureValue(multiArray: timestep)
                     ]
                     let prediction = try loaded.run(inputs: inputs)
+                    try cancellation?.throwIfCancelled()
                     guard let output = prediction.featureValue(for: "frame")?.imageBufferValue else {
                         throw FloeError.internalError("model \(loaded.modelID) produced no frame")
                     }
@@ -608,7 +614,7 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
 
     private func tileBuffer(from source: CVPixelBuffer, rect: CGRect, size: Int, offset: CGPoint) throws -> CVPixelBuffer {
         let buffer = try store.makeBuffer(format: MediaImageBridge.bgra, width: size, height: size)
-        let image = CIImage(cvPixelBuffer: source).clampedToExtent().cropped(to: rect)
+        let image = bridge.image(source).clampedToExtent().cropped(to: CGRect(origin: offset, size: CGSize(width: size, height: size)))
         let translated = image.transformed(by: CGAffineTransform(translationX: -offset.x, y: -offset.y))
         bridgeContext.render(
             translated, to: buffer,
@@ -619,8 +625,8 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
     }
 
     private func composite(output: CVPixelBuffer, destination: CVPixelBuffer, coreRect: CGRect, tileRect: CGRect) throws {
-        let scaleX = CGFloat(CVPixelBufferGetWidth(output)) / tileRect.width
-        let scaleY = CGFloat(CVPixelBufferGetHeight(output)) / tileRect.height
+        let scaleX = CGFloat(CVPixelBufferGetWidth(output)) / CGFloat(loaded.contract.tileSize)
+        let scaleY = CGFloat(CVPixelBufferGetHeight(output)) / CGFloat(loaded.contract.tileSize)
         let scaledCore = CGRect(
             x: (coreRect.minX - tileRect.minX) * scaleX,
             y: (coreRect.minY - tileRect.minY) * scaleY,
@@ -628,7 +634,7 @@ final class CoreMLInterpolationEngine: MediaInterpolationEngine, @unchecked Send
             height: coreRect.height * scaleY
         )
         let outputImage = CIImage(cvPixelBuffer: output).transformed(
-            by: CGAffineTransform(translationX: -scaledCore.minX, y: -scaledCore.minY)
+            by: CGAffineTransform(translationX: coreRect.minX * scaleX - scaledCore.minX, y: coreRect.minY * scaleY - scaledCore.minY)
         )
         let destinationRect = CGRect(
             x: coreRect.minX * scaleX, y: coreRect.minY * scaleY,
@@ -692,11 +698,12 @@ final class CoreMLSuperResolutionEngine: MediaSuperResolutionEngine, @unchecked 
 
     func teardown() {}
 
-    func scale(current: CVPixelBuffer, output: CVPixelBuffer) throws {
+    func scale(current: CVPixelBuffer, output: CVPixelBuffer, cancellation: CancellationToken?) throws {
         let tile = loaded.contract.tileSize
         let scale = CGFloat(loaded.contract.scaleFactor ?? 1)
         for originY in stride(from: 0, to: height, by: tileStride) {
             for originX in stride(from: 0, to: width, by: tileStride) {
+                try cancellation?.throwIfCancelled()
                 let coreWidth = min(tileStride, width - originX)
                 let coreHeight = min(tileStride, height - originY)
                 let padLeft = min(quality.tileOverlap, originX)
@@ -707,6 +714,7 @@ final class CoreMLSuperResolutionEngine: MediaSuperResolutionEngine, @unchecked 
                 )
                 let tileInput = try tileBuffer(from: current, rect: rect, size: tile, offset: CGPoint(x: rect.minX, y: rect.minY))
                 let prediction = try loaded.run(inputs: [inputName: MLFeatureValue(pixelBuffer: tileInput)])
+                try cancellation?.throwIfCancelled()
                 guard let tileOutput = prediction.featureValue(for: outputName)?.imageBufferValue else {
                     throw FloeError.internalError("model \(loaded.modelID) produced no image")
                 }
@@ -721,7 +729,7 @@ final class CoreMLSuperResolutionEngine: MediaSuperResolutionEngine, @unchecked 
                     width: scaledCore.width, height: scaledCore.height
                 )
                 let outputImage = CIImage(cvPixelBuffer: tileOutput).transformed(
-                    by: CGAffineTransform(translationX: -scaledCore.minX, y: -scaledCore.minY)
+                    by: CGAffineTransform(translationX: destinationRect.minX - scaledCore.minX, y: destinationRect.minY - scaledCore.minY)
                 )
                 bridge.cicontext.render(outputImage, to: output, bounds: destinationRect, colorSpace: bridge.colorSpace)
             }
@@ -730,7 +738,7 @@ final class CoreMLSuperResolutionEngine: MediaSuperResolutionEngine, @unchecked 
 
     private func tileBuffer(from source: CVPixelBuffer, rect: CGRect, size: Int, offset: CGPoint) throws -> CVPixelBuffer {
         let buffer = try store.makeBuffer(format: MediaImageBridge.bgra, width: size, height: size)
-        let image = CIImage(cvPixelBuffer: source).clampedToExtent().cropped(to: rect)
+        let image = bridge.image(source).clampedToExtent().cropped(to: CGRect(origin: offset, size: CGSize(width: size, height: size)))
         let translated = image.transformed(by: CGAffineTransform(translationX: -offset.x, y: -offset.y))
         bridge.cicontext.render(
             translated, to: buffer,

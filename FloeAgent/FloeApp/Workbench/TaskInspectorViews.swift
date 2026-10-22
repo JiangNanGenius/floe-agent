@@ -971,6 +971,10 @@ struct ChildAgentDetailView: View {
     @State private var hasMorePage = false
     @State private var isLoadingPage = false
     @State private var loadError: String?
+    @State private var resumeAvailability: ChildResumeAvailability = .unavailable
+    @State private var hasLiveParent = false
+    @State private var isResuming = false
+    @State private var resumeNotice: String?
 
     private let pageSize = 80
 
@@ -988,6 +992,31 @@ struct ChildAgentDetailView: View {
                             Text(error)
                                 .font(.caption)
                                 .foregroundStyle(FloeTheme.destructive)
+                        }
+                        if child.state == .interrupted {
+                            if resumeAvailability == .available {
+                                Button {
+                                    Task { await resumeChild() }
+                                } label: {
+                                    Label(String(localized: "workbench.task_inspector_views.continue_subagent"), systemImage: "play.fill")
+                                }
+                                .disabled(isResuming || !hasLiveParent)
+                                .frame(minHeight: FloeTheme.minimumTarget)
+                                .accessibilityIdentifier("inspector.childDetail.resume")
+                                if !hasLiveParent {
+                                    Text(String(localized: "Keep this task running before continuing its subagent."))
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            } else if resumeAvailability == .recoveryHeld {
+                                Text(String(localized: "Check the previous action before continuing. Its result is unknown."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else if resumeAvailability == .budgetExhausted {
+                                Text(String(localized: "This subagent has used its execution allowance."))
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        if let resumeNotice {
+                            Text(resumeNotice).font(.caption).textSelection(.enabled)
                         }
                         HStack(spacing: 8) {
                             Text("\(TaskInspectorText.parentRun) \(String(child.parentRunID.uuidString.prefix(8)))")
@@ -1077,11 +1106,28 @@ struct ChildAgentDetailView: View {
         loadError = nil
         do {
             child = try await SQLiteChildRunStore(database: environment.database).child(id: childRunID)
+            resumeAvailability = try await environment.childResumeService.availability(childID: childRunID)
+            if let child {
+                hasLiveParent = await environment.conversationCenter.canResumeInterruptedChild(
+                    conversationID: child.conversationID)
+            } else { hasLiveParent = false }
         } catch {
             // A failed record read is reported, never silently blanked.
             loadError = error.localizedDescription
         }
         await loadNextPage()
+    }
+
+    private func resumeChild() async {
+        guard !isResuming, let child else { return }
+        isResuming = true
+        defer { isResuming = false }
+        do {
+            let outcome = try await environment.conversationCenter.resumeInterruptedChild(
+                childID: child.id, conversationID: child.conversationID)
+            resumeNotice = outcome.status == .completed ? nil : outcome.findings
+        } catch { resumeNotice = error.localizedDescription }
+        await reload()
     }
 
     /// Appends the next durable page. Paging is cursor-based on the store's

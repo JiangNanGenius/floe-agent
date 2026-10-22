@@ -98,11 +98,15 @@ struct OfficePDFExportServiceTests {
         let xlsx = try #require(OfficePDFExportService.capability(forExtension: "XLSX"))
         #expect(xlsx.savedIsolatedExport && xlsx.liveSessionFinalize)
         #expect(xlsx.sheetScope && xlsx.customPageSetup && xlsx.finalPageRange)
+        #expect(xlsx.selectedSheetsScope && xlsx.printAreaScope)
+        #expect(xlsx.exactScale && xlsx.fitPageCount)
 
         for ext in ["docx", "pptx"] {
             let capability = try #require(OfficePDFExportService.capability(forExtension: ext))
             #expect(capability.savedIsolatedExport && capability.liveSessionFinalize)
             #expect(!capability.sheetScope && !capability.customPageSetup)
+            #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
+            #expect(!capability.exactScale && !capability.fitPageCount)
             #expect(capability.finalPageRange)
         }
 
@@ -111,6 +115,8 @@ struct OfficePDFExportServiceTests {
             #expect(!capability.savedIsolatedExport, "\(ext) must not claim saved isolation")
             #expect(capability.liveSessionFinalize, "\(ext) must remain exportable from a live session")
             #expect(!capability.sheetScope && !capability.customPageSetup)
+            #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
+            #expect(!capability.exactScale && !capability.fitPageCount)
             #expect(capability.finalPageRange)
         }
         #expect(OfficePDFExportService.capability(forExtension: "txt") == nil)
@@ -131,6 +137,156 @@ struct OfficePDFExportServiceTests {
             try OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(paper: .a4))
                 .validate(forExtension: "odt")
         }
+    }
+
+    // MARK: - Build 285 preview round: choices, scopes and the preview fence
+
+    @Test("every supported Excel choice maps into the validated plan")
+    func choicesMapEverySupportedOption() throws {
+        let tabOrder = ["First", "Second", "Third"]
+
+        var selected = OfficePDFExportChoices()
+        selected.scope = .selectedSheets
+        // Deliberately out-of-order: the plan must carry tab order.
+        selected.selectedSheetNames = ["Second", "First"]
+        let selectedPlan = try selected.plan(activeSheetName: nil, sheetTabOrder: tabOrder)
+        #expect(selectedPlan.scope == .sheets(names: ["First", "Second"]))
+        try selectedPlan.validate(forExtension: "xlsx")
+
+        var printArea = OfficePDFExportChoices()
+        printArea.scope = .sheet
+        printArea.sheetName = "Second"
+        printArea.sheetContent = .printArea
+        let printAreaPlan = try printArea.plan(activeSheetName: "First", sheetTabOrder: tabOrder)
+        #expect(printAreaPlan.scope == .sheetWithPrintArea(name: "Second"))
+        try printAreaPlan.validate(forExtension: "xlsx")
+
+        var range = printArea
+        range.sheetContent = .range
+        range.cellRange = "A1:R37"
+        #expect(try range.plan(activeSheetName: nil, sheetTabOrder: tabOrder).scope
+                == .sheet(name: "Second", cellRange: "A1:R37"))
+
+        var exact = OfficePDFExportChoices()
+        exact.fit = .exactScale
+        exact.scalePercentText = "85"
+        let exactPlan = try exact.plan(activeSheetName: nil)
+        #expect(exactPlan.pageSetup.scalePercent == 85)
+        #expect(exactPlan.pageSetup.fit == nil)
+        #expect(exactPlan.pageSetup.hasOverrides)
+        try exactPlan.validate(forExtension: "xlsx")
+
+        var pages = OfficePDFExportChoices()
+        pages.fit = .fitPages
+        pages.fitPagesWideText = "2"
+        pages.fitPagesTallText = "3"
+        let pagesPlan = try pages.plan(activeSheetName: nil)
+        #expect(pagesPlan.pageSetup.fitPages == OfficePDFFitPages(width: 2, height: 3))
+        try pagesPlan.validate(forExtension: "xlsx")
+
+        // The full-content sheet scope stays the ink-safe default: no range
+        // crop is invented when the user only names the sheet.
+        var full = OfficePDFExportChoices()
+        full.scope = .sheet
+        full.sheetName = "Second"
+        #expect(try full.plan(activeSheetName: nil, sheetTabOrder: tabOrder).scope
+                == .sheet(name: "Second", cellRange: nil))
+    }
+
+    @Test("invalid new-choice input is refused instead of producing a best-effort plan")
+    func invalidChoiceInputsThrow() throws {
+        var selected = OfficePDFExportChoices()
+        selected.scope = .selectedSheets
+        #expect(throws: (any Error).self) {
+            _ = try selected.plan(activeSheetName: nil, sheetTabOrder: ["A"])
+        }
+        selected.selectedSheetNames = ["Ghost"]
+        #expect(throws: (any Error).self) {
+            _ = try selected.plan(activeSheetName: nil, sheetTabOrder: ["A", "B"])
+        }
+
+        var printArea = OfficePDFExportChoices()
+        printArea.scope = .sheet
+        printArea.sheetName = "A"
+        printArea.sheetContent = .range
+        #expect(throws: (any Error).self) {
+            _ = try printArea.plan(activeSheetName: nil, sheetTabOrder: ["A"])
+        }
+
+        var exact = OfficePDFExportChoices()
+        exact.fit = .exactScale
+        for text in ["", "5", "401", "abc"] {
+            exact.scalePercentText = text
+            #expect(throws: (any Error).self) {
+                _ = try exact.plan(activeSheetName: nil)
+            }
+        }
+
+        var pages = OfficePDFExportChoices()
+        pages.fit = .fitPages
+        pages.fitPagesWideText = "1"
+        pages.fitPagesTallText = ""
+        #expect(throws: (any Error).self) {
+            _ = try pages.plan(activeSheetName: nil)
+        }
+    }
+
+    @Test("live-session finalize refuses the new print-copy scopes before any file read")
+    func finalizeRefusesNewScopes() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try writeSource(root, name: "book.xlsx")
+        let sha = try FloeDigest.sha256Hex(ofFileAt: source)
+        let owned = root.appendingPathComponent("owned", isDirectory: true)
+
+        for plan in [
+            OfficePDFPrintPlan(scope: .sheets(names: ["A", "B"])),
+            OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "A")),
+            OfficePDFPrintPlan(pageSetup: OfficePDFPageSetup(scalePercent: 85)),
+        ] {
+            await #expect(throws: OfficePDFExportError.self) {
+                _ = try await OfficePDFExportService.finalizeExistingPDF(
+                    OfficePDFFinalizeRequest(
+                        exportedPDFURL: root.appendingPathComponent("missing.pdf"),
+                        sourceURL: source, sourceSHA256: sha,
+                        formatExtension: "xlsx", plan: plan,
+                        ownedDirectory: owned))
+            }
+        }
+        // No child directory may exist: refusal happens before file work.
+        #expect(childDirectories(in: owned).isEmpty)
+    }
+
+    @Test("the preview fence accepts only the current generation and goes stale on any choice change")
+    func previewFenceSemantics() throws {
+        var state = OfficePDFExportPreviewState()
+        #expect(state.isReady == false)
+        _ = state.beginGeneration()
+        let token = state.beginGeneration()
+        let artifact = OfficePDFExportPreviewState.Artifact(
+            url: URL(fileURLWithPath: "/tmp/floe-preview-test.pdf"),
+            pageCount: 2, byteCount: 1_234,
+            pdfSHA256: String(repeating: "0", count: 64))
+        // A late completion from the fenced older generation never publishes.
+        #expect(state.accept(token: token - 1, artifact: artifact,
+                              choices: OfficePDFExportChoices()) == false)
+        #expect(state.isReady == false)
+        let accepted = OfficePDFExportChoices()
+        #expect(state.accept(token: token, artifact: artifact, choices: accepted) == true)
+        #expect(state.isReady)
+        #expect(state.isStale(currentChoices: accepted) == false)
+        var changed = accepted
+        changed.pages = "1"
+        #expect(state.isStale(currentChoices: changed) == true)
+        changed = accepted
+        changed.fit = .exactScale
+        #expect(state.isStale(currentChoices: changed) == true)
+        changed = accepted
+        changed.selectedSheetNames = ["A"]
+        #expect(state.isStale(currentChoices: changed) == true)
+        state.invalidate()
+        #expect(state.isReady == false)
+        #expect(state.isStale(currentChoices: accepted) == false)
     }
 
     // MARK: - Preflight
@@ -379,4 +535,123 @@ struct OfficePDFExportServiceTests {
         #expect(try OfficePDFPageRange(pages: []).validated(pageCount: 4) == [1, 2, 3, 4])
     }
 }
+
+@MainActor
+private final class PDFPreparationTestSignal {
+    private var resolved = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if resolved { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func resolve() {
+        resolved = true
+        let pending = waiters; waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
+@MainActor
+private final class PDFPreparationTestState {
+    var produced = 0
+    var current = true
+}
+
+@Suite("FloeApp.OfficePDFPreparationCoordinator")
+@MainActor
+struct OfficePDFPreparationCoordinatorTests {
+    @Test func remountedConsumerJoinsOneProducerAndCancelsLocally() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let request = CancellationToken()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let joined = PDFPreparationTestSignal()
+        let state = PDFPreparationTestState()
+        let producer: @MainActor () async throws -> String = {
+            state.produced += 1; started.resolve()
+            await release.wait()
+            return "verified-copy"
+        }
+        let first = Task { @MainActor in
+            try await coordinator.run(request: request, isCurrent: { state.current }, producer: producer)
+        }
+        await started.wait()
+        let second = Task { @MainActor in
+            try await coordinator.run(request: request, isCurrent: { state.current }, producer: producer,
+                                      observe: { if $0 == "joined" { joined.resolve() } })
+        }
+        await joined.wait()
+        first.cancel()
+        release.resolve()
+        switch await first.result {
+        case .failure(let error): #expect(error is CancellationError)
+        case .success: Issue.record("Cancelled consumer published a preparation")
+        }
+        let result = try await second.value
+        #expect(result == "verified-copy")
+        #expect(state.produced == 1)
+        let fresh = try await coordinator.run(request: CancellationToken(), isCurrent: { true }, producer: {
+            state.produced += 1; return "new-intent"
+        })
+        #expect(fresh == "new-intent")
+        #expect(state.produced == 2)
+    }
+
+    @Test func modalCancellationCannotCancelTheNextModal() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let oldRequest = CancellationToken(), nextRequest = CancellationToken()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let old = Task { @MainActor in
+            try await coordinator.run(request: oldRequest, isCurrent: { true }, producer: {
+                started.resolve(); await release.wait(); return "old"
+            })
+        }
+        await started.wait()
+        oldRequest.cancel(); coordinator.cancel(request: oldRequest)
+        release.resolve()
+        switch await old.result {
+        case .failure(let error): #expect(error is CancellationError)
+        case .success: Issue.record("Cancelled modal published a preparation")
+        }
+        let nextStarted = PDFPreparationTestSignal(), nextRelease = PDFPreparationTestSignal()
+        let next = Task { @MainActor in
+            try await coordinator.run(request: nextRequest, isCurrent: { true }, producer: {
+                nextStarted.resolve(); await nextRelease.wait(); return "next"
+            })
+        }
+        await nextStarted.wait()
+        coordinator.cancel(request: oldRequest)
+        nextRelease.resolve()
+        let result = try await next.value
+        #expect(result == "next")
+    }
+
+    @Test func replacedOwnerCannotPublishOrRebaseThePreparation() async throws {
+        let coordinator = OfficePDFPreparationCoordinator<String>()
+        let state = PDFPreparationTestState()
+        let started = PDFPreparationTestSignal(), release = PDFPreparationTestSignal()
+        let operation = Task { @MainActor in
+            try await coordinator.run(request: CancellationToken(), isCurrent: { state.current }, producer: {
+                state.produced += 1; started.resolve(); await release.wait(); return "old-owner"
+            })
+        }
+        await started.wait()
+        state.current = false; release.resolve()
+        switch await operation.result {
+        case .failure(let error):
+            guard let screenError = error as? OfficePDFExportScreenError else {
+                Issue.record("Expected source change, received \(error)"); return
+            }
+            if case .sourceChanged = screenError { } else { Issue.record("Owner replacement was relabelled busy") }
+        case .success: Issue.record("Replaced owner published a preparation")
+        }
+        do {
+            _ = try await coordinator.run(request: CancellationToken(), isCurrent: { state.current }, producer: {
+                state.produced += 1; return "silently-rebased"
+            })
+            Issue.record("Invalid owner was silently rebased")
+        } catch { #expect(error is OfficePDFExportScreenError) }
+        #expect(state.produced == 1)
+    }
+}
+
 #endif

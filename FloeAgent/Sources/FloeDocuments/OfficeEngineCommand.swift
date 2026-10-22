@@ -193,6 +193,7 @@ public enum OfficeEngineCommandError: LocalizedError, Sendable, Equatable {
 /// cannot be named and whose selection cannot be fingerprinted is gated
 /// unavailable instead of being applied against an unknown target.
 public enum OfficeEngineCommand: Equatable, Sendable {
+    case explicit(OfficeExplicitCommand)
     case wordStyle(name: String)
     case wordBulletList
     case wordNumberedList
@@ -215,6 +216,7 @@ public enum OfficeEngineCommand: Equatable, Sendable {
     /// Stable id used by the tool schema, capability matrix and receipts.
     public var id: String {
         switch self {
+        case .explicit(let command): return command.id
         case .wordStyle: return "word.style"
         case .wordBulletList: return "word.bulletList"
         case .wordNumberedList: return "word.numberedList"
@@ -255,6 +257,7 @@ public enum OfficeEngineCommand: Equatable, Sendable {
     /// The explicit target shown in proposals/receipts.
     public var targetSummary: String {
         switch self {
+        case .explicit(let command): return "\(command.target.member) paragraph=\(command.target.paragraphIndex.map(String.init) ?? "-") sheet=\(command.target.sheetName ?? "-") shapes=\(command.target.shapeIDs?.joined(separator: ",") ?? "-")"
         case .wordStyle, .wordBulletList, .wordNumberedList, .wordAlignment:
             return "current text selection"
         case .wordInsertTable:
@@ -276,6 +279,7 @@ public enum OfficeEngineCommand: Equatable, Sendable {
 
     public var format: OfficeDocumentFormat {
         switch self {
+        case .explicit(let command): return command.format
         case .wordStyle, .wordBulletList, .wordNumberedList, .wordAlignment, .wordInsertTable:
             return .docx
         case .excelNumberFormat, .excelInsertRows, .excelDeleteRows, .excelInsertColumns,
@@ -299,6 +303,7 @@ public enum OfficeEngineCommand: Equatable, Sendable {
     /// Human summary used in proposal previews and receipts.
     public var summary: String {
         switch self {
+        case .explicit(let command): return "Apply \(command.id) to the named target"
         case .wordStyle(let name): return "Apply paragraph style \(name)"
         case .wordBulletList: return "Apply bulleted list"
         case .wordNumberedList: return "Apply numbered list"
@@ -324,6 +329,7 @@ public enum OfficeEngineCommand: Equatable, Sendable {
 
     public func validate() throws {
         switch self {
+        case .explicit(let command): try command.validate()
         case .wordStyle(let name):
             guard OfficeEngineCommandCatalog.paragraphStyles.contains(name) else {
                 throw OfficeEngineCommandError.invalidArgument(
@@ -395,6 +401,7 @@ public enum OfficeEngineCommandCatalog {
 
     public static func plan(for command: OfficeEngineCommand) -> OfficeDispatchPlan {
         switch command {
+        case .explicit(let command): return OfficeExplicitPreparation.enginePlan(command)
         case .wordStyle(let name):
             return OfficeDispatchPlan(steps: [
                 .uno(name: ".uno:StyleApply", arguments: [

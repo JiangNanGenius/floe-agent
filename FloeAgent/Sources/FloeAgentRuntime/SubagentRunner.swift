@@ -116,6 +116,14 @@ public struct SubagentRunner: Sendable {
     /// too-many-tools). Thrown only by this file's own checks; it must stay
     /// `.toolError` and must never be confused with a provider/transport
     /// failure at the streaming boundary.
+    /// A durability boundary stops the loop without erasing its last valid
+    /// continuation. In particular, an unknown write is never sent back to
+    /// the model as a fresh invitation to repeat it.
+    private struct CheckpointStop: Error, Sendable {
+        let iterations: Int
+        let reason: String
+    }
+
     private struct LocalGuardAbort: Error, LocalizedError, Sendable {
         var message: String
         var errorDescription: String? { message }
@@ -175,6 +183,9 @@ public struct SubagentRunner: Sendable {
     /// callers); production wires the SQLite store so the child survives
     /// process death, UI close and app relaunch.
     private let childRunStore: (any ChildRunStoring)?
+    /// Durable loop-state checkpoints for true child resume (S7 audit17).
+    /// Nil disables checkpointing (historical behavior, unchanged).
+    private let checkpointStore: (any ChildRunCheckpointStoring)?
     /// Durable-child-change observer (the app refreshes the child panel from
     /// the store). Never a permission channel: it cannot authorize anything.
     private let onChildStateChange: (@Sendable (ChildRunSnapshot) async -> Void)?
@@ -186,6 +197,7 @@ public struct SubagentRunner: Sendable {
         credentials: ProviderCredentials,
         executor: any ToolExecutor,
         childRunStore: (any ChildRunStoring)? = nil,
+        checkpointStore: (any ChildRunCheckpointStoring)? = nil,
         onChildStateChange: (@Sendable (ChildRunSnapshot) async -> Void)? = nil
     ) {
         self.provider = provider
@@ -194,6 +206,7 @@ public struct SubagentRunner: Sendable {
         self.credentials = credentials
         self.executor = executor
         self.childRunStore = childRunStore
+        self.checkpointStore = checkpointStore
         self.onChildStateChange = onChildStateChange
     }
 
@@ -239,6 +252,12 @@ public struct SubagentRunner: Sendable {
             )
             await childBudget.finish()
             if let persistence { return await persistence.finish(outcome) }
+            return outcome
+        } catch let stopped as CheckpointStop {
+            await childBudget.finish()
+            let outcome = SubagentOutcome(status: .toolError, iterationsUsed: stopped.iterations,
+                                           findings: stopped.reason, unfinished: [stopped.reason])
+            if let persistence { return await persistence.interrupt(outcome) }
             return outcome
         } catch let termination as Termination {
             await childBudget.finish()
@@ -341,17 +360,28 @@ public struct SubagentRunner: Sendable {
         let store: any ChildRunStoring
         let record: ChildRunRecord
         let observer: (@Sendable (ChildRunSnapshot) async -> Void)?
+        /// Checkpoint/lease store plus this run's resume owner token. Both nil
+        /// for an original (non-resumed) run; the lease settles only when a
+        /// resumed run reaches its real terminal state.
+        let checkpointStore: (any ChildRunCheckpointStoring)?
+        let resumeOwner: UUID?
         private var failures: [Failure] = []
 
         init(
             store: any ChildRunStoring,
             record: ChildRunRecord,
-            observer: (@Sendable (ChildRunSnapshot) async -> Void)?
+            observer: (@Sendable (ChildRunSnapshot) async -> Void)?,
+            checkpointStore: (any ChildRunCheckpointStoring)? = nil,
+            resumeOwner: UUID? = nil
         ) {
             self.store = store
             self.record = record
             self.observer = observer
+            self.checkpointStore = checkpointStore
+            self.resumeOwner = resumeOwner
         }
+
+        var childID: UUID { record.id }
 
         func transition(_ state: ChildRunState, iterations: Int?) async {
             do {
@@ -363,6 +393,29 @@ public struct SubagentRunner: Sendable {
             } catch {
                 recordFailure("transition(\(state.rawValue))", error)
             }
+        }
+
+        /// Records a checkpoint/lease failure so it surfaces in the terminal
+        /// outcome exactly like a transcript-write failure: visible, never
+        /// silently dropped, and never rewritten as success.
+        func noteCheckpointFailure(_ operation: String, _ error: Error) {
+            recordFailure(operation, error)
+        }
+
+        /// Durable resume marker, written BEFORE the first resumed provider
+        /// turn: the original history stays untouched while the ACTIVE
+        /// authorized resuming parent is recorded as provenance.
+        func noteResumeBegin(_ plan: ChildResumePlan) async {
+            _ = await append(.state, SubagentRunner.jsonPayload([
+                "state": "resumed",
+                "childID": plan.childID.uuidString,
+                "originalParentRunID": plan.record.parentRunID.uuidString,
+                "resumedParentRunID": plan.resumedIdentity.parentRunID.uuidString,
+                "resumeOrdinal": plan.resumeOrdinal,
+                "spentIterations": plan.checkpoint.iterationsUsed,
+                "hardCeiling": plan.checkpoint.hardCeiling,
+            ]))
+            await notify(state: .running, iterations: plan.checkpoint.iterationsUsed)
         }
 
         @discardableResult
@@ -420,6 +473,47 @@ public struct SubagentRunner: Sendable {
                 // a terminal snapshot the database does not contain.
                 _ = await append(.error, Self.warningPayload())
             }
+            return augmented(outcome)
+        }
+
+        /// Terminal settle for a RESUMED run: the lease is finished and the
+        /// checkpoint row is removed only after the real outcome is known —
+        /// a resumed child that crashes before this point stays resumable
+        /// (lease expiry + launch reconciliation converge it back). Failures
+        /// here are recorded and surfaced like every other durable-write
+        /// failure, never hidden.
+        func interrupt(_ outcome: SubagentOutcome) async -> SubagentOutcome {
+            _ = await append(.error, SubagentRunner.jsonPayload([
+                "message": outcome.findings, "state": "interrupted", "recoveryHeld": true]))
+            do {
+                if let checkpointStore, let resumeOwner {
+                    try await checkpointStore.cancelResume(childRunID: record.id, owner: resumeOwner)
+                } else {
+                    try await store.transition(id: record.id, state: .interrupted,
+                                               iterationCount: outcome.iterationsUsed, endedAt: Date())
+                }
+                await notify(state: .interrupted, iterations: outcome.iterationsUsed)
+            } catch { recordFailure("interrupt", error) }
+            return augmented(outcome)
+        }
+
+        func finishResumed(_ outcome: SubagentOutcome, plan: ChildResumePlan) async -> SubagentOutcome {
+            guard let checkpointStore, let resumeOwner else {
+                recordFailure("finishResume", FloeError.storageCorrupted("missing resume owner"))
+                return augmented(outcome)
+            }
+            do {
+                _ = await append(.result, try Self.resultPayload(augmented(outcome)))
+                let final = augmented(outcome)
+                let state = Self.state(for: outcome.status)
+                try await checkpointStore.finishResumedChild(
+                    id: record.id, owner: resumeOwner, state: state,
+                    iterationCount: outcome.iterationsUsed,
+                    resultSummary: Self.terminalSummary(final, failures: failures),
+                    errorText: outcome.status == .completed ? nil : final.unfinished.joined(separator: "; "),
+                    digest: FloeDigest.sha256Hex(Data(outcome.findings.utf8)))
+                await notify(state: state, iterations: outcome.iterationsUsed)
+            } catch { recordFailure("finishResume", error) }
             return augmented(outcome)
         }
 
@@ -542,10 +636,26 @@ public struct SubagentRunner: Sendable {
         _ request: SubagentRequest,
         context: ToolContext,
         childBudget: ChildBudgetContext,
-        persistence: ChildRunPersistence?
+        persistence: ChildRunPersistence?,
+        resume: ChildResumePlan? = nil
     ) async throws -> SubagentOutcome {
-        let iterationCeiling = min(request.maxIterations, childBudget.maximumIterations)
-        let hardCeiling = max(1, min(iterationCeiling, 20))
+        // The ceiling stays ABSOLUTE across a resume: the spent total is
+        // restored from the checkpoint and the loop bound is
+        // `spent..<toolCeiling`, so the original allowance is never refreshed
+        // and no fresh 20-turn budget is minted per resume. The fresh
+        // childBudget still gates every iteration through the CURRENT parent
+        // run's shared ledger (reserve), intersecting the new parent
+        // allowance with the original child ceiling.
+        let hardCeiling: Int
+        let startingIterations: Int
+        if let resume {
+            hardCeiling = max(1, resume.checkpoint.hardCeiling)
+            startingIterations = max(0, min(resume.checkpoint.iterationsUsed, hardCeiling))
+        } else {
+            let iterationCeiling = min(request.maxIterations, childBudget.maximumIterations)
+            hardCeiling = max(1, min(iterationCeiling, 20))
+            startingIterations = 0
+        }
         // Reserve the last slot of the child's own allowance for a bounded
         // wrap-up pass when the model would otherwise spend every iteration
         // on tool calls. The wrap-up stays inside the EXISTING budget
@@ -558,40 +668,65 @@ public struct SubagentRunner: Sendable {
         // per-call approved) or under the fail-closed legacy read-only
         // ceiling. The kind never changes the permission set.
         let canonicalChild = context.childExecution?.dispatcher != nil
-        var messages: [(role: String, content: String)] = [
-            (role: "system", content: Self.systemPrompt(
-                kind: request.kind,
-                context: request.context,
-                canonicalChild: canonicalChild
-            )),
-            (role: "user", content: request.task)
-        ]
         // The child discovers its own schemas progressively inside the same
         // 48 KiB frozen-schema budget the request composer enforces. The full
         // catalog is NEVER frozen onto the child wire: a large catalog (the
         // production 239-tool catalog serializes far above the allowance)
-        // would otherwise abort every child before its first request.
+        // would otherwise abort every child before its first request. On
+        // resume the universe is re-derived from the CURRENT parent's
+        // effective ceiling and the persisted child selection is intersected
+        // with it — effective rights are revalidated, never inherited blindly.
         let offered = offeredDescriptors(
             kind: request.kind,
             context: context,
             isChild: context.childExecution != nil,
             canonicalChild: canonicalChild
         )
-        var discovery = ChildToolDiscovery(
-            descriptors: offered,
-            seedNames: ChildToolDiscovery.seedNames(
-                offeredNames: Set(offered.map(\.name)),
-                includeChildOnlyPeers: context.childExecution != nil
-            )
+        let seedNames = ChildToolDiscovery.seedNames(
+            offeredNames: Set(offered.map(\.name)),
+            includeChildOnlyPeers: context.childExecution != nil
         )
+        var messages: [(role: String, content: String)]
+        var discovery: ChildToolDiscovery
+        if let resume {
+            messages = resume.checkpoint.messages.map { ($0.role, $0.content) }
+            var restored = ChildToolDiscovery(
+                restoring: ChildToolDiscovery.Snapshot(
+                    loadedNames: resume.checkpoint.discovery.loadedNames,
+                    priorityNames: resume.checkpoint.discovery.priorityNames,
+                    revision: resume.checkpoint.discovery.revision
+                ),
+                descriptors: offered,
+                seedNames: seedNames
+            )
+            // Re-fit the restored selection inside the CURRENT parent's schema
+            // budget; every further drop rides the existing explicit
+            // eviction-notice path into the first resumed request.
+            _ = restored.load([], maxBytes: Self.maximumFrozenToolSchemaBytes)
+            discovery = restored
+        } else {
+            messages = [
+                (role: "system", content: Self.systemPrompt(
+                    kind: request.kind,
+                    context: request.context,
+                    canonicalChild: canonicalChild
+                )),
+                (role: "user", content: request.task)
+            ]
+            discovery = ChildToolDiscovery(
+                descriptors: offered,
+                seedNames: seedNames
+            )
+        }
         if let startupFailure = discovery.startupFailure(
             maxBytes: Self.maximumFrozenToolSchemaBytes
         ) {
             // Fail closed BEFORE reserving an iteration: the reported
-            // iterationsUsed is the real zero, never a fabricated one.
+            // iterationsUsed is the real zero (fresh) or the real restored
+            // spent total (resume), never a fabricated one.
             return SubagentOutcome(
                 status: .toolError,
-                iterationsUsed: 0,
+                iterationsUsed: startingIterations,
                 findings: startupFailure
             )
         }
@@ -601,46 +736,170 @@ public struct SubagentRunner: Sendable {
         // siblings or an unrelated consumer of the same shared backend.
         let childCancellation = context.cancellation.derived()
         defer { childCancellation.cancel() }
+        // Durable identity for checkpoint provenance (nil for unwired runs).
+        let checkpointIdentity: CheckpointIdentity? = await {
+            guard let persistence else { return nil }
+            return await CheckpointIdentity(
+                childID: persistence.childID,
+                parentRunID: persistence.record.parentRunID,
+                rootRunID: persistence.record.rootRunID,
+                conversationID: persistence.record.conversationID,
+                startedAt: persistence.record.startedAt
+            )
+        }()
         /// Child-local skill state: skill id → the revision this child has
         /// already read. Versioned per child; never shared with the parent or
         /// siblings.
-        var childSkillRevisions: [String: String] = [:]
+        var childSkillRevisions: [String: String]
         /// Child-local skill provenance: skill ids THIS child actually read.
         /// Passed to every child tool call so a child-executed procedure sees
         /// the child's own skill state (never mutating the parent's).
-        var childActiveSkillIDs: Set<String> = []
+        var childActiveSkillIDs: Set<String>
+        /// Settled tool pairs from earlier iterations, archived with their
+        /// assistant reasoning AND their true status so cross-turn evidence
+        /// and any reasoning the protocol needs (DeepSeek) survive the whole
+        /// loop. Bounded by BOTH a pair count and a serialized byte budget;
+        /// the drop count is surfaced as an explicit truncation, never silent.
+        var replayedPairs: [ReplayedToolPair]
+        var droppedSettledPairs: Int
+        /// Assistant text dropped from the accumulated conversation history
+        /// because the bounded request context could not carry it. Counted and
+        /// surfaced; never a silent loss.
+        var droppedAssistantMessages: Int
+        /// Pending tool outputs clipped before their FIRST feedback request.
+        /// Counted and surfaced alongside the in-band truncation marker.
+        var truncatedResultOutputs: Int
+        /// Reasoning emitted immediately before the CURRENT pending tool
+        /// calls, forwarded to thinking-mode providers that require it on a
+        /// tool-bearing request.
+        var pendingAssistantReasoning: String?
+        var iterationsUsed: Int
+        var lastAssistantText: String
+        var evidence: [String]
+        var pendingRoutes: [String]
+        var peerMessagesDelivered: Int
         var pendingToolCalls: [ToolCall] = []
         /// Real, executed tool results (with their actual status/digest) for
         /// the CURRENT pending pair. A denied/failed/cancelled read is never
         /// rewritten as `.ok` — the transcript and the replayed history keep
         /// the true outcome.
         var pendingSettled: [(call: ToolCall, result: ToolResult)] = []
-        /// Settled tool pairs from earlier iterations, archived with their
-        /// assistant reasoning AND their true status so cross-turn evidence
-        /// and any reasoning the protocol needs (DeepSeek) survive the whole
-        /// loop. Bounded by BOTH a pair count and a serialized byte budget;
-        /// the drop count is surfaced as an explicit truncation, never silent.
-        var replayedPairs: [ReplayedToolPair] = []
-        var droppedSettledPairs = 0
-        /// Assistant text dropped from the accumulated conversation history
-        /// because the bounded request context could not carry it. Counted and
-        /// surfaced; never a silent loss.
-        var droppedAssistantMessages = 0
-        /// Pending tool outputs clipped before their FIRST feedback request.
-        /// Counted and surfaced alongside the in-band truncation marker.
-        var truncatedResultOutputs = 0
-        /// Reasoning emitted immediately before the CURRENT pending tool
-        /// calls, forwarded to thinking-mode providers that require it on a
-        /// tool-bearing request.
-        var pendingAssistantReasoning: String?
-        var iterationsUsed = 0
-        var lastAssistantText = ""
-        var evidence: [String] = []
-        var pendingRoutes: [String] = []
-        var peerMessagesDelivered = 0
+
+        if let resume {
+            // Seed the loop from the durable checkpoint: real continuation
+            // messages, archived replay history, child-local skill revisions,
+            // truncation counters and the ACTUAL spent budget — never a
+            // fresh start. What rides the first resumed request is exactly
+            // what a crash could leave durable: pending intent (preCall) or
+            // pending real results (postCall), resolved first by the
+            // explicit recovery contract below.
+            childSkillRevisions = resume.checkpoint.skillRevisions
+            childActiveSkillIDs = Set(resume.checkpoint.activeSkillIDs)
+            replayedPairs = resume.checkpoint.replayedPairs.compactMap(Self.replayedPair)
+            droppedSettledPairs = resume.checkpoint.droppedReplayedPairs
+            droppedAssistantMessages = resume.checkpoint.droppedAssistantMessages
+            truncatedResultOutputs = resume.checkpoint.truncatedResultOutputs
+            pendingAssistantReasoning = resume.checkpoint.pendingReasoning
+            iterationsUsed = startingIterations
+            lastAssistantText = resume.checkpoint.lastAssistantText
+            evidence = resume.checkpoint.evidence
+            pendingRoutes = resume.checkpoint.pendingRoutes
+            peerMessagesDelivered = resume.checkpoint.peerMessagesDelivered
+
+            // Durable resume marker BEFORE the first resumed provider turn.
+            await persistence?.noteResumeBegin(resume)
+
+            // Resolve unknown in-flight calls (preCall crash): read-only calls
+            // re-execute through the CURRENT parent's canonical dispatcher;
+            // mutating calls get an explicit recovery hold — a truthful,
+            // actionable result, NEVER a blind replay. Calls outside the
+            // current parent's allowance are denied exactly like a fresh
+            // dispatch would deny them.
+            let resolution = await resolveRecoveryCalls(
+                resume: resume,
+                context: context,
+                discovery: &discovery,
+                activeSkillIDs: context.activeSkillIDs.union(childActiveSkillIDs),
+                childCancellation: childCancellation
+            )
+            pendingToolCalls = resolution.calls
+            pendingSettled = resolution.settled
+            for callID in resolution.holds {
+                evidence.append("recovery hold: call \(callID) was in flight at interruption; not re-executed")
+            }
+            if !resolution.holds.isEmpty || !resolution.dropped.isEmpty {
+                messages.append((role: "system", content: Self.resumeRecoveryNote(
+                    holds: resolution.holds,
+                    dropped: resolution.dropped
+                )))
+            }
+            if resume.checkpoint.kind == .preCall || !resolution.holds.isEmpty
+                || !resolution.dropped.isEmpty {
+                // The pre-call intent is now resolved: persist the resolution
+                // BEFORE the first resumed provider request so a second crash
+                // never double-executes the reads or re-holds the writes.
+                let resolutionDurable = await persistCheckpoint(captureCheckpoint(
+                    kind: .postCall,
+                    identity: checkpointIdentity,
+                    request: request,
+                    context: context,
+                    iterationsUsed: iterationsUsed,
+                    hardCeiling: hardCeiling,
+                    messages: messages,
+                    replayedPairs: replayedPairs,
+                    pendingCalls: pendingToolCalls,
+                    pendingSettled: pendingSettled,
+                    pendingReasoning: pendingAssistantReasoning,
+                    discovery: discovery,
+                    childSkillRevisions: childSkillRevisions,
+                    childActiveSkillIDs: childActiveSkillIDs,
+                    droppedReplayedPairs: droppedSettledPairs,
+                    droppedAssistantMessages: droppedAssistantMessages,
+                    truncatedResultOutputs: truncatedResultOutputs,
+                    peerMessagesDelivered: peerMessagesDelivered,
+                    evidence: evidence,
+                    pendingRoutes: pendingRoutes,
+                    lastAssistantText: lastAssistantText,
+                    resume: resume,
+                    recoveryHoldCallIDs: resolution.holds + resolution.dropped
+                ), resume: resume, persistence: persistence)
+                guard resolutionDurable else {
+                    throw CheckpointStop(iterations: iterationsUsed,
+                        reason: "The recovered tool results could not be saved. The previous checkpoint was retained; this child is interrupted.")
+                }
+            }
+            guard resolution.holds.isEmpty, resolution.dropped.isEmpty else {
+                throw CheckpointStop(iterations: iterationsUsed,
+                    reason: "A previous tool call has an unknown outcome. This child is paused for recovery; inspect the original action before continuing. No write was repeated.")
+            }
+        } else {
+            childSkillRevisions = [:]
+            childActiveSkillIDs = []
+            replayedPairs = []
+            droppedSettledPairs = 0
+            droppedAssistantMessages = 0
+            truncatedResultOutputs = 0
+            pendingAssistantReasoning = nil
+            iterationsUsed = 0
+            lastAssistantText = ""
+            evidence = []
+            pendingRoutes = []
+            peerMessagesDelivered = 0
+        }
+        if let resume {
+            messages.append((role: "system", content: Self.resumeNote(
+                resume: resume,
+                restoredDrops: discovery.restoredDrops,
+                currentProviderID: provider.id.uuidString,
+                currentModelID: model.id.uuidString
+            )))
+        }
 
         do {
-            for _ in 0..<toolCeiling {
+            // `max(toolCeiling, iterationsUsed)` keeps the range valid (and
+            // empty) when a resumed child already spent its whole tool
+            // allowance — the wrap-up/exhausted logic below handles it.
+            for _ in iterationsUsed..<max(toolCeiling, iterationsUsed) {
                 try childCancellation.throwIfCancelled()
                 guard await childBudget.reserve() else {
                     return Self.cappedOutcome(
@@ -773,6 +1032,39 @@ public struct SubagentRunner: Sendable {
                     )
                     pendingToolCalls = calls
                     pendingRoutes = calls.map { "\($0.toolName) \(Self.argumentsDigest($0))" }
+                    // Durable PRE-CALL checkpoint BEFORE any side effect: the
+                    // exact loop state plus the pending intent is committed so
+                    // an interruption during execution can be resolved by the
+                    // recovery-hold contract instead of guessed.
+                    let checkpointDurable = await persistCheckpoint(captureCheckpoint(
+                        kind: .preCall,
+                        identity: checkpointIdentity,
+                        request: request,
+                        context: context,
+                        iterationsUsed: iterationsUsed,
+                        hardCeiling: hardCeiling,
+                        messages: messages,
+                        replayedPairs: replayedPairs,
+                        pendingCalls: calls,
+                        pendingSettled: [],
+                        pendingReasoning: turnReasoning.isEmpty ? nil : turnReasoning,
+                        discovery: discovery,
+                        childSkillRevisions: childSkillRevisions,
+                        childActiveSkillIDs: childActiveSkillIDs,
+                        droppedReplayedPairs: droppedSettledPairs,
+                        droppedAssistantMessages: droppedAssistantMessages,
+                        truncatedResultOutputs: truncatedResultOutputs,
+                        peerMessagesDelivered: peerMessagesDelivered,
+                        evidence: evidence,
+                        pendingRoutes: pendingRoutes,
+                        lastAssistantText: lastAssistantText,
+                        resume: resume,
+                        recoveryHoldCallIDs: []
+                    ), resume: resume, persistence: persistence)
+                    guard checkpointDurable else {
+                        throw CheckpointStop(iterations: iterationsUsed,
+                            reason: "The tool intent could not be saved. No tool from this batch was executed; the child is interrupted.")
+                    }
                     // Discovery calls are handled INSIDE the child (exactly as
                     // the main run handles them): `tools.list`/`tools.search`
                     // are presentation, never authority, and they grow the
@@ -888,6 +1180,41 @@ public struct SubagentRunner: Sendable {
                     // The reasoning immediately before these calls is the one
                     // the protocol needs on the follow-up tool-bearing turn.
                     pendingAssistantReasoning = turnReasoning.isEmpty ? nil : turnReasoning
+                    // Durable POST-CALL checkpoint BEFORE the next provider
+                    // request: the REAL settled results, the calls that must
+                    // ride the next request, the discovery/skill revisions and
+                    // the truncation ledger are committed, so a crash after
+                    // this point resumes by FEEDING these real results — the
+                    // tools are never re-executed blindly.
+                    let settlementDurable = await persistCheckpoint(captureCheckpoint(
+                        kind: .postCall,
+                        identity: checkpointIdentity,
+                        request: request,
+                        context: context,
+                        iterationsUsed: iterationsUsed,
+                        hardCeiling: hardCeiling,
+                        messages: messages,
+                        replayedPairs: replayedPairs,
+                        pendingCalls: pendingToolCalls,
+                        pendingSettled: pendingSettled,
+                        pendingReasoning: pendingAssistantReasoning,
+                        discovery: discovery,
+                        childSkillRevisions: childSkillRevisions,
+                        childActiveSkillIDs: childActiveSkillIDs,
+                        droppedReplayedPairs: droppedSettledPairs,
+                        droppedAssistantMessages: droppedAssistantMessages,
+                        truncatedResultOutputs: truncatedResultOutputs,
+                        peerMessagesDelivered: peerMessagesDelivered,
+                        evidence: evidence,
+                        pendingRoutes: pendingRoutes,
+                        lastAssistantText: lastAssistantText,
+                        resume: resume,
+                        recoveryHoldCallIDs: []
+                    ), resume: resume, persistence: persistence)
+                    guard settlementDurable else {
+                        throw CheckpointStop(iterations: iterationsUsed,
+                            reason: "The tool batch ran but its results could not be saved. The original intent was retained; check the actions before continuing this child.")
+                    }
                     continue
                 }
 
@@ -903,6 +1230,8 @@ public struct SubagentRunner: Sendable {
                     )
                 }
             }
+        } catch let stopped as CheckpointStop {
+            throw stopped
         } catch {
             // Preserve the bounded work completed before the failure instead
             // of resetting iterationsUsed/evidence to zero: a second-round
@@ -1638,6 +1967,473 @@ public struct SubagentRunner: Sendable {
         case .toolError:
             return outcome.findings
         }
+    }
+
+    // MARK: - Durable checkpoints and resume (S7 audit17)
+
+    /// Lease lifetime while a resumed loop is alive: renewed after every
+    /// successful checkpoint save, so a healthy resumed run holds its lease
+    /// indefinitely while a dead owner releases it within one TTL.
+    static let resumeLeaseDuration: TimeInterval = 30 * 60
+
+    /// Public resume entry, called ONLY by the parent runtime's own
+    /// `AgentRuntime.resumeInterruptedChild` glue: the durable identity
+    /// already exists, the lease was acquired by `ChildResumeService`, and
+    /// `context` carries the CURRENT parent's canonical handoff with a
+    /// `resumedIdentity` whose parentRunID binds THIS run. The original
+    /// record/history is never rewritten.
+    public func resumeStructured(
+        _ plan: ChildResumePlan,
+        context: ToolContext,
+        childBudget: ChildBudgetContext
+    ) async throws -> SubagentOutcome {
+        guard context.childBudget != nil else {
+            throw FloeError.validationFailed("Subagent budget is unavailable")
+        }
+        guard context.runID == plan.resumedIdentity.parentRunID,
+              context.conversationID == plan.record.conversationID,
+              context.childExecution?.identity == plan.resumedIdentity else {
+            throw FloeError.validationFailed("Child resume context does not match its current parent and durable identity")
+        }
+        guard let childRunStore, let checkpointStore else {
+            throw FloeError.invalidConfiguration(
+                "Child resume requires both durable child stores")
+        }
+        let persistence = ChildRunPersistence(
+            store: childRunStore,
+            record: plan.record,
+            observer: onChildStateChange,
+            checkpointStore: checkpointStore,
+            resumeOwner: plan.ownerToken
+        )
+        guard try await checkpointStore.markResumeStarted(
+            childRunID: plan.childID, owner: plan.ownerToken) else {
+            throw FloeError.storageCorrupted("Child resume lease was lost before execution")
+        }
+        do {
+            let outcome = try await runLoop(
+                plan.request, context: context, childBudget: childBudget,
+                persistence: persistence, resume: plan
+            )
+            await childBudget.finish()
+            return await persistence.finishResumed(outcome, plan: plan)
+        } catch let stopped as CheckpointStop {
+            await childBudget.finish()
+            return await persistence.interrupt(SubagentOutcome(
+                status: .toolError, iterationsUsed: stopped.iterations,
+                findings: stopped.reason, unfinished: [stopped.reason]))
+        } catch let termination as Termination {
+            await childBudget.finish()
+            let outcome = Self.terminatedOutcome(termination, request: plan.request)
+            return await persistence.finishResumed(outcome, plan: plan)
+        } catch {
+            await childBudget.finish()
+            // Defensive: runLoop classifies every expected failure into a
+            // Termination. An error reaching here is an unclassified harness
+            // failure, never a success.
+            let outcome = SubagentOutcome(
+                status: .toolError,
+                iterationsUsed: 0,
+                findings: "Subagent resume stopped by a harness guard: \(error.localizedDescription)"
+            )
+            return await persistence.finishResumed(outcome, plan: plan)
+        }
+    }
+
+    /// Persist one loop-state checkpoint. Returns false when the checkpoint
+    /// store is wired but the save failed (the failure is recorded and
+    /// surfaced at the terminal outcome); a nil store keeps the historical
+    /// unwired behavior and reports true.
+    private func persistCheckpoint(
+        _ snapshot: ChildRunCheckpoint,
+        resume: ChildResumePlan?,
+        persistence: ChildRunPersistence?
+    ) async -> Bool {
+        guard let store = checkpointStore else { return true }
+        do {
+            if let resume {
+                try await store.saveCheckpoint(snapshot, owner: resume.ownerToken,
+                    leaseExpiresAt: Date().addingTimeInterval(Self.resumeLeaseDuration))
+            } else {
+                try await store.saveCheckpoint(snapshot)
+            }
+            return true
+        } catch {
+            await persistence?.noteCheckpointFailure(
+                "saveCheckpoint(\(snapshot.kind.rawValue))", error)
+            return false
+        }
+    }
+
+    /// Builds the bounded checkpoint document from the current loop state.
+    /// The capture is data-only: every value is already bounded by the loop's
+    /// own wire/store budgets, and the shared payload codec re-bounds the
+    /// encoded document so the row is always legal JSON. `identity` is the
+    /// durable child identity (nil for unwired legacy runs, which fall back
+    /// to the request's run id and simply cannot be resumed).
+    private struct CheckpointIdentity {
+        var childID: UUID
+        var parentRunID: UUID
+        var rootRunID: UUID
+        var conversationID: UUID
+        var startedAt: Date
+    }
+
+    private func captureCheckpoint(
+        kind: ChildRunCheckpointKind,
+        identity: CheckpointIdentity?,
+        request: SubagentRequest,
+        context: ToolContext,
+        iterationsUsed: Int,
+        hardCeiling: Int,
+        messages: [(role: String, content: String)],
+        replayedPairs: [ReplayedToolPair],
+        pendingCalls: [ToolCall],
+        pendingSettled: [(call: ToolCall, result: ToolResult)],
+        pendingReasoning: String?,
+        discovery: ChildToolDiscovery,
+        childSkillRevisions: [String: String],
+        childActiveSkillIDs: Set<String>,
+        droppedReplayedPairs: Int,
+        droppedAssistantMessages: Int,
+        truncatedResultOutputs: Int,
+        peerMessagesDelivered: Int,
+        evidence: [String],
+        pendingRoutes: [String],
+        lastAssistantText: String,
+        resume: ChildResumePlan?,
+        recoveryHoldCallIDs: [String]
+    ) -> ChildRunCheckpoint {
+        let snapshot = discovery.snapshot()
+        return ChildRunCheckpoint(
+            childID: resume?.childID ?? identity?.childID ?? request.runID,
+            kind: kind,
+            iterationsUsed: iterationsUsed,
+            hardCeiling: hardCeiling,
+            requestKind: request.kind.rawValue,
+            task: request.task,
+            context: request.context,
+            messages: messages.map {
+                ChildRunCheckpoint.Message(role: $0.role, content: $0.content)
+            },
+            replayedPairs: replayedPairs
+                .map(Self.checkpointPair),
+            pendingCalls: pendingCalls
+                .map(Self.callIntent),
+            pendingSettled: pendingSettled
+                .map(Self.settledPair),
+            pendingReasoning: pendingReasoning,
+            discovery: ChildRunCheckpoint.DiscoveryState(
+                loadedNames: snapshot.loadedNames,
+                priorityNames: snapshot.priorityNames,
+                revision: snapshot.revision,
+                droppedFromRestore: discovery.restoredDrops
+            ),
+            skillRevisions: childSkillRevisions,
+            activeSkillIDs: childActiveSkillIDs.sorted(),
+            droppedReplayedPairs: droppedReplayedPairs,
+            droppedAssistantMessages: droppedAssistantMessages,
+            truncatedResultOutputs: truncatedResultOutputs,
+            peerMessagesDelivered: peerMessagesDelivered,
+            evidence: Array(evidence.prefix(ChildRunCheckpoint.maximumReferences)),
+            pendingRoutes: Array(pendingRoutes.prefix(ChildRunCheckpoint.maximumReferences)),
+            lastAssistantText: lastAssistantText,
+            providerID: provider.id.uuidString,
+            modelID: model.id.uuidString,
+            originalParentRunID: resume?.record.parentRunID ?? identity?.parentRunID ?? request.runID,
+            rootRunID: resume?.record.rootRunID ?? identity?.rootRunID ?? request.runID,
+            conversationID: resume?.record.conversationID ?? identity?.conversationID
+                ?? context.conversationID ?? request.runID,
+            startedAt: resume?.record.startedAt ?? identity?.startedAt ?? Date(),
+            savedAt: Date(),
+            resumedParentRunID: resume?.resumedIdentity.parentRunID,
+            resumeCount: resume?.resumeOrdinal ?? 0,
+            recoveryHoldCallIDs: recoveryHoldCallIDs
+        )
+    }
+
+    /// True when a call must be withheld if the pre-call checkpoint could not
+    /// be persisted: anything side-effecting OR main-run-only. Read-only calls
+    /// stay safe to execute (a re-execution after a crash has no side effect).
+    private static func requiresRecoveryGate(
+        executor: any ToolExecutor,
+        call: ToolCall
+    ) -> Bool {
+        guard let descriptor = executor.descriptor(named: call.toolName) else { return true }
+        return descriptor.isSideEffecting
+            || descriptor.executionBoundary == .mainRunOnly
+    }
+
+    /// Resolves the pending calls persisted by a PRE-CALL checkpoint against
+    /// the CURRENT parent's actual authority — never blindly replayed:
+    ///
+    ///   * calls no longer inside the current parent's ceiling/frozen
+    ///     catalog (or the temporary read-only projection) are DENIED with
+    ///     the same wording the canonical dispatcher uses;
+    ///   * read-only calls re-execute through the current parent's canonical
+    ///     dispatcher (per-call approval included), so progress resumes;
+    ///   * mutating (or main-run-only/unknown) calls get an explicit recovery
+    ///     hold: a truthful `.failed` result stating the effect is unknown
+    ///     and the call was NOT re-executed; the provider loop stays paused;
+    ///   * unrecoverable persisted intent (arguments that no longer rebuild
+    ///     a valid ToolCall) is dropped with an explicit note, so no orphan
+    ///     tool result can reach the wire.
+    ///
+    /// The returned `calls`/`settled` preserve the ORIGINAL provider order, so
+    /// the first resumed request pairs every tool result with its call.
+    private func resolveRecoveryCalls(
+        resume: ChildResumePlan,
+        context: ToolContext,
+        discovery: inout ChildToolDiscovery,
+        activeSkillIDs: Set<String>,
+        childCancellation: CancellationToken
+    ) async -> (calls: [ToolCall], settled: [(call: ToolCall, result: ToolResult)], holds: [String], dropped: [String]) {
+        let checkpoint = resume.checkpoint
+        guard checkpoint.kind == .preCall else {
+            // postCall crash: real results were persisted and simply feed the
+            // next request; nothing was left in flight. A pair whose call no
+            // longer rebuilds is dropped whole (never an orphan tool result on
+            // the wire) and reported explicitly.
+            var settled: [(call: ToolCall, result: ToolResult)] = []
+            var dropped: [String] = []
+            for pair in checkpoint.pendingSettled {
+                guard let call = Self.rebuiltCall(pair.call) else {
+                    dropped.append(pair.call.id)
+                    continue
+                }
+                settled.append((call, Self.toolResult(pair.result)))
+            }
+            return (settled.map(\.call), settled, [], dropped)
+        }
+        var calls: [ToolCall] = []
+        var settled: [(call: ToolCall, result: ToolResult)] = []
+        var holds: [String] = []
+        var dropped: [String] = []
+        var reexecute: [ToolCall] = []
+        var reexecutedByID: [String: ToolResult] = [:]
+        for intent in checkpoint.pendingCalls {
+            guard let call = Self.rebuiltCall(intent) else {
+                dropped.append(intent.id)
+                continue
+            }
+            calls.append(call)
+            let isDiscovery = call.toolName == ToolDiscovery.listName || call.toolName == ToolDiscovery.name
+            if !isDiscovery && Self.requiresRecoveryGate(executor: executor, call: call) {
+                holds.append(call.id)
+                settled.append((call, Self.recoveryHoldResult(call)))
+                continue
+            }
+            if let denial = Self.currentParentDenial(call: call, context: context, executor: executor) {
+                settled.append((call, denial))
+                continue
+            }
+            switch call.toolName {
+            case ToolDiscovery.listName:
+                settled.append((call, Self.localDiscoveryListResult(
+                    call, discovery: discovery, provider: provider
+                )))
+            case ToolDiscovery.name:
+                settled.append((call, Self.localDiscoverySearchResult(
+                    call, discovery: &discovery, provider: provider
+                )))
+            default:
+                if let descriptor = executor.descriptor(named: call.toolName),
+                   descriptor.effect == .readOnly,
+                   !descriptor.requiresHostScope,
+                   descriptor.executionBoundary != .mainRunOnly {
+                    reexecute.append(call)
+                } else {
+                    holds.append(call.id)
+                    settled.append((call, Self.recoveryHoldResult(call)))
+                }
+            }
+        }
+        if !reexecute.isEmpty {
+            let executed = await executeInParallel(
+                reexecute, request: resume.request, parentContext: context,
+                cancellation: childCancellation,
+                activeSkillIDs: activeSkillIDs
+            )
+            for item in executed {
+                reexecutedByID[item.call.id] = item.result
+            }
+        }
+        let resolved = Dictionary(uniqueKeysWithValues: settled.map { ($0.call.id, $0.result) })
+        settled = calls.compactMap { call in
+            guard let result = reexecutedByID[call.id] ?? resolved[call.id] else { return nil }
+            return (call, result)
+        }
+        return (calls, settled, holds, dropped)
+    }
+
+    /// Re-validates one recovered call against the CURRENT parent's allowance
+    /// exactly like `AgentRuntime.dispatchChildTool` would: effective name
+    /// ceiling, frozen catalog identity, and the temporary read-only
+    /// projection. Returns the denial result, or nil when the call is inside
+    /// the current allowance.
+    private static func currentParentDenial(
+        call: ToolCall,
+        context: ToolContext,
+        executor: any ToolExecutor
+    ) -> ToolResult? {
+        if let allowed = context.allowedToolNames, !allowed.contains(call.toolName) {
+            return ToolResult(
+                callID: call.id, status: .denied,
+                outputSummary: "Denied: tool '\(call.toolName)' is outside this task's effective capability set",
+                outputDigest: ""
+            )
+        }
+        if let frozen = context.frozenEffectiveCatalogNames,
+           !frozen.contains(call.toolName) {
+            return ToolResult(
+                callID: call.id, status: .denied,
+                outputSummary: "Denied: tool '\(call.toolName)' is not part of this task's offered catalog",
+                outputDigest: ""
+            )
+        }
+        guard let descriptor = executor.descriptor(named: call.toolName) else {
+            return ToolResult(
+                callID: call.id, status: .denied,
+                outputSummary: "Denied: unknown tool '\(call.toolName)' — not in catalog",
+                outputDigest: ""
+            )
+        }
+        if descriptor.executionBoundary == .mainRunOnly {
+            return ToolResult(
+                callID: call.id, status: .denied,
+                outputSummary: "Denied: tool '\(call.toolName)' is main-run only and cannot be called from a delegated subagent",
+                outputDigest: ""
+            )
+        }
+        if context.temporaryReadOnly,
+           TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil {
+            return ToolResult(
+                callID: call.id, status: .denied,
+                outputSummary: "Denied: temporary chat runs are read-only; '\(call.toolName)' cannot execute",
+                outputDigest: ""
+            )
+        }
+        return nil
+    }
+
+    /// The explicit, durable recovery hold: truthful, actionable, and NEVER
+    /// a blind replay. The effect of the withheld call is unknown (the
+    /// previous execution ended mid-flight); execution remains paused until
+    /// the original operation is reconciled.
+    private static func recoveryHoldResult(_ call: ToolCall) -> ToolResult {
+        ToolResult(
+            callID: call.id,
+            status: .failed,
+            outputSummary: "Recovery hold: this call was in flight when the previous execution ended unexpectedly, so its real-world effect is unknown. It was NOT re-executed. Inspect the original operation or its receipt before continuing; this child remains paused.",
+            outputDigest: ""
+        )
+    }
+
+    static func rebuiltCall(_ intent: ChildRunCheckpoint.CallIntent) -> ToolCall? {
+        try? ToolCall(
+            id: intent.id,
+            toolName: intent.toolName,
+            argumentsJSON: Data(intent.argumentsJSON.utf8),
+            scope: .local
+        )
+    }
+
+    static func callIntent(_ call: ToolCall) -> ChildRunCheckpoint.CallIntent {
+        ChildRunCheckpoint.CallIntent(
+            id: call.id,
+            toolName: call.toolName,
+            argumentsJSON: String(decoding: call.argumentsJSON, as: UTF8.self)
+        )
+    }
+
+    static func settledResult(_ result: ToolResult) -> ChildRunCheckpoint.SettledResult {
+        ChildRunCheckpoint.SettledResult(
+            callID: result.callID,
+            status: result.status.rawValue,
+            outputSummary: result.outputSummary,
+            outputDigest: result.outputDigest,
+            exitStatus: result.exitStatus
+        )
+    }
+
+    static func settledPair(
+        _ item: (call: ToolCall, result: ToolResult)
+    ) -> ChildRunCheckpoint.SettledPair {
+        ChildRunCheckpoint.SettledPair(
+            call: callIntent(item.call),
+            result: settledResult(item.result)
+        )
+    }
+
+    static func checkpointPair(_ pair: ReplayedToolPair) -> ChildRunCheckpoint.ReplayPair {
+        ChildRunCheckpoint.ReplayPair(
+            call: callIntent(pair.call),
+            result: settledResult(pair.result),
+            assistantReasoning: pair.assistantReasoning
+        )
+    }
+
+    static func replayedPair(_ pair: ChildRunCheckpoint.ReplayPair) -> ReplayedToolPair? {
+        // A persisted pair whose arguments no longer rebuild a valid call is
+        // dropped whole (consistent with the loop's pair-level trim policy)
+        // rather than fed to the wire in a corrupted form.
+        guard let call = rebuiltCall(pair.call) else { return nil }
+        return ReplayedToolPair(
+            call: call,
+            result: toolResult(pair.result),
+            assistantReasoning: pair.assistantReasoning
+        )
+    }
+
+    static func toolResult(_ result: ChildRunCheckpoint.SettledResult) -> ToolResult {
+        ToolResult(
+            callID: result.callID,
+            status: ToolResult.Status(rawValue: result.status) ?? .failed,
+            outputSummary: result.outputSummary,
+            outputDigest: result.outputDigest,
+            exitStatus: result.exitStatus
+        )
+    }
+
+    /// One-time note appended when a resumed loop opens: it tells the model
+    /// this is a genuine continuation (spent budget, real prior results), and
+    /// records any schema drops from the current-parent revalidation and a
+    /// provider/model binding switch (the history is provider-agnostic text;
+    /// the CURRENT parent's binding governs from here on).
+    static func resumeNote(
+        resume: ChildResumePlan,
+        restoredDrops: [String],
+        currentProviderID: String,
+        currentModelID: String
+    ) -> String {
+        let checkpoint = resume.checkpoint
+        var note = "Harness control: this subtask is RESUMING after an unexpected interruption. "
+            + "Everything above this line is real: \(checkpoint.iterationsUsed) iteration(s) had already been spent (ceiling \(checkpoint.hardCeiling)) and every tool result shown is a REAL result. "
+            + "Continue from this exact state; do not restart work that already has evidence. "
+        if checkpoint.providerID != currentProviderID || checkpoint.modelID != currentModelID {
+            note += "Provider/model binding changed since the interruption (history produced by provider \(checkpoint.providerID)/model \(checkpoint.modelID)); the conversation continues unchanged. "
+        }
+        if !restoredDrops.isEmpty {
+            note += "Schemas no longer offered by this task's current tool ceiling were dropped: "
+                + restoredDrops.joined(separator: ", ")
+                + ". Everything else remains callable by exact name. "
+        }
+        return String(note.prefix(2_048))
+    }
+
+    static func resumeRecoveryNote(holds: [String], dropped: [String]) -> String {
+        var note = ""
+        if !holds.isEmpty {
+            note += "Recovery holds (calls in flight at interruption, NOT re-executed, effect unknown): "
+                + holds.joined(separator: ", ")
+                + ". Execution is paused until the original actions are reconciled. "
+        }
+        if !dropped.isEmpty {
+            note += "Unrecoverable call intent dropped (no result will be paired for): "
+                + dropped.joined(separator: ", ")
+                + ". Execution remains paused with the original state retained. "
+        }
+        return String(note.prefix(2_048))
     }
 
     // MARK: - Execution

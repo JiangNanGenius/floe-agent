@@ -158,6 +158,10 @@ public struct LinuxGuestLifecycleReceipt: Sendable, Equatable, Codable {
     public var launchGeneration: Int?
     /// Managed services stopped as part of this operation.
     public var servicesStopped: Int
+    /// Stable id of the soft-restart operation that produced this receipt,
+    /// when the receipt came from the ordered soft-restart path (the durable
+    /// operation record carries the full stage evidence).
+    public var operationID: String?
     /// Image/kernel capability summary (dual-core qualified for testing on a
     /// verified SMP image; no speedup claimed).
     public var capability: String
@@ -174,6 +178,7 @@ public struct LinuxGuestLifecycleReceipt: Sendable, Equatable, Codable {
         imageID: String? = nil,
         launchGeneration: Int? = nil,
         servicesStopped: Int = 0,
+        operationID: String? = nil,
         capability: String,
         detail: String
     ) {
@@ -187,6 +192,7 @@ public struct LinuxGuestLifecycleReceipt: Sendable, Equatable, Codable {
         self.imageID = imageID
         self.launchGeneration = launchGeneration
         self.servicesStopped = servicesStopped
+        self.operationID = operationID
         self.capability = capability
         self.detail = detail
     }
@@ -226,6 +232,29 @@ public enum LinuxGuestLifecycleError: Error, LocalizedError, Sendable, Equatable
     /// treated as quarantined (its disk is not reused by a new start) until a
     /// later stop succeeds.
     case stopFailedQuarantined(environmentID: String, detail: String)
+    /// A soft restart requires a running guest (the ordered flush+poweroff
+    /// executes inside it). Nothing was started or stopped.
+    case guestNotRunning(environmentID: String)
+    /// One ordered soft-restart stage failed with a KNOWN outcome: the
+    /// environment is left recoverable (the guest is running or captured) and
+    /// the durable record is settled failed. Never reported for the
+    /// post-submission unknown boundary (see `softRestartOutcomeUnknown`).
+    case softRestartStageFailed(environmentID: String, stage: String, detail: String)
+    /// The poweroff request was submitted but its effect could not be
+    /// confirmed: the outcome is UNKNOWN, the durable record stays pending
+    /// and a blind repeat is blocked until a query against current state
+    /// converges it. No force reset was attempted.
+    case softRestartOutcomeUnknown(environmentID: String, operationID: String, detail: String)
+    /// A committed soft restart exists for the same durable operation key,
+    /// but the trusted owner or the canonical payload does not match this
+    /// call: refused instead of returning a receipt that belongs to a
+    /// different caller or request. Nothing was rebooted.
+    case softRestartIdempotencyConflict(environmentID: String, operationKey: String, detail: String)
+    /// The durable operation record or a committed idempotency receipt could
+    /// not be read or written. Fails closed: no state is inferred from the
+    /// failure and no retry is claimed safe; the outcome stays unresolved
+    /// until the record is readable again.
+    case softRestartPersistenceFailed(environmentID: String, detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -247,16 +276,30 @@ public enum LinuxGuestLifecycleError: Error, LocalizedError, Sendable, Equatable
             return "environment \(id) has \(count) interactive terminal(s) open; close them before stopping or restarting the guest"
         case .stopFailedQuarantined(let id, let detail):
             return "the guest for environment \(id) did not stop: \(detail); the disk stays quarantined until a later stop succeeds"
+        case .guestNotRunning(let id):
+            return "environment \(id) has no running guest; a soft restart executes an ordered flush+poweroff inside the running guest, so start it first"
+        case .softRestartStageFailed(let id, let stage, let detail):
+            return "environment \(id): the ordered soft-restart stage '\(stage)' failed with a known outcome: \(detail)"
+        case .softRestartOutcomeUnknown(let id, let operationID, let detail):
+            return "environment \(id): the soft-restart outcome is unknown (operation \(operationID)): \(detail)"
+        case .softRestartIdempotencyConflict(let id, let operationKey, let detail):
+            return "environment \(id): a committed soft restart already exists for operation key \(operationKey) and this call does not match it: \(detail); nothing was rebooted"
+        case .softRestartPersistenceFailed(let id, let detail):
+            return "environment \(id): the durable soft-restart record failed and no state was inferred: \(detail)"
         }
     }
 }
 
 /// Real guest soft-restart seam: an ordered in-guest flush + durable restart
-/// that preserves running services where possible. Absent in the current guest
-/// image; the manager then reports soft restart unsupported.
+/// with a verified new-boot reconnect, executed under the caller's shared
+/// lifecycle transaction with the caller's cancellation token. The request
+/// carries the trusted environment/task/run/call identity and the runtime
+/// truth captured before any guest action; see
+/// `LinuxGuestSoftRestartOrchestrator` for the default implementation. The
+/// manager reports soft restart unsupported only when no performer is
+/// injected; a performer itself refuses honestly per stage.
 public typealias LinuxGuestSoftRestartPerformer = @Sendable (
-    _ environmentID: String,
-    _ config: LinuxGuestLifecycleConfig?
+    _ request: LinuxGuestSoftRestartRequest
 ) async throws -> LinuxGuestLifecycleReceipt
 
 /// Outcome of a VERIFIED environment-disk repair: the preserved bytes were
@@ -305,6 +348,17 @@ public protocol LinuxGuestLifecycleControlling: Sendable {
         config: LinuxGuestLifecycleConfig?,
         cancellation: CancellationToken?
     ) async throws -> LinuxGuestLifecycleReceipt
+    /// Soft restart with the trusted task/run/call identity the ordered path
+    /// persists into the durable operation record. Conformers that predate
+    /// the identity get the forwarding default; the production manager
+    /// implements the full ordered transaction path.
+    func softRestart(
+        environmentID: String,
+        config: LinuxGuestLifecycleConfig?,
+        ownerTaskID: String?,
+        operationKey: String?,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestLifecycleReceipt
     func hardRestart(
         environmentID: String,
         config: LinuxGuestLifecycleConfig?,
@@ -335,6 +389,24 @@ public extension LinuxGuestLifecycleControlling {
             reason: "this build does not support verified environment disk repair"
         )
     }
+
+    /// Default: a soft restart with task/run/call identity forwards to the
+    /// identity-less requirement for pre-existing conformers. The production
+    /// lifecycle manager overrides this with the full ordered transaction
+    /// path.
+    func softRestart(
+        environmentID: String,
+        config: LinuxGuestLifecycleConfig?,
+        ownerTaskID: String?,
+        operationKey: String?,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestLifecycleReceipt {
+        try await softRestart(
+            environmentID: environmentID,
+            config: config,
+            cancellation: cancellation
+        )
+    }
 }
 
 /// Serializes safe lifecycle operations around one injected guest controller.
@@ -359,6 +431,8 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
     private let controller: any LinuxGuestControlling
     private let releasePolicy: GuestReleaseShapePolicy
     private let softRestartPerformer: LinuxGuestSoftRestartPerformer?
+    private let softRestartReplay: (@Sendable (LinuxGuestSoftRestartRequest) async throws -> LinuxGuestLifecycleReceipt?)?
+
     /// Optional image preparation, matching the shell's prepare-and-retry
     /// path: when a start hits an unqualified/missing image, this prepares
     /// (downloads/verifies) the pinned image once and the start is retried.
@@ -408,12 +482,14 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
         controller: any LinuxGuestControlling,
         releasePolicy: GuestReleaseShapePolicy = .production,
         softRestartPerformer: LinuxGuestSoftRestartPerformer? = nil,
+        softRestartReplay: (@Sendable (LinuxGuestSoftRestartRequest) async throws -> LinuxGuestLifecycleReceipt?)? = nil,
         prepareImage: (@Sendable (String, CancellationToken?) async throws -> Void)? = nil,
         stopVerificationTimeout: TimeInterval = 10
     ) {
         self.controller = controller
         self.releasePolicy = releasePolicy
         self.softRestartPerformer = softRestartPerformer
+        self.softRestartReplay = softRestartReplay
         self.prepareImage = prepareImage
         self.stopVerificationTimeout = max(0.05, stopVerificationTimeout)
     }
@@ -979,14 +1055,33 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
 
     // MARK: soft restart
 
+    /// Ordered soft restart: the guest flushes its filesystems and powers
+    /// ITSELF off after the request, the exited disk is captured and a
+    /// replacement reconnects — all under the SAME shared lifecycle
+    /// transaction as a hard restart (external starts/commands/terminals are
+    /// refused for the whole window) and with the caller's cancellation
+    /// token propagated through every stage. The manager owns the safe
+    /// ordering and re-verifies every claim the performer returns against
+    /// the runtime's own session table.
     public func softRestart(
         environmentID: String,
         config: LinuxGuestLifecycleConfig? = nil,
+        ownerTaskID: String? = nil,
+        operationKey: String? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxGuestLifecycleReceipt {
         try beginOperation(environmentID)
         defer { endOperation(environmentID) }
         try Self.throwIfCancelled(cancellation)
+        // A read-only retry lookup precedes present-day guest admission.
+        // Current liveness, shape or terminals cannot erase an old committed
+        // result or cause this same call to perform another reboot.
+        if let softRestartReplay, let operationKey, !operationKey.isEmpty,
+           let receipt = try await softRestartReplay(LinuxGuestSoftRestartRequest(
+                environmentID: environmentID, ownerTaskID: ownerTaskID,
+                operationKey: operationKey, config: config, cancellation: cancellation)) {
+            return receipt
+        }
         guard let performer = softRestartPerformer else {
             throw LinuxGuestLifecycleError.capabilityUnsupported(
                 environmentID: environmentID,
@@ -998,7 +1093,135 @@ public actor LinuxGuestLifecycleManager: LinuxGuestLifecycleControlling {
                 """
             )
         }
-        return try await performer(environmentID, config)
+        // Server-side authority: reject an out-of-ladder configuration before
+        // any disruption, exactly like a hard restart.
+        if let config { try validate(config, environmentID: environmentID) }
+
+        // A soft restart reboots the guest: an open interactive terminal is a
+        // human session and is refused, exactly like the other disruptive
+        // paths.
+        if let detail = await activity(environmentID), detail.activeTerminalCount > 0 {
+            throw LinuxGuestLifecycleError.activeInteractiveTerminal(
+                environmentID: environmentID,
+                terminalCount: detail.activeTerminalCount
+            )
+        }
+        let serviceCount = (await activity(environmentID))?.activeServiceCount ?? 0
+
+        // Resolve the replacement shape BEFORE any disruption: unspecified
+        // dimensions preserve the running guest's granted shape, a restart
+        // with nothing running restores the saved configuration, and an
+        // unqualified shape refuses here without killing anything.
+        let before = await snapshot(environmentID)
+        let runningShape: (vcpus: Int, ramMB: Int)? = {
+            guard let before, before.running else { return nil }
+            return (before.vcpus, before.ramMB)
+        }()
+        let saved = await controller.preferredGuestConfiguration(environmentID: environmentID)
+        let fallback = saved.flatMap { value -> (vcpus: Int, ramMB: Int)? in
+            guard let cores = value.vcpus, let memory = value.memoryMB else { return nil }
+            return (cores, memory)
+        }
+        let lifecycleConfig = Self.mergedConfig(config, current: runningShape ?? fallback)
+        let shape = try resolvedRequest(lifecycleConfig, environmentID: environmentID)
+
+        // Hold the shared service's exclusive transaction across the WHOLE
+        // ordered window, exactly like a hard restart: the performer's stage
+        // commands run on the transaction-owned channel (the token is the
+        // authority; the lifecycle lock is never re-acquired, so the ordered
+        // sequence cannot deadlock on the lease it holds).
+        let transaction = try await beginSharedTransaction(environmentID)
+        do {
+            try Self.throwIfCancelled(cancellation)
+            let preSnapshot = await snapshot(environmentID)
+            let status = await controller.guestStatus(environmentID: environmentID)
+            // The lifecycle transaction fences new registry consumers. Re-read
+            // actual activity here: a persistent service or foreign task must
+            // never be stopped merely to make an orderly restart succeed.
+            if let ownedActivity = await activity(environmentID) {
+                guard ownedActivity.activeTerminalCount == 0,
+                      ownedActivity.activeServiceCount == 0,
+                      ownedActivity.activeCommandCount == 0 else {
+                    throw LinuxGuestLifecycleError.busy(environmentID: environmentID)
+                }
+                if let ownerTaskID, let currentOwner = ownedActivity.ownerRunID,
+                   currentOwner != ownerTaskID {
+                    throw LinuxGuestLifecycleError.notOwned(environmentID: environmentID)
+                }
+            }
+            let preBoot: LinuxGuestSoftRestartPreBoot? = preSnapshot.flatMap { state in
+                guard state.running else { return nil }
+                return LinuxGuestSoftRestartPreBoot(
+                    vcpus: state.vcpus,
+                    ramMB: state.ramMB,
+                    launchGeneration: state.launchGeneration,
+                    imageID: status.imageID
+                )
+            }
+            let receipt = try await performer(LinuxGuestSoftRestartRequest(
+                environmentID: environmentID,
+                ownerTaskID: ownerTaskID,
+                operationKey: operationKey,
+                config: config,
+                shape: shape,
+                transaction: transaction,
+                preBoot: preBoot,
+                servicesActive: serviceCount,
+                cancellation: cancellation
+            ))
+            // The performer is a seam: re-verify anything that claims a
+            // running replacement against the runtime's own truth.
+            if receipt.phase == .running {
+                guard let actual = await snapshot(environmentID), actual.running else {
+                    throw LinuxGuestLifecycleError.capabilityUnsupported(
+                        environmentID: environmentID,
+                        requestedVCPUs: lifecycleConfig.vcpus ?? 1,
+                        reason: "soft restart reported success but no running guest was observed"
+                    )
+                }
+                try verifyGrantedShape(actual, request: shape, environmentID: environmentID)
+            }
+            if let transaction { await controller.endLifecycleTransaction(transaction) }
+            return receipt
+        } catch let error as LinuxGuestLifecycleError {
+            if let transaction { await controller.endLifecycleTransaction(transaction) }
+            throw error
+        } catch let error as LinuxGuestError {
+            // Surface the engine's honest reason as the matching lifecycle
+            // refusal; the shared ownership is still released below.
+            if let transaction { await controller.endLifecycleTransaction(transaction) }
+            switch error {
+            case .notOwned:
+                throw LinuxGuestLifecycleError.notOwned(environmentID: environmentID)
+            case .guestBusy:
+                throw LinuxGuestLifecycleError.busy(environmentID: environmentID)
+            default:
+                throw LinuxGuestLifecycleError.capabilityUnsupported(
+                    environmentID: environmentID,
+                    requestedVCPUs: lifecycleConfig.vcpus ?? 1,
+                    reason: error.localizedDescription
+                )
+            }
+        } catch {
+            if let transaction { await controller.endLifecycleTransaction(transaction) }
+            throw error
+        }
+    }
+
+    /// Identity-less convenience: forwards to the ordered path without a
+    /// task/run/call identity (UI and legacy callers).
+    public func softRestart(
+        environmentID: String,
+        config: LinuxGuestLifecycleConfig? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> LinuxGuestLifecycleReceipt {
+        try await softRestart(
+            environmentID: environmentID,
+            config: config,
+            ownerTaskID: nil,
+            operationKey: nil,
+            cancellation: cancellation
+        )
     }
 
     // MARK: hard restart

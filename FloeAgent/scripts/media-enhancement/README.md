@@ -175,3 +175,21 @@ the result is persisted as `.floe-readiness.json` and invalidated by any
 byte/version change. A notice/metadata change therefore invalidates only the
 cached readiness record; the model and fixture bytes are unchanged and are
 proven so by the `--reuse-compiled --reuse-report` mapping.
+
+## Exact retained distribution candidates
+
+`stage_retained_models.py --retained <read-only-bundles> --output <new-directory>`
+verifies the pinned original manifests and every retained byte without compiling,
+converting, downloading or inferring. It preserves original provenance/notices,
+adds a clearly labelled distribution decision and RGB8 runtime contract, then
+writes flat release `assets/`, hard-linked qualification `bundles/` and
+`CANDIDATE.json`. This is preparation, not current qualification or availability.
+
+`promote_retained_models.py --candidate <CANDIDATE.json> --qualification <reviewed-evidence.json> --models skill-hub/models.json --release-base <immutable-github-release-download-url> --output <models-candidate.json>`
+requires the exact candidate manifest digest and host/device evidence per model,
+then independently reads and hashes every published asset. It only produces a
+staged `models.json` candidate. The normal hub build/sign/publication procedure
+must generate `catalog.json` and its matching signature; never hand-edit them.
+The existing installer downloads individual files into the declared model
+layout, verifies all bytes and the manifest/contract identity before registering
+an install. Runtime readiness still requires actual fixture inference.

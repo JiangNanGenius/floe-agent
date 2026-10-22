@@ -80,6 +80,7 @@ final class AppEnvironment: ObservableObject {
     let keychain: KeychainStore
     let catastrophicGate: CatastrophicActionGate
     let subagentRunnerRegistry: SubagentRunnerRegistry
+    let childResumeService: ChildResumeService
 
     // MARK: Execution (T13/T14)
 
@@ -161,8 +162,24 @@ final class AppEnvironment: ObservableObject {
     /// only to these centers, never to stores or runtimes directly.
     /// T01 vends minimal shells; T02/T04/T05 fill them in.
     private lazy var _conversationCenter = ConversationCenter(environment: self)
+    /// Owns the bounded App Group widget snapshot. It observes live
+    /// conversation/run projections; it never owns a second task store.
+    private lazy var _widgetSnapshotCenter = WidgetSnapshotCenter(
+        runStore: runStore,
+        conversationStore: conversationStore,
+        store: WidgetTaskSnapshotStore.appGroup()
+    )
     private lazy var _remoteSessionCenter = RemoteSessionCenter(environment: self)
     private lazy var _filesCenter = FilesCenter(environment: self)
+    /// App-owned inbound-share queue/consumer (S5 P1). It lives for the
+    /// process, not a Home view, and never sends or starts a task by itself.
+    private lazy var _shareIntakeCenter = ShareIntakeCenter(
+        inbox: try? ShareInbox.applicationGroup(),
+        staging: FilesCenterShareAttachmentStaging(filesCenter: filesCenter)
+    )
+    private lazy var _documentIntakeCenter = DocumentIntakeCenter(
+        root: DocumentIntakeCenter.applicationSupportRoot()
+    )
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
@@ -242,6 +259,9 @@ final class AppEnvironment: ObservableObject {
     private lazy var _officeCommandCenter = OfficeCommandCenter()
 
     var conversationCenter: ConversationCenter { _conversationCenter }
+    /// Home-screen widget snapshot owner. Refreshes on actual run/title/
+    /// deletion/temporary-session changes; it grants no task authority.
+    var widgetSnapshotCenter: WidgetSnapshotCenter { _widgetSnapshotCenter }
 
     /// Shared, published design-entry state (durable-derived; see
     /// DesignEntryStateCenter). The root re-vends it as an environment
@@ -250,8 +270,14 @@ final class AppEnvironment: ObservableObject {
     /// Set during tool registration; used at launch to reconcile interrupted
     /// in-process jobs and by UI surfaces that list active background work.
     private(set) var backgroundJobService: BackgroundJobService?
+    #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
+    private var alarmService: SystemAlarmService?
+    #endif
     var remoteSessionCenter: RemoteSessionCenter { _remoteSessionCenter }
     var filesCenter: FilesCenter { _filesCenter }
+    var shareIntakeCenter: ShareIntakeCenter { _shareIntakeCenter }
+    var documentIntakeCenter: DocumentIntakeCenter { _documentIntakeCenter }
+    var sharedDocumentsCenter: SharedDocumentsCenter { .shared }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
     var sourceControlCenter: SourceControlCenter { _sourceControlCenter }
     /// Lazily created on first access; ConversationCenter reads
@@ -517,6 +543,7 @@ final class AppEnvironment: ObservableObject {
         self.keychain = keychain
         self.catastrophicGate = catastrophicGate
         self.subagentRunnerRegistry = SubagentRunnerRegistry()
+        self.childResumeService = ChildResumeService(store: SQLiteChildRunStore(database: database))
         self.isEphemeral = isEphemeral
         self.browserCenter = BrowserSessionCenter()
         self.previewCenter = LocalPreviewCoordinator(browser: self.browserCenter)
@@ -737,8 +764,21 @@ final class AppEnvironment: ObservableObject {
         // and tools observe the same instance); it must be assigned BEFORE
         // any closure below captures self, so it is created here — after
         // `linuxPreparation` exists, before ContainerLifecycle hooks.
+        let softRestartOrchestrator = LinuxGuestSoftRestartOrchestrator(
+            transport: LinuxGuestServiceSoftRestartTransport(controller: linuxGuests),
+            store: LinuxGuestFileSoftRestartStore(
+                directory: URL.applicationSupportDirectory
+                    .appendingPathComponent("FloeAgent/LinuxGuestSoftRestart", isDirectory: true)
+            )
+        )
         let linuxGuestLifecycle = LinuxGuestLifecycleManager(
             controller: linuxGuests,
+            softRestartPerformer: { request in
+                try await softRestartOrchestrator.perform(request)
+            },
+            softRestartReplay: { request in
+                try await softRestartOrchestrator.committedReceipt(for: request)
+            },
             prepareImage: { environmentID, cancellation in
                 _ = try await linuxPreparation(LinuxPreparationRequest(
                     environmentID: environmentID,
@@ -856,6 +896,9 @@ final class AppEnvironment: ObservableObject {
 
         // All stored properties are initialized above. Registrations below
         // may now safely resolve lazy centers that retain this environment.
+        browserCenter.ownerReleaseHook = { [previewCenter] owner in
+            previewCenter.releasePreview(for: owner)
+        }
         // Unified tool registration: every tool the model can see is
         // registered here in one place, in a deterministic order.
         registerAllAgentTools(
@@ -1199,6 +1242,30 @@ final class AppEnvironment: ObservableObject {
             onScheduleDue: { [weak self] in
                 guard let self else { return }
                 await self.backgroundRunCoordinator.runDueSchedulesNow()
+            }
+        )
+        // Read-only HealthKit metrics and the foreground NFC NDEF scan. Both
+        // use process-wide app-lifetime services owned by the registration
+        // helper; the settings capability gate and device availability hide
+        // them from discovery when unsupported.
+        #if canImport(UIKit) && canImport(HealthKit) && canImport(CoreNFC)
+        registerAppleHealthNFCTools()
+        #endif
+        #if canImport(AlarmKit) && !targetEnvironment(macCatalyst)
+        alarmService = registerAppleAlarmTools(database: database, existingService: alarmService)
+        #endif
+        registerAppleContactsMediaTools(
+            audioBusyReason: { [weak self] in
+                guard let self else { return "unavailable" }
+                return await MainActor.run { () -> String? in
+                    if self.voiceInput.state.hasSession { return "recording" }
+                    if self.speechService.isSpeaking { return "speech" }
+                    if self.pipAudioService.holdsSharedAudioSession
+                        || self.pipAudioService.state != .stopped { return "taskAudio" }
+                    if self.backgroundVideoService.audioSessionActivationOwned
+                        || self.backgroundVideoService.isPiPActive { return "video" }
+                    return nil
+                }
             }
         )
         // Independent credential-card management over the shared vault.
@@ -2139,6 +2206,14 @@ final class AppEnvironment: ObservableObject {
             } else {
                 persistenceReady = true
                 bootstrapError = nil
+            }
+            // Inbound shares are app-owned (never View-owned). Start the
+            // foreground refresh once launch reached a usable state; the
+            // center itself performs the App Group maintenance pass.
+            if !isEphemeral {
+                shareIntakeCenter.start()
+                documentIntakeCenter.markStoresReady()
+                sharedDocumentsCenter.start()
             }
             // Design freeze reconciliation: drop protections whose owning
             // conversation no longer exists (deleted task / crashed launch)

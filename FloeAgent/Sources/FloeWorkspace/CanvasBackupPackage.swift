@@ -1312,25 +1312,25 @@ public enum CanvasBackupPackage {
     /// `finalize` (the canvas registry write) runs AFTER the payload commits
     /// and its failure rolls them back.
     @discardableResult
-    public static func restore(fileURL: URL, floeRoot: URL,
+    public static func restore(fileURL: URL, floeRoot: URL, canvasID: UUID = UUID(),
                                finalize: ((CanvasProject) throws -> Void)? = nil) throws -> Restored {
-        try restoreArchive(at: fileURL, floeRoot: floeRoot, finalize: finalize)
+        try restoreArchive(at: fileURL, floeRoot: floeRoot, canvasID: canvasID, finalize: finalize)
     }
 
     /// Staged, verified restore for an in-memory package (legacy callers and
     /// tests). Prefer `restore(fileURL:)` for large packages.
     @discardableResult
-    public static func restore(data: Data, floeRoot: URL,
+    public static func restore(data: Data, floeRoot: URL, canvasID: UUID = UUID(),
                                finalize: ((CanvasProject) throws -> Void)? = nil) throws -> Restored {
         let manager = FileManager.default
         let archiveFile = manager.temporaryDirectory
             .appendingPathComponent("canvas-restore-input-\(UUID().uuidString).zip")
         try data.write(to: archiveFile, options: .atomic)
         defer { try? manager.removeItem(at: archiveFile) }
-        return try restoreArchive(at: archiveFile, floeRoot: floeRoot, finalize: finalize)
+        return try restoreArchive(at: archiveFile, floeRoot: floeRoot, canvasID: canvasID, finalize: finalize)
     }
 
-    private static func restoreArchive(at archiveSource: URL, floeRoot: URL,
+    private static func restoreArchive(at archiveSource: URL, floeRoot: URL, canvasID: UUID,
                                        finalize: ((CanvasProject) throws -> Void)?) throws -> Restored {
         let manager = FileManager.default
         let canonicalRoot = floeRoot.standardizedFileURL.resolvingSymlinksInPath()
@@ -1344,8 +1344,10 @@ public enum CanvasBackupPackage {
         // zero changes on disk (the hostile-manifest contract).
         let canvasCADRoot = try containedDirectory(canonicalRoot, "CanvasCAD", create: false)
         // The restored canvas identity is fixed before destinations resolve so
-        // carried drafts can be rewritten onto it.
-        let restoredCanvasID = UUID()
+        // carried drafts can be rewritten onto it. Callers that pre-allocate
+        // the identity (document intake) pass it in so a restart can prove the
+        // commit; every other caller keeps the fresh random default.
+        let restoredCanvasID = canvasID
 
         // Phase 1: stream entries into a private staging directory.
         let staging = manager.temporaryDirectory
@@ -1730,7 +1732,12 @@ public enum CanvasBackupPackage {
             for child in manifest.childProjects {
                 let planFile = childPlans[child.projectID]!
                 let data = try Data(contentsOf: planFile.source)
-                let newID = UUID()
+                // A stable derivation from the restored canvas identity: a
+                // retried restore for the same planned canvas reuses the same
+                // child paths, so an interrupted first attempt cannot leave
+                // orphan child projects behind. Different canvas identities
+                // still derive disjoint child identities.
+                let newID = stableChildProjectID(canvasID: restoredCanvasID, archivedID: child.projectID)
                 guard let rewritten = Self.remappingProject(
                     data, to: newID, assetRemap: remappedAssets) else {
                     throw BackupError.corrupt(FloeL10n.l("workspace.canvas_backup_package.sub_project_is_not_valid_project", child.file))
@@ -1982,6 +1989,24 @@ public enum CanvasBackupPackage {
 
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// RFC 4122 version-5-style deterministic identity derived from the
+    /// restored canvas id and the archived child project id. Restoring the
+    /// same package for the same planned canvas (an intake retry after an
+    /// interrupted first attempt) reproduces the same child identities, so
+    /// the staged commit reuses the exact same child paths instead of
+    /// accumulating orphans. Distinct canvas identities derive disjoint
+    /// children, so unrelated restores can never collide.
+    private static func stableChildProjectID(canvasID: UUID, archivedID: UUID) -> UUID {
+        let name = "floe-canvas-child-v1|\(canvasID.uuidString.lowercased())|\(archivedID.uuidString.lowercased())"
+        var bytes = [UInt8](SHA256.hash(data: Data(name.utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0f) | 0x50   // version 5
+        bytes[8] = (bytes[8] & 0x3f) | 0x80   // RFC 4122 variant
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3],
+                           bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11],
+                           bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
     /// Rewrites the top-level "id", the asset relativePaths and the task

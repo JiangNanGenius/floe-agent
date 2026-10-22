@@ -47,6 +47,8 @@ jobs:
           python3 FloeAgent/scripts/tests/test_office_language_resources.py
           python3 FloeAgent/scripts/test_office_stage_diagnostics.py
           python3 FloeAgent/scripts/tests/test_office_render_recovery.py
+          python3 FloeAgent/scripts/test_office_host_bootstrap.py
+          python3 FloeAgent/scripts/test_office_component_recovery.py
       - name: Reuse complete qualified engine inputs
         env:
           GH_TOKEN: ${{ github.token }}

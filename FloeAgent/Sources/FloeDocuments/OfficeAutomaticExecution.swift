@@ -414,64 +414,79 @@ public actor OfficeAutomaticExecutor {
         try copyVerified(from: documentURL, to: workingURL)
 
         var sessionOpen = false
-        /// Set when a close attempt was not acknowledged: unsafe state wins
-        /// over a plain cancellation so a cancelled run is never reported as
-        /// cleanly cancelled while the engine may still hold the working copy.
         var closeFailureReason: String?
-        let session: any OfficeServiceEngineSession
-        do {
-            session = try await factory.openServiceSession(workingCopyURL: workingURL,
-                                                           format: format,
-                                                           originalURL: documentURL,
-                                                           access: access)
-            sessionOpen = true
-        } catch let error as OfficeAutomaticExecutionError where error.isUnsafeResourceState {
-            // Native resources may still be live: retain the working copy.
-            stagingSafeToClean = false
-            throw error
-        } catch {
-            throw OfficeAutomaticExecutionError.sessionUnavailable(
-                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-        }
+        var activeSession: (any OfficeServiceEngineSession)?
+        var sessionLabel = ""
         var saved = false
+        var exactFacts: [String] = []
         do {
-            try throwIfCancelled(cancellation)
-            let status = try await session.status()
-            guard status.editable else {
-                throw OfficeAutomaticExecutionError.sessionNotEditable(
-                    status.unavailableReason ?? "the engine reports the working copy read-only")
-            }
-            guard !status.hasUnsavedChanges else {
-                throw OfficeAutomaticExecutionError.sessionNotReady(
-                    "the fresh working copy unexpectedly holds unsaved edits")
-            }
-            try throwIfCancelled(cancellation)
+            if commands.contains(where: { if case .explicit = $0 { return true }; return false }) {
+                let result = try await executeOrdered(commands: commands, proposal: proposal,
+                    workingURL: workingURL, sourceURL: documentURL, format: format,
+                    access: access, cancellation: cancellation)
+                sessionLabel = result.engineLabel
+                exactFacts = result.facts
+                saved = true
+            } else {
+            let session: any OfficeServiceEngineSession
             do {
-                try await session.apply(commands: commands, batchID: proposal.id.uuidString)
+                session = try await factory.openServiceSession(workingCopyURL: workingURL,
+                                                               format: format,
+                                                               originalURL: documentURL,
+                                                               access: access)
+                sessionOpen = true
+                activeSession = session
+                sessionLabel = session.engineLabel
+            } catch let error as OfficeAutomaticExecutionError where error.isUnsafeResourceState {
+                // Native resources may still be live: retain the working copy.
+                stagingSafeToClean = false
+                throw error
             } catch {
-                throw OfficeAutomaticExecutionError.sessionNotReady(
-                    "command dispatch failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
-            }
-            try throwIfCancelled(cancellation)
-            do {
-                try await session.save()
-            } catch {
-                throw OfficeAutomaticExecutionError.saveFailed(
+                throw OfficeAutomaticExecutionError.sessionUnavailable(
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             }
-            saved = true
-            do {
-                try await closeSession(session)
-                sessionOpen = false
-            } catch {
-                // The engine may still hold the working copy: retain it and
-                // refuse to verify/publish/claim success.
-                stagingSafeToClean = false
-                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                closeFailureReason = reason
-                throw OfficeAutomaticExecutionError.sessionCloseUnacknowledged(reason)
+                try throwIfCancelled(cancellation)
+                let status = try await session.status()
+                guard status.editable else {
+                    throw OfficeAutomaticExecutionError.sessionNotEditable(
+                        status.unavailableReason ?? "the engine reports the working copy read-only")
+                }
+                guard !status.hasUnsavedChanges else {
+                    throw OfficeAutomaticExecutionError.sessionNotReady(
+                        "the fresh working copy unexpectedly holds unsaved edits")
+                }
+                try throwIfCancelled(cancellation)
+                do {
+                    try await session.apply(commands: commands, batchID: proposal.id.uuidString)
+                } catch {
+                    throw OfficeAutomaticExecutionError.sessionNotReady(
+                        "command dispatch failed: \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
+                }
+                try throwIfCancelled(cancellation)
+                do {
+                    try await session.save()
+                } catch {
+                    throw OfficeAutomaticExecutionError.saveFailed(
+                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                }
+                saved = true
+                do {
+                    try await closeSession(session)
+                    sessionOpen = false
+                } catch {
+                    // The engine may still hold the working copy: retain it and
+                    // refuse to verify/publish/claim success.
+                    stagingSafeToClean = false
+                    let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    closeFailureReason = reason
+                    throw OfficeAutomaticExecutionError.sessionCloseUnacknowledged(reason)
+                }
             }
 
+            // The engine has acknowledged close; preserve embedded workbook
+            // formatting on the stable copy before final validation/reopen.
+            _ = try OfficeEmbeddedWorkbookPreservation.preserve(originalURL: documentURL, savedURL: workingURL)
+            try throwIfCancelled(cancellation)
             // REOPEN the saved copy and verify the exact promises.
             let after = try OfficeOutputSnapshot.capture(url: workingURL)
             let before = try OfficeOutputSnapshot.capture(url: documentURL)
@@ -482,7 +497,7 @@ public actor OfficeAutomaticExecutor {
             let facts: [String]
             do {
                 facts = try OfficeOutputValidator.verify(before: before, after: after,
-                                                         expectations: expectations)
+                                                         expectations: expectations) + exactFacts
             } catch {
                 throw OfficeAutomaticExecutionError.verificationFailed(
                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
@@ -499,6 +514,10 @@ public actor OfficeAutomaticExecutor {
             let engineReopen = await factory.verifyEngineReopen(savedCopyURL: workingURL,
                                                                 format: format,
                                                                 access: access)
+            if commands.contains(where: { if case .explicit = $0 { return true }; return false }),
+               case .unavailable(let reason) = engineReopen {
+                throw OfficeAutomaticExecutionError.verificationFailed("exact-target engine reopen was unavailable: " + reason)
+            }
             // The source must still be the exact approved revision before any
             // output is published.
             let sourceAfter = try FloeDigest.sha256Hex(ofFileAt: documentURL)
@@ -519,7 +538,7 @@ public actor OfficeAutomaticExecutor {
                     outputRelativePath: outputRelative, outputSHA256: savedSHA,
                     outputByteCount: savedBytes, commands: commands.map(\.id),
                     verified: facts, formulaSummary: formulaSummary,
-                    engineReopen: engineReopen.receiptValue, sessionEngine: session.engineLabel,
+                    engineReopen: engineReopen.receiptValue, sessionEngine: sessionLabel,
                     saved: saved, replay: true, runID: authorization.runID.uuidString,
                     taskID: authorization.taskID?.uuidString,
                     operationID: authorization.operationID,
@@ -534,7 +553,7 @@ public actor OfficeAutomaticExecutor {
                 outputRelativePath: outputRelative, outputSHA256: savedSHA,
                 outputByteCount: savedBytes, commands: commands.map(\.id),
                 verified: facts, formulaSummary: formulaSummary,
-                engineReopen: engineReopen.receiptValue, sessionEngine: session.engineLabel,
+                engineReopen: engineReopen.receiptValue, sessionEngine: sessionLabel,
                 saved: saved, runID: authorization.runID.uuidString,
                 taskID: authorization.taskID?.uuidString,
                 operationID: authorization.operationID,
@@ -542,7 +561,10 @@ public actor OfficeAutomaticExecutor {
             record(receipt, key: replayKey)
             return receipt
         } catch {
-            if sessionOpen {
+            if (error as? OfficeAutomaticExecutionError)?.isUnsafeResourceState == true {
+                stagingSafeToClean = false
+            }
+            if sessionOpen, let session = activeSession {
                 do {
                     try await closeSession(session)
                 } catch {
@@ -561,6 +583,83 @@ public actor OfficeAutomaticExecutor {
             if error is CancellationError { throw OfficeAutomaticExecutionError.cancelled }
             if let error = error as? FloeError, case .cancelled = error {
                 throw OfficeAutomaticExecutionError.cancelled
+            }
+            throw error
+        }
+    }
+
+    /// Executes ordered engine/package segments. A package edit can only run
+    /// after the prior session acknowledged save AND close. Every preparation
+    /// is subsequently opened/saved by the real engine; an empty dispatch is
+    /// never used as evidence. Unsafe resources retain staging via the caller.
+    private func executeOrdered(commands: [OfficeEngineCommand], proposal: OfficeCommandProposal,
+                                workingURL: URL, sourceURL: URL, format: OfficeDocumentFormat,
+                                access: OfficeCommandAccess, cancellation: CancellationToken?) async throws
+        -> (engineLabel: String, facts: [String]) {
+        var pending: [OfficeEngineCommand] = []
+        var verifications: [String: OfficeExplicitPreparation.Verification] = [:]
+        var engineLabel = ""
+        var segment = 0
+        for command in commands {
+            try throwIfCancelled(cancellation)
+            guard case .explicit(let exact) = command else { pending.append(command); continue }
+            if !pending.isEmpty {
+                segment += 1; engineLabel = try await runOrderedSegment(pending, proposal: proposal, workingURL: workingURL, sourceURL: sourceURL, format: format, access: access, cancellation: cancellation, segment: segment); pending.removeAll()
+            }
+            try throwIfCancelled(cancellation)
+            let prepared = try OfficeExplicitPreparation.prepare(exact, workingURL: workingURL,
+                sourceURL: sourceURL, baseSHA256: proposal.baseSHA256)
+            try throwIfCancelled(cancellation)
+            segment += 1; engineLabel = try await runOrderedSegment(prepared.engineCommands, proposal: proposal, workingURL: workingURL, sourceURL: sourceURL, format: format, access: access, cancellation: cancellation, segment: segment)
+            try OfficeExplicitPreparation.verify(prepared.verification, url: workingURL)
+            verifications[prepared.verification.key] = prepared.verification
+        }
+        if !pending.isEmpty { segment += 1; engineLabel = try await runOrderedSegment(pending, proposal: proposal, workingURL: workingURL, sourceURL: sourceURL, format: format, access: access, cancellation: cancellation, segment: segment) }
+        try throwIfCancelled(cancellation)
+        // Later commands may intentionally overwrite an earlier property on
+        // the same target. Last-write expectations win for that property; all
+        // other exact target promises must still hold in the final package.
+        for value in verifications.values { try OfficeExplicitPreparation.verify(value, url: workingURL, verifyUntouched: false) }
+        let facts = verifications.keys.sorted().map { "saved exact target verified: " + $0 }
+        return (engineLabel, facts)
+    }
+
+    private func runOrderedSegment(_ batch: [OfficeEngineCommand], proposal: OfficeCommandProposal,
+                                   workingURL: URL, sourceURL: URL, format: OfficeDocumentFormat,
+                                   access: OfficeCommandAccess, cancellation: CancellationToken?,
+                                   segment: Int) async throws -> String {
+        try throwIfCancelled(cancellation)
+        let session: any OfficeServiceEngineSession
+        do {
+            session = try await factory.openServiceSession(workingCopyURL: workingURL,
+                format: format, originalURL: sourceURL, access: access)
+        } catch let error as OfficeAutomaticExecutionError where error.isUnsafeResourceState {
+            throw error
+        } catch {
+            throw OfficeAutomaticExecutionError.sessionUnavailable(error.localizedDescription)
+        }
+        var closeAttempted = false
+        do {
+            try throwIfCancelled(cancellation)
+            let status = try await session.status()
+            guard status.editable else { throw OfficeAutomaticExecutionError.sessionNotEditable(status.unavailableReason ?? "working copy is read-only") }
+            guard !status.hasUnsavedChanges else { throw OfficeAutomaticExecutionError.sessionNotReady("fresh segment unexpectedly has unsaved changes") }
+            if !batch.isEmpty {
+                try await session.apply(commands: batch, batchID: proposal.id.uuidString + "-segment-" + String(segment))
+            }
+            try throwIfCancelled(cancellation)
+            try await session.save()
+            // Even cancellation after save must release the actual native
+            // owner before the package can be inspected or changed.
+            closeAttempted = true
+            do { try await session.close() }
+            catch { throw OfficeAutomaticExecutionError.sessionCloseUnacknowledged(error.localizedDescription) }
+            try throwIfCancelled(cancellation)
+            return session.engineLabel
+        } catch {
+            if !closeAttempted {
+                do { try await session.close() }
+                catch { throw OfficeAutomaticExecutionError.sessionCloseUnacknowledged(error.localizedDescription) }
             }
             throw error
         }

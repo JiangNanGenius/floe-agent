@@ -1163,12 +1163,17 @@ enum WorkspaceCanvasRegistry {
         return "\(base.isEmpty ? FloeL10n.l("workspace.workspace_canvas_view.floe_canvas") : base).floeCanvas"
     }
 
+    /// Imports a package under the given canvas identity. Callers that
+    /// pre-allocate the destination (document intake) pass a planned id so a
+    /// restart can prove the commit with `exists(canvasID:)`; every other
+    /// caller keeps the fresh random default. The identity is used verbatim —
+    /// never matched by title, name or content hash.
     @discardableResult
-    static func importPackage(from source: URL) throws -> UUID {
+    static func importPackage(from source: URL, canvasID: UUID = UUID()) throws -> UUID {
         // ZIP detection reads only the leading bytes; the package itself is
         // streamed by the staged restore and never assembled in memory.
         if try CanvasBackupPackage.looksLikeZipArchive(at: source) {
-            return try importBackupPackage(fileURL: source)
+            return try importBackupPackage(fileURL: source, canvasID: canvasID)
         }
         // Legacy plain-canvas-JSON package (Build265 and earlier), bounded.
         let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
@@ -1181,7 +1186,7 @@ enum WorkspaceCanvasRegistry {
               (1...CanvasProject.currentSchemaVersion).contains(project.schemaVersion) else {
             throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.this_is_not_a_supported_floe"))
         }
-        let id = UUID()
+        let id = canvasID
         project.id = id
         project.workspaceID = nil
         project.agentConversationID = nil
@@ -1199,13 +1204,17 @@ enum WorkspaceCanvasRegistry {
     /// child projects and their assets are only committed after every hash
     /// and path validates, so a bad package changes nothing on disk; the
     /// registry write is the finalize step and a failure rolls files back.
-    private static func importBackupPackage(fileURL: URL) throws -> UUID {
+    private static func importBackupPackage(fileURL: URL, canvasID: UUID) throws -> UUID {
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true)
         let floeRoot = support.appendingPathComponent("FloeAgent", isDirectory: true)
         var registeredID: UUID?
-        let restored = try CanvasBackupPackage.restore(fileURL: fileURL, floeRoot: floeRoot) { project in
+        let restored = try CanvasBackupPackage.restore(
+            fileURL: fileURL,
+            floeRoot: floeRoot,
+            canvasID: canvasID
+        ) { project in
             try encodeProject(project,
                               to: projectURL(canvasID: project.id, createDirectory: true))
             registeredID = project.id
@@ -1214,6 +1223,42 @@ enum WorkspaceCanvasRegistry {
             throw FloeError.validationFailed(FloeL10n.l("workspace.workspace_canvas_view.canvas_backup_registration_failed"))
         }
         return id
+    }
+
+    /// Removes only the per-canvas payload namespaces a staged restore
+    /// commits BEFORE the registry write: the canvas-owned native CAD package
+    /// folder and the unapplied CAD draft folder for this exact identity.
+    /// Shared namespaces (Materials, WorkbenchRoot, child project JSONs with
+    /// stable derived identities) are intentionally untouched: identical
+    /// content is reused by a later commit, never duplicated. Returns true
+    /// when an owned partial payload existed. Foreign work under other canvas
+    /// identities is never affected.
+    @discardableResult
+    static func removePartialRestoreArtifacts(canvasID: UUID) -> Bool {
+        let manager = FileManager.default
+        var removed = false
+        if let support = try? manager.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: false
+        ) {
+            let floeRoot = support
+                .appendingPathComponent("FloeAgent", isDirectory: true)
+                .standardizedFileURL
+            let owned = [
+                floeRoot.appendingPathComponent(CanvasCADStorage.containerDirectoryName, isDirectory: true)
+                    .appendingPathComponent(canvasID.uuidString, isDirectory: true),
+                floeRoot.appendingPathComponent(CanvasDrawingNodePlanner.draftRootDirectoryName, isDirectory: true)
+                    .appendingPathComponent(canvasID.uuidString.lowercased(), isDirectory: true),
+            ]
+            for directory in owned {
+                guard DocumentIntakeStorage.isDirectoryNotSymlink(directory),
+                      DocumentIntakeStorage.isContained(directory, in: floeRoot) else { continue }
+                if (try? manager.removeItem(at: directory)) != nil {
+                    removed = true
+                }
+            }
+        }
+        return removed
     }
 
     @MainActor

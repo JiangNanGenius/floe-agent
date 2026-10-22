@@ -1,4 +1,4 @@
-// FloeApp — compiled browser tools backed by the visible WKWebView center.
+// FloeApp — compiled browser tools routed to the calling task's own session.
 
 #if canImport(SwiftUI) && canImport(WebKit)
 import Foundation
@@ -14,6 +14,62 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         self.center = center
     }
 
+    /// Task ownership comes only from the runtime-issued ToolContext. A nil
+    /// owner is rejected instead of falling back to whatever browser happens
+    /// to be visible, and the temporary chat ceiling stays unchanged.
+    @MainActor
+    func owner(for context: ToolContext) throws -> UUID {
+        guard let owner = context.conversationID else {
+            throw FloeError.validationFailed(
+                "Browser tools require a task-owned run. Open a task and use its browser."
+            )
+        }
+        guard !context.temporaryReadOnly, !context.publicWebOnly else {
+            throw FloeError.validationFailed(
+                "Temporary chat cannot open or control a durable browser session"
+            )
+        }
+        return owner
+    }
+
+    @MainActor
+    func session(for context: ToolContext) throws -> (owner: UUID, session: BrowserTaskSession) {
+        guard let center else {
+            throw FloeError.invalidConfiguration("The task browser service is unavailable")
+        }
+        let owner = try owner(for: context)
+        // Cancellation is runtime evidence that the owning run is finished.
+        // It is checked again immediately before any session would be
+        // created, so a late callback from a cancelled (deleted, archived or
+        // superseded) run can never recreate a browser for its owner.
+        try context.cancellation.throwIfCancelled()
+        return (owner, try center.taskSession(for: owner))
+    }
+
+    /// Resolves the exact run that owns a durable browser handoff for this
+    /// call. Main-run calls use their actual `context.runID`. A delegated
+    /// child uses the runtime-issued `ChildExecutionIdentity`: the original
+    /// parent run that delegated it, validated against the actual ToolContext
+    /// conversation (`rootTaskID`) and against canonical depth (nested
+    /// delegation is never minted and is refused). The newest run of a
+    /// conversation is never chosen as a substitute for a known original.
+    @MainActor
+    func handoffRun(for context: ToolContext, owner: UUID) throws -> UUID {
+        guard let child = context.childExecution else { return context.runID }
+        let identity = child.identity
+        guard identity.depth == 1 else {
+            throw FloeError.validationFailed(
+                "A nested delegated child cannot request a browser handoff"
+            )
+        }
+        guard identity.rootTaskID == owner else {
+            throw FloeError.validationFailed(
+                "The delegated child belongs to a different root task and cannot use this task's browser"
+            )
+        }
+        return identity.parentRunID
+    }
+
     @MainActor
     func run(
         context: ToolContext,
@@ -24,12 +80,11 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         visualFallbackReason: String? = nil,
         timeoutMilliseconds: Int = 15_000
     ) async throws -> ToolExecutionOutput {
-        guard let center else { throw FloeError.invalidConfiguration("The visible browser is unavailable") }
-        guard center.conversationID == context.conversationID else {
-            throw FloeError.validationFailed("This task's browser is not currently visible. Continue other work or ask the user to reopen its browser.")
-        }
+        try context.cancellation.throwIfCancelled()
+        guard let center else { throw FloeError.invalidConfiguration("The task browser service is unavailable") }
+        let resolved = try session(for: context)
         let command = BrowserCommand(
-            sessionID: center.sessionID,
+            sessionID: resolved.session.sessionID,
             tabID: tabID,
             expectedDocumentID: documentID,
             timeoutMilliseconds: timeoutMilliseconds,
@@ -37,7 +92,9 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
             visualFallbackReason: visualFallbackReason,
             action: action
         )
-        let result = await center.execute(command)
+        // The owner is applied explicitly; visibility is irrelevant.
+        let result = await center.execute(command, in: resolved.owner)
+        try context.cancellation.throwIfCancelled()
         let data = try JSONEncoder().encode(result)
         // The protocol already bounds nodes, events and tabs. Byte truncation
         // here creates invalid JSON and can remove action evidence mid-field.
@@ -51,11 +108,14 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
                 byteCount: $0.byteCount, sha256: $0.sha256
             )]
         } ?? []
+        // The protocol bounds nodes, events and tabs well below this ceiling,
+        // but the default summary budget would still cut the JSON mid-field.
         return ToolExecutionOutput(
             summary: summary,
             fullOutputSHA256: FloeDigest.sha256Hex(data),
             artifacts: artifacts,
-            requiresUserAction: false
+            requiresUserAction: false,
+            maximumSummaryCharacters: 262_144
         )
     }
 }
@@ -87,15 +147,24 @@ private struct BrowserPanelTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         try validate(args)
         guard let center = environment.center else { throw FloeError.invalidConfiguration("Browser is unavailable") }
-        if let owner = context.conversationID, center.conversationID != owner {
-            throw FloeError.validationFailed("This browser belongs to another task")
-        }
+        let owner = try environment.owner(for: context)
         if args.action == "requestUser" {
             let reason = args.reason!.trimmingCharacters(in: .whitespacesAndNewlines)
-            try center.requestUserInteraction(reason: reason, tabID: args.tabID, runID: context.runID)
-            return ToolExecutionOutput(summary: "The user controls the browser; continue other authorized work. A return notification will arrive in this task. Requested interaction: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: false)
+            // The handoff run is the exact original run: this run's own id for
+            // a main-run call, or the runtime-issued parent run of a delegated
+            // child (never the conversation's newest run). The notification
+            // therefore can never be orphaned on a finished child run or
+            // misattributed to a newer run of the same task.
+            let handoffRunID = try environment.handoffRun(for: context, owner: owner)
+            try center.requestUserInteraction(
+                reason: reason,
+                tabID: args.tabID,
+                runID: handoffRunID,
+                in: owner
+            )
+            return ToolExecutionOutput(summary: "The user controls this task's browser; continue other authorized work. A return notification will arrive in this task. Requested interaction: " + reason, fullOutputSHA256: FloeDigest.sha256Hex(Data(reason.utf8)), requiresUserAction: false)
         }
-        try center.requestPanelDismissal()
+        try center.requestPanelDismissal(conversationID: owner)
         return ToolExecutionOutput(digesting: "Browser panel closed; sidebar preference retained")
     }
 }
@@ -152,7 +221,7 @@ private struct BrowserTabTool: AgentTool {
 private struct BrowserEventsTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID?; let afterSequence: Int?; let limit: Int? }
     static let name = "browser.events"
-    static let toolDescription = "Read bounded CDP-style lifecycle and DOM events from Floe's visible browser"
+    static let toolDescription = "Read bounded CDP-style lifecycle and DOM events from this task's browser"
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"afterSequence":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":50}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -179,7 +248,7 @@ private struct BrowserWaitTool: AgentTool {
         let timeoutMilliseconds: Int?
     }
     static let name = "browser.wait"
-    static let toolDescription = "Wait for load, DOM readiness, selector, text, document change, or approximate idle in Floe's visible browser"
+    static let toolDescription = "Wait for load, DOM readiness, selector, text, document change, or approximate idle in this task's browser"
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"condition":{"type":"string","enum":["load","dom","selector","text","documentChanged","idle"]},"value":{"type":"string","maxLength":512},"quietMilliseconds":{"type":"integer","minimum":100,"maximum":5000},"timeoutMilliseconds":{"type":"integer","minimum":250,"maximum":30000}},"required":["condition"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
@@ -376,7 +445,7 @@ private struct BrowserTypeTool: AgentTool {
         let submit: Bool?
     }
     static let name = "browser.type"
-    static let toolDescription = "Type into a non-password element in Floe's visible browser"
+    static let toolDescription = "Type into a non-password element in this task's browser"
     static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"ref":{"type":"string"},"documentID":{"type":"string"},"text":{"type":"string","maxLength":16384},"submit":{"type":"boolean"}},"required":["ref","documentID","text"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.controlsGUI, .sendsDataToProvider]
     static let isSideEffecting = true
@@ -398,7 +467,7 @@ private struct BrowserTypeTool: AgentTool {
 private struct BrowserScrollTool: AgentTool {
     struct Arguments: Decodable, Sendable { let tabID: UUID?; let deltaX: Double?; let deltaY: Double }
     static let name = "browser.scroll"
-    static let toolDescription = "Scroll Floe's visible browser viewport"
+    static let toolDescription = "Scroll this task's browser viewport"
     static let riskLabels: Set<RiskLabel> = [.controlsGUI]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating

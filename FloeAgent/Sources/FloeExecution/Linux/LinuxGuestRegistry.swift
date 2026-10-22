@@ -2694,6 +2694,209 @@ public actor TinyEMULinuxGuestRegistry {
         }
     }
 
+    /// One observable boundary of the raced orderly-poweroff stage.
+    fileprivate enum PoweroffRaceEvent: Sendable {
+        /// The session's liveness dropped: the machine left.
+        case poweredOff
+        /// The command answered (the machine demonstrably did not go down).
+        case commandCompleted(exitCode: Int32, stderr: String)
+        /// The command threw; the machine may still have gone down.
+        case commandFailed(description: String)
+        /// The deadline elapsed with the machine alive / a cancelled watcher.
+        case aliveAtDeadline
+    }
+
+    /// Settles exactly ONE race event: the first reporter wins, later
+    /// reports (and a late waiter) observe the settled value. A plain actor:
+    /// the race is per-call, never hot-path, and the continuation hop keeps
+    /// the structured caller free of unstructured-task leaks.
+    fileprivate actor PoweroffRaceFirst {
+        private var settled: PoweroffRaceEvent?
+
+        func report(_ event: PoweroffRaceEvent) {
+            guard settled == nil else { return }
+            settled = event
+            let parked = continuation
+            continuation = nil
+            parked?.resume(returning: event)
+        }
+
+        func wait() async -> PoweroffRaceEvent {
+            // Actor-serialized against report: the settled check and the
+            // continuation registration cannot interleave with a report.
+            if let event = settled { return event }
+            return await withCheckedContinuation { continuation in
+                self.continuation = continuation
+                if let event = settled {
+                    self.continuation = nil
+                    continuation.resume(returning: event)
+                }
+            }
+        }
+
+        private var continuation: CheckedContinuation<PoweroffRaceEvent, Never>?
+    }
+
+    /// Runs ONE bounded ordered stage command on the transaction-owned
+    /// session's console channel. The transaction token is the authority:
+    /// the admission check is the token comparison, NOT a lifecycle-lock
+    /// acquisition, so the ordered soft-restart sequence never deadlocks on
+    /// the lease it holds. External commands stay refused (`guestBusy`) for
+    /// the whole transaction window.
+    public func runForLifecycleTransaction(
+        environmentID: String,
+        token: UInt64,
+        argv: [String],
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        guard lifecycleTransactions[environmentID] == token else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard let session = sessions[environmentID],
+              await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        return try await session.channel.run(
+            argv: argv,
+            timeout: timeout,
+            maxOutputBytes: nil,
+            cancellation: cancellation
+        )
+    }
+
+    /// Submits the orderly poweroff (`<poweroffPath> -f`) on the
+    /// transaction-owned session and reports which boundary was observed.
+    /// The orderly poweroff ends the whole machine, so the command is
+    /// expected to NEVER answer END: the observable boundaries are the
+    /// machine leaving (`.poweredOff`), the command answering
+    /// (`.refused`/`.completedWithoutPoweringOff`), or no boundary inside
+    /// the deadline (`.unconfirmed` — an unknown outcome, never a force
+    /// reset here).
+    ///
+    /// The liveness poll and the command run as INDEPENDENT unstructured
+    /// tasks raced through a first-event box, NOT in a structured task
+    /// group: a structured group cannot return while a cancelled child is
+    /// still blocked in `channel.run`'s token stream, and cancelling that
+    /// child kills its own timeout machinery, turning every non-exit path
+    /// into a multi-minute wait cycle. Here each reporter owns its bounded
+    /// completion:
+    ///
+    ///  * Machine wins (`.poweredOff`): the exact captured, PROVEN-exited
+    ///    machine's channel is closed BEFORE the command task is joined, so
+    ///    its blocked reader wakes immediately; nothing waits for the later
+    ///    disk capture. Only that old channel is touched.
+    ///  * Command answers or errors: the machine is alive; the outcome is
+    ///    known (or re-read for liveness before being called unknown).
+    ///  * Deadline elapses with the machine alive (`.unconfirmed`): the
+    ///    command task is NOT cancelled — it keeps its own channel timeout/
+    ///    interrupt/recovery machinery and finishes independently, bounded.
+    ///    A live, unconfirmed machine's channel is NEVER closed or reset
+    ///    merely to finish the race.
+    ///
+    /// The caller's cancellation token is deliberately not forwarded into
+    /// the poweroff command: a submitted poweroff is never retracted, and an
+    /// interrupt-driven END would masquerade as the guest's own refusal.
+    /// Post-submission cancellation is reported by the orchestrator as the
+    /// real outcome — committed or unknown, never a clean cancel.
+    public func requestOrderlyPoweroffForLifecycleTransaction(
+        environmentID: String,
+        token: UInt64,
+        argv: [String],
+        deadline: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestSoftRestartPoweroffOutcome {
+        guard lifecycleTransactions[environmentID] == token else {
+            throw LinuxGuestError.guestBusy(environmentID: environmentID)
+        }
+        guard let session = sessions[environmentID],
+              await session.handle.isRunning() else {
+            throw LinuxGuestError.notRunning(environmentID: environmentID)
+        }
+        let budget = max(0.05, deadline)
+        let deadlineClock = ContinuousClock.now.advanced(by: .seconds(budget))
+        let handle = session.handle
+        let channel = session.channel
+        let first = PoweroffRaceFirst()
+        let watcher = Task { [handle] in
+            while true {
+                if Task.isCancelled || cancellation?.isCancelled == true {
+                    await first.report(.aliveAtDeadline)
+                    return
+                }
+                if !(await handle.isRunning()) {
+                    await first.report(.poweredOff)
+                    return
+                }
+                if ContinuousClock.now >= deadlineClock {
+                    await first.report(.aliveAtDeadline)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        // Independent command completion: NOT a child of any structured
+        // scope, so its own bounded channel machinery (timeout → interrupt →
+        // recovery) stays live even after this call returns.
+        let command = Task { [channel] in
+            do {
+                let result = try await channel.run(
+                    argv: argv,
+                    timeout: budget,
+                    maxOutputBytes: nil,
+                    cancellation: nil
+                )
+                await first.report(.commandCompleted(
+                    exitCode: result.exitCode, stderr: result.stderr
+                ))
+            } catch {
+                await first.report(.commandFailed(description: error.localizedDescription))
+            }
+        }
+        let event = await first.wait()
+        switch event {
+        case .poweredOff:
+            // The exact captured machine has PROVEN exited while this
+            // transaction still excludes a replacement. Close only that old
+            // channel before joining the command task: its reader wakes from
+            // the stream finish instead of hanging until the later disk
+            // capture. A live machine never reaches this branch.
+            watcher.cancel()
+            await channel.close()
+            await command.value
+            return .poweredOff
+        case .commandCompleted(let exitCode, let stderr):
+            watcher.cancel()
+            if exitCode == 0 {
+                return .completedWithoutPoweringOff(exitCode: exitCode)
+            }
+            return .refused(
+                exitCode: exitCode,
+                detail: String(stderr.prefix(200))
+            )
+        case .commandFailed(let description):
+            watcher.cancel()
+            // The machine may have gone down between the command error
+            // and now: re-read liveness before calling it unknown. Only a
+            // PROVEN-exited machine's channel is closed here.
+            if await !(handle.isRunning()) {
+                await channel.close()
+                await command.value
+                return .poweredOff
+            }
+            return .unconfirmed(detail:
+                "the poweroff command failed without the machine leaving: \(description)")
+        case .aliveAtDeadline:
+            // The machine stayed alive past the budget and the command has
+            // not answered. The command task is left to its own bounded
+            // channel timeout/interrupt/recovery — the live channel is
+            // deliberately NOT closed and the guest is NOT reset.
+            watcher.cancel()
+            return .unconfirmed(detail:
+                "the guest stayed alive past the \(Int(budget))s orderly-poweroff deadline")
+        }
+    }
+
     /// Destructive teardown of an environment whose lifecycle lock the CALLER
     /// already owns (an explicit transaction): no lock acquisition, no
     /// deadlock, but the same marker, terminal close, session removal and
@@ -3436,6 +3639,40 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
             token: transaction.token,
             taskID: taskID,
             shape: shape
+        )
+    }
+
+    /// Ordered stage command on the transaction-owned channel. The token —
+    /// never a second lifecycle-lock acquisition — is the authority, so the
+    /// soft-restart stage sequence cannot deadlock on the lease it holds.
+    public func runForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        argv: [String],
+        timeout: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        try await registry.runForLifecycleTransaction(
+            environmentID: transaction.environmentID,
+            token: transaction.token,
+            argv: argv,
+            timeout: timeout,
+            cancellation: cancellation
+        )
+    }
+
+    /// The raced orderly-poweroff boundary on the transaction-owned guest.
+    public func requestOrderlyPoweroffForLifecycleTransaction(
+        _ transaction: LinuxGuestLifecycleTransaction,
+        poweroffPath: String,
+        deadline: TimeInterval,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxGuestSoftRestartPoweroffOutcome {
+        try await registry.requestOrderlyPoweroffForLifecycleTransaction(
+            environmentID: transaction.environmentID,
+            token: transaction.token,
+            argv: [poweroffPath, "-f"],
+            deadline: deadline,
+            cancellation: cancellation
         )
     }
 

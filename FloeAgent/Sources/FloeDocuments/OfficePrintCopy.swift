@@ -9,7 +9,7 @@
 // byte-preserving path. The copy is not the Notes resource and not the live
 // editor's working copy.
 //
-// Semantics (settled for build 283):
+// Semantics (settled for build 283; extended for the build 285 preview round):
 //  * `.documentSettings` keeps the workbook's own sheet set, print areas,
 //    print titles, visibility and tab order. It only writes page-setup
 //    overrides the caller explicitly chose.
@@ -20,6 +20,15 @@
 //  * `.sheet(name:range:)` additionally writes exactly one scoped
 //    `_xlnm.Print_Area` for the canonical range and removes print titles so
 //    an out-of-range repeating header is never silently added.
+//  * `.sheetWithPrintArea(name)` suppresses the other tabs like `.sheet` but
+//    rewrites the target tab's own saved `_xlnm.Print_Area` verbatim after
+//    clearing; when the sheet declares no area of its own, the copy declares
+//    none either (full content), never another sheet's area. Print titles
+//    are preserved.
+//  * `.sheets(names:)` keeps exactly the chosen tabs visible/active (an
+//    explicitly selected hidden tab is made visible inside the copy), hides
+//    every other previously-visible tab, clears print areas so each printed
+//    tab emits its full content, and preserves print titles.
 //  * `.allVisibleSheets` keeps every visible sheet visible, keeps hidden
 //    sheets hidden, removes print areas so each visible sheet prints its full
 //    content, and preserves print titles.
@@ -31,9 +40,12 @@
 // Page setup is written as valid SpreadsheetML: `sheetPr/pageSetUpPr`
 // `fitToPage` AND `pageSetup` `scale`/`fitToWidth`/`fitToHeight` are kept
 // consistent, paper/orientation use the ECMA-376 codes, and margin presets
-// write all six physical-inch attributes. Every unrelated package member —
-// drawings, media, styles, relationships, theme, custom properties — is
-// compared byte-for-byte before the copy is committed.
+// write all six physical-inch attributes. An exact scale writes
+// `fitToPage="0"` + `scale=<percent>` with no fit attributes; a fit-to-pages
+// budget writes `fitToPage="1"` + `fitToWidth=<w>` + `fitToHeight=<h>` with
+// no stale `scale`. Every unrelated package member — drawings, media,
+// styles, relationships, theme, custom properties — is compared byte-for-byte
+// before the copy is committed.
 
 import Foundation
 import FloeCore
@@ -90,6 +102,10 @@ public struct OfficePrintCopyPlan: Codable, Sendable, Equatable {
     /// The exact `_xlnm.Print_Area` content written into the copy, or `nil`
     /// when the copy declares no print area (full-content modes).
     public var printAreaReference: String?
+    /// True only for `.sheetWithPrintArea` when the copy carries the target
+    /// sheet's own saved print area (re-emitted verbatim). A written
+    /// requested cell range is never reported as preserved.
+    public var preservedDocumentPrintArea: Bool = false
     public var removedPrintAreas: Int
     public var removedPrintTitles: Int
     public var preservedPrintAreas: Int
@@ -156,9 +172,11 @@ public enum OfficePrintCopy {
 
         let rewrite: WorkbookRewrite
         let target: OfficeRegionWorkbookSheet?
+        let selectedTargets: [OfficeRegionWorkbookSheet]
         switch plan.scope {
         case .documentSettings:
             target = nil
+            selectedTargets = []
             rewrite = try rewriteDocumentSettings(workbookXML, sheets: sheets)
         case .sheet(let name, let cellRange):
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -167,10 +185,37 @@ public enum OfficePrintCopy {
                                                         available: sheets.map(\.name))
             }
             target = selected
+            selectedTargets = []
             rewrite = try rewriteSingleSheet(workbookXML, sheets: sheets,
                                              target: selected, cellRange: cellRange)
+        case .sheetWithPrintArea(let name):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let selected = sheets.first(where: { $0.name == trimmed }) else {
+                throw OfficePrintCopyError.unknownSheet(requested: trimmed,
+                                                        available: sheets.map(\.name))
+            }
+            target = selected
+            selectedTargets = []
+            rewrite = try rewritePrintAreaPreserving(workbookXML, sheets: sheets,
+                                                     target: selected)
+        case .sheets(let names):
+            var resolved: [OfficeRegionWorkbookSheet] = []
+            resolved.reserveCapacity(names.count)
+            for raw in names {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let selected = sheets.first(where: { $0.name == trimmed }) else {
+                    throw OfficePrintCopyError.unknownSheet(requested: trimmed,
+                                                            available: sheets.map(\.name))
+                }
+                resolved.append(selected)
+            }
+            target = nil
+            selectedTargets = resolved
+            rewrite = try rewriteSelectedSheets(workbookXML, sheets: sheets,
+                                                selected: resolved)
         case .allVisibleSheets:
             target = nil
+            selectedTargets = []
             rewrite = try rewriteAllVisibleSheets(workbookXML, sheets: sheets)
         }
 
@@ -178,8 +223,10 @@ public enum OfficePrintCopy {
         switch plan.scope {
         case .documentSettings, .allVisibleSheets:
             pageSetupParts = sheets.filter(\.isVisible).map(\.partPath)
-        case .sheet:
+        case .sheet, .sheetWithPrintArea:
             pageSetupParts = target.map { [$0.partPath] } ?? []
+        case .sheets:
+            pageSetupParts = selectedTargets.map(\.partPath)
         }
 
         var replacements: [String: Data] = ["xl/workbook.xml": Data(rewrite.xml.utf8)]
@@ -263,9 +310,14 @@ public enum OfficePrintCopy {
         case .documentSettings, .allVisibleSheets:
             printedNames = sheets.filter(\.isVisible).map(\.name)
             suppressedNames = sheets.filter { !$0.isVisible }.map(\.name)
-        case .sheet:
+        case .sheet, .sheetWithPrintArea:
             printedNames = target.map { [$0.name] } ?? []
             suppressedNames = sheets.filter { $0.index != target?.index }.map(\.name)
+        case .sheets:
+            let selectedIndices = Set(selectedTargets.map(\.index))
+            // Tab order, not the request's spelling order.
+            printedNames = sheets.filter { selectedIndices.contains($0.index) }.map(\.name)
+            suppressedNames = sheets.filter { !selectedIndices.contains($0.index) }.map(\.name)
         }
 
         return OfficePrintCopyPlan(
@@ -276,6 +328,10 @@ public enum OfficePrintCopy {
             targetSheetIndex: target?.index,
             targetSheetPart: target?.partPath,
             printAreaReference: rewrite.expectedPrintArea,
+            preservedDocumentPrintArea: {
+                guard case .sheetWithPrintArea = plan.scope else { return false }
+                return rewrite.expectedPrintArea != nil
+            }(),
             removedPrintAreas: rewrite.removedPrintAreas,
             removedPrintTitles: rewrite.removedPrintTitles,
             preservedPrintAreas: rewrite.preservedPrintAreas,
@@ -410,10 +466,160 @@ public enum OfficePrintCopy {
             setActiveTab: activeTab.changed)
     }
 
+    /// Keeps exactly the chosen tabs printable: every selected tab is visible
+    /// (an explicitly selected hidden tab is made visible inside the copy —
+    /// the user asked for it by name), every other previously-visible tab is
+    /// hidden, the first selected tab in tab order becomes the active tab,
+    /// print areas are cleared so each printed tab emits its full content,
+    /// and genuine print titles are preserved.
+    private static func rewriteSelectedSheets(_ xml: String,
+                                              sheets: [OfficeRegionWorkbookSheet],
+                                              selected: [OfficeRegionWorkbookSheet]) throws
+        -> WorkbookRewrite {
+        let selectedIndices = Set(selected.map(\.index))
+        var fixed = xml
+        let sheetRanges = elementRanges(fixed, tag: "sheet")
+        guard sheetRanges.count == sheets.count else {
+            throw OfficePrintCopyError.packageUnresolvable(
+                reason: "sheet element count (\(sheetRanges.count)) does not match the resolved tab list (\(sheets.count))")
+        }
+        var madeTargetVisible = false
+        for position in stride(from: sheetRanges.count - 1, through: 0, by: -1) {
+            let range = sheetRanges[position]
+            var element = String(fixed[range])
+            let state = attribute("state", inOpeningElement: element)
+            if selectedIndices.contains(position) {
+                if let state, state != "visible" {
+                    madeTargetVisible = true
+                    element = removeAttribute(element, name: "state")
+                    fixed.replaceSubrange(range, with: element)
+                }
+            } else {
+                let visibility = state ?? "visible"
+                if visibility != "hidden", visibility != "veryHidden" {
+                    element = setAttribute(element, name: "state", value: "hidden")
+                    fixed.replaceSubrange(range, with: element)
+                }
+            }
+        }
+        guard let firstSelected = selectedIndices.min() else {
+            throw OfficePrintCopyError.noVisibleSheets
+        }
+        let activeTab = setActiveTab(fixed, index: firstSelected)
+        fixed = activeTab.xml
+        let names = try rewriteDefinedNames(fixed,
+                                            printAreaReference: nil,
+                                            printAreaSheetIndex: nil,
+                                            removePrintAreas: true,
+                                            removePrintTitles: false)
+        fixed = names.xml
+
+        var expectedStates = sheets.map(\.visibility)
+        for position in expectedStates.indices {
+            if selectedIndices.contains(position) {
+                expectedStates[position] = "visible"
+            } else if expectedStates[position] == "visible" {
+                expectedStates[position] = "hidden"
+            }
+        }
+
+        return WorkbookRewrite(
+            xml: fixed,
+            expectedStates: expectedStates,
+            expectedActiveTab: activeTab.changed ? firstSelected : nil,
+            expectedPrintArea: nil,
+            expectedPrintAreaCount: 0,
+            expectedPrintTitleCount: names.preservedPrintTitles,
+            removedPrintAreas: names.removedPrintAreas,
+            removedPrintTitles: names.removedPrintTitles,
+            preservedPrintAreas: names.preservedPrintAreas,
+            preservedPrintTitles: names.preservedPrintTitles,
+            madeTargetVisible: madeTargetVisible,
+            setActiveTab: activeTab.changed)
+    }
+
+    /// Suppresses every other tab like the single-sheet rewrite, but instead
+    /// of clearing the target's print area it re-emits the target tab's OWN
+    /// saved scoped `_xlnm.Print_Area` verbatim after clearing the workbook.
+    /// When the target declares no area, the copy declares none either and
+    /// the sheet prints its full content — it never silently adopts another
+    /// sheet's area. Print titles are preserved.
+    private static func rewritePrintAreaPreserving(_ xml: String,
+                                                   sheets: [OfficeRegionWorkbookSheet],
+                                                   target: OfficeRegionWorkbookSheet) throws
+        -> WorkbookRewrite {
+        var preservedPrintArea: String?
+        for range in elementRanges(xml, tag: "definedName") {
+            let element = String(xml[range])
+            let name = attribute("name", inOpeningElement: element) ?? ""
+            let local = attribute("localSheetId", inOpeningElement: element)
+            if name == "_xlnm.Print_Area", local == String(target.index) {
+                let text = definedNameText(element)
+                if !text.isEmpty { preservedPrintArea = text }
+            }
+        }
+
+        var fixed = xml
+        let sheetRanges = elementRanges(fixed, tag: "sheet")
+        guard sheetRanges.count == sheets.count else {
+            throw OfficePrintCopyError.packageUnresolvable(
+                reason: "sheet element count (\(sheetRanges.count)) does not match the resolved tab list (\(sheets.count))")
+        }
+        var madeTargetVisible = false
+        for position in stride(from: sheetRanges.count - 1, through: 0, by: -1) {
+            let range = sheetRanges[position]
+            var element = String(fixed[range])
+            let state = attribute("state", inOpeningElement: element)
+            if position == target.index {
+                if let state, state != "visible" {
+                    madeTargetVisible = true
+                    element = removeAttribute(element, name: "state")
+                    fixed.replaceSubrange(range, with: element)
+                }
+            } else {
+                let visibility = state ?? "visible"
+                if visibility != "hidden", visibility != "veryHidden" {
+                    element = setAttribute(element, name: "state", value: "hidden")
+                    fixed.replaceSubrange(range, with: element)
+                }
+            }
+        }
+
+        let activeTab = setActiveTab(fixed, index: target.index)
+        fixed = activeTab.xml
+        let names = try rewriteDefinedNames(fixed,
+                                            printAreaReference: preservedPrintArea,
+                                            printAreaSheetIndex: target.index,
+                                            removePrintAreas: true,
+                                            removePrintTitles: false)
+        fixed = names.xml
+
+        var expectedStates = sheets.map(\.visibility)
+        expectedStates[target.index] = "visible"
+        for position in expectedStates.indices where position != target.index {
+            if expectedStates[position] == "visible" {
+                expectedStates[position] = "hidden"
+            }
+        }
+
+        return WorkbookRewrite(
+            xml: fixed,
+            expectedStates: expectedStates,
+            expectedActiveTab: activeTab.changed ? target.index : nil,
+            expectedPrintArea: preservedPrintArea,
+            expectedPrintAreaCount: preservedPrintArea == nil ? 0 : 1,
+            expectedPrintTitleCount: names.preservedPrintTitles,
+            removedPrintAreas: names.removedPrintAreas,
+            removedPrintTitles: names.removedPrintTitles,
+            preservedPrintAreas: names.preservedPrintAreas,
+            preservedPrintTitles: names.preservedPrintTitles,
+            madeTargetVisible: madeTargetVisible,
+            setActiveTab: activeTab.changed)
+    }
+
     private static func rewriteAllVisibleSheets(_ xml: String,
                                                 sheets: [OfficeRegionWorkbookSheet]) throws
-        -> WorkbookRewrite {
-        let visible = sheets.filter(\.isVisible)
+        -> WorkbookRewrite {        let visible = sheets.filter(\.isVisible)
         guard let firstVisible = visible.first else {
             throw OfficePrintCopyError.noVisibleSheets
         }
@@ -451,6 +657,16 @@ public enum OfficePrintCopy {
             preservedPrintTitles: names.preservedPrintTitles,
             madeTargetVisible: false,
             setActiveTab: setActive)
+    }
+
+    /// The unescaped, trimmed element text of one `<definedName>` element.
+    /// A self-closing element yields the empty string.
+    private static func definedNameText(_ element: String) -> String {
+        guard let openEnd = element.firstIndex(of: ">"),
+              let closeStart = element.lastIndex(of: "<"),
+              openEnd < closeStart else { return "" }
+        return XMLText.unescape(String(element[element.index(after: openEnd)..<closeStart]))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private struct DefinedNameCounts {
@@ -511,7 +727,10 @@ public enum OfficePrintCopy {
                 throw OfficePrintCopyError.packageUnresolvable(
                     reason: "a print area needs a target worksheet index")
             }
-            let entry = "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"\(printAreaSheetIndex)\">\(printAreaReference)</definedName>"
+            // Element text is re-escaped so a preserved area containing XML
+            // entities re-emits its original bytes exactly; a generated
+            // reference has no entities, so this is a no-op for that path.
+            let entry = "<definedName name=\"_xlnm.Print_Area\" localSheetId=\"\(printAreaSheetIndex)\">\(XMLText.escape(printAreaReference))</definedName>"
             if let container = elementRanges(fixed, tag: "definedNames").first,
                let openEnd = fixed[container].firstIndex(of: ">") {
                 fixed.insert(contentsOf: entry, at: fixed.index(after: openEnd))
@@ -585,8 +804,20 @@ public enum OfficePrintCopy {
         var xml = worksheet
         var expectation = PageSetupExpectation()
 
+        // Exactly one scaling control may be set (plan validation enforces
+        // this); the declared mode fixes `sheetPr/pageSetUpPr@fitToPage` so
+        // `scale` and `fitToWidth/fitToHeight` never contradict each other.
+        let fitToPageValue: String?
         if let fit = setup.fit {
-            let value = fit == .actualSize ? "0" : "1"
+            fitToPageValue = fit == .actualSize ? "0" : "1"
+        } else if setup.scalePercent != nil {
+            fitToPageValue = "0"
+        } else if setup.fitPages != nil {
+            fitToPageValue = "1"
+        } else {
+            fitToPageValue = nil
+        }
+        if let value = fitToPageValue {
             xml = try setSheetFitToPage(xml, value: value)
             expectation.fitToPage = value
         }
@@ -601,7 +832,8 @@ public enum OfficePrintCopy {
             expectation.margins = Dictionary(uniqueKeysWithValues: attributes)
         }
 
-        if setup.paper != nil || setup.orientation != nil || setup.fit != nil {
+        if setup.paper != nil || setup.orientation != nil || setup.fit != nil
+            || setup.scalePercent != nil || setup.fitPages != nil {
             xml = try updatePageSetup(xml, setup: setup, expectation: &expectation)
         }
         return (xml, expectation)
@@ -696,6 +928,25 @@ public enum OfficePrintCopy {
             case nil:
                 break
             }
+            // Exact-scale and fit-to-pages are the other two legal scaling
+            // spellings; plan validation guarantees at most one scaling
+            // control is set, so these branches never race `setup.fit`.
+            if let scalePercent = setup.scalePercent {
+                element = setAttribute(element, name: "scale", value: String(scalePercent))
+                element = removeAttribute(element, name: "fitToWidth")
+                element = removeAttribute(element, name: "fitToHeight")
+                expectation.scale = String(scalePercent)
+                expectation.requiresFitWidthAbsent = true
+                expectation.requiresFitHeightAbsent = true
+            }
+            if let fitPages = setup.fitPages {
+                element = setAttribute(element, name: "fitToWidth", value: String(fitPages.width))
+                element = setAttribute(element, name: "fitToHeight", value: String(fitPages.height))
+                element = removeAttribute(element, name: "scale")
+                expectation.fitToWidth = String(fitPages.width)
+                expectation.fitToHeight = String(fitPages.height)
+                expectation.requiresScaleAbsent = true
+            }
             fixed.replaceSubrange(range, with: element)
             return fixed
         }
@@ -725,6 +976,19 @@ public enum OfficePrintCopy {
             expectation.fitToHeight = "1"
         case nil:
             break
+        }
+        if let scalePercent = setup.scalePercent {
+            attributes.append(("scale", String(scalePercent)))
+            expectation.scale = String(scalePercent)
+            expectation.requiresFitWidthAbsent = true
+            expectation.requiresFitHeightAbsent = true
+        }
+        if let fitPages = setup.fitPages {
+            attributes.append(("fitToWidth", String(fitPages.width)))
+            attributes.append(("fitToHeight", String(fitPages.height)))
+            expectation.fitToWidth = String(fitPages.width)
+            expectation.fitToHeight = String(fitPages.height)
+            expectation.requiresScaleAbsent = true
         }
         let element = "<pageSetup " + attributes.map {
             "\($0.0)=\"\(XMLText.escapeAttribute($0.1))\""

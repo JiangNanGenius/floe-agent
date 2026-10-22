@@ -8,19 +8,78 @@
 // attach a Specific Time trigger that matches the plan. Floe cannot detect
 // whether the system automation was created or enabled; this sheet only opens
 // Shortcuts and never claims an enrollment happened.
+//
+// When (and only when) the app bundle carries the Apple-SIGNED Shortcuts
+// template file, the sheet also offers a REAL import handoff: the system
+// shows its own "Add Shortcut" confirmation for the signed file. Opening or
+// handing off is recorded as evidence with distinct states; an installed
+// automation is never claimed, and the manual path stays available.
+// An actual handoff — or the user's explicit confirmation, import or manual
+// — durably (re)starts SILENT monitoring for this plan, so that a later
+// permanent delete or terminal one-shot run can surface exactly one honest
+// cleanup reminder. Never-configured plans have no record and no reminder.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import AppIntents
 import FloeCore
 import FloeModels
+import FloePersistence
 
 struct TaskScheduleAutomationSetupView: View {
     let schedule: TaskScheduleRecord
+    /// Monitoring/cleanup evidence authority, injected by Home. Without it
+    /// the sheet degrades to display-only evidence (no durable monitoring).
+    var cleanupStore: TaskScheduleCleanupReminderStore?
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var importModel = TaskScheduleShortcutImport()
 
     private var anchorCalendar: Calendar {
         TaskSchedulePlanner.calendar(for: schedule)
+    }
+
+    /// The signed template import is only ever shown for the cadence
+    /// families whose automation this sheet actually explains (the same
+    /// once/daily/weekly set the Home row button gates). interval/afterSuccess
+    /// plans keep showing the honest "no time automation" limitations.
+    private var showsImport: Bool {
+        importModel.availability != .noTemplate
+    }
+
+    /// Compact honest status line under the import button. Every state says
+    /// what FLOE did, never what the system confirmed; only the user's own
+    /// mark may read "added".
+    private var importStatusText: String? {
+        switch importModel.evidence?.attempt?.state {
+        case nil, .filePrepared:
+            return nil
+        case .importFlowOpened:
+            return setupText(
+                zh: "已打开导入页，请在系统页面确认添加。",
+                en: "Import page opened. Confirm the add there.")
+        case .handedOffToUser:
+            return setupText(
+                zh: "文件已交给系统，请在快捷指令中确认添加。",
+                en: "File handed to the system. Confirm the add in Shortcuts.")
+        case .cancelled:
+            return setupText(zh: "导入未完成，可重试。", en: "Import not completed — you can retry.")
+        case .failed:
+            return setupText(
+                zh: "无法打开导入页，可重试或手动设置。",
+                en: "Could not open import. Retry or use manual setup.")
+        }
+    }
+
+    private var importShareBinding: Binding<FloeShortcutShareItem?> {
+        Binding(
+            get: { importModel.shareItem },
+            set: { newValue in
+                if newValue == nil {
+                    // Sheet dismissed. The activity's own completion already
+                    // records when it ran; a bare dismissal records cancel.
+                    Task { await importModel.finishShareSheet(completed: false) }
+                }
+            })
     }
 
     private var timezoneName: String {
@@ -152,14 +211,6 @@ struct TaskScheduleAutomationSetupView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section(setupText(zh: "计划", en: "Plan")) {
-                    LabeledContent(setupText(zh: "名称", en: "Name"), value: schedule.title)
-                    LabeledContent(setupText(zh: "周期", en: "Cadence"), value: cadenceText)
-                    if let planTimeText {
-                        LabeledContent(setupText(zh: "计划时间", en: "Plan time"), value: planTimeText)
-                    }
-                    LabeledContent(setupText(zh: "时区", en: "Time zone"), value: timezoneName)
-                }
                 if !schedule.isEnabled {
                     Section {
                         Label(setupText(zh: "此计划已停用。先在主页启用后，自动化才能运行它。",
@@ -167,6 +218,52 @@ struct TaskScheduleAutomationSetupView: View {
                               systemImage: "pause.circle")
                             .foregroundStyle(.secondary)
                     }
+                }
+                if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
+                    Section(setupText(zh: "快捷指令", en: "Shortcut")) {
+                        if showsImport {
+                            Button {
+                                Task { await importModel.presentImport() }
+                            } label: {
+                                Label(setupText(zh: "导入定时快捷指令",
+                                               en: "Import scheduled-task shortcut"),
+                                      systemImage: "square.and.arrow.down")
+                                    .frame(minHeight: FloeTheme.minimumTarget)
+                            }
+                            .buttonStyle(.borderless)
+                            if let importStatusText {
+                                Text(importStatusText)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        ShortcutsLink { }
+                        Toggle(
+                            setupText(zh: "我已添加该计划的自动化",
+                                      en: "I added an automation for this plan"),
+                            isOn: Binding(
+                                get: { importModel.evidence?.userConfirmedSetup ?? false },
+                                set: { confirmed in
+                                    if confirmed {
+                                        Task { await importModel.markSetupConfirmedByUser() }
+                                    } else {
+                                        importModel.undoSetupConfirmation()
+                                    }
+                                }))
+                        Text(setupText(
+                            zh: "Floe 无法自行检测系统自动化，这里只记录你自己的确认。",
+                            en: "Floe cannot detect system automations; this records only your confirmation."))
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Section(setupText(zh: "计划", en: "Plan")) {
+                    LabeledContent(setupText(zh: "名称", en: "Name"), value: schedule.title)
+                    LabeledContent(setupText(zh: "周期", en: "Cadence"), value: cadenceText)
+                    if let planTimeText {
+                        LabeledContent(setupText(zh: "计划时间", en: "Plan time"), value: planTimeText)
+                    }
+                    LabeledContent(setupText(zh: "时区", en: "Time zone"), value: timezoneName)
                 }
                 if schedule.cadence == .afterSuccess || schedule.cadence == .interval {
                     Section {
@@ -184,12 +281,20 @@ struct TaskScheduleAutomationSetupView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                        Text(stepOneText)
-                        Text(setupText(zh: "2. 添加操作，选择 Floe 的「运行定时任务」。",
-                                       en: "2. Add the action “Run Scheduled Task” from Floe."))
-                        Text(setupText(zh: "3. 在该操作中选择计划「\(schedule.title)」。",
-                                       en: "3. Pick the plan “\(schedule.title)” in the action."))
-                        Text(enableStepText)
+                        if showsImport {
+                            Text(setupText(
+                                zh: "添加后，点「日程」选择计划「\(schedule.title)」，再返回保存。",
+                                en: "After adding, set Schedule to “\(schedule.title)”, then return to save."))
+                            Text(setupText(
+                                zh: "新建「特定时间」自动化，运行该快捷指令；\(repeatInstruction)。",
+                                en: "Create a Specific Time automation for that shortcut; \(repeatInstruction)."))
+                            Text(enableStepText)
+                            DisclosureGroup(setupText(zh: "手动设置", en: "Manual setup")) {
+                                manualSetupSteps
+                            }
+                        } else {
+                            manualSetupSteps
+                        }
                     }
                     if let limitationText {
                         Section {
@@ -198,9 +303,15 @@ struct TaskScheduleAutomationSetupView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Section {
-                        ShortcutsLink { }
-                    }
+                }
+            }
+            .task {
+                importModel.refresh(
+                    scheduleID: schedule.id, title: schedule.title, cleanupStore: cleanupStore)
+            }
+            .sheet(item: importShareBinding) { item in
+                FloeShortcutShareActivity(items: [item.url]) { completed in
+                    Task { await importModel.finishShareSheet(completed: completed) }
                 }
             }
             .navigationTitle(setupText(zh: "系统定时", en: "Automation"))
@@ -212,14 +323,24 @@ struct TaskScheduleAutomationSetupView: View {
         }
     }
 
+    @ViewBuilder
+    private var manualSetupSteps: some View {
+        Text(stepOneText)
+        Text(setupText(zh: "2. 添加 Floe 的「运行定时任务」操作。",
+                       en: "2. Add Floe’s Run Scheduled Task action."))
+        Text(setupText(zh: "3. 选择计划「\(schedule.title)」。",
+                       en: "3. Choose “\(schedule.title)”."))
+        Text(enableStepText)
+    }
+
     private var stepOneText: String {
         setupText(zh: "1. 在快捷指令的「自动化」页新建「特定时间」，时间设为上方建议值，\(repeatInstruction)。",
                   en: "1. In Shortcuts, create a Specific Time automation at the suggested time above, and \(repeatInstruction).")
     }
 
     private var enableStepText: String {
-        setupText(zh: "4. 打开自动化开关，使其自动运行。",
-                  en: "4. Turn the automation on so it runs automatically.")
+        setupText(zh: "设为「立即运行」，并启用自动化。",
+                  en: "Select Run Immediately and enable the automation.")
     }
 
     /// Inline bilingual fallback for strings whose central catalog entry has

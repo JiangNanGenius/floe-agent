@@ -5,7 +5,8 @@
 // saves and the package is reopened, this checker reads each formula cell's
 // PERSISTED cached value (`<v>`), result type (`t=`) and error code, and — for
 // the formula shapes it can evaluate exactly from the workbook's own persisted
-// dependency values (SUM/MIN/MAX/COUNT, direct references, cross-sheet
+// dependency values (SUM/MIN/MAX/COUNT/AVERAGE, numeric IF comparisons and ROUND,
+// direct references, cross-sheet
 // references and constant arithmetic) — recomputes the expected result from
 // the dependency context.
 //
@@ -170,8 +171,8 @@ public struct OfficeFormulaVerificationReport: Equatable, Sendable {
     }
 }
 
-/// Recomputes an expected formula result from the workbook's own persisted
-/// dependency caches. Never executes anything and never calls the network.
+/// Recomputes an expected formula result from persisted source values and
+/// recursively evaluated formula dependencies. Never executes anything and never calls the network.
 struct OfficeFormulaEvaluator {
     let snapshot: OfficeOutputSnapshot
     let maximumDependencies = 4_096
@@ -228,6 +229,9 @@ private struct EvaluationContext {
     let rootSheet: String
     var dependencyBudget: Int
     var usedDependencies = 0
+    var visitingReferences: Set<String> = []
+    var currentSheet: String?
+    var evaluationDepth = 0
 
     init(evaluator: OfficeFormulaEvaluator, rootSheet: String, dependencyBudget: Int) {
         self.evaluator = evaluator
@@ -240,10 +244,17 @@ private struct EvaluationContext {
         guard let node = parser.parseExpression(), parser.atEnd else {
             return .unsupported("unrecognized formula shape")
         }
-        return resolve(node)
+        let result = resolve(node)
+        if case .number(let value) = result, !value.isFinite {
+            return .unsupported("non-finite arithmetic result")
+        }
+        return result
     }
 
     private mutating func resolve(_ node: ExpressionNode) -> OfficeFormulaEvaluation {
+        guard evaluationDepth < 64 else { return .unsupported("formula nesting exceeds 64") }
+        evaluationDepth += 1
+        defer { evaluationDepth -= 1 }
         switch node {
         case .number(let value):
             return .number(value)
@@ -275,8 +286,30 @@ private struct EvaluationContext {
         guard usedDependencies <= evaluator.maximumDependencies else {
             return .unsupported("dependency budget exceeded")
         }
-        let targetSheet = sheet ?? evaluator.snapshot.sheetNameByMember[rootSheet] ?? rootSheet
+        let targetSheet = sheet ?? currentSheet ?? evaluator.snapshot.sheetNameByMember[rootSheet] ?? rootSheet
+        guard let member = evaluator.member(forSheetName: targetSheet)
+                ?? (evaluator.snapshot.cachedCellsBySheet[targetSheet] != nil ? targetSheet : nil) else {
+            return .unsupported("dependency sheet is unavailable: \(targetSheet)")
+        }
+        if let formula = evaluator.formulaRecord(sheet: targetSheet, cell: cell) {
+            let identity = member + "!" + cell.uppercased()
+            guard visitingReferences.insert(identity).inserted else {
+                return .unsupported("circular formula dependency")
+            }
+            let previousSheet = currentSheet
+            currentSheet = member
+            defer { currentSheet = previousSheet; visitingReferences.remove(identity) }
+            guard formula.cachedType != .missing, formula.cachedValue != nil else {
+                return .unsupported("formula dependency has no cached result")
+            }
+            // Recompute the dependency too. A stale intermediate cache cannot
+            // certify another cell merely because its dependent cache agrees.
+            return evaluate(formula.formula)
+        }
         guard let cached = evaluator.cachedValue(sheet: targetSheet, cell: cell) else {
+            guard !evaluator.snapshot.formulaContextTruncated else {
+                return .unsupported("dependency context is truncated")
+            }
             if evaluator.formulaRecord(sheet: targetSheet, cell: cell) != nil {
                 // A formula dependency without a persisted cache is not usable
                 // as dependency context; its own record is checked separately.
@@ -298,18 +331,41 @@ private struct EvaluationContext {
             return .boolean(cached.value == "1" || cached.value.lowercased() == "true")
         case .error:
             return .error(cached.value)
-        case .blank, .missing:
+        case .blank:
             return .blank
+        case .missing:
+            return .unsupported("dependency cache is missing")
         }
     }
 
     private mutating func resolveFunction(name: String, arguments: [ExpressionNode]) -> OfficeFormulaEvaluation {
         guard arguments.count <= 32 else { return .unsupported("too many function arguments") }
         switch name.uppercased() {
-        case "SUM", "MIN", "MAX", "COUNT":
+        case "IF":
+            guard (2...3).contains(arguments.count) else { return .unsupported("IF needs 2 or 3 arguments") }
+            let condition = resolve(arguments[0])
+            if case .error = condition { return condition }
+            if case .unsupported = condition { return condition }
+            guard let value = numeric(condition) else { return .unsupported("IF condition is not numeric or boolean") }
+            // Excel only evaluates the selected branch.
+            if value != 0 { return resolve(arguments[1]) }
+            return arguments.count == 3 ? resolve(arguments[2]) : .boolean(false)
+        case "ROUND":
+            guard arguments.count == 2 else { return .unsupported("ROUND needs 2 arguments") }
+            let raw = resolve(arguments[0]); let digits = resolve(arguments[1])
+            if case .error = raw { return raw }; if case .error = digits { return digits }
+            guard let number = numeric(raw), let places = numeric(digits), number.isFinite,
+                  places.isFinite, (-15...15).contains(places) else {
+                return .unsupported("ROUND precision or argument is outside the supported range")
+            }
+            let factor = pow(10, places.rounded(.towardZero))
+            let scaled = number * factor
+            guard scaled.isFinite else { return .unsupported("ROUND overflow") }
+            return .number(scaled.rounded(.toNearestOrAwayFromZero) / factor)
+        case "SUM", "MIN", "MAX", "COUNT", "AVERAGE":
             var numbers: [Double] = []
             for argument in arguments {
-                switch collectNumbers(argument) {
+                switch collectNumbers(argument, countOnly: name.uppercased() == "COUNT") {
                 case .values(let values):
                     numbers.append(contentsOf: values)
                 case .error(let code):
@@ -322,6 +378,7 @@ private struct EvaluationContext {
             case "SUM": return .number(numbers.reduce(0, +))
             case "MIN": return numbers.isEmpty ? .number(0) : .number(numbers.min() ?? 0)
             case "MAX": return numbers.isEmpty ? .number(0) : .number(numbers.max() ?? 0)
+            case "AVERAGE": return numbers.isEmpty ? .error("#DIV/0!") : .number(numbers.reduce(0, +) / Double(numbers.count))
             default: return .number(Double(numbers.count))
             }
         default:
@@ -335,7 +392,7 @@ private struct EvaluationContext {
         case unsupported(String)
     }
 
-    private mutating func collectNumbers(_ node: ExpressionNode) -> NumberCollection {
+    private mutating func collectNumbers(_ node: ExpressionNode, countOnly: Bool = false) -> NumberCollection {
         switch node {
         case .range(let sheet, let start, let end):
             guard let cells = expandRange(start: start, end: end) else {
@@ -350,9 +407,9 @@ private struct EvaluationContext {
                 switch resolveReference(sheet: sheet, cell: cell) {
                 case .number(let value): values.append(value)
                 case .blank, .string: continue
-                case .error(let code): return .error(code)
+                case .error(let code): if !countOnly { return .error(code) }
                 case .unsupported(let reason): return .unsupported(reason)
-                case .boolean(let flag): values.append(flag ? 1 : 0)
+                case .boolean: continue
                 }
             }
             return .values(values)
@@ -360,17 +417,22 @@ private struct EvaluationContext {
             switch resolveReference(sheet: sheet, cell: cell) {
             case .number(let value): return .values([value])
             case .blank, .string: return .values([])
-            case .error(let code): return .error(code)
+            case .error(let code): return countOnly ? .values([]) : .error(code)
             case .unsupported(let reason): return .unsupported(reason)
-            case .boolean(let flag): return .values([flag ? 1 : 0])
+            case .boolean: return .values([])
             }
         case .number(let value):
             return .values([value])
-        case .function, .binary, .negative, .string, .boolean:
+        case .string(let value):
+            if let number = Double(value), number.isFinite { return .values([number]) }
+            return countOnly ? .values([]) : .error("#VALUE!")
+        case .function, .binary, .negative, .boolean:
             switch resolve(node) {
             case .number(let value): return .values([value])
             case .error(let code): return .error(code)
-            case .string, .blank, .boolean: return .values([])
+            case .boolean(let flag): return .values([flag ? 1 : 0])
+            case .string: return .unsupported("text produced by a scalar expression")
+            case .blank: return .values([])
             case .unsupported(let reason): return .unsupported(reason)
             }
         }
@@ -378,6 +440,10 @@ private struct EvaluationContext {
 
     private func expandRange(start: String, end: String) -> [String]? {
         guard let startCell = CellReference(start), let endCell = CellReference(end) else { return nil }
+        let columnCount = abs(startCell.column - endCell.column) + 1
+        let rowCount = abs(startCell.row - endCell.row) + 1
+        guard columnCount <= evaluator.maximumRangeLength,
+              rowCount <= evaluator.maximumRangeLength / columnCount else { return nil }
         let columnStep = startCell.column <= endCell.column ? 1 : -1
         let rowStep = startCell.row <= endCell.row ? 1 : -1
         let columns = Array(stride(from: startCell.column, through: endCell.column, by: columnStep))
@@ -401,11 +467,15 @@ private struct EvaluationContext {
         if case .unsupported(let reason) = left { return .unsupported(reason) }
         if case .unsupported(let reason) = right { return .unsupported(reason) }
         guard let leftNumber = numeric(left), let rightNumber = numeric(right) else {
-            // String concatenation is recognized but not compared numerically.
-            if op == .add, case .string(let a) = left, case .string(let b) = right { return .string(a + b) }
             return .unsupported("non-numeric operand")
         }
         switch op {
+        case .equal: return .boolean(leftNumber == rightNumber)
+        case .notEqual: return .boolean(leftNumber != rightNumber)
+        case .less: return .boolean(leftNumber < rightNumber)
+        case .lessEqual: return .boolean(leftNumber <= rightNumber)
+        case .greater: return .boolean(leftNumber > rightNumber)
+        case .greaterEqual: return .boolean(leftNumber >= rightNumber)
         case .add: return .number(leftNumber + rightNumber)
         case .subtract: return .number(leftNumber - rightNumber)
         case .multiply: return .number(leftNumber * rightNumber)
@@ -426,7 +496,7 @@ private struct EvaluationContext {
 }
 
 private enum ExpressionOperator: Equatable {
-    case add, subtract, multiply, divide
+    case add, subtract, multiply, divide, equal, notEqual, less, lessEqual, greater, greaterEqual
 }
 
 private indirect enum ExpressionNode: Equatable {
@@ -446,6 +516,7 @@ private indirect enum ExpressionNode: Equatable {
 private struct ExpressionParser {
     private let scalars: [Character]
     private var index = 0
+    private var depth = 0
 
     init(formula: String) {
         self.scalars = Array(formula)
@@ -458,6 +529,22 @@ private struct ExpressionParser {
     }
 
     mutating func parseExpression() -> ExpressionNode? {
+        guard let lhs = parseSum() else { return nil }
+        skipWhitespace()
+        let operation: ExpressionOperator?
+        if consumeToken("<>") { operation = .notEqual }
+        else if consumeToken("<=") { operation = .lessEqual }
+        else if consumeToken(">=") { operation = .greaterEqual }
+        else if consume("=") { operation = .equal }
+        else if consume("<") { operation = .less }
+        else if consume(">") { operation = .greater }
+        else { operation = nil }
+        guard let operation else { return lhs }
+        guard let rhs = parseSum() else { return nil }
+        return .binary(operation, lhs, rhs)
+    }
+
+    private mutating func parseSum() -> ExpressionNode? {
         guard var lhs = parseTerm() else { return nil }
         while true {
             skipWhitespace()
@@ -490,6 +577,9 @@ private struct ExpressionParser {
     }
 
     private mutating func parseFactor() -> ExpressionNode? {
+        guard depth < 64 else { return nil }
+        depth += 1
+        defer { depth -= 1 }
         skipWhitespace()
         if consume("-") {
             guard let value = parseFactor() else { return nil }
@@ -517,6 +607,9 @@ private struct ExpressionParser {
             let character = scalars[index]
             index += 1
             if character == "\"" {
+                if index < scalars.count, scalars[index] == "\"" {
+                    value.append("\""); index += 1; continue
+                }
                 return .string(value)
             }
             value.append(character)
@@ -529,10 +622,16 @@ private struct ExpressionParser {
         var name = ""
         if peek("'") {
             index += 1
-            while index < scalars.count, scalars[index] != "'" {
-                name.append(scalars[index]); index += 1
+            var closed = false
+            while index < scalars.count {
+                let character = scalars[index]; index += 1
+                if character == "'" {
+                    if index < scalars.count, scalars[index] == "'" {
+                        name.append("'"); index += 1
+                    } else { closed = true; break }
+                } else { name.append(character) }
             }
-            guard consume("'") else { return nil }
+            guard closed else { return nil }
         } else {
             while index < scalars.count,
                   scalars[index].isLetter || scalars[index].isNumber
@@ -627,6 +726,15 @@ private struct ExpressionParser {
         skipWhitespace()
         guard index < scalars.count, scalars[index] == character else { return false }
         index += 1
+        return true
+    }
+
+    private mutating func consumeToken(_ token: String) -> Bool {
+        skipWhitespace()
+        let characters = Array(token)
+        guard !characters.isEmpty, index + characters.count <= scalars.count,
+              scalars[index..<(index + characters.count)].elementsEqual(characters) else { return false }
+        index += characters.count
         return true
     }
 }
@@ -878,7 +986,7 @@ extension OfficeXMLScan {
                              maximumFormulas: Int = 4_000) -> ParsedFormulaCells {
         var result = ParsedFormulaCells()
         guard let regex = try? NSRegularExpression(
-            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"([^>]*)>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
+            pattern: "<c r=\"([A-Z]{1,3}[0-9]+)\"([^>]*)(?<!/)>(.*?)</c>", options: [.dotMatchesLineSeparators]) else {
             return result
         }
         let range = NSRange(sheetXML.startIndex..<sheetXML.endIndex, in: sheetXML)
@@ -913,7 +1021,7 @@ extension OfficeXMLScan {
                 }
                 let record = OfficeFormulaCellRecord(
                     member: member, sheet: sheet, cell: reference,
-                    formula: formulaText,
+                    formula: unescapeXMLAttribute(formulaText),
                     cachedValue: valueElement,
                     cachedType: cached.type,
                     errorCode: cached.type == .error ? cached.value : nil)

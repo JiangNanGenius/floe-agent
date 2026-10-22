@@ -2,11 +2,14 @@
 // FloeDocuments — pure, view-independent Office PDF export plan.
 //
 // This file owns the values a user chooses BEFORE a PDF exists: the print
-// scope (the document's own settings, one named sheet with all of its content
-// or one canonical cell range, or every visible sheet), the page setup
-// overrides, and an optional final PDF page selection. It also owns the
-// read-only content-extent resolver the live UI can use to prefill an explicit
-// cell range from the saved package.
+// scope (the document's own settings, one named sheet with all of its content,
+// the sheet's own saved print area, one canonical cell range, an explicitly
+// selected set of worksheets, or every visible sheet), the page setup
+// overrides (paper, orientation, margins, and exactly one scaling control:
+// preset fit, an exact 10–400% scale, or a fit-to-width×height page count),
+// and an optional final PDF page selection. It also owns the read-only
+// content-extent resolver the live UI can use to prefill an explicit cell
+// range from the saved package.
 //
 // Nothing here renders, opens an engine session or touches a live editor.
 // `OfficePrintCopy` turns an XLSX plan into a private copy with real print
@@ -63,6 +66,34 @@ public enum OfficePDFFit: String, Codable, Sendable, CaseIterable, Equatable {
     case fitToOnePage
 }
 
+/// A bounded explicit scaling percentage written to `pageSetup@scale` with
+/// `pageSetUpPr@fitToPage="0"`. The bounds are the ECMA-376 `ST_Percentage`
+/// range the spreadsheet print path reads (the same `scale` member that the
+/// user's own saved worksheets already carry, e.g. `scale="100"`), so any
+/// value here only changes an attribute the engine demonstrably consumes.
+public enum OfficePDFScale {
+    public static let minimumPercent = 10
+    public static let maximumPercent = 400
+}
+
+/// An explicit fit-to-pages size written to `pageSetup@fitToWidth`/
+/// `pageSetup@fitToHeight` with `pageSetUpPr@fitToPage="1"`: at most `width`
+/// pages wide by at most `height` pages tall. Bounds exclude the `0`
+/// ("automatic") spelling so every accepted value is a definite page budget;
+/// the automatic directions remain available through `OfficePDFFit`.
+public struct OfficePDFFitPages: Codable, Sendable, Equatable {
+    public static let minimum = 1
+    public static let maximum = 99
+
+    public var width: Int
+    public var height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
+    }
+}
+
 /// Margin presets. `.document` is a no-op: the source worksheet's own
 /// `pageMargins` element is left byte-identical. The other presets write the
 /// six physical-inch attributes OOXML requires.
@@ -98,15 +129,25 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
     public var orientation: OfficePDFOrientation?
     public var fit: OfficePDFFit?
     public var margins: OfficePDFMargins?
+    /// Exact `pageSetup@scale` percentage (10…400). Mutually exclusive with
+    /// `fit` and `fitPages`; nil keeps the sheet's own scaling member.
+    public var scalePercent: Int?
+    /// Exact fit-to-pages budget (1…99 × 1…99). Mutually exclusive with
+    /// `fit` and `scalePercent`.
+    public var fitPages: OfficePDFFitPages?
 
     public init(paper: OfficePDFPaper? = nil,
                 orientation: OfficePDFOrientation? = nil,
                 fit: OfficePDFFit? = nil,
-                margins: OfficePDFMargins? = nil) {
+                margins: OfficePDFMargins? = nil,
+                scalePercent: Int? = nil,
+                fitPages: OfficePDFFitPages? = nil) {
         self.paper = paper
         self.orientation = orientation
         self.fit = fit
         self.margins = margins
+        self.scalePercent = scalePercent
+        self.fitPages = fitPages
     }
 
     /// Keep every page-setup member of the source worksheet.
@@ -116,10 +157,18 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
     public var isDocumentSettings: Bool {
         paper == nil && orientation == nil && fit == nil
             && (margins == nil || margins == .document)
+            && scalePercent == nil && fitPages == nil
     }
 
     /// True when at least one member must be written.
     public var hasOverrides: Bool { !isDocumentSettings }
+
+    /// How many scaling controls are set; at most one may be chosen because
+    /// `scale` and `fitToWidth/fitToHeight` are mutually exclusive in a
+    /// consistent OOXML print setup.
+    public var scalingControlCount: Int {
+        (fit != nil ? 1 : 0) + (scalePercent != nil ? 1 : 0) + (fitPages != nil ? 1 : 0)
+    }
 }
 
 /// What the shared backend can truthfully do for one source format.
@@ -139,7 +188,20 @@ public enum OfficePDFFormatSupport: String, Codable, Sendable, Equatable {
     case documentSettingsOnly
 
     public var supportsSheetScope: Bool { self == .workbook }
+    /// Printing an explicitly chosen set of worksheets (each with its full
+    /// content) uses the same copy-only visibility mechanism as `.sheet` and
+    /// `.allVisibleSheets`, both already qualified on saved `.xlsx`.
+    public var supportsSelectedSheetsScope: Bool { self == .workbook }
+    /// Printing one sheet's own saved `_xlnm.Print_Area` uses the same defined
+    /// name the qualified cell-range and assistant region routes write.
+    public var supportsPrintAreaScope: Bool { self == .workbook }
     public var supportsCustomPageSetup: Bool { self == .workbook }
+    /// Exact `pageSetup@scale` percent — the same member a source worksheet's
+    /// own settings already carry and the engine prints from.
+    public var supportsExactScale: Bool { self == .workbook }
+    /// Exact `fitToWidth`×`fitToHeight` page budget — the same members the
+    /// qualified fit presets write.
+    public var supportsFitPageCount: Bool { self == .workbook }
     public var supportsFinalPageRange: Bool { true }
     /// The saved-file isolated engine host is qualified for `.xlsx`,
     /// `.docx` and `.pptx` only. Legacy formats use the live-session
@@ -174,6 +236,18 @@ public enum OfficePDFScope: Codable, Sendable, Equatable {
     /// Every visible sheet, each with its full content. Hidden and very-hidden
     /// sheets keep their state and are not printed.
     case allVisibleSheets
+    /// Exactly one sheet, printed through the `_xlnm.Print_Area` the source
+    /// workbook itself declares for that tab. When the sheet has no print
+    /// area of its own this is truthfully the sheet's full content (the copy
+    /// suppresses the other tabs and clears their areas, exactly like
+    /// `.sheet(name:cellRange:nil)`); it never silently adopts another
+    /// sheet's area. Print titles are preserved.
+    case sheetWithPrintArea(name: String)
+    /// An explicitly chosen set of worksheets (at least one name, workbook tab
+    /// names in the request's own order is not meaningful — the copy prints
+    /// them in tab order), each with its full content. Unselected sheets are
+    /// suppressed inside the copy; already-hidden sheets stay hidden.
+    case sheets(names: [String])
 }
 
 /// A bounded, strictly 1-based selection of FINAL PDF pages.
@@ -265,6 +339,11 @@ public struct OfficePDFPageRange: Codable, Sendable, Equatable {
 
 /// One complete, view-independent export request.
 public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
+    /// Hard cap for an explicit worksheet selection; it matches the
+    /// assistant's 0-based sheet index bound and any real workbook this
+    /// backend prints.
+    public static let maximumSelectedSheets = 255
+
     public var scope: OfficePDFScope
     public var pageSetup: OfficePDFPageSetup
     /// `nil` or an empty selection means every page of the actual PDF.
@@ -284,7 +363,7 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
         switch scope {
         case .documentSettings:
             return pageSetup.hasOverrides
-        case .sheet, .allVisibleSheets:
+        case .sheet, .sheetWithPrintArea, .sheets, .allVisibleSheets:
             return true
         }
     }
@@ -315,12 +394,35 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
         if !support.supportsCustomPageSetup, pageSetup.hasOverrides {
             throw OfficePDFPlanError.unsupportedPageSetup(format: ext)
         }
+        // Exactly one scaling control at most: `scale` and
+        // `fitToWidth`/`fitToHeight` cannot both be declared truthfully.
+        guard pageSetup.scalingControlCount <= 1 else {
+            throw OfficePDFPlanError.conflictingScalingControls
+        }
+        if let scalePercent = pageSetup.scalePercent {
+            guard (OfficePDFScale.minimumPercent...OfficePDFScale.maximumPercent)
+                    .contains(scalePercent) else {
+                throw OfficePDFPlanError.scalePercentOutOfRange(
+                    requested: scalePercent,
+                    minimum: OfficePDFScale.minimumPercent,
+                    maximum: OfficePDFScale.maximumPercent)
+            }
+        }
+        if let fitPages = pageSetup.fitPages {
+            guard (OfficePDFFitPages.minimum...OfficePDFFitPages.maximum)
+                    .contains(fitPages.width),
+                  (OfficePDFFitPages.minimum...OfficePDFFitPages.maximum)
+                    .contains(fitPages.height) else {
+                throw OfficePDFPlanError.fitPagesOutOfRange(
+                    requested: fitPages, maximum: OfficePDFFitPages.maximum)
+            }
+        }
         switch scope {
         case .documentSettings, .allVisibleSheets:
             break
         case .sheet(let name, let cellRange):
-            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else {
+            guard name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty == false else {
                 throw OfficePDFPlanError.invalidSheetName
             }
             if let cellRange {
@@ -333,6 +435,29 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
                         requested: cellRange,
                         maximumColumn: OfficePDFWorksheetBounds.maximumColumn,
                         maximumRow: OfficePDFWorksheetBounds.maximumRow)
+                }
+            }
+        case .sheetWithPrintArea(let name):
+            guard name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty == false else {
+                throw OfficePDFPlanError.invalidSheetName
+            }
+        case .sheets(let names):
+            guard !names.isEmpty else {
+                throw OfficePDFPlanError.emptySheetSelection
+            }
+            guard names.count <= Self.maximumSelectedSheets else {
+                throw OfficePDFPlanError.tooManySheets(
+                    requested: names.count, maximum: Self.maximumSelectedSheets)
+            }
+            var seen: Set<String> = []
+            for raw in names {
+                let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    throw OfficePDFPlanError.invalidSheetName
+                }
+                guard seen.insert(trimmed).inserted else {
+                    throw OfficePDFPlanError.duplicateSheetName(name: trimmed)
                 }
             }
         }
@@ -368,6 +493,12 @@ public enum OfficePDFPlanError: LocalizedError, Sendable, Equatable {
     case rangeOutsideWorksheetBounds(requested: String, maximumColumn: Int, maximumRow: Int)
     case unsupportedScope(format: String)
     case unsupportedPageSetup(format: String)
+    case conflictingScalingControls
+    case scalePercentOutOfRange(requested: Int, minimum: Int, maximum: Int)
+    case fitPagesOutOfRange(requested: OfficePDFFitPages, maximum: Int)
+    case emptySheetSelection
+    case tooManySheets(requested: Int, maximum: Int)
+    case duplicateSheetName(name: String)
     case invalidPageSelection(reason: String)
     case tooManySelectedPages(requested: Int, maximum: Int)
     case pageOutOfRange(page: Int, pageCount: Int)
@@ -390,6 +521,18 @@ public enum OfficePDFPlanError: LocalizedError, Sendable, Equatable {
             "Sheet and workbook scopes are available for .xlsx workbooks only (requested .\(format))."
         case .unsupportedPageSetup(let format):
             "Custom paper, orientation, fit and margin settings are available for .xlsx workbooks only (requested .\(format))."
+        case .conflictingScalingControls:
+            "Choose only one scaling control: a fit preset, an exact scale, or a fit-to-pages size."
+        case .scalePercentOutOfRange(let requested, let minimum, let maximum):
+            "Scale \(requested)% is outside the supported \(minimum)…\(maximum)% range."
+        case .fitPagesOutOfRange(let requested, let maximum):
+            "Fit-to \(requested.width)×\(requested.height) pages is outside the supported \(OfficePDFFitPages.minimum)…\(maximum) bounds for each direction."
+        case .emptySheetSelection:
+            "Select at least one worksheet to print."
+        case .tooManySheets(let requested, let maximum):
+            "The sheet selection names \(requested) worksheets; select at most \(maximum)."
+        case .duplicateSheetName(let name):
+            "Worksheet \(name) is selected more than once."
         case .invalidPageSelection(let reason):
             "The page selection is invalid: \(reason)."
         case .tooManySelectedPages(let requested, let maximum):

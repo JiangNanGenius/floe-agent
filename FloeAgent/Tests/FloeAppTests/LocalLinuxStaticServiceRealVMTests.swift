@@ -66,6 +66,244 @@ import FloeTools
         print("FLOE_OWNED_QA_CLEANUP_VERIFIED id=\(id) otherRecordsPreserved=\(otherIDs.count)")
     }
 
+    // Opt-in service acceptance, never a mock or a UI/physical-device claim.
+    // Select this method alone and serialize it with all other real-VM work.
+    @Test("real guest ordered soft restart preserves its disk and shares and exact replay does not reboot",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_SOFT_RESTART_QUALIFICATION"] == "1"))
+    func realGuestSoftRestartPersistenceGenerationAndReplay() async throws {
+        let app = AppEnvironment.live()
+        await app.bootstrap()
+        try #require(app.persistenceReady, "Production persistence bootstrap failed")
+        let services = FloePlatformServices.shared
+        let controller = try #require(services.linuxGuestController(), "Production Linux controller is unavailable")
+        let runner = try #require(services.linuxCommandRunner(), "Production Linux command runner is unavailable")
+        let qualificationID = UUID().uuidString
+        // The lifecycle tools pass the trusted run UUID in this field.
+        // This test owns one synthetic run identity and never adopts one.
+        let ownerTaskID = UUID().uuidString
+        let operationKey = "soft-restart-once-" + UUID().uuidString
+        let nonce = UUID().uuidString
+        let root = URL.applicationSupportDirectory
+            .appendingPathComponent("FloeAgent/QualificationWorkspaces/SoftRestart/" + qualificationID, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL
+        let evidenceRoot = URL.applicationSupportDirectory
+            .appendingPathComponent("FloeAgent/QualificationEvidence/SoftRestart/" + qualificationID, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: evidenceRoot, withIntermediateDirectories: true)
+        let workspaceOwner = FloeDigest.sha256Hex(Data(root.path.utf8))
+        let shareName = "qa-share-" + qualificationID
+        let reconnectName = "qa-reconnected-" + qualificationID
+        try Data(nonce.utf8).write(to: root.appendingPathComponent(shareName), options: .atomic)
+        let guestFile = "/var/lib/floe/qa-soft-restart-" + qualificationID
+        // This is the actual live assembly's store, opened independently for
+        // readback. It is never injected into/replaced on the live manager.
+        let store = LinuxGuestFileSoftRestartStore(directory: URL.applicationSupportDirectory
+            .appendingPathComponent("FloeAgent/LinuxGuestSoftRestart", isDirectory: true))
+        var environmentID: String?
+        var restartAttempted = false
+        var evidence: [String: String] = ["kind": "real-live-service-soft-restart",
+            "workspace": root.path, "workspaceOwner": workspaceOwner,
+            "ownerTaskID": ownerTaskID, "operationKey": operationKey,
+            "guestFile": guestFile, "nonce": nonce, "evidenceRoot": evidenceRoot.path]
+
+        func retain(_ phase: String) throws {
+            evidence["phase"] = phase
+            try JSONEncoder().encode(evidence).write(to: evidenceRoot.appendingPathComponent("evidence.json"), options: .atomic)
+            print("FLOE_SOFT_RESTART_REALVM phase=\(phase) evidence=\(evidenceRoot.path)")
+        }
+
+        func saveDurableEvidence(_ id: String, suffix: String) async throws {
+            if let operation = try await store.load(environmentID: id) {
+                try JSONEncoder().encode(operation).write(to: evidenceRoot
+                    .appendingPathComponent("operation-" + suffix + ".json"), options: .atomic)
+                evidence["durableStatus"] = operation.status.rawValue
+                evidence["durableOperationID"] = operation.operationID
+            }
+            if let committed = try await store.loadCommittedReceipt(environmentID: id, operationKey: operationKey) {
+                try JSONEncoder().encode(committed).write(to: evidenceRoot
+                    .appendingPathComponent("receipt-" + suffix + ".json"), options: .atomic)
+            }
+        }
+
+        func ownRuntime(_ id: String) async throws -> LinuxGuestRuntimeState {
+            let states = await controller.runtimeStates().filter { $0.environmentID == id }
+            try #require(states.count == 1, "Own environment must have exactly one authoritative runtime")
+            let state = try #require(states.first)
+            try #require(state.running, "Own runtime is not running")
+            return state
+        }
+
+        func guest(_ id: String, script: String, arguments: [String] = []) async throws -> LinuxCommandResult {
+            let result = try await runner.run(environmentID: id,
+                argv: ["/bin/sh", "-c", script, "soft-restart-qualification"] + arguments,
+                workingDirectory: "/workspace", standardInput: nil, timeout: 90,
+                maxOutputBytes: 8_192, cancellation: CancellationToken())
+            evidence["lastGuestStdout"] = result.stdout
+            evidence["lastGuestStderr"] = result.stderr
+            evidence["lastGuestExit"] = String(result.exitCode)
+            try #require(result.exitCode == 0, "Real guest command failed; bounded output is retained")
+            return result
+        }
+
+        func cleanupSettledOwnEnvironment() async throws {
+            // Resolve only this exact unique workspace, even if preparation
+            // failed after creating its record. Never use first/latest all().
+            let ownID: String?
+            if let id = environmentID { ownID = id }
+            else { ownID = try await ownedEnvironment(root: root, app: app) }
+            if let id = ownID {
+                let record = try #require(await app.environmentRegistry.record(id: id))
+                try #require(record.kind == .project && record.ownerID == workspaceOwner)
+                let mappedRoot = try #require(try await app.environmentRegistry.workspaceRoot(for: id))
+                try #require(mappedRoot.resolvingSymlinksInPath().standardizedFileURL == root)
+                let layer = try #require(await app.environmentRegistry.layerURL(for: id))
+                // A pending/corrupt/missing-after-submission record is an
+                // unresolved outcome. Do not force-stop or delete its disk.
+                let operation = try await store.load(environmentID: id)
+                if restartAttempted {
+                    try #require(operation != nil && operation?.status != .pending,
+                        "Restart outcome remains unresolved; retain own guest, disk and evidence for reconciliation")
+                }
+                let beforeStop = await app.linuxGuestLifecycle.reconciliationSnapshot(environmentID: id)
+                if !beforeStop.isQuietlyStopped {
+                    let stopped = try await app.linuxGuestLifecycle.stop(environmentID: id, cancellation: CancellationToken())
+                    try #require(stopped.phase == .stopped)
+                }
+                let quiet = await app.linuxGuestLifecycle.reconciliationSnapshot(environmentID: id)
+                try #require(quiet.isQuietlyStopped, "Own worker exit/capture is unconfirmed; preserve its disk")
+                try await services.deleteEnvironment(id: id)
+                try #require(await app.environmentRegistry.record(id: id) == nil)
+                try #require(!FileManager.default.fileExists(atPath: layer.path))
+                evidence["cleanup"] = "own environment stopped, reconciled quiet and deleted; durable receipts retained with exported evidence"
+            }
+            try FileManager.default.removeItem(at: root)
+        }
+
+        do {
+            try await services.prepareWorkspaceEnvironment(root: root)
+            let id = try #require(try await ownedEnvironment(root: root, app: app), "Own project environment was not prepared")
+            environmentID = id; evidence["environmentID"] = id
+            let record = try #require(await app.environmentRegistry.record(id: id))
+            try #require(record.kind == .project && record.ownerID == workspaceOwner)
+            let layerBefore = try #require(await app.environmentRegistry.layerURL(for: id))
+            evidence["environmentLayer"] = layerBefore.path
+            try #require(await runner.ownsLinuxEnvironment(environmentID: id))
+            try retain("starting-own-guest")
+            // Uses the same live manager/image preparation, resource policy
+            // and engine as the App tools. No seeded image or fake performer.
+            let started = try await app.linuxGuestLifecycle.start(environmentID: id,
+                config: LinuxGuestLifecycleConfig(vcpus: 1, memoryMB: 256),
+                ownerTaskID: ownerTaskID, cancellation: CancellationToken())
+            try #require(started.phase == .running && !started.reused)
+            let before = try await ownRuntime(id)
+            let oldGeneration = try #require(before.identity.launchGeneration, "Generation evidence is required")
+            evidence["oldGeneration"] = String(oldGeneration)
+            try #require(started.launchGeneration == Int(exactly: oldGeneration))
+            // The file is written by the real guest on its root ext4 disk,
+            // explicitly excluding the host-backed workspace/environment 9p
+            // shares and RAM filesystems from the persistence proof.
+            _ = try await guest(id, script: #"""
+            set -eu
+            mkdir -p /var/lib/floe
+            test "$(stat -c %d /var/lib/floe)" = "$(stat -c %d /)"
+            awk '$2 == "/" && $3 == "ext4" { found=1 } END { exit !found }' /proc/mounts
+            printf '%s' "$2" > "$1"
+            sync
+            """#, arguments: [guestFile, nonce])
+            let witnessScript = #"""
+            set -eu
+            test "$(cat "$1")" = "$2"
+            test "$(cat "$3")" = "$2"
+            test "$(stat -c %d "$1")" = "$(stat -c %d /)"
+            awk '$2 == "/" && $3 == "ext4" { found=1; print "root=" $1 ":" $3 } END { exit !found }' /proc/mounts
+            printf 'nonce='; cat "$1"
+            printf '\ninode='; stat -c %i "$1"
+            """#
+            let witnessArguments = [guestFile, nonce, "/workspace/" + shareName]
+            let witnessBefore = try await guest(id, script: witnessScript, arguments: witnessArguments)
+            evidence["diskWitnessBefore"] = witnessBefore.stdout
+            try retain("persistent-ext4-file-written")
+
+            restartAttempted = true
+            let receipt = try await app.linuxGuestLifecycle.softRestart(environmentID: id,
+                config: nil, ownerTaskID: ownerTaskID, operationKey: operationKey, cancellation: CancellationToken())
+            try #require(receipt.phase == .running && receipt.environmentID == id && !receipt.reused)
+            let operationID = try #require(receipt.operationID)
+            try JSONEncoder().encode(receipt).write(to: evidenceRoot.appendingPathComponent("returned-receipt.json"), options: .atomic)
+            try await saveDurableEvidence(id, suffix: "committed")
+            let operation = try #require(try await store.load(environmentID: id))
+            try #require(operation.status == .committed && operation.progress == .diskCaptureCommitted)
+            try #require(operation.environmentID == id && operation.ownerTaskID == ownerTaskID
+                         && operation.operationKey == operationKey && operation.operationID == operationID)
+            try #require(operation.preLaunchGeneration == oldGeneration && operation.committedReceipt == receipt)
+            try #require(operation.stageReceipts.map(\.stage) == [.flush, .rebootRequest, .guestExit, .diskCapture, .newBoot],
+                "The real transport must prove ordered flush, guest exit, disk capture and reconnect")
+            try #require(operation.stageReceipts.allSatisfy { $0.outcome == "ok" })
+            let journal = try #require(try await store.loadCommittedReceipt(environmentID: id, operationKey: operationKey))
+            try #require(journal.ownerTaskID == ownerTaskID && journal.receipt == receipt)
+            let after = try await ownRuntime(id)
+            let newGeneration = try #require(after.identity.launchGeneration)
+            try #require(newGeneration != oldGeneration && receipt.launchGeneration == Int(exactly: newGeneration))
+            try #require(after.vcpus == before.vcpus && after.ramMB == before.ramMB)
+            try #require(receipt.actualVCPUs == after.vcpus && receipt.actualMemoryMB == after.ramMB)
+            try #require(await app.environmentRegistry.layerURL(for: id) == layerBefore)
+            evidence["newGeneration"] = String(newGeneration)
+            let witnessAfter = try await guest(id, script: witnessScript, arguments: witnessArguments)
+            try #require(witnessAfter.stdout == witnessBefore.stdout, "Persistent nonce, inode and root disk witness changed")
+            evidence["diskWitnessAfter"] = witnessAfter.stdout
+            let diskNonce = try await guest(id, script: #"cat "$1""#,
+                arguments: [LinuxGuestServiceSoftRestartTransport.defaultNoncePath])
+            try #require(diskNonce.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == operationID)
+            _ = try await guest(id, script: #"set -eu; printf '%s' "$1" > "$2"; sync"#,
+                arguments: [nonce, "/workspace/" + reconnectName])
+            try #require(try Data(contentsOf: root.appendingPathComponent(reconnectName)) == Data(nonce.utf8),
+                "Replacement must reconnect to the exact owned workspace share")
+            try retain("ordered-restart-disk-and-share-verified")
+
+            // One exact replay, with the same trusted owner/key/payload.
+            // Compare the complete original receipt and durable record, then
+            // execute on the replacement and re-read authoritative identity.
+            let replay = try await app.linuxGuestLifecycle.softRestart(environmentID: id,
+                config: nil, ownerTaskID: ownerTaskID, operationKey: operationKey, cancellation: CancellationToken())
+            try #require(replay == receipt, "Exact replay must return the original receipt verbatim")
+            let replayWitness = try await guest(id, script: witnessScript, arguments: witnessArguments)
+            try #require(replayWitness.stdout == witnessBefore.stdout)
+            let afterReplay = try await ownRuntime(id)
+            try #require(afterReplay.identity == after.identity, "Exact replay must not launch another generation")
+            try #require(try await store.load(environmentID: id) == operation)
+            try #require(try await store.loadCommittedReceipt(environmentID: id, operationKey: operationKey) == journal)
+            try await saveDurableEvidence(id, suffix: "replayed")
+            evidence["replayGeneration"] = String(try #require(afterReplay.identity.launchGeneration))
+            try retain("exact-replay-verified")
+            try await cleanupSettledOwnEnvironment()
+            try retain("passed-and-cleaned")
+        } catch {
+            evidence["failure"] = String(describing: error)
+            if let id = environmentID {
+                do { try await saveDurableEvidence(id, suffix: "failure") }
+                catch { evidence["durableEvidenceError"] = String(describing: error) }
+                evidence["guestStatusOnFailure"] = String(describing: await services.linuxGuestStatus(id: id))
+                evidence["reconciliationOnFailure"] = String(describing:
+                    await app.linuxGuestLifecycle.reconciliationSnapshot(environmentID: id))
+            }
+            do { try retain("failed-before-cleanup") }
+            catch {
+                // Export failure must not permit deletion of recoverable data.
+                Issue.record("Soft restart failure evidence export failed; retain own workspace: \(root.path); \(error)")
+                throw error
+            }
+            do { try await cleanupSettledOwnEnvironment() }
+            catch {
+                evidence["cleanupPreservedReason"] = String(describing: error)
+                Issue.record("Soft restart outcome/cleanup is unresolved; retain only own workspace and disk: \(root.path)")
+            }
+            do { try retain("failed") }
+            catch { Issue.record("Final soft restart evidence update failed: \(error)") }
+            throw error // Unsupported, boot, stage and cleanup failures remain failures.
+        }
+    }
+
+
     private struct Progress: Decodable {
         var state: String
         var previewURL: String?

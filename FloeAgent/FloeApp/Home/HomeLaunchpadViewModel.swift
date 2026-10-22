@@ -710,4 +710,83 @@ final class HomeLaunchpadViewModel: ObservableObject {
         return String(trimmed.prefix(40)) + "…"
     }
 }
+
+
+// MARK: - Inbound share intake (S5 P1)
+
+/// The live Home composer is the only destination for a reviewed share. The
+/// merge is non-destructive (existing text and attachments are preserved),
+/// and the durable commit uses the same envelope-bound receipt as the
+/// Shortcuts handoff so a crash after commit can never append twice.
+@MainActor
+extension HomeLaunchpadViewModel: ShareIntakeDestination {
+    var shareIntakeDestinationID: String { draftStorageID.uuidString }
+
+    func shareIntakeSnapshot() -> ShareDraftSnapshot {
+        let stored = draftStore.entry(for: draftStorageID)
+        return ShareDraftSnapshot(
+            text: draft,
+            attachmentIDs: attachments.map(\.id),
+            storedRevision: stored?.revision,
+            isBusy: isSending || isConsumingDraft
+                || Self.destinationsInHandoff.contains(draftStorageID.uuidString)
+        )
+    }
+
+    func shareIntakeAppliedClaimToken(envelopeID: UUID) -> String? {
+        draftStore.unsettledHandoffReceipts.first { receipt in
+            receipt.entryID == envelopeID
+                && receipt.destinationID == draftStorageID.uuidString
+                && draftStore.handoffReceiptOnDisk(receipt)
+        }?.claimToken
+    }
+
+    func shareIntakeSettle(envelopeID: UUID, claimToken: String) {
+        draftStore.settleHandoff(entryID: envelopeID, claimToken: claimToken)
+    }
+
+    func shareIntakeApply(_ application: ShareDraftApplication) async -> ShareDraftApplyResult {
+        guard acceptsShortcutInbox else { return .unavailable }
+        guard !isSending, !isConsumingDraft else { return .busy }
+        guard !Task.isCancelled else { return .failed }
+        let destination = draftStorageID.uuidString
+        guard Self.destinationsInHandoff.insert(destination).inserted else { return .busy }
+        defer { Self.destinationsInHandoff.remove(destination) }
+        let stored = draftStore.entry(for: draftStorageID)
+        let preAcceptanceDraft = draft
+        let preAcceptanceAttachments = attachments
+        let mergedText = ShareDraftMerger.mergedText(
+            existing: preAcceptanceDraft,
+            incoming: application.incomingText
+        )
+        let mergedAttachments = ShareDraftMerger.mergedAttachments(
+            existing: preAcceptanceAttachments,
+            incoming: application.stagedAttachments
+        )
+        // Render synchronously before the durable commit. A text change bumps
+        // draftGeneration through didSet; an attachment-only share does not,
+        // so a failed commit can still roll back exactly this attempt.
+        let renderedGeneration = draftGeneration &+ (mergedText == preAcceptanceDraft ? 0 : 1)
+        draft = mergedText
+        attachments = mergedAttachments
+        let committed = await draftStore.commitDurable(
+            text: mergedText,
+            attachments: mergedAttachments,
+            conversationID: draftStorageID,
+            expectedRevision: stored?.revision,
+            handoff: application.receipt
+        )
+        guard committed, draftStore.handoffReceiptOnDisk(application.receipt) else {
+            // Restore only while no human edit happened during the await.
+            if draftGeneration == renderedGeneration {
+                draft = preAcceptanceDraft
+                if attachments == mergedAttachments {
+                    attachments = preAcceptanceAttachments
+                }
+            }
+            return .failed
+        }
+        return .applied
+    }
+}
 #endif

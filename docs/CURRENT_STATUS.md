@@ -1,11 +1,15 @@
-<!-- docs-updated: 2026-10-21 -->
+<!-- docs-updated: 2026-10-22 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-21. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-10-22. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
 当前目标为 **S5～S7 合并交付：先完成全部代码与集成，再统一测试**。S4 已随 284 完成本地验证、内部可安装、稳定无签名 Release／同次 Feather 及本轮产物清理，移出活动目标；系统自动触发、锁屏、强退与长期行为仍按真实设备证据单独记录。283 已送审一次并等待审核，不重复查询或提交 281／282，不修改 275 正式提交。[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。
 
 Current goal: one combined S5–S7 delivery, with all code and integration completed before unified testing. S4 is delivered in build 284 with local qualification, internal availability, canonical unsigned publication/awaited Feather and output cleanup. Unattended triggering and physical-device behavior remain separately unverified. Earlier external-review submissions and the formal App Store submission are unchanged.
+
+## 1.7.44（285）候选集成中，尚未交付 / Candidate integration, not delivered
+
+签名快捷指令模板、计划结束清理、文件分享字节保留及 File Provider 修复已进入共同候选。实际系统导入、原生计划选择和稳定 ID 保存已有模拟器证据；完整 App 交接、异常与结束清理尚待本批复验。新反馈追加 Office 打印／PDF 导出真实预览和 Excel 设置闭环，已纳入同一候选，完成代码后集中验证。仅生成模板、提交代码或推进版本号均不代表 285 已可安装。The signed schedule template and system-file repairs are integrated; actual simulator import and stable plan selection are recorded. App handoff and cleanup checks remain pending. Office PDF/print preview and Excel page options are part of this candidate. Build 285 is not yet delivered.
 
 ## 1.7.43（284）内部可安装，无签名包与 Feather 已交付 / Internal and unsigned available
 

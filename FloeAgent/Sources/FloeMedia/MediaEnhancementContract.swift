@@ -260,6 +260,8 @@ public struct MediaSourceDescriptor: Sendable {
     public var isHDR: Bool
     public var hasAlpha: Bool
     public var codec: String?
+    public var colorMatrix: String? = nil
+    public var bitDepth: Int? = nil
 }
 
 public enum MediaSourceInspector {
@@ -281,11 +283,12 @@ public enum MediaSourceInspector {
             throw FloeError.validationFailed("Image could not be inspected")
         }
         let hasAlpha = (properties[kCGImagePropertyHasAlpha] as? Bool) ?? false
+        let depth = (properties[kCGImagePropertyDepth] as? Int) ?? 8
         var descriptor = MediaSourceDescriptor(
             url: url, isImage: true, width: width, height: height,
             displayWidth: width, displayHeight: height,
             naturalFPS: 0, durationSeconds: 0, hasAudio: false, hadRotation: false,
-            colorPrimary: nil, transferFunction: nil, isHDR: false, hasAlpha: hasAlpha, codec: nil
+            colorPrimary: nil, transferFunction: nil, isHDR: depth > 8, hasAlpha: hasAlpha, codec: nil
         )
         let orientation = (properties[kCGImagePropertyOrientation] as? Int) ?? 1
         if (5...8).contains(orientation) {
@@ -313,6 +316,8 @@ public enum MediaSourceInspector {
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         let descriptions = try await video.load(.formatDescriptions)
         var colorPrimary: String?
+        var matrix: String?
+        var bitDepth: Int?
         var transfer: String?
         var hasAlpha = false
         var codec: String?
@@ -326,8 +331,9 @@ public enum MediaSourceInspector {
                 if let transferFunction = extensions[kCVImageBufferTransferFunctionKey] as? String {
                     transfer = transferFunction
                 }
-                // Any alpha channel mode means the track carries transparency,
-                // which this pipeline cannot preserve end to end.
+                if let atoms = extensions[kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms] as? [String: Any],
+                   let configuration = atoms["hvcC"] as? Data { bitDepth = hevcBitDepth(configuration) }
+                matrix = extensions[kCVImageBufferYCbCrMatrixKey] as? String
                 hasAlpha = extensions[kCVImageBufferAlphaChannelModeKey] != nil
             }
         }
@@ -338,15 +344,25 @@ public enum MediaSourceInspector {
         let hdrPrimaries = colorPrimary == (kCVImageBufferColorPrimaries_ITU_R_2020 as String)
         let isHDR = hdrPrimaries || (transfer.map { hdrTransferFunctions.contains($0) } ?? false)
         let rotation = abs(transform.b) > 0.0001 || abs(transform.c) > 0.0001
-        return MediaSourceDescriptor(
+        var descriptor = MediaSourceDescriptor(
             url: url, isImage: false,
             width: Int(naturalSize.width.rounded()), height: Int(naturalSize.height.rounded()),
             displayWidth: displayWidth, displayHeight: displayHeight,
             naturalFPS: fps, durationSeconds: duration.seconds,
             hasAudio: !audioTracks.isEmpty, hadRotation: rotation,
             colorPrimary: colorPrimary, transferFunction: transfer, isHDR: isHDR,
-            hasAlpha: hasAlpha, codec: codec
+            hasAlpha: hasAlpha || codec == "muxa", codec: codec
         )
+        descriptor.colorMatrix = matrix
+        descriptor.bitDepth = bitDepth
+        return descriptor
+    }
+
+    /// HEVCDecoderConfigurationRecord (ISO/IEC 14496-15), not a file tag or
+    /// the precision requested from a decoder that could upconvert RGB8.
+    static func hevcBitDepth(_ configuration: Data) -> Int? {
+        guard configuration.count >= 23, configuration[0] == 1 else { return nil }
+        return 8 + Int(configuration[17] & 0x07)
     }
 
     static func fourCC(_ value: FourCharCode) -> String {
@@ -391,14 +407,10 @@ public enum MediaEnhancementGuards {
         request: MediaEnhancementRequest,
         limits: Limits
     ) throws -> (displayWidth: Int, displayHeight: Int, framesPerPair: Int) {
-        guard !source.isHDR else {
-            throw FloeError.invalidConfiguration(
-                "HDR source (primaries=\(source.colorPrimary ?? "unknown"), transfer=\(source.transferFunction ?? "unknown")): tone mapping is not implemented in this build; pass an SDR source"
-            )
+        guard let mode = MediaEnhancementMode(requested: request.mode) else {
+            throw FloeError.validationFailed("Unknown enhancement mode")
         }
-        guard !source.hasAlpha else {
-            throw FloeError.invalidConfiguration("Source carries an alpha channel; flatten it to an opaque SDR file first")
-        }
+        _ = try MediaEnhancementFormat(source: source, mode: mode, output: request.outputURL)
         guard source.displayWidth > 1, source.displayHeight > 1,
               source.displayWidth <= limits.maximumSourceDimension,
               source.displayHeight <= limits.maximumSourceDimension else {
@@ -421,20 +433,26 @@ public enum MediaEnhancementGuards {
                 throw FloeError.validationFailed("Source has no usable constant frame rate (reported \(source.naturalFPS))")
             }
             let ratio = targetFPS / source.naturalFPS
-            let rounded = ratio.rounded()
-            guard abs(ratio - rounded) < 0.001, rounded >= 2, rounded <= Double(limits.maximumUpscaleWhileInterpolating) else {
+            guard ratio >= 2, ratio <= Double(limits.maximumUpscaleWhileInterpolating) else {
                 throw FloeError.validationFailed(
-                    "targetFPS must be an integer 2...\(limits.maximumUpscaleWhileInterpolating)x multiple of the source frame rate \(source.naturalFPS); got \(targetFPS)"
+                    "targetFPS must be within 2...\(limits.maximumUpscaleWhileInterpolating)x multiple of the source frame rate \(source.naturalFPS); got \(targetFPS)"
                 )
             }
-            let estimatedFrames = Int((source.durationSeconds * source.naturalFPS).rounded()) * Int(rounded)
+            guard source.durationSeconds.isFinite, source.durationSeconds > 0 else {
+                throw FloeError.validationFailed("Source duration must be positive and finite")
+            }
+            let estimate = ceil(source.durationSeconds * targetFPS)
+            guard estimate.isFinite, estimate <= Double(limits.maximumSourceFrames) else {
+                throw FloeError.validationFailed("Estimated output exceeds the frame bound")
+            }
+            let estimatedFrames = Int(estimate)
             guard estimatedFrames <= limits.maximumSourceFrames else {
                 throw FloeError.validationFailed("Estimated output frames \(estimatedFrames) exceed the \(limits.maximumSourceFrames) frame bound")
             }
             guard source.durationSeconds <= limits.maximumDurationSeconds else {
                 throw FloeError.validationFailed("Source duration exceeds the \(Int(limits.maximumDurationSeconds)) second bound")
             }
-            return (source.displayWidth, source.displayHeight, Int(rounded))
+            return (source.displayWidth, source.displayHeight, Int(ceil(ratio)))
         case .superResolution(let scaleFactor):
             guard scaleFactor >= 2, scaleFactor <= 4 else {
                 throw FloeError.validationFailed("scaleFactor must be 2, 3 or 4")
@@ -447,7 +465,15 @@ public enum MediaEnhancementGuards {
                 )
             }
             if !source.isImage {
-                let estimatedFrames = Int((source.durationSeconds * max(source.naturalFPS, 1)).rounded())
+                guard source.durationSeconds.isFinite, source.durationSeconds > 0,
+                      source.naturalFPS.isFinite, source.naturalFPS > 0 else {
+                    throw FloeError.validationFailed("Source duration and nominal frame rate must be finite and positive")
+                }
+                let estimate = ceil(source.durationSeconds * source.naturalFPS)
+                guard estimate.isFinite, estimate <= Double(limits.maximumSourceFrames) else {
+                    throw FloeError.validationFailed("Estimated source frames exceed the frame bound")
+                }
+                let estimatedFrames = Int(estimate)
                 guard estimatedFrames <= limits.maximumSourceFrames else {
                     throw FloeError.validationFailed("Estimated frames \(estimatedFrames) exceed the \(limits.maximumSourceFrames) frame bound")
                 }
@@ -484,3 +510,51 @@ public enum MediaFrameOrientation {
 }
 
 #endif
+
+
+/// One rational output clock. NTSC rates retain their /1001 clock and other
+/// rates use a bounded rational approximation; no per-frame timestamp rounding
+/// or accumulation is used. Actual input PTS determine interpolation phases.
+public struct MediaOutputFrameClock: Sendable, Equatable {
+    public let numerator: Int32
+    public let denominator: Int64
+
+    public init(fps: Double) throws {
+        guard fps.isFinite, fps > 0, fps <= 240 else {
+            throw FloeError.validationFailed("Output frame rate must be finite and within 0...240")
+        }
+        let ntsc = (fps * 1001).rounded()
+        let rawNumerator: Int64
+        let rawDenominator: Int64
+        if abs(fps - ntsc / 1001) < 0.000001 {
+            rawNumerator = Int64(ntsc); rawDenominator = 1001
+        } else {
+            rawNumerator = Int64((fps * 1_000_000).rounded()); rawDenominator = 1_000_000
+        }
+        guard rawNumerator > 0 else { throw FloeError.validationFailed("Output rate is below the supported clock precision") }
+        var a = rawNumerator, b = rawDenominator
+        while b != 0 { let remainder = a % b; a = b; b = remainder }
+        numerator = Int32(rawNumerator / a)
+        denominator = rawDenominator / a
+    }
+
+    public func ticks(at index: Int) throws -> Int64 {
+        guard index >= 0 else { throw FloeError.validationFailed("Frame index cannot be negative") }
+        let (value, overflow) = Int64(index).multipliedReportingOverflow(by: denominator)
+        guard !overflow else { throw FloeError.validationFailed("Output clock overflow") }
+        return value
+    }
+
+    public func seconds(at index: Int) throws -> Double {
+        Double(try ticks(at: index)) / Double(numerator)
+    }
+
+    /// Strictly interior samples require synthesis; endpoints use their
+    /// original pixels. A missing/descending source clock is never guessed.
+    public func phase(at index: Int, sourcePTS: Double, nextPTS: Double) throws -> Double {
+        guard sourcePTS.isFinite, nextPTS.isFinite, nextPTS > sourcePTS else {
+            throw FloeError.validationFailed("Source frame timestamps must be finite and increasing")
+        }
+        return (try seconds(at: index) - sourcePTS) / (nextPTS - sourcePTS)
+    }
+}

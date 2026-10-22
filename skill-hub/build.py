@@ -162,8 +162,28 @@ def validate_models(models):
             continue
         if license_name in rejected:
             raise ValueError(f"{identifier}: rejected license {license_name}")
-        if status not in {"ready", "pending-assets", "license-check"}:
+        if status not in {"ready", "pending-assets", "pending-qualification", "license-check"}:
             raise ValueError(f"{identifier}: unknown status {status}")
+        if status == "pending-qualification":
+            prepared = model.get("preparedAssets", {})
+            if model.get("files") or not prepared.get("version"):
+                raise ValueError(f"{identifier}: prepared assets require a version and no downloadable files")
+            sha = prepared.get("manifestSHA256", "")
+            if len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+                raise ValueError(f"{identifier}: prepared manifest needs an exact SHA-256")
+            paths = set()
+            for entry in prepared.get("files", []):
+                path = entry.get("path", "")
+                if not path or path.startswith("/") or "\\" in path or any(p in ("", ".", "..") for p in path.split("/")) or path in paths:
+                    raise ValueError(f"{identifier}: invalid prepared model member")
+                paths.add(path)
+                sha = entry.get("sha256", "")
+                if entry.get("url") or not entry.get("assetName") or len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+                    raise ValueError(f"{identifier}: prepared member needs asset name/hash and no assumed URL")
+                if not isinstance(entry.get("sizeBytes"), int) or entry["sizeBytes"] <= 0:
+                    raise ValueError(f"{identifier}: prepared member needs a positive size")
+            if not {"manifest.json", "contract.json", "LICENSE.txt", "PROVENANCE.json", "DISTRIBUTION.json"}.issubset(paths):
+                raise ValueError(f"{identifier}: incomplete prepared runtime/notices")
         if status == "ready":
             if license_name not in allowed:
                 raise ValueError(f"{identifier}: ready models need an allowed license")

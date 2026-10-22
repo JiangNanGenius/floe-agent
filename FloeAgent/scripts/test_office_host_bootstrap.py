@@ -2,12 +2,39 @@
 import json
 import plistlib
 from pathlib import Path
+import shutil
+import struct
+import subprocess
 import tempfile
 import unittest
 import zipfile
-from bootstrap_office_host import digest, install, relative, checked_lock, verify_installed, write_project_inputs, write_project_configuration
+import office_component_recovery as component_recovery
+from bootstrap_office_host import (digest, install, relative, checked_lock, fetch_pinned_archive,
+                                   verify_installed, write_project_inputs, write_project_configuration)
 from embed_office_host import embed
 from verify_office_app_embedding import verify_payload
+
+EXECUTABLE_UUID = '11111111-2222-3333-4444-555555555555'
+
+
+def macho_bytes(uuid_text=EXECUTABLE_UUID):
+    compact = bytes.fromhex(uuid_text.replace('-', ''))
+    header = struct.pack('<IIIIIIII', 0xfeedfacf, 0x0100000c, 0, 6, 1, 24, 0, 0)
+    command = struct.pack('<II', 0x1b, 24) + compact
+    return header + command
+
+
+def release_runner_from(directory, *, fail=False):
+    def run(argv, check=True, timeout=None):
+        if fail:
+            raise subprocess.CalledProcessError(1, argv)
+        pattern = argv[argv.index('--pattern') + 1]
+        output = Path(argv[argv.index('--output') + 1])
+        source = Path(directory) / pattern
+        if not source.is_file():
+            raise subprocess.CalledProcessError(1, argv)
+        shutil.copyfile(source, output)
+    return run
 
 
 class OfficeHostBootstrapTests(unittest.TestCase):
@@ -20,7 +47,7 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         native.mkdir()
         for name in ['FloeOfficeNative.h', 'FloeOfficeNative.mm', 'FloeOfficeAttachment.cpp', 'FloeOfficeAttachment.hxx']:
             (native / name).write_text('source-' + name)
-        files = {'FloeOfficeNative.framework/FloeOfficeNative': 'native binary fixture',
+        files = {'FloeOfficeNative.framework/FloeOfficeNative': macho_bytes(),
                  'FloeOfficeNative.framework/Headers/FloeOfficeNative.h': 'public header',
                  'FloeOfficeNative.framework/Modules/module.modulemap': 'module fixture',
                  'FloeOfficeNative.framework/Info.plist': 'plist fixture',
@@ -28,7 +55,10 @@ class OfficeHostBootstrapTests(unittest.TestCase):
         for name, data in files.items():
             path = self.host / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(data)
+            if isinstance(data, bytes):
+                path.write_bytes(data)
+            else:
+                path.write_text(data)
         (self.host / 'OfficeRuntimeResources/config').mkdir()
         sources = {path.name: digest(path) for path in native.iterdir()}
         report = {'sourceCommit': 'pinned-source', 'overlaySHA256': 'pinned-overlay',
@@ -55,6 +85,151 @@ class OfficeHostBootstrapTests(unittest.TestCase):
 
     def install(self):
         return install(self.archive, self.destination, self.lock)
+
+    def make_component_release(self):
+        release = self.root / 'release'
+        release.mkdir()
+        shutil.copyfile(self.archive, release / component_recovery.HOST_ASSET)
+        lock, pin = checked_lock(self.lock)
+        manifest = json.loads((self.host / 'native-host.json').read_text())
+        hashes = {'manifestSHA256': pin['manifestSHA256'],
+                  'executableSHA256': pin['executableSHA256']}
+        dsym = self.root / 'Symbols' / component_recovery.SYMBOLS_ROOT
+        dwarf = dsym / 'Contents/Resources/DWARF/FloeOfficeNative'
+        dwarf.parent.mkdir(parents=True)
+        dwarf.write_bytes(macho_bytes())
+        # The dSYM is a separate PRIVATE artifact; it is never written into
+        # the public release directory downloaded by bootstrap.
+        private = self.root / 'private-symbols'
+        private.mkdir()
+        symbols_archive = component_recovery.write_deterministic_zip(
+            dsym, private / component_recovery.SYMBOLS_ASSET,
+            component_recovery.SYMBOLS_ROOT)
+        licenses = self.root / 'licenses' / component_recovery.LICENSES_ROOT
+        licenses.mkdir(parents=True)
+        for name in ('LICENSE', 'COPYING.MPL', 'NOTICE'):
+            (licenses / name).write_text('license ' + name)
+        component_recovery.write_deterministic_zip(
+            licenses, release / component_recovery.LICENSES_ASSET,
+            component_recovery.LICENSES_ROOT)
+        symbols = component_recovery.inspect_symbol_archive(symbols_archive)
+        licenses_block = component_recovery.inspect_license_archive(
+            release / component_recovery.LICENSES_ASSET)
+        descriptor = component_recovery.build_descriptor(
+            lock, manifest, hashes, release / component_recovery.HOST_ASSET,
+            claims=component_recovery.required_claims(lock, pin),
+            transport=component_recovery.expected_transport(pin),
+            symbols=symbols, symbols_archive=symbols_archive,
+            licenses=licenses_block)
+        (release / component_recovery.DESCRIPTOR_ASSET).write_text(
+            json.dumps(descriptor, indent=2, sort_keys=True) + '\n')
+        (release / component_recovery.HOST_SIDECAR).write_text(
+            f"{descriptor['archive']['sha256']}  {component_recovery.HOST_ASSET}\n")
+        self.release = release
+        self.private_symbols = symbols_archive
+        return release
+
+    def expired_actions(self, argv, check=True, timeout=None):
+        raise subprocess.CalledProcessError(1, argv)
+
+    def test_expired_actions_artifact_recovers_the_exact_component_release(self):
+        release = self.make_component_release()
+        lock, pin = checked_lock(self.lock)
+        staging = self.root / 'staging'
+        staging.mkdir()
+        archive, transport = fetch_pinned_archive(
+            lock, pin, staging, actions_runner=self.expired_actions,
+            release_runner=release_runner_from(release), attempts=1, sleep=lambda _: None)
+        self.assertEqual(transport['kind'], 'component-release')
+        self.assertEqual(digest(archive), pin['archiveSHA256'])
+        self.assertFalse(transport['symbolsVerified'])
+        self.assertEqual(transport['symbolsVisibility'], 'private')
+        self.assertNotIn(component_recovery.SYMBOLS_ASSET,
+                         {path.name for path in release.iterdir()})
+        result = install(archive, self.destination, self.lock,
+                         expected_executable_uuid=transport['executableUUID'])
+        self.assertEqual(result['runID'], '123')
+        self.assertEqual((self.destination / 'OfficeRuntimeResources/cool.html').read_text(),
+                         'editor fixture')
+
+    def test_release_only_never_calls_the_actions_artifact(self):
+        release = self.make_component_release()
+        lock, pin = checked_lock(self.lock)
+        calls = []
+
+        def actions(argv, check=True, timeout=None):
+            calls.append(argv)
+            raise subprocess.CalledProcessError(1, argv)
+
+        staging = self.root / 'staging'
+        staging.mkdir()
+        archive, transport = fetch_pinned_archive(
+            lock, pin, staging, actions_runner=actions,
+            release_runner=release_runner_from(release), release_only=True,
+            attempts=1, sleep=lambda _: None)
+        self.assertEqual(calls, [])
+        self.assertEqual(digest(archive), pin['archiveSHA256'])
+        self.assertEqual(transport['kind'], 'component-release')
+
+    def test_unavailable_network_reports_both_transports_and_installs_nothing(self):
+        lock, pin = checked_lock(self.lock)
+        staging = self.root / 'staging'
+        staging.mkdir()
+        with self.assertRaisesRegex(ValueError, 'both transports'):
+            fetch_pinned_archive(
+                lock, pin, staging, actions_runner=self.expired_actions,
+                release_runner=release_runner_from(self.root / 'missing', fail=True),
+                attempts=1, sleep=lambda _: None)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(list(staging.iterdir()), [])
+
+    def test_wrong_component_bytes_do_not_create_a_destination(self):
+        release = self.make_component_release()
+        (release / component_recovery.HOST_ASSET).write_bytes(b'corrupt archive')
+        lock, pin = checked_lock(self.lock)
+        staging = self.root / 'staging'
+        staging.mkdir()
+        with self.assertRaisesRegex(ValueError, 'component release'):
+            fetch_pinned_archive(
+                lock, pin, staging, release_only=True,
+                release_runner=release_runner_from(release), attempts=1,
+                sleep=lambda _: None)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(list(staging.iterdir()), [])
+
+    def test_mismatched_symbol_uuid_is_rejected_before_commit(self):
+        with self.assertRaisesRegex(ValueError, 'UUID differs'):
+            install(self.archive, self.destination, self.lock,
+                    expected_executable_uuid='00000000-0000-0000-0000-000000000000')
+        self.assertFalse(self.destination.exists())
+
+    def test_cancelled_install_never_commits_or_leaves_staging(self):
+        checks = []
+
+        def cancel():
+            checks.append(True)
+            if len(checks) == 3:
+                raise component_recovery.RecoveryCancelled('cancelled by test')
+
+        with self.assertRaises(component_recovery.RecoveryCancelled):
+            install(self.archive, self.destination, self.lock, cancel_check=cancel)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual(list(self.destination.parent.glob('.office-host-*')), [])
+
+    def test_existing_destination_is_not_replaced_by_a_failed_component(self):
+        self.install()
+        release = self.make_component_release()
+        (release / component_recovery.HOST_ASSET).write_bytes(b'corrupt archive')
+        lock, pin = checked_lock(self.lock)
+        staging = self.root / 'staging'
+        staging.mkdir()
+        with self.assertRaises(ValueError):
+            fetch_pinned_archive(lock, pin, staging, release_only=True,
+                                 release_runner=release_runner_from(release),
+                                 attempts=1, sleep=lambda _: None)
+        self.assertEqual(self.install()['verifiedFiles'], 6)
+        self.assertEqual((self.destination / 'OfficeRuntimeResources/cool.html').read_text(),
+                         'editor fixture')
 
     def test_installs_once_and_preserves_required_empty_directories(self):
         first = self.install()
