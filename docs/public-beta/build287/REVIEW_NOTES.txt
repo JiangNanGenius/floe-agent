@@ -1,0 +1,9 @@
+Floe Agent 1.7.46 (Build 287), bundle org.floeagent.ios, is an iPad-first workspace with iPhone support.
+
+No Floe account or demo login is required. Notes, local Office editing and PDF annotation work without cloud AI. Optional AI tasks use the tester's own configured provider; no provider credit is included.
+
+This build focuses on Office print and export. Open a spreadsheet workbook in Notes and use Print or Export PDF. Page setup adds a Print gridlines choice (Document settings, Print, or Don't print), and Scaling adds Exact scale with a typed percentage plus a slider. The real PDF preview under the options regenerates automatically as settings change; please change print options repeatedly, check pagination, then print or share that same previewed output. Saving also works after switching an Office document to read mode; please check save, document close and reopening with the updated cover.
+
+The Skills list now shows origin badges: Official, Internal, External, and Unknown for older records whose source cannot be proven. For scheduled tasks, tapping the Shortcuts badge starts the import directly, and when a plan ends a popup offers cleanup of its Shortcut and automation. Scheduled execution runs only through automations the tester creates and controls in Apple's Shortcuts app; there is no arbitrary background execution.
+
+Adaptive layouts for foldable devices turn on automatically when such hardware is detected and can be turned off in Settings → General; the option never appears on ordinary iPhone and iPad models. Foldable support in this build is code-level and was qualified in software; please report results from your own hardware, as no specific foldable device is claimed as tested. Physical Pencil feel, real printers and other hardware-specific behavior remain part of beta testing. Please use synthetic files and redact private content in feedback. This beta leaves the existing formal App Store submission unchanged.
