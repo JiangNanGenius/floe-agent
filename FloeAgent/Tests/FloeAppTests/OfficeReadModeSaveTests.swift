@@ -335,9 +335,9 @@ final class OfficeReadModeSaveTests: XCTestCase {
 
     /// Size (and existence) of every workbook drawing part, the members the
     /// supplied highlighter ink lives in.
-    private func workbookDrawingParts(_ url: URL) throws -> [String: UInt32] {
+    private func workbookDrawingParts(_ url: URL) throws -> [String: UInt64] {
         let archive = try Archive(url: url, accessMode: .read)
-        var parts: [String: UInt32] = [:]
+        var parts: [String: UInt64] = [:]
         for entry in archive where entry.path.hasPrefix("xl/drawings/")
             && !entry.path.contains("/_rels/") {
             parts[entry.path] = entry.uncompressedSize
