@@ -1,0 +1,11 @@
+Floe Agent 1.7.47 (Build 288), bundle org.floeagent.ios, is an iPad-first workspace with iPhone support.
+
+No Floe account or demo login is required. Notes, local Office editing and PDF annotation work without cloud AI. Optional AI chats and tasks use the tester's configured provider; no provider credit is included.
+
+On the home screen select Chat to start a lightweight conversation, then select a thinking level in the composer. Dictation uses the microphone button. The separate voice waveform button opens continuous conversation. Speech playback reads the completed answer body. Please test speaking, pausing, resuming and interrupting playback, and rapidly stopping and restarting dictation. A configured AI provider is required for generated answers.
+
+In Settings → General, Voice Input and Voice Output are separate pages. Voice Output → Voice offers system voices and an optional enhanced speech model with nine voices. Download its voice pack first, then tap a voice to select it or tap its play button to synthesize the editable audition text. Auditions are generated on demand. Chinese, English, Japanese and mixed-language examples are included. Online voice services are optional and require the tester's own credentials; saving a service does not change the selected voice. No automatic paid-provider fallback is enabled.
+
+In Settings → Web Search, the list contains only added providers. Tap Add Provider to choose from the catalog or configure a custom interface, test a search and save it. Existing entries can be enabled, edited, reordered or removed. The search provider catalog can be refreshed through Content Updates.
+
+Please use synthetic content and redact private information in feedback. Physical-device audio behavior remains part of beta testing. This beta leaves the existing formal App Store submission unchanged.
