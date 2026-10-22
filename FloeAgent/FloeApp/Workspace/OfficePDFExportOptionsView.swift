@@ -382,6 +382,11 @@ struct OfficePDFExportOptionsView: View {
     /// from an external presentation dismissal, so the trace names the actual
     /// dismissal owner instead of leaving a silent disappearance.
     @State private var abandoning = false
+    /// Content-free identity of this view's state container. A transient
+    /// remount and the same view reappearing carry different values, so the
+    /// next actual trace can tell a fresh container from preserved state.
+    /// Random only; never derived from or joined with document content.
+    @State private var traceViewID = UUID()
 
     private func t(_ chinese: String, _ english: String) -> String { OfficeInkText.t(chinese, english) }
 
@@ -412,7 +417,8 @@ struct OfficePDFExportOptionsView: View {
         .interactiveDismissDisabled(working || presentation != nil)
         .task(id: loadAttempt) {
             loading = true; error = nil
-            observe("export.options.loadBegin", ["attempt": String(loadAttempt)])
+            observe("export.options.loadBegin",
+                    ["attempt": String(loadAttempt), "view": traceViewID.uuidString])
             do {
                 let prepared = try await prepare()
                 try Task.checkCancellation()
@@ -421,13 +427,16 @@ struct OfficePDFExportOptionsView: View {
                 // choice. No first-sheet substitution for Current Sheet.
                 choices.sheetName = prepared.activeSheetName
                     ?? prepared.sheets.first(where: \.isVisible)?.name ?? ""
-                observe("export.options.loaded", ["attempt": String(loadAttempt)])
+                observe("export.options.loaded",
+                        ["attempt": String(loadAttempt), "view": traceViewID.uuidString])
             } catch is CancellationError {
-                observe("export.options.loadCancelled", ["attempt": String(loadAttempt)])
+                observe("export.options.loadCancelled",
+                        ["attempt": String(loadAttempt), "view": traceViewID.uuidString])
             }
             catch {
                 observe("export.options.loadError",
-                        ["attempt": String(loadAttempt), "kind": Self.errorKind(error)])
+                        ["attempt": String(loadAttempt), "view": traceViewID.uuidString,
+                         "kind": Self.errorKind(error)])
                 self.error = message(for: error)
             }
             loading = false
@@ -435,14 +444,30 @@ struct OfficePDFExportOptionsView: View {
             scheduleAutoPreview(choices)
         }
         .onChange(of: choices) { _, next in scheduleAutoPreview(next) }
+        .onAppear {
+            observe("export.options.appear", ["view": traceViewID.uuidString])
+        }
         .onDisappear {
-            // An external teardown (the presentation owner removed this
-            // sheet) reaches here WITHOUT a prior abandon. Ordering this
-            // breadcrumb against the parent's export.sheet.bindingSet nil
-            // write names the actual dismissal owner on the live trace.
-            observe("export.options.disappear",
-                    ["owner": abandoning ? "abandon" : "external"])
-            abandon(source: "disappear")
+            // A genuine dismissal writes the parent's presentation binding
+            // nil (Cancel/completion here, or the owner's interactive
+            // dismissal): that nil write is the authoritative request
+            // cancellation. A transient content remount only reaches this
+            // callback, so it must tear down THIS container's preview work
+            // but must never call dismiss() — that would cancel the
+            // still-live parent-owned preparation. `traceViewID` separates a
+            // fresh state container from the same view reappearing.
+            var facts = ["owner": abandoning ? "explicit" : "external",
+                         "view": traceViewID.uuidString]
+            if presentation != nil { facts["covered"] = "presenting" }
+            observe("export.options.disappear", facts)
+            if presentation != nil {
+                // The nested share/print surface currently owns the visible
+                // delivery and its leased artifact; its completion/failure
+                // path decides the next step. Do not tear the preview or
+                // delivery down under it.
+                return
+            }
+            teardownPreview(source: "disappear")
         }
         .sheet(item: $presentation, onDismiss: {
             if deliveryFailed {
@@ -453,8 +478,9 @@ struct OfficePDFExportOptionsView: View {
                 scheduleAutoPreview(choices)
             } else if delivery != nil {
                 // A completed share/print run ends the export session, as
-                // before: the user already received the final artifact.
-                dismiss()
+                // before: the user already received the final artifact. This
+                // is our own dismissal, so the trace names it as such.
+                abandon(source: "deliveryComplete")
             }
         }) { presentation in
             switch presentation {
@@ -472,17 +498,30 @@ struct OfficePDFExportOptionsView: View {
         }
     }
 
+    /// Ends the presentation explicitly: the user tapped Cancel, or a
+    /// finished share/print delivery already handed the artifact to the
+    /// system surface. ONLY this path calls `dismiss()`, which writes the
+    /// parent presentation binding nil and therefore owns request
+    /// cancellation; a transient child disappearance must never reach it.
     private func abandon(source: String) {
-        // Diagnostic stage: observe only. Reentrant teardown (Cancel then
-        // onDisappear, or an external dismissal reaching the same path) keeps
-        // its original cleanup/dismiss calls unchanged; the latch exists only
-        // to label which breadcrumb observed the teardown first.
         abandoning = true
-        observe("export.options.abandon", ["source": source])
+        observe("export.options.abandon",
+                ["source": source, "view": traceViewID.uuidString])
+        teardownPreview(source: source)
+        dismiss()
+    }
+
+    /// Releases only work this view instance owns: the preview generation
+    /// consumer, the queued/debounced choices and the accepted-artifact
+    /// fence. The parent's presentation request and its preparation are NOT
+    /// owned here, so a transient remount cannot cancel them; they end only
+    /// when the presentation binding is actually written nil.
+    private func teardownPreview(source: String) {
+        observe("export.options.teardown",
+                ["source": source, "view": traceViewID.uuidString])
         cancellation.cancel(); operation?.cancel()
         debounce?.cancel(); pendingChoices = nil
         preview.invalidate()
-        dismiss()
     }
 
     // MARK: - Settings (upper scrolling region)
