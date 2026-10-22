@@ -125,6 +125,29 @@ public final class WorkspaceTransferEngine: @unchecked Sendable {
         return installed
     }
 
+    /// Test-only producer cleanup: releases this instance's install slot
+    /// (hooks + transfer root), its live session table and its counters,
+    /// restoring fresh-instance state. The slot belongs to ONE accepted
+    /// generation exactly like the authority install in FloeAndroidCore,
+    /// so the host suite's existing reset chain (composition
+    /// .resetForTesting -> LinuxWorkspaceAuthority.resetInstallationForTesting)
+    /// releases BOTH halves together: without this seam the
+    /// first-install-wins rule above would strand every later synthetic-
+    /// root generation of a host suite with an authority that is silently
+    /// never installed. Production never calls it (one accepted install per
+    /// process; same-root rebinds stay idempotent).
+    public func resetInstallationForTesting() {
+        lock.lock()
+        hooksStorage = nil
+        transferRootStorage = nil
+        sessions.removeAll()
+        counters = ["baselineBegin": 0, "baselineFinish": 0, "entryServed": 0,
+                    "entryStaged": 0, "exportFinish": 0, "refused": 0,
+                    "sweptSessions": 0]
+        sweptStagingBytesTotal = 0
+        lock.unlock()
+    }
+
     private var hooks: WorkspaceAuthorityHooks? {
         lock.lock()
         let value = hooksStorage

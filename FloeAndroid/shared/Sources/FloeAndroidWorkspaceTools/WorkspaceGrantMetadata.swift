@@ -20,6 +20,7 @@
 // nothing further is applied.
 
 import Foundation
+import CoreFoundation
 import Crypto
 
 public struct WorkspaceGrantBinding: Sendable, Equatable {
@@ -155,11 +156,41 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
 // MARK: - Strict scalar parsing (shared)
 
 public enum WorkspaceStrict {
+    /// Exact transport boolean classification. A JSON boolean is either a
+    /// CFBoolean-backed number (the Darwin `JSONSerialization` storage) or
+    /// a native Swift `Bool` (the corelibs-foundation storage); a JSON
+    /// integer is NEITHER. A plain Swift `is Bool` check is NOT usable as
+    /// the discriminator here: on Darwin Foundation NSNumber-backed zero and one values answer
+    /// it true, so the previous blanket rejection wrongly refused the
+    /// legitimate integer `1` (the binding `version` member) and integer
+    /// zero. This mirrors the module family's existing canonical
+    /// classification (`LinuxReadinessIngress.readinessExactInt64`,
+    /// `G02DomainBinder`, `MCPRemoteToolSource`, `ChildRunPayload`), which
+    /// gates booleans through the CF type on the ACTUAL toolchains.
+    /// nil for any non-boolean value (numbers, strings, nulls, containers).
+    public static func boolean(_ value: Any?) -> Bool? {
+        guard let value else { return nil }
+        // Native Swift Bool (corelibs JSON shape) — an NSNumber object's
+        // dynamic type is never Bool, so this branch cannot misread a
+        // number.
+        if Swift.type(of: value) == Bool.self {
+            return value as? Bool
+        }
+        // CFBoolean (Darwin JSON shape) — the toll-free-bridged discriminator.
+        if let number = value as? NSNumber,
+           CFGetTypeID(number) == CFBooleanGetTypeID() {
+            return number.boolValue
+        }
+        return nil
+    }
+
     /// Finite integer: real numbers must be integral, booleans are refused
-    /// (JSON true is an NSNumber whose doubleValue is 1 — it must never
-    /// silently become a budget or epoch), NaN/infinity are refused.
+    /// (classified EXACTLY by `boolean(_:)` above — a JSON true is an
+    /// NSNumber whose doubleValue is 1 and must never silently become a
+    /// budget or epoch, while real integer `0`/`1` values must never be
+    /// refused as booleans), NaN/infinity are refused.
     public static func integer(_ value: Any?, min: Int64, max: Int64) -> Int64? {
-        if value is Bool { return nil }
+        if boolean(value) != nil { return nil }
         guard let number = value as? NSNumber else { return nil }
         let double = number.doubleValue
         guard double.isFinite, double == double.rounded(),

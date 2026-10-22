@@ -522,11 +522,23 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             // ORIGINAL run/conversation/workspace ownership rows. A run that
             // is not actually active/owned yields NO grant (null) — a typed
             // unavailable, never a synthetic session.
+            // Closed-token refusal discriminator (G03-R3 grant refusal
+            // observation): create() reports EXACTLY ONE fixed closed token
+            // naming the actual null branch (or the flat native reply
+            // code) through the run-owned observer; it rides the EXISTING
+            // bounded stage recording below, replacing the single collapsed
+            // "workspace_unresolved" observation with the precise branch
+            // evidence. The historical token stays the fallback when null
+            // came back without a report. Recording qualifies nothing; the
+            // admission, ownership, cancellation and drain semantics of
+            // this lane are unchanged.
+            var grantRefusal: String? = null
             val grant = CoreWorkspaceGrant.create(context, acceptedEpoch, runID, trustedCallID = null,
                 isOwned = WorkspaceOwnershipProbe {
                     epoch.get() == acceptedEpoch && preflights[owned.controlID] === owned && !owned.lease.isClosed
-                }, authority = CoreWorkspaceNativeAuthority())
-                ?: error("workspace_unresolved")
+                }, authority = CoreWorkspaceNativeAuthority(),
+                refusalObserver = { token -> grantRefusal = token })
+                ?: error(grantRefusal ?: "workspace_unresolved")
             owned.workspaceGrant = grant
             // Stamp the claim with the ACTUAL anchored generation it is being
             // dispatched to; reconciliation later proves retirement ONLY by

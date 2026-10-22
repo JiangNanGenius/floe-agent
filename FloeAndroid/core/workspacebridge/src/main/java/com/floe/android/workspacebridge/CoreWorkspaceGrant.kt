@@ -301,6 +301,16 @@ class CoreWorkspaceGrant private constructor(
          *    commit authority;
          *  * `authority` is required (no default-true): without the native
          *    adapter there is no grant at all.
+         *  * `refusalObserver` — OPTIONAL diagnostic-only sink
+         *    (G03-R3 grant refusal observation): every null return below reports
+         *    EXACTLY ONE closed fixed token (branch name, or the flat
+         *    native reply code when it is an enumerated member of
+         *    [NATIVE_REFUSAL_CODES]) before returning. The observer gates
+         *    nothing, changes no admission/ownership outcome and never
+         *    carries paths, digests, commands or reply bodies; absence
+         *    (default null) preserves every existing call site byte-for-
+         *    byte. Tokens are <=32 printable ASCII so the pump can ride
+         *    them through its existing bounded stage recording.
          * Returns null (never a partially-usable object) when the workspace,
          * run, epoch or native session cannot be resolved.
          */
@@ -311,33 +321,46 @@ class CoreWorkspaceGrant private constructor(
             trustedCallID: String? = null,
             isOwned: WorkspaceOwnershipProbe,
             authority: WorkspaceNativeAuthority,
+            refusalObserver: ((String) -> Unit)? = null,
         ): CoreWorkspaceGrant? {
-            if (rootEpoch <= 0 || runID.length > WorkspaceBridgeWire.MAX_IDENTIFIER_CHARS) return null
+            fun refuse(branch: String, nativeCode: String? = null): CoreWorkspaceGrant? {
+                refusalObserver?.invoke(refusalToken(branch, nativeCode))
+                return null
+            }
+            if (rootEpoch <= 0 || runID.length > WorkspaceBridgeWire.MAX_IDENTIFIER_CHARS)
+                return refuse(REFUSAL_ARGUMENTS_INVALID)
             val corePackage = contextCore.packageName
-            val packages = runCatching { RuntimePackages.forCore(corePackage) }.getOrNull() ?: return null
+            val packages = runCatching { RuntimePackages.forCore(corePackage) }.getOrNull()
+                ?: return refuse(REFUSAL_PEER_REFUSED)
             // Own-process sanity: this factory only ever runs in the Core app.
             val verifier = RuntimePeerVerifier(contextCore)
-            runCatching { verifier.verifyPeer(packages.runtime) }.getOrNull() ?: return null
+            runCatching { verifier.verifyPeer(packages.runtime) }.getOrNull()
+                ?: return refuse(REFUSAL_PEER_REFUSED)
             val grantID = randomGrantID()
             val bindingBytes = if (trustedCallID == null) {
                 authority.binding(rootEpoch, runID, grantID)
             } else {
                 authority.bindingForCall(rootEpoch, runID, trustedCallID, grantID)
-            } ?: return null
-            if (bindingBytes.size > WorkspaceBridgeWire.MAX_CONTROL_BYTES) return null
-            val binding = runCatching { JSONObject(String(bindingBytes, Charsets.UTF_8)) }.getOrNull() ?: return null
-            if (!binding.optBoolean("ok", false)) return null
+            } ?: return refuse(REFUSAL_BINDING_UNPARSABLE)
+            if (bindingBytes.size > WorkspaceBridgeWire.MAX_CONTROL_BYTES)
+                return refuse(REFUSAL_BINDING_UNPARSABLE)
+            val binding = runCatching { JSONObject(String(bindingBytes, Charsets.UTF_8)) }.getOrNull()
+                ?: return refuse(REFUSAL_BINDING_UNPARSABLE)
+            if (!binding.optBoolean("ok", false))
+                return refuse(REFUSAL_BINDING_REFUSED, binding.optString("code").takeIf { it.isNotEmpty() })
             if (binding.optString("runID") != runID || binding.optLong("rootEpoch") != rootEpoch ||
                 binding.optString("grantID") != grantID
             ) {
-                return null
+                return refuse(REFUSAL_IDENTITY_MISMATCH)
             }
             val openReply = runCatching {
                 JSONObject(String(authority.openSession(bindingBytes), Charsets.UTF_8))
-            }.getOrNull() ?: return null
-            if (!openReply.optBoolean("ok", false)) return null
+            }.getOrNull() ?: return refuse(REFUSAL_OPEN_UNPARSABLE)
+            if (!openReply.optBoolean("ok", false))
+                return refuse(REFUSAL_OPEN_REFUSED, openReply.optString("code").takeIf { it.isNotEmpty() })
             val sessionKey = openReply.optString("sessionKey")
-            if (!sessionKey.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX))) return null
+            if (!sessionKey.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX)))
+                return refuse(REFUSAL_SESSION_KEY_MALFORMED)
             return CoreWorkspaceGrant(
                 context = contextCore.applicationContext,
                 authority = authority,
@@ -367,6 +390,51 @@ class CoreWorkspaceGrant private constructor(
             -10 -> "diskReserveUnmet"
             else -> "nativeError$value"
         }
+
+        // MARK: Closed grant-refusal diagnostic vocabulary
+        // (G03-R3 grant refusal observation). Fixed constants only — enumerated
+        // from the ACTUAL null-return branches of [create] and the flat
+        // frozen native reply codes; never paths, digests, commands or
+        // reply bodies. The host readiness controller enumerates these
+        // SAME strings in its KNOWN_STAGE_TOKENS closed set (membership,
+        // not length, is the bound); every token is <=32 printable ASCII
+        // so it survives the pump's boundedCode/reason grammar unchanged.
+
+        const val REFUSAL_ARGUMENTS_INVALID = "grant_arguments_invalid"
+        const val REFUSAL_PEER_REFUSED = "grant_peer_refused"
+        const val REFUSAL_BINDING_UNPARSABLE = "grant_binding_unparsable"
+        const val REFUSAL_BINDING_REFUSED = "grant_binding_refused"
+        const val REFUSAL_IDENTITY_MISMATCH = "grant_identity_mismatch"
+        const val REFUSAL_OPEN_UNPARSABLE = "grant_open_unparsable"
+        const val REFUSAL_OPEN_REFUSED = "grant_open_refused"
+        const val REFUSAL_SESSION_KEY_MALFORMED = "grant_session_key_malformed"
+
+        val BRANCH_REFUSAL_TOKENS: Set<String> = setOf(
+            REFUSAL_ARGUMENTS_INVALID, REFUSAL_PEER_REFUSED, REFUSAL_BINDING_UNPARSABLE,
+            REFUSAL_BINDING_REFUSED, REFUSAL_IDENTITY_MISMATCH, REFUSAL_OPEN_UNPARSABLE,
+            REFUSAL_OPEN_REFUSED, REFUSAL_SESSION_KEY_MALFORMED,
+        )
+
+        /** Flat CLOSED native reply codes: the fixed `code` members the
+         *  frozen `floe_linux_workspace_binding(_for_call)` /
+         *  `floe_linux_workspace_session_open` entries and the engine's
+         *  flat wire codes can emit. PARAMETERIZED engine codes (for
+         *  example `workspaceProofRefused:<hook>` or
+         *  `workspaceIO:<stage>:<errno>`) are deliberately NOT enumerated:
+         *  they fall back to the branch token, so no free text ever rides
+         *  the observer. */
+        val NATIVE_REFUSAL_CODES: Set<String> = setOf(
+            "invalidArguments", "epochNotCurrent", "bindingUnavailable",
+            "bindingMalformed", "bindingUnresolved", "jobCallMismatch",
+            "grantNotMinted", "sessionOpenFailed", "workspaceNotConfigured",
+        )
+
+        /** Pure token selection (unit-testable without Android): the
+         *  closed native code when it is an enumerated member, otherwise
+         *  the branch token. Never concatenates, truncates or passes
+         *  unknown text through. */
+        fun refusalToken(branch: String, nativeCode: String?): String =
+            nativeCode?.takeIf { it in NATIVE_REFUSAL_CODES } ?: branch
 
         /** Host-side process check used by tests/diagnostics only; the
          *  authoritative UID/signature gate is `requireCallingPeer` inside

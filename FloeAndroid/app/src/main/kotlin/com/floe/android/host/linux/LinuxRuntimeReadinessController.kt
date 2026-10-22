@@ -676,6 +676,19 @@ class LinuxRuntimeReadinessController(
             "runtime_busy", "workspace_unresolved", "close_retained",
             "mapping_unsynced", "evidence_incomplete", "preflight_aborted",
             "preflight_failed", "runtime_unavailable", "cancelled", "unavailable",
+            // CoreWorkspaceGrant.create closed branch tokens + the flat
+            // native reply codes it may surface (G03-R3 grant refusal
+            // observation): fixed constants enumerated from the actual producers
+            // (CoreWorkspaceGrant.BRANCH_REFUSAL_TOKENS /
+            // NATIVE_REFUSAL_CODES); parameterized engine codes stay out
+            // and fall back to their branch token at the producer.
+            "grant_arguments_invalid", "grant_peer_refused",
+            "grant_binding_unparsable", "grant_binding_refused",
+            "grant_identity_mismatch", "grant_open_unparsable",
+            "grant_open_refused", "grant_session_key_malformed",
+            "invalidArguments", "epochNotCurrent", "bindingUnavailable",
+            "bindingMalformed", "bindingUnresolved", "jobCallMismatch",
+            "grantNotMinted", "sessionOpenFailed", "workspaceNotConfigured",
             // Controller ingest/activation codes.
             "generationStopped", "nativeUnavailable", "nativeUnparsable",
             "epoch_unbound", "peer_unanchored", "peer_anchor_mismatch",

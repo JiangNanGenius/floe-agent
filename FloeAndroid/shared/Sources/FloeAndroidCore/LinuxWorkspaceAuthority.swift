@@ -253,7 +253,12 @@ public enum LinuxWorkspaceAuthority {
     /// Test-only producer cleanup matching G02RuntimeComposition
     /// .resetForTesting's existing ownership-reset discipline: releases
     /// exactly the Swift-side install slot for suite isolation. Production
-    /// never calls it (one accepted generation per process).
+    /// never calls it (one accepted generation per process). The slot is
+    /// ONE install shared with the engine (this file's install binds both
+    /// or neither), so the release is paired: without the engine's
+    /// matching reset, the first-install-wins rule would strand every
+    /// later synthetic-root generation of a host suite with an authority
+    /// that is silently never installed.
     internal static func resetInstallationForTesting() {
         lock.lock()
         installedRootPath = nil
@@ -261,6 +266,7 @@ public enum LinuxWorkspaceAuthority {
         externalGate = nil
         mintedGrants.removeAll()
         lock.unlock()
+        WorkspaceTransferEngine.shared.resetInstallationForTesting()
     }
 
     public static var isInstalled: Bool {
@@ -830,10 +836,32 @@ public func floe_linux_workspace_session_open(_ bindingJson: UnsafePointer<CChar
     }
     let data = Data(bytes: bindingJson, count: Int(bindingLen))
     guard let object = try? JSONSerialization.jsonObject(with: data),
-          let dictionary = object as? [String: Any],
-          let grantID = dictionary["grantID"] as? String,
-          let epochNumber = dictionary["rootEpoch"] as? NSNumber else {
+          let envelope = object as? [String: Any],
+          let grantID = envelope["grantID"] as? String,
+          let epochNumber = envelope["rootEpoch"] as? NSNumber else {
         return workspaceError("bindingMalformed", buffer: outBuffer, capacity: capacity)
+    }
+    // Transport-envelope separation (G03-R3 grant protocol): the mint
+    // entries return the binding scope INSIDE the shared reply envelope
+    // (`{"ok":true, ...scope}`; error bodies reuse `"ok":false` + `"code"`),
+    // and the trusted Kotlin host forwards those exact bytes back here.
+    // `WorkspaceGrantBinding.from(dictionary:)` validates the exact
+    // BINDING-SCOPE field set, so the envelope's status member is separated
+    // before the strict parse: when present it must be an actual boolean
+    // TRUE (`false`, numeric/string/null markers are a malformed envelope,
+    // never a silently accepted success); a raw binding-scope body without
+    // the member stays accepted exactly as before. Separation adds no
+    // trust — the HMAC proof (engine `revalidateLight`), the single-use
+    // `consumeMint`, the live-epoch recheck and the store-re-derived
+    // identity/root below remain the ONLY grant authority: any body with a
+    // foreign scope member is still refused by the exact field set, and an
+    // unminted grantID by `grantNotMinted`.
+    var dictionary = envelope
+    if dictionary["ok"] != nil {
+        guard WorkspaceStrict.boolean(dictionary["ok"]) == true else {
+            return workspaceError("bindingMalformed", buffer: outBuffer, capacity: capacity)
+        }
+        dictionary.removeValue(forKey: "ok")
     }
     guard epochNumber.uint64Value > 0, G02NativeRootEpoch.readback() == epochNumber.uint64Value else {
         return workspaceError("epochNotCurrent", buffer: outBuffer, capacity: capacity)
