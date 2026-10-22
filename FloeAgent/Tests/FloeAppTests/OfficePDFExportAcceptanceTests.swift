@@ -315,8 +315,9 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         do {
             await session.open(source)
             // The failing surface is never a read-only preview: the production
-            // edit handler must have acknowledged the editable session and the
-            // owner-autosave must be idle before Print is meaningful.
+            // edit handler must acknowledge editing and settle its operation
+            // before Print. Actual Notes autosave ownership is qualified by
+            // Main separately in the ordinary App.
             try await wait("editable owner acknowledged") {
                 !session.readOnly && session.documentActionsReady && session.canAct
                     && OfficeStageRecorder.shared.events.contains {
