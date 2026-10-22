@@ -11,7 +11,7 @@
 | [builds/](builds/) | 专项构建记录 | 2 |
 | [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 25 |
 
-当前交付：[1.7.33 (274) 本地核验与交付记录](testflight/BUILD_274_LOCAL_VERIFICATION.md)、[1.7.33 (274) 发布说明](notes/RELEASE_NOTES_1.7.33_BUILD_274.md)、[双语测试说明](testflight/TESTFLIGHT_1.7_WHATS_NEW_BUILD_274.json)；内部 Floe QA 可用，已提交 publictest1 等待 Apple 审核，审核通过是后续独立状态。当前正式 GitHub Release 的档案：[Build 241 发布说明](notes/RELEASE_NOTES_1.7.0_BUILD_241.md)、[历史 TestFlight 记录](testflight/TESTFLIGHT_1.7.0_BETA.md)。
+最近交付：[1.7.45（286）交付记录](testflight/BUILD_286_DELIVERY.md)、[发布说明](notes/RELEASE_NOTES_1.7.45_BUILD_286.md)。[1.7.46（287）本地资格检查](testflight/BUILD_287_LOCAL_VERIFICATION.md)已完成，分发状态仍独立核验。历史构建保留各自的原始交付记录。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 
