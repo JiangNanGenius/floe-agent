@@ -129,6 +129,12 @@ struct OfficePDFExportChoices: Sendable, Equatable {
         case document, actualSize, width, page, exactScale, fitPages
     }
     enum Margins: String, CaseIterable { case document, normal, narrow, wide }
+    /// Printed-gridlines choice. `.document` leaves the workbook's own
+    /// `printOptions` untouched; on/off is written only into the private
+    /// print copy (never cell borders, never the source package). Excel's
+    /// own default prints no gridlines regardless of the screen display,
+    /// so `.document` is the honest default.
+    enum Gridlines: String, CaseIterable { case document, on, off }
     var scope: Scope = .document
     var sheetName = ""
     var sheetContent: SheetContent = .full
@@ -141,6 +147,7 @@ struct OfficePDFExportChoices: Sendable, Equatable {
     var fitPagesWideText = "1"
     var fitPagesTallText = "1"
     var margins: Margins = .document
+    var gridlines: Gridlines = .document
     var pages = ""
 
     /// Builds the pure plan. `sheetTabOrder` is the saved workbook's own tab
@@ -175,11 +182,24 @@ struct OfficePDFExportChoices: Sendable, Equatable {
                 !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             })
             guard !chosen.isEmpty else { throw CocoaError(.coderInvalidValue) }
-            let ordered = sheetTabOrder.filter { chosen.contains($0) }
-            // Every chosen tab must exist in the saved workbook's current
-            // tab order; a stale name is refused instead of silently dropped.
-            guard ordered.count == chosen.count else { throw CocoaError(.coderInvalidValue) }
-            resolvedScope = .sheets(names: ordered)
+            if sheetTabOrder.isEmpty {
+                // The caller cannot supply the saved tab order (the live
+                // adapter path calls this without it). The selection set
+                // stays as requested: the print copy resolves every name
+                // against the actual workbook, prints in tab order and
+                // refuses an unknown tab explicitly, so a stale name still
+                // fails honestly instead of mislabeling the picker.
+                var seen: Set<String> = []
+                resolvedScope = .sheets(names: selectedSheetNames
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && seen.insert($0).inserted })
+            } else {
+                let ordered = sheetTabOrder.filter { chosen.contains($0) }
+                // Every chosen tab must exist in the saved workbook's current
+                // tab order; a stale name is refused instead of silently dropped.
+                guard ordered.count == chosen.count else { throw CocoaError(.coderInvalidValue) }
+                resolvedScope = .sheets(names: ordered)
+            }
         }
         guard let range = OfficePDFPageRange.parse(pages) else {
             throw CocoaError(.coderInvalidValue)
@@ -195,7 +215,8 @@ struct OfficePDFExportChoices: Sendable, Equatable {
         var setup = OfficePDFPageSetup(
             paper: OfficePDFPaper(rawValue: paper.rawValue),
             orientation: OfficePDFOrientation(rawValue: orientation.rawValue),
-            fit: resolvedFit, margins: OfficePDFMargins(rawValue: margins.rawValue))
+            fit: resolvedFit, margins: OfficePDFMargins(rawValue: margins.rawValue),
+            printGridlines: gridlines == .document ? nil : gridlines == .on)
         switch fit {
         case .exactScale:
             guard let percent = Int(scalePercentText.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -300,9 +321,13 @@ struct OfficePDFExportPreviewState: Equatable {
         return true
     }
 
-    /// Clears the fence (error, cancel or a confirmed source change). No
-    /// final action may proceed without a fresh accepted artifact.
+    /// Clears the fence (error, cancel or a confirmed source change) and
+    /// fences the current generation itself: a late completion that still
+    /// carries the pre-invalidate token is refused by `accept` instead of
+    /// publishing stale bytes. No final action may proceed without a fresh
+    /// accepted artifact.
     mutating func invalidate() {
+        generation += 1
         artifact = nil
         choicesForArtifact = nil
     }
@@ -317,12 +342,17 @@ struct OfficePDFExportPreviewState: Equatable {
     }
 }
 
-/// Shared pre-generation options plus the actual generated-PDF preview for
-/// both the app menu and the engine's Print entry. Only supported settings
-/// are shown; the preview, the share sheet and the system print panel all
-/// use one and the same prepared artifact — no second PDF is produced when
-/// the final action is tapped. Errors keep the choices intact and the
-/// preview can be regenerated.
+/// Print/export options with the actual PDF preview inline below them, for
+/// both the app menu and the engine's Print entry. Settings scroll in the
+/// upper region; the dock below always shows the current accepted artifact.
+/// Editing any setting (and opening the sheet) automatically regenerates the
+/// preview serially: one native render at a time, debounced input, a
+/// generation fence that refuses cancelled or stale output, and settings
+/// that stay editable while a render runs. The final Print/Share action
+/// consumes only the artifact matching the current choices and source — no
+/// second PDF is produced when it is tapped. Errors keep the choices intact;
+/// a manual retry appears whenever the preview is missing or stale and no
+/// render is running.
 struct OfficePDFExportOptionsView: View {
     let purpose: OfficePDFExportPurpose
     let prepare: @MainActor () async throws -> OfficePDFExportPreparation
@@ -337,7 +367,9 @@ struct OfficePDFExportOptionsView: View {
     @State private var operation: Task<Void, Never>?
     @State private var preview = OfficePDFExportPreviewState()
     @State private var delivery: OfficePDFPreparedDelivery?
-    @State private var showingPreview = false
+    /// Latest choices waiting for the single serial renderer.
+    @State private var pendingChoices: OfficePDFExportChoices?
+    @State private var debounce: Task<Void, Never>?
     @State private var presentation: OfficePDFDeliveryPresentation?
     @State private var deliveryFailed = false
     @State private var loadAttempt = 0
@@ -346,11 +378,24 @@ struct OfficePDFExportOptionsView: View {
 
     var body: some View {
         NavigationStack {
-            Group {
-                if showingPreview, let artifact = preview.artifact {
-                    previewPage(artifact)
-                } else {
-                    optionsPage
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    settingsForm
+                    Divider()
+                    // The dock keeps the real preview visible at every size;
+                    // height comes from the actual container, never from an
+                    // idiom check, so a later foldable host gets the same
+                    // layout from its available size.
+                    previewDock
+                        .frame(height: min(max(220, proxy.size.height * 0.42), 460))
+                }
+            }
+            .navigationTitle(purpose == .export ? t("导出 PDF", "Export PDF") : t("打印", "Print"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(t("取消", "Cancel")) { abandon() }
+                        .frame(minHeight: 44)
                 }
             }
         }
@@ -369,11 +414,18 @@ struct OfficePDFExportOptionsView: View {
             } catch is CancellationError { }
             catch { self.error = message(for: error) }
             loading = false
+            // The initial preview is automatic: no Generate stage.
+            scheduleAutoPreview(choices)
         }
-        .onDisappear { cancellation.cancel(); operation?.cancel() }
+        .onChange(of: choices) { _, next in scheduleAutoPreview(next) }
+        .onDisappear { abandon() }
         .sheet(item: $presentation, onDismiss: {
             if deliveryFailed {
                 deliveryFailed = false
+                // A generation could not run while the share/print surface
+                // held the leased delivery slot; resume the automatic queue
+                // only now that the session continues on this same source.
+                scheduleAutoPreview(choices)
             } else if delivery != nil {
                 // A completed share/print run ends the export session, as
                 // before: the user already received the final artifact.
@@ -395,9 +447,16 @@ struct OfficePDFExportOptionsView: View {
         }
     }
 
-    // MARK: - Options stage
+    private func abandon() {
+        cancellation.cancel(); operation?.cancel()
+        debounce?.cancel(); pendingChoices = nil
+        preview.invalidate()
+        dismiss()
+    }
 
-    private var optionsPage: some View {
+    // MARK: - Settings (upper scrolling region)
+
+    private var settingsForm: some View {
         Form {
             if loading {
                 HStack { Spacer(); ProgressView(); Spacer() }
@@ -465,17 +524,26 @@ struct OfficePDFExportOptionsView: View {
                         }
                         .accessibilityIdentifier("office.pdf.scaling")
                         if choices.fit == .exactScale {
+                            // The percentage is directly visible and settable
+                            // two ways: slide, or type any exact value.
                             HStack {
                                 TextField(t("缩放百分比", "Scale percent"), text: $choices.scalePercentText)
                                     .keyboardType(.numbersAndPunctuation)
                                     .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
+                                    .frame(width: 72)
+                                    .multilineTextAlignment(.trailing)
+                                    .accessibilityIdentifier("office.pdf.scalePercent")
                                 Text("%")
+                                    .font(.body.monospacedDigit())
                             }
+                            Slider(value: scalePercentSlider,
+                                   in: Double(OfficePDFScale.minimumPercent)...Double(OfficePDFScale.maximumPercent),
+                                   step: 5)
+                                .accessibilityIdentifier("office.pdf.scaleSlider")
                             Text(t("范围 \(OfficePDFScale.minimumPercent)–\(OfficePDFScale.maximumPercent)%。",
                                    "Valid range: \(OfficePDFScale.minimumPercent)–\(OfficePDFScale.maximumPercent)%."))
                                 .font(.footnote).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("office.pdf.scalePercent")
                         }
                         if choices.fit == .fitPages {
                             HStack {
@@ -501,6 +569,12 @@ struct OfficePDFExportOptionsView: View {
                             Text(t("窄", "Narrow")).tag(OfficePDFExportChoices.Margins.narrow)
                             Text(t("宽", "Wide")).tag(OfficePDFExportChoices.Margins.wide)
                         }
+                        Picker(t("打印网格线", "Print gridlines"), selection: $choices.gridlines) {
+                            Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Gridlines.document)
+                            Text(t("打印", "Print")).tag(OfficePDFExportChoices.Gridlines.on)
+                            Text(t("不打印", "Don't print")).tag(OfficePDFExportChoices.Gridlines.off)
+                        }
+                        .accessibilityIdentifier("office.pdf.gridlines")
                     } header: {
                         Text(t("页面设置", "Page setup"))
                     }
@@ -511,21 +585,6 @@ struct OfficePDFExportOptionsView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("office.pdf.pages")
-                    if let artifact = preview.artifact {
-                        // The number below is measured from the actual
-                        // generated PDF, never estimated from the viewport.
-                        Text(t("上次预览：\(artifact.pageCount) 页",
-                               "Last preview: \(artifact.pageCount) pages"))
-                            .font(.footnote).foregroundStyle(.secondary)
-                            .accessibilityIdentifier("office.pdf.measuredPages")
-                    }
-                    if preview.isReady,
-                       preview.isStale(currentChoices: choices) {
-                        Text(t("设置已修改，请重新生成预览。",
-                               "Settings changed. Generate a new preview."))
-                            .font(.footnote).foregroundStyle(.orange)
-                            .accessibilityIdentifier("office.pdf.stale")
-                    }
                 } header: {
                     Text(t("PDF 页码", "PDF pages"))
                 }
@@ -539,100 +598,115 @@ struct OfficePDFExportOptionsView: View {
                     }
                 }
             }
-            if working {
-                HStack { Spacer(); ProgressView(t("正在生成预览…", "Preparing preview…")); Spacer() }
-            }
         }
-        .disabled(working)
-        .navigationTitle(purpose == .export ? t("导出 PDF", "Export PDF") : t("打印", "Print"))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(t("取消", "Cancel")) { cancellation.cancel(); operation?.cancel(); dismiss() }
-                    .frame(minHeight: 44)
-            }
-            ToolbarItem(placement: .confirmationAction) {
-                Button(generateTitle) { generate() }
-                    .fontWeight(.semibold).frame(minHeight: 44)
-                    .disabled(source == nil || working)
-                    .accessibilityIdentifier("office.pdf.generate")
-            }
-        }
+        // The automatic renderer owns one operation at a time; the form
+        // stays editable while a render runs.
+        .disabled(loading)
     }
 
-    private var generateTitle: String {
-        if preview.artifact != nil, preview.isStale(currentChoices: choices) {
-            return t("重新生成预览", "Update Preview")
-        }
-        return preview.artifact != nil
-            ? t("查看预览", "Show Preview")
-            : t("生成预览", "Preview")
+    /// Live percentage for the slider: typing an out-of-range or partial
+    /// value moves the slider from the last valid percentage instead of
+    /// rewriting the user's text mid-edit.
+    private var scalePercentSlider: Binding<Double> {
+        Binding(
+            get: {
+                let parsed = Int(choices.scalePercentText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 100
+                return Double(min(max(parsed, OfficePDFScale.minimumPercent),
+                                  OfficePDFScale.maximumPercent))
+            },
+            set: { choices.scalePercentText = String(Int($0)) })
     }
 
-    // MARK: - Preview stage (the actual generated PDF)
+    // MARK: - Actual preview dock (always visible below the settings)
 
-    private func previewPage(_ artifact: OfficePDFExportPreviewState.Artifact) -> some View {
-        VStack(spacing: 0) {
+    private var previewDock: some View {
+        VStack(spacing: 8) {
+            Group {
+                if let artifact = preview.artifact {
+                    // Re-keyed by the accepted PDF's own digest: the leased
+                    // delivery slot keeps one stable name, so this is what
+                    // forces a real reload of the newly generated bytes.
+                    OfficePDFPreviewSurface(url: artifact.url, pageCount: artifact.pageCount)
+                        .id(artifact.pdfSHA256)
+                        .accessibilityIdentifier("office.pdf.inlinePreview")
+                } else {
+                    Group {
+                        if loading {
+                            ProgressView(t("正在准备预览…", "Preparing preview…"))
+                        } else if working {
+                            ProgressView(t("正在生成预览…", "Preparing preview…"))
+                        } else {
+                            Text(t("暂无预览", "No preview yet"))
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
             if let error {
-                // Print-panel failures land here too: the user stays on the
-                // preview with the same recoverable message and can retry.
+                // Export and print-panel failures land here too: the user
+                // stays on the same recoverable message with the preview
+                // visible and can retry without losing their settings.
                 Text(error)
                     .font(.footnote).foregroundStyle(.red)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16).padding(.top, 8)
             }
-            OfficePDFPreviewSurface(url: artifact.url, pageCount: artifact.pageCount)
-            Divider()
-            VStack(spacing: 10) {
-                HStack {
+            HStack(spacing: 8) {
+                if let artifact = preview.artifact {
+                    // The number below is measured from the actual
+                    // generated PDF, never estimated from the viewport.
                     Text(t("共 \(artifact.pageCount) 页 · \(byteText(artifact.byteCount))",
                            "\(artifact.pageCount) pages · \(byteText(artifact.byteCount))"))
                         .font(.footnote).foregroundStyle(.secondary)
-                        .accessibilityIdentifier("office.pdf.preview.facts")
-                    Spacer()
-                    if preview.isStale(currentChoices: choices) {
-                        Text(t("设置已修改", "Settings changed"))
-                            .font(.footnote).foregroundStyle(.orange)
-                            .accessibilityIdentifier("office.pdf.preview.stale")
-                    }
+                        .accessibilityIdentifier("office.pdf.measuredPages")
                 }
-                HStack(spacing: 12) {
-                    Button(t("修改选项", "Change Options")) { showingPreview = false }
+                if working {
+                    ProgressView().controlSize(.small)
+                    Text(t("正在更新预览…", "Updating preview…"))
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .accessibilityIdentifier("office.pdf.autoupdating")
+                } else if preview.isStale(currentChoices: choices) {
+                    Text(t("设置已修改", "Settings changed"))
+                        .font(.footnote).foregroundStyle(.orange)
+                        .accessibilityIdentifier("office.pdf.stale")
+                }
+                Spacer()
+            }
+            HStack(spacing: 12) {
+                if source != nil, !loading, !working,
+                   preview.artifact == nil || preview.isStale(currentChoices: choices) {
+                    Button(t("更新预览", "Update preview")) { retryNow() }
                         .frame(minHeight: 44)
-                        .accessibilityIdentifier("office.pdf.backToOptions")
-                    Spacer()
-                    Button {
-                        guard let delivery, !preview.isStale(currentChoices: choices) else { return }
-                        presentation = purpose == .export ? .share(delivery) : .print(delivery)
-                    } label: {
-                        Label(purpose == .export
-                              ? t("分享 / 存储 PDF", "Share / Save PDF")
-                              : t("打印", "Print"),
-                              systemImage: purpose == .export ? "square.and.arrow.up" : "printer")
-                            .fontWeight(.semibold)
-                    }
-                    .disabled(preview.isStale(currentChoices: choices) || delivery == nil)
-                    .accessibilityIdentifier(purpose == .export
-                                             ? "office.pdf.finalShare" : "office.pdf.finalPrint")
+                        .accessibilityIdentifier("office.pdf.retry")
+                }
+                Spacer()
+                Button {
+                    guard canFinish, let delivery else { return }
+                    presentation = purpose == .export ? .share(delivery) : .print(delivery)
+                } label: {
+                    Label(purpose == .export
+                          ? t("分享 / 存储 PDF", "Share / Save PDF")
+                          : t("打印", "Print"),
+                          systemImage: purpose == .export ? "square.and.arrow.up" : "printer")
+                        .fontWeight(.semibold)
                 }
                 .frame(minHeight: 44)
-            }
-            .padding(.horizontal, 16).padding(.vertical, 10)
-        }
-        .navigationTitle((source?.displayName ?? "") + ".pdf")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(t("取消", "Cancel")) { dismiss() }
-                    .frame(minHeight: 44)
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button(t("选项", "Options")) { showingPreview = false }
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("office.pdf.options")
+                .disabled(!canFinish)
+                .accessibilityIdentifier(purpose == .export
+                                         ? "office.pdf.finalShare" : "office.pdf.finalPrint")
             }
         }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+    }
+
+    /// The final action consumes only the accepted artifact that matches the
+    /// current choices — never while a newer render is in flight.
+    private var canFinish: Bool {
+        preview.artifact != nil
+            && !preview.isStale(currentChoices: choices)
+            && delivery != nil
+            && !working
     }
 
     private func byteText(_ bytes: Int) -> String {
@@ -653,26 +727,52 @@ struct OfficePDFExportOptionsView: View {
             })
     }
 
-    // MARK: - Generation
+    // MARK: - Automatic generation
 
-    private func generate() {
-        guard let source, !working else { return }
-        if preview.artifact != nil, !preview.isStale(currentChoices: choices),
-           let delivery, showingPreview == false {
-            // Nothing changed since the accepted preview: reopen it instead
-            // of exporting a second identical PDF.
-            self.delivery = delivery
-            showingPreview = true
-            return
+    /// Debounces edits into the single serial queue. The newest snapshot wins:
+    /// a change that lands while a render runs is stored pending and rendered
+    /// as soon as the current generation settles, so overlapping renders are
+    /// structurally impossible (the leased delivery slot and the native host
+    /// each carry exactly one operation at a time).
+    private func scheduleAutoPreview(_ next: OfficePDFExportChoices) {
+        guard source != nil else { return }
+        pendingChoices = next
+        debounce?.cancel()
+        debounce = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(550))
+            guard !Task.isCancelled else { return }
+            debounce = nil
+            pumpPreview()
         }
+    }
+
+    private func pumpPreview() {
+        guard let source, !loading, !working, presentation == nil,
+              let pending = pendingChoices else { return }
+        pendingChoices = nil
+        // Already-current artifact: nothing to regenerate.
+        if preview.artifact != nil, !preview.isStale(currentChoices: pending) { return }
+        // Auto-render complete, valid settings only. Mid-edit input (a
+        // partial range, an out-of-bounds percent) stays silently queued
+        // until the next change instead of spamming an error for every
+        // keystroke; the visible preview just reads as stale.
+        guard (try? pending.plan(activeSheetName: source.activeSheetName,
+                                 sheetTabOrder: source.tabOrder)) != nil else { return }
+        startGeneration(for: pending, source: source)
+    }
+
+    private func startGeneration(for snapshot: OfficePDFExportChoices,
+                                 source: OfficePDFExportPreparation) {
         working = true; error = nil
-        let choicesSnapshot = choices
         let token = preview.beginGeneration()
-        preview.invalidate()
         operation = Task { @MainActor in
-            defer { working = false; operation = nil }
+            defer {
+                working = false; operation = nil
+                // Pick up any change queued while this render ran.
+                pumpPreview()
+            }
             do {
-                let result = try await export(source, choicesSnapshot, cancellation)
+                let result = try await export(source, snapshot, cancellation)
                 try Task.checkCancellation()
                 guard !cancellation.isCancelled else { throw CancellationError() }
                 let accepted = preview.accept(
@@ -680,15 +780,15 @@ struct OfficePDFExportOptionsView: View {
                     artifact: OfficePDFExportPreviewState.Artifact(
                         url: result.url, pageCount: result.pageCount,
                         byteCount: result.byteCount, pdfSHA256: result.pdfSHA256),
-                    choices: choicesSnapshot)
+                    choices: snapshot)
                 guard accepted else {
-                    // A fenced generation's late completion never publishes.
-                    // The shared leased file belongs to the newer accepted
-                    // run; nothing here touches it.
+                    // A fenced generation's late completion never publishes:
+                    // the session was cancelled or the source changed while
+                    // this run was in flight. The lease and directory stay
+                    // owned by the preparation; nothing here touches them.
                     return
                 }
                 delivery = result
-                showingPreview = true
             } catch is CancellationError { }
             catch {
                 if needsSourceRefresh(error) {
@@ -699,6 +799,22 @@ struct OfficePDFExportOptionsView: View {
                 if !cancellation.isCancelled { self.error = message(for: error) }
             }
         }
+    }
+
+    /// Recovery affordance for a failed or missing auto-generation (for
+    /// example a transient busy session). It is not a stage button: the
+    /// normal path never needs it because edits already regenerate.
+    private func retryNow() {
+        guard let source, !working else { return }
+        debounce?.cancel(); debounce = nil
+        if (try? choices.plan(activeSheetName: source.activeSheetName,
+                              sheetTabOrder: source.tabOrder)) == nil {
+            error = t("请检查工作表、单元格区域、缩放和 PDF 页码。",
+                      "Check the sheet, range, scale and PDF pages.")
+            return
+        }
+        pendingChoices = choices
+        pumpPreview()
     }
 
     private func needsSourceRefresh(_ error: Error) -> Bool {

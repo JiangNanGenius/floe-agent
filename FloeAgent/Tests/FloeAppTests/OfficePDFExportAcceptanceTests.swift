@@ -161,6 +161,53 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    func testRealWorkbookPrintGridlinesChangesTheActualRenderedPDF() async throws {
+        let (source, sha, root) = try input()
+        do {
+            let sheets = try OfficeRegionExport.workbookSheets(sourceURL: source, expectedSHA256: sha)
+            let visible = sheets.filter(\.isVisible)
+            XCTAssertFalse(visible.isEmpty)
+            // The user's real reproduction complaint: the printed PDF was a
+            // white page of digits with no cell grid. Same scale for both
+            // runs so the `printOptions@gridLines` member is the ONLY
+            // difference; the first page of each is rastered from the real
+            // PDF with the existing helper. No engine mock anywhere.
+            let plain = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: .init(scope: .sheets(names: visible.map(\.name)),
+                            pageSetup: .init(scalePercent: 100)),
+                ownedDirectory: root))
+            XCTAssertNil(plain.appliedPrintPlan?.appliedPageSetup.printGridlines)
+            let gridded = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: .init(scope: .sheets(names: visible.map(\.name)),
+                            pageSetup: .init(scalePercent: 100, printGridlines: true)),
+                ownedDirectory: root))
+            XCTAssertEqual(gridded.appliedPrintPlan?.appliedPageSetup.printGridlines, true)
+            XCTAssertEqual(gridded.pageCount, plain.pageCount,
+                           "gridlines must not change pagination, only what is drawn")
+            XCTAssertNotEqual(gridded.pdfSHA256, plain.pdfSHA256,
+                              "the printOptions member must reach the actual PDF bytes")
+            let plainPixels = try raster(plain.pdfURL)
+            let griddedPixels = try raster(gridded.pdfURL)
+            XCTAssertGreaterThan(griddedPixels.inked, plainPixels.inked,
+                                 "the printed copy must actually render cell gridlines, not just carry the member")
+            attach(plain.pdfURL, "provided-grid-default.pdf")
+            attach(gridded.pdfURL, "provided-grid-on.pdf")
+            attach(griddedPixels.png, "provided-grid-on-page1.png")
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha,
+                           "the original workbook bytes are never touched")
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: root)
+            }
+            throw error
+        }
+    }
+
     func testNativeToolbarPrintOpensSharedOptionsAndSavedSource() async throws {
         let (source, sha, root) = try input()
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -531,7 +578,7 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         attachWindow(window, "actual-system-print-presenter-app-window")
     }
 
-    private func raster(_ url: URL) throws -> (png: Data, yellow: Int, text: String) {
+    private func raster(_ url: URL) throws -> (png: Data, yellow: Int, inked: Int, text: String) {
         try PDFKitGate.run {
             try withPDFExceptionGuard {
                 let pdf = try XCTUnwrap(PDFDocument(url: url))
@@ -556,10 +603,15 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                     return try XCTUnwrap(UIImage(cgImage: image).pngData())
                 }
                 var yellow = 0
+                var inked = 0
                 for offset in stride(from: 0, to: bytes.count, by: 4) {
                     if bytes[offset] > 230 && bytes[offset + 1] > 180 && bytes[offset + 2] < 220 { yellow += 1 }
+                    // Any pixel that is not (near-)white: the canvas starts
+                    // white, so this counts everything the page actually
+                    // drew — text, borders and, when chosen, cell gridlines.
+                    if bytes[offset] < 240 || bytes[offset + 1] < 240 || bytes[offset + 2] < 240 { inked += 1 }
                 }
-                return (png, yellow, pdf.string ?? "")
+                return (png, yellow, inked, pdf.string ?? "")
             }
         }
     }

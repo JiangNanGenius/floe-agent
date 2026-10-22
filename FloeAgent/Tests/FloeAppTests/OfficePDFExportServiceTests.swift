@@ -100,6 +100,7 @@ struct OfficePDFExportServiceTests {
         #expect(xlsx.sheetScope && xlsx.customPageSetup && xlsx.finalPageRange)
         #expect(xlsx.selectedSheetsScope && xlsx.printAreaScope)
         #expect(xlsx.exactScale && xlsx.fitPageCount)
+        #expect(xlsx.printGridlines)
 
         for ext in ["docx", "pptx"] {
             let capability = try #require(OfficePDFExportService.capability(forExtension: ext))
@@ -107,6 +108,7 @@ struct OfficePDFExportServiceTests {
             #expect(!capability.sheetScope && !capability.customPageSetup)
             #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
             #expect(!capability.exactScale && !capability.fitPageCount)
+            #expect(!capability.printGridlines)
             #expect(capability.finalPageRange)
         }
 
@@ -117,6 +119,7 @@ struct OfficePDFExportServiceTests {
             #expect(!capability.sheetScope && !capability.customPageSetup)
             #expect(!capability.selectedSheetsScope && !capability.printAreaScope)
             #expect(!capability.exactScale && !capability.fitPageCount)
+            #expect(!capability.printGridlines)
             #expect(capability.finalPageRange)
         }
         #expect(OfficePDFExportService.capability(forExtension: "txt") == nil)
@@ -191,6 +194,50 @@ struct OfficePDFExportServiceTests {
         full.sheetName = "Second"
         #expect(try full.plan(activeSheetName: nil, sheetTabOrder: tabOrder).scope
                 == .sheet(name: "Second", cellRange: nil))
+
+        // The printed-gridlines choice maps to the explicit page-setup member;
+        // the document default keeps the workbook's own printOptions.
+        var grid = OfficePDFExportChoices()
+        grid.gridlines = .on
+        let gridPlan = try grid.plan(activeSheetName: nil)
+        #expect(gridPlan.pageSetup.printGridlines == true)
+        #expect(gridPlan.pageSetup.hasOverrides)
+        try gridPlan.validate(forExtension: "xlsx")
+        #expect(throws: OfficePDFPlanError.unsupportedPageSetup(format: "docx")) {
+            try gridPlan.validate(forExtension: "docx")
+        }
+        grid.gridlines = .off
+        #expect(try grid.plan(activeSheetName: nil).pageSetup.printGridlines == false)
+        grid.gridlines = .document
+        #expect(try grid.plan(activeSheetName: nil).pageSetup.isDocumentSettings)
+
+        // A slider-set percentage propagates into the validated plan.
+        var slider = OfficePDFExportChoices()
+        slider.fit = .exactScale
+        slider.scalePercentText = "150"
+        let sliderPlan = try slider.plan(activeSheetName: nil)
+        #expect(sliderPlan.pageSetup.scalePercent == 150)
+        try sliderPlan.validate(forExtension: "xlsx")
+    }
+
+    @Test("selected sheets survive the adapter call without a tab order and still refuse stale names with one")
+    func selectedSheetsWithoutTabOrder() throws {
+        var choices = OfficePDFExportChoices()
+        choices.scope = .selectedSheets
+        // Duplicates and blanks are collapsed; the user's own order stands
+        // when the caller cannot supply the saved tab order.
+        choices.selectedSheetNames = ["Second", "First", "Second", " "]
+        let plan = try choices.plan(activeSheetName: nil)
+        #expect(plan.scope == .sheets(names: ["Second", "First"]))
+        try plan.validate(forExtension: "xlsx")
+
+        // With a supplied tab order the old normalization and stale refusal
+        // stay exactly as before.
+        #expect(throws: (any Error).self) {
+            _ = try choices.plan(activeSheetName: nil, sheetTabOrder: ["Ghost"])
+        }
+        #expect(try choices.plan(activeSheetName: nil, sheetTabOrder: ["First", "Second"]).scope
+                == .sheets(names: ["First", "Second"]))
     }
 
     @Test("invalid new-choice input is refused instead of producing a best-effort plan")
@@ -287,6 +334,40 @@ struct OfficePDFExportServiceTests {
         state.invalidate()
         #expect(state.isReady == false)
         #expect(state.isStale(currentChoices: accepted) == false)
+    }
+
+    @Test("the auto-preview fence refuses superseded, cancelled and post-cancel completions")
+    func autoPreviewFenceRefusesStaleAndCancelledGenerations() throws {
+        var state = OfficePDFExportPreviewState()
+        let artifact = OfficePDFExportPreviewState.Artifact(
+            url: URL(fileURLWithPath: "/tmp/floe-auto-preview.pdf"),
+            pageCount: 1, byteCount: 10,
+            pdfSHA256: String(repeating: "a", count: 64))
+        // A change while a render runs supersedes it: the older completion
+        // can never publish, so two generations never overlap on screen.
+        let superseded = state.beginGeneration()
+        let current = state.beginGeneration()
+        #expect(state.accept(token: superseded, artifact: artifact,
+                              choices: OfficePDFExportChoices()) == false)
+        #expect(state.isReady == false)
+        // Cancel/dismiss fences the run that WAS current: after invalidate a
+        // late completion is refused instead of publishing stale bytes.
+        state.invalidate()
+        #expect(state.accept(token: current, artifact: artifact,
+                              choices: OfficePDFExportChoices()) == false)
+        #expect(state.artifact == nil)
+        // A fresh generation after recovery publishes, and the final-action
+        // gate goes stale again on any visible setting change.
+        let token = state.beginGeneration()
+        let settled = OfficePDFExportChoices()
+        #expect(state.accept(token: token, artifact: artifact, choices: settled) == true)
+        #expect(state.isStale(currentChoices: settled) == false)
+        var changed = settled
+        changed.gridlines = .on
+        #expect(state.isStale(currentChoices: changed) == true)
+        changed = settled
+        changed.scalePercentText = "150"
+        #expect(state.isStale(currentChoices: changed) == true)
     }
 
     // MARK: - Preflight

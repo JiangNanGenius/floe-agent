@@ -83,6 +83,8 @@ struct DocumentExportScope: Sendable, Equatable {
     /// mutually exclusive with `fit` and `scalePercent`.
     var fitPagesWide: Int? = nil
     var fitPagesTall: Int? = nil
+    /// Workbook PDF only: nil preserves the saved print-gridline setting.
+    var printGridlines: Bool? = nil
 }
 
 struct DocumentExportRequest: Sendable, Equatable {
@@ -148,6 +150,7 @@ struct DocumentExportCapabilities: Encodable, Sendable, Equatable {
         /// Workbook only: exact `fitToWidth`×`fitToHeight` page budget.
         var fitPageCountSupported: Bool = false
         var fitPagesMaximum: Int? = nil
+        var printGridlinesSupported: Bool = false
         var supportedPaper: [String]
         var supportedOrientation: [String]
         var supportedFit: [String]
@@ -301,6 +304,7 @@ enum DocumentExportService {
                     fitPageCountSupported: canExportPDF && capability.fitPageCount,
                     fitPagesMaximum: canExportPDF && capability.fitPageCount
                         ? OfficePDFFitPages.maximum : nil,
+                    printGridlinesSupported: canExportPDF && capability.printGridlines,
                     supportedPaper: capability.customPageSetup ? OfficePDFPaper.allCases.map(\.rawValue) : [],
                     supportedOrientation: capability.customPageSetup ? OfficePDFOrientation.allCases.map(\.rawValue) : [],
                     supportedFit: capability.customPageSetup ? OfficePDFFit.allCases.map(\.rawValue) : [],
@@ -697,6 +701,7 @@ enum DocumentExportService {
             }
             plan.pageSetup.margins = value
         }
+        plan.pageSetup.printGridlines = request.scope.printGridlines
         if let scalePercent = request.scope.scalePercent {
             plan.pageSetup.scalePercent = scalePercent
         }
@@ -918,6 +923,7 @@ enum DocumentExportService {
         let hasPageSetup = scope.paper != nil || scope.orientation != nil
             || scope.fit != nil || scope.margins != nil
             || scope.scalePercent != nil || scope.fitPagesWide != nil || scope.fitPagesTall != nil
+            || scope.printGridlines != nil
         guard scope.pageIDs == nil || (isPDF && scope.pages == nil) else {
             throw invalidScope()
         }
@@ -1191,7 +1197,7 @@ enum DocumentExportService {
                 parts.append("For a notebook PDF, pass ordered pageIDs (or pages with 1-based numbers) to export a subset; omit both for every page.")
             }
             if pdf.sheetScopeSupported {
-                parts.append("For a workbook PDF, pass an exact sheet or sheetIndex with an optional canonical cellRange, workbook=true for every visible sheet, sheets=[tab names] for an explicit multi-sheet full-content selection, usePrintArea=true with one sheet to print that sheet's own saved print area (full content when it declares none), optional paper/orientation/margins, exactly one scaling control (fit, scalePercent 10-400, or the paired fitPagesWide/fitPagesTall 1-99 page budget), and pages for the final PDF pages. A cellRange never implies the first sheet.")
+                parts.append("For a workbook PDF, pass an exact sheet or sheetIndex with an optional canonical cellRange, workbook=true for every visible sheet, sheets=[tab names] for an explicit multi-sheet full-content selection, usePrintArea=true with one sheet to print that sheet's own saved print area (full content when it declares none), optional paper/orientation/margins and printGridlines (true/false; omit to preserve the saved setting), exactly one scaling control (fit, scalePercent 10-400, or the paired fitPagesWide/fitPagesTall 1-99 page budget), and pages for the final PDF pages. A cellRange never implies the first sheet.")
             }
             if pdf.finalPageRangeSupported, !pdf.sheetScopeSupported {
                 parts.append("Pass pages (1-based, e.g. 2-4,7) to select final PDF pages.")

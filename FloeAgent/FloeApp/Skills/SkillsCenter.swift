@@ -69,7 +69,26 @@ final class SkillsCenter: ObservableObject {
         } catch { catalogError = FloeL10n.l("skills.skills_center.updates_cannot_be_checked_right_now") }
     }
 
+    /// Truthful origin badge for one persisted row, derived only from the
+    /// install/creator bindings the reviewed write paths own. Shared by the
+    /// hub badge and the official-update gate; never inferred from the ID,
+    /// name or enabled state alone.
+    func origin(of skill: PersistedSkill) -> SkillOrigin {
+        SkillOriginResolver.origin(
+            id: skill.id,
+            sourceURL: skill.sourceURL,
+            rewrittenDigest: skill.rewrittenDigest,
+            rewriteModelID: skill.rewriteModelID,
+            verifiedCatalogContentDigest: catalogPackages[skill.id]?.contentDigest
+        )
+    }
+
     func availableVersion(for skill: PersistedSkill) -> String? {
+        // The signed catalog offers an official update only for rows whose
+        // origin is provably official. A community, locally created or
+        // unprovable row must never be shown (or auto-applied) an
+        // "official" update merely because its ID appears in the catalog.
+        guard origin(of: skill) == .official else { return nil }
         guard let version = catalogPackages[skill.id]?.version,
               version.compare(skill.version, options: .numeric) == .orderedDescending else { return nil }
         return version
