@@ -296,7 +296,7 @@ final class OfficeReadModeSaveTests: XCTestCase {
     /// checkmark invokes it: `app.dispatcher.dispatch('closetablet')` ->
     /// `actionsMap.closetablet` -> `uiManager.enterReadonlyOrClose()`.
     private static let dispatchReadModeAction = #"""
-    (() => {
+    return (() => {
         const app = window.app;
         const map = app && app.map;
         if (!map || typeof map.isEditMode !== 'function')

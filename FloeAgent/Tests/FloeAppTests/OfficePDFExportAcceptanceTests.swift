@@ -410,6 +410,11 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             try await wait("accepted artifact surfaced in the dock (request A)") {
                 Self.accessibilityNodes(in: sheetViewA).contains { $0.identifier == "office.pdf.inlinePreview" }
             }
+            try await wait("measured page count exposed after the preview update") {
+                Self.accessibilityNodes(in: sheetViewA).contains {
+                    $0.identifier == "office.pdf.measuredPages" && $0.label.contains(String(pages))
+                }
+            }
             let measured = Self.accessibilityNodes(in: sheetViewA)
                 .first { $0.identifier == "office.pdf.measuredPages" }
             XCTAssertNotNil(measured, "the dock must show the page count measured from the actual PDF")
@@ -815,6 +820,18 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                                   "the options sheet must be presented before an explicit Cancel")
         let deadline = Date().addingTimeInterval(30)
         while Date() < deadline {
+            // Activation may dispatch asynchronously even when an AX wrapper
+            // reports false. The caller still requires the real cancelButton
+            // breadcrumb, so an unrelated dismissal cannot pass this test.
+            if window.rootViewController?.presentedViewController == nil { return }
+            for item in Self.toolbarButtons(in: sheet) {
+                let title = (item.title ?? item.accessibilityLabel ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if labels.contains(title), let action = item.action,
+                   UIApplication.shared.sendAction(action, to: item.target, from: item, for: nil) {
+                    return
+                }
+            }
             for node in Self.accessibilityNodes(in: sheet.view) where labels.contains(node.label) {
                 if node.activate() { return }
             }
@@ -840,6 +857,27 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         add(attachment)
     }
 
+    /// The system navigation bar exposes a public target/action path even
+    /// when SwiftUI's virtual accessibility tree is not ready yet.
+    private static func toolbarButtons(in root: UIViewController) -> [UIBarButtonItem] {
+        var result: [UIBarButtonItem] = []
+        var visited = Set<ObjectIdentifier>()
+        func walk(_ controller: UIViewController) {
+            guard visited.insert(ObjectIdentifier(controller)).inserted else { return }
+            var items = [controller.navigationItem]
+            if let navigation = controller as? UINavigationController {
+                items += navigation.navigationBar.items ?? []
+            }
+            for item in items {
+                result += item.leftBarButtonItems ?? []
+                result += item.rightBarButtonItems ?? []
+            }
+            for child in controller.children { walk(child) }
+        }
+        walk(root)
+        return result
+    }
+
     private struct HostedAccessibilityNode {
         let identifier: String
         let label: String
@@ -858,29 +896,29 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
     private static func accessibilityNodes(in view: UIView) -> [HostedAccessibilityNode] {
         var nodes: [HostedAccessibilityNode] = []
         var visited = Set<ObjectIdentifier>()
-        func walk(_ node: UIView, depth: Int) {
-            guard depth < 64, visited.insert(ObjectIdentifier(node)).inserted else { return }
+        func walk(_ value: Any, depth: Int) {
+            guard depth < 64, visited.count < 4_096,
+                  let node = value as? NSObject,
+                  visited.insert(ObjectIdentifier(node)).inserted else { return }
+            // SwiftUI vends virtual containers as well as UIViews. Traverse
+            // their public container protocol recursively, not just one level.
             let count = node.accessibilityElementCount()
-            if node.isAccessibilityElement || node.accessibilityIdentifier != nil {
+            let identifier = (node as? UIAccessibilityIdentification)?.accessibilityIdentifier ?? ""
+            if node.isAccessibilityElement || !identifier.isEmpty {
+                let label = node.accessibilityLabel ?? node.accessibilityValue ?? ""
                 nodes.append(HostedAccessibilityNode(
-                    identifier: node.accessibilityIdentifier ?? "",
-                    label: node.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                    identifier: identifier,
+                    label: label.trimmingCharacters(in: .whitespacesAndNewlines),
                     activate: { node.accessibilityActivate() }))
             }
             var elements = node.accessibilityElements ?? []
             if elements.isEmpty, count != NSNotFound, count > 0, count <= 4_096 {
                 elements = (0..<count).compactMap { node.accessibilityElement(at: $0) }
             }
-            for element in elements {
-                // Only the accessibility wrappers are read here; real UIView
-                // elements are covered by the subview walk below.
-                guard let element = element as? UIAccessibilityElement else { continue }
-                nodes.append(HostedAccessibilityNode(
-                    identifier: element.accessibilityIdentifier ?? "",
-                    label: element.accessibilityLabel?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                    activate: { element.accessibilityActivate() }))
+            for element in elements { walk(element, depth: depth + 1) }
+            if let view = node as? UIView {
+                for sub in view.subviews { walk(sub, depth: depth + 1) }
             }
-            for sub in node.subviews { walk(sub, depth: depth + 1) }
         }
         walk(view, depth: 0)
         return nodes
