@@ -147,7 +147,7 @@ final class OfficeSaveReceipt {
 /// engine answer. The deadline is an unstructured `Task`, never a child the
 /// caller would keep waiting on.
 @MainActor
-private final class OfficeBoundedValue<Value> {
+private final class OfficeBoundedValue<Value: Sendable> {
     private let fallback: Value
     private var continuation: CheckedContinuation<Value, Never>?
     private var settledResult: Value?
@@ -1966,7 +1966,7 @@ final class OfficeFileSession: ObservableObject {
     }
     #endif
 
-    private struct PermissionProbe {
+    private struct PermissionProbe: Sendable {
         let backendReadOnly: Bool?
         let permission: String?
         let isEditMode: Bool?
