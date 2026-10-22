@@ -35,6 +35,16 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
     private val census: ProcCensus
     private val cancelPreparation = AtomicBoolean()
     private val installID = AtomicReference<String?>()
+    // G03-R3 runtime-start repair: the EXACT pending shell.start wire request
+    // id currently executing inside start() on the owned control thread — the
+    // SAME id the kernel tracks as its pendingShellID (the pump dispatches
+    // shell.start with its own control UUID as the wire request id, and the
+    // session-less stop carries that identical UUID). Set in the execute()
+    // dispatch and cleared on return. A session-less stop is
+    // validated ONLY against this exact id (target-scoped; never a broad
+    // runtime cancel), so it can arm cancelPreparation while a start is still
+    // executing before any session id has ever surfaced.
+    private val pendingShellStartID = AtomicReference<String?>()
     // R3 first-use preflight ownership (kernel admission already serializes
     // this with install/shell work through hasOwnedWork()).
     private val activePreflightID = AtomicReference<String?>()
@@ -64,6 +74,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                           val workspace: RuntimeWorkspaceSession, val imported: WorkspaceImportReceipt) {
         val terminal = AtomicReference<WorkloadTerminal?>()
         val finished = AtomicBoolean()
+        @Volatile var authorityBound = false
         @Volatile var nativeReleaseFailed = false
         @Volatile var cleanupDeferred = false
         @Volatile var workspaceResult: JSONObject? = null
@@ -119,7 +130,18 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         "install.start" -> install(request, cancelled)
         "install.status" -> { fields(request.payload, emptySet()); JSONObject(progress.get().toString()) }
         "environment.list" -> { fields(request.payload, emptySet()); configure(); authority.list() }
-        "shell.start" -> start(request.payload, checkNotNull(workspaceGrant), cancelled)
+        "shell.start" -> {
+            // G03-R3 runtime-start repair: expose the EXACT in-flight start
+            // request id for session-less cancellation validation for the
+            // whole duration of start() (cleared on return, whether the
+            // session was Accepted, Abandoned or thrown).
+            pendingShellStartID.set(request.id)
+            try {
+                start(request.payload, checkNotNull(workspaceGrant), cancelled)
+            } finally {
+                pendingShellStartID.compareAndSet(request.id, null)
+            }
+        }
         "workspace.preflight" -> preflight(request, checkNotNull(workspaceGrant), cancelled)
         "shell.poll" -> poll(request.payload)
         "shell.input" -> input(request.payload)
@@ -242,6 +264,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         var preparedScratch: File? = null
         var preparedWorkspace: RuntimeWorkspaceSession? = null
         var safeToAbandon = true
+        val terminal = AtomicReference<WorkloadTerminal?>()
         try {
             val descriptor = lease.descriptor
             val writable = ownedPath(descriptor.getString("writableLayer"))
@@ -282,7 +305,6 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                     stdinDelivery = if (stdinDelivery == "pipe") StdinDelivery.OneShotPipe
                     else StdinDelivery.PtyInput)
             RuntimeExecutionTrace.mark(Stage.OPS_SPEC_READY)
-            val terminal = AtomicReference<WorkloadTerminal?>()
             RuntimeExecutionTrace.mark(Stage.OPS_SPAWN)
             when (val outcome = supervisor.start(spec, LeaseToken(lease.id, descriptor.getString("runID"))) { terminal.set(it) }) {
                 is StartOutcome.Refused -> error("Linux process was not admitted")
@@ -298,9 +320,12 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                     child = Running(lease, outcome.job, SystemClock.elapsedRealtime() + (seconds * 1000).toLong(), scratch,
                         workspaceSession, imported)
                     running.set(child)
-                    authority.started(lease, outcome.job.rootBirth)
-                    RuntimeExecutionTrace.mark(Stage.OPS_BIND_STARTED)
                     val owned = checkNotNull(child)
+                    synchronized(owned) {
+                        authority.started(lease, outcome.job.rootBirth)
+                        owned.authorityBound = true
+                    }
+                    RuntimeExecutionTrace.mark(Stage.OPS_BIND_STARTED)
                     pumpExecutor.execute {
                         RuntimeExecutionTrace.mark(Stage.OPS_PUMP_ENTER)
                         try {
@@ -318,6 +343,11 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                             RuntimeExecutionTrace.mark(Stage.OPS_PUMP_EXCEPTION)
                             owned.nativeReleaseFailed = true
                         }
+                        // G03-R3 runtime-start repair — the drain-loop break
+                        // and a failed release attempt are no longer an
+                        // ownership dead end. Retry ONLY the designed proof
+                        // and release entries until the REAL release lands.
+                        reconcileUntilReleased(owned, terminal)
                     }
                     return JSONObject().put("sessionID", lease.id).put("environmentID", lease.environmentID)
                 }
@@ -334,12 +364,14 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             else child?.let { owned ->
                 // If native binding failed after spawn, stop before attempting
                 // any hand-back. Unknown stop keeps the original lease held.
-                val stopped = owned.job.requestCancel("start-binding-failed")
-                if (stopped is CancelOutcome.Terminated) {
-                    owned.terminal.set(stopped.terminal)
-                    // Re-issue exact binding before completion; both are idempotent.
-                    runCatching { authority.started(lease, owned.job.rootBirth); finish(owned) }
-                }
+                cancelPreparation.set(true)
+                val stopped = runCatching { owned.job.requestCancel("start-binding-failed") }.getOrNull()
+                if (stopped is CancelOutcome.Terminated) owned.terminal.set(stopped.terminal)
+                // The pump may never have been admitted. This control thread
+                // retains the same real child/lease until retryable proof and
+                // authority hand-back succeed; the independent stop lane is
+                // still available. Never replay the original command.
+                reconcileUntilReleased(owned, terminal)
             }
             throw failure
         }
@@ -379,6 +411,12 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                 is WorkloadTerminal.Completed -> { exit = terminal.exit; proof = terminal.quiescence }
                 is WorkloadTerminal.Cancelled -> { exit = terminal.exit; proof = terminal.quiescence }
                 is WorkloadTerminal.SpawnAbandoned -> return
+            }
+            if (!owned.authorityBound) {
+                // A lost binding reply is retryable with the exact measured
+                // root birth. No export/completion can precede that binding.
+                authority.started(owned.lease, owned.job.rootBirth)
+                owned.authorityBound = true
             }
             if (owned.workspaceResult == null) {
                 // The actual whole-UID stop proof above precedes file export.
@@ -456,6 +494,30 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
     private fun input(payload: JSONObject): JSONObject {
         fields(payload, setOf("sessionID", "inputBase64"))
         val owned = matching(payload)
+        if (running.get() !== owned) {
+            // G03-R3 fast-exit stdin contract: the trusted one-shot backend
+            // ALWAYS commands exactly one trailing EMPTY shell.input EOF
+            // page after the start reply (including nil stdin); a fast
+            // command can settle the session before that page is executed.
+            // The lifecycle already closed the write end at the REAL
+            // terminal, so the honest answer is the SAME rejected EOF the
+            // running engine reports — bound to the actual terminal facts —
+            // never a fabricated accepted delivery. A NON-empty input page
+            // to a finished session still refuses (no data ever crosses
+            // after terminal).
+            val encoded = payload.getString("inputBase64")
+            require(encoded.isEmpty()) { "Session already finished" }
+            val terminal = owned.terminal.get()
+            return JSONObject().put("sessionID", owned.lease.id).put("acceptedBytes", 0)
+                .put("stdinEof", "rejected").put("reason", "sessionReleased")
+                .put("leaseReleased", owned.finished.get())
+                .also { page ->
+                    (terminal as? WorkloadTerminal.Completed)?.let { page.put("exitCode", it.exit.exitCode) }
+                    (terminal as? WorkloadTerminal.Cancelled)?.let {
+                        page.put("cancelled", true).put("stopReason", it.reason)
+                    }
+                }
+        }
         check(running.get() === owned)
         val encoded = payload.getString("inputBase64")
         require(encoded.length <= 22_000)
@@ -527,8 +589,29 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             fields(request.payload, setOf("requestID"))
             require(request.payload.getString("requestID") == activePreflightID.get())
         } else {
-            fields(request.payload, setOf("sessionID"))
-            require(request.payload.getString("sessionID") == heldLease.get()?.id)
+            // G03-R3 runtime-start repair — exactly TWO target-scoped
+            // shell.cancel grammars, decided by ONE pure function:
+            //  * started session (unchanged primary path): the exact
+            //    {sessionID} equal to the held lease id;
+            //  * pending start (additive): the exact {requestID} equal to
+            //    this service's own in-flight shell.start wire id — the
+            //    same id RuntimeKernel already matched against its
+            //    pendingShellID before routing this urgent stop. The old
+            //    single-grammar check threw HERE (before stopOwnedWork's
+            //    cancelPreparation.set(true)) and the stopExecutor
+            //    swallowed it, so a user stop could never cancel a start
+            //    still running recover/materialize/import — candidate 05's
+            //    notification Stop retained ownership indefinitely.
+            // Any other shape or identity mismatch still refuses, and
+            // neither grammar ever touches unrelated work.
+            val scope = shellCancelScope(
+                keys = request.payload.keys().asSequence().toSet(),
+                sessionID = request.payload.optString("sessionID").takeIf { it.isNotEmpty() },
+                requestID = request.payload.optString("requestID").takeIf { it.isNotEmpty() },
+                heldLeaseID = heldLease.get()?.id,
+                pendingStartID = pendingShellStartID.get(),
+            )
+            require(scope != null) { "Cancellation does not address owned work" }
         }
     }
 
@@ -555,6 +638,73 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         authority.cancel(owned.lease)
         val cancelled = supervisor.cancelActive(owned.job.lease, "user-stop")
         if (cancelled is CancelOutcome.Terminated) { owned.terminal.set(cancelled.terminal); finish(owned) }
+        else if (cancelled is CancelOutcome.Rejected && owned.job.stateNow == JobState.TERMINATED) {
+            // G03-R3 runtime-start repair: the job already reached its REAL
+            // terminal but an earlier release attempt failed (the frozen
+            // native lease contract keeps a failed hand-back RETRYABLE, the
+            // entry retained). A user stop retries the actual release;
+            // finish() is idempotent and its export result stays cached.
+            // Nothing is fabricated and a still-failing release keeps every
+            // ownership exactly as claimed.
+            runCatching { finish(owned) }
+        }
+    }
+
+    /**
+     * G03-R3 runtime-start repair — bounded OWNED release reconciliation.
+     * The drain loop above ends on Blocked/QuiescePending/ReadFailed, and
+     * finish() then either returned WITHOUT a terminal (proof pending: root
+     * reap or whole-runtime-UID census not Proven yet) or threw at the
+     * retryable authority hand-back. Nothing retried those DESIGNED entries
+     * (SupervisedPtyJob.settleLease had no production caller at all), so a
+     * transient proof miss became a permanent held lease: every later
+     * shell.start refused as busy (exit=125 runtime_not_started, candidate
+     * 05) and the Core foreground ownership kept the wake lock.
+     *
+     * This loop runs on the service's own pump thread and retries ONLY the
+     * real completion paths: settleLease re-runs the missing terminal proof
+     * (root reap re-poll + whole-runtime-UID census), and finish() re-runs
+     * the export-cached authority completion, which the frozen native lease
+     * contract keeps retryable. Invariants: a Pending settlement keeps
+     * everything exactly as claimed; a release is NEVER granted on a budget,
+     * never fabricated from an absent child at one sample, and the engine
+     * deadline stays enforced here even after a transport read failure
+     * (requestCancel performs the real stop + whole-UID proof). The loop
+     * exits when the real release lands (finished) or when this session no
+     * longer owns the running slot; it never bypasses quiescence, ownership,
+     * cancellation or drain ordering.
+     */
+    private fun reconcileUntilReleased(owned: Running,
+                                       terminal: AtomicReference<WorkloadTerminal?>) {
+        while (!owned.finished.get() && (running.get() === owned || owned.terminal.get() != null)) {
+            val action = nextReconcileAction(
+                state = owned.job.stateNow,
+                finished = owned.finished.get(),
+                terminalPresent = owned.terminal.get() != null || terminal.get() != null,
+                deadlinePassed = SystemClock.elapsedRealtime() >= owned.deadline,
+                stopRequested = cancelPreparation.get(),
+            )
+            when (action) {
+                ReconcileAction.DONE -> return
+                ReconcileAction.REQUEST_STOP -> runCatching { owned.job.requestCancel("user-stop") }
+                ReconcileAction.ENFORCE_DEADLINE -> runCatching { owned.job.requestCancel("timeout") }
+                ReconcileAction.SETTLE -> {
+                    val settlement = runCatching { supervisor.settleLease(owned.job.lease) }.getOrNull()
+                    if (settlement is LeaseSettlement.Released) {
+                        if (owned.terminal.get() == null) owned.terminal.set(terminal.get() ?: settlement.terminal)
+                        runCatching { finish(owned) }
+                    }
+                }
+                ReconcileAction.RETRY_FINISH -> {
+                    if (owned.terminal.get() == null) owned.terminal.set(terminal.get())
+                    runCatching { finish(owned) }
+                }
+                ReconcileAction.WAIT -> Unit
+            }
+            if (owned.finished.get()) return
+            try { Thread.sleep(1_000) }
+            catch (_: InterruptedException) { Thread.currentThread().interrupt(); return }
+        }
     }
 
     private fun ownedPath(path: String): File {
@@ -590,4 +740,56 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                 }
             })
         }.isSuccess // Failed ownership/IO checks retain only this marker-owned scratch.
+
+    internal enum class ReconcileAction { DONE, REQUEST_STOP, ENFORCE_DEADLINE, SETTLE, RETRY_FINISH, WAIT }
+
+    companion object {
+        /**
+         * Pure shell.cancel scope decision (no Android, no org.json): a
+         * non-null answer means the cancellation addresses EXACTLY this
+         * service's own owned work. "session" is the unchanged started
+         * grammar; "pendingStart" is the additive session-less grammar
+         * bound to the exact in-flight start request id (the same id the
+         * kernel validated before routing the urgent stop — target-scoped,
+         * never a broad runtime cancel). Anything else refuses.
+         */
+        internal fun shellCancelScope(
+            keys: Set<String>,
+            sessionID: String?,
+            requestID: String?,
+            heldLeaseID: String?,
+            pendingStartID: String?,
+        ): String? = when {
+            keys == setOf("sessionID") ->
+                if (sessionID != null && sessionID == heldLeaseID) "session" else null
+            keys == setOf("requestID") ->
+                if (requestID != null && requestID == pendingStartID) "pendingStart" else null
+            else -> null
+        }
+
+        /**
+         * Pure next-step decision for the bounded owned release
+         * reconciliation. Only real, already-designed completion entries are
+         * chosen; WAIT/SETTLE never release anything themselves — the
+         * release happens only through settleLease's proven terminal plus
+         * finish()'s authority hand-back success (finished).
+         */
+        internal fun nextReconcileAction(
+            state: JobState,
+            finished: Boolean,
+            terminalPresent: Boolean,
+            deadlinePassed: Boolean,
+            stopRequested: Boolean = false,
+        ): ReconcileAction = when {
+            finished -> ReconcileAction.DONE
+            state == JobState.TERMINATED ->
+                if (terminalPresent) ReconcileAction.RETRY_FINISH else ReconcileAction.SETTLE
+            state == JobState.LEASE_RETAINED ->
+                if (terminalPresent) ReconcileAction.RETRY_FINISH else ReconcileAction.SETTLE
+            state == JobState.RUNNING ->
+                if (stopRequested) ReconcileAction.REQUEST_STOP
+                else if (deadlinePassed) ReconcileAction.ENFORCE_DEADLINE else ReconcileAction.WAIT
+            else -> ReconcileAction.WAIT // CANCELLING: the stop owner converges
+        }
+    }
 }

@@ -212,10 +212,43 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                 } finally { client.close() }
                 return
             }
+            if (owner == null && operation == "shell.input" &&
+                payload.keys().asSequence().toSet() == setOf("sessionID", "inputBase64") &&
+                isEofInputPage(payload.getString("inputBase64"))
+            ) {
+                // G03-R3 fast-exit stdin contract: the trusted one-shot
+                // backend ALWAYS commands exactly one trailing EMPTY
+                // shell.input EOF page after the start reply, including nil
+                // stdin. A fast command can settle and retire the session
+                // BEFORE that page is claimed (candidate 06's ~2s lifecycle).
+                // The write-end close then already belongs to the REAL
+                // terminal lifecycle, so the honest answer is the SAME
+                // REJECTED EOF the running engine reports — bound to the
+                // recorded actual terminal — never a fabricated accepted
+                // delivery, and NEVER any data written to a finished
+                // session. A NON-empty input page here stays refused exactly
+                // as before (checkNotNull(owner) below).
+                val terminal = synchronized(terminals) { terminals.values.lastOrNull { it.epoch == acceptedEpoch && it.sessionID == sessionID } }
+                checkNotNull(terminal)
+                val proof = JSONObject(terminal.proof)
+                val ack = JSONObject().put("sessionID", sessionID).put("acceptedBytes", 0)
+                    .put("stdinEof", "rejected").put("reason", "sessionReleased")
+                for (key in listOf("leaseReleased", "cancelled", "stopReason", "exitCode", "termSig", "waitErrno")) {
+                    if (proof.has(key)) ack.put(key, proof.get(key))
+                }
+                complete(claim, 0, ack)
+                return
+            }
             checkNotNull(owner)
             val response = if (operation == "shell.cancel") {
                 owner.requestStop(); JSONObject().put("state", "stop_requested")
-            } else awaitReceipt(owner, owner.exchange(operation, payload))
+            } else {
+                val first = owner.exchange(operation, payload)
+                // Poll is an immediate memory snapshot; input/resize are
+                // queued controls. Route by the operation, never by a
+                // process state that overlaps the receipt vocabulary.
+                if (requiresControlReceipt(operation)) awaitReceipt(owner, first) else first
+            }
             if (operation == "shell.poll" && response.optBoolean("leaseReleased")) {
                 val proof = owner.finish(terminalProof(response))
                 copyWorkspaceProof(response, proof)
@@ -784,6 +817,18 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
     companion object {
         internal val ENVIRONMENT_ID = Regex("^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+
+        internal fun requiresControlReceipt(operation: String): Boolean {
+            require(operation in setOf("shell.poll", "shell.input", "shell.resize"))
+            return operation != "shell.poll"
+        }
+
+        /** The canonical one-shot pipe EOF command page: EMPTY base64 stdin.
+         * Only this shape may receive the terminal-bound rejected EOF ack
+         * after a fast session retires; any other input page to an unknown
+         * owner stays refused exactly as before. */
+        internal fun isEofInputPage(inputBase64: String): Boolean = inputBase64.isEmpty()
+
         /** Own-request cancellations: settle + typed "cancelled"; they do NOT
          *  invalidate the generation's other facts or unrelated work. */
         internal val CANCEL_CODES = setOf("cancelled", "preflight_cancelled", "caller_stopped")
