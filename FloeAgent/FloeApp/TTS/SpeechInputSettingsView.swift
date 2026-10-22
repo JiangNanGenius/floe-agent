@@ -75,7 +75,7 @@ private struct EnhancedRecognitionModelView: View {
                     Label("voice.local.installed", systemImage: "checkmark.circle")
                     Button("voice.input.use_model") { method = VoiceRecognitionPreferences.Method.enhanced.rawValue }
                 } else {
-                    Button("voice.local.download", systemImage: "arrow.down.circle") { Task { await WhisperModelStore.shared.beginInstallation() } }
+                    Button("voice.input.model.download", systemImage: "arrow.down.circle") { failure = nil; Task { await WhisperModelStore.shared.beginInstallation() } }
                 }
                 NavigationLink("voice.local.source") {
                     Form {
@@ -87,14 +87,14 @@ private struct EnhancedRecognitionModelView: View {
             }
             if installed {
                 Section {
-                    Button("voice.local.remove", role: .destructive) {
+                    Button("voice.input.model.remove", role: .destructive) {
                         Task {
                             do {
                                 try await WhisperModelStore.shared.remove()
                                 installed = false
                                 if method == VoiceRecognitionPreferences.Method.enhanced.rawValue { method = VoiceRecognitionPreferences.Method.automatic.rawValue }
-                            } catch WhisperModelStore.Failure.busy { failure = "voice.local.error.busy" }
-                            catch { failure = "voice.local.error.remove" }
+                            } catch WhisperModelStore.Failure.busy { failure = "voice.input.model.error.busy" }
+                            catch { failure = "voice.input.model.error.remove" }
                         }
                     }
                 }
@@ -106,7 +106,7 @@ private struct EnhancedRecognitionModelView: View {
                     installed = await WhisperModelStore.shared.isInstalled()
                     let state = await WhisperModelStore.shared.installationState()
                     running = state.running; completed = state.completed; total = state.total
-                    if state.error != nil { failure = "voice.local.error.install" }
+                    if state.error != nil { failure = "voice.input.model.error.install" }
                     do { try await Task.sleep(for: .seconds(1)) } catch { return }
                 }
             }

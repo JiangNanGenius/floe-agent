@@ -10,7 +10,7 @@ import FloeProviders
 final class TTSSettingsService: ObservableObject {
     @Published private(set) var snapshot: TTSSettingsSnapshot
     private let defaults: UserDefaults
-    private let keychain: KeychainStore
+    private let keychain: any KeychainProbeStore
     private let modelStore: LocalSpeechModelStore
     private let resolveConnection: @MainActor (UUID) async throws -> String
     private static let storageKey = "voice.output.settings.v1"
@@ -23,7 +23,7 @@ final class TTSSettingsService: ObservableObject {
     private var profiles: [String: TTSSettingsSnapshot] = [:]
 
     init(defaults: UserDefaults = .standard,
-         keychain: KeychainStore = KeychainStore(service: "org.floeagent.ios.tts", synchronizable: false),
+         keychain: any KeychainProbeStore = KeychainStore(service: "org.floeagent.ios.tts", synchronizable: false),
          resolveConnection: @escaping @MainActor (UUID) async throws -> String = { _ in throw TTSSettingsFailure.missingCredential },
          modelStore: LocalSpeechModelStore = .shared) {
         self.defaults = defaults

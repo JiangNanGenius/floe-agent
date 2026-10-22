@@ -248,7 +248,8 @@ actor LocalSpeechModelStore {
     }
 
     private func safeComponent(_ value: String) -> Bool {
-        !value.isEmpty && value.utf8.count <= 80 && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+        !value.isEmpty && !value.hasPrefix(".") && value.utf8.count <= 80
+            && value.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".") }
     }
     private func safePath(_ value: String) -> Bool {
         !value.isEmpty && !value.hasPrefix("/") && !value.contains("\\") && value.split(separator: "/", omittingEmptySubsequences: false).allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }

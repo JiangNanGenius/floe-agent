@@ -44,6 +44,21 @@ struct ChatPreferenceStoreTests {
         #expect(Set(columns).isSuperset(of: ["conversation_id", "preferences_json", "updated_at"]))
     }
 
+    @Test("an already-applied prerelease migration repairs its version without losing preferences")
+    func repairsPrereleaseVersionWithoutReplayingMigration() async throws {
+        let (manager, _) = try await makeDatabase()
+        let conversationID = try await makeConversation(manager)
+        let store = SQLiteChatPreferenceStore(database: manager)
+        let saved = ChatConversationPreferences(chatReasoning: .maximum, preferredExecutionMode: "chat")
+        try await store.savePreferences(saved, conversationID: conversationID)
+        let appliedBefore = try await manager.appliedMigrations()
+        try await manager.writer { db in try db.execute(sql: "PRAGMA user_version = 49") }
+        try await manager.migrate()
+        #expect(try await manager.userVersion() == DatabaseManager.currentSchemaVersion)
+        #expect(try await manager.appliedMigrations() == appliedBefore)
+        #expect(try await store.preferences(conversationID: conversationID) == saved)
+    }
+
     @Test("an absent row answers no snapshot and the effective view defaults to fast")
     func absentRowDefaultsToFast() async throws {
         let (manager, _) = try await makeDatabase()

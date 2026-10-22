@@ -2078,6 +2078,21 @@ public actor FloeAgentRuntime {
                 }
             )
         }
+        // Fast chat presents EXACTLY its frozen projection. The ceiling is a
+        // handful of descriptors (the public web trio plus this conversation's
+        // bound attachment reads), so goal-text matching, the large-task
+        // schema budget and eviction notices must never hide an actually
+        // usable ceiling tool — for example `web.fetch` in a chat whose goal
+        // never mentions the web — behind a tools.list round-trip. Pinning
+        // the projected names keeps `toolSchemas`, `tools.list` and
+        // `allToolNames` on the same frozen set the presentation projection
+        // already decided. Task and temporary runs keep progressive discovery.
+        if configuration.chatFastMode {
+            let projectedNames = catalogDescriptors.map(\.name)
+            discoveredToolNames.formUnion(projectedNames)
+            discoveryPriority = projectedNames
+                + discoveryPriority.filter { !projectedNames.contains($0) }
+        }
         // Restore recently used groups without replaying a discovery call.
         let recentGroups = Set(executionLedger.entries.suffix(6).map { ToolDiscovery.group($0.toolName) })
         catalogDescriptors = catalogDescriptors.filter {

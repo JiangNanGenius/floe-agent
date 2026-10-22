@@ -848,6 +848,22 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             round?.modelCompleted = true
             round?.fullText = full
             if answerText.isEmpty { answerText = full }
+            // MODEL-DONE TRUTH: the durable confirmed body has arrived, so
+            // "waiting for the model" is over the instant this event lands.
+            // The canonical confirmed-final-body-only driver may carry its
+            // FIRST content in this very event (no prior `.answerUpdated` /
+            // `.finalAnswerUpdated`): without this transition the session
+            // presents `.waitingModel` — "waiting" copy and the mic-driven
+            // waiting orb (VoiceOrbView) — while the answer is queued or
+            // even audibly playing, and a barge false-start resume would
+            // keep presenting that wrong state. A synchronous driver
+            // completion still inside submit's handoff is the same truth
+            // (submit only settles to waitingModel when still submitting).
+            // Content-free completion stays put: the round-finish path
+            // settles it to listening.
+            if state == .waitingModel || state == .submitting, !answerText.isEmpty {
+                state = .answering
+            }
             commitFinalSpeechBody(full)
             settleAfterModelCompletion(token)
         case .failed(let message):
@@ -1125,6 +1141,11 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         guard var r = round, frames >= r.playedFrames else { return }
         r.playedFrames = frames
         round = r
+        // STATE FOLLOWS ACTUAL PLAYBACK: this round's own audio left the
+        // speaker, so the assistant is answering — never present "waiting
+        // for model" while confirmed output is audibly playing, whatever
+        // event-order gap a pluggable driver seam may leave above.
+        if frames > 0, state == .waitingModel { state = .answering }
         recheckPlaybackProgress()
     }
 

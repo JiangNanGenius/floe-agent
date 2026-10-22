@@ -78,9 +78,6 @@ struct GeneralSettingsView: View {
                     get: { center.verifyFinalAnswer },
                     set: { value in Task { await center.setVerifyFinalAnswer(value) } }
                 ))
-                Text("settings.general_settings_view.when_on_an_extra_self_check")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             if let contentUpdates {

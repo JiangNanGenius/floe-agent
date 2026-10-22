@@ -85,7 +85,7 @@ struct HomeLaunchpadView: View {
             // available height (rotation, split, dynamic type).
             .environment(\.composerHeightBudget, proxy.size.height)
         }
-        .navigationTitle(LocalizedStringKey(designStart ? "design.conversation.start_title" : "workbench.new_task"))
+        .navigationTitle(LocalizedStringKey(launchTitleKey))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.load()
@@ -160,7 +160,7 @@ struct HomeLaunchpadView: View {
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
 
-            Text(LocalizedStringKey(designStart ? "design.conversation.start_prompt" : "home.welcome"))
+            Text(LocalizedStringKey(launchPromptKey))
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
@@ -169,6 +169,16 @@ struct HomeLaunchpadView: View {
     }
 
     // MARK: - Composer (centered, prominent)
+
+    private var launchTitleKey: String {
+        if designStart { return "design.conversation.start_title" }
+        return viewModel.agentMode == .chat ? "chat.new.title" : "workbench.new_task"
+    }
+
+    private var launchPromptKey: String {
+        if designStart { return "design.conversation.start_prompt" }
+        return viewModel.agentMode == .chat ? "chat.new.prompt" : "home.welcome"
+    }
 
     private var composer: some View {
         VStack(spacing: 0) {

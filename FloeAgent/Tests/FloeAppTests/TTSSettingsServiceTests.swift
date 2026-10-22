@@ -3,6 +3,7 @@ import XCTest
 import CryptoKit
 import FloeCore
 import FloeSecurity
+import Synchronization
 @testable import FloeApp
 
 @MainActor
@@ -11,7 +12,7 @@ final class TTSSettingsServiceTests: XCTestCase {
         let name = "tts-settings-test." + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         defer { defaults.removePersistentDomain(forName: name) }
-        let keychain = KeychainStore(service: name, synchronizable: false)
+        let keychain = SpeechSettingsTestKeychain()
         let settings = TTSSettingsService(defaults: defaults, keychain: keychain)
         var account = TTSSettingsSnapshot.systemDefault
         account.provider = .openAI; account.modelID = "gpt-4o-mini-tts"; account.voiceID = "alloy"
@@ -19,8 +20,34 @@ final class TTSSettingsServiceTests: XCTestCase {
         defer { try? settings.removeProfile(account) }
         XCTAssertEqual(settings.snapshot.provider, .apple)
         XCTAssertEqual(settings.configuredProfiles.count, 1)
+        XCTAssertTrue(settings.hasCredential(for: account))
         settings.choose(account)
         XCTAssertEqual(settings.snapshot.provider, .openAI)
+    }
+
+    func testBillingChannelsKeepIndependentCredentials() async throws {
+        let name = "tts-channels-test." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let settings = TTSSettingsService(defaults: defaults, keychain: SpeechSettingsTestKeychain())
+        var plan = TTSSettingsSnapshot.systemDefault
+        plan.provider = .alibaba
+        plan.billingRoute = .tokenPlan
+        plan.modelID = "synthetic-model"
+        plan.voiceID = "synthetic-voice"
+        var usage = plan
+        usage.billingRoute = .payAsYouGo
+        try settings.saveProfile(plan, credential: "synthetic-plan")
+        try settings.saveProfile(usage, credential: "synthetic-usage")
+        let planCredential = try await settings.credential(for: plan)
+        let usageCredential = try await settings.credential(for: usage)
+        XCTAssertEqual(planCredential, "synthetic-plan")
+        XCTAssertEqual(usageCredential, "synthetic-usage")
+        XCTAssertEqual(settings.configuredProfiles.count, 2)
+        XCTAssertEqual(settings.snapshot.provider, .apple)
+        try settings.removeProfile(plan)
+        XCTAssertFalse(settings.hasCredential(for: plan))
+        XCTAssertTrue(settings.hasCredential(for: usage))
     }
 
     func testFirstSuccessfulInstallSelectsVivianAndReinstallKeepsChoice() async throws {
@@ -92,6 +119,22 @@ private actor InstallDownloadFixture: LocalSpeechDownloading {
         try bytes.write(to: target)
         progress(Int64(bytes.count))
         return target
+    }
+}
+
+private final class SpeechSettingsTestKeychain: KeychainProbeStore {
+    private let items = Mutex<[String: Data]>([:])
+    func store(account: String, secret: Data) throws {
+        items.withLock { $0[account] = secret }
+    }
+    func read(account: String) throws -> Data {
+        try items.withLock {
+            guard let value = $0[account] else { throw KeychainStoreError.itemNotFound }
+            return value
+        }
+    }
+    func delete(account: String) throws {
+        items.withLock { _ = $0.removeValue(forKey: account) }
     }
 }
 #endif

@@ -961,16 +961,8 @@ private struct SearchProviderCatalogPicker: View {
     }
 
     private func row(_ entry: SearchProviderCatalogEntry) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
-            let blurb = entry.localizedBlurb(localePrimary: WebSearchSettingsCenter.localePrimary)
-            if !blurb.isEmpty {
-                Text(blurb)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .frame(minHeight: FloeTheme.minimumTarget)
+        Text(entry.displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
+            .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
     }
 
     private func addDraft(for entry: SearchProviderCatalogEntry) -> WebSearchProviderInstance {

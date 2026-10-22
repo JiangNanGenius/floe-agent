@@ -479,19 +479,40 @@ struct VoiceConversationTests {
         await rig.say("念诗")
         rig.clock.advance(by: 0.95)
         await rig.settle()
+        // Canonical production shape: the ONE confirmed final body arrives at
+        // `.completed` with NO prior display event — its first content is the
+        // durable body itself.
         await rig.confirmFinal("床前明月光。")
         await rig.playQueued()
         rig.stack.stepPlayed(frames: 40)
         await rig.settle()
+        // The root invariant: 40 REAL frames of the confirmed body are out of
+        // the speaker, so the session must present actual speech playback,
+        // never "waiting for model".
+        #expect(rig.coordinator.state == .answering)
+        #expect(rig.coordinator.currentSpokenText == "床前明月光。")
+        let round = rig.coordinator.currentRound
+        let progress = rig.coordinator.playingUnitProgress
+        #expect(progress?.index == 0)
+        #expect(progress?.fraction == 0.4)
+        // Setup/projection lifecycles may already have stopped output; the
+        // barge pause → false-start resume itself must add no stop/reset.
+        let stopBaseline = rig.stack.count("stopPlayback")
 
         rig.stack.yieldLevel(0.7, speech: true, duration: 0.2)
         await rig.settle()
         #expect(rig.stack.count("pause") == 1)
+        #expect(rig.coordinator.state == .answering)     // tentative pause keeps the round
         rig.stack.yieldLevel(0, speech: false, duration: 0.15)
         rig.stack.yieldLevel(0, speech: false, duration: 0.15)
         await rig.settle()
         #expect(rig.stack.count("resume") == 1)
+        #expect(rig.stack.count("stopPlayback") == stopBaseline)  // no stop: position kept
         #expect(rig.driving.cancelled.isEmpty)
+        #expect(rig.coordinator.currentRound == round)   // same round
+        // Same played position: (tuple is Equatable-free, compare members).
+        #expect(rig.coordinator.playingUnitProgress?.index == progress?.index)
+        #expect(rig.coordinator.playingUnitProgress?.fraction == progress?.fraction)
         #expect(rig.coordinator.state == .answering)
 
         for _ in 0..<12 { rig.stack.yieldLevel(0.8, speech: true, duration: 0.1) }

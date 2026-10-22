@@ -161,10 +161,17 @@ struct ChatReasoningResolutionTests {
 
     @Test("explicit levels clamp exactly like the automatic helper and never claim an unsupported tier")
     func explicitLevelsClamp() {
-        let ark = makeModel(provider: arkProvider, remoteID: "deepseek-v3.2")
-        #expect(ChatReasoningSupport.resolve(.high, provider: arkProvider, model: ark).level == .high)
-        // Ark sends `maximum` as high.
-        #expect(ChatReasoningSupport.resolve(.maximum, provider: arkProvider, model: ark).level == .high)
+        // Ark's own model contract sends `maximum` as high (the provider-kind
+        // clamp `AutomaticReasoningEffortTests` pins for `doubao-*`).
+        let arkNative = makeModel(provider: arkProvider, remoteID: "doubao-seed-2-1-pro")
+        #expect(ChatReasoningSupport.resolve(.high, provider: arkProvider, model: arkNative).level == .high)
+        #expect(ChatReasoningSupport.resolve(.maximum, provider: arkProvider, model: arkNative).level == .high)
+        // A DeepSeek-family model on the Ark gateway keeps DeepSeek's own wire
+        // contract (native `max`): `ProviderTraits.isDeepSeek` matches the
+        // model id intentionally, and both `chatOptions` and the clamp resolve
+        // the family before the provider-kind branch.
+        let arkDeepSeek = makeModel(provider: arkProvider, remoteID: "deepseek-v3.2")
+        #expect(ChatReasoningSupport.resolve(.maximum, provider: arkProvider, model: arkDeepSeek).level == .maximum)
 
         let deepSeek = makeModel(provider: deepSeekProvider, remoteID: "deepseek-chat")
         // No native DeepSeek medium: the abstract choice lands on high.
@@ -290,11 +297,12 @@ struct ChatReasoningCoordinatorTests {
         let resolution = await coordinator.resolve(
             runID: runID,
             provider: arkProvider,
-            model: makeModel(provider: arkProvider, remoteID: "deepseek-v3.2"),
+            model: makeModel(provider: arkProvider, remoteID: "doubao-seed-2-1-pro"),
             preference: .fast,  // current conversation state must NOT override the seed
             seedReader: { _ in seeded },
             recorder: { runID, decision in await log.append(runID: runID, decision: decision) })
-        // Frozen maximum re-derived against Ark: modelDefault, maximum clamped to high.
+        // Frozen maximum re-derived against Ark's own model contract:
+        // modelDefault, maximum clamped to high.
         #expect(resolution.policy == .modelDefault)
         #expect(resolution.model.reasoningEffort == .high)
         #expect(await log.count == 0)
@@ -418,7 +426,22 @@ struct ChatReasoningPersistenceShapeTests {
         let bad = try? JSONDecoder().decode(
             ChatConversationPreferences.self, from: Data(#"{"chatReasoning":"turbo"}"#.utf8))
         #expect(bad == nil)
-        let reencoded = try JSONEncoder().encode(ChatConversationPreferences())
-        #expect(String(decoding: reencoded, as: UTF8.self).contains("null"))
+        // The durable snapshot is a plain `JSONEncoder` payload
+        // (`SQLiteChatPreferenceStore.encode`), so an unset optional is
+        // omitted rather than written as an explicit null; the absent key must
+        // still decode back to the product default instead of failing the
+        // reader. An explicit choice is carried by value and round-trips.
+        let defaultSnapshotJSON = try JSONEncoder().encode(ChatConversationPreferences())
+        let defaultSnapshot = try JSONDecoder().decode(
+            ChatConversationPreferences.self, from: defaultSnapshotJSON)
+        #expect(defaultSnapshot.chatReasoning == nil)
+        #expect(defaultSnapshot.effectiveChatReasoning == .fast)
+        let explicitSnapshotJSON = try JSONEncoder().encode(
+            ChatConversationPreferences(chatReasoning: .maximum))
+        #expect(String(decoding: explicitSnapshotJSON, as: UTF8.self).contains("maximum"))
+        let explicitSnapshot = try JSONDecoder().decode(
+            ChatConversationPreferences.self, from: explicitSnapshotJSON)
+        #expect(explicitSnapshot.chatReasoning == .maximum)
+        #expect(explicitSnapshot.effectiveChatReasoning == .maximum)
     }
 }

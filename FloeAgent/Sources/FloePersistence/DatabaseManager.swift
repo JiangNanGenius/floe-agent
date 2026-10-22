@@ -114,9 +114,22 @@ public actor DatabaseManager {
     public func migrate() throws {
         if let queue {
             try migrator.migrate(queue)
+            try queue.write { try Self.repairPrereleaseChatSchemaVersion($0) }
         } else if let pool {
             try migrator.migrate(pool)
+            try pool.write { try Self.repairPrereleaseChatSchemaVersion($0) }
         }
+    }
+
+    /// Early v51 development builds recorded the migration without updating
+    /// user_version. Repair metadata only after GRDB confirms v51 was applied;
+    /// never replay its table creation or lower a newer database version.
+    private static func repairPrereleaseChatSchemaVersion(_ db: Database) throws {
+        let version = try Int.fetchOne(db, sql: "PRAGMA user_version") ?? 0
+        guard version < 51,
+              try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM grdb_migrations WHERE identifier = ?",
+                               arguments: ["v51_chat_preferences"]) == 1 else { return }
+        try db.execute(sql: "PRAGMA user_version = 51")
     }
 
     /// Read-only access. The closure runs outside the actor's serial

@@ -26,6 +26,7 @@ enum V51ChatPreferences {
                     updated_at TEXT NOT NULL
                 ) STRICT
                 """)
+            try db.execute(sql: "PRAGMA user_version = 51")
         }
     }
 }

@@ -268,9 +268,13 @@ struct ChatToolPolicyTests {
         let bound = boundContext
         #expect(bound.contains(boundPath))
         #expect(bound.contains("./\(boundPath)"))
-        #expect(bound.contains("Attachments/\(boundID.uuidString)//notes.txt") == false
-                || true) // duplicate separators collapse → still bound
-        #expect(bound.contains("Attachments/\(boundID.uuidString)/sub/../notes.txt"))
+        // Duplicate separators and `.` segments collapse to the same bound file.
+        #expect(bound.contains("Attachments/\(boundID.uuidString)//notes.txt"))
+        // A `..` component is a traversal, not a matchable alias: the
+        // documented normalization rejects any parent reference outright
+        // instead of folding it into a containment match
+        // (`ChatToolPolicy.ResourceContext.normalize`).
+        #expect(bound.contains("Attachments/\(boundID.uuidString)/sub/../notes.txt") == false)
         #expect(bound.contains(boundPath + ".bak") == false)
         // Construction rejects garbage but keeps the valid members.
         let mixed = context(paths: [boundPath, "/tmp/x", "..", "~/y"])

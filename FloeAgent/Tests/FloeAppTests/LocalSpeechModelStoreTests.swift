@@ -85,6 +85,28 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         catch { XCTAssertEqual(error as? LocalSpeechModelStore.Failure, .corrupt) }
     }
 
+    func testBundledCatalogOffersAllEnhancedVoicesBeforeInstallation() async throws {
+        let models = try await LocalSpeechModelStore.shared.catalog()
+        let enhanced = try XCTUnwrap(models.first { $0.engine == "qwen3TTS" })
+        XCTAssertEqual(Set(enhanced.voices.map(\.id)), Set([
+            "vivian", "serena", "uncle_fu", "dylan", "eric", "ryan", "aiden", "ono_anna", "sohee"
+        ]))
+        XCTAssertEqual(enhanced.voices.count, 9)
+    }
+
+    func testCatalogRejectsUnsafeModelDirectoryNames() async {
+        let original = fixture(Data("model".utf8))
+        for id in ["..", "../escape", ".staging", "nested/model"] {
+            let model = LocalSpeechModel(id: id, title: original.title, engine: original.engine,
+                repository: original.repository, revision: original.revision, license: original.license,
+                languages: original.languages, voices: original.voices, files: original.files,
+                tokenizerRelativePath: nil, minimumMemoryBytes: nil)
+            let store = LocalSpeechModelStore(catalog: .init(schemaVersion: 1, models: [model]))
+            do { _ = try await store.catalog(); XCTFail("Unsafe model directory accepted: \(id)") }
+            catch { XCTAssertEqual(error as? LocalSpeechModelStore.Failure, .corrupt) }
+        }
+    }
+
     private func fixture(_ bytes: Data) -> LocalSpeechModel {
         let revision = String(repeating: "1", count: 40)
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()

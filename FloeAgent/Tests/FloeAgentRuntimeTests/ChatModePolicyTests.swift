@@ -24,6 +24,29 @@ struct ChatModePolicyTests {
 
     // MARK: - Fixtures
 
+    /// Parks one scripted parent-run execution until the test releases it, so
+    /// delegated child calls can be dispatched while the owning run is really
+    /// active (the runtime only accepts child dispatch from a live run).
+    actor ExecutionSuspensionGate {
+        private(set) var entered = false
+        private var isOpen = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func park() async {
+            entered = true
+            if isOpen { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func isParked() -> Bool { entered }
+
+        func open() {
+            isOpen = true
+            for waiter in waiters { waiter.resume() }
+            waiters.removeAll()
+        }
+    }
+
     final class RecordingExecutor: ToolExecutor, @unchecked Sendable {
         struct Entry {
             var call: ToolCall
@@ -32,9 +55,17 @@ struct ChatModePolicyTests {
 
         private let storage = AsyncLock<[Entry]>([])
         private let descriptors: [String: ToolCatalog.Descriptor]
+        private let gate: ExecutionSuspensionGate?
+        private let gatedCallID: String?
 
-        init(descriptors: [String: ToolCatalog.Descriptor]) {
+        init(
+            descriptors: [String: ToolCatalog.Descriptor],
+            gate: ExecutionSuspensionGate? = nil,
+            gatedCallID: String? = nil
+        ) {
             self.descriptors = descriptors
+            self.gate = gate
+            self.gatedCallID = gatedCallID
         }
 
         var entries: [Entry] { storage.withLock { $0 } }
@@ -56,6 +87,9 @@ struct ChatModePolicyTests {
         ) async throws -> ToolResult {
             try context.cancellation.throwIfCancelled()
             storage.withLock { $0.append(Entry(call: call, context: context)) }
+            if call.id == gatedCallID {
+                await gate?.park()
+            }
             return ToolResult(callID: call.id, status: .ok, outputSummary: "read ok", outputDigest: "d")
         }
     }
@@ -140,6 +174,16 @@ struct ChatModePolicyTests {
             from: executor.allDescriptors, hasResourceContext: true)
     }
 
+    /// The app-side name ceiling a chat run is started with: derived from the
+    /// HONEST catalog. `ConversationCenter` intersects `allowedToolNames` with
+    /// exactly this set, so a descriptor that turns out to be forged/have
+    /// stale broad metadata at execution must not retroactively remove its own
+    /// allowed name — that is the case descriptor revalidation must catch.
+    private func ceilingNames() -> Set<String> {
+        ChatToolPolicy.allowedToolNames(
+            from: Array(catalog().values), hasResourceContext: true)
+    }
+
     private func completionEvents() -> [AgentEvent] {
         [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
     }
@@ -187,12 +231,21 @@ struct ChatModePolicyTests {
         let denialOutputs = adapter.requests[2].toolResults
         for callID in ["u-1", "x-1", "s-1", "d-1"] {
             let denial = try #require(denialOutputs.first { $0.callID == callID })
-            #expect(denial.output.contains("fast chat") || denial.output.contains("outside"),
+            // Two established denial copies prove the same frozen ceiling: the
+            // path-specific "Fast chat can only read the files attached here"
+            // (sentence-initial for a misbound ceiling-path argument) and the
+            // "outside … fast chat's ceiling / capability set" family line.
+            #expect(denial.output.lowercased().contains("fast chat")
+                    || denial.output.contains("outside"),
                     "\(callID): \(denial.output)")
         }
-        // The offered schemas are the projection: never the denied families.
+        // The offered schemas are the projection plus the always-callable
+        // discovery utilities (the temporary-ceiling suite's wire contract):
+        // never the denied families.
+        let offered = ordinaryChatAllowed(executor)
+            .union([ToolDiscovery.name, ToolDiscovery.listName])
         let firstSchemas = Set(adapter.requests[0].toolSchemas.map(\.name))
-        #expect(firstSchemas.isSubset(of: ordinaryChatAllowed(executor)))
+        #expect(firstSchemas.isSubset(of: offered))
         #expect(firstSchemas.contains("workspace.readFile"))
         #expect(!firstSchemas.contains("exec.shell"))
         #expect(!firstSchemas.contains("workspace.searchFiles"))
@@ -245,9 +298,13 @@ struct ChatModePolicyTests {
             id: "f-1", toolName: "workspace.readFile",
             arguments: #"{"path":"\#(Self.boundPath)"}"#)
         adapter.script = [[.toolRequest(forgedRead)], completionEvents()]
+        // The NAME stays inside the frozen app ceiling (the honest catalog
+        // grants it); only the descriptor metadata is forged. Deriving the
+        // allowed set from the forged executor would let the name gate
+        // pre-empt the very revalidation this test pins.
         let runtime = makeRuntime(
             adapter: adapter, executor: executor,
-            allowedToolNames: ordinaryChatAllowed(executor),
+            allowedToolNames: ceilingNames(),
             chatResourceCeiling: resourceContext())
         try await runtime.start(goal: "read the attached file")
         #expect(!executor.entries.contains { $0.call.id == "f-1" })
@@ -294,9 +351,13 @@ struct ChatModePolicyTests {
             [.toolRequest(widen)],
             completionEvents()
         ]
+        // Deliberately WIDER than the app's name intersection — the same shape
+        // the temporary-ceiling suite uses: the runtime's canonical chat
+        // ceiling itself must deny a discovery guess, not merely inherit the
+        // app-side intersection.
         let runtime = makeRuntime(
             adapter: adapter, executor: executor,
-            allowedToolNames: ordinaryChatAllowed(executor),
+            allowedToolNames: Set(executor.allDescriptors.map(\.name)),
             chatResourceCeiling: resourceContext())
         try await runtime.start(goal: "what tools do you have? then run a command")
         // The discovery utility itself answered (it is a runtime built-in),
@@ -319,11 +380,32 @@ struct ChatModePolicyTests {
 
     @Test("a delegated call inside a fast chat keeps the same frozen ceiling")
     func childDispatchCeiling() async throws {
-        let executor = RecordingExecutor(descriptors: catalog())
+        // Child dispatch is legal only while the owning run is active (the
+        // runtime's lifecycle fence rejects an unstarted/finished run before
+        // any ceiling decision). Hold the parent inside a real tool execution
+        // so every delegated call below exercises the production seam instead
+        // of `deny:child-inactive-parent`.
+        let gate = ExecutionSuspensionGate()
+        let executor = RecordingExecutor(
+            descriptors: catalog(), gate: gate, gatedCallID: "hold")
+        let adapter = MockAdapter()
+        let hold = try TestFixtures.toolCall(
+            id: "hold", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#)
+        adapter.script = [[.toolRequest(hold)], completionEvents()]
         let runtime = makeRuntime(
-            adapter: MockAdapter(), executor: executor,
+            adapter: adapter, executor: executor,
             allowedToolNames: ordinaryChatAllowed(executor),
             chatResourceCeiling: resourceContext())
+        let parentRun = Task {
+            try await runtime.start(goal: "hold the chat open for delegation")
+        }
+        var waited = 0
+        while await gate.isParked() == false, waited < 500 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            waited += 1
+        }
+        let parked = await gate.isParked()
+        #expect(parked)
         func childContext() async -> ToolContext {
             ToolContext(
                 runID: await runtime.runID,
@@ -349,14 +431,18 @@ struct ChatModePolicyTests {
                 call, identity: identity, childContext: await childContext())
             #expect(result.status == .denied, Comment(rawValue: name))
         }
-        #expect(executor.entries.isEmpty)
+        #expect(!executor.entries.contains { $0.call.id.hasPrefix("child-") })
         let boundRead = try TestFixtures.toolCall(
             id: "child-read", toolName: "workspace.readFile",
             arguments: #"{"path":"\#(Self.boundPath)"}"#)
         let ok = await runtime.dispatchChildTool(
             boundRead, identity: identity, childContext: await childContext())
         #expect(ok.status == .ok)
-        #expect(executor.entries.first?.call.id == "child-read")
+        // The parent's parked call is the only other execution: no denied
+        // child ever reached the executor, and the bound read did.
+        #expect(executor.entries.filter { $0.call.id != "hold" }.map(\.call.id) == ["child-read"])
+        await gate.open()
+        try await parentRun.value
     }
 
     @Test("a temporary run keeps the stricter public-web ceiling even with both flags set")

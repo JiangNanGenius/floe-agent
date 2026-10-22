@@ -871,7 +871,7 @@ struct ThreadComposerView: View {
             // internally with the caret kept visible.
             ComposerReturnField(
                 text: $draft,
-                placeholder: String(localized: "home.new_task.placeholder"),
+                placeholder: composerPlaceholder,
                 canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
                 lineLimit: 1...8,
                 maxHeightBudget: composerHeightBudget,
@@ -896,7 +896,7 @@ struct ThreadComposerView: View {
             )
             .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
             .contentShape(Rectangle())
-            .accessibilityLabel("home.new_task.placeholder")
+            .accessibilityLabel(composerPlaceholder)
             .accessibilityIdentifier("composer.input")
 
             // The full editor control appears only once the inline field has
@@ -1499,14 +1499,12 @@ struct ThreadComposerView: View {
         }
     }
 
+    private var composerPlaceholder: String {
+        FloeL10n.l(agentMode == .chat ? "chat.message.placeholder" : "home.new_task.placeholder")
+    }
+
     private func chatReasoningTitle(_ preference: ChatReasoningPreference) -> String {
-        switch preference {
-        case .fast: String(localized: "chat.reasoning.fast")
-        case .low: reasoningTitle(.low)
-        case .medium: reasoningTitle(.medium)
-        case .high: reasoningTitle(.high)
-        case .maximum: reasoningTitle(.maximum)
-        }
+        FloeL10n.l("chat.reasoning." + preference.rawValue)
     }
 
     @MainActor
