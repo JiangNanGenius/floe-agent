@@ -410,13 +410,19 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             try await wait("accepted artifact surfaced in the dock (request A)") {
                 Self.accessibilityNodes(in: sheetViewA).contains { $0.identifier == "office.pdf.inlinePreview" }
             }
+            // In the real hosted tree SwiftUI can omit this Text's test ID
+            // while publishing its exact visible label. Match that public
+            // label too; it must still name the PDF's measured page count.
+            let measuredPrefixes = ["共 \(pages) 页 · ", "\(pages) pages · "]
+            func isMeasuredCount(_ node: HostedAccessibilityNode) -> Bool {
+                measuredPrefixes.contains { node.label.hasPrefix($0) }
+                    && (node.identifier.isEmpty || node.identifier == "office.pdf.measuredPages")
+            }
             try await wait("measured page count exposed after the preview update") {
-                Self.accessibilityNodes(in: sheetViewA).contains {
-                    $0.identifier == "office.pdf.measuredPages" && $0.label.contains(String(pages))
-                }
+                Self.accessibilityNodes(in: sheetViewA).contains(where: isMeasuredCount)
             }
             let measured = Self.accessibilityNodes(in: sheetViewA)
-                .first { $0.identifier == "office.pdf.measuredPages" }
+                .first(where: isMeasuredCount)
             XCTAssertNotNil(measured, "the dock must show the page count measured from the actual PDF")
             XCTAssertTrue(measured?.label.contains(String(pages)) ?? false,
                           "the visible measured count must equal the generated page count")
