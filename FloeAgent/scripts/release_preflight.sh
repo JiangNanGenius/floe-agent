@@ -28,6 +28,9 @@ if ! python3 scripts/validate_localization_catalog.py FloeApp/Resources/Localiza
     exit 1
 fi
 
+# Check the source and generated metadata that Apple validates at upload.
+python3 -B scripts/verify_apple_upload_metadata.py
+
 # Phase 2 (TinyEMU migration): no bundled native Python/Node may return to
 # the project manifests; the IPA form of this audit runs after packaging.
 if ! python3 scripts/audit_native_runtime_free.py --project; then
