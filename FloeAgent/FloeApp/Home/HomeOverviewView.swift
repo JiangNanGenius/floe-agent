@@ -27,6 +27,7 @@ struct HomeOverviewView: View {
     @State private var historySchedule: TaskScheduleRecord?
     @State private var historyOccurrences: [TaskScheduleOccurrence] = []
     @State private var cleanupReminders: [TaskScheduleCleanupReminder] = []
+    @Environment(\.scenePhase) private var scenePhase
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
     @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
@@ -95,10 +96,10 @@ struct HomeOverviewView: View {
                                 .font(.subheadline)
                             HStack(spacing: 12) {
                                 ShortcutsLink { }
-                                Button(scheduleText(zh: "已移除", en: "Removed")) {
+                                Button(TaskScheduleCleanupCopy.removed()) {
                                     Task { await resolveCleanup(reminder.id, removed: true) }
                                 }
-                                Button(scheduleText(zh: "忽略", en: "Dismiss")) {
+                                Button(TaskScheduleCleanupCopy.dismiss()) {
                                     Task { await resolveCleanup(reminder.id, removed: false) }
                                 }
                             }
@@ -275,6 +276,17 @@ struct HomeOverviewView: View {
         }
         .task { await load() }
         .refreshable { await load() }
+        .onChange(of: scenePhase) { _, phase in
+            // Foreground re-entry refreshes THIS inline list too (stale
+            // fires, terminals and lost auxiliary writes received while
+            // inactive must not sit invisibly until a manual pull-to-
+            // refresh). The popup itself is the root-attached single
+            // source (`floeScheduleCleanupPopup`), so no alert lives
+            // here anymore — exactly one popup source app-wide.
+            if phase == .active {
+                Task { await load() }
+            }
+        }
         .sheet(item: $batchStartingConversation) { conversation in
             ConversationBatchManagementView(center: center, initialConversation: conversation)
         }
@@ -356,12 +368,17 @@ struct HomeOverviewView: View {
         }
     }
 
+    /// The empty-state overlay must never hide actionable rows: a pending
+    /// cleanup reminder (often the ONLY leftover after the plan itself was
+    /// deleted) keeps the overview non-empty so its inline row — and the
+    /// popup surface built on the same list — stays reachable.
     private var overviewIsEmpty: Bool {
         runningTasks.isEmpty
             && viewModel.pendingApprovals.isEmpty
             && failedTasks.isEmpty
             && completedTasks.isEmpty
             && schedules.isEmpty
+            && cleanupReminders.isEmpty
     }
 
     private var filteredConversations: [ConversationRecord] {
@@ -395,38 +412,38 @@ struct HomeOverviewView: View {
         FloeL10n.isChinese ? zh : en
     }
 
-    /// One short, actionable bilingual line per retired schedule — the plan's
-    /// own name, no IDs, and honest about what Floe can and cannot know.
-    /// Conditional wording by necessity: no API detects the system side.
+    /// One short, actionable bilingual line per retired schedule — shared
+    /// with the cleanup popup so the same event never reads differently
+    /// in two places (see `TaskScheduleCleanupCopy`).
     private func cleanupReasonCopy(_ reminder: TaskScheduleCleanupReminder) -> String {
-        switch reminder.reason {
-        case .deleted:
-            scheduleText(
-                zh: "已删除「\(reminder.title)」。你为它设置过系统自动化，请在快捷指令中删除对应自动化。",
-                en: "“\(reminder.title)” was deleted. You had set up a system automation for it — remove that automation in Shortcuts.")
-        case .onceConsumed:
-            scheduleText(
-                zh: "一次性计划「\(reminder.title)」已运行结束，不会再运行。请在快捷指令中删除对应自动化。",
-                en: "The one-time plan “\(reminder.title)” has finished running and will not fire again. Remove its automation in Shortcuts.")
-        case .staleTrigger:
-            scheduleText(
-                zh: "「\(reminder.title)」的系统自动化仍在触发已不存在的计划。请在快捷指令中删除它。",
-                en: "“\(reminder.title)” still fires an automation for a plan that no longer exists. Remove it in Shortcuts.")
-        case nil:
-            scheduleText(
-                zh: "「\(reminder.title)」可能仍有对应的系统自动化。请在快捷指令中检查并删除。",
-                en: "A system automation for “\(reminder.title)” may still exist. Check and remove it in Shortcuts.")
-        }
+        TaskScheduleCleanupCopy.reason(reminder)
     }
 
     private func resolveCleanup(_ id: UUID, removed: Bool) async {
         let store = TaskScheduleCleanupReminderStore(database: viewModel.environment.database)
         // User-side marks only: neither branch touches schedules, occurrences
         // or the system. Neither claims Floe detected an automation removal.
-        if removed {
-            try? await store.markRemoved(id: id)
-        } else {
-            try? await store.dismiss(id: id)
+        let didResolve: Bool
+        do {
+            if removed {
+                try await store.markRemoved(id: id)
+            } else {
+                try await store.dismiss(id: id)
+            }
+            didResolve = true
+        } catch {
+            didResolve = false
+        }
+        if didResolve {
+            // Successful durable write ONLY: release this row's
+            // process-scoped popup marks so a FUTURE durable event for
+            // the same row — notably the store-sanctioned case of a new
+            // stale fire reopening a `removed` row at its same
+            // monitoring epoch — presents fresh instead of inheriting
+            // the answered-and-resolved round's suppression. This is a
+            // presentation mark reset; it deletes nothing and claims no
+            // system-automation removal.
+            TaskScheduleCleanupPopupLedger.shared.releaseRowSuppressions(rowID: id)
         }
         cleanupReminders = (try? await store.openReminders()) ?? []
     }

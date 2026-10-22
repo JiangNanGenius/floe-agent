@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "1.7.46（287）：改进 Excel 打印／PDF 自动预览、网格线及比例设置；增加 Skill 来源标签；快捷指令图标直接添加，计划结束后弹窗提醒清理；新增折叠屏适配。请测试连续修改打印设置、最终 PDF 与预览一致、快捷指令添加及结束提醒。支持折叠屏的设备会自动启用适配，设置 → 通用可关闭；普通设备不显示此项。",
+  "en-US": "1.7.46 (287): Improved automatic Excel print/PDF preview, gridlines and scaling. Added skill origin tags, direct Shortcut badge import, plan cleanup popups and foldable layouts. Please test repeated print-setting changes, the exported PDF matching the preview, Shortcut import and cleanup reminders. Foldable adaptation turns on automatically on supported devices and can be disabled in Settings → General; the option is hidden on ordinary devices."
+}

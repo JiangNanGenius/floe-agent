@@ -18,6 +18,11 @@ struct GeneralSettingsView: View {
     var contentUpdates: ContentUpdateCenter?
     @AppStorage(VoiceRecognitionLanguage.defaultsKey)
     private var voiceLanguage = VoiceRecognitionLanguage.automatic.rawValue
+    /// Scene foldable capability snapshot. A plain environment value with an
+    /// unknown default: isolated hosts never crash, and ordinary devices
+    /// never see the foldable row.
+    @Environment(\.foldableDisplay) private var foldableDisplay
+    @ObservedObject private var layoutPreferences = LayoutPreferences.shared
 
     init(center: SettingsCenter, contentUpdates: ContentUpdateCenter? = nil) {
         self.center = center
@@ -94,6 +99,22 @@ struct GeneralSettingsView: View {
                     Text("settings.content_updates.footer")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            // Foldable adaptation is automatic on system-detected folding
+            // hardware. The row appears ONLY when the live scene has
+            // positively proven hinge capability — never on ordinary devices,
+            // even if a stale preference from earlier hardware exists. An
+            // explicit off is persisted and survives relaunch/update;
+            // fold/unfold events never write this key.
+            if foldableDisplay.capability == .foldable {
+                Section {
+                    Toggle("settings.general.foldable_adaptation", isOn: Binding(
+                        get: { layoutPreferences.settings.foldableAdaptationEnabled },
+                        set: { layoutPreferences.setFoldableAdaptationEnabled($0) }
+                    ))
+                    .accessibilityIdentifier(FoldableLayoutIdentifiers.settingsToggle)
                 }
             }
 

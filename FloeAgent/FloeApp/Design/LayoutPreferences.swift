@@ -20,6 +20,7 @@ final class LayoutPreferences: ObservableObject {
         static let showFullPath = "floe.layout.showFullPath"
         static let showFileExtension = "floe.layout.showFileExtension"
         static let sidebarWidth = "floe.layout.sidebarWidth"
+        static let foldableAdaptationEnabled = "floe.layout.foldableAdaptationEnabled"
     }
 
     private let defaults: UserDefaults
@@ -41,7 +42,11 @@ final class LayoutPreferences: ObservableObject {
             fileNameLines: storedLines,
             showFullPath: defaults.bool(forKey: Keys.showFullPath),
             showFileExtension: defaults.object(forKey: Keys.showFileExtension) as? Bool ?? true,
-            sidebarWidth: storedWidth)
+            sidebarWidth: storedWidth,
+            // Missing key means enabled: foldable adaptation is automatic on
+            // system-detected folding hardware; only an explicit toggle ever
+            // writes `false`, and folds/relaunches/updates never overwrite it.
+            foldableAdaptationEnabled: defaults.object(forKey: Keys.foldableAdaptationEnabled) as? Bool ?? true)
     }
 
     func setFontSize(_ size: LayoutListFontSize, for kind: LayoutListKind) {
@@ -74,6 +79,14 @@ final class LayoutPreferences: ObservableObject {
         guard abs(clamped - settings.sidebarWidth) > 2 else { return }
         settings.sidebarWidth = clamped
         defaults.set(clamped, forKey: Keys.sidebarWidth)
+        objectWillChange.send()
+    }
+
+    /// Explicit foldable-adaptation opt-out. Only the General settings row
+    /// calls this; detection, folds and relaunches never write the key.
+    func setFoldableAdaptationEnabled(_ value: Bool) {
+        settings.foldableAdaptationEnabled = value
+        defaults.set(value, forKey: Keys.foldableAdaptationEnabled)
         objectWillChange.send()
     }
 

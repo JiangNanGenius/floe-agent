@@ -337,6 +337,75 @@ struct TaskScheduleShortcutImportTests {
         cleanup(suite, Written())
     }
 
+    @Test("Badge routing mirrors availability exactly: ready→import, none→open Shortcuts")
+    func badgeActionMapping() throws {
+        let suite = makeSuite()
+        let written = Written()
+        let withTemplate = makeModel(
+            templateData: Data("badge-route".utf8), scheduleID: UUID(), title: "T",
+            written: written, suite: suite)
+        #expect(withTemplate.badgeAction == .presentImport)
+        let without = makeModel(
+            templateData: nil, scheduleID: UUID(), title: "T",
+            written: written, suite: suite)
+        #expect(without.badgeAction == .openShortcutsApp)
+        cleanup(suite, written)
+    }
+
+    @Test("Badge tap WITH a signed template runs the real import handoff")
+    func badgeTapImportsWhenReady() async throws {
+        let data = Data("badge-signed-v1".utf8)
+        let suite = makeSuite()
+        let written = Written()
+        let store = try await makeCleanupStore()
+        let scheduleID = UUID()
+        var handedURLs: [URL] = []
+        let model = makeModel(
+            templateData: data,
+            opener: { url in handedURLs.append(url); return true },
+            scheduleID: scheduleID, title: "Badge plan",
+            written: written, suite: suite, cleanupStore: store)
+        var shortcutsOpened: [URL] = []
+        model.shortcutsAppOpener = { shortcutsOpened.append($0) }
+        await model.performBadgeTap()
+        // The SAME native Add path runs: prepared file handed to the system,
+        // silent monitoring started — and the badge fallback never fired.
+        #expect(model.evidence?.attempt?.state == .importFlowOpened)
+        #expect(shortcutsOpened.isEmpty)
+        let handed = try #require(handedURLs.first)
+        #expect((try? Data(contentsOf: handed)) == data)
+        let row = try #require(try await store.reminder(scheduleID: scheduleID))
+        #expect(row.status == .monitoring)
+        #expect(row.setupSource == .importFlowOpened)
+        cleanup(suite, written)
+    }
+
+    @Test("Badge tap WITHOUT a template only opens Shortcuts and records nothing")
+    func badgeTapOpensShortcutsWithoutTemplate() async throws {
+        let suite = makeSuite()
+        let written = Written()
+        let store = try await makeCleanupStore()
+        let scheduleID = UUID()
+        let model = makeModel(
+            templateData: nil, scheduleID: scheduleID, title: "Manual plan",
+            written: written, suite: suite, cleanupStore: store)
+        var openedURLs: [URL] = []
+        model.shortcutsAppOpener = { openedURLs.append($0) }
+        await model.performBadgeTap()
+        // Opening the Shortcuts app is the badge's documented behavior and
+        // NOTHING else: no temp file, no attempt record, no monitoring row.
+        #expect(openedURLs == [TaskScheduleShortcutImport.shortcutsAppURL])
+        #expect(written.urls.isEmpty)
+        #expect(model.evidence?.attempt == nil)
+        #expect(try await store.reminder(scheduleID: scheduleID) == nil)
+        // Repeated taps never invent evidence either.
+        await model.performBadgeTap()
+        #expect(openedURLs.count == 2)
+        #expect(model.evidence?.attempt == nil)
+        #expect(try await store.reminder(scheduleID: scheduleID) == nil)
+        cleanup(suite, written)
+    }
+
     @Test("The attempt vocabulary has no installed/imported state")
     func honestVocabulary() {
         // Freeze the honesty contract: nothing an opening can report as a

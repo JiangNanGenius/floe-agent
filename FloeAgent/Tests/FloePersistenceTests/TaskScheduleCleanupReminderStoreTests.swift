@@ -1009,4 +1009,56 @@ struct TaskScheduleCleanupReminderStoreTests {
         #expect(live.isEnabled)
         _ = database
     }
+
+    // MARK: Open-set live observation (root cleanup popup trigger)
+
+    /// Waits (test-side settle only) for the GRDB observation to deliver;
+    /// a missed emission is a failure, never a silent pass.
+    @MainActor
+    private func settle(
+        _ label: String, _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(8))
+        while !condition() {
+            if ContinuousClock.now >= deadline {
+                Issue.record("open-set observation: \(label) not delivered")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    @Test("Open-set observation emits initial, terminal-open and resolve fresh values")
+    @MainActor
+    func openSetObservationTracksLifecycle() async throws {
+        let (database, schedules, reminders) = try await makeStores()
+        let record = try await makeSchedule(schedules, title: "Watched")
+        // Silent monitoring only: the OPEN set is empty when observation
+        // starts — a live plan must never present a popup candidate.
+        try await reminders.recordSetup(
+            scheduleID: record.id, title: record.title,
+            source: .importFlowOpened, at: Date())
+        let stream = try await reminders.openRemindersObservation()
+        final class Box { var values: [[TaskScheduleCleanupReminder]] = [] }
+        let box = Box()
+        let collector = Task { @MainActor in
+            for try await value in stream { box.values.append(value) }
+        }
+        try await settle("initial value") { !box.values.isEmpty }
+        #expect(box.values.first?.isEmpty == true)
+        // The permanent delete is the terminal retirement: exactly one
+        // committed fresh value carries the single open row.
+        try await schedules.delete(id: record.id)
+        try await settle("terminal open") { box.values.contains { $0.count == 1 } }
+        let openedValue = try #require(box.values.first { $0.count == 1 })
+        let row = try #require(openedValue.first)
+        #expect(row.reason == .deleted)
+        #expect(row.title == "Watched")
+        // Resolving through the inline user-side transition removes it
+        // from the open set — the observation must let the popup go.
+        try await reminders.dismiss(id: row.id)
+        try await settle("resolved empty") { box.values.last?.isEmpty == true }
+        collector.cancel()
+        _ = database
+    }
 }

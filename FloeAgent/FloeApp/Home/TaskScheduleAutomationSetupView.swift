@@ -9,15 +9,20 @@
 // whether the system automation was created or enabled; this sheet only opens
 // Shortcuts and never claims an enrollment happened.
 //
-// When (and only when) the app bundle carries the Apple-SIGNED Shortcuts
-// template file, the sheet also offers a REAL import handoff: the system
-// shows its own "Add Shortcut" confirmation for the signed file. Opening or
-// handing off is recorded as evidence with distinct states; an installed
-// automation is never claimed, and the manual path stays available.
-// An actual handoff — or the user's explicit confirmation, import or manual
-// — durably (re)starts SILENT monitoring for this plan, so that a later
-// permanent delete or terminal one-shot run can surface exactly one honest
-// cleanup reminder. Never-configured plans have no record and no reminder.
+// The sheet shows ONE control: the system Shortcuts badge, with its tap
+// routed honestly by `TaskScheduleShortcutImport.performBadgeTap`. When the
+// app bundle carries the Apple-SIGNED template the badge invokes the REAL
+// import handoff directly — the system shows its own "Add Shortcut"
+// confirmation for the signed file. Without a template the badge keeps its
+// documented behavior of opening Shortcuts for the manual steps, which
+// records nothing. Opening or handing off is kept as display evidence with
+// distinct states; an installed automation is never claimed, and there is
+// no separate import button or self-confirmation toggle.
+// An actual handoff — or a genuine system firing observed by the run
+// receipt path — durably (re)starts SILENT monitoring for this plan, so
+// that a later permanent delete or terminal one-shot run can surface
+// exactly one honest cleanup reminder. Never-configured plans have no
+// record and no reminder.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -38,17 +43,19 @@ struct TaskScheduleAutomationSetupView: View {
         TaskSchedulePlanner.calendar(for: schedule)
     }
 
-    /// The signed template import is only ever shown for the cadence
-    /// families whose automation this sheet actually explains (the same
-    /// once/daily/weekly set the Home row button gates). interval/afterSuccess
-    /// plans keep showing the honest "no time automation" limitations.
+    /// True when a signed template is bundled. The badge always shows and
+    /// routes itself; this flag only selects the step copy: with a template
+    /// the steps explain binding the imported shortcut to this plan (with
+    /// the manual path as a disclosure), without one the manual steps stand
+    /// alone. interval/afterSuccess plans keep showing the honest
+    /// "no time automation" limitations.
     private var showsImport: Bool {
         importModel.availability != .noTemplate
     }
 
-    /// Compact honest status line under the import button. Every state says
-    /// what FLOE did, never what the system confirmed; only the user's own
-    /// mark may read "added".
+    /// Compact honest hint under the badge: the last observed attempt only.
+    /// Every state says what FLOE did, never what the system confirmed; an
+    /// opened Add page proves the page opened — nothing more.
     private var importStatusText: String? {
         switch importModel.evidence?.attempt?.state {
         case nil, .filePrepared:
@@ -221,40 +228,31 @@ struct TaskScheduleAutomationSetupView: View {
                 }
                 if schedule.cadence == .once || schedule.cadence == .daily || schedule.cadence == .weekly {
                     Section(setupText(zh: "快捷指令", en: "Shortcut")) {
-                        if showsImport {
-                            Button {
-                                Task { await importModel.presentImport() }
-                            } label: {
-                                Label(setupText(zh: "导入定时快捷指令",
-                                               en: "Import scheduled-task shortcut"),
-                                      systemImage: "square.and.arrow.down")
-                                    .frame(minHeight: FloeTheme.minimumTarget)
-                            }
-                            .buttonStyle(.borderless)
-                            if let importStatusText {
-                                Text(importStatusText)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                        // ONE control: the system badge. The overlay owns
+                        // the tap and routes it honestly — a bundled signed
+                        // template goes straight to the system's own "Add
+                        // Shortcut" page; without one the tap performs the
+                        // badge's documented behavior (open Shortcuts for
+                        // the manual steps) and records nothing.
                         ShortcutsLink { }
-                        Toggle(
-                            setupText(zh: "我已添加该计划的自动化",
-                                      en: "I added an automation for this plan"),
-                            isOn: Binding(
-                                get: { importModel.evidence?.userConfirmedSetup ?? false },
-                                set: { confirmed in
-                                    if confirmed {
-                                        Task { await importModel.markSetupConfirmedByUser() }
-                                    } else {
-                                        importModel.undoSetupConfirmation()
-                                    }
-                                }))
-                        Text(setupText(
-                            zh: "Floe 无法自行检测系统自动化，这里只记录你自己的确认。",
-                            en: "Floe cannot detect system automations; this records only your confirmation."))
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .allowsHitTesting(false)
+                            .overlay {
+                                Button {
+                                    Task { await importModel.performBadgeTap() }
+                                } label: {
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(setupText(
+                                    zh: "添加定时快捷指令",
+                                    en: "Add the scheduled shortcut"))
+                            }
+                        if let importStatusText {
+                            Text(importStatusText)
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 Section(setupText(zh: "计划", en: "Plan")) {

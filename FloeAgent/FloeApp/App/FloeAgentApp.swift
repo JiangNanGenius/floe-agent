@@ -304,7 +304,6 @@ struct RootView: View {
     /// SceneStorage belongs to one WindowGroup content instance even though
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     @State private var batchStartingConversation: ConversationRecord?
     @State private var renamingConversation: ConversationRecord?
@@ -320,6 +319,11 @@ struct RootView: View {
     @ObservedObject private var taskBannerCenter = TaskBannerCenter.shared
     /// Persisted list typography and iPad sidebar width (Build265).
     @ObservedObject private var layoutPreferences = LayoutPreferences.shared
+    /// Scene-bound foldable display capability. Proven hinge hardware keeps
+    /// the stable NavigationSplitView shell across open/close (system
+    /// collapse handles compact), so fold/unfold never remounts the editor
+    /// session identities below. Never persisted across hardware.
+    @StateObject private var foldableSupport = FoldableDisplayState()
     @State private var sidebarWidthObservation: CGFloat = 0
     /// Linux session/service deep link destination, optionally focused on the
     /// environment the notification came from.
@@ -382,15 +386,40 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if !environment.persistenceReady {
+            if FoldableMountGate.showsBootChrome(
+                persistenceReady: environment.persistenceReady,
+                mountResolved: foldableSupport.snapshot.isMountResolved) {
+                // Existing boot chrome (no new spinner). The foldable mount
+                // decision is bounded: the attach-time initial hinge update
+                // answers immediately on 27.1 hardware and a deadline
+                // guarantees ordinary mounting everywhere else, so this gate
+                // cannot stall — it only ensures the ONE shell/container
+                // choice freezes before any editor mounts or route delivers.
                 persistenceState
-            } else if forceRegularForUITest
-                        || (horizontalSizeClass == .regular && !forceCompactForUITest) {
+            } else if FoldableLayoutEngine.selectRootShell(
+                snapshot: foldableSupport.snapshot,
+                isPadIdiom: UIDevice.current.userInterfaceIdiom == .pad,
+                mountResolved: foldableSupport.snapshot.isMountResolved,
+                forceRegularForUITest: forceRegularForUITest,
+                forceCompactForUITest: forceCompactForUITest) == .splitView {
+                // Outermost shell is chosen from the FROZEN decision + idiom
+                // only — never live width/size-class — so rotation, stage
+                // resizing and late foldable evidence cannot replace the
+                // mounted tree. Size-adaptive layout stays inside each shell.
                 iPadRoot
             } else {
                 iPhoneRoot
             }
         }
+        // Foldable detection is scene/window-bound. The probe observes the
+        // real iOS 27.1 hinge context (initial state arrives on attach) and
+        // system division regions; the outermost shell then follows the
+        // frozen mount choice (idiom selects only the ordinary navigation
+        // shell — size adaptation lives inside the shells). The snapshot is
+        // a plain environment value so isolated hosts and pre-27.1 systems
+        // need no provider.
+        .environment(\.foldableDisplay, foldableSupport.snapshot)
+        .modifier(FoldableCapabilityProbeModifier(state: foldableSupport))
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }
@@ -423,6 +452,7 @@ struct RootView: View {
         }
         .onAppear {
             configureDocumentRouting()
+            foldableSupport.startMountResolutionDeadline()
             DocumentIntakeRoutingRegistry.shared.setActive(scenePhase == .active, sceneID: sceneID)
             GitHubActionsJobCenter.shared.scenePhaseChanged(active: scenePhase == .active, sceneID: sceneID)
         }
@@ -495,11 +525,22 @@ struct RootView: View {
             environment.widgetSnapshotCenter.start(
                 observing: environment.conversationCenter
             )
-            entryNavigationReady = true
+            // Entry/deeplink routes stay queued (existing pendingEntry
+            // machinery) until the one frozen foldable mount decision lands,
+            // so delivery always happens inside the final root shell — never
+            // through a shell that a late decision would replace.
+            entryNavigationReady = FoldableMountGate.entryRoutesReady(
+                persistenceReady: environment.persistenceReady,
+                mountResolved: foldableSupport.snapshot.isMountResolved)
             await environment.settingsCenter.load()
             await environment.conversationCenter.resumeSafeRunsAfterForeground()
             await environment.backgroundRunCoordinator.reconcileSchedulesAfterLaunch()
             await presentOnboardingIfNeeded()
+        }
+        .onChange(of: foldableSupport.snapshot.isMountResolved) { _, resolved in
+            if resolved && environment.persistenceReady {
+                entryNavigationReady = true
+            }
         }
         .onReceive(environment.conversationCenter.$conversations) { conversations in
             // The durable list is SQLite-only by design; the ACTIVE temporary
@@ -656,6 +697,11 @@ struct RootView: View {
         }
         .preferredColorScheme(resolvedColorScheme)
         .environment(\.locale, resolvedLocale)
+        // Terminal schedule-cleanup popup, attached exactly once at the app
+        // root (Home lane owner; this lane only wires the call). It gates on
+        // persistenceReady + scene active internally and never re-wraps the
+        // navigation shell or changes editor identity.
+        .floeScheduleCleanupPopup(environment: environment)
     }
 
     private func configureDocumentRouting() {

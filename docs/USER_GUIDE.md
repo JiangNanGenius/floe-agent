@@ -6,7 +6,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-Version note: This guide follows the source. The new print/PDF preview, Excel export options and this round’s system integrations belong to the [1.7.44 (285) candidate](releases/notes/RELEASE_NOTES_1.7.44_BUILD_285.md), pending qualification and delivery.
+Version note: This guide follows the source. [1.7.45 (286) is delivered](releases/testflight/BUILD_286_DELIVERY.md); this batch’s printing, origin badges, Shortcuts and foldable changes await combined qualification and delivery.
 
 ## Contents
 
@@ -213,7 +213,7 @@ Available operations depend on the file format; unavailable options explain why.
 
 **View a specific region.** The assistant can read an Excel sheet and cell range (such as `A1:N30`), or a Word/PowerPoint page and optional rectangle, including content outside the screen. Ask it to list sheets or pages first if needed. Floe saves completed edits before returning the region image from that saved version; use a vision-capable model to view it. Lift the pen or retry if the editor is busy.
 
-**PDF export and printing.** Choose Export Format → PDF or Print…, set the options and generate an actual PDF preview before sharing, saving or printing. XLSX supports the current, a named, several selected or all visible worksheets; full content, a saved print area or an explicit cell range; paper, orientation, margins, fit to width/page, exact scale percent or a width-by-height page budget. Update the preview after changing settings. The final action uses that same file. Word/PowerPoint support final PDF page selection such as `1-3,5`. The original is preserved; lift the Pencil before exporting. Preview and the additional Excel options are in the 1.7.44 (285) candidate, pending this round’s qualification and delivery.
+**PDF export and printing.** Choose Export Format → PDF or Print…. The actual PDF preview stays below the settings and updates automatically as you change them. XLSX supports worksheet selection, full content, saved print areas or explicit cell ranges; paper, orientation, margins, printed gridlines, fit to width/page, percentage or a width-by-height page budget. Drag the scale slider or enter an exact percentage. Once the preview is current, sharing, saving and printing use that same file. Word/PowerPoint support final PDF page selection such as `1-3,5`. The assistant can export with these same workbook options. The original is preserved; lift the Pencil before exporting.
 
 An AI edit that was not confirmed in the editor can still run as an authorized automatic copy: only after the task's runtime approves that exact tool call, the engine works on an isolated copy and publishes a new `<name>.edited.<ext>` — the original is never overwritten, the output is reopened and verified (formula cells check their persisted cached value/type/error), and an existing different file at the output path is refused. A user-confirmed edit (the editor's confirmation) keeps its existing path. Long Office/media work can be submitted as a background job: the job freezes the workspace, revision and command payload at submission, reports real progress, keeps running when you close the page, and cancellation only becomes terminal after the processor acknowledges and cleans its staging.
 
@@ -418,6 +418,10 @@ Live input, file transcription and video subtitles are separate paths. Check tex
 
 **Get Run Files.** In Shortcuts, add **Get Run Files** and choose an existing Floe run. It returns the verified files produced by that exact run as Shortcuts files. Leave **Include partial results** off for complete results; turn it on only when you explicitly want verified files from a run that is still active, failed or cancelled. Use native Shortcuts steps such as **Quick Look** or **Save File** to view or store them. A run that produced no files returns an empty result.
 
+**Foldable layouts.** Supported hardware is detected automatically. The **Foldable adaptation** switch appears only on foldable devices, under **Settings → General**. Turn it off to use the ordinary adaptive layout.
+
+The skill list shows Official, Internal or External origin tags. Older records with no provable source show Unknown.
+
 Skills supply methods; installation/enabling does not grant file, network or account access. Use only needed skills and inspect source/version. MCP tools depend on configured, available servers.
 
 After connecting mail, verify account/folders read-only before sending. Check recipients, subject, body and attachments. See [mail](MAIL_CONNECTOR.md) and [Skill Hub](../skill-hub/README.md).
@@ -426,13 +430,13 @@ Scheduled tasks live on Home under **Scheduled** (**Schedule task** adds one). C
 
 **System automation for one plan.** Save the plan first, then choose **Automation** on its Home row or row menu. The setup shows the saved plan and a suggested trigger time in its anchor time zone.
 
-1. Choose **Import scheduled-task shortcut** and confirm the add. Then open the shortcut in the editor, tap the empty **Schedule** field of the **Run Scheduled Task** action, select the saved plan, then return to save. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
+1. Tap the Shortcuts badge and confirm the add on the system page. Then open the shortcut in the editor, tap the empty **Schedule** field of the **Run Scheduled Task** action, select the saved plan, then return to save. Alternatively, expand **Manual setup**, add Floe’s **Run Scheduled Task** action and select the plan.
 2. In Shortcuts, create a **Specific Time** automation at the suggested time and cadence. Run the added shortcut, select **Run Immediately** and enable it.
 3. To continue with results, use the returned run with **Status / Wait / Text / Files / Cancel**. Query that run later rather than starting the plan again.
 
-When a possibly configured plan is deleted or its one-shot run ends, Floe retains a cleanup reminder. Remove its Shortcut and automation in the system app, then choose **Removed**; **Dismiss** only silences the reminder. Pausing a plan or completing one recurring occurrence does not prompt deletion. Floe cannot detect or delete system Shortcuts, and opening an add page does not mean the shortcut was added.
+When a possibly configured plan is deleted or its one-shot run ends, Floe prompts you to clean up its Shortcut and retains a reminder on Home. Remove its Shortcut and automation in the system app, then choose **Removed**; **Dismiss** only silences the reminder. Pausing a plan or completing one recurring occurrence does not prompt deletion. Floe cannot detect or delete system Shortcuts, and opening an add page does not mean the shortcut was added.
 
-The action uses the existing plan's model, workspace, environment and permissions. The suggestion rounds up to a whole minute to avoid firing before the plan's stored seconds; it does not change the plan. If the device and plan use different time zones, convert the suggested time and adjust the automation when those zones change. For a one-time plan, add a date condition and turn off any repeating automation after completion. This setup covers once, daily and weekly plans; fixed intervals remain on the in-app scheduler, and after-success plans use their upstream event. Enable a disabled plan before running it. Opening Shortcuts does not create an automation, and Floe cannot read its enabled state. Locked and force-quit behavior remains unverified on a physical device.
+The action uses the existing plan's model, workspace, environment and permissions. The suggestion rounds up to a whole minute to avoid firing before the plan's stored seconds; it does not change the plan. If the device and plan use different time zones, convert the suggested time and adjust the automation when those zones change. For a one-time plan, add a date condition and turn off any repeating automation after completion. This setup covers once, daily and weekly plans; fixed intervals remain on the in-app scheduler, and after-success plans use their upstream event. Enable a disabled plan before running it. Opening Shortcuts does not create an automation, and Floe cannot read its enabled state. Execution while locked or force-quit is controlled by iOS; check the run record.
 
 Mail search and organization: `mail.search` is read-only and pages with an opaque cursor bound to the account, folder and mailbox version (UIDVALIDITY) plus the exact criteria — repeating a page with a changed account/folder/criteria fails loudly instead of returning wrong messages. `mail.move` (move/archive/trash, one message per call) requires approval, never issues a global EXPUNGE and never deletes permanently; POP3 accounts report these operations as unsupported instead of pretending. If the connection drops after a mutating command, the next attempt first reconciles read-only and reports whether the action actually completed.
 
