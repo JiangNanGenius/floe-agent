@@ -121,7 +121,30 @@ editor identity are rechecked before any conflict state is changed.
 
 Four focused macOS Core tests passed with Swift 6 object compilation: repeated
 read-only proof, a same-size external rewrite with restored timestamp, closed or
-foreign sessions, and missing/substituted originals. The final App build and
-native preview check remain pending. The original preview failure and unchanged
-source-digest assertion remain retained; final tests capture the actual before/after
-bytes rather than weakening that assertion.
+foreign sessions, and missing/substituted originals. The complete App and test host
+subsequently compiled at `0d40e141` with Xcode 27.1 / Swift 6. Actual native preview
+attachments retained the original workbook before and after the operation; both
+were 18,421 bytes with the exact original digest. The original hash failure remains
+retained rather than replacing its expected value.
+
+## Office integration results — 2026-10-24
+
+- Three real pinned-engine Word/PowerPoint tests passed: physical paper and
+  orientation, whole-page fit with text preservation, and explicit overflow
+  reporting. The source packages remained unchanged.
+- The actual workbook handwriting check passed at `10b18c7b`: six engine exports
+  verified 51 omitted ink shapes, one retained ordinary object, zero yellow
+  highlighter pixels in omitted output, identical typed numbers, reduced automatic
+  page extent, an honored explicit range and an unchanged source digest.
+- Shared export contract and PDF text tests initially failed incorrect test
+  expectations (drawing replacement characters, literal hyphens and Excel defaults
+  applied to Word). The original failures were retained; the four corrected cases
+  passed without changing runtime code or weakening source preservation.
+- The native automatic-preview check correctly changed the real scaling picker
+  and started generation 2 without a manual Update action. The isolated engine
+  then failed to produce the second PDF; the old preview remained visibly stale
+  with a retry action. This is an outstanding runtime failure, not an accepted
+  preview or a claim that the queue failed to re-arm.
+- Only the existing canonical iPad Simulator was used and it was shut down after
+  testing. Build 291 is a local candidate; no new tag, upload or publication is
+  implied by these compile/test results. Full-App M4 playback remains pending.
