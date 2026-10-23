@@ -147,6 +147,39 @@ private func occurrences(of needle: String, in haystack: String) -> Int {
     haystack.components(separatedBy: needle).count - 1
 }
 
+/// Serial-queue test barrier with a deterministic suspension lifecycle.
+/// Current libdispatch aborts the process (`_dispatch_lane_resume` trap)
+/// when a queue is resumed more times than it was suspended, and these
+/// fixtures legitimately need TWO release sites — the happy path that lets
+/// the held-back write complete and the scope-exit safety net that keeps an
+/// early throw from leaving the queue parked forever — so the fixture grants
+/// exactly one resume credit: the first `release()` performs the single
+/// matching `resume()`, every later call is a no-op, and the scope-exit
+/// cleanup always still runs.
+private final class ImportDraftBarrier {
+    let queue: DispatchQueue
+    private var holdsSuspension = false
+
+    init(label: String) {
+        queue = DispatchQueue(label: label)
+    }
+
+    /// Park the queue so work enqueued afterwards cannot start.
+    func park() {
+        precondition(!holdsSuspension, "import barrier parked twice without a release")
+        queue.suspend()
+        holdsSuspension = true
+    }
+
+    /// Consume the one suspension credit: resumes the parked queue at most
+    /// once. A second call never over-resumes it.
+    func release() {
+        guard holdsSuspension else { return }
+        holdsSuspension = false
+        queue.resume()
+    }
+}
+
 @Suite("FloeApp.ImportDraftSynchronization")
 @MainActor
 struct ImportDraftSynchronizationTests {
@@ -596,8 +629,8 @@ struct ImportDraftSynchronizationTests {
     @Test("A human edit during the durable IO cannot adopt unproven refs, and success re-applies the proven delta")
     func editDuringInFlightImportThenSuccess() async throws {
         let url = syncTempDraftURL("barrier-success")
-        let barrier = DispatchQueue(label: "app.floe.test.import-draft-barrier")
-        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.import-draft-barrier")
+        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier.queue)
         let conversationID = UUID()
         let human = syncAttachment("human.bin")
         let baseRevision = try #require(
@@ -609,9 +642,9 @@ struct ImportDraftSynchronizationTests {
         )
         let imported = syncAttachment("incoming.bin")
         let receipt = syncReceipt(for: conversationID, claimToken: "claim-barrier")
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             store.settleHandoff(entryID: receipt.entryID, claimToken: receipt.claimToken)
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         }
@@ -652,7 +685,7 @@ struct ImportDraftSynchronizationTests {
 
         // Now the bytes land. The proven placement becomes authoritative, is
         // re-applied onto the newer human content, and only then renders.
-        barrier.resume()
+        barrier.release()
         let result = await landing.value
         guard case .landed = result else {
             Issue.record("expected .landed after the write completed, got \(result)")
@@ -677,8 +710,8 @@ struct ImportDraftSynchronizationTests {
             .appendingPathComponent("import-draft-barrier-blocker-\(UUID().uuidString)")
         try Data().write(to: blocker)
         let blockedURL = blocker.appendingPathComponent("nested/drafts.json")
-        let barrier = DispatchQueue(label: "app.floe.test.import-draft-failure-barrier")
-        let store = ComposerDraftStore(fileURL: blockedURL, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.import-draft-failure-barrier")
+        let store = ComposerDraftStore(fileURL: blockedURL, writeQueue: barrier.queue)
         let conversationID = UUID()
         let human = syncAttachment("human.bin")
         let baseRevision = try #require(
@@ -690,9 +723,9 @@ struct ImportDraftSynchronizationTests {
         )
         let imported = syncAttachment("incoming.bin")
         let receipt = syncReceipt(for: conversationID, claimToken: "claim-fail-barrier")
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             try? FileManager.default.removeItem(at: blocker)
         }
         let landing = Task {
@@ -716,7 +749,7 @@ struct ImportDraftSynchronizationTests {
         // The write fails. The source is never acknowledged and it discards
         // its staged files — nothing in the live or durable draft may be
         // holding those ids.
-        barrier.resume()
+        barrier.release()
         let result = await landing.value
         #expect(result == .failed)
         let afterFailure = try #require(store.entry(for: conversationID))
@@ -759,8 +792,8 @@ struct ImportDraftSynchronizationTests {
     @Test("The reconciled second write gates .landed: disk reconstruction proves human+import+receipt")
     func reconcileSecondWriteGatesLandedUntilDurable() async throws {
         let url = syncTempDraftURL("reconcile-second-write")
-        let barrier = DispatchQueue(label: "app.floe.test.reconcile-second-write-barrier")
-        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.reconcile-second-write-barrier")
+        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier.queue)
         let conversationID = UUID()
         let human = syncAttachment("human.bin")
         let baseRevision = try #require(
@@ -773,9 +806,9 @@ struct ImportDraftSynchronizationTests {
         let imported = syncAttachment("incoming.bin")
         let receipt = syncReceipt(for: conversationID, claimToken: "claim-reconcile")
         var outcome: ComposerDraftStore.ImportedDraftLandingResult?
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         }
         let landing = Task {
@@ -803,8 +836,8 @@ struct ImportDraftSynchronizationTests {
         // exactly the first placement's write + verdict blocks.
         let gate = DispatchSemaphore(value: 0)
         defer { gate.signal() }
-        barrier.async { gate.wait() }
-        barrier.resume()
+        barrier.queue.async { gate.wait() }
+        barrier.release()
         try await waitForReconciledPlacement(
             store, conversationID: conversationID, maskContains: "typed during io"
         )
@@ -857,8 +890,8 @@ struct ImportDraftSynchronizationTests {
             .appendingPathComponent("import-draft-reconcile-fail-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let url = root.appendingPathComponent("nested/drafts.json")
-        let barrier = DispatchQueue(label: "app.floe.test.reconcile-failure-barrier")
-        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.reconcile-failure-barrier")
+        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier.queue)
         let conversationID = UUID()
         let human = syncAttachment("human.bin")
         let baseRevision = try #require(
@@ -871,9 +904,9 @@ struct ImportDraftSynchronizationTests {
         let imported = syncAttachment("incoming.bin")
         let receipt = syncReceipt(for: conversationID, claimToken: "claim-reconcile-fail")
         var outcome: ComposerDraftStore.ImportedDraftLandingResult?
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             try? FileManager.default.removeItem(at: root)
         }
         let landing = Task {
@@ -895,8 +928,8 @@ struct ImportDraftSynchronizationTests {
         )
         let gate = DispatchSemaphore(value: 0)
         defer { gate.signal() }
-        barrier.async { gate.wait() }
-        barrier.resume()
+        barrier.queue.async { gate.wait() }
+        barrier.release()
         try await waitForReconciledPlacement(
             store, conversationID: conversationID, maskContains: "typed during io"
         )
@@ -939,8 +972,8 @@ struct ImportDraftSynchronizationTests {
     @Test("A cancel during the reconciled hold defers: no publish, no ack, durable state stays honest")
     func reconcileCancellationDefersWithoutPublishing() async throws {
         let url = syncTempDraftURL("reconcile-cancel")
-        let barrier = DispatchQueue(label: "app.floe.test.reconcile-cancel-barrier")
-        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.reconcile-cancel-barrier")
+        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier.queue)
         let conversationID = UUID()
         let human = syncAttachment("human.bin")
         let baseRevision = try #require(
@@ -953,9 +986,9 @@ struct ImportDraftSynchronizationTests {
         let imported = syncAttachment("incoming.bin")
         let receipt = syncReceipt(for: conversationID, claimToken: "claim-reconcile-cancel")
         var outcome: ComposerDraftStore.ImportedDraftLandingResult?
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         }
         let landing = Task {
@@ -977,8 +1010,8 @@ struct ImportDraftSynchronizationTests {
         )
         let gate = DispatchSemaphore(value: 0)
         defer { gate.signal() }
-        barrier.async { gate.wait() }
-        barrier.resume()
+        barrier.queue.async { gate.wait() }
+        barrier.release()
         try await waitForReconciledPlacement(
             store, conversationID: conversationID, maskContains: "typed during io"
         )
@@ -1010,17 +1043,17 @@ struct ImportDraftSynchronizationTests {
     @Test("Two in-flight landings serialize: the second defers as busy")
     func secondLandingDefersWhileFirstInFlight() async throws {
         let url = syncTempDraftURL("barrier-serialize")
-        let barrier = DispatchQueue(label: "app.floe.test.import-draft-serialize")
-        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier)
+        let barrier = ImportDraftBarrier(label: "app.floe.test.import-draft-serialize")
+        let store = ComposerDraftStore(fileURL: url, writeQueue: barrier.queue)
         let conversationID = UUID()
         let otherID = UUID()
         _ = store.save(text: "a", attachments: [], conversationID: conversationID)
         _ = store.save(text: "b", attachments: [], conversationID: otherID)
         let firstReceipt = syncReceipt(for: conversationID, claimToken: "claim-first-barrier")
         let secondReceipt = syncReceipt(for: otherID, claimToken: "claim-second-barrier")
-        barrier.suspend()
+        barrier.park()
         defer {
-            barrier.resume()
+            barrier.release()
             store.settleHandoff(entryID: firstReceipt.entryID, claimToken: firstReceipt.claimToken)
             try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
         }
@@ -1041,7 +1074,7 @@ struct ImportDraftSynchronizationTests {
         )
         #expect(second == .deferredBusy)
         #expect(store.latestImportedDraftLanding == nil)
-        barrier.resume()
+        barrier.release()
         guard case .landed = await first.value else {
             Issue.record("expected the first landing to succeed")
             return
