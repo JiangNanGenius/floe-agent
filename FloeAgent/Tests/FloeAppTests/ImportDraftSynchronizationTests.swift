@@ -46,6 +46,8 @@ import FloeModels
 
 // MARK: - Helpers
 
+private enum ImportDraftTestFailure: Error { case writeBarrierTimedOut }
+
 private func syncTempDraftURL(_ label: String) -> URL {
     FileManager.default.temporaryDirectory
         .appendingPathComponent("import-draft-\(label)-\(UUID().uuidString)", isDirectory: true)
@@ -585,7 +587,7 @@ struct ImportDraftSynchronizationTests {
         let deadline = clock.now.advanced(by: .seconds(5))
         while !store.isImportedDraftCommitInFlight(for: conversationID) {
             if clock.now >= deadline {
-                throw CocoaError(.fileWriteInProgress)
+                throw ImportDraftTestFailure.writeBarrierTimedOut
             }
             try await Task.sleep(nanoseconds: 2_000_000)
         }
@@ -748,7 +750,7 @@ struct ImportDraftSynchronizationTests {
                 && store.entry(for: conversationID)?.text.contains(humanMarker) == true
         ) {
             if clock.now >= deadline {
-                throw CocoaError(.fileWriteInProgress)
+                throw ImportDraftTestFailure.writeBarrierTimedOut
             }
             try await Task.sleep(nanoseconds: 2_000_000)
         }
