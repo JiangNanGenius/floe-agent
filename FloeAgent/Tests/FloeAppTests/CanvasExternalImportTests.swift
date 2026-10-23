@@ -206,11 +206,11 @@ struct CanvasImportPublicationSemanticsTests {
 @MainActor
 @Suite(.serialized)
 struct CanvasExternalImportBridgeTests {
-    private func bookkeeping() throws -> (database: DatabaseManager,
+    private func bookkeeping() async throws -> (database: DatabaseManager,
                                           assets: CreativeAssetStore,
                                           sync: CanvasSyncOperationStore) {
         let database = try DatabaseManager.inMemory()
-        try database.migrate()
+        try await database.migrate()
         return (database, CreativeAssetStore(database: database),
                 CanvasSyncOperationStore(database: database))
     }
@@ -262,7 +262,7 @@ struct CanvasExternalImportBridgeTests {
         defer { try? FileManager.default.removeItem(at: ingestionBase) }
         let payloads = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: payloads) }
-        let book = try bookkeeping()
+        let book = try await bookkeeping()
         let ingestion = CreativeAssetIngestionService(assetStore: book.assets, baseDirectory: ingestionBase)
         let committer = CanvasExternalImportCommitter(
             ingestion: ingestion, assets: book.assets, sync: book.sync,
@@ -324,7 +324,7 @@ struct CanvasExternalImportBridgeTests {
         defer { try? FileManager.default.removeItem(at: ingestionBase) }
         let payloads = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: payloads) }
-        let book = try bookkeeping()
+        let book = try await bookkeeping()
         let committer = CanvasExternalImportCommitter(
             ingestion: CreativeAssetIngestionService(assetStore: book.assets, baseDirectory: ingestionBase),
             assets: book.assets, sync: book.sync, canvasDirectoryOverride: canvasDirectory)
@@ -354,7 +354,7 @@ struct CanvasExternalImportBridgeTests {
         defer { try? FileManager.default.removeItem(at: ingestionBase) }
         let payloads = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: payloads) }
-        let book = try bookkeeping()
+        let book = try await bookkeeping()
         let committer = CanvasExternalImportCommitter(
             ingestion: CreativeAssetIngestionService(assetStore: book.assets, baseDirectory: ingestionBase),
             assets: book.assets, sync: book.sync, canvasDirectoryOverride: canvasDirectory)
@@ -419,7 +419,7 @@ struct CanvasExternalImportBridgeTests {
         let payloads = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: payloads) }
         let database = try DatabaseManager.inMemory()
-        try database.migrate()
+        try await database.migrate()
         let committedStore = CreativeAssetStore(database: database)
         let syncStore = CanvasSyncOperationStore(database: database)
         // A second, bookkeeping-blind store receives the SAME op ids on the
@@ -427,7 +427,7 @@ struct CanvasExternalImportBridgeTests {
         // SQLite transaction, so the failed update must roll the receipt
         // back — the exact interrupted-bookkeeping shape the journal retries.
         let interruptedDatabase = try DatabaseManager.inMemory()
-        try interruptedDatabase.migrate()
+        try await interruptedDatabase.migrate()
         let interruptedStore = CreativeAssetStore(database: interruptedDatabase)
         let ingestion = CreativeAssetIngestionService(assetStore: committedStore, baseDirectory: ingestionBase)
         let plannedCanvas = UUID()
