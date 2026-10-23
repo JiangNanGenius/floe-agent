@@ -113,12 +113,15 @@ struct VoiceConversationAudioTests {
     @Test("A short voiced utterance followed by ~0.5 s of tail flushes; pure silence never does")
     func utteranceGateFlushesShortSpeech() {
         var gate = VoiceConversationUtteranceGate()
-        // ~1 s of quiet-but-real speech (RMS 0.004 ≥ voiced floor 0.002).
-        for _ in 0..<8 { gate.process(rms: 0.004, samples: 1_000) }
+        // ~1 s of quiet-but-real speech (RMS 0.004 ≥ voiced floor 0.002):
+        // 16 × 1_000 samples = 16_000 in the gate's 16 kHz domain.
+        for _ in 0..<16 { gate.process(rms: 0.004, samples: 1_000) }
         #expect(!gate.shouldFlush)              // still mid-utterance
-        // ~0.5 s of tail silence: the utterance ended → flush NOW, even
-        // though the 3 s chunk boundary was never reached.
-        for _ in 0..<4 { gate.process(rms: 0.0001, samples: 1_000) }
+        // ~0.5 s of tail silence: 8 × 1_000 = 8_000 samples at 16 kHz, the
+        // documented `silenceTailSamplesRequired` end-of-utterance tail. The
+        // utterance ended → flush NOW, even though the 3 s chunk boundary was
+        // never reached.
+        for _ in 0..<8 { gate.process(rms: 0.0001, samples: 1_000) }
         #expect(gate.shouldFlush)
         gate.noteDecoded()
         #expect(!gate.shouldFlush)              // counted once, never replayed

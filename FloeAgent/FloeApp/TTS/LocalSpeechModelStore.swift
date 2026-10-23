@@ -222,6 +222,8 @@ actor LocalSpeechModelStore {
     private let transfersRoot: URL?
     private let downloader: any LocalSpeechDownloading
     private let remover: (URL) throws -> Void
+    private let availableMemory: @Sendable () -> UInt64
+    private let isThermallyCritical: @Sendable () -> Bool
     // Smoothed network speed estimate, fenced per asset download window so a
     // late callback from a previous asset can never contaminate the new one.
     private var estimator = SpeedEstimator()
@@ -235,13 +237,17 @@ actor LocalSpeechModelStore {
 
     init(catalog: LocalSpeechCatalog? = nil, root: URL? = nil, defaults: UserDefaults = .standard,
          downloader: (any LocalSpeechDownloading)? = nil, transfersRoot: URL? = nil,
-         remover: ((URL) throws -> Void)? = nil) {
+         remover: ((URL) throws -> Void)? = nil,
+         availableMemory: @escaping @Sendable () -> UInt64 = { UInt64(os_proc_available_memory()) },
+         isThermallyCritical: @escaping @Sendable () -> Bool = { ProcessInfo.processInfo.thermalState == .critical }) {
         providedCatalog = catalog
         storageRoot = root
         self.transfersRoot = transfersRoot
         self.defaults = defaults
         self.downloader = downloader ?? SharedSpeechDownloader()
         self.remover = remover ?? { try FileManager.default.removeItem(at: $0) }
+        self.availableMemory = availableMemory
+        self.isThermallyCritical = isThermallyCritical
     }
     private static let pendingKey = "voice.local.pendingInstallation"
     private static let migrationKey = "voice.local.migration.v1"
@@ -390,9 +396,9 @@ actor LocalSpeechModelStore {
         // cleanup crosses its await points.
         guard !retiring.contains(id) else { throw Failure.busy }
         guard leases.isEmpty else { throw Failure.busy }
-        guard ProcessInfo.processInfo.thermalState != .critical else { throw Failure.thermal }
+        guard !isThermallyCritical() else { throw Failure.thermal }
         let required = model.minimumMemoryBytes ?? max(768 * 1024 * 1024, UInt64(model.byteCount) * 2)
-        let available = UInt64(os_proc_available_memory())
+        let available = availableMemory()
         let reserved = UInt64(max(0, ResidentMemoryReservations.totalBytes()))
         let headroom = available > reserved ? available - reserved : 0
         guard headroom > required + 256 * 1024 * 1024 else { throw Failure.memory }

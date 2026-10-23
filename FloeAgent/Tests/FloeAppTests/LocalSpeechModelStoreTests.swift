@@ -5,6 +5,13 @@ import CryptoKit
 
 @MainActor
 final class LocalSpeechModelStoreTests: XCTestCase {
+    /// A rejected (corrupt/hash-mismatched) download of a REPLACEMENT pack must
+    /// fail visibly, leave the currently installed pack usable, and a retry
+    /// with healthy transport bytes must recover. The product deliberately
+    /// treats re-begging the SAME already-installed pack as a crash-window
+    /// no-op ("the pack is already installed, so finish without
+    /// re-downloading"), so the rejected attempt targets a genuinely new
+    /// revision — the MOSS pack-swap path.
     func testRejectedDownloadPreservesInstalledModelAndRetryCanRecover() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -13,24 +20,29 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let bytes = Data("verified-model".utf8)
         let model = fixture(bytes)
+        let replacement = fixture(bytes, id: "test-tts-replacement", revision: String(repeating: "9", count: 40))
         let downloader = DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: bytes)
-        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: downloader)
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model, replacement]), root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: downloader)
         await store.beginInstallation(model)
         try await waitForCompletion(store)
         let installed = await store.isInstalled(model)
         XCTAssertTrue(installed)
         await downloader.setCorrupt(true)
-        await store.beginInstallation(model)
+        await store.beginInstallation(replacement)
         try await waitForCompletion(store)
         let failure = await store.state().failureKey
         XCTAssertNotNil(failure)
         let preserved = await store.isInstalled(model)
         XCTAssertTrue(preserved, "A failed replacement must not destroy the good model")
+        let rejected = await store.isInstalled(replacement)
+        XCTAssertFalse(rejected, "Rejected transport bytes are never committed")
         await downloader.setCorrupt(false)
-        await store.beginInstallation(model)
+        await store.beginInstallation(replacement)
         try await waitForCompletion(store)
         let retryFailure = await store.state().failureKey
         XCTAssertNil(retryFailure)
+        let recovered = await store.isInstalled(replacement)
+        XCTAssertTrue(recovered, "A healthy retry completes the replacement")
         try await store.remove(model)
         let removed = await store.isInstalled(model)
         XCTAssertFalse(removed)
@@ -252,6 +264,36 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         XCTAssertTrue(installed)
     }
 
+    func testResourceRefusalDoesNotLeaveALeaseOrPinInstalledBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "local-speech-tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = hiddenPack()
+        for thermal in [false, true] {
+            let modelsRoot = root.appendingPathComponent(thermal ? "thermal" : "memory")
+            try seedInstalledPack(model, root: modelsRoot, bytes: Data(legacyBytes))
+            let store = LocalSpeechModelStore(
+                catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]),
+                root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
+                availableMemory: { thermal ? 8 * 1024 * 1024 * 1024 : 0 },
+                isThermallyCritical: { thermal }
+            )
+            do {
+                _ = try await store.acquire(model.id)
+                XCTFail("Resource refusal must not grant a lease")
+            } catch let failure as LocalSpeechModelStore.Failure {
+                XCTAssertEqual(failure, thermal ? .thermal : .memory)
+            }
+            let retained = await store.isInstalled(model)
+            XCTAssertTrue(retained, "Refusal preserves installed bytes")
+            try await store.remove(model)
+            let removed = await store.isInstalled(model)
+            XCTAssertFalse(removed, "A refused acquire leaves no lease pinning the pack")
+        }
+    }
+
     func testLeaseBlockedLegacyCleanupRetriesOnReleaseAndLaunch() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -265,14 +307,14 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
                                           root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
-                                          transfersRoot: root.appendingPathComponent("transfers"))
+                                          transfersRoot: root.appendingPathComponent("transfers"),
+                                          availableMemory: { 8 * 1024 * 1024 * 1024 },
+                                          isThermallyCritical: { false })
         await store.beginInstallation(fresh, selectionRevision: 1)
         try await waitForCompletion(store)
-        let lease: LocalSpeechModelStore.Lease
-        do { lease = try await store.acquire(legacy.id) }
-        catch LocalSpeechModelStore.Failure.memory, LocalSpeechModelStore.Failure.thermal {
-            throw XCTSkip("Lease path requires device-like memory/thermal headroom")
-        }
+        // Synthetic bytes and controlled resource readings exercise lease
+        // ownership, not device inference or physical memory qualification.
+        let lease = try await store.acquire(legacy.id)
         await store.migrationLoadValidated(legacyStillSelected: true)
         var record = await store.migrationRecord
         XCTAssertEqual(record?.stage, .awaitingLegacyRelease)
@@ -343,7 +385,16 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let state = await store.state()
         XCTAssertFalse(state.running, "A pending legacy install must not resume")
         XCTAssertNil(defaults.string(forKey: "voice.local.pendingInstallation"))
-        for artifact in legacyArtifacts(legacy, transfers: transfers) where artifact.pathExtension == "resume" {
+        // restoreInstallation returns synchronously, but the durable transfer
+        // fence (downloader.retire) is a follow-up actor job: the blobs are
+        // dropped once that fence settles. Wait for the documented outcome
+        // instead of racing the fire-and-forget retirement, then assert it.
+        let resumeArtifacts = legacyArtifacts(legacy, transfers: transfers).filter { $0.pathExtension == "resume" }
+        for _ in 0..<300 {
+            if resumeArtifacts.allSatisfy({ !FileManager.default.fileExists(atPath: $0.path) }) { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        for artifact in resumeArtifacts {
             XCTAssertFalse(FileManager.default.fileExists(atPath: artifact.path), "Legacy resume blobs dropped")
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: decoy.path), "Only the legacy keys are removed")
@@ -555,10 +606,10 @@ final class LocalSpeechModelStoreTests: XCTestCase {
     private let legacyBytes = Data("legacy-qwen-weights".utf8)
     private let freshBytes = Data("fresh-moss-weights".utf8)
 
-    private func fixture(_ bytes: Data) -> LocalSpeechModel {
-        let revision = String(repeating: "1", count: 40)
+    private func fixture(_ bytes: Data, id: String = "test-tts",
+                         revision: String = String(repeating: "1", count: 40)) -> LocalSpeechModel {
         let hash = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
-        return LocalSpeechModel(id: "test-tts", title: "Synthetic test", engine: "mossTTSNano", repository: "test/model", revision: revision, license: "Apache-2.0", languages: ["zh", "en"], voices: [.init(id: "default", name: "Test", languages: ["zh", "en"])], files: [.init(path: "weights.bin", url: URL(string: "https://huggingface.co/test/model/resolve/\(revision)/weights.bin")!, sha256: hash, byteCount: Int64(bytes.count))], tokenizerRelativePath: nil, minimumMemoryBytes: nil)
+        return LocalSpeechModel(id: id, title: "Synthetic test", engine: "mossTTSNano", repository: "test/model", revision: revision, license: "Apache-2.0", languages: ["zh", "en"], voices: [.init(id: "default", name: "Test", languages: ["zh", "en"])], files: [.init(path: "weights.bin", url: URL(string: "https://huggingface.co/test/model/resolve/\(revision)/weights.bin")!, sha256: hash, byteCount: Int64(bytes.count))], tokenizerRelativePath: nil, minimumMemoryBytes: nil)
     }
 
     private func hiddenPack() -> LocalSpeechModel {
@@ -692,8 +743,13 @@ private actor DownloadFixture: LocalSpeechDownloading {
         if delays { try await Task.sleep(for: .seconds(30)) }
         try Task.checkCancellation()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let file = root.appendingPathComponent("cached-download")
-        if FileManager.default.fileExists(atPath: file.path) { return file }
+        // One cached payload per asset URL so a new revision never reuses a
+        // previous pack's bytes. A completed transfer may be reused only while
+        // healthy: with corruption armed the file is rewritten, so the store's
+        // verification really rejects THESE bytes (it deletes the rejected
+        // transport bytes, so the later retry redownloads healthy content).
+        let file = root.appendingPathComponent(url.absoluteString.data(using: .utf8)!.base64EncodedString().replacingOccurrences(of: "/", with: "_"))
+        if !corrupt, FileManager.default.fileExists(atPath: file.path) { return file }
         var result = bytes
         if corrupt { result[0] ^= 1 }
         try result.write(to: file)

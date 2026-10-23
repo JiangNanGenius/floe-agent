@@ -348,6 +348,21 @@ private final class VoiceRig {
         await Task.yield()
     }
 
+    /// Deterministic cross-task sync: the levels and transcripts streams are
+    /// consumed by two independent MainActor tasks, so a blind sleep cannot
+    /// pin which one has run. Poll a published product effect instead (each
+    /// poll yields the MainActor so pending consumer jobs run); a timeout is a
+    /// real test failure, never a silent pass.
+    func waitUntil(_ timeoutMilliseconds: UInt64 = 10_000, _ condition: @MainActor () -> Bool) async -> Bool {
+        var waited: UInt64 = 0
+        while !condition() {
+            guard waited < timeoutMilliseconds else { return false }
+            await settle(10)
+            waited += 10
+        }
+        return true
+    }
+
     func say(_ text: String) async {
         stack.yieldTranscript(text)
         await settle()
@@ -742,10 +757,25 @@ struct VoiceConversationTests {
     func voicedClockResetsOnText() async {
         let rig = VoiceRig()
         await rig.coordinator.start()
-        for _ in 0..<30 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }  // 6 s
+        // Both the levels and the transcripts observer are separate MainActor
+        // tasks: the two synchronous bursts below are buffered, not consumed.
+        // A blind sleep could let the transcript's clock reset land in the
+        // MIDDLE of the first burst, so the samples still queued behind it
+        // would count against the reset (double-counting one utterance).
+        // Fence each side explicitly on published product effects instead:
+        // the levels stream is FIFO, so a distinguishable terminal level
+        // proves the whole burst was counted before the text is injected.
+        for _ in 0..<29 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }   // 5.8 s
+        rig.stack.yieldLevel(0.42, speech: true, duration: 0.2)                       // 6 s, sentinel
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.42 })
         await rig.say("你好")
-        for _ in 0..<30 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }  // +6 s voiced
-        await rig.settle(30)
+        // consumeTranscript zeroes the speech-without-recognition clock before
+        // it publishes the staged text, so this proves the reset is applied.
+        #expect(await rig.waitUntil { rig.coordinator.stagedTranscript == "你好" })
+        for _ in 0..<29 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }   // +5.8 s voiced
+        rig.stack.yieldLevel(0.41, speech: true, duration: 0.2)                       // +6 s, fresh sentinel
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.41 })
+        // 6 s of voiced audio since the transcript → below the 8 s cap.
         #expect(rig.coordinator.state == .listening)
         // And the utterance still endpoints normally.
         rig.clock.advance(by: 0.95)

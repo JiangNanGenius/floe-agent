@@ -246,6 +246,14 @@ final class TTSSettingsServiceTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         await fixture.settings.syncLocalSelection()
+        // An install notification can already own reconciliation when this
+        // explicit sync arrives. Wait for its observable selection and cleanup
+        // outcome; keep the assertions strict if that completion never lands.
+        for _ in 0..<300 {
+            let legacyPresent = await fixture.store.isInstalled(fixture.legacy)
+            if fixture.settings.snapshot.modelID == fixture.fresh.id && !legacyPresent { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(fixture.settings.snapshot.modelID, fixture.fresh.id)
         XCTAssertEqual(fixture.settings.snapshot.voiceID, "serena")
         let legacyInstalled = await fixture.store.isInstalled(fixture.legacy)
