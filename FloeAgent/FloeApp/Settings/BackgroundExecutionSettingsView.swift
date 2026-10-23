@@ -4,12 +4,16 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import CoreLocation
+import UIKit
 
 @MainActor
 struct BackgroundExecutionSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @ObservedObject var videoService: BackgroundVideoService
     @ObservedObject var audioService: PiPAudioService
+    @ObservedObject private var locationService = LocationServicesCenter.shared
+    @Environment(\.openURL) private var openURL
 
     private var statusPiPEnabled: Bool { StatusPiPReleaseGate.isEnabled }
 
@@ -45,6 +49,23 @@ struct BackgroundExecutionSettingsView: View {
                 .accessibilityIdentifier("background.screenFeedback.toggle")
             }
 
+            Section {
+                LabeledContent("background.location.title") {
+                    Text(locationStatus)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityIdentifier("background.location.status")
+
+                if locationService.authorizationStatus == .denied {
+                    Button("background.location.open_settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            openURL(url)
+                        }
+                    }
+                    .accessibilityIdentifier("background.location.openSettings")
+                }
+            }
+
             if center.backgroundExecutionOptions.pictureInPictureEnabled, statusPiPEnabled {
                 Section {
                     LabeledContent {
@@ -70,7 +91,28 @@ struct BackgroundExecutionSettingsView: View {
             }
         }
         .navigationTitle(FloeL10n.l("background.settings.title"))
-        .task { await center.loadBackgroundExecution() }
+        .task {
+            await center.loadBackgroundExecution()
+            locationService.refreshAuthorizationStatus()
+        }
+    }
+
+    private var locationStatus: String {
+        switch locationService.authorizationStatus {
+        case .notDetermined:
+            return FloeL10n.l("background.location.permission.not_determined")
+        case .denied:
+            return FloeL10n.l("background.location.permission.denied")
+        case .restricted:
+            return FloeL10n.l("background.location.permission.restricted")
+        default:
+            switch locationService.backgroundState {
+            case .idle: return FloeL10n.l("background.location.state.idle")
+            case .ready: return FloeL10n.l("background.location.state.ready")
+            case .active: return FloeL10n.l("background.location.state.active")
+            case .unavailable: return FloeL10n.l("background.location.state.unavailable")
+            }
+        }
     }
 }
 

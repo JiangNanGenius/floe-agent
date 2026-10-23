@@ -1,6 +1,23 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+  "NSLocationWhenInUseUsageDescription": {
+    "extractionState": "manual",
+    "localizations": {
+      "en": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe uses your location for weather and nearby places you request, including while those tasks continue in the background. Background assistance uses approximate location while tasks are running."
+        }
+      },
+      "zh-Hans": {
+        "stringUnit": {
+          "state": "translated",
+          "value": "Floe 使用你的位置查询你请求的天气和附近地点，这些任务切到后台后也能继续。任务运行期间，后台辅助会使用近似位置。"
+        }
+      }
+    }
+  },
   "NSAlarmKitUsageDescription": {
     "extractionState": "manual",
     "localizations": {

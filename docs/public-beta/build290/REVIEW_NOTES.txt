@@ -1,0 +1,11 @@
+Floe Agent 1.7.49 (Build 290)
+
+Floe is a task assistant using the user's configured AI provider. No Floe account or demo account is required. Model responses require a user-configured provider.
+
+This build adds background location support to user-requested location tasks, such as getting local weather or finding nearby places. Location permission is requested on first foreground launch. Approximate location is supported. The existing location tool returns the current fix and its accuracy to the requesting task; the task can use its existing weather or search tools and returns results in the same conversation.
+
+Settings > Background execution shows the location state. Location assistance follows any enabled supported background feature, including Enhanced background and Picture in Picture. It runs only with active local task work and is released after the work ends or background support is disabled. Background coordinates are not stored as a location history or logged. Location permissions can be changed in iOS Settings. Denying location does not prevent ordinary non-location tasks.
+
+Suggested check: configure a model provider, ask Floe to obtain the current location and look up the local weather, then leave Floe while the task is running and return to the same conversation to see its result. With location denied, the task reports unavailable location rather than fabricated coordinates.
+
+Qualification used the existing iPad Simulator and controlled location adapters. Physical-device background duration and GPS behavior are not claimed as validated by those checks. This is a beta submission; the formal App Store submission is unchanged.

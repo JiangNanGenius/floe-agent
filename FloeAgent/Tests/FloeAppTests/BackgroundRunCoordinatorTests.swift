@@ -8,6 +8,7 @@
 #if canImport(UIKit)
 import Foundation
 import Testing
+import SwiftUI
 import UIKit
 import UserNotifications
 import FloeCore
@@ -428,6 +429,264 @@ struct BackgroundRunCoordinatorTests {
         let settledStale = try #require(try await store.occurrence(id: staleOccurrence.id))
         #expect(settledStale.state == .skipped)
     }
+
+    // MARK: - Background location assist inputs
+
+    private func activeRun(
+        media: Bool = false,
+        awaitingUser: Bool = false,
+        pendingApproval: String? = nil
+    ) -> BackgroundRunCoordinator.ActiveRun {
+        BackgroundRunCoordinator.ActiveRun(
+            conversationID: nil,
+            title: "Location task",
+            continuedProcessingOrigin: .explicitUserAction,
+            allowsContinuedProcessing: true,
+            retainsSurfaceOnFailure: true,
+            sendsTerminalNotification: true,
+            publishesContent: true,
+            isProviderRemoteMediaWork: media,
+            isAwaitingUserAttention: awaitingUser,
+            pendingApprovalToolName: pendingApproval
+        )
+    }
+
+    @Test("Background location support is the OR of the honored existing capabilities")
+    func backgroundLocationSupportFollowsHonoredCapabilities() {
+        #expect(BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundExecutionOptions(
+                enhancedBackgroundEnabled: true,
+                pictureInPictureEnabled: false,
+                screenFeedbackEnabled: false
+            )
+        ))
+        #expect(BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundExecutionOptions(
+                enhancedBackgroundEnabled: false,
+                pictureInPictureEnabled: true,
+                screenFeedbackEnabled: false
+            )
+        ))
+        #expect(BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundExecutionOptions(
+                enhancedBackgroundEnabled: false,
+                pictureInPictureEnabled: false,
+                screenFeedbackEnabled: true
+            )
+        ))
+        #expect(!BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundExecutionOptions(
+                enhancedBackgroundEnabled: false,
+                pictureInPictureEnabled: false,
+                screenFeedbackEnabled: false
+            )
+        ))
+
+        // The status-PiP release gate strips the visual flags (never the
+        // enhanced flag), so an ungated visual choice cannot re-enable the
+        // assist by itself.
+        let visualOnly = BackgroundExecutionOptions(
+            enhancedBackgroundEnabled: false,
+            pictureInPictureEnabled: true,
+            screenFeedbackEnabled: true
+        )
+        #expect(!BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundRunCoordinator.honoredOptions(visualOnly, statusPiPEnabled: false)
+        ))
+        let enhanced = BackgroundExecutionOptions(enhancedBackgroundEnabled: true)
+        #expect(BackgroundRunCoordinator.backgroundLocationSupportEnabled(
+            for: BackgroundRunCoordinator.honoredOptions(enhanced, statusPiPEnabled: false)
+        ))
+    }
+
+    @Test("Only actual local execution is eligible location work")
+    func locationWorkEligibilityExcludesWaitingStates() {
+        let options = BackgroundExecutionOptions(enhancedBackgroundEnabled: true)
+        func inputs(
+            runs: [BackgroundRunCoordinator.ActiveRun],
+            enabled: [String] = [],
+            held: [String] = [],
+            running: [String] = [],
+            scene: ScenePhase = .active
+        ) -> BackgroundRunCoordinator.BackgroundLocationInputs {
+            BackgroundRunCoordinator.backgroundLocationInputs(
+                options: options,
+                statusPiPEnabled: true,
+                runs: runs,
+                enabledLinuxEnvironmentIDs: enabled,
+                heldLinuxEnvironmentIDs: held,
+                runningLinuxEnvironmentIDs: running,
+                aggregateScenePhase: scene
+            )
+        }
+
+        #expect(inputs(runs: [activeRun()]).workEligible)
+        // Executing before the first model token is still real work.
+        #expect(inputs(runs: [activeRun()], scene: .active).workEligible)
+        #expect(!inputs(runs: []).workEligible)
+        #expect(!inputs(runs: [activeRun(media: true)]).workEligible)
+        #expect(!inputs(runs: [activeRun(awaitingUser: true)]).workEligible)
+        #expect(!inputs(runs: [activeRun(pendingApproval: "web.fetch")]).workEligible)
+        // One ordinary run among ineligible ones keeps the assist on.
+        #expect(inputs(runs: [
+            activeRun(media: true),
+            activeRun(awaitingUser: true),
+            activeRun()
+        ]).workEligible)
+        // A user-permitted Linux guest that is really running is work too.
+        #expect(inputs(runs: [], enabled: ["env-1"], held: ["env-1"], running: ["env-1"]).workEligible)
+        #expect(inputs(runs: [], enabled: ["env-1"], running: ["env-1"]).workEligible)
+        // A guest the user never enabled for background running is not work,
+        // even when it is really running or has a stale hold.
+        #expect(!inputs(runs: [], running: ["env-1"]).workEligible)
+        #expect(!inputs(runs: [], held: ["env-1"], running: ["env-1"]).workEligible)
+        #expect(!inputs(runs: [], enabled: ["env-2"], running: ["env-1"]).workEligible)
+        // Support and the aggregate scene are independent facts.
+        #expect(inputs(runs: [activeRun()]).supportEnabled)
+        #expect(inputs(runs: [activeRun()], scene: .background).fullyBackgroundScene)
+        #expect(!inputs(runs: [activeRun()], scene: .inactive).fullyBackgroundScene)
+        #expect(!inputs(runs: [activeRun()], scene: .active).fullyBackgroundScene)
+    }
+
+    @Test("Only an enabled AND actually running guest retains the location assist")
+    func linuxGuestAuthorityFiltering() {
+        let filtered = BackgroundRunCoordinator.locationEligibleLinuxEnvironmentIDs(
+            heldEnvironmentIDs: ["env-a", "env-b"],
+            runningEnvironmentIDs: ["env-a", "env-b"],
+            enabledEnvironmentIDs: ["env-b"]
+        )
+        #expect(filtered.held == ["env-b"])
+        #expect(filtered.running == ["env-b"])
+
+        // A stale hold for a guest that is no longer running is not authority.
+        let staleHold = BackgroundRunCoordinator.locationEligibleLinuxEnvironmentIDs(
+            heldEnvironmentIDs: ["env-b"],
+            runningEnvironmentIDs: [],
+            enabledEnvironmentIDs: ["env-b"]
+        )
+        #expect(staleHold.held.isEmpty)
+        #expect(staleHold.running.isEmpty)
+
+        let options = BackgroundExecutionOptions(enhancedBackgroundEnabled: true)
+        func inputs(running: [String], held: [String] = []) -> BackgroundRunCoordinator.BackgroundLocationInputs {
+            BackgroundRunCoordinator.backgroundLocationInputs(
+                options: options,
+                statusPiPEnabled: true,
+                runs: [],
+                enabledLinuxEnvironmentIDs: ["env-b"],
+                heldLinuxEnvironmentIDs: held,
+                runningLinuxEnvironmentIDs: running,
+                aggregateScenePhase: .active
+            )
+        }
+        // The permitted guest is running: eligible.
+        #expect(inputs(running: ["env-b"]).workEligible)
+        // A running, NON-enabled guest alone never keeps the assist alive.
+        #expect(!inputs(running: ["env-a"]).workEligible)
+        // The last permitted guest stops: the assist must clear, and a stale
+        // hold cannot resurrect it.
+        #expect(!inputs(running: []).workEligible)
+        #expect(!inputs(running: [], held: ["env-b"]).workEligible)
+    }
+
+    @Test("Multiwindow aggregation: inactive alone never counts as background")
+    func multiwindowSceneAggregation() {
+        #expect(BackgroundRunCoordinator.aggregateScenePhase([:]) == .background)
+        #expect(BackgroundRunCoordinator.aggregateScenePhase(
+            ["a": .active, "b": .background]
+        ) == .active)
+        #expect(BackgroundRunCoordinator.aggregateScenePhase(
+            ["a": .active, "b": .inactive]
+        ) == .active)
+        #expect(BackgroundRunCoordinator.aggregateScenePhase(
+            ["a": .inactive, "b": .inactive]
+        ) == .inactive)
+        #expect(BackgroundRunCoordinator.aggregateScenePhase(
+            ["a": .background, "b": .background]
+        ) == .background)
+    }
+
+    #if DEBUG
+    @Test("Real run transitions drive location eligibility until the last run ends")
+    func runTransitionsDriveLocationEligibility() {
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        let first = UUID()
+
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: first,
+            title: "Weather lookup",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // Suspended runs stay in `activeRuns`; they are not executing work.
+        coordinator.didSuspend(runID: first, message: "Waiting for you")
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        // A real progress event proves the run resumed.
+        coordinator.didUpdateProgress(runID: first, stage: "Resumed", progress: 40)
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // Awaiting an approval is not execution.
+        coordinator.didUpdatePendingApproval(runID: first, toolName: "web.fetch")
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        coordinator.didUpdatePendingApproval(runID: first, toolName: nil)
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // A second ordinary run keeps the assist alive when the first ends.
+        let second = UUID()
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: second,
+            title: "Nearby search",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        coordinator.didFinish(runID: first, succeeded: true, message: nil)
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+        coordinator.didFinish(runID: second, succeeded: true, message: nil)
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+    }
+
+    @Test("Provider media work never holds background location by itself")
+    func providerMediaWorkIsNotLocalExecution() {
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        coordinator.didStartMediaGeneration(workID: UUID(), title: "Canvas image")
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        // An ordinary agent run beside it is still real local execution.
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: UUID(),
+            title: "Weather lookup",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+    }
+
+    @Test("Suspension clears again on real tool activity")
+    func suspensionClearsOnToolActivity() {
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        let runID = UUID()
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: runID,
+            title: "Weather lookup",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        coordinator.didSuspend(runID: runID, message: "Waiting for you")
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        coordinator.didUpdateTool(runID: runID, name: "web.search", outcome: .started)
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+    }
+    #endif
 }
 
 /// Synchronous notification observer capture. `NotificationCenter.post` is

@@ -1055,80 +1055,20 @@ struct AppleWatchUpdateTool: AgentTool {
     }
 }
 
-private struct SendableLocation: Sendable { var latitude: Double; var longitude: Double; var accuracy: Double; var timestamp: Date }
-
-@MainActor
-private final class CurrentLocationBroker: NSObject {
-    static let shared = CurrentLocationBroker()
-    private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<SendableLocation, Error>?
-    private var timeoutTask: Task<Void, Never>?
-    override init() { super.init(); manager.delegate = self }
-
-    func current() async throws -> SendableLocation {
-        guard continuation == nil else {
-            throw FloeError.validationFailed("A location request is already active")
-        }
-        guard CLLocationManager.locationServicesEnabled() else {
-            throw FloeError.validationFailed("Location Services are disabled")
-        }
-        if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
-            throw FloeError.validationFailed("Location permission was denied")
-        }
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                self.continuation = continuation
-                if manager.authorizationStatus == .notDetermined {
-                    manager.requestWhenInUseAuthorization()
-                }
-                manager.requestLocation()
-                timeoutTask = Task { @MainActor [weak self] in
-                    try? await Task.sleep(for: .seconds(15))
-                    guard !Task.isCancelled else { return }
-                    self?.finish(throwing: FloeError.syncUnavailable(
-                        "Location did not become available within 15 seconds"
-                    ))
-                }
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.finish(throwing: FloeError.cancelled)
-            }
-        }
-    }
-
-    private func finish(returning value: SendableLocation) {
-        guard let continuation else { return }
-        self.continuation = nil
-        timeoutTask?.cancel()
-        timeoutTask = nil
-        continuation.resume(returning: value)
-    }
-
-    private func finish(throwing error: any Error) {
-        guard let continuation else { return }
-        self.continuation = nil
-        timeoutTask?.cancel()
-        timeoutTask = nil
-        continuation.resume(throwing: error)
-    }
-}
-
-extension CurrentLocationBroker: @preconcurrency CLLocationManagerDelegate {
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard let value = locations.last else { return }
-        finish(returning: SendableLocation(latitude: value.coordinate.latitude, longitude: value.coordinate.longitude, accuracy: value.horizontalAccuracy, timestamp: value.timestamp))
-    }
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) { finish(throwing: error) }
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if manager.authorizationStatus == .denied || manager.authorizationStatus == .restricted {
-            finish(throwing: FloeError.validationFailed("Location permission was denied"))
-        }
-    }
-}
-
+/// One-shot fix for an explicit weather/nearby step in a real task.
+///
+/// The shared `LocationServicesCenter` owns authorization, request identity,
+/// timeouts and the optional background assist; this tool keeps its identity,
+/// schema and output shape unchanged. A fix may complete while the app is in
+/// the background when an eligible run prepared the session in the foreground
+/// and the existing weather/search tools then return the result to the same
+/// task.
 struct AppleCurrentLocationTool: AgentTool {
     struct Arguments: Decodable, Sendable {}
+    private let locationService: LocationServicesCenter?
+    init(locationService: LocationServicesCenter? = nil) {
+        self.locationService = locationService
+    }
     static let name = "apple.location.current"
     static let toolDescription = "Request one current location fix through Core Location. The system owns permission and may deny it."
     static let parametersJSON = #"{"type":"object","additionalProperties":false}"#
@@ -1137,8 +1077,18 @@ struct AppleCurrentLocationTool: AgentTool {
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let value = try await CurrentLocationBroker.shared.current()
+        let value = try await currentLocation()
+        // A run cancelled while the fix was in flight must not expose a
+        // location it just received.
+        try context.cancellation.throwIfCancelled()
         return AppleToolOutput.make("status=ok latitude=\(value.latitude) longitude=\(value.longitude) accuracyMeters=\(value.accuracy) timestamp=\(AppleToolOutput.iso(value.timestamp))")
+    }
+}
+
+extension AppleCurrentLocationTool {
+    @MainActor
+    private func currentLocation() async throws -> SendableLocation {
+        try await (locationService ?? LocationServicesCenter.shared).currentLocation()
     }
 }
 
