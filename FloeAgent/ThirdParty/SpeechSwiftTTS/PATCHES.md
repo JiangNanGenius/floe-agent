@@ -14,4 +14,13 @@ SOURCE_SHA256.json. The latter records upstream bytes, not patched replacements.
   reclamation point after materialized PCM and joined generation. No global
   cache limit or wired-memory setting is changed.
 
-No weights, sampling, tokenization, codec or signal processing algorithms change.
+- MossTTSNano/MossTTSNanoModel.swift: split prefill into fixed 16-row batches
+  with a one-row tail, preserving token order and exact positions without
+  padding. On the qualified macOS 27 CoreML GPU path, large prefill batches
+  accumulated GPU workspaces between sessions; this shape plateaued in
+  repeated, multilingual/reference-varied and cancel/reuse synthesis checks.
+  This is host evidence; physical iOS memory and listening acceptance remain
+  separate. Original upstream digests remain unchanged in SOURCE_SHA256.json.
+
+No weights, sampling, tokenization, codec or signal processing algorithms change;
+the MOSS prefill execution batches change as described above.

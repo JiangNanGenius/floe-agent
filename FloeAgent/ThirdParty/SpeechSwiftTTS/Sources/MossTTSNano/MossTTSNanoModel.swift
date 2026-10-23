@@ -150,12 +150,26 @@ public actor MossTTSNanoModel: SpeechGenerationModel {
         guard rows.count + options.maxFrames <= configuration.contextLength else { throw MossTTSNanoError.contextExceeded }
         let globalState = globalDecoder.makeState(), localState = localDecoder.makeState(), codecState = codecDecoder.makeState()
         var hidden: MLMultiArray?
-        for position in stride(from: 0, to: rows.count, by: configuration.prefillLimit) {
+        // Bounded, reusable prefill shapes avoid accumulating CoreML GPU
+        // workspaces across sessions. Use 16-row batches and a one-row tail,
+        // preserving token order, exact positions and cancellation points.
+        let prefillChunk = min(16, configuration.prefillLimit)
+        var position = 0
+        while position < rows.count {
             try Task.checkCancellation()
-            let batch = Array(rows[position..<min(rows.count, position + configuration.prefillLimit)])
-            let output = try predict(globalDecoder, globalState,
-                ["input_ids": ints(batch.flatMap { $0 }, [1, batch.count, 17]), "position": ints([Int32(position)], [1])])
-            hidden = try outputArray(output, "hidden", [1, 768], .float32)
+            if position + prefillChunk <= rows.count {
+                let batch = Array(rows[position..<(position + prefillChunk)])
+                let output = try predict(globalDecoder, globalState,
+                    ["input_ids": ints(batch.flatMap { $0 }, [1, batch.count, 17]), "position": ints([Int32(position)], [1])])
+                hidden = try outputArray(output, "hidden", [1, 768], .float32)
+                position += prefillChunk
+            } else {
+                let row = rows[position]
+                let output = try predict(globalDecoder, globalState,
+                    ["input_ids": ints(row, [1, 1, 17]), "position": ints([Int32(position)], [1])])
+                hidden = try outputArray(output, "hidden", [1, 768], .float32)
+                position += 1
+            }
         }
         guard var currentHidden = hidden else { throw MossTTSNanoError.invalidOutput("empty prompt") }
         var sampler = MossTTSNanoSampler(state: options.seed), seen = [Set<Int>](repeating: [], count: 16)
