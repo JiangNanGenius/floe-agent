@@ -3,25 +3,25 @@
   "commit": "27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc",
   "qualificationStatus": "office-export-presentation-ink-host-compiled-runtime-pending+pptx-chart-workbook-overlay-compiled-linked-runtime-roundtrip-pending",
   "qualifiedHostArtifact": {
-    "runID": "39634788604",
+    "runID": "39960312165",
     "artifactName": "office-native-host-unsigned",
-    "artifactID": 12360238402,
-    "workflowCommit": "e5d880fe364d0587b8efae536ed3b144511998a5",
-    "archiveSHA256": "ea11a7bacea4596a46c7e33cbf44af0df8e6097790341e44d5664f7e8f0c111b",
-    "executableSHA256": "c48ee46df101e1b895262c03fb671f57dc0e7db681257dd6d5eeee0942032774",
+    "artifactID": 12503948587,
+    "workflowCommit": "2806630e8477b4c701f2236436c6679433888f64",
+    "archiveSHA256": "6772699fa8d1809ae2d98431f961d264ad65311028ddd84b9da249855bf0d593",
+    "executableSHA256": "28c19b90f8d93b18e34faf1f662eb0bd4eeae692af51300efb21918146b921be",
     "overlaySHA256": "807aa8b89514fa81652b45440a6cb0258183580687378e4ab916ec5a62e8884a",
     "hostSourceSHA256": {
       "FloeOfficeNative.h": "e0fb3d5d90f86c379c7de68f61bb7072886cc8ad22eb00c7fab1bf5600c71cfb",
-      "FloeOfficeNative.mm": "06e64e9b97a575bf87f973e5bb4e889acc7ee0d4961b82317c348a614a692d25",
+      "FloeOfficeNative.mm": "8728b0ffbd9417b336432d7ee9f323c64d3a5c6e3eb2f11475c3ae2b4848f79f",
       "FloeOfficeAttachment.cpp": "281c55eb6ccb6ae85092ade38a7debe30cd2d010e76e0cbbcd3d88bcc42bfde8",
       "FloeOfficeAttachment.hxx": "0fe8268cd8bb8355593d662b1cd19e707a8ea5a03068d359c0ef1edfb67b8a76"
     },
     "verifiedResourceFiles": 4780,
     "verifiedResourceDirectories": 174,
-    "manifestSHA256": "496d5758a3368d072178d5fed60531159251a30b3e1ef919661246aa67832a4b",
+    "manifestSHA256": "508cb1d98b67cb72a312042fe6016b33f2bbc10229ba4d7d5a87277b57542ac6",
     "frameworkAuxiliarySHA256": {
       "Headers/FloeOfficeNative.h": "e0fb3d5d90f86c379c7de68f61bb7072886cc8ad22eb00c7fab1bf5600c71cfb",
-      "Info.plist": "53b2ef0ba3a8b95a56e7faf31361982f05021225eb621d97c4837f68a30d310d",
+      "Info.plist": "59bfa5b44841208d891de112d0ec3845f931ee995dc0d81ff4a6f83a3491745b",
       "Modules/module.modulemap": "d967d38f5f16c6f99b504e56cac3b4375835298ffb3854f465816975ed119e83"
     },
     "swiftProbeSHA256": "edadb4a7251e1aae8d3c4cac0a6f3c83b4a148b6345034f11470ee6f4957032f",
@@ -31,7 +31,7 @@
       "onEnginePermissionChanged",
       "enterEditModeWithCompletion:"
     ],
-    "note": "Locally compiled and imported iOS arm64 component from 5f3e6172 with the scoped iOS Symbol font mapping. Public metadata packaging preserves executable and payload bytes. Storage-only workflow 39634788604; App rendering and save/reopen acceptance remain pending.",
+    "note": "Locally compiled and imported iOS arm64 component from c48b28c2 with scoped File ribbon actions. Public metadata preserves executable and payload bytes. Storage-only workflow 39960312165; App rendering and save/reopen acceptance are separate.",
     "filterOverlay": {
       "patchSHA256": "59b7842fbc2abf14b2f2f155c2e6f55a2a38d6b4e39a7f6890a5422ddd74412f",
       "sourceFiles": {
@@ -206,7 +206,7 @@
         "libsallo.a": {
           "archive": "source/engine/instdir/program/libsallo.a",
           "archiveReplacementPassed": true,
-          "archiveSHA256": "08ddd8dfb81ae42914c6dde1a8dcd31d9cddbe8c0a99c118b3fbeb711805cecf",
+          "archiveSHA256": "9be0b8b0d474e71de08df9d32137c2a9d2bae8f8643d8ae6558cd454e3995850",
           "compileOverrides": {
             "flags": [
               "-DSAL_DLLIMPLEMENTATION"
@@ -218,12 +218,12 @@
           },
           "compilePassed": true,
           "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
-          "linkerListSHA256": "99dcc41ddd730cd3641239eb9f3e04fd7b3a6167f6610f84ce18b6c0a94913de",
+          "linkerListSHA256": "54b91520ea57a9a2d871e08972138e6368ee1d34cd66c09b16bdbae729611b4b",
           "members": {
             "thread.o": "engine/sal/osl/unx/thread.cxx"
           },
           "objectSHA256ByMember": {
-            "thread.o": "0bf09093ac757843466111e3010ed819a9bbf255b79637f0d27a36bb6b6feb3e"
+            "thread.o": "057d58238e0c4e345fa0dabf72a0e3b7c53db59962c6a8407b5cb87b07be1c06"
           },
           "originalArchiveSHA256": "d07491dcb70518a15b0bc3981373f660bccb69a59b7ded3c4e1505d6260744ce",
           "originalSourceSHA256": "8ac07b16f8298185bb876268ebc6c2e96440ac27f3a2fb7011d8ced0f2c70e71",
@@ -237,7 +237,7 @@
         "libsfxlo.a": {
           "archive": "source/engine/instdir/program/libsfxlo.a",
           "archiveReplacementPassed": true,
-          "archiveSHA256": "aea39ca861051dc219a2498d6ccd5319eac0aeed6052a95531f669c2805ed185",
+          "archiveSHA256": "d426dec480384f3f57607d71be0230ee5f4c63910819ef64605c8673ef56d66b",
           "compileOverrides": {
             "flags": [
               "-DSFX2_DLLIMPLEMENTATION"
@@ -257,12 +257,12 @@
           },
           "compilePassed": true,
           "compiledPatchSHA256": "6ee496b15702fc28ebc3341293c660e69df7917964a28a9e6106b26be60cfc3e",
-          "linkerListSHA256": "3dbcf6eaa7be64cd1c3f5fdb6bcdbdd18781a0d0e2de787cd3e68491d7d915e9",
+          "linkerListSHA256": "ffe60bd0f88a7be13b60907b799be94da0850bbeac2d3d0dbf28c9cfff5eb6ab",
           "members": {
             "SfxNotebookBar.o": "engine/sfx2/source/notebookbar/SfxNotebookBar.cxx"
           },
           "objectSHA256ByMember": {
-            "SfxNotebookBar.o": "24b871ea20257fbbc23865afe1bd39e1d8d5f1242a4b170f053bf3de8022561e"
+            "SfxNotebookBar.o": "0128aab43ec6fef5bf645d9f42eb0f6ff978893d6d04def185c08034a0b7418d"
           },
           "originalArchiveSHA256": "f67c0df3fbe24ccfd928d3554884a5ef994cbfee3f7a813af52ebbad8c18bc0a",
           "originalSourceSHA256": "37ad6c7b1926e97bcb1bdb14a89aab7175c35060a83ecca2253c9626a6fca4af",
@@ -276,7 +276,7 @@
         "libsvxcorelo.a": {
           "archive": "source/engine/instdir/program/libsvxcorelo.a",
           "archiveReplacementPassed": true,
-          "archiveSHA256": "7ecd3fcf458b1bcb4061df27922a9dad61a64119588c73326aa0c4e1f4cc087f",
+          "archiveSHA256": "eec6985872d110cbdef9d6898f717112f974fa7849f2c8fbb75b4c0384419551",
           "compileOverrides": {
             "flags": [
               "-DSVXCORE_DLLIMPLEMENTATION"
@@ -296,12 +296,12 @@
           },
           "compilePassed": true,
           "compiledPatchSHA256": "a9c8bc2ead408ff7f14e4149331bb7ee36c6f0e8bd1dae7ad120f7c79f20c9ac",
-          "linkerListSHA256": "5be52df3b93f44dcbbf9ae5c8fe2961e686240dee3d7bf452406241bf13c4441",
+          "linkerListSHA256": "2b0a6e0b6c533a422159fc06ccd2218a6045f8414dd5e280d15c42e4696b7fda",
           "members": {
             "svdcrtv.o": "engine/svx/source/svdraw/svdcrtv.cxx"
           },
           "objectSHA256ByMember": {
-            "svdcrtv.o": "f0ccdee55852879fa49f8c96e73d5a92f313f910c01f83152bba0993ee4fc344"
+            "svdcrtv.o": "135617f926425bbc49d63efb12314bad7be0c9aa013d09ae5b669d3a532fad13"
           },
           "originalArchiveSHA256": "c31984be5d9736b98e229db9273f25daa18467e7e19cba04c0e51bb29f50b9f8",
           "originalSourceSHA256": "f95838f7e7cf1b49e0c8ca1f853bf2f20997d927b7a8accbc02a42e0a30f529e",
@@ -315,61 +315,61 @@
       },
       "archive": "source/engine/instdir/program/libvcllo.a",
       "archiveReplacementPassed": true,
-      "archiveSHA256": "dc74d61155a4363777090c4a6d1f4c7dc2aa9dfc835417ffcbf3c75332e1f737",
+      "archiveSHA256": "1e658a55ec65edb9fc882e4d2be4df7739906535a332bcc43a0058a242f44159",
       "compilePassed": true,
       "compiledPatchSHA256": "4d992c0f147198f436547258ac20ea19a6364c6bbdce3f476c30835b82b8a1d4",
       "linkOwnership": {
         "archives": {
           "libsallo.a": {
-            "archiveSHA256": "08ddd8dfb81ae42914c6dde1a8dcd31d9cddbe8c0a99c118b3fbeb711805cecf",
+            "archiveSHA256": "9be0b8b0d474e71de08df9d32137c2a9d2bae8f8643d8ae6558cd454e3995850",
             "objectSHA256ByMember": {
-              "thread.o": "0bf09093ac757843466111e3010ed819a9bbf255b79637f0d27a36bb6b6feb3e"
+              "thread.o": "057d58238e0c4e345fa0dabf72a0e3b7c53db59962c6a8407b5cb87b07be1c06"
             }
           },
           "libsfxlo.a": {
-            "archiveSHA256": "aea39ca861051dc219a2498d6ccd5319eac0aeed6052a95531f669c2805ed185",
+            "archiveSHA256": "d426dec480384f3f57607d71be0230ee5f4c63910819ef64605c8673ef56d66b",
             "objectSHA256ByMember": {
-              "SfxNotebookBar.o": "24b871ea20257fbbc23865afe1bd39e1d8d5f1242a4b170f053bf3de8022561e"
+              "SfxNotebookBar.o": "0128aab43ec6fef5bf645d9f42eb0f6ff978893d6d04def185c08034a0b7418d"
             }
           },
           "libsvxcorelo.a": {
-            "archiveSHA256": "7ecd3fcf458b1bcb4061df27922a9dad61a64119588c73326aa0c4e1f4cc087f",
+            "archiveSHA256": "eec6985872d110cbdef9d6898f717112f974fa7849f2c8fbb75b4c0384419551",
             "objectSHA256ByMember": {
-              "svdcrtv.o": "f0ccdee55852879fa49f8c96e73d5a92f313f910c01f83152bba0993ee4fc344"
+              "svdcrtv.o": "135617f926425bbc49d63efb12314bad7be0c9aa013d09ae5b669d3a532fad13"
             }
           },
           "libvcllo.a": {
-            "archiveSHA256": "dc74d61155a4363777090c4a6d1f4c7dc2aa9dfc835417ffcbf3c75332e1f737",
+            "archiveSHA256": "1e658a55ec65edb9fc882e4d2be4df7739906535a332bcc43a0058a242f44159",
             "objectSHA256ByMember": {
-              "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
-              "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc",
-              "fontcache.o": "95e937d496745dcbf9b5c53b15a806324e18ec0c121dc3c6337f4295e7864f81",
-              "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
-              "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff"
+              "AquaGraphicsBackend.o": "6a6d238efd5878ebcdb1dc76a7c30a58c122a4a1701e27061b144a7166e9aea8",
+              "executor.o": "d7785273399608e1eb1a5da8e40ef85770af8970d0782bb6e1e15f9f0cb9671f",
+              "fontcache.o": "1b57c9f6a7e953c5ae5e8b0f9bf04782594ac3884b81be9890e18c9bb72ea5cf",
+              "salios.o": "4e0ef328a7e53fe90bf240da49d9abd8f2a2b8182db82a6d701b09d28e023d2e",
+              "svdata.o": "b320d9f34116d8a15b900e23e6a79e3e8b7481f3421da82479022c6cd41b16e6"
             }
           }
         },
-        "linkMapSHA256": "3bf3503b2b1eda7ddf5eb95f8034bbcab55c3db3223dd9a60d82efff298aa719",
-        "linkerListSHA256": "a4baaf9396aa284d06b21a5d1247dea2e3c1ba3db152258b45f899dc09d08e16",
+        "linkMapSHA256": "93a0a87cba238053351e2a5bd160b198e0a2a0d8a39dbe02ade9526039d4f4a7",
+        "linkerListSHA256": "2cd0ff6aeb14d01013afd15869f8e8c65c5c1d7ddf9e294190f9ac6f8e3e5496",
         "preparedObjects": {
           "kit/Kit.cpp": {
             "objectName": "Kit.o",
-            "objectSHA256": "16002a4b9a583ca34eb20162ab0ab3cdaf715437c1500ba8aa8ed5e845aabfc5",
+            "objectSHA256": "328468cf154709aff44df9d5910f463aa8786c3bdc21bcf2720068b3b9554ced",
             "preparedSourceSHA256": "f3ec03aca544ad3b0a1b54eeb9c8af80a6c01629c3a11c8b2167b2fb3360d871"
           },
           "net/FakeSocket.cpp": {
             "objectName": "FakeSocket.o",
-            "objectSHA256": "715db01592600c9ed3eb01a141bdc3629d5ae5f9b2f6bd9903d298d35f347885",
+            "objectSHA256": "c85c025693ea0a76fec8ae6a026e9e8ca76f552498d3f7cd90356f91a3b5ca71",
             "preparedSourceSHA256": "c5167ebc2131998c25d549d7484efcf93bb870a8e81ef815fd4a99d622c09ec2"
           },
           "wsd/COOLWSD.cpp": {
             "objectName": "COOLWSD.o",
-            "objectSHA256": "d99b3ee5066b1ab962a80d73a66c54db6fb6eb97993f066c49f77934c9c2a9a4",
+            "objectSHA256": "05024ed3480536153f97b3880bb73a9fbaac512fb0440760d5b31b70535ddd33",
             "preparedSourceSHA256": "7c2392b1d2649067e93c68aff0e8eb5bcbbc5401c7f201c69468d8a91e26bfc9"
           }
         }
       },
-      "linkerListSHA256": "a8c323fb4e69bf27255e77c8ec137b959d167c052ca52cd65786af56e1d78cc5",
+      "linkerListSHA256": "84d0846502a1ed6c2a677f29cd9118c35877053bdc80ebe0711fb929094ca58a",
       "memberSources": {
         "AquaGraphicsBackend.o": {
           "originalMemberSHA256": "370db84970455dd3bd2222c7702c89d41640aedb4df058725d3adf2b93597254",
@@ -446,11 +446,11 @@
         }
       },
       "objectSHA256ByMember": {
-        "AquaGraphicsBackend.o": "d1e34d139eae9147718d9201ee0ee7d93c21c1fbf8cfcc41a8041748369720e7",
-        "executor.o": "4bb7d266eef0b9ea865dcd1f5c506bbee59ee522506b7a6634da7ca5278eccbc",
-        "fontcache.o": "95e937d496745dcbf9b5c53b15a806324e18ec0c121dc3c6337f4295e7864f81",
-        "salios.o": "2ffdad5b86b16336f93aca4523cb4ab277e22123cd8286599268335a8607675b",
-        "svdata.o": "5114ea818698cb8019476959881a9986c597328c134248218736dc2c302c67ff"
+        "AquaGraphicsBackend.o": "6a6d238efd5878ebcdb1dc76a7c30a58c122a4a1701e27061b144a7166e9aea8",
+        "executor.o": "d7785273399608e1eb1a5da8e40ef85770af8970d0782bb6e1e15f9f0cb9671f",
+        "fontcache.o": "1b57c9f6a7e953c5ae5e8b0f9bf04782594ac3884b81be9890e18c9bb72ea5cf",
+        "salios.o": "4e0ef328a7e53fe90bf240da49d9abd8f2a2b8182db82a6d701b09d28e023d2e",
+        "svdata.o": "b320d9f34116d8a15b900e23e6a79e3e8b7481f3421da82479022c6cd41b16e6"
       },
       "originalArchiveSHA256": "df9bcde15702a1947835ebf646df295f64c1cdc70a43837e810559d0edc96c89",
       "originalObjectSHA256ByMember": {
@@ -471,12 +471,12 @@
     "embeddedLifecycleOverlaySHA256": "75213b77748152b5e44fb4792c44c6d2e2e0361cea1dfbf1f12a15b7cf7db971",
     "localStorageArtifact": {
       "kind": "office-local-host-artifact-storage",
-      "runID": "39634788604",
-      "workflowCommit": "e5d880fe364d0587b8efae536ed3b144511998a5",
+      "runID": "39960312165",
+      "workflowCommit": "2806630e8477b4c701f2236436c6679433888f64",
       "artifactName": "office-native-host-unsigned",
-      "archiveSHA256": "ea11a7bacea4596a46c7e33cbf44af0df8e6097790341e44d5664f7e8f0c111b",
+      "archiveSHA256": "6772699fa8d1809ae2d98431f961d264ad65311028ddd84b9da249855bf0d593",
       "note": "Storage-only provenance: the device host was produced by the local device build (engine source 27b21dc1a90ac67c90fb1addd6f9fb22eec40ccc, verified by validate_local_office_transport); this Actions run retains the exact bytes for download and did not compile them.",
-      "artifactID": 12360238402,
+      "artifactID": 12503948587,
       "nativeProducer": "local-device-host-build"
     },
     "browserResources": {
@@ -536,6 +536,14 @@
       ],
       "originalBundleSHA256": "6320b78ccd3b08e55d4d861f78e696b15d750aca871a1c4a6c8f2027a795f574",
       "bundleSHA256": "9fede7b1f95ef06e282ca39f61914335c69abe7f28089df9d49de7be3989c076"
+    },
+    "componentRelease": {
+      "archiveSHA256": "6772699fa8d1809ae2d98431f961d264ad65311028ddd84b9da249855bf0d593",
+      "descriptorSHA256": "00fea732cdceae996e0c7802a0e5f3fc78c7afd9a22164af5d4f03bf96fac097",
+      "repository": "JiangNanGenius/floe-agent",
+      "schema": "floe-office-component-release/v1",
+      "symbolsSHA256": "30f691f4ca48e916ea4bc10649b8049276a4608a8894c4f1d6a4cab2a59802cc",
+      "tag": "office-native-host-6772699fa8d1809ae2d98431f961d264ad65311028ddd84b9da249855bf0d593"
     }
   },
   "qualifiedNativeArtifact": {
@@ -695,7 +703,7 @@
         "preparedSHA256": "3754d754f819140a75bca4cd2f9865588096672ba5338e45df77ddc053d7e1a5"
       }
     },
-    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered — including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
+    "note": "Crash-proofs the app2js forwarding thread and its HULLO entry, with an explicit lifetime contract. A repeated HULLO on an already forwarded document (page reload / wake-from-sleep, tdf#122543) used to connect again, overwrite the close-pipe fds and start a second consumer on the same fakeClientFd; two consumers racing one record queue made the loser read -1 lengths, and the loop then constructed std::vector<char>(-1) or called send2JS with length -1 (std::string throw): std::length_error, std::terminate, whole process death with no app-side log. Ownership is now floeForwarderActive: set in a @synchronized check-and-set before the thread is dispatched and cleared only by the forwarder itself as the last step of its retirement, so the whole consumer window is covered \u2014 including after BYE/bye closed and reset pipe end 0 while the forwarder was still alive (the v1 pipe-fd check admitted a second consumer there; found in primary review). A closing document (floeClosing/floeClosed) never accepts a forwarder. The failed-connect path behaves identically in debug and release (the upstream assert(rc != -1) only fired in debug) and clears the flag so a later HULLO can retry. Every loop exit retires through one block that closes pipe end 1 and the client fd exactly once (fake fds are never reused, a repeated close is a benign EBADF) and then clears the flag; upstream leaked both fds on the EOF path. Negative/error lengths log and retire instead of terminating; revents are bitmask-tested (POLLIN|POLLHUP and POLLNVAL no longer spin at 100% CPU); the unreachable assert(false) is a quiet retire. Record order, wire framing, EOF (n == 0) delivery semantics and the close-notification contract are unchanged; every abnormal retirement emits LOG_ERR. Applies after the embedding and scheme overlays; originalSHA256 above is the embedding-prepared input state. Regression: scripts/test_office_forwarding_lifecycle.py (real pinned FakeSocket + byte-faithful extracted loop; mock JS/engine, not a device PPT reproduction). The published host pin and every other overlay are unchanged; bootstrap accepts the new-overlay claim only once a future host pin records forwardingOverlaySHA256."
   },
   "kitCallbackLifecycleOverlay": {
     "patch": "patches/ios-kit-callback-lifecycle.patch",

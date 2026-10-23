@@ -23,18 +23,19 @@ final class SpeechPerformanceLifecycleTests: XCTestCase {
     func testCancelledParkedProducerAlwaysFinishes() async {
         let (stream, sender) = TTSAudioChunkStream.make(slotCapacity: 1, byteCapacity: 4096)
         let session = UUID()
-        let producer = Task { () -> String in
+        var outcome = ""
+        let producer = Task { @MainActor () -> Void in
             do {
                 for sequence in 0..<4 {
                     try await CancellableSpeechSend.send(TTSAudioChunk(
                         sessionID: session, segmentIndex: 0, sequence: sequence,
                         pcm: Data(repeating: 7, count: 1024), sampleRate: 24_000), sender: sender)
                 }
-                return "completed"
+                outcome = "completed"
             } catch is CancellationError {
-                return "cancelled"
+                outcome = "cancelled"
             } catch {
-                return (error as? TTSSynthesisError) == .cancelled ? "cancelled" : "other"
+                outcome = (error as? TTSSynthesisError) == .cancelled ? "cancelled" : "other"
             }
         }
         sender.attach(producer)
@@ -43,7 +44,7 @@ final class SpeechPerformanceLifecycleTests: XCTestCase {
         XCTAssertFalse(producer.isCancelled)
 
         producer.cancel()
-        guard case .value(let outcome) = await Self.bounded({ await producer.value }) else {
+        guard case .value = await Self.bounded({ await producer.value }) else {
             return XCTFail("parked producer did not finish after cancellation")
         }
         XCTAssertEqual(outcome, "cancelled")

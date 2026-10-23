@@ -664,7 +664,7 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             let ax = Self.sceneAccessibilityNodes()
                 .map { ["identifier": $0.identifier, "label": $0.label] }
             if let data = try? JSONSerialization.data(withJSONObject: ax, options: [.sortedKeys]) {
-                add(XCTAttachment(data: data, uniformTypeIdentifiers: ["public.json"]))
+                add(XCTAttachment(data: data, uniformTypeIdentifier: "public.json"))
             }
             await session.release()
             XCTFail("Settings-change preview trigger regression failed: \(error)")

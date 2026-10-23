@@ -479,6 +479,7 @@ struct OfficePDFExportServiceTests {
         #expect(decide(loading: true, settingsValid: false) == .waitForOwner)
     }
 
+    @MainActor
     @Test("only a session-busy generation may retry; every other failure keeps its error")
     func previewRetryFamily() {
         #expect(OfficePDFExportOptionsView.isRetryablePreviewFailure(
