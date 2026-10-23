@@ -685,7 +685,16 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                     opened = picker.activate()
                 }
             }
-            for node in Self.sceneAccessibilityNodes() where labels.contains(node.label) {
+            let nodes = Self.sceneAccessibilityNodes()
+            // A system-hosted menu may be outside the in-process AX tree.
+            // Accept only a real changed Picker value (including external
+            // accessibility interaction); the caller still requires a new
+            // pinned-engine PDF generation without touching Update.
+            if opened, nodes.contains(where: { node in
+                node.identifier == "office.pdf.scaling"
+                    && labels.contains(where: { node.label.hasSuffix($0) })
+            }) { return }
+            for node in nodes where labels.contains(node.label) {
                 if node.activate() { return }
             }
             try await Task.sleep(for: .milliseconds(250))

@@ -367,7 +367,7 @@ struct OfficePDFExportServiceTests {
         #expect(state.accept(token: token, artifact: artifact, choices: settled) == true)
         #expect(state.isStale(currentChoices: settled) == false)
         var changed = settled
-        changed.gridlines = .on
+        changed.gridlines = .off
         #expect(state.isStale(currentChoices: changed) == true)
         changed = settled
         changed.scalePercentText = "150"
