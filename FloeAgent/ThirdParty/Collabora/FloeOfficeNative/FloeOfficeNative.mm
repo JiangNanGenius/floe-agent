@@ -2414,6 +2414,62 @@ static NSString *FloeFullScreenEditScript() {
 }
 // FLOE_FULLSCREEN_EDIT_SCRIPT_END
 
+// FLOE_FILE_PANEL_TRIM_BEGIN
+// The App's own outer menu already owns Save (the tiny quick-save stays), Save
+// As (on-device system-Files saver) and Print (the engine's `lok` PRINT message
+// is intercepted into the shared options/print sheet by
+// FloeOfficeDocumentViewController above). The iPad notebookbar's File tab
+// still renders those same commands as large entries, so tapping one starts a
+// second, unowned route to the same action — and on iOS the download entry is
+// even labelled "Save As" while doing an engine download the App never sees.
+//
+// This trims exactly the duplicated entries of the notebookbar's own File page
+// (`#File-container`) by the ids the pinned frontend builds them with
+// (bundle.js `JSDialog.*Notebookbar.getFileTab`):
+//   #file-save                     .uno:Save
+//   #file-saveas                   .uno:SaveAs
+//   #saveas:SaveAsMenu             grouped "Save As" variant of the same choice
+//   #exportas:ExportAsMenu         "Export As" engine download route
+//   #downloadas:DownloadAsMenu     "Download"/"Save As" engine download route
+//   #print / #Data-Print:Print     .uno:Print (Writer/Impress/Draw vs Calc)
+// Repair, Properties, Signature and every host-gated File entry (share,
+// history, rename, options) stay untouched, as does every other surface that
+// can dispatch these commands: the quick-save in the notebookbar's upper left,
+// keyboard accelerators, the App menu and the engine capabilities themselves.
+// No command is removed — only these duplicated File-page buttons are hidden.
+//
+// CSS-only and idempotent. The notebookbar rebuilds its DOM on every tab
+// switch, so the stylesheet lives in the document head and keeps applying to
+// the new nodes; it is scoped to `#File-container`, so a same-named id in any
+// other dialog is unaffected.
+static NSString *FloeFilePanelTrimScript() {
+    return [NSString stringWithUTF8String:R"FLOE_JS(
+(() => {
+    if (window.__floeFilePanelTrimInstalled) return;
+    window.__floeFilePanelTrimInstalled = true;
+    const install = () => {
+        if (document.getElementById('floe-office-file-panel-trim')) return;
+        const style = document.createElement('style');
+        style.id = 'floe-office-file-panel-trim';
+        style.textContent = [
+            '#File-container [id="file-save"] { display: none !important; }',
+            '#File-container [id="file-saveas"] { display: none !important; }',
+            '#File-container [id="saveas:SaveAsMenu"] { display: none !important; }',
+            '#File-container [id="exportas:ExportAsMenu"] { display: none !important; }',
+            '#File-container [id="downloadas:DownloadAsMenu"] { display: none !important; }',
+            '#File-container [id="print"] { display: none !important; }',
+            '#File-container [id="Data-Print:Print"] { display: none !important; }'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    };
+    if (document.readyState === 'loading')
+        document.addEventListener('DOMContentLoaded', install, { once: true });
+    else install();
+})();
+)FLOE_JS"];
+}
+// FLOE_FILE_PANEL_TRIM_END
+
 // FLOE_ENGINE_PERMISSION_BEGIN
 // Reads the engine's own backing permission and UI mode. app.file.readOnly is
 // set from the handshake permission (main.js) and only lowered by a real edit
@@ -4333,6 +4389,13 @@ static NSString *FloeSetDrawingModeScript(BOOL enabled) {
         initWithSource:self.readOnly ? FloeReadOnlyScript() : FloeFullScreenEditScript()
         injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES];
     [contentController addUserScript:script];
+    // The notebookbar's File tab renders Save/Save As/Print/export entries
+    // that duplicate the App's own menu; trim only those entries (see
+    // FloeFilePanelTrimScript). Read-only and editable mounts share it: the
+    // App owns those actions in both modes.
+    [contentController addUserScript:[[WKUserScript alloc]
+        initWithSource:FloeFilePanelTrimScript()
+        injectionTime:WKUserScriptInjectionTimeAtDocumentStart forMainFrameOnly:YES]];
     FloeOfficeEnginePermissionObserver *observer = [FloeOfficeEnginePermissionObserver new];
     observer.controller = self;
     self.permissionObserver = observer;
