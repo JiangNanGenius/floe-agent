@@ -473,8 +473,11 @@ struct ExternalDocumentIntakeQueueTests {
         let changedRecord = try await queue.enqueue(changedStaged)
         #expect(changedRecord.id != firstRecord.id)
 
-        let claimed = try await queue.claimNext()
+        // Both staged timestamps may occupy the same persisted second;
+        // explicitly commit the original whose later reimport is under test.
+        let claimed = try await queue.claimNext(where: { $0.id == firstRecord.id })
         let claim = try #require(claimed)
+        #expect(claim.record.id == firstRecord.id)
         try await queue.markCommitted(
             claim,
             commit: DocumentIntakeCommit(

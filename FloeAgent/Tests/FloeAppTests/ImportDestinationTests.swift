@@ -86,7 +86,7 @@ private func makeEnvelope(
     in inbox: ShareInbox,
     text: String? = nil,
     files: [(name: String, data: Data, type: String)] = [],
-    createdAt: Date = Date(timeIntervalSince1970: 2_000)
+    createdAt: Date = Date()
 ) throws -> ShareEnvelope {
     var inputs: [ShareInboxInput] = []
     if let text {
@@ -233,6 +233,7 @@ private final class FakeStaging: ShareAttachmentStaging, @unchecked Sendable {
 private final class FakeCommitter: CanvasDestinationCommitting {
     var failNext = false
     var lastOperation: CanvasImportOperation?
+    var payloadsAtCommit: [Data] = []
     var operations: [CanvasImportOperation] = []
     var commitCanvasID = UUID()
     var calls = 0
@@ -247,6 +248,13 @@ private final class FakeCommitter: CanvasDestinationCommitting {
         calls += 1
         lastOperation = operation
         operations.append(operation)
+        // Payload URLs are borrowed for this call. A successful destination
+        // releases the source, so assertions must retain bytes here.
+        do {
+            payloadsAtCommit = try operation.units.map { try Data(contentsOf: $0.payloadURL) }
+        } catch {
+            return .failed(message: "Test committer could not read its payload")
+        }
         if failNext { return .failed(message: nil) }
         return .committed(
             canvasID: operation.plannedNewCanvasID ?? commitCanvasID,
@@ -261,7 +269,9 @@ private final class FakeTaskProvider: TaskDestinationProviding, @unchecked Senda
     private var _failNext = false
     private var _available: Set<UUID> = []
 
-    func setTargets(_ value: [TaskImportTarget]) { lock.withLock { _targets = value } }
+    func setTargets(_ value: [TaskImportTarget]) {
+        lock.withLock { _targets = value.sorted { $0.updatedAt > $1.updatedAt } }
+    }
     func setFailNext(_ value: Bool) { lock.withLock { _failNext = value } }
     func setAvailable(_ value: Set<UUID>) { lock.withLock { _available = value } }
 
@@ -296,7 +306,8 @@ struct ImportDestinationLedgerTests {
     func decisionRoundtrip() throws {
         let root = importTestRoot("ledger-roundtrip")
         defer { try? FileManager.default.removeItem(at: root) }
-        let store = makeDecisionStore(root)
+        // The ledger's ISO-8601 wire format stores whole seconds.
+        let store = ImportDestinationDecisionStore(root: root, now: { Date(timeIntervalSince1970: 9_000) })
         #expect(store.isAvailable)
         let envelopeID = UUID()
         let origin = ImportDestinationOrigin.shareEnvelope(envelopeID)
@@ -353,14 +364,16 @@ struct ImportDestinationLedgerTests {
         #expect(ImportDestinationDecisionStore.autoImportIsCleared(for: explicit, decision: nil))
         // Requirement present: a missing decision can only HOLD.
         #expect(!ImportDestinationDecisionStore.autoImportIsCleared(for: flagged, decision: nil))
-        #expect(!ImportDestinationDecisionStore.autoImportIsCleared(
+        let taskCleared = ImportDestinationDecisionStore.autoImportIsCleared(
             for: flagged,
             decision: .init(origin: .documentEvent(eventID), status: .task, chosenAt: nil, updatedAt: Date())
-        ))
-        #expect(!ImportDestinationDecisionStore.autoImportIsCleared(
+        )
+        let canvasCleared = ImportDestinationDecisionStore.autoImportIsCleared(
             for: flagged,
             decision: .init(origin: .documentEvent(eventID), status: .canvas, chosenAt: nil, updatedAt: Date())
-        ))
+        )
+        #expect(!taskCleared)
+        #expect(!canvasCleared)
         #expect(ImportDestinationDecisionStore.autoImportIsCleared(
             for: flagged,
             decision: .init(origin: .documentEvent(eventID), status: .notes, chosenAt: nil, updatedAt: Date())
@@ -541,7 +554,7 @@ struct ImportDestinationGateTests {
         #expect(operation.units.count == 1)
         #expect(operation.units.first?.key == "file")
         #expect(operation.plannedNewCanvasID != nil)
-        let committed = operation.units.first.map { (try? Data(contentsOf: $0.payloadURL)) ?? Data() }
+        let committed = committer.payloadsAtCommit.first
         #expect(committed == pdfBytes(9))
         let released = await poll {
             (try? await doc.queue?.record(id: eventID)) == nil
@@ -982,7 +995,7 @@ struct ImportDestinationEnvelopeTests {
         #expect(operation.target == target)
         #expect(operation.originID == envelope.id)
         #expect(operation.units.count == 2)
-        let datas = operation.units.map { (try? Data(contentsOf: $0.payloadURL)) ?? Data() }
+        let datas = committer.payloadsAtCommit
         #expect(datas.contains { $0 == pdfBytes(12) })
         #expect(datas.contains { $0 == Data("caption".utf8) })
         await #expect(throws: (any Error).self) { _ = try inbox.claim(id: envelope.id) }
