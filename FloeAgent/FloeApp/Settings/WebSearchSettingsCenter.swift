@@ -26,6 +26,36 @@ struct SearchProviderCatalogProvenance: Sendable {
     }
 }
 
+/// The display-name identity the dedicated Volcengine editor hands to
+/// `upsert`, because that editor maps a form draft instead of a full
+/// instance. It carries titles only: the name the editor was opened with and
+/// the catalog's current official titles for the preset. Combined with the
+/// stored instance's existing `displayName` override (the only alias
+/// provenance), it lets the save keep a genuine user alias, keep a
+/// catalog-owned name catalog-owned across an automatic title refresh, and
+/// clear the alias when the user re-enters an official title. No new alias
+/// concept is introduced.
+struct SearchProviderNameOwnership: Equatable, Sendable {
+    /// The name the editor was opened with (the stored name at that moment).
+    var openingTitle: String
+    /// The catalog's official title for the active locale, nil when the
+    /// preset has no entry in the effective catalog.
+    var officialTitle: String?
+    /// Every official title the current catalog entry carries (active locale,
+    /// English, Simplified Chinese); empty when the entry is unknown.
+    var officialTitles: Set<String>
+
+    init(
+        openingTitle: String,
+        officialTitle: String? = nil,
+        officialTitles: Set<String> = []
+    ) {
+        self.openingTitle = openingTitle
+        self.officialTitle = officialTitle
+        self.officialTitles = officialTitles
+    }
+}
+
 enum WebSearchSettingsError: Error, Equatable, LocalizedError {
     case invalidEndpoint
     case invalidDisplayName
@@ -221,10 +251,15 @@ final class WebSearchSettingsCenter: ObservableObject {
     /// and the provider editor both go through this). Existing instances keep
     /// their catalog provenance; new identities get their preset identity and
     /// an independent, UUID-owned Keychain account.
+    /// `nameOwnership` is only supplied by the dedicated editor: it decides
+    /// whether the saved display name is a genuine user alias or a
+    /// catalog-owned official title, and which name is actually persisted.
+    /// Every other caller keeps the plain previous→updated comparison.
     func upsert(
         _ configuration: WebSearchProviderConfiguration,
         credential: WebSearchCredential?,
-        provenance: SearchProviderCatalogProvenance? = nil
+        provenance: SearchProviderCatalogProvenance? = nil,
+        nameOwnership: SearchProviderNameOwnership? = nil
     ) throws {
         try validateCredentialRequirement(for: configuration, supplied: credential)
         if let credential {
@@ -233,12 +268,14 @@ final class WebSearchSettingsCenter: ObservableObject {
         }
         if let index = instances.firstIndex(where: { $0.configuration.id == configuration.id }) {
             var instance = instances[index]
-            Self.recordOverrideChanges(
+            let persistedName = Self.recordOverrideChanges(
                 previous: instance.configuration,
                 updated: configuration,
-                into: &instance
+                into: &instance,
+                nameOwnership: nameOwnership
             )
             instance.configuration = configuration
+            instance.configuration.displayName = persistedName
             if let provenance {
                 instance.presetID = provenance.presetID ?? instance.presetID
                 if let version = provenance.catalogVersion {
@@ -252,12 +289,25 @@ final class WebSearchSettingsCenter: ObservableObject {
         } else {
             var configuration = configuration
             configuration.priority = nextPriority()
+            var overrides: Set<String> = []
+            if let nameOwnership {
+                let resolved = Self.resolvedDisplayName(
+                    saved: configuration.displayName,
+                    previous: nameOwnership.openingTitle,
+                    aliased: false,
+                    ownership: nameOwnership
+                )
+                configuration.displayName = resolved.displayName
+                if resolved.isUserAlias {
+                    overrides.insert("displayName")
+                }
+            }
             let instance = WebSearchProviderInstance(
                 configuration: configuration,
                 presetID: provenance?.presetID
                     ?? SearchProviderPresets.presetID(for: configuration.kind),
                 appliedCatalogVersion: provenance?.catalogVersion,
-                overrides: [],
+                overrides: overrides,
                 catalogCredentialKeys: provenance?.credentialKeys
             )
             instances.append(instance)
@@ -331,12 +381,31 @@ final class WebSearchSettingsCenter: ObservableObject {
     /// Records the fields the user personally changed. Catalog updates merge
     /// only values the user has not overridden. Option keys are tracked
     /// individually so changing one option never freezes an unrelated one.
+    /// With `nameOwnership` (the dedicated editor) the display name follows
+    /// the catalog-ownership rule below instead of a raw value diff; the
+    /// function then returns the name that must actually be persisted.
+    @discardableResult
     nonisolated static func recordOverrideChanges(
         previous: WebSearchProviderConfiguration,
         updated: WebSearchProviderConfiguration,
-        into instance: inout WebSearchProviderInstance
-    ) {
-        if previous.displayName != updated.displayName {
+        into instance: inout WebSearchProviderInstance,
+        nameOwnership: SearchProviderNameOwnership? = nil
+    ) -> String {
+        var persistedName = updated.displayName
+        if let nameOwnership {
+            let resolved = Self.resolvedDisplayName(
+                saved: updated.displayName,
+                previous: previous.displayName,
+                aliased: instance.overrides.contains("displayName"),
+                ownership: nameOwnership
+            )
+            persistedName = resolved.displayName
+            if resolved.isUserAlias {
+                instance.overrides.insert("displayName")
+            } else {
+                instance.overrides.remove("displayName")
+            }
+        } else if previous.displayName != updated.displayName {
             instance.overrides.insert("displayName")
         }
         if previous.endpoint != updated.endpoint {
@@ -348,6 +417,33 @@ final class WebSearchSettingsCenter: ObservableObject {
         for key in previous.options.keys where updated.options[key] == nil {
             instance.overrides.insert("option:\(key)")
         }
+        return persistedName
+    }
+
+    /// The display name a dedicated-editor save must persist and whether that
+    /// name is the user's alias, following the same rule the generic editor's
+    /// `mergedOverrides` applies: a saved value equal to one of the current
+    /// official catalog titles stays catalog-owned (re-entering or clearing
+    /// back to the official title therefore removes the alias marking), and a
+    /// value carried over unchanged from a still-unaliased stored name stays
+    /// catalog-owned as well — that is a former official title the catalog has
+    /// since renamed, not a user edit. A catalog-owned save adopts the current
+    /// official title, so a passive save never freezes or overwrites a title
+    /// the catalog already refreshed. Only a genuinely different saved value
+    /// is a user alias, and an unchanged existing alias keeps its marking.
+    nonisolated static func resolvedDisplayName(
+        saved: String,
+        previous: String,
+        aliased: Bool,
+        ownership: SearchProviderNameOwnership
+    ) -> (displayName: String, isUserAlias: Bool) {
+        if ownership.officialTitles.contains(saved) {
+            return (ownership.officialTitle ?? saved, false)
+        }
+        if !aliased, saved == ownership.openingTitle {
+            return (ownership.officialTitle ?? previous, false)
+        }
+        return (saved, true)
     }
 
     func setEnabled(_ enabled: Bool, id: UUID) {
@@ -402,7 +498,11 @@ final class WebSearchSettingsCenter: ObservableObject {
     // MARK: - Catalog review / apply
 
     /// The pending catalog plan for one instance, if any. Pure and read-only:
-    /// nothing is applied or persisted until `applyCatalogUpdate`.
+    /// nothing is applied or persisted until `applyCatalogUpdate`. The
+    /// supplier display name is never part of a plan — official catalog
+    /// titles are cosmetic and refresh automatically via
+    /// `synchronizeCatalogTitles`; only real endpoint/option/credential
+    /// changes are reviewed by the user.
     func updatePlan(
         for instance: WebSearchProviderInstance,
         catalog: SearchProviderCatalogIndex
@@ -410,10 +510,41 @@ final class WebSearchSettingsCenter: ObservableObject {
         SearchProviderUpdatePlanner.plan(for: instance, in: catalog, localePrimary: Self.localePrimary)
     }
 
+    /// Advances catalog-owned official supplier titles to the effective
+    /// catalog automatically. Only instances the user never renamed (no
+    /// `displayName` override) participate, so a saved default — including a
+    /// legacy default kept by the migration — refreshes without ever being
+    /// offered as a meaningless name-only update, while an actually
+    /// user-edited name persists. Endpoints, options, credential schemas, the
+    /// credential account, the enabled switch, priority and the reviewed
+    /// `appliedCatalogVersion` marker are untouched here; real changes still
+    /// go through `updatePlan`/`applyCatalogUpdate` with their confirmation.
+    /// Persists only when at least one title changed and returns the count;
+    /// `applyCatalogUpdate` normalizes its own reviewed outcome instead, so a
+    /// single catalog apply never writes the store twice.
+    @discardableResult
+    func synchronizeCatalogTitles(catalog: SearchProviderCatalogIndex) -> Int {
+        let result = SearchProviderTitleSynchronizer.synchronize(
+            instances: instances,
+            catalog: catalog,
+            localePrimary: Self.localePrimary
+        )
+        guard result.renamedCount > 0 else { return 0 }
+        instances = result.instances
+        persist()
+        FloeLogger(category: .sync).info(
+            "webSearchCatalogTitlesSynced count=\(result.renamedCount) catalog=\(catalog.version)"
+        )
+        return result.renamedCount
+    }
+
     /// Applies a reviewed plan. Host or credential-schema changes require an
     /// explicit confirmation and rotate the credential account, so a key that
     /// was stored for the old destination can never be sent to a new one.
-    /// The old Keychain entry is retained as a backup.
+    /// The old Keychain entry is retained as a backup. The reviewed outcome is
+    /// normalized against the applied entry exactly once — the catalog-owned
+    /// official title advances with it while a user alias stays — assigned,
+    /// persisted and returned as that same instance.
     @discardableResult
     func applyCatalogUpdate(
         _ plan: SearchProviderUpdatePlan,
@@ -441,12 +572,25 @@ final class WebSearchSettingsCenter: ObservableObject {
             entry: entry,
             rotatedCredentialAccount: rotatedAccount
         )
-        instances[index] = outcome.instance
+        // The reviewed real fields above advanced; normalize the outcome once
+        // against the same entry so the catalog-owned official title follows
+        // (an aliased name returns nil here and stays untouched). This is a
+        // single assignment and a single persistence for the whole apply, and
+        // it never bumps `appliedCatalogVersion` beyond the reviewed plan.
+        var applied = outcome.instance
+        if let officialTitle = SearchProviderTitleSynchronizer.officialTitle(
+            for: applied,
+            entry: entry,
+            localePrimary: Self.localePrimary
+        ) {
+            applied.configuration.displayName = officialTitle
+        }
+        instances[index] = applied
         persist()
         FloeLogger(category: .sync).info(
             "webSearchCatalogApplied preset=\(plan.presetID) from=\(plan.fromCatalogVersion ?? "none") to=\(plan.toCatalogVersion) changes=\(plan.changes.count) rotatedCredential=\(outcome.didRotateCredential)"
         )
-        return outcome.instance
+        return applied
     }
 
     private static func accountVersionSlug(_ version: String) -> String {
@@ -731,6 +875,14 @@ struct WebSearchSettingsView: View {
             }
         }
         .navigationTitle(FloeL10n.l("websearch.title"))
+        .task(id: catalog?.version) {
+            // Opening the page with a newer signed/bundled catalog quietly
+            // adopts official supplier titles (user aliases persist); this is
+            // why a pure rename never surfaces as "Available Update".
+            if let catalog {
+                center.synchronizeCatalogTitles(catalog: catalog)
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -761,7 +913,8 @@ struct WebSearchSettingsView: View {
                         presetID: instance.presetID,
                         catalogVersion: instance.appliedCatalogVersion,
                         credentialKeys: instance.catalogCredentialKeys
-                    )
+                    ),
+                    catalog: catalog
                 )
             } else {
                 WebSearchProviderEditor(
@@ -938,6 +1091,7 @@ private struct SearchProviderCatalogPicker: View {
                             catalogVersion: catalog?.version,
                             credentialKeys: selection.entry.credentialKeys
                         ),
+                        catalog: catalog,
                         onFinished: { isPresented = false }
                     )
                 } else {
@@ -1002,6 +1156,9 @@ private struct SearchProviderCatalogPicker: View {
         refreshing = true
         Task { @MainActor in
             await catalogOwner.refreshSearchProviderCatalog()
+            if let catalog {
+                center.synchronizeCatalogTitles(catalog: catalog)
+            }
             refreshing = false
         }
     }
@@ -1211,7 +1368,6 @@ struct WebSearchProviderEditor: View {
     ) -> some View {
         let label: String = {
             switch change.field {
-            case .displayName: return FloeL10n.l("websearch.display_name")
             case .endpoint: return FloeL10n.l("websearch.endpoint")
             case .option(let key):
                 return entry.optionFields.first { $0.key == key }
@@ -1418,6 +1574,7 @@ struct WebSearchProviderEditor: View {
                 updated.overrides = Self.mergedOverrides(
                     existing: isNew ? [] : instance.overrides,
                     configuration: draft,
+                    previousName: isNew ? nil : instance.configuration.displayName,
                     entry: entry
                 )
                 updated.presetID = instance.presetID ?? entry.presetID
@@ -1442,17 +1599,26 @@ struct WebSearchProviderEditor: View {
     /// User overrides = fields whose saved value differs from the catalog
     /// default (or that were already overridden). Reverting a value to the
     /// catalog default clears its override so future catalog updates manage
-    /// it again. Credentials, the enabled switch, priority, identity and
-    /// non-catalog options are never part of this set.
+    /// it again. The display name is a user alias only when the user
+    /// personally changed it: a saved name that equals any current catalog
+    /// title, or that was carried over unchanged from a still-unoverridden
+    /// stored value (a former official title the catalog has since renamed),
+    /// stays catalog-owned so `synchronizeCatalogTitles` keeps refreshing it.
+    /// Credentials, the enabled switch, priority, identity and non-catalog
+    /// options are never part of this set.
     nonisolated static func mergedOverrides(
         existing: Set<String>,
         configuration: WebSearchProviderConfiguration,
+        previousName: String?,
         entry: SearchProviderCatalogEntry
     ) -> Set<String> {
         var overrides = existing.filter { $0 == "displayName" || $0 == "endpoint" || $0.hasPrefix("option:") || $0 == "options" }
         let locale = WebSearchSettingsCenter.localePrimary
         let defaultNames = Set([entry.name[locale], entry.name["en"], entry.name["zh-Hans"]].compactMap { $0 })
-        if defaultNames.contains(configuration.displayName) {
+        let keptUnoverriddenOfficialName = previousName != nil
+            && configuration.displayName == previousName
+            && !existing.contains("displayName")
+        if defaultNames.contains(configuration.displayName) || keptUnoverriddenOfficialName {
             overrides.remove("displayName")
         } else {
             overrides.insert("displayName")

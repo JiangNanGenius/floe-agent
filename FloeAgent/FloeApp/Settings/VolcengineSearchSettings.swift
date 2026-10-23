@@ -145,8 +145,18 @@ struct VolcengineSettingsDraft: Equatable {
     var dataProEnabled: Bool
     var dataProServerID: UUID
     var displayName: String
+    /// The catalog-owned official title of this preset, captured while the
+    /// editor is open, or nil when the preset has no catalog entry. An
+    /// emptied display-name field falls back to this title and then to the
+    /// name the editor opened with — never to a hardcoded literal, which
+    /// would freeze a stale official name in and let a passive save mark it
+    /// as a user alias after the catalog title refreshed on its own.
+    var officialName: String?
 
     let providerID: UUID
+    /// The display name this draft was opened with. A saved name still equal
+    /// to it is a carried-over official title, not a user edit.
+    let openingDisplayName: String
     let enabled: Bool
     let priority: Int
     let region: String?
@@ -177,6 +187,8 @@ struct VolcengineSettingsDraft: Equatable {
         dataProEnabled: Bool,
         dataProServerID: UUID,
         displayName: String,
+        officialName: String? = nil,
+        openingDisplayName: String? = nil,
         providerID: UUID,
         enabled: Bool,
         priority: Int,
@@ -194,6 +206,8 @@ struct VolcengineSettingsDraft: Equatable {
         self.dataProEnabled = dataProEnabled
         self.dataProServerID = dataProServerID
         self.displayName = displayName
+        self.officialName = officialName
+        self.openingDisplayName = openingDisplayName ?? displayName
         self.providerID = providerID
         self.enabled = enabled
         self.priority = priority
@@ -229,6 +243,8 @@ struct VolcengineSettingsDraft: Equatable {
         dataProServerID = options.dataProServerID
             ?? Self.defaultDataProServerID(for: configuration.id)
         displayName = configuration.displayName
+        officialName = nil
+        openingDisplayName = configuration.displayName
         providerID = configuration.id
         enabled = configuration.enabled
         priority = configuration.priority
@@ -351,10 +367,16 @@ struct VolcengineSettingsDraft: Equatable {
         // MCP server and create a duplicate on return to Agent Plan.
         options[VolcengineSearchOptions.Key.dataProServerID] = dataProServerID.uuidString
         let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // An empty field means the user wants no personal alias: keep the
+        // catalog-owned official title, falling back to the name this draft
+        // opened with when no catalog entry is known.
+        let resolvedName = trimmedName.isEmpty
+            ? (officialName ?? openingDisplayName)
+            : trimmedName
         return WebSearchProviderConfiguration(
             id: providerID,
             kind: .volcengine,
-            displayName: trimmedName.isEmpty ? "Volcengine Web Search" : trimmedName,
+            displayName: resolvedName,
             endpoint: resolvedEndpoint,
             credentialAccount: credentialAccount,
             enabled: enabled,
@@ -553,6 +575,10 @@ struct VolcengineSearchEditor: View {
     /// Nil for an edit that predates catalogs; the dedicated interface and
     /// account guards below are identical in both cases.
     var provenance: SearchProviderCatalogProvenance?
+    /// The effective signed catalog, read only for this preset's official
+    /// titles so a save can tell a carried-over official name from a real
+    /// user alias. Nil (or a missing entry) keeps the legacy name behavior.
+    var catalog: SearchProviderCatalogIndex?
     /// Called after a successful save when this editor is pushed inside the
     /// Add Provider sheet (the sheet closes; the editor's own dismiss would
     /// only pop the navigation stack).
@@ -578,14 +604,22 @@ struct VolcengineSearchEditor: View {
         center: WebSearchSettingsCenter,
         configuration: WebSearchProviderConfiguration,
         provenance: SearchProviderCatalogProvenance? = nil,
+        catalog: SearchProviderCatalogIndex? = nil,
         onFinished: (() -> Void)? = nil
     ) {
         self.center = center
         self.configuration = configuration
         self.provenance = provenance
+        self.catalog = catalog
         self.onFinished = onFinished
+        let officialName = Self.catalogEntry(
+            in: catalog,
+            presetID: provenance?.presetID
+                ?? SearchProviderPresets.presetID(for: .volcengine)
+        )?.displayName(localePrimary: WebSearchSettingsCenter.localePrimary)
         do {
-            let loaded = try VolcengineSettingsDraft(configuration: configuration)
+            var loaded = try VolcengineSettingsDraft(configuration: configuration)
+            loaded.officialName = officialName
             let stored = center.credential(forAccount: loaded.credentialAccount)?
                 .values["apiKey"] ?? ""
             _draft = State(initialValue: loaded)
@@ -596,7 +630,8 @@ struct VolcengineSearchEditor: View {
                 loaded.mode == .legacyCustom || loaded.mode == .arkResponses
             )
         } catch {
-            let fallback = VolcengineSettingsDraft.fallback(configuration: configuration)
+            var fallback = VolcengineSettingsDraft.fallback(configuration: configuration)
+            fallback.officialName = officialName
             _draft = State(initialValue: fallback)
             _credential = State(initialValue: "")
             _credentialsByMode = State(initialValue: [:])
@@ -606,6 +641,38 @@ struct VolcengineSearchEditor: View {
             _advancedExpanded = State(initialValue: true)
         }
         _dataProState = State(initialValue: center.dataProState(for: configuration))
+    }
+
+    /// The catalog entry owning this provider's official title, when the
+    /// effective catalog still carries the preset.
+    private static func catalogEntry(
+        in catalog: SearchProviderCatalogIndex?,
+        presetID: String?
+    ) -> SearchProviderCatalogEntry? {
+        guard let catalog, let presetID else { return nil }
+        return catalog.entry(presetID: presetID)
+    }
+
+    private var entry: SearchProviderCatalogEntry? {
+        Self.catalogEntry(
+            in: catalog,
+            presetID: provenance?.presetID
+                ?? SearchProviderPresets.presetID(for: .volcengine)
+        )
+    }
+
+    /// The catalog's current official title for the active locale.
+    private var officialName: String? {
+        entry?.displayName(localePrimary: WebSearchSettingsCenter.localePrimary)
+    }
+
+    /// Every official title the current entry carries, mirroring the generic
+    /// editor's official-name set so both editors treat the same titles as
+    /// catalog-owned.
+    private var officialNames: Set<String> {
+        guard let entry else { return [] }
+        let locale = WebSearchSettingsCenter.localePrimary
+        return Set([entry.name[locale], entry.name["en"], entry.name["zh-Hans"]].compactMap { $0 })
     }
 
     var body: some View {
@@ -797,7 +864,14 @@ struct VolcengineSearchEditor: View {
         errorMessage = nil
         let generation = saveGeneration &+ 1
         saveGeneration = generation
-        let snapshot = draft
+        var snapshot = draft
+        // Re-read the official title at save time: a catalog rename that
+        // landed while this sheet stayed open is then adopted by the save
+        // instead of being frozen in or marked as a user alias.
+        snapshot.officialName = officialName
+        let openingTitle = snapshot.openingDisplayName
+        let officialTitle = officialName
+        let officialTitles = officialNames
         let supplied = credential.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Task { @MainActor in
@@ -816,7 +890,12 @@ struct VolcengineSearchEditor: View {
                 try center.upsert(
                     updated,
                     credential: credentialValue,
-                    provenance: provenance
+                    provenance: provenance,
+                    nameOwnership: SearchProviderNameOwnership(
+                        openingTitle: openingTitle,
+                        officialTitle: officialTitle,
+                        officialTitles: officialTitles
+                    )
                 )
 
                 let dataProCredential: String? = supplied.isEmpty

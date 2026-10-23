@@ -114,6 +114,7 @@
 		1F32E06B561D0EF46F855469 /* CadWebEngineSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBB17111CB3EFA4C8BF7302 /* CadWebEngineSessionTests.swift */; };
 		1F44647EAA29328BB0C0EE48 /* WorkbenchUITestHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95EAC5B497BECD2BCD52CF44 /* WorkbenchUITestHarness.swift */; };
 		1F9E9D4798A43C720FD0E1AF /* ComposerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F45D36BF6CCD7DE422A618F0 /* ComposerTests.swift */; };
+		1FF07875F9BE930E6159711A /* OfficeBackendReadinessProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27A6ED2F73715446E0E215FD /* OfficeBackendReadinessProbe.swift */; };
 		200FF4205A0D8FB439E16371 /* BrowserProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 734621A9EFCDFAC074872173 /* BrowserProtocolTests.swift */; };
 		20BA403DE976131AA22420E4 /* ImportDestinationCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46932D248DEB95A5975790A /* ImportDestinationCenter.swift */; };
 		2140E4DAD8F8850912BC9C4E /* DesignEntryStateCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F46F4FCA39F623BE5CFFE25 /* DesignEntryStateCenter.swift */; };
@@ -1037,6 +1038,7 @@
 		26DD1D961BA4287302C7C341 /* RARFixtures.LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = RARFixtures.LICENSE.txt; sourceTree = "<group>"; };
 		276A4BD225189F342404A19B /* PDFium.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = PDFium.xcframework; path = Vendor/PDFium/PDFium.xcframework; sourceTree = "<group>"; };
 		2795FA9C3C98A62982F843B2 /* RuntimeDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeDiagnostics.swift; sourceTree = "<group>"; };
+		27A6ED2F73715446E0E215FD /* OfficeBackendReadinessProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeBackendReadinessProbe.swift; sourceTree = "<group>"; };
 		27A87A202AC5E2A252E8632E /* IOSSystemShellBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSSystemShellBackend.swift; sourceTree = "<group>"; };
 		27B62CF0F97A8B6933F05E5C /* OfficePDFPaginatedLayoutAcceptanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficePDFPaginatedLayoutAcceptanceTests.swift; sourceTree = "<group>"; };
 		27BD00E30D4F02142C2C3B51 /* FloeShare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeShare.entitlements; sourceTree = "<group>"; };
@@ -2063,6 +2065,7 @@
 				577DF3FC3224D0985547747A /* NativeCADProposalStore.swift */,
 				5E3833A109069A20461F51ED /* NativeCADTaskRegistry.swift */,
 				DC3E986891CA3776E2C72939 /* OfficeAttachmentListView.swift */,
+				27A6ED2F73715446E0E215FD /* OfficeBackendReadinessProbe.swift */,
 				3D26D1A66D6D035CF7B264F7 /* OfficeCommandBridge.swift */,
 				FB9641DA51B4B98FEFC0C988 /* OfficeCommandCenter.swift */,
 				AC5A01D009413E26CBFDA461 /* OfficeConflictReviewView.swift */,
@@ -4020,6 +4023,7 @@
 				FCB09713A823D3578A3E9E8B /* NotificationResponseBridge.swift in Sources */,
 				CD1194126440A9ED929AC910 /* OfficeAttachmentListView.swift in Sources */,
 				6E624E3F76C7C45E967F351C /* OfficeAutosaveCoordinator.swift in Sources */,
+				1FF07875F9BE930E6159711A /* OfficeBackendReadinessProbe.swift in Sources */,
 				BAACAE2E9E820320AEB82EEB /* OfficeCommandBridge.swift in Sources */,
 				A3F0445011B1ABAC7C71B1E1 /* OfficeCommandCenter.swift in Sources */,
 				07D1C1304E9448BD34727FE9 /* OfficeConflictReviewView.swift in Sources */,

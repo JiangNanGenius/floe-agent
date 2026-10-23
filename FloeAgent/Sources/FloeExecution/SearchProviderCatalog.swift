@@ -594,10 +594,15 @@ public enum SearchProviderDraftFactory {
 /// field diff and the user decides. Removed catalog entries never delete or
 /// change instances; in-flight queries always run on the configuration that
 /// was frozen when the query started.
+///
+/// The supplier display name is deliberately NOT a reviewable field: it is
+/// catalog-owned cosmetic metadata, auto-refreshed by
+/// `SearchProviderTitleSynchronizer` unless the user personally renamed the
+/// instance (a `displayName` override). A name-only catalog revision
+/// therefore offers no update at all.
 public struct SearchProviderUpdatePlan: Equatable, Sendable {
     public struct FieldChange: Equatable, Sendable {
         public enum Field: Equatable, Sendable {
-            case displayName
             case endpoint
             case option(String)
             case credentialKeys
@@ -655,7 +660,11 @@ public struct SearchProviderUpdatePlan: Equatable, Sendable {
 public enum SearchProviderUpdatePlanner {
     /// The pending plan for one instance against the effective catalog, or
     /// nil when there is nothing to review. Instances with no preset
-    /// identity are never touched by catalog updates.
+    /// identity are never touched by catalog updates. The supplier display
+    /// name is never part of a plan: official catalog titles are cosmetic
+    /// metadata refreshed automatically by `SearchProviderTitleSynchronizer`
+    /// (user aliases — a `displayName` override — are never changed), so a
+    /// catalog revision that only renames entries offers nothing to review.
     public static func plan(
         for instance: WebSearchProviderInstance,
         in catalog: SearchProviderCatalogIndex,
@@ -666,18 +675,6 @@ public enum SearchProviderUpdatePlanner {
               instance.appliedCatalogVersion != catalog.version else { return nil }
         var changes: [SearchProviderUpdatePlan.FieldChange] = []
         var touchesHost = false
-
-        if !instance.overrides.contains("displayName"),
-           let desired = entry.name[localePrimary]
-            ?? entry.name["en"]
-            ?? entry.name["zh-Hans"],
-           instance.configuration.displayName != desired {
-            changes.append(.init(
-                field: .displayName,
-                from: instance.configuration.displayName,
-                to: desired
-            ))
-        }
 
         if (entry.managesEndpoint ?? false), !instance.overrides.contains("endpoint") {
             let current = instance.configuration.endpoint?.absoluteString
@@ -742,9 +739,6 @@ public enum SearchProviderUpdatePlanner {
 
         for change in plan.changes {
             switch change.field {
-            case .displayName:
-                guard !overrides.contains("displayName") else { continue }
-                if let to = change.to { configuration.displayName = to }
             case .endpoint:
                 guard !overrides.contains("endpoint") else { continue }
                 if let to = change.to {
@@ -797,6 +791,75 @@ public enum SearchProviderUpdatePlanner {
         let lhsHost = (lhs?.host?.lowercased(), lhs?.port)
         let rhsHost = (rhs?.host?.lowercased(), rhs?.port)
         return lhsHost != rhsHost
+    }
+}
+
+// MARK: - Official supplier title sync (pure, automatic)
+
+/// The catalog-owned supplier display name is cosmetic metadata, not a user
+/// setting: while the user has never renamed an instance — its `overrides`
+/// does not contain `displayName` — the current localized catalog title
+/// owns the visible name and refreshes automatically with later catalog
+/// revisions. That covers migration-kept records that still carry the exact
+/// legacy default and saved configs that still carry the catalog default
+/// from the revision they were added from: saving a default never turns it
+/// into an alias. An actually user-edited name is a `displayName` override
+/// (recorded by the editor save paths and the v1 → v2 migration provenance)
+/// and is preserved against every later catalog revision. Sync never touches
+/// endpoint, options, credential keys, the credential account, the enabled
+/// switch, priority, preset identity or `appliedCatalogVersion`: real field
+/// changes still require the reviewed plan with its host/auth confirmation.
+public enum SearchProviderTitleSynchronizer {
+    /// The current official title an instance should adopt, or nil when the
+    /// name is not catalog-owned (user alias), the preset is not in the
+    /// catalog, or the stored name already equals the current title.
+    public static func officialTitle(
+        for instance: WebSearchProviderInstance,
+        entry: SearchProviderCatalogEntry,
+        localePrimary: String
+    ) -> String? {
+        guard !instance.overrides.contains("displayName") else { return nil }
+        let desired = entry.displayName(localePrimary: localePrimary)
+        guard !desired.isEmpty, desired != instance.configuration.displayName else {
+            return nil
+        }
+        return desired
+    }
+
+    /// The title-synchronised copy of one instance. Identical to the input
+    /// when the name is user-owned or already current.
+    public static func synchronizing(
+        _ instance: WebSearchProviderInstance,
+        catalog: SearchProviderCatalogIndex,
+        localePrimary: String
+    ) -> WebSearchProviderInstance {
+        guard let presetID = instance.presetID,
+              let entry = catalog.entry(presetID: presetID),
+              let desired = officialTitle(
+                for: instance, entry: entry, localePrimary: localePrimary
+              ) else { return instance }
+        var updated = instance
+        updated.configuration.displayName = desired
+        return updated
+    }
+
+    /// Batch sync. Document order is preserved and only the display name can
+    /// change. The caller persists the result through its existing store
+    /// lifecycle; this function itself never mutates or writes.
+    public static func synchronize(
+        instances: [WebSearchProviderInstance],
+        catalog: SearchProviderCatalogIndex,
+        localePrimary: String
+    ) -> (instances: [WebSearchProviderInstance], renamedCount: Int) {
+        var renamed = 0
+        let updated = instances.map { instance in
+            let next = synchronizing(instance, catalog: catalog, localePrimary: localePrimary)
+            if next.configuration.displayName != instance.configuration.displayName {
+                renamed += 1
+            }
+            return next
+        }
+        return (updated, renamed)
     }
 }
 

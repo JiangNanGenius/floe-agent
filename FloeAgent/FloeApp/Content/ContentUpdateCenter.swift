@@ -639,7 +639,9 @@ final class ContentUpdateCenter: ObservableObject {
 
     /// True when a signed catalog revision newer than the active/bundled one
     /// is available for review. The instance list shows per-instance update
-    /// badges from the same catalog version, never auto-applying defaults.
+    /// badges only for real endpoint/option/credential diffs; the catalog-
+    /// owned official supplier titles refresh automatically through the
+    /// settings center's title sync and never appear as a manual update.
     var searchProviderCatalogUpdateAvailable: Bool {
         available[Self.searchProviderPackageID]?.decision.isUpdate == true
     }

@@ -874,7 +874,7 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
     private var window: UIWindow?
     /// Close lifecycle: references are only released after the engine
     /// acknowledged the close; a failed close quarantines the session.
-    enum CloseState { case open, closing, closed, quarantined }
+    enum CloseState: Equatable { case open, closing, closed, quarantined }
     private var closeState: CloseState = .open
 
     // Open readiness state. Callbacks may settle before a wait attaches and
@@ -995,6 +995,7 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             Task { @MainActor in
                 let failure = OfficeServiceSessionFailure(
                     reason: "the engine renderer process terminated")
+                self?.boundedWaitBreadcrumb("renderer", outcome: "terminated")
                 self?.resolveOpen(.failure(failure))
                 self?.resolveRender(.failure(failure))
             }
@@ -1025,6 +1026,15 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
         self.window = window
     }
 
+    /// Content-free diagnostics, enabled only in Debug qualification runs.
+    private func boundedWaitBreadcrumb(_ wait: String, outcome: String) {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["FLOE_OFFICE_EXPORT_QUALIFICATION"] == "1" else { return }
+        NSLog("[FloeOfficeExportStage] wait=%@ outcome=%@ readOnly=%d requiresVisibleRender=%d",
+              wait, outcome, readOnly ? 1 : 0, requiresVisibleRender ? 1 : 0)
+        #endif
+    }
+
     private func awaitOpen(timeout: TimeInterval = 45) async throws {
         if let settled = openSettled {
             _ = try settled.get()
@@ -1034,6 +1044,9 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             openWaiter = continuation
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if self?.openWaiter != nil {
+                    self?.boundedWaitBreadcrumb("open", outcome: "timeout")
+                }
                 self?.resolveOpen(.failure(OfficeServiceSessionFailure(
                     reason: "the working copy did not finish opening in time")))
             }
@@ -1048,6 +1061,7 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             if await OfficeCommandBridge.isReady(controller: native) { return }
             try? await Task.sleep(nanoseconds: 150_000_000)
         }
+        boundedWaitBreadcrumb("commandBridge", outcome: "timeout")
         throw OfficeServiceSessionFailure(
             reason: "the engine command bridge did not become ready in time")
     }
@@ -1061,10 +1075,76 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             renderWaiter = continuation
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                if self?.renderWaiter != nil, self?.renderSettled == nil {
+                    self?.boundedWaitBreadcrumb("visibleRender", outcome: "timeout")
+                }
                 self?.resolveRender(.failure(OfficeServiceSessionFailure(
                     reason: "the presentation produced no visible render in time; automatic engine edits are unavailable for it")))
             }
         }
+    }
+
+    /// Bounded wait for the engine page's REAL loaded-document
+    /// acknowledgement before dispatching this session's PDF export.
+    ///
+    /// Why not the paint receipt: for non-presentation formats the pinned
+    /// host deliberately stops delivering ANY render receipt once its own
+    /// bounded probe settles (`reportFailureIfRequiredWithReason:` leaves
+    /// the outcome "to the App's own open bound"), so after that deadline
+    /// a paint wait here can only fail — a transient renderer stall would
+    /// become a deterministic preview failure while the export worker
+    /// itself (`FloeExportDocument` on the core `loKitDocument`, with its
+    /// own fakeClientFd/save/close busy guards) reads the core, not the
+    /// canvas. What the invariant demands is that the engine has actually
+    /// loaded this session's document. The bridge check reuses the exact
+    /// facts the pinned native render probe evaluates — the reported
+    /// document type, `map._docLoaded` (set by the engine's own
+    /// `docloaded` socket-ack event, reset by socket close) and a sized
+    /// document canvas — the same triple the pinned host itself defines as
+    /// the Word/Excel edit-entry extent trigger
+    /// (`FloeRenderFactsSatisfyEditEntryTrigger`), with tile-decode and
+    /// pixel paint deliberately excluded. No sleep, no retry beyond the
+    /// same bounded poll cadence as the existing command-bridge readiness
+    /// wait, no timeout bump. A render receipt that DID settle stays
+    /// authoritative in both directions: success replays instantly and a
+    /// terminated renderer still fails fast before dispatch.
+    private func awaitBackendDocumentLoaded(cancellation: CancellationToken?,
+                                            timeout: TimeInterval) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+            if closeState != .open {
+                throw OfficeServiceSessionFailure(reason: "the engine session is no longer open")
+            }
+            if let settled = renderSettled {
+                var outcome = "rendererFailed"
+                if case .success = settled { outcome = "renderReceipt" }
+                boundedWaitBreadcrumb("documentLoaded", outcome: outcome)
+                try settled.get()
+                return
+            }
+            let remaining = deadline.timeIntervalSinceNow
+            let loaded = await OfficeCommandBridge.isBackendDocumentLoaded(
+                controller: native, timeout: min(1, remaining))
+            if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
+            guard closeState == .open else {
+                throw OfficeServiceSessionFailure(reason: "the engine session is no longer open")
+            }
+            // A reply can race renderer termination or close. Recheck the
+            // session receipt before accepting the probe's result.
+            if let settled = renderSettled {
+                try settled.get()
+                return
+            }
+            if loaded {
+                boundedWaitBreadcrumb("documentLoaded", outcome: "ready")
+                return
+            }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        boundedWaitBreadcrumb("documentLoaded", outcome: "timeout")
+        throw OfficeServiceSessionFailure(
+            reason: "the engine did not confirm the document load in time")
     }
 
     private func engineReportsReadOnly() async -> Bool {
@@ -1166,17 +1246,29 @@ final class OfficeServiceNativeSession: OfficeServiceEngineSession {
             throw OfficeServiceSessionFailure(reason: "the engine session is quarantined")
         }
         if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
-        // Opening the UIDocument and installing the command bridge can finish
-        // before the backend has loaded its LoKit document. PDF export reads
-        // that backend directly, so require the same session's acknowledged
-        // painted document before dispatching the export worker.
-        try await awaitVisibleRender(timeout: min(max(1, timeout), 30))
+        // The invariant is unchanged: the PDF dispatch waits for THIS
+        // session's genuinely loaded document. A successful open only proves
+        // the UIDocument/core open and the command-bridge check only proves
+        // the document-start adapter installed — neither proves the engine
+        // loaded the document. Presentations keep the exact paint-receipt
+        // contract; for the formats whose paint receipt the pinned host
+        // structurally stops delivering after its own probe settles, the
+        // wait is the engine's real loaded-document ack under the same
+        // bounded cap instead (see awaitBackendDocumentLoaded), never a
+        // bare function check and never an arbitrary sleep.
+        if requiresVisibleRender {
+            try await awaitVisibleRender(timeout: min(max(1, timeout), 30))
+        } else {
+            try await awaitBackendDocumentLoaded(cancellation: cancellation,
+                                                 timeout: min(max(1, timeout), 30))
+        }
         if cancellation?.isCancelled == true || Task.isCancelled { throw FloeError.cancelled }
         let receipt = OfficePDFExportReceipt()
-        let timeoutTask = Task { @MainActor in
+        let timeoutTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(1, timeout) * 1_000_000_000))
-            receipt.resolve(.failure(OfficeServiceSessionFailure(
+            let won = receipt.resolve(.failure(OfficeServiceSessionFailure(
                 reason: "the engine did not finish the PDF export in time")))
+            if won { self?.boundedWaitBreadcrumb("exportReceipt", outcome: "timeout") }
         }
         native.exportDocument(withFormat: "pdf") { fileURL, error in
             if let error {
@@ -1318,15 +1410,19 @@ final class OfficePDFExportReceipt: @unchecked Sendable {
         }
     }
 
-    func resolve(_ result: Result<URL, Error>) {
-        let waiting: CheckedContinuation<URL, Error>? = lock.withLock {
-            guard settled == nil else { return nil }
+    /// Settle-first-wins replay, unchanged. The boolean result is
+    /// diagnostic-only: true when THIS call actually won the settle race.
+    @discardableResult
+    func resolve(_ result: Result<URL, Error>) -> Bool {
+        let outcome: (CheckedContinuation<URL, Error>?, Bool) = lock.withLock {
+            guard settled == nil else { return (nil, false) }
             settled = result
             let waiting = continuation
             continuation = nil
-            return waiting
+            return (waiting, true)
         }
-        waiting?.resume(with: result)
+        outcome.0?.resume(with: result)
+        return outcome.1
     }
 }
 

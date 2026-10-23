@@ -332,7 +332,7 @@ struct SearchProviderCatalogTests {
 
     // MARK: - Reviewed catalog updates
 
-    @Test("Catalog updates merge only non-overridden fields and retain user state")
+    @Test("Catalog updates merge only non-overridden real fields; names sync automatically")
     func planMergesOnlyUnoverriddenFields() throws {
         let instance = Self.bochaInstance()
         let renamed = try Self.catalogIndex(version: "1.1.0") { entry in
@@ -341,34 +341,64 @@ struct SearchProviderCatalogTests {
             fields[0]["defaultValue"] = "false"
             entry["optionFields"] = fields
         }
+        let bochaEntry = try #require(renamed.entry(presetID: "bocha"))
         let plan = try #require(SearchProviderUpdatePlanner.plan(
             for: instance, in: renamed, localePrimary: "en"
         ))
         #expect(plan.toCatalogVersion == "1.1.0")
         #expect(plan.fromCatalogVersion == "1.0.0")
-        #expect(plan.changes.count == 2)
+        // The catalog rename is cosmetic supplier metadata, never a reviewable
+        // field change: only the real option default diff is offered.
+        #expect(plan.changes.count == 1)
+        #expect(plan.changes.first?.field == .option("summaryEnabled"))
         #expect(plan.touchesHost == false)
         #expect(plan.touchesCredentialKeys == false)
         #expect(plan.requiresConfirmation == false)
 
         let applied = SearchProviderUpdatePlanner.apply(
-            plan, to: instance, entry: try #require(renamed.entry(presetID: "bocha"))
+            plan, to: instance, entry: bochaEntry
         )
         #expect(applied.didRotateCredential == false)
-        #expect(applied.instance.configuration.displayName == "Bocha Web Search")
-        #expect(applied.instance.configuration.options["summaryEnabled"] == "false")
-        #expect(applied.instance.configuration.enabled == true)
-        #expect(applied.instance.configuration.priority == instance.configuration.priority)
-        #expect(applied.instance.configuration.credentialAccount == instance.configuration.credentialAccount)
-        #expect(applied.instance.appliedCatalogVersion == "1.1.0")
-        #expect(applied.instance.catalogCredentialKeys == ["apiKey"])
+        // apply() merges only the plan fields; the official title advances
+        // through the automatic synchronizer.
+        #expect(applied.instance.configuration.displayName == "Bocha Search")
+        let synced = SearchProviderTitleSynchronizer.synchronizing(
+            applied.instance, catalog: renamed, localePrimary: "en"
+        )
+        #expect(synced.configuration.displayName == "Bocha Web Search")
+        #expect(synced.overrides.isEmpty)
+        #expect(synced.appliedCatalogVersion == "1.1.0")
+        #expect(synced.configuration.options["summaryEnabled"] == "false")
+        #expect(synced.configuration.enabled == true)
+        #expect(synced.configuration.priority == instance.configuration.priority)
+        #expect(synced.configuration.credentialAccount == instance.configuration.credentialAccount)
+        #expect(synced.catalogCredentialKeys == ["apiKey"])
 
-        // User overrides win and produce no pending plan at all.
+        // A revision that only renames the supplier offers nothing at all,
+        // in any locale.
+        var matching = instance
+        matching.configuration.options["summaryEnabled"] = "true"
+        let renameOnly = try Self.catalogIndex(version: "1.2.0") { entry in
+            entry["name"] = ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"]
+        }
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: matching, in: renameOnly, localePrimary: "en"
+        ) == nil)
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: matching, in: renameOnly, localePrimary: "zh-Hans"
+        ) == nil)
+
+        // A genuine user alias wins over every later title: no pending plan,
+        // no automatic rename.
         var overridden = instance
+        overridden.configuration.displayName = "My Bocha"
         overridden.overrides = ["displayName", "option:summaryEnabled"]
         #expect(SearchProviderUpdatePlanner.plan(
             for: overridden, in: renamed, localePrimary: "en"
         ) == nil)
+        #expect(SearchProviderTitleSynchronizer.synchronizing(
+            overridden, catalog: renamed, localePrimary: "en"
+        ).configuration.displayName == "My Bocha")
 
         // An already reviewed version produces no plan.
         var reviewed = instance
@@ -408,8 +438,15 @@ struct SearchProviderCatalogTests {
         #expect(applied.instance.configuration.id == instance.configuration.id)
 
         // A catalog that does not manage endpoints never proposes one.
+        // (search-saved-name lane: this fixture previously asserted plan == nil
+        // while the saved instance still lacked the current summaryEnabled
+        // default, so a REAL option diff made the plan non-nil — a pre-existing
+        // base failure in this suite, originally unrunnable on this host. The
+        // assertion is unchanged; the fixture is aligned to a fully default-
+        // matching saved state so the test checks exactly what it claims.)
         var unmanaged = instance
         unmanaged.configuration.endpoint = nil
+        unmanaged.configuration.options["summaryEnabled"] = "true"
         let plain = try Self.catalogIndex(version: "1.3.0") { entry in
             entry["defaultEndpoint"] = "https://elsewhere.example.com/search"
         }
@@ -448,6 +485,100 @@ struct SearchProviderCatalogTests {
             for: instance, in: trimmed, localePrimary: "en"
         ) == nil)
         #expect(instance.configuration.displayName == "Bocha Search")
+    }
+
+    // MARK: - Automatic official title refresh
+
+    @Test("Title sync refreshes catalog-owned names only, is idempotent and locale-true")
+    func titleSyncRefreshesOnlyCatalogOwnedNames() throws {
+        var official = Self.bochaInstance()
+        official.configuration.options["summaryEnabled"] = "true"
+        let presetless = WebSearchProviderInstance(
+            configuration: Self.configuration(
+                .custom, name: "My Tunnel", enabled: true, account: "web-search.custom",
+                endpoint: "https://tunnel.example.com/api"
+            ),
+            presetID: nil, appliedCatalogVersion: nil
+        )
+        var aliased = Self.bochaInstance()
+        aliased.configuration.displayName = "My Bocha"
+        aliased.overrides = ["displayName"]
+
+        let renamed = try Self.catalogIndex(version: "1.1.0") { entry in
+            entry["name"] = ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"]
+        }
+        let batch = SearchProviderTitleSynchronizer.synchronize(
+            instances: [official, aliased, presetless], catalog: renamed, localePrimary: "en"
+        )
+        #expect(batch.renamedCount == 1)
+        #expect(batch.instances[0].configuration.displayName == "Bocha Web Search")
+        #expect(batch.instances[1].configuration.displayName == "My Bocha")
+        #expect(batch.instances[2] == presetless)
+        // Only the name changes on the refreshed instance: everything else is
+        // byte-identical, including the reviewed catalog marker.
+        #expect(batch.instances[0].overrides == official.overrides)
+        #expect(batch.instances[0].appliedCatalogVersion == official.appliedCatalogVersion)
+        #expect(batch.instances[0].configuration.credentialAccount == official.configuration.credentialAccount)
+        #expect(batch.instances[0].configuration.enabled == official.configuration.enabled)
+        #expect(batch.instances[0].configuration.priority == official.configuration.priority)
+        #expect(batch.instances[0].configuration.options == official.configuration.options)
+        // Second pass renames nothing.
+        #expect(SearchProviderTitleSynchronizer.synchronize(
+            instances: batch.instances, catalog: renamed, localePrimary: "en"
+        ).renamedCount == 0)
+        // Localized official titles are honoured deterministically.
+        let zh = SearchProviderTitleSynchronizer.synchronize(
+            instances: [official], catalog: renamed, localePrimary: "zh-Hans"
+        )
+        #expect(zh.instances.first?.configuration.displayName == "博查网页搜索")
+
+        // Synced results round-trip through the v2 store: the refreshed name
+        // persists and remains catalog-owned (no alias marking) after reload.
+        let decoded = try JSONDecoder().decode(
+            [WebSearchProviderInstance].self, from: try JSONEncoder().encode(batch.instances)
+        )
+        #expect(decoded[0].configuration.displayName == "Bocha Web Search")
+        #expect(decoded[0].overrides.isEmpty)
+        #expect(SearchProviderUpdatePlanner.plan(for: decoded[0], in: renamed, localePrimary: "en") == nil)
+        #expect(SearchProviderTitleSynchronizer.synchronize(
+            instances: decoded, catalog: renamed, localePrimary: "en"
+        ).renamedCount == 0)
+
+        // A removed preset keeps its last official title: sync never renames
+        // against a missing entry.
+        var object = try #require(try JSONSerialization.jsonObject(with: Self.bundledData()) as? [String: Any])
+        object["version"] = "1.3.0"
+        object["entries"] = try #require(object["entries"] as? [[String: Any]])
+            .filter { ($0["presetID"] as? String) != "bocha" }
+        let trimmed = try SearchProviderCatalogIndex.validated(
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        let trimmedSync = SearchProviderTitleSynchronizer.synchronize(
+            instances: [batch.instances[0]], catalog: trimmed, localePrimary: "en"
+        )
+        #expect(trimmedSync.renamedCount == 0)
+        #expect(trimmedSync.instances.first?.configuration.displayName == "Bocha Web Search")
+    }
+
+    @Test("Drafts created from a catalog pick stay catalog-owned until a real rename")
+    func catalogPickDraftFollowsLaterTitles() throws {
+        let bundled = try Self.bundledIndex()
+        let draft = try #require(SearchProviderDraftFactory.draftInstance(
+            for: try #require(bundled.entry(presetID: "bocha")), localePrimary: "zh-Hans"
+        ))
+        #expect(draft.configuration.displayName == "博查搜索")
+        #expect(draft.overrides.isEmpty, "adopting the pick default is not a user alias")
+        let renamed = try Self.catalogIndex(version: "1.1.0") { entry in
+            entry["name"] = ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"]
+        }
+        #expect(SearchProviderUpdatePlanner.plan(
+            for: draft, in: renamed, localePrimary: "zh-Hans"
+        ) == nil, "a pure rename offers nothing even with a newer unreviewed version")
+        let synced = SearchProviderTitleSynchronizer.synchronize(
+            instances: [draft], catalog: renamed, localePrimary: "zh-Hans"
+        )
+        #expect(synced.renamedCount == 1)
+        #expect(synced.instances.first?.configuration.displayName == "博查网页搜索")
     }
 
     // MARK: - v1 → v2 migration
@@ -540,6 +671,54 @@ struct SearchProviderCatalogTests {
         #expect(result.instances.first?.configuration.kind == .bochaWeb)
         #expect(result.instances.first?.configuration.enabled == true)
         #expect(result.outcomes.first?.credentialCopies.first?.from == "web-search.bochaAI")
+    }
+
+    @Test("Migrated defaults follow later catalog titles while migrated aliases persist")
+    func migratedDefaultsFollowCatalogTitlesAliasesPersist() throws {
+        let defaultBocha = Self.configuration(
+            .bochaWeb, name: "Bocha Search", enabled: true, account: "web-search.bocha.a"
+        )
+        let aliasBocha = Self.configuration(
+            .bochaWeb, id: UUID(), name: "My Bocha", enabled: true, account: "web-search.bocha.b"
+        )
+        let aliasBrave = Self.configuration(
+            .brave, id: UUID(), name: "Work Brave", enabled: true, account: "web-search.brave.c"
+        )
+        let result = WebSearchInstanceMigration.migrate(
+            records: [defaultBocha, aliasBocha, aliasBrave],
+            hasCredential: { _ in true }
+        )
+        #expect(result.instances.count == 3)
+        let migratedDefault = try #require(
+            result.instances.first { $0.configuration.displayName == "Bocha Search" }
+        )
+        #expect(!migratedDefault.overrides.contains("displayName"),
+                "an untouched legacy default is not a user alias just because it was saved")
+        #expect(result.instances.contains {
+            $0.configuration.displayName == "My Bocha" && $0.overrides.contains("displayName")
+        })
+        #expect(result.instances.contains {
+            $0.configuration.displayName == "Work Brave" && $0.overrides.contains("displayName")
+        })
+
+        let renamed = try Self.catalogIndex(version: "1.1.0") { entry in
+            entry["name"] = ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"]
+        }
+        // None of the migrated instances receives a reviewable plan from a
+        // rename-only revision (the legacy M4 badge case).
+        for instance in result.instances {
+            #expect(SearchProviderUpdatePlanner.plan(
+                for: instance, in: renamed, localePrimary: "en"
+            ) == nil)
+        }
+        // The automatic refresh renames exactly the unaliased record.
+        let synced = SearchProviderTitleSynchronizer.synchronize(
+            instances: result.instances, catalog: renamed, localePrimary: "en"
+        )
+        #expect(synced.renamedCount == 1)
+        #expect(synced.instances.contains { $0.configuration.displayName == "Bocha Web Search" })
+        #expect(synced.instances.contains { $0.configuration.displayName == "My Bocha" })
+        #expect(synced.instances.contains { $0.configuration.displayName == "Work Brave" })
     }
 
     @Test("v2 instances round-trip and v1 payloads still decode")

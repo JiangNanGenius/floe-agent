@@ -31,6 +31,44 @@ import FloeTools
 
 @Suite("FloeApp.OfficePDFExportService")
 struct OfficePDFExportServiceTests {
+    @MainActor
+    @Test("a silent readiness probe times out and late replies cannot affect another probe")
+    func readinessProbeBoundsSilentAndLateReplies() async {
+        var lateReply: (@Sendable (Bool) -> Void)?
+        let timedOut = await OfficeBackendReadinessProbe.run(timeout: 0.03) { lateReply = $0 }
+        #expect(timedOut == false)
+        lateReply?(true)
+        let accepted = await OfficeBackendReadinessProbe.run(timeout: 1) { reply in
+            reply(true)
+            reply(false)
+        }
+        #expect(accepted)
+    }
+
+    @MainActor
+    @Test("cancelling a readiness probe fences its pending WebKit reply")
+    func readinessProbeCancellationFencesReply() async {
+        var lateReply: (@Sendable (Bool) -> Void)?
+        let task = Task { @MainActor in
+            await OfficeBackendReadinessProbe.run(timeout: 3) { lateReply = $0 }
+        }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while lateReply == nil, ContinuousClock.now < deadline, !Task.isCancelled {
+            await Task.yield()
+        }
+        guard lateReply != nil else {
+            task.cancel()
+            Issue.record("The controlled readiness probe did not start")
+            return
+        }
+        task.cancel()
+        let result = await task.value
+        #expect(result == false)
+        lateReply?(true)
+        let next = await OfficeBackendReadinessProbe.run(timeout: 1) { $0(true) }
+        #expect(next)
+    }
+
     // MARK: - Fixtures
 
     private func temporaryRoot() throws -> URL {

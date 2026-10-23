@@ -677,6 +677,238 @@ final class VolcengineSearchSettingsTests: XCTestCase {
         XCTAssertEqual(observed.last, .inactive)
         observation.cancel()
     }
+
+    // MARK: - Dedicated-editor display-name ownership
+    //
+    // The dedicated Volcengine editor maps a form draft, so it saves through
+    // `upsert` with the name identity it observed (opening title + the
+    // catalog's official titles). The official supplier title stays
+    // catalog-owned; only a name the user actually changed is an alias.
+
+    private func volcengineEntry(
+        name: [String: String] = ["en": "Volcengine Web Search", "zh-Hans": "火山引擎联网搜索"]
+    ) -> SearchProviderCatalogEntry {
+        SearchProviderCatalogEntry(
+            presetID: SearchProviderPresets.volcengine,
+            adapterKind: "volcengine",
+            name: name,
+            blurb: ["en": "Search", "zh-Hans": "搜索"],
+            defaultEndpoint: nil,
+            endpointRequired: false,
+            credentialFields: [
+                .init(key: "apiKey", required: true, label: ["en": "Key", "zh-Hans": "密钥"])
+            ],
+            optionFields: []
+        )
+    }
+
+    private func volcengineCatalog(
+        version: String,
+        name: [String: String]
+    ) -> SearchProviderCatalogIndex {
+        SearchProviderCatalogIndex(document: SearchProviderCatalogDocument(
+            schemaVersion: 1,
+            id: SearchProviderCatalog.packageID,
+            version: version,
+            entries: [volcengineEntry(name: name)]
+        ))
+    }
+
+    private var locale: String { WebSearchSettingsCenter.localePrimary }
+
+    func testDraftEmptyNameUsesTheOfficialTitleAndIsNeverAnAlias() throws {
+        let entry = volcengineEntry()
+        let officialTitle = entry.displayName(localePrimary: locale)
+        let center = makeCenter()
+        let stored = volcengineConfiguration(interface: .agentPlan, enabled: false)
+        try center.upsert(stored, credential: nil)
+
+        var draft = try VolcengineSettingsDraft(configuration: stored)
+        draft.officialName = officialTitle
+        draft.displayName = "   "
+        let saved = try draft.configuration()
+        XCTAssertEqual(saved.displayName, officialTitle,
+                       "an emptied field keeps the catalog-owned official title, not a literal")
+        try center.upsert(
+            saved,
+            credential: nil,
+            nameOwnership: SearchProviderNameOwnership(
+                openingTitle: stored.displayName,
+                officialTitle: officialTitle,
+                officialTitles: [officialTitle, "Volcengine Web Search", "火山引擎联网搜索"]
+            )
+        )
+        let instance = try XCTUnwrap(center.instances.first { $0.configuration.id == stored.id })
+        XCTAssertEqual(instance.configuration.displayName, officialTitle)
+        XCTAssertFalse(instance.overrides.contains("displayName"),
+                       "clearing the field is not a user alias")
+
+        // Without a catalog entry the draft keeps the opening name instead of
+        // a hardcoded English literal.
+        var legacy = try VolcengineSettingsDraft(configuration: stored)
+        legacy.displayName = ""
+        XCTAssertEqual(try legacy.configuration().displayName, stored.displayName)
+    }
+
+    func testDedicatedEditorSaveAcrossCatalogRefreshKeepsCatalogOwnedNameUnaliased() throws {
+        let oldTitle = volcengineEntry().displayName(localePrimary: locale)
+        let renamedEntry = volcengineEntry(
+            name: ["en": "Volcengine Web Search Pro", "zh-Hans": "火山引擎联网搜索Pro"]
+        )
+        let newTitle = renamedEntry.displayName(localePrimary: locale)
+        XCTAssertNotEqual(oldTitle, newTitle)
+
+        let center = makeCenter()
+        var opening = volcengineConfiguration(interface: .agentPlan, enabled: false)
+        opening.displayName = oldTitle
+        try center.upsert(opening, credential: nil)
+        // The catalog title refreshes automatically while the editor is open.
+        XCTAssertEqual(
+            center.synchronizeCatalogTitles(
+                catalog: volcengineCatalog(version: "1.1.0", name: renamedEntry.name)
+            ),
+            1
+        )
+        XCTAssertEqual(center.instances.first?.configuration.displayName, newTitle)
+
+        // The user only changed a real option; the name field still shows the
+        // opening official name. Saving must neither freeze that stale name
+        // nor turn it into an alias.
+        var draft = try VolcengineSettingsDraft(configuration: opening)
+        draft.officialName = newTitle
+        draft.queryRewrite = true
+        let refreshedConfiguration = try XCTUnwrap(center.instances.first).configuration
+        XCTAssertNotEqual(draft.openingDisplayName, refreshedConfiguration.displayName)
+        XCTAssertEqual(draft.openingDisplayName, oldTitle)
+        let saved = try draft.configuration()
+        XCTAssertEqual(saved.displayName, oldTitle, "the untouched draft carries the opening name")
+        try center.upsert(
+            saved,
+            credential: nil,
+            provenance: SearchProviderCatalogProvenance(
+                presetID: SearchProviderPresets.volcengine,
+                catalogVersion: "1.1.0",
+                credentialKeys: ["apiKey"]
+            ),
+            nameOwnership: SearchProviderNameOwnership(
+                openingTitle: draft.openingDisplayName,
+                officialTitle: newTitle,
+                officialTitles: [newTitle, renamedEntry.name["en"]!, renamedEntry.name["zh-Hans"]!]
+            )
+        )
+        let instance = try XCTUnwrap(center.instances.first)
+        XCTAssertEqual(instance.configuration.displayName, newTitle,
+                       "the refreshed official title is preserved, not overwritten")
+        XCTAssertFalse(instance.overrides.contains("displayName"))
+        XCTAssertEqual(instance.configuration.options[VolcengineSearchOptions.Key.queryRewrite], "true",
+                       "the user's real option change persisted")
+    }
+
+    func testDedicatedEditorNameEditSurvivesSyncAndRevertingToOfficialClearsAlias() throws {
+        let entry = volcengineEntry()
+        let officialTitle = entry.displayName(localePrimary: locale)
+        let officialTitles: Set<String> = [
+            officialTitle, entry.name["en"]!, entry.name["zh-Hans"]!
+        ]
+        let alias = "我的火山引擎"
+        let center = makeCenter()
+        var opening = volcengineConfiguration(interface: .agentPlan, enabled: false)
+        opening.displayName = officialTitle
+        try center.upsert(opening, credential: nil)
+
+        // 1. A genuine edit through the dedicated path is marked and kept.
+        var edited = opening
+        edited.displayName = alias
+        try center.upsert(
+            edited,
+            credential: nil,
+            nameOwnership: SearchProviderNameOwnership(
+                openingTitle: officialTitle,
+                officialTitle: officialTitle,
+                officialTitles: officialTitles
+            )
+        )
+        var instance = try XCTUnwrap(center.instances.first)
+        XCTAssertEqual(instance.configuration.displayName, alias)
+        XCTAssertTrue(instance.overrides.contains("displayName"))
+
+        // 2. An automatic official-title refresh never renames the alias.
+        let renamed = volcengineCatalog(
+            version: "1.1.0",
+            name: ["en": "Volcengine Web Search Pro", "zh-Hans": "火山引擎联网搜索Pro"]
+        )
+        XCTAssertEqual(center.synchronizeCatalogTitles(catalog: renamed), 0)
+        XCTAssertEqual(center.instances.first?.configuration.displayName, alias)
+
+        // 3. Re-saving the alias unchanged keeps the marking (a reloaded
+        //    editor sees the alias as its opening name).
+        try center.upsert(
+            edited,
+            credential: nil,
+            nameOwnership: SearchProviderNameOwnership(
+                openingTitle: alias,
+                officialTitle: renamed.entries[0].displayName(localePrimary: locale),
+                officialTitles: [renamed.entries[0].displayName(localePrimary: locale)]
+            )
+        )
+        XCTAssertEqual(center.instances.first?.overrides.contains("displayName"), true)
+
+        // 4. Clearing the field reverts to the current official title and
+        //    removes the alias marking so the catalog owns the name again.
+        let newOfficial = renamed.entries[0].displayName(localePrimary: locale)
+        var cleared = try VolcengineSettingsDraft(configuration: edited)
+        cleared.officialName = newOfficial
+        cleared.displayName = ""
+        let clearedSaved = try cleared.configuration()
+        XCTAssertEqual(clearedSaved.displayName, newOfficial)
+        try center.upsert(
+            clearedSaved,
+            credential: nil,
+            nameOwnership: SearchProviderNameOwnership(
+                openingTitle: alias,
+                officialTitle: newOfficial,
+                officialTitles: [newOfficial]
+            )
+        )
+        instance = try XCTUnwrap(center.instances.first)
+        XCTAssertEqual(instance.configuration.displayName, newOfficial)
+        XCTAssertFalse(instance.overrides.contains("displayName"),
+                       "reverting to the official title restores catalog ownership")
+    }
+
+    func testResolvedDisplayNameFollowsTheCatalogOwnershipRule() {
+        let ownership = SearchProviderNameOwnership(
+            openingTitle: "Bocha Search",
+            officialTitle: "Bocha Web Search",
+            officialTitles: ["Bocha Web Search", "博查网页搜索"]
+        )
+        // A user-typed alias is marked.
+        XCTAssertEqual(
+            WebSearchSettingsCenter.resolvedDisplayName(
+                saved: "My Bocha", previous: "Bocha Search", aliased: false, ownership: ownership
+            ).isUserAlias,
+            true
+        )
+        // Entering a current official title is catalog-owned and adopts it.
+        let reverted = WebSearchSettingsCenter.resolvedDisplayName(
+            saved: "博查网页搜索", previous: "My Bocha", aliased: true, ownership: ownership
+        )
+        XCTAssertFalse(reverted.isUserAlias)
+        XCTAssertEqual(reverted.displayName, "Bocha Web Search")
+        // A carried-over former official title stays catalog-owned and adopts
+        // the current official title.
+        let carried = WebSearchSettingsCenter.resolvedDisplayName(
+            saved: "Bocha Search", previous: "Bocha Web Search", aliased: false, ownership: ownership
+        )
+        XCTAssertFalse(carried.isUserAlias)
+        XCTAssertEqual(carried.displayName, "Bocha Web Search")
+        // An unchanged existing alias keeps its marking and its name.
+        let keptAlias = WebSearchSettingsCenter.resolvedDisplayName(
+            saved: "My Bocha", previous: "My Bocha", aliased: true, ownership: ownership
+        )
+        XCTAssertTrue(keptAlias.isUserAlias)
+        XCTAssertEqual(keptAlias.displayName, "My Bocha")
+    }
 }
 
 // MARK: - Test-owned stores

@@ -1401,6 +1401,10 @@ struct OfficePDFExportOptionsView: View {
         #if canImport(FloeOfficeNative)
         if error is OfficePDFExportError { return "exportError" }
         #endif
+        #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
+        if error is OfficeServiceSessionFailure { return "serviceSession" }
+        #endif
+        if error is OfficeAutomaticExecutionError { return "automaticExecution" }
         if let floe = error as? FloeError, case .validationFailed = floe { return "validation" }
         return "other"
     }

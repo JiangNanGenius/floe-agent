@@ -418,6 +418,254 @@ final class WebSearchCatalogSettingsTests: XCTestCase {
         XCTAssertNil(center.updatePlan(for: persisted, catalog: newer))
     }
 
+    func testApplyCatalogUpdateNormalizesOnceAndPersistsOnce() throws {
+        let center = makeCenter()
+        let bocha = instance(
+            configuration(.bochaWeb, name: "Bocha Search", enabled: true,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID()),
+                          options: ["summaryEnabled": "true"]),
+            presetID: SearchProviderPresets.bocha,
+            appliedCatalogVersion: "1.0.0"
+        )
+        try center.saveInstance(bocha, credential: WebSearchCredential(values: ["apiKey": "k"]))
+        let stored = try XCTUnwrap(center.instances.first)
+
+        let newer = catalog(version: "1.1.0", entries: [
+            catalogEntry(
+                name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"],
+                optionDefault: "false"
+            )
+        ])
+        let plan = try XCTUnwrap(center.updatePlan(for: stored, catalog: newer))
+        XCTAssertEqual(plan.changes.count, 1, "only the real option diff is reviewed")
+
+        let writesBefore = cloud.synchronizeCount
+        let applied = try center.applyCatalogUpdate(
+            plan, to: stored.configuration.id, catalog: newer, confirmed: false
+        )
+        // One reviewed apply writes the store exactly once: the official title
+        // is normalized inside the same assignment instead of a second,
+        // global title-sync pass.
+        XCTAssertEqual(cloud.synchronizeCount, writesBefore + 1)
+        let expected = newer.entries[0].displayName(
+            localePrimary: WebSearchSettingsCenter.localePrimary
+        )
+        XCTAssertEqual(applied.configuration.displayName, expected)
+        XCTAssertEqual(applied.configuration.options["summaryEnabled"], "false")
+        XCTAssertEqual(applied.appliedCatalogVersion, "1.1.0")
+        // The returned value is the stored instance, not a stale pre-sync copy.
+        XCTAssertEqual(applied, try XCTUnwrap(center.instances.first))
+        XCTAssertEqual(
+            makeCenter().instances.first?.configuration.displayName, expected,
+            "the single write persisted the normalized title"
+        )
+    }
+
+    // MARK: - Official supplier title semantics
+    //
+    // The supplier display name is catalog-owned cosmetic metadata unless the
+    // user personally renamed the instance. A saved official default (the
+    // M4 case: legacy English preset names against a Chinese catalog) must
+    // never be offered as a meaningless name-only "Available Update"; it
+    // refreshes automatically through the existing store lifecycle. A real
+    // alias persists through every later revision, reload and re-sync.
+
+    func testNameOnlyCatalogRenameOffersNoUpdateAndOfficialTitleRefreshesAutomatically() throws {
+        let center = makeCenter()
+        let bocha = instance(
+            configuration(.bochaWeb, name: "Bocha Search", enabled: true,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID()),
+                          options: ["summaryEnabled": "true"]),
+            presetID: SearchProviderPresets.bocha,
+            appliedCatalogVersion: "1.0.0"
+        )
+        try center.saveInstance(bocha, credential: WebSearchCredential(values: ["apiKey": "k"]))
+        center.setEnabled(true, id: bocha.configuration.id)
+        let stored = try XCTUnwrap(center.instances.first)
+
+        let renamed = catalog(version: "1.1.0", entries: [
+            catalogEntry(name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"])
+        ])
+        // 1. A pure supplier rename is never a reviewable config change.
+        XCTAssertNil(center.updatePlan(for: stored, catalog: renamed))
+        // 2. The official title of the saved default refreshes automatically.
+        let expected = renamed.entries[0].displayName(
+            localePrimary: WebSearchSettingsCenter.localePrimary
+        )
+        XCTAssertEqual(center.synchronizeCatalogTitles(catalog: renamed), 1)
+        let synced = try XCTUnwrap(center.instances.first)
+        XCTAssertEqual(synced.configuration.displayName, expected)
+        XCTAssertEqual(synced.overrides, [], "a saved official default never becomes a user alias")
+        XCTAssertEqual(synced.appliedCatalogVersion, "1.0.0",
+                       "the reviewed marker only advances through applyCatalogUpdate")
+        XCTAssertEqual(synced.configuration.enabled, true, "the user switch survives the refresh")
+        XCTAssertEqual(synced.configuration.credentialAccount, stored.configuration.credentialAccount)
+        XCTAssertEqual(center.credential(forAccount: synced.configuration.credentialAccount)?.values["apiKey"], "k")
+        // 3. Persisted: a fresh center over the same storage reloads the synced title.
+        XCTAssertEqual(makeCenter().instances.first?.configuration.displayName, expected)
+        // 4. Idempotent.
+        XCTAssertEqual(center.synchronizeCatalogTitles(catalog: renamed), 0)
+    }
+
+    func testUserRenamedAliasSurvivesCatalogRenameSyncAndReload() throws {
+        let center = makeCenter()
+        let bocha = instance(
+            configuration(.bochaWeb, name: "My Bocha", enabled: true,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID()),
+                          options: ["summaryEnabled": "true"]),
+            presetID: SearchProviderPresets.bocha,
+            appliedCatalogVersion: "1.0.0",
+            overrides: ["displayName"]
+        )
+        try center.saveInstance(bocha, credential: WebSearchCredential(values: ["apiKey": "k"]))
+        center.setEnabled(true, id: bocha.configuration.id)
+        let renamed = catalog(version: "1.1.0", entries: [
+            catalogEntry(name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"])
+        ])
+        XCTAssertNil(center.updatePlan(for: try XCTUnwrap(center.instances.first), catalog: renamed))
+        XCTAssertEqual(center.synchronizeCatalogTitles(catalog: renamed), 0,
+                       "an actual alias is never renamed by the catalog")
+        XCTAssertEqual(center.instances.first?.configuration.displayName, "My Bocha")
+        XCTAssertEqual(makeCenter().instances.first?.configuration.displayName, "My Bocha")
+    }
+
+    func testTwoAccountsOfSameBrandRefreshIndependently() throws {
+        let center = makeCenter()
+        let official = instance(
+            configuration(.bochaWeb, name: "Bocha Search", enabled: false,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID())),
+            presetID: SearchProviderPresets.bocha, appliedCatalogVersion: "1.0.0"
+        )
+        let aliased = instance(
+            configuration(.bochaWeb, id: UUID(), name: "Work Bocha", enabled: false,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID())),
+            presetID: SearchProviderPresets.bocha, appliedCatalogVersion: "1.0.0",
+            overrides: ["displayName"]
+        )
+        try center.saveInstance(official, credential: WebSearchCredential(values: ["apiKey": "one"]))
+        try center.saveInstance(aliased, credential: WebSearchCredential(values: ["apiKey": "two"]))
+        let renamed = catalog(version: "1.1.0", entries: [
+            catalogEntry(name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"])
+        ])
+        XCTAssertEqual(center.synchronizeCatalogTitles(catalog: renamed), 1)
+        let expected = renamed.entries[0].displayName(
+            localePrimary: WebSearchSettingsCenter.localePrimary
+        )
+        XCTAssertEqual(
+            center.instances.first { $0.configuration.id == official.configuration.id }?
+                .configuration.displayName, expected
+        )
+        XCTAssertEqual(
+            center.instances.first { $0.configuration.id == aliased.configuration.id }?
+                .configuration.displayName, "Work Bocha"
+        )
+        // Both instances still own separate Keychain accounts and keys.
+        let officialAccount = try XCTUnwrap(
+            center.instances.first { $0.configuration.id == official.configuration.id }
+        ).configuration.credentialAccount
+        let aliasedAccount = try XCTUnwrap(
+            center.instances.first { $0.configuration.id == aliased.configuration.id }
+        ).configuration.credentialAccount
+        XCTAssertNotEqual(officialAccount, aliasedAccount)
+        XCTAssertEqual(center.credential(forAccount: officialAccount)?.values["apiKey"], "one")
+        XCTAssertEqual(center.credential(forAccount: aliasedAccount)?.values["apiKey"], "two")
+    }
+
+    func testMeaningfulUpdateStillAppliesWithHostConfirmationAndRefreshesOfficialTitle() throws {
+        let center = makeCenter()
+        let bocha = instance(
+            configuration(.bochaWeb, name: "Bocha Search", enabled: false,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID()),
+                          endpoint: "https://old.example.com/search",
+                          options: ["summaryEnabled": "true"]),
+            presetID: SearchProviderPresets.bocha,
+            appliedCatalogVersion: "1.0.0"
+        )
+        try center.saveInstance(bocha, credential: WebSearchCredential(values: ["apiKey": "old-key"]))
+        center.setEnabled(true, id: bocha.configuration.id)
+        let stored = try XCTUnwrap(center.instances.first)
+        let oldAccount = stored.configuration.credentialAccount
+
+        let newer = catalog(version: "1.2.0", entries: [
+            catalogEntry(
+                name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"],
+                optionDefault: "false",
+                endpoint: "https://new.example.com/search",
+                managesEndpoint: true
+            )
+        ])
+        let plan = try XCTUnwrap(center.updatePlan(for: stored, catalog: newer))
+        // The card shows exactly the real diffs: endpoint + option default.
+        // The rename never appears as a user-field change.
+        XCTAssertEqual(plan.changes.count, 2)
+        XCTAssertTrue(plan.changes.contains { if case .endpoint = $0.field { return true }; return false })
+        XCTAssertTrue(plan.changes.contains {
+            if case .option("summaryEnabled") = $0.field { return true }; return false
+        })
+        XCTAssertTrue(plan.touchesHost)
+        XCTAssertTrue(plan.requiresConfirmation)
+
+        XCTAssertThrowsError(try center.applyCatalogUpdate(
+            plan, to: stored.configuration.id, catalog: newer, confirmed: false
+        )) { error in
+            XCTAssertEqual(error as? WebSearchSettingsError, .confirmationRequired)
+        }
+        let afterRefusal = try XCTUnwrap(center.instances.first)
+        XCTAssertEqual(afterRefusal.configuration.endpoint?.host, "old.example.com",
+                       "an unconfirmed host change merges nothing")
+        XCTAssertEqual(afterRefusal.configuration.credentialAccount, oldAccount)
+        XCTAssertEqual(center.credential(forAccount: oldAccount)?.values["apiKey"], "old-key")
+
+        let applied = try center.applyCatalogUpdate(
+            plan, to: stored.configuration.id, catalog: newer, confirmed: true
+        )
+        XCTAssertEqual(applied.configuration.endpoint?.host, "new.example.com")
+        XCTAssertNotEqual(applied.configuration.credentialAccount, oldAccount, "host change rotates the account")
+        XCTAssertNil(center.credential(forAccount: applied.configuration.credentialAccount),
+                     "the new account starts empty: the old key never follows to the new host")
+        XCTAssertNotNil(center.credential(forAccount: oldAccount), "the old key stays as a backup")
+        XCTAssertEqual(applied.configuration.options["summaryEnabled"], "false")
+        XCTAssertEqual(applied.configuration.enabled, true)
+        XCTAssertEqual(applied.appliedCatalogVersion, "1.2.0")
+        // The official title advanced automatically with the reviewed real update.
+        XCTAssertEqual(applied.configuration.displayName,
+                       newer.entries[0].displayName(localePrimary: WebSearchSettingsCenter.localePrimary))
+    }
+
+    func testMergedOverridesKeepsFormerOfficialNamesCatalogOwnedAndMarksRealAliases() {
+        let renamedEntry = catalogEntry(name: ["en": "Bocha Web Search", "zh-Hans": "博查网页搜索"])
+        func config(_ name: String) -> WebSearchProviderConfiguration {
+            configuration(.bochaWeb, name: name, enabled: true,
+                          account: WebSearchProviderInstance.credentialAccount(for: UUID()))
+        }
+        // A user-typed alias is marked.
+        XCTAssertTrue(WebSearchProviderEditor.mergedOverrides(
+            existing: [], configuration: config("My Bocha"), previousName: "Bocha Search",
+            entry: renamedEntry
+        ).contains("displayName"))
+        // A name equal to a current official title is catalog-owned.
+        XCTAssertFalse(WebSearchProviderEditor.mergedOverrides(
+            existing: [], configuration: config("Bocha Web Search"), previousName: "Bocha Search",
+            entry: renamedEntry
+        ).contains("displayName"))
+        // The carried-over former official name stays catalog-owned even after
+        // the catalog renamed it: saving a config is not an alias.
+        XCTAssertFalse(WebSearchProviderEditor.mergedOverrides(
+            existing: [], configuration: config("Bocha Search"), previousName: "Bocha Search",
+            entry: renamedEntry
+        ).contains("displayName"))
+        // An unchanged genuine alias keeps its marking.
+        XCTAssertTrue(WebSearchProviderEditor.mergedOverrides(
+            existing: ["displayName"], configuration: config("My Bocha"), previousName: "My Bocha",
+            entry: renamedEntry
+        ).contains("displayName"))
+        // Reverting an alias back to any official title clears the marking.
+        XCTAssertFalse(WebSearchProviderEditor.mergedOverrides(
+            existing: ["displayName"], configuration: config("博查网页搜索"), previousName: "My Bocha",
+            entry: renamedEntry
+        ).contains("displayName"))
+    }
+
     func testHostChangeRequiresConfirmationAndRotatesTheCredentialAccount() throws {
         let center = makeCenter()
         var configuration = self.configuration(

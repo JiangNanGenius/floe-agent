@@ -100,9 +100,13 @@ enum OfficeCommandBridge {    struct DispatchOutcome {
     }
 
     /// Bounded readiness probe: true only when the engine page has installed
-    /// the command-dispatch function. A service-owned (hidden-window) session
-    /// waits for this after open so the first command cannot race the page's
-    /// JavaScript bring-up and be reported as an invalid bridge response.
+    /// the command-dispatch function. The adapter is a document-start user
+    /// script, so this proves the page's JavaScript bring-up only — it is
+    /// NEVER evidence that the engine backend loaded the document. A
+    /// service-owned (hidden-window) session waits for this after open so
+    /// the first command cannot race the page's JavaScript bring-up and be
+    /// reported as an invalid bridge response; the truthful loaded-document
+    /// proof for the PDF export gate is `isBackendDocumentLoaded`.
     static func isReady(controller: UIViewController) async -> Bool {
         controller.loadViewIfNeeded()
         guard let webView = OfficeExplicitSaveBridge.findWebView(in: controller.view) else {
@@ -112,6 +116,67 @@ enum OfficeCommandBridge {    struct DispatchOutcome {
             "typeof window.__floeOfficeCommandDispatch === 'function'")
         return (value as? Bool) == true
     }
+
+    /// Bounded loaded-document probe: the engine page's real core-load
+    /// acknowledgement. It reuses ONLY the fields the pinned native render
+    /// probe already evaluates (verified in
+    /// `FloeAgent/ThirdParty/Collabora/FloeOfficeNative/FloeOfficeNative.mm`
+    /// `FloeRenderProbeScript()` and in the shipped `bundle.js` of the
+    /// qualified host artifact, run 39960312165):
+    /// * `map._docLayer._docType` / `map.getDocType()` — the engine-reported
+    ///   document type, which exists once the core's first document status
+    ///   created the tile layer;
+    /// * `map._docLoaded` — the shipped bundle assigns it exactly to the
+    ///   status of the engine's own `docloaded` event; the single
+    ///   `{status:!0}` fire happens only after the core status created the
+    ///   layer and `addLayer` (whose synchronous `onAdd` runs
+    ///   `sendInitUNOCommands()`/`setInitialZoom()`/`setPermission`) has
+    ///   returned, and socket close/error re-fires with `status:!1`;
+    /// * a sized document canvas — the same largest-canvas selection and
+    ///   size rule as the pinned probe.
+    /// The triple deliberately excludes tile-decode and pixel paint: it is
+    /// the paint-independent extent contract the pinned host itself uses
+    /// for the Word/Excel edit-entry trigger
+    /// (`FloeRenderFactsSatisfyEditEntryTrigger`). No new engine fields
+    /// are invented or renamed here. The payload is booleans and a stage
+    /// tag only — never document content.
+    static func isBackendDocumentLoaded(controller: UIViewController,
+                                        timeout: TimeInterval) async -> Bool {
+        controller.loadViewIfNeeded()
+        guard let webView = OfficeExplicitSaveBridge.findWebView(in: controller.view) else {
+            return false
+        }
+        return await OfficeBackendReadinessProbe.run(timeout: timeout) { resolve in
+            webView.evaluateJavaScript(loadedDocumentScript) { value, error in
+                let object = value as? [String: Any]
+                resolve(error == nil && (object?["extent"] as? Bool) == true)
+            }
+        }
+    }
+
+    /// Fact expressions mirror `FloeRenderProbeScript()`; content-free.
+    static let loadedDocumentScript = #"""
+    (() => {
+      try {
+        const map = window.app && window.app.map;
+        if (!map) return { extent: false, stage: 'map' };
+        const layer = map._docLayer || null;
+        const docType = layer && typeof layer._docType === 'string'
+            ? layer._docType
+            : (typeof map.getDocType === 'function' ? map.getDocType() : null);
+        const docLoaded = map._docLoaded === true;
+        const canvases = document.querySelectorAll('canvas');
+        let canvas = null;
+        for (let i = 0; i < canvases.length; i++) {
+          const candidate = canvases[i];
+          if (!candidate || candidate.width < 2 || candidate.height < 2) continue;
+          if (!canvas || candidate.width * candidate.height > canvas.width * canvas.height)
+            canvas = candidate;
+        }
+        return { extent: !!(docType && docLoaded && canvas !== null), stage: 'ready' };
+      } catch (_) { return { extent: false, stage: 'error' }; }
+    })()
+    """#
 
     /// Fresh `commandstatechanged` events correlated with one dispatch token.
     /// Returns the command names that reported a NEW state after the dispatch.
