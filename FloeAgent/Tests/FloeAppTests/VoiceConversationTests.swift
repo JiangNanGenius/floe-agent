@@ -830,9 +830,16 @@ struct VoiceConversationTests {
         let rig = VoiceRig()
         await rig.coordinator.start()
         for cycle in 1...3 {
-            for _ in 0..<2 { rig.stack.yieldLevel(0.6, speech: true, duration: 0.2) } // 0.4 s voiced
+            let sentinel = Float(0.6) + Float(cycle) * 0.01
+            rig.stack.yieldLevel(0.6, speech: true, duration: 0.2)
+            rig.stack.yieldLevel(sentinel, speech: true, duration: 0.2) // 0.4 s voiced
+            #expect(await rig.waitUntil { rig.coordinator.audioLevel == sentinel })
             rig.stack.endTranscriptStream(failure: nil)
-            await rig.settle(30)
+            #expect(await rig.waitUntil {
+                cycle < 3
+                    ? rig.stack.count("begin") == cycle + 1 && rig.coordinator.state == .listening
+                    : rig.coordinator.state == .failed(.recognizerFailed)
+            })
             if cycle < 3 {
                 #expect(rig.coordinator.state == .listening)
                 #expect(rig.stack.count("begin") == cycle + 1)

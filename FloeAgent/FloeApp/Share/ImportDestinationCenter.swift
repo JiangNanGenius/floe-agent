@@ -303,6 +303,7 @@ final class ImportDestinationCenter: ObservableObject {
     private let store: ImportDestinationDecisionStore?
     private let canvas: (any CanvasDestinationCommitting)?
     private let taskProvider: (any TaskDestinationProviding)?
+    private let taskDraftStore: ComposerDraftStore
     private let now: @Sendable () -> Date
 
     private weak var shareCenter: ShareIntakeCenter?
@@ -329,6 +330,7 @@ final class ImportDestinationCenter: ObservableObject {
         store: ImportDestinationDecisionStore? = ImportDestinationDecisionStore.production(),
         canvas: (any CanvasDestinationCommitting)? = nil,
         taskProvider: (any TaskDestinationProviding)? = nil,
+        taskDraftStore: ComposerDraftStore = .shared,
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.inbox = inbox
@@ -337,6 +339,7 @@ final class ImportDestinationCenter: ObservableObject {
         self.isLedgerAvailable = self.store != nil
         self.canvas = canvas
         self.taskProvider = taskProvider
+        self.taskDraftStore = taskDraftStore
         self.now = now
     }
 
@@ -742,7 +745,7 @@ final class ImportDestinationCenter: ObservableObject {
         guard await taskProvider.isTaskTargetAvailable(conversationID) else {
             return .failed(message: FloeL10n.l("app.entry.task_unavailable"))
         }
-        let destination = ConversationDraftDestination(conversationID: conversationID)
+        let destination = ConversationDraftDestination(conversationID: conversationID, draftStore: taskDraftStore)
         let outcome = await shareCenter.apply(envelope, to: destination)
         switch outcome {
         case .applied, .alreadyApplied:

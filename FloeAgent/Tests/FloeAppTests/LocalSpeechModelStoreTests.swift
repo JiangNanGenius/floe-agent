@@ -340,12 +340,12 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let pre = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
                                         root: modelsRoot2, defaults: try Self.transferredDefaults(suiteName: suite2),
                                         downloader: DownloadFixture(root: root.appendingPathComponent("transfers2"), bytes: Data(freshBytes)),
-                                        transfersRoot: root.appendingPathComponent("transfers2"))
+                                        transfersRoot: root.appendingPathComponent("transfers2"),
+                                        availableMemory: { 8 * 1024 * 1024 * 1024 },
+                                        isThermallyCritical: { false })
         await pre.beginInstallation(fresh, selectionRevision: 1)
         try await waitForCompletion(pre)
-        let held: LocalSpeechModelStore.Lease
-        do { held = try await pre.acquire(legacy.id) }
-        catch LocalSpeechModelStore.Failure.memory, LocalSpeechModelStore.Failure.thermal { throw XCTSkip("Lease path requires device-like memory/thermal headroom") }
+        let held = try await pre.acquire(legacy.id)
         await pre.migrationLoadValidated(legacyStillSelected: true)
         await pre.migrationLegacyReleased()
         let again = await pre.migrationRecord

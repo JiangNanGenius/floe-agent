@@ -1126,7 +1126,8 @@ struct ImportDestinationEnvelopeTests {
             inbox: inbox,
             notes: FakeNotesImporter(library: ImportTestNotesLibrary()),
             store: makeDecisionStore(decisionRoot),
-            taskProvider: provider
+            taskProvider: provider,
+            taskDraftStore: draftStore
         )
         let doc = DocumentIntakeCenter(
             root: importTestRoot("task-livefold-doc"),
@@ -1177,7 +1178,8 @@ struct ImportDestinationEnvelopeTests {
             inbox: inbox,
             notes: FakeNotesImporter(library: ImportTestNotesLibrary()),
             store: makeDecisionStore(decisionRoot),
-            taskProvider: provider
+            taskProvider: provider,
+            taskDraftStore: draftStore
         )
         let doc = DocumentIntakeCenter(
             root: importTestRoot("task-temp-doc"),

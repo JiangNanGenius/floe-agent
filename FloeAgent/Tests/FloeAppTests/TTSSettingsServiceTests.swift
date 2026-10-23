@@ -205,6 +205,11 @@ final class TTSSettingsServiceTests: XCTestCase {
         await fixture.settings.install(fixture.fresh)
         for _ in 0..<300 { if !(await fixture.store.state().running) { break }; try await Task.sleep(for: .milliseconds(10)) }
         await fixture.settings.syncLocalSelection()
+        for _ in 0..<300 {
+            let pending = await fixture.store.migrationRecord
+            if fixture.settings.snapshot.modelID == fixture.fresh.id && pending == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(fixture.settings.snapshot.provider, .onDevice)
         XCTAssertEqual(fixture.settings.snapshot.modelID, fixture.fresh.id)
         XCTAssertEqual(fixture.settings.snapshot.voiceID, "default", "Migration lands on the catalog default voice")
@@ -222,6 +227,11 @@ final class TTSSettingsServiceTests: XCTestCase {
         await fixture.settings.install(fixture.fresh)
         for _ in 0..<300 { if !(await fixture.store.state().running) { break }; try await Task.sleep(for: .milliseconds(10)) }
         await fixture.settings.syncLocalSelection()
+        for _ in 0..<300 {
+            let stage = await fixture.store.migrationRecord?.stage
+            if stage == .awaitingLegacyRelease { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(fixture.settings.snapshot.modelID, fixture.legacy.id)
         XCTAssertEqual(fixture.settings.snapshot.voiceID, "serena")
         let actualAt220 = await fixture.store.isInstalled(fixture.legacy)
