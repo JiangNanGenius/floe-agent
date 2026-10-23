@@ -149,6 +149,12 @@ final class TTSSettingsServiceTests: XCTestCase {
         func cleanup() { defaults.removePersistentDomain(forName: name); try? FileManager.default.removeItem(at: root) }
     }
 
+    // Construct a distinct instance for the model actor, transferring ownership
+    // while the settings fixture keeps its own instance of the same suite.
+    private nonisolated static func transferredDefaults(suiteName: String) throws -> sending UserDefaults {
+        try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    }
+
     private func twoPackFixture(preferredVoice: String, matchingVoiceAvailable: Bool = false) async throws -> TwoPackFixture {
         let name = "tts-migration-test." + UUID().uuidString
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(name)
@@ -167,7 +173,7 @@ final class TTSSettingsServiceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
                                           root: root.appendingPathComponent("models"),
-                                          defaults: try XCTUnwrap(UserDefaults(suiteName: name)),
+                                          defaults: try Self.transferredDefaults(suiteName: name),
                                           downloader: MultiDownloadFixture(root: root.appendingPathComponent("transfers"), payloads: [legacy.files[0].url.absoluteString: legacyBytes, fresh.files[0].url.absoluteString: freshBytes]),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         // Mark the store as a previous first install so legacy selection is
