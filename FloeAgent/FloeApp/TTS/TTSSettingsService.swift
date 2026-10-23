@@ -397,6 +397,43 @@ final class TTSSettingsService: ObservableObject {
 
 enum TTSSettingsFailure: Error { case missingCredential }
 
+/// One utterance segment's forwarding channel plus its explicit close handle.
+///
+/// Consumers close it on every exit (EOF, failure, stall, cancellation). The
+/// close is idempotent and is what wakes a producer that is parked on a full
+/// channel after the consumer stopped taking chunks; without it the forwarder
+/// outlives the utterance and the next local session join never returns.
+@MainActor
+struct TTSConfiguredStream {
+    let stream: TTSAudioChunkStream
+    private let close: @Sendable () -> Void
+
+    func closeStream() { close() }
+
+    /// Wraps a routed provider stream into an explicitly closable segment.
+    static func make(request: TTSSynthesisRequest,
+                     credential: @escaping @MainActor @Sendable () async throws -> String,
+                     service: TTSSpeechService) -> TTSConfiguredStream {
+        let (stream, sender) = TTSAudioChunkStream.make()
+        let producer = Task { @MainActor in
+            do {
+                let value = try await credential()
+                try Task.checkCancellation()
+                for try await chunk in service.synthesize(request, credential: value) {
+                    try Task.checkCancellation()
+                    // Cooperative: a cancelled forwarder closes its own
+                    // channel so a parked send can never outlive the segment.
+                    try await CancellableSpeechSend.send(chunk, sender: sender)
+                }
+                sender.finish()
+            } catch { sender.finish(throwing: error) }
+        }
+        sender.attach(producer)
+        return TTSConfiguredStream(stream: stream,
+            close: { sender.finish(throwing: TTSSynthesisError.cancelled) })
+    }
+}
+
 /// Freeze configuration for a spoken answer. Settings changes apply to the next
 /// answer; an in-flight segment cannot silently move provider or billing route.
 @MainActor
@@ -406,29 +443,21 @@ struct ConfiguredTTSSpeechSource {
     let service: TTSSpeechService
     var overrideCredential: String? = nil
 
-    func synthesize(text: String, sessionID: UUID, segmentIndex: Int) -> TTSAudioChunkStream {
-        let (stream, sender) = TTSAudioChunkStream.make()
+    func synthesize(text: String, sessionID: UUID, segmentIndex: Int) -> TTSConfiguredStream {
         let request = TTSSynthesisRequest(
             sessionID: sessionID, segmentIndex: segmentIndex,
             provider: snapshot.provider, billingRoute: snapshot.billingRoute,
             region: snapshot.alibabaRegion, modelID: snapshot.modelID,
             voiceID: snapshot.voiceID, text: text, speechRateRatio: snapshot.speechRateRatio, language: snapshot.language
         )
-        let producer = Task { @MainActor in
-            do {
-                let credential: String
-                if let overrideCredential { credential = overrideCredential }
-                else { credential = try await settings.credential(for: snapshot) }
-                try Task.checkCancellation()
-                for try await chunk in service.synthesize(request, credential: credential) {
-                    try Task.checkCancellation()
-                    try await sender.send(chunk)
-                }
-                sender.finish()
-            } catch { sender.finish(throwing: error) }
+        let settings = self.settings
+        let snapshot = self.snapshot
+        let overrideCredential = self.overrideCredential
+        let credential: @MainActor @Sendable () async throws -> String = {
+            if let overrideCredential { return overrideCredential }
+            return try await settings.credential(for: snapshot)
         }
-        sender.attach(producer)
-        return stream
+        return TTSConfiguredStream.make(request: request, credential: credential, service: service)
     }
 }
 #endif

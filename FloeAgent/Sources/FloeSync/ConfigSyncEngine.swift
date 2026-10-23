@@ -1139,7 +1139,11 @@ public actor ConfigSyncEngine {
 
     /// CloudKit records and iCloud Keychain arrive independently. Keep the
     /// global sync status honest until every synchronized descriptor has a
-    /// corresponding secret on this device.
+    /// corresponding secret on this device. Device-bound descriptors are
+    /// excluded from the cloud delivery wait: their secret intentionally
+    /// never leaves this device's local Keychain namespace, so the synced
+    /// namespace will never receive it and awaiting it would freeze the
+    /// status with no possible recovery.
     private func credentialSyncStatus() async -> SyncStatus {
         let preferences = SyncControlPreferences.load()
         if preferences.overallEnabled, let configurationStore,
@@ -1163,8 +1167,15 @@ public actor ConfigSyncEngine {
             service: CredentialVaultService.serviceName,
             synchronizable: true
         )
-        for record in records where record.synchronizable {
-            if record.deviceBound { return .waitingForSecret }
+        // A device-bound record's secret (e.g. a Floe-generated SSH key
+        // registered by RemoteSessionCenter) lives only in the local,
+        // non-synchronizable namespace, and setSavedCredentialSyncEnabled
+        // deliberately skips these records, so no iCloud Keychain delivery
+        // can ever satisfy the synced-namespace read. Excluding them keeps
+        // the honest waiting behavior for records that are genuinely
+        // expected to arrive; their local presence is enforced at use time
+        // by CredentialVaultService.resolveForApprovedUse instead.
+        for record in records where record.synchronizable && !record.deviceBound {
             do { _ = try keychain.read(account: record.keychainAccount) }
             catch { return .waitingForSecret }
         }

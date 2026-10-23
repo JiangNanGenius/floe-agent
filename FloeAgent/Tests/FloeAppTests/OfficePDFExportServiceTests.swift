@@ -208,6 +208,10 @@ struct OfficePDFExportServiceTests {
         }
         grid.gridlines = .off
         #expect(try grid.plan(activeSheetName: nil).pageSetup.printGridlines == false)
+        // Document settings for BOTH controls is the explicit "keep exactly
+        // the workbook's own print setup" combination; the untouched form now
+        // defaults to grid on + fit width, so the fit must be reset too.
+        grid.fit = .document
         grid.gridlines = .document
         #expect(try grid.plan(activeSheetName: nil).pageSetup.isDocumentSettings)
 
@@ -368,6 +372,162 @@ struct OfficePDFExportServiceTests {
         changed = settled
         changed.scalePercentText = "150"
         #expect(state.isStale(currentChoices: changed) == true)
+    }
+
+    // MARK: - Product defaults and the automatic-preview queue boundary
+
+    @Test("workbook defaults print the grid and fit the page width; Word/Presentation keep their own setup")
+    func workbookDefaultsAndFormatNormalization() throws {
+        // The untouched form for a workbook submits grid on + fit width and
+        // keeps every other member at the document's own value.
+        let workbook = try OfficePDFExportChoices().plan(activeSheetName: nil)
+        #expect(workbook.scope == .documentSettings)
+        #expect(workbook.pageSetup.fit == .fitToWidth)
+        #expect(workbook.pageSetup.printGridlines == true)
+        #expect(workbook.pageSetup.paper == nil)
+        #expect(workbook.pageSetup.orientation == nil)
+        #expect(workbook.pageSetup.scalePercent == nil)
+        #expect(workbook.pageSetup.fitPages == nil)
+        try workbook.validate(forExtension: "xlsx")
+
+        // Word/Presentation documents must never inherit the workbook-only
+        // grid/scaling defaults: their plan stays document settings.
+        for ext in ["docx", "pptx", "ods", "doc", "odt", "rtf", "ppt", "odp"] {
+            var choices = OfficePDFExportChoices()
+            choices.applyDocumentSetupDefaults(forFormatExtension: ext)
+            let plan = try choices.plan(activeSheetName: nil)
+            #expect(plan.scope == .documentSettings)
+            #expect(plan.pageSetup.isDocumentSettings, "unexpected overrides for .\(ext)")
+            try plan.validate(forExtension: ext)
+        }
+
+        // An explicit scaling choice stays authoritative; the grid remains a
+        // separate control with its own default.
+        var exact = OfficePDFExportChoices()
+        exact.fit = .exactScale
+        exact.scalePercentText = "120"
+        let exactPlan = try exact.plan(activeSheetName: nil)
+        #expect(exactPlan.pageSetup.scalePercent == 120)
+        #expect(exactPlan.pageSetup.fit == nil)
+        #expect(exactPlan.pageSetup.printGridlines == true)
+        try exactPlan.validate(forExtension: "xlsx")
+
+        // Explicitly returning the scaling control to document settings
+        // restores exactly the workbook's own scale.
+        var document = OfficePDFExportChoices()
+        document.fit = .document
+        #expect(try document.plan(activeSheetName: nil).pageSetup.fit == nil)
+    }
+
+    @Test("the cover plan is the first visible sheet at full content, never a saved crop area")
+    func coverPlanShape() throws {
+        let cover = OfficePDFExportService.savedCoverPlan(
+            formatExtension: "xlsx", firstVisibleSheetName: "Data")
+        // Full content: no invented cell range and no adoption of the sheet's
+        // saved `_xlnm.Print_Area` (that stays the explicit user choice).
+        #expect(cover.scope == .sheet(name: "Data", cellRange: nil))
+        #expect(cover.pageSetup.fit == .fitToOnePage)
+        #expect(cover.pageSetup.printGridlines == true)
+        try cover.validate(forExtension: "xlsx")
+
+        for ext in ["docx", "pptx"] {
+            let plan = OfficePDFExportService.savedCoverPlan(
+                formatExtension: ext, firstVisibleSheetName: nil)
+            #expect(plan.scope == .documentSettings)
+            #expect(plan.pageSetup.isDocumentSettings)
+        }
+        // A workbook whose visible tab cannot be resolved keeps the previous
+        // full-workbook route instead of inventing a sheet.
+        let unresolved = OfficePDFExportService.savedCoverPlan(
+            formatExtension: "xlsx", firstVisibleSheetName: nil)
+        #expect(unresolved.scope == .allVisibleSheets)
+    }
+
+    @Test("the reconciliation re-arms a stale idle dock and never loops a refused failure")
+    func previewReconciliationDecisions() {
+        typealias Decision = OfficePDFAutoPreviewReconciliation.Decision
+        func decide(loading: Bool = false, working: Bool = false,
+                    presenting: Bool = false, artifactUsable: Bool = false,
+                    settingsValid: Bool = true, canRetry: Bool = true,
+                    sourcePresent: Bool = true) -> Decision {
+            OfficePDFAutoPreviewReconciliation.decision(
+                sourcePresent: sourcePresent, loading: loading, working: working,
+                presenting: presenting, artifactUsable: artifactUsable,
+                settingsValid: settingsValid, automaticRetryAllowed: canRetry)
+        }
+
+        // The reported on-device state: a settings change whose pump ran while
+        // the previous render still owned the serial slot. The render settles
+        // and the same stale dock must re-arm instead of waiting for a tap.
+        #expect(decide(working: true) == .waitForOwner)
+        #expect(decide() == .render)
+        // A fenced or cancelled completion leaves no pending snapshot; the
+        // idle stale state is still re-armed.
+        #expect(decide() == .render)
+        // Accepted artifact for the visible settings: nothing to render.
+        #expect(decide(artifactUsable: true) == .current)
+        // Owners hold the view first.
+        #expect(decide(loading: true) == .waitForOwner)
+        #expect(decide(presenting: true) == .waitForOwner)
+        // No loop for a state that must stay manual: invalid settings, a
+        // non-retryable failure (budget not allowed), a spent budget, or a
+        // missing source.
+        #expect(decide(settingsValid: false) == .manual)
+        #expect(decide(canRetry: false) == .manual)
+        #expect(decide(sourcePresent: false) == .manual)
+        // An owner that is active always wins over a manual state.
+        #expect(decide(loading: true, settingsValid: false) == .waitForOwner)
+    }
+
+    @Test("only a session-busy generation may retry; every other failure keeps its error")
+    func previewRetryFamily() {
+        #expect(OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFExportScreenError.sessionBusy))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFExportScreenError.sourceChanged))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFPlanError.conflictingScalingControls))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFPlanError.unsupportedPageSetup(format: "docx")))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFExportError.invalidPDF(reason: "not-a-pdf")))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePDFExportError.outputDirectoryUnavailable))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            OfficePrintCopyError.verificationFailed(reason: "tampered")))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(
+            CocoaError(.fileWriteNoPermission)))
+        #expect(!OfficePDFExportOptionsView.isRetryablePreviewFailure(CancellationError()))
+    }
+
+    @Test("the automatic retry budget is bounded per snapshot and released by a new one")
+    func previewRetryBudget() {
+        var retry = OfficePDFAutoPreviewRetry()
+        var choices = OfficePDFExportChoices()
+        choices.pages = "1"
+        #expect(retry.canRetry)
+        #expect(retry.registerFailure(of: choices) != nil)
+        #expect(retry.registerFailure(of: choices) != nil)
+        #expect(retry.registerFailure(of: choices) != nil)
+        #expect(retry.canRetry == false)
+        #expect(retry.registerFailure(of: choices) == nil,
+                "a spent budget must stop rendering instead of looping")
+        // A different visible snapshot owns a fresh budget.
+        choices.pages = "2"
+        #expect(retry.registerFailure(of: choices) != nil)
+        #expect(retry.canRetry)
+        // A successful generation releases everything.
+        retry.recordSuccess()
+        #expect(retry.attempts == 0)
+        #expect(retry.snapshot == nil)
+        #expect(retry.canRetry)
+        // The backoff grows with the spent attempts (never a tight loop).
+        #expect(retry.nextBackoff < {
+            var grown = OfficePDFAutoPreviewRetry()
+            _ = grown.registerFailure(of: choices)
+            _ = grown.registerFailure(of: choices)
+            return grown.nextBackoff
+        }())
     }
 
     // MARK: - Preflight

@@ -367,6 +367,31 @@ enum OfficePDFExportService {
         OfficePDFExportCapability.resolve(forExtension: ext)
     }
 
+    /// The cover/thumbnail plan for a saved document.
+    ///
+    /// A workbook cover is the actual first visible worksheet at its own full
+    /// engine content (never a guessed cell range and never a crop of the
+    /// user's ink), fitted onto one page with the printed grid visible, so
+    /// page 1 of the real PDF — the only page the Notes card rasterizes —
+    /// carries everything that sheet prints. Word/Presentation documents keep
+    /// their own setup exactly as before. Nothing here writes the source: the
+    /// plan only feeds the private print copy.
+    static func savedCoverPlan(formatExtension ext: String,
+                               firstVisibleSheetName: String?) -> OfficePDFPrintPlan {
+        guard OfficePDFFormatSupport.resolve(forExtension: ext)?
+                .supportsCustomPageSetup == true else {
+            return OfficePDFPrintPlan(scope: .documentSettings)
+        }
+        guard let firstVisibleSheetName else {
+            // No resolved visible tab keeps the previous full-workbook route;
+            // the print copy itself refuses a workbook with no visible sheet.
+            return OfficePDFPrintPlan(scope: .allVisibleSheets)
+        }
+        return OfficePDFPrintPlan(
+            scope: .sheet(name: firstVisibleSheetName, cellRange: nil),
+            pageSetup: OfficePDFPageSetup(fit: .fitToOnePage, printGridlines: true))
+    }
+
     // MARK: - Finalization
 
     /// Copies/renames the produced PDF into its final name, applies the

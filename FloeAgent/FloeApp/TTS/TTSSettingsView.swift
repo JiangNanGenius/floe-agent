@@ -166,7 +166,12 @@ struct SpeechVoicePickerView: View {
                 if playing { playback.stop(); previewID = nil }
                 else { previewID = id; playback.preview(sample, settings: value, ownerID: previewOwnerID) }
             } label: {
-                if playing && playback.isPreparing { ProgressView().frame(width: 44, height: 44) }
+                if playing && playback.isPreparing {
+                    ZStack {
+                        ProgressView().controlSize(.regular)
+                        Image(systemName: "stop.fill").font(.system(size: 7))
+                    }.frame(width: 44, height: 44)
+                }
                 else { Image(systemName: playing ? "stop.circle.fill" : "play.circle").font(.title2).frame(width: 44, height: 44) }
             }.buttonStyle(.borderless)
                 .accessibilityLabel(playing ? "voice.settings.audition.stop" : "voice.settings.audition")

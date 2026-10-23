@@ -12,13 +12,34 @@ final class LocalSpeechRuntime: TTSSpeechProviding, Sendable {
     enum Failure: Error { case unsupportedDevice, voice, language, invalidAudio }
     private let engine = LocalSpeechInferenceOwner()
 
+    /// Local PCM travels in far larger pieces than the shared 4 KiB cloud
+    /// target: one native MOSS frame is ~80 ms (7.7 KiB at 48 kHz) and the
+    /// player must never be fed a single frame at a time.
+    fileprivate static let pcmSliceBytes = 32_768
+    /// Bounded lead for the local producer. The shared default channel holds
+    /// only 8 × 4 KiB (~0.33 s), which cannot cover one slow generative frame;
+    /// 1 MiB of s16le mono is ~10.9 s at 48 kHz — enough for generation to run
+    /// ahead of playback while memory stays small and cancellation latency is
+    /// still one channel close away.
+    private static let channelSlotCapacity = 256
+    private static let channelByteCapacity = 1024 * 1024
+
     func synthesize(_ request: TTSSynthesisRequest, credential: String) -> TTSAudioChunkStream {
-        let (stream, sender) = TTSAudioChunkStream.make()
+        let (stream, sender) = TTSAudioChunkStream.make(
+            slotCapacity: Self.channelSlotCapacity, byteCapacity: Self.channelByteCapacity)
         let producer = Task { await engine.enqueue(request, sender: sender) }
         sender.attach(producer)
         return stream
     }
     func endSession(_ id: UUID) async { await engine.endSession(id) }
+
+    /// Foreground residency ends (background/inactive). Only releases an idle
+    /// engine: a run that still owns the model keeps it mounted.
+    func setForeground(_ isForeground: Bool) async { await engine.setForeground(isForeground) }
+    /// Pack replacement/deletion handshake. The caller has already joined the
+    /// stopped session, so the lease can be released even though a small pack
+    /// is normally kept warm.
+    func releaseForPackManagement() async { await engine.releaseForPackManagement() }
     func handleMemoryWarning() async { await engine.releaseForMemoryPressure() }
 
     /// Load-validation hook: acquire a store lease (byte verification runs
@@ -34,6 +55,55 @@ final class LocalSpeechRuntime: TTSSpeechProviding, Sendable {
     }
 }
 
+/// Sending into the shared speech channel must be cooperative with task
+/// cancellation.
+///
+/// `TTSAudioChunkStream.Sender.send` parks a producer on a plain continuation
+/// while the queue is full; that park does not observe task cancellation, and
+/// only closing the channel (`finish`) wakes it. A consumer that stops without
+/// draining the channel would otherwise strand the producer, and the owner's
+/// `enqueue`/`endSession` join of that task would never return — every later
+/// utterance then hangs before the model is even mounted. Closing our own
+/// channel from the cancellation handler wakes the park (chunks already queued
+/// stay available to a live consumer; the producer throws `.cancelled`).
+enum CancellableSpeechSend {
+    static func send(_ chunk: TTSAudioChunk, sender: TTSAudioChunkSender) async throws {
+        try await withTaskCancellationHandler {
+            try await sender.send(chunk)
+        } onCancel: {
+            sender.finish(throwing: TTSSynthesisError.cancelled)
+        }
+    }
+}
+
+/// Foreground residency policy for the enhanced local voice pack.
+///
+/// The default pack is small (368.7 MB MOSS nano) and expensive to mount, so a
+/// successfully mounted engine stays warm across ordinary stop/end/voice
+/// changes while the app is in the foreground. The legacy 2.5 GB CustomVoice
+/// pack is deliberately not pinned by this policy. Real memory pressure, pack
+/// switching and leaving the foreground still release the engine.
+enum LocalSpeechResidencyPolicy {
+    /// Upper bound for a pack kept warm between utterances. Sized for the
+    /// small default pack only; large legacy packs keep the previous release
+    /// behavior.
+    static let warmRetentionByteLimit: Int64 = 512 * 1024 * 1024
+
+    static func retainsWarmModel(byteCount: Int64) -> Bool {
+        byteCount > 0 && byteCount <= warmRetentionByteLimit
+    }
+    /// Ordinary session end (stop or natural finish): a small pack stays
+    /// mounted, a large one is released.
+    static func unloadsAfterSessionEnd(byteCount: Int64?, isForeground: Bool = true) -> Bool {
+        if !isForeground { return true }
+        guard let byteCount else { return false }
+        return !retainsWarmModel(byteCount: byteCount)
+    }
+    /// Background/inactive idle release never takes the model from a run that
+    /// still owns it.
+    static func releasesOnIdleLifecycle(hasActiveRun: Bool) -> Bool { !hasActiveRun }
+}
+
 /// The Qwen model is explicitly not thread-safe. A new request cancels and
 /// joins the previous inference task before any cached model is reused.
 private actor LocalSpeechInferenceOwner {
@@ -46,6 +116,7 @@ private actor LocalSpeechInferenceOwner {
     private var active: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var sessionID: UUID?
+    private var isForeground = true
     /// Validated reference voices, keyed by voice id + asset digest. Cleared
     /// with the model lease so a remount can never reuse stale codes.
     private var references: [String: MossTTSNanoReference] = [:]
@@ -74,7 +145,33 @@ private actor LocalSpeechInferenceOwner {
         guard owner == generation, sessionID == id else { return }
         active = nil
         sessionID = nil
-        await unload()
+        // A finished or stopped utterance keeps a small warm pack mounted so
+        // the next utterance reuses it instead of paying the 368.7 MB mount
+        // again. Large legacy packs keep the previous release behavior.
+        if LocalSpeechResidencyPolicy.unloadsAfterSessionEnd(byteCount: lease?.model.byteCount, isForeground: isForeground) {
+            await unload(reason: isForeground ? "sessionEndLargePack" : "backgroundSessionEnd")
+        }
+    }
+
+    /// Remember background retirement even when a run still owns the engine.
+    /// Its final endSession releases the model after playback has safely joined.
+    func setForeground(_ value: Bool) async {
+        isForeground = value
+        guard !value,
+              LocalSpeechResidencyPolicy.releasesOnIdleLifecycle(hasActiveRun: active != nil || sessionID != nil) else { return }
+        await unload(reason: "idleLifecycle")
+    }
+
+    func releaseForPackManagement() async {
+        generation &+= 1
+        let owner = generation
+        let previous = active
+        previous?.cancel()
+        if let previous { await previous.value }
+        guard owner == generation else { return }
+        active = nil
+        sessionID = nil
+        await unload(reason: "packManagement")
     }
 
     func releaseForMemoryPressure() async {
@@ -86,10 +183,11 @@ private actor LocalSpeechInferenceOwner {
         guard owner == generation else { return }
         active = nil
         sessionID = nil
-        await unload()
+        await unload(reason: "memoryPressure")
     }
 
-    private func unload() async {
+    private func unload(reason: String) async {
+        guard loaded != nil || lease != nil else { return }
         let wasQwen = if case .qwen? = loaded { true } else { false }
         loaded = nil
         references = [:]
@@ -98,26 +196,32 @@ private actor LocalSpeechInferenceOwner {
             catch { FloeLogger(category: .providers).warning("localSpeechCacheReclaimFailed") }
         }
         if let lease { self.lease = nil; await LocalSpeechModelStore.shared.release(lease.id) }
+        FloeLogger(category: .providers).debug("localSpeechUnload reason=\(reason)")
     }
 
     private func load(_ request: TTSSynthesisRequest) async throws -> Model {
         if let lease, lease.model.id == request.modelID, let loaded { return loaded }
-        await unload()
+        await unload(reason: "modelSwitch")
         let acquired = try await LocalSpeechModelStore.shared.acquire(request.modelID)
         do {
             try Task.checkCancellation()
+            let started = Date()
             let result: Model
             switch acquired.model.engine {
             case "qwen3TTS":
                 guard let tokenizer = acquired.model.tokenizerRelativePath else { throw LocalSpeechModelStore.Failure.corrupt }
                 result = .qwen(try Qwen3TTSModel.fromLocal(modelDirectory: acquired.directory,
                     tokenizerDirectory: acquired.directory.appendingPathComponent(tokenizer), wiredMemoryPolicy: .none))
-            case "mossTTSNano": result = .moss(try MossTTSNanoModel(modelDirectory: acquired.directory, computeUnits: .cpuAndGPU))
+            case "mossTTSNano": result = .moss(try MossTTSNanoModel(modelDirectory: acquired.directory, computeUnits: .cpuOnly))
             default: throw LocalSpeechModelStore.Failure.unavailable
             }
             try Task.checkCancellation()
             loaded = result
             lease = acquired
+            // Diagnostics only (no user-facing progress): a cold mount is the
+            // dominant first-audio cost, so its duration must be observable.
+            FloeLogger(category: .providers).debug(
+                "localSpeechMount engine=\(acquired.model.engine) ms=\(Int(Date().timeIntervalSince(started) * 1000))")
             return result
         } catch {
             await LocalSpeechModelStore.shared.release(acquired.id)
@@ -126,6 +230,8 @@ private actor LocalSpeechInferenceOwner {
     }
 
     private func render(_ request: TTSSynthesisRequest, sender: TTSAudioChunkSender) async {
+        let renderStarted = Date()
+        var firstChunkLogged = false
         do {
             #if targetEnvironment(simulator)
             throw LocalSpeechRuntime.Failure.unsupportedDevice
@@ -172,6 +278,10 @@ private actor LocalSpeechInferenceOwner {
                         try Task.checkCancellation()
                         let data = try normalizer.convert(chunk.samples, sampleRate: chunk.sampleRate)
                         try Qwen3TTSModel.reclaimGenerationCache()
+                        if !data.isEmpty, !firstChunkLogged {
+                            firstChunkLogged = true
+                            Self.logFirstChunk(since: renderStarted)
+                        }
                         try await send(data, request: request, sequence: &sequence, total: &totalBytes, sender: sender)
                       }
                       await session.waitForCompletion()
@@ -193,6 +303,10 @@ private actor LocalSpeechInferenceOwner {
                       for try await chunk in session.stream {
                         try Task.checkCancellation()
                         let data = try normalizer.convert(chunk.mono, sampleRate: 48_000)
+                        if !data.isEmpty, !firstChunkLogged {
+                            firstChunkLogged = true
+                            Self.logFirstChunk(since: renderStarted)
+                        }
                         try await send(data, request: request, sequence: &sequence, total: &totalBytes, sender: sender)
                       }
                       await session.waitForCompletion()
@@ -202,14 +316,20 @@ private actor LocalSpeechInferenceOwner {
             let tail = try normalizer.finish()
             try await send(tail, request: request, sequence: &sequence, total: &totalBytes, sender: sender)
             guard totalBytes > 0 else { throw LocalSpeechRuntime.Failure.invalidAudio }
-            try await sender.send(TTSAudioChunk(sessionID: request.sessionID, segmentIndex: request.segmentIndex,
-                sequence: sequence, pcm: Data(), sampleRate: request.format.sampleRate, isFinal: true))
+            try await CancellableSpeechSend.send(TTSAudioChunk(sessionID: request.sessionID,
+                segmentIndex: request.segmentIndex, sequence: sequence, pcm: Data(),
+                sampleRate: request.format.sampleRate, isFinal: true), sender: sender)
             #endif
             sender.finish()
         } catch {
             // Local model errors may contain input text or file paths. Only
             // app-authored fixed categories cross into normal presentation.
-            await unload()
+            // A cancelled utterance never discards a successfully mounted
+            // pack: the model stays warm for the next answer and for a voice
+            // change. Real failures fall back to releasing it.
+            if !(error is CancellationError) && !Task.isCancelled {
+                await unload(reason: "renderFailure")
+            }
             if error is CancellationError || Task.isCancelled { sender.finish(throwing: TTSSynthesisError.cancelled) }
             else if let failure = error as? LocalSpeechModelStore.Failure { sender.finish(throwing: failure) }
             else if let failure = error as? LocalSpeechRuntime.Failure { sender.finish(throwing: failure) }
@@ -255,7 +375,7 @@ private actor LocalSpeechInferenceOwner {
         switch acquired.model.engine {
         case "mossTTSNano":
             do {
-                _ = try MossTTSNanoModel(modelDirectory: acquired.directory, computeUnits: .cpuAndGPU)
+                _ = try MossTTSNanoModel(modelDirectory: acquired.directory, computeUnits: .cpuOnly)
                 if let voice = acquired.model.voices.first(where: { $0.id == voiceID }), let asset = voice.reference {
                     guard let codes = try? LocalSpeechVoiceReference.load(reference: asset, modelDirectory: acquired.directory),
                           (try? MossTTSNanoReference(codes: codes)) != nil else { return .failed }
@@ -273,15 +393,24 @@ private actor LocalSpeechInferenceOwner {
         }
     }
 
+    private static func logFirstChunk(since started: Date) {
+        // Diagnostics only: first generated chunk latency is the second half of
+        // first-audio time (mount is logged separately).
+        FloeLogger(category: .providers).debug(
+            "localSpeechFirstChunk ms=\(Int(Date().timeIntervalSince(started) * 1000))")
+    }
+
     private func send(_ data: Data, request: TTSSynthesisRequest, sequence: inout Int,
                       total: inout Int, sender: TTSAudioChunkSender) async throws {
         total += data.count
         guard total <= 8 * 1024 * 1024 else { throw TTSSynthesisError.streamTruncated(provider: .onDevice) }
-        for offset in stride(from: 0, to: data.count, by: 4096) {
+        let sliceBytes = LocalSpeechRuntime.pcmSliceBytes
+        for offset in stride(from: 0, to: data.count, by: sliceBytes) {
             try Task.checkCancellation()
-            let end = min(data.count, offset + 4096)
-            try await sender.send(TTSAudioChunk(sessionID: request.sessionID, segmentIndex: request.segmentIndex,
-                sequence: sequence, pcm: data.subdata(in: offset..<end), sampleRate: request.format.sampleRate))
+            let end = min(data.count, offset + sliceBytes)
+            try await CancellableSpeechSend.send(TTSAudioChunk(sessionID: request.sessionID,
+                segmentIndex: request.segmentIndex, sequence: sequence,
+                pcm: data.subdata(in: offset..<end), sampleRate: request.format.sampleRate), sender: sender)
             sequence += 1
         }
     }

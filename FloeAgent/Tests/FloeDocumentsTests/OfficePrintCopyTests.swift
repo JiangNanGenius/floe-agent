@@ -1155,6 +1155,124 @@ struct OfficePrintCopyTests {
             .validate(forExtension: "docx")
     }
 
+    @Test("the product default print (grid on + fit width, document settings) keeps saved print areas and titles and never touches the source")
+    func productDefaultPrintCopiesGridAndFitWidth() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        try makeWorkbook(at: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let sourceDrawing = try member(try Archive(url: source, accessMode: .read),
+                                       "xl/drawings/drawing1.xml")
+        let destination = root.appendingPathComponent("copy-product-default.xlsx")
+
+        // This is exactly what the options form's untouched defaults send for
+        // a workbook: document settings scope (saved print areas and titles
+        // stay authoritative), fit-to-page-width scaling of the engine's own
+        // full content, and printed gridlines on. The source is never edited.
+        let plan = OfficePDFPrintPlan(
+            scope: .documentSettings,
+            pageSetup: OfficePDFPageSetup(fit: .fitToWidth, printGridlines: true))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: sourceSHA,
+                                                   plan: plan)
+        #expect(copyPlan.printedSheetNames == ["Summary", "Data"])
+        #expect(copyPlan.suppressedSheetNames == ["Hidden"])
+        // The saved area/title of "Data" are preserved verbatim: the product
+        // default changes only what is drawn and how the content is scaled.
+        #expect(copyPlan.preservedDocumentPrintArea == false)
+        #expect(copyPlan.preservedPrintAreas == 1)
+        #expect(copyPlan.preservedPrintTitles == 1)
+        #expect(copyPlan.removedPrintAreas == 0)
+        #expect(copyPlan.printAreaReference == nil)
+
+        let copy = try Archive(url: destination, accessMode: .read)
+        for part in ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"] {
+            let worksheet = try xmlString(copy, part)
+            #expect(worksheet.contains(#"fitToPage="1""#))
+            #expect(worksheet.contains(#"fitToWidth="1""#))
+            #expect(worksheet.contains(#"fitToHeight="0""#))
+            #expect(worksheet.contains(#"gridLines="1""#))
+            #expect(worksheet.contains(#"gridLinesSet="1""#))
+            #expect(!worksheet.contains(#"scale="100""#))
+        }
+        // The visible sheets are the only page-setup parts; the very-hidden
+        // sheet keeps its own members.
+        #expect(copyPlan.pageSetupSheetParts.sorted()
+                == ["xl/worksheets/sheet1.xml", "xl/worksheets/sheet2.xml"])
+        #expect(!(try xmlString(copy, "xl/worksheets/sheet3.xml")).contains("pageSetup"))
+        // Drawings and the source itself stay byte-identical.
+        #expect(try member(copy, "xl/drawings/drawing1.xml") == sourceDrawing)
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+
+        // An explicit exact scale stays authoritative: no fit members are
+        // written next to it, so the user's own percentage is what prints.
+        let scaledDestination = root.appendingPathComponent("copy-explicit-scale.xlsx")
+        let scaled = try OfficePrintCopy.prepare(
+            sourceURL: source, destinationURL: scaledDestination,
+            expectedSHA256: sourceSHA,
+            plan: OfficePDFPrintPlan(scope: .documentSettings,
+                                     pageSetup: OfficePDFPageSetup(scalePercent: 65)))
+        #expect(scaled.appliedPageSetup.scalePercent == 65)
+        let scaledWorksheet = try xmlString(try Archive(url: scaledDestination,
+                                                        accessMode: .read),
+                                            "xl/worksheets/sheet2.xml")
+        #expect(scaledWorksheet.contains(#"scale="65""#))
+        #expect(!scaledWorksheet.contains("fitToWidth"))
+        #expect(!scaledWorksheet.contains("fitToPage=\"1\""))
+        #expect(!scaledWorksheet.contains("gridLines"))
+    }
+
+    @Test("the workbook cover plan prints all content on one gridded page and never adopts a saved crop print area")
+    func coverPlanIgnoresSavedPrintArea() throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("book.xlsx")
+        // The fixture's "Data" tab declares its own `_xlnm.Print_Area`
+        // 'Data'!$B$2:$C$3. A cover thumbnail is page 1 of the real PDF, so it
+        // must show the sheet's full content (ink included) and never silently
+        // honour that saved crop; only an explicit user print-area choice does.
+        try makeWorkbook(at: source)
+        let sourceSHA = try FloeDigest.sha256Hex(ofFileAt: source)
+        let destination = root.appendingPathComponent("cover-copy.xlsx")
+
+        let plan = OfficePDFPrintPlan(
+            scope: .sheet(name: "Data", cellRange: nil),
+            pageSetup: OfficePDFPageSetup(fit: .fitToOnePage, printGridlines: true))
+        let copyPlan = try OfficePrintCopy.prepare(sourceURL: source,
+                                                   destinationURL: destination,
+                                                   expectedSHA256: sourceSHA,
+                                                   plan: plan)
+        #expect(copyPlan.printAreaReference == nil)
+        #expect(copyPlan.preservedDocumentPrintArea == false)
+        #expect(copyPlan.removedPrintAreas == 1)
+        #expect(copyPlan.printedSheetNames == ["Data"])
+        #expect(copyPlan.suppressedSheetNames.sorted() == ["Hidden", "Summary"])
+
+        let worksheet = try xmlString(try Archive(url: destination, accessMode: .read),
+                                      "xl/worksheets/sheet2.xml")
+        #expect(worksheet.contains(#"fitToWidth="1""#))
+        #expect(worksheet.contains(#"fitToHeight="1""#))
+        #expect(worksheet.contains(#"gridLines="1""#))
+        #expect(!worksheet.contains(#"scale="100""#))
+        let workbook = try xmlString(try Archive(url: destination, accessMode: .read),
+                                     "xl/workbook.xml")
+        #expect(!workbook.contains("_xlnm.Print_Area"))
+        // The cover plan is a private copy: the source package is untouched.
+        #expect(try FloeDigest.sha256Hex(ofFileAt: source) == sourceSHA)
+
+        // The explicit user choice of the sheet's own saved area is a distinct
+        // plan and still honours exactly that area.
+        let areaDestination = root.appendingPathComponent("explicit-area-copy.xlsx")
+        let areaPlan = try OfficePrintCopy.prepare(
+            sourceURL: source, destinationURL: areaDestination,
+            expectedSHA256: sourceSHA,
+            plan: OfficePDFPrintPlan(scope: .sheetWithPrintArea(name: "Data")))
+        #expect(areaPlan.printAreaReference == "'Data'!$B$2:$C$3")
+        #expect(areaPlan.preservedDocumentPrintArea)
+    }
+
     // MARK: - Plan / page range
 
     @Test("page range parse is strict and normalizes order and duplicates")

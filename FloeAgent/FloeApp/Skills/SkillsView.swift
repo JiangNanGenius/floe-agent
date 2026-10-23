@@ -136,13 +136,29 @@ struct SkillsView: View {
                             if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
                                 Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                             }
-                            Button {
-                                updatingSkill = skill
-                            } label: {
-                                if let version = center.availableVersion(for: skill) {
+                            switch skillUpdateRowAction(
+                                skillID: skill.id,
+                                availableVersion: center.availableVersion(for: skill),
+                                origin: center.origin(of: skill),
+                                sourceURL: skill.sourceURL,
+                                hubSkillIDs: OfficialSkillHub.skillIDs,
+                                hasGitHubUpgradeSource: center.lastGitHubSource(skillID: skill.id) != nil
+                            ) {
+                            case .update(let version):
+                                Button {
+                                    updatingSkill = skill
+                                } label: {
                                     Label(FloeL10n.l("skills.skills_view.update_to_v", version), systemImage: "arrow.down.circle")
-                                } else { Label("skills.update", systemImage: "arrow.down.circle") }
-                            }.buttonStyle(.borderless)
+                                }.buttonStyle(.borderless)
+                            case .check:
+                                Button {
+                                    updatingSkill = skill
+                                } label: {
+                                    Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath")
+                                }.buttonStyle(.borderless).tint(.secondary)
+                            case .noAction:
+                                EmptyView()
+                            }
                         }
                         .swipeActions {
                             if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
@@ -215,6 +231,46 @@ struct SkillsView: View {
     }
 }
 
+/// The single truthful action row an installed skill may show. Only a
+/// genuinely newer signature-verified version offers an update; a known
+/// remote source without proven newer content offers the localized check;
+/// rows with no remote to check offer nothing.
+enum SkillUpdateRowAction: Equatable, Sendable {
+    /// The signed catalog proves a newer official version for this row.
+    case update(toVersion: String)
+    /// A checkable remote source exists; no newer version is currently proven.
+    case check
+    /// No real update source; never advertise an update affordance.
+    case noAction
+}
+
+/// Pure installed-row presentation policy. Availability (`availableVersion`)
+/// and origin come from the center's verified gates, and a non-newer package
+/// is still rejected by the unchanged upgrade transaction guard; this decides
+/// only which honest label an already-trusted row state may show. An update
+/// label appears exactly when the signed catalog offers a newer official
+/// version. Otherwise official rows check against the hub only when the
+/// catalog actually publishes their ID (bundled guides change with the app,
+/// not on demand), community rows check only when a reviewed upgrade journal
+/// or a github.com install binding proves a reachable source, and creator,
+/// folder-import and unprovenance local rows show no update affordance.
+func skillUpdateRowAction(
+    skillID: String,
+    availableVersion: String?,
+    origin: SkillOrigin,
+    sourceURL: String?,
+    hubSkillIDs: Set<String>,
+    hasGitHubUpgradeSource: Bool
+) -> SkillUpdateRowAction {
+    if let availableVersion { return .update(toVersion: availableVersion) }
+    let knownRemoteGitHub = hasGitHubUpgradeSource || (sourceURL?.hasPrefix("https://github.com/") ?? false)
+    switch origin {
+    case .official: return hubSkillIDs.contains(skillID) ? .check : .noAction
+    case .external, .unknown: return knownRemoteGitHub ? .check : .noAction
+    case .internalCreated: return .noAction
+    }
+}
+
 /// Compact secondary provenance tag beside a skill's name/version. Labels
 /// come from the shared localization catalog (`skills.origin.*`).
 private struct SkillOriginPill: View {
@@ -268,6 +324,15 @@ private struct SkillGitHubUpgradeSheet: View {
                         }.disabled(candidate.changedFiles.isEmpty)
                     } else {
                         Button("skills.update.check") { checkForUpdate() }
+                        if center.upgradeIsUpToDate {
+                            // The checked source is not newer than the
+                            // installed version. State it politely with the
+                            // existing localized result; the unchanged
+                            // transaction guard already refused any downgrade.
+                            Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
                 DisclosureGroup("skills.update.details") {

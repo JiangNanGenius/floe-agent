@@ -52,8 +52,10 @@
 // when `gridLines` AND `gridLinesSet` are both true, so an explicit "on"
 // also coerces a saved `gridLinesSet="false"`, and an explicit "off" never
 // needs more than `gridLines="0"`. A nil choice keeps the worksheet's own
-// printOptions byte-identical (Excel's shipped default prints NO gridlines
-// regardless of the screen display). Cell borders and the source package are
+// printOptions byte-identical; the App's options form selects "on" by default
+// because a printed grid is the expected spreadsheet output, while `.document`
+// remains available for a workbook whose saved print options are authoritative.
+// Cell borders and the source package are
 // never touched. Every unrelated package member — drawings, media,
 // styles, relationships, theme, custom properties — is compared byte-for-byte
 // before the copy is committed.

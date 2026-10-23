@@ -550,6 +550,12 @@ struct RootView: View {
                     await environment.sourceControlCenter.refreshOnForeground()
                 }
             }
+            if newPhase == .active || newPhase == .background {
+                // App state avoids retiring a shared model when another window
+                // still owns the foreground. Active playback retires on completion.
+                let foreground = UIApplication.shared.applicationState != .background
+                Task { await environment.speechService.setLocalSpeechForeground(foreground) }
+            }
             if newPhase != .active {
                 environment.voiceInput.handleInterruption(reason: .interrupted)
                 // Persist the diagnostics ring buffer before suspension so a

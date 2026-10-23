@@ -131,9 +131,12 @@ struct OfficePDFExportChoices: Sendable, Equatable {
     enum Margins: String, CaseIterable { case document, normal, narrow, wide }
     /// Printed-gridlines choice. `.document` leaves the workbook's own
     /// `printOptions` untouched; on/off is written only into the private
-    /// print copy (never cell borders, never the source package). Excel's
-    /// own default prints no gridlines regardless of the screen display,
-    /// so `.document` is the honest default.
+    /// print copy (never cell borders, never the source package).
+    ///
+    /// The App's default is `.on`: a spreadsheet print is expected to show a
+    /// practical cell grid, and the user's own file is never modified by it.
+    /// `.document` stays selectable for a workbook whose saved print settings
+    /// must be honoured exactly.
     enum Gridlines: String, CaseIterable { case document, on, off }
     var scope: Scope = .document
     var sheetName = ""
@@ -142,13 +145,36 @@ struct OfficePDFExportChoices: Sendable, Equatable {
     var selectedSheetNames: [String] = []
     var paper: Paper = .document
     var orientation: Orientation = .document
-    var fit: Fit = .document
+    /// The App's default scaling for a workbook is fit-to-page-width: the
+    /// engine shrinks its OWN full content extent (cells, drawings and ink,
+    /// with their real relative geometry) onto one page wide, so wide ink is
+    /// never split or cropped. `document`, `actualSize`, `exactScale`,
+    /// `fitPages` and `page` remain explicit authoritative choices.
+    var fit: Fit = .width
     var scalePercentText = "100"
     var fitPagesWideText = "1"
     var fitPagesTallText = "1"
     var margins: Margins = .document
-    var gridlines: Gridlines = .document
+    var gridlines: Gridlines = .on
     var pages = ""
+
+    /// Keeps Word/Presentation documents on their own page setup: the
+    /// workbook grid/scaling defaults above are product choices for
+    /// spreadsheets only and are reset before the first plan of any other
+    /// format is built, because this backend writes no page setup there.
+    mutating func applyDocumentSetupDefaults(forFormatExtension ext: String) {
+        guard OfficePDFFormatSupport.resolve(forExtension: ext)?
+                .supportsCustomPageSetup != true else { return }
+        scope = .document
+        sheetContent = .full
+        cellRange = ""
+        selectedSheetNames = []
+        paper = .document
+        orientation = .document
+        fit = .document
+        margins = .document
+        gridlines = .document
+    }
 
     /// Builds the pure plan. `sheetTabOrder` is the saved workbook's own tab
     /// order; an explicit selection is re-ordered by it so the print copy —
@@ -342,6 +368,87 @@ struct OfficePDFExportPreviewState: Equatable {
     }
 }
 
+/// Bounded automatic retry for the live preview.
+///
+/// Only a concrete retryable failure family is registered here (see
+/// `OfficePDFExportOptionsView.isRetryablePreviewFailure`): the session is
+/// momentarily held by another owner on the same, unchanged document. Invalid
+/// plans, unsupported formats, storage/IO failures, corrupt output, security
+/// and page-selection errors are never retried; their error stays visible and
+/// the manual Update control owns recovery.
+struct OfficePDFAutoPreviewRetry: Equatable {
+    static let maximumAutomaticAttempts = 3
+
+    private(set) var attempts = 0
+    private(set) var snapshot: OfficePDFExportChoices?
+
+    var canRetry: Bool { attempts < Self.maximumAutomaticAttempts }
+
+    /// Backoff before the next automatic attempt. 550 ms matches the input
+    /// debounce for the first retry and grows with each spent attempt.
+    var nextBackoff: Duration { .milliseconds(550 * (attempts + 1)) }
+
+    mutating func reset() {
+        attempts = 0
+        snapshot = nil
+    }
+
+    mutating func recordSuccess() { reset() }
+
+    /// Registers one retryable failed generation for `snapshot` and returns
+    /// the backoff before the next automatic attempt, or `nil` when this
+    /// snapshot has spent its automatic attempts.
+    mutating func registerFailure(of snapshot: OfficePDFExportChoices) -> Duration? {
+        if self.snapshot != snapshot {
+            self.snapshot = snapshot
+            attempts = 0
+        }
+        guard canRetry else { return nil }
+        attempts += 1
+        return .milliseconds(550 * attempts)
+    }
+}
+
+/// The one decision the idle live preview makes: may the automatic queue run
+/// again for the settings on screen?
+///
+/// This exists because the queue is otherwise event-driven (a settings change,
+/// or the completion of the render that was already running). A pump can be
+/// refused while another render owns the single serial slot, and a completion
+/// can be fenced or cancelled; in every one of those cases the queued snapshot
+/// used to be consumed with nothing left to re-arm it, which is exactly the
+/// "orange settings changed + Update preview" idle state seen on device. The
+/// decision is pure so the boundary is regression-tested without a device.
+struct OfficePDFAutoPreviewReconciliation: Equatable {
+    enum Decision: Equatable {
+        /// A load, a render or the nested share/print surface owns the view.
+        case waitForOwner
+        /// The accepted artifact already belongs to the visible settings.
+        case current
+        /// No source, invalid settings, or the retry budget is spent: the
+        /// visible manual Update control owns recovery.
+        case manual
+        /// Idle, valid settings and no accepted artifact for them: render.
+        case render
+    }
+
+    /// - Parameter automaticRetryAllowed: the retry budget for this snapshot
+    ///   is not spent AND the last failure (if any) belongs to the concrete
+    ///   retryable family. A non-retryable failure keeps this false until the
+    ///   user changes a setting or taps Update, so its visible error can never
+    ///   turn into an automatic render loop.
+    static func decision(sourcePresent: Bool, loading: Bool, working: Bool,
+                         presenting: Bool, artifactUsable: Bool,
+                         settingsValid: Bool,
+                         automaticRetryAllowed: Bool) -> Decision {
+        guard sourcePresent else { return .manual }
+        if loading || working || presenting { return .waitForOwner }
+        if artifactUsable { return .current }
+        guard settingsValid, automaticRetryAllowed else { return .manual }
+        return .render
+    }
+}
+
 /// Print/export options with the actual PDF preview inline below them, for
 /// both the app menu and the engine's Print entry. Settings scroll in the
 /// upper region; the dock below always shows the current accepted artifact.
@@ -375,9 +482,19 @@ struct OfficePDFExportOptionsView: View {
     /// Latest choices waiting for the single serial renderer.
     @State private var pendingChoices: OfficePDFExportChoices?
     @State private var debounce: Task<Void, Never>?
+    /// Bounded automatic retry state for transient preview failures.
+    @State private var autoRetry = OfficePDFAutoPreviewRetry()
+    /// False once a generation failed for a NON-retryable reason. The
+    /// reconciliation pulse then stays quiet (`.manual`) until the user
+    /// changes a setting or taps Update, so an invalid/unsupported/storage
+    /// failure is reported once instead of being re-rendered in a loop.
+    @State private var lastFailureRetryable = true
     @State private var presentation: OfficePDFDeliveryPresentation?
     @State private var deliveryFailed = false
     @State private var loadAttempt = 0
+    /// How many automatic re-preparations this container already spent on a
+    /// transiently busy session (a leaving remount can still hold it).
+    @State private var loadRetryCount = 0
     /// Latch distinguishing this view's own teardown (Cancel, delivery done)
     /// from an external presentation dismissal, so the trace names the actual
     /// dismissal owner instead of leaving a silent disappearance.
@@ -427,6 +544,10 @@ struct OfficePDFExportOptionsView: View {
                 // choice. No first-sheet substitution for Current Sheet.
                 choices.sheetName = prepared.activeSheetName
                     ?? prepared.sheets.first(where: \.isVisible)?.name ?? ""
+                // Workbook product defaults: the printed grid is visible and
+                // the printed content fits the page width unless the user
+                // chooses otherwise. Word/Presentation keep their own setup.
+                choices.applyDocumentSetupDefaults(forFormatExtension: prepared.fileExtension)
                 observe("export.options.loaded",
                         ["attempt": String(loadAttempt), "view": traceViewID.uuidString])
             } catch is CancellationError {
@@ -437,6 +558,21 @@ struct OfficePDFExportOptionsView: View {
                 observe("export.options.loadError",
                         ["attempt": String(loadAttempt), "view": traceViewID.uuidString,
                          "kind": Self.errorKind(error)])
+                if Self.isTransientPreparationError(error),
+                   loadRetryCount + 1 < Self.maximumAutomaticLoadAttempts {
+                    // A transient remount can begin its fresh container while
+                    // the leaving container's frozen surface is still settling
+                    // its own operation. That is busy, not a changed document:
+                    // retry the same preparation automatically instead of
+                    // leaving the sheet on a manual Retry with no preview.
+                    loadRetryCount += 1
+                    observe("export.options.loadRetry",
+                            ["attempt": String(loadRetryCount), "view": traceViewID.uuidString])
+                    try? await Task.sleep(for: .milliseconds(700 * loadRetryCount))
+                    guard !Task.isCancelled else { return }
+                    loadAttempt &+= 1
+                    return
+                }
                 self.error = message(for: error)
             }
             loading = false
@@ -444,6 +580,14 @@ struct OfficePDFExportOptionsView: View {
             scheduleAutoPreview(choices)
         }
         .onChange(of: choices) { _, next in scheduleAutoPreview(next) }
+        // The queue is normally driven by a settings change or by the render
+        // that was already running. A pump refused while that render held the
+        // single serial slot, a fenced completion, or a generation cancelled
+        // with the view still mounted used to consume the queued snapshot and
+        // leave the dock on "settings changed" with nothing scheduled — the
+        // on-device idle-stale state. This pulse re-arms exactly that state
+        // once no owner is active, with the latest visible choices.
+        .task(id: previewReconciliationKey) { await reconcileAutomaticPreview() }
         .onAppear {
             observe("export.options.appear", ["view": traceViewID.uuidString])
         }
@@ -516,12 +660,19 @@ struct OfficePDFExportOptionsView: View {
     /// fence. The parent's presentation request and its preparation are NOT
     /// owned here, so a transient remount cannot cancel them; they end only
     /// when the presentation binding is actually written nil.
+    ///
+    /// The cancellation token is renewed after the teardown: a container that
+    /// disappears and reappears (or survives a transient re-host) must start
+    /// its next generation under a live token, otherwise every later attempt
+    /// would be reported as a cancelled generation and never publish. Work
+    /// that was in flight keeps the old token it was started with.
     private func teardownPreview(source: String) {
         observe("export.options.teardown",
                 ["source": source, "view": traceViewID.uuidString])
         cancellation.cancel(); operation?.cancel()
         debounce?.cancel(); pendingChoices = nil
         preview.invalidate()
+        cancellation = CancellationToken()
     }
 
     // MARK: - Settings (upper scrolling region)
@@ -809,6 +960,10 @@ struct OfficePDFExportOptionsView: View {
             observe("export.preview.skip", ["reason": "noSource"])
             return
         }
+        // A real setting change (or the initial load) owns a fresh retry
+        // budget; a pending automatic retry for an older snapshot is dropped.
+        autoRetry.reset()
+        lastFailureRetryable = true
         pendingChoices = next
         debounce?.cancel()
         debounce = Task { @MainActor in
@@ -825,21 +980,24 @@ struct OfficePDFExportOptionsView: View {
             observe("export.preview.skip", ["reason": pumpSkipReason()])
             return
         }
-        pendingChoices = nil
         // Already-current artifact: nothing to regenerate.
         if preview.artifact != nil, !preview.isStale(currentChoices: pending) {
+            pendingChoices = nil
             observe("export.preview.skip", ["reason": "current"])
             return
         }
         // Auto-render complete, valid settings only. Mid-edit input (a
-        // partial range, an out-of-bounds percent) stays silently queued
-        // until the next change instead of spamming an error for every
-        // keystroke; the visible preview just reads as stale.
+        // partial range, an out-of-bounds percent) stays queued: the next
+        // valid snapshot owns the next generation instead of an error for
+        // every keystroke, and the visible preview just reads as stale.
         guard (try? pending.plan(activeSheetName: source.activeSheetName,
                                  sheetTabOrder: source.tabOrder)) != nil else {
             observe("export.preview.skip", ["reason": "invalidPlan"])
             return
         }
+        // The snapshot is consumed only once a generation actually starts;
+        // a refused/invalid pump keeps it queued for the next trigger.
+        pendingChoices = nil
         startGeneration(for: pending, source: source)
     }
 
@@ -882,6 +1040,8 @@ struct OfficePDFExportOptionsView: View {
                     return
                 }
                 delivery = result
+                autoRetry.recordSuccess()
+                lastFailureRetryable = true
                 observe("export.preview.generationAccepted", ["token": String(token)])
             } catch is CancellationError {
                 observe("export.preview.generationCancelled", ["token": String(token)])
@@ -902,18 +1062,101 @@ struct OfficePDFExportOptionsView: View {
                     self.source = nil
                     preview.invalidate()
                     delivery = nil
+                    self.error = message(for: error)
+                    return
                 }
-                if !cancellation.isCancelled { self.error = message(for: error) }
+                self.error = message(for: error)
+                // Only the concrete retryable family (the same, unchanged
+                // session briefly held by another owner) is re-queued by the
+                // reconciliation pulse below. Everything else keeps its
+                // visible error and leaves recovery to the manual Update
+                // control, so a real defect can never be masked as "retrying".
+                guard presentation == nil, !cancellation.isCancelled else { return }
+                guard Self.isRetryablePreviewFailure(error) else {
+                    lastFailureRetryable = false
+                    observe("export.preview.retrySkipped",
+                            ["token": String(token), "kind": Self.errorKind(error)])
+                    return
+                }
+                lastFailureRetryable = true
+                if autoRetry.registerFailure(of: snapshot) != nil {
+                    observe("export.preview.retryScheduled",
+                            ["token": String(token),
+                             "attempt": String(autoRetry.attempts),
+                             "delayMS": String(550 * autoRetry.attempts)])
+                } else {
+                    observe("export.preview.retryExhausted", ["token": String(token)])
+                }
             }
         }
     }
 
+    // MARK: - Automatic preview reconciliation
+
+    /// The exact idle state the reconciliation pulse acts on. Content-free and
+    /// cheap: it reads only the view's own flags plus the plan's validity.
+    private var previewReconciliationDecision: OfficePDFAutoPreviewReconciliation.Decision {
+        guard let source else {
+            return OfficePDFAutoPreviewReconciliation.decision(
+                sourcePresent: false, loading: loading, working: working,
+                presenting: presentation != nil, artifactUsable: false,
+                settingsValid: false, automaticRetryAllowed: false)
+        }
+        let artifactUsable = preview.artifact != nil
+            && !preview.isStale(currentChoices: choices)
+        let settingsValid = (try? choices.plan(activeSheetName: source.activeSheetName,
+                                               sheetTabOrder: source.tabOrder)) != nil
+        return OfficePDFAutoPreviewReconciliation.decision(
+            sourcePresent: true, loading: loading, working: working,
+            presenting: presentation != nil, artifactUsable: artifactUsable,
+            settingsValid: settingsValid,
+            automaticRetryAllowed: autoRetry.canRetry && lastFailureRetryable)
+    }
+
+    /// Identity of the reconciliation input. `.task(id:)` re-runs whenever a
+    /// real transition occurs (idle→stale, a completed/fenced/cancelled
+    /// generation, an accepted artifact, a spent retry attempt); it does not
+    /// re-run for unrelated renders, so a failure cannot become a render loop.
+    private var previewReconciliationKey: String {
+        let decision = previewReconciliationDecision
+        let token: String
+        switch decision {
+        case .waitForOwner: token = "wait"
+        case .current: token = "current"
+        case .manual: token = "manual"
+        case .render: token = "render"
+        }
+        return "\(token)|\(preview.artifact?.pdfSHA256 ?? "none")"
+            + "|\(preview.generation)|\(autoRetry.attempts)"
+    }
+
+    /// Re-arms the single serial queue after the owner slot settles. The
+    /// latest visible choices always win: a snapshot that was consumed by a
+    /// refused or fenced pump is re-created from `choices` here.
+    private func reconcileAutomaticPreview() async {
+        guard previewReconciliationDecision == .render else { return }
+        observe("export.preview.reconciled",
+                ["attempt": String(autoRetry.attempts),
+                 "view": traceViewID.uuidString])
+        // Match the input debounce on the first attempt; a retry waits longer.
+        let delay = autoRetry.nextBackoff + .milliseconds(550)
+        try? await Task.sleep(for: delay)
+        guard !Task.isCancelled else { return }
+        guard previewReconciliationDecision == .render else { return }
+        pendingChoices = choices
+        pumpPreview()
+    }
+
     /// Recovery affordance for a failed or missing auto-generation (for
-    /// example a transient busy session). It is not a stage button: the
-    /// normal path never needs it because edits already regenerate.
+    /// example a busy session after the bounded automatic retries). It is not
+    /// a stage button: the normal path never needs it because edits already
+    /// regenerate, transient failures retry themselves, and the reconciliation
+    /// pulse re-arms any idle stale state.
     private func retryNow() {
         guard let source, !working else { return }
         debounce?.cancel(); debounce = nil
+        autoRetry.reset()
+        lastFailureRetryable = true
         if (try? choices.plan(activeSheetName: source.activeSheetName,
                               sheetTabOrder: source.tabOrder)) == nil {
             error = t("请检查工作表、单元格区域、缩放和 PDF 页码。",
@@ -922,6 +1165,34 @@ struct OfficePDFExportOptionsView: View {
         }
         pendingChoices = choices
         pumpPreview()
+    }
+
+    /// Bounded automatic re-preparation attempts for a transiently busy
+    /// session; the visible Retry remains for a persistent failure.
+    private static let maximumAutomaticLoadAttempts = 3
+
+    /// True only for the transient busy surface this view can recover from by
+    /// itself: the document is present and unchanged, another owner is just
+    /// holding it for a moment. A changed source, an invalid plan or a real
+    /// engine failure is never auto-retried here.
+    private static func isTransientPreparationError(_ error: Error) -> Bool {
+        if let screenError = error as? OfficePDFExportScreenError {
+            if case .sessionBusy = screenError { return true }
+        }
+        return false
+    }
+
+    /// The ONLY retryable automatic-preview failure family: the unchanged
+    /// session is momentarily held by another owner (`sessionBusy`). Invalid
+    /// plans, unsupported formats, storage/IO failures, corrupt output,
+    /// security and page-selection refusals are deliberately excluded — the
+    /// original failure and its message stay visible and the manual control
+    /// owns recovery.
+    static func isRetryablePreviewFailure(_ error: Error) -> Bool {
+        if let screenError = error as? OfficePDFExportScreenError {
+            if case .sessionBusy = screenError { return true }
+        }
+        return false
     }
 
     private func needsSourceRefresh(_ error: Error) -> Bool {

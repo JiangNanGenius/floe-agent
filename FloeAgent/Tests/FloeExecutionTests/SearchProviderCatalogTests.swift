@@ -544,7 +544,7 @@ struct SearchProviderCatalogTests {
 
     @Test("v2 instances round-trip and v1 payloads still decode")
     func instanceStoreRoundTripsAndV1Decodes() throws {
-        let instance = Self.bochaInstance(overrides: ["displayName"], appliedVersion: "1.0.0")
+        let instance = Self.bochaInstance(appliedVersion: "1.0.0", overrides: ["displayName"])
         let data = try JSONEncoder().encode([instance])
         let decoded = try JSONDecoder().decode([WebSearchProviderInstance].self, from: data)
         #expect(decoded.count == 1)

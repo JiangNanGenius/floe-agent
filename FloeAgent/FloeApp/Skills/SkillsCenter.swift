@@ -31,6 +31,12 @@ final class SkillsCenter: ObservableObject {
     @Published var errorMessage: String?
     @Published var pendingInstallation: PendingInstallation?
     @Published private(set) var pendingUpgrade: SkillUpgradeCandidate?
+    /// A completed update check proved the known remote is not newer than
+    /// this row's installed version. The upgrade transaction guard still
+    /// rejects any non-newer candidate unchanged; this flag only carries the
+    /// truthful "nothing newer" outcome so the review sheet can show the
+    /// existing localized already-latest state instead of raw error text.
+    @Published private(set) var upgradeIsUpToDate = false
     private var upgradeStagingRoot: URL?
     private var upgradeStagingLease: ScratchLeaseToken?
 
@@ -154,6 +160,16 @@ final class SkillsCenter: ObservableObject {
         return try? JSONDecoder().decode(SkillManifest.self, from: data)
     }
 
+    /// Presentation classifier only. The candidate transactions in FloeSkills
+    /// still throw for every non-newer package; this recognizes exactly the
+    /// known "nothing newer" outcome (the remote version does not exceed the
+    /// installed version) so a no-update check can never surface the raw
+    /// regression text. Signature, identity, integrity, digest and conflict
+    /// failures keep surfacing unchanged.
+    static func checkFoundNothingNewer(_ error: Error) -> Bool {
+        (error as? SkillUpgradeError) == .versionRegression
+    }
+
     func checkGitHubUpgrade(skill: PersistedSkill, source: GitHubSkillSource) async {
         await perform {
             guard DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false else {
@@ -192,6 +208,13 @@ final class SkillsCenter: ObservableObject {
                 try await self.stageUpgradeForReview(candidate, at: staging)
             } catch {
                 try? FileManager.default.removeItem(at: staging)
+                if Self.checkFoundNothingNewer(error) {
+                    // Nothing newer exists at the checked source. The guard
+                    // rejected the downgrade before any review or write;
+                    // report the truthful no-update result, not an alarm.
+                    self.upgradeIsUpToDate = true
+                    return
+                }
                 throw error
             }
         }
@@ -209,6 +232,7 @@ final class SkillsCenter: ObservableObject {
 
     func cancelUpgrade() {
         pendingUpgrade = nil
+        upgradeIsUpToDate = false
         if let root = upgradeStagingRoot { try? FileManager.default.removeItem(at: root) }
         upgradeStagingRoot = nil
         upgradeStagingLease?.release()

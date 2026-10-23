@@ -682,6 +682,7 @@ targets:
       - path: Tests/FloeAppTests/ContinuousVoicePresentationTests.swift
       - path: Tests/FloeAppTests/ChatAutomaticReadControllerTests.swift
       - path: Tests/FloeAppTests/SpeechOwnershipTests.swift
+      - path: Tests/FloeAppTests/SpeechPerformanceLifecycleTests.swift
       - path: Tests/FloeAppTests/SpeechTransferRetirementTests.swift
       - path: Tests/FloeAppTests/MemoryCancellationTests.swift
       - path: Tests/FloeAgentRuntimeTests/PersonalizationMemoryTests.swift
@@ -690,6 +691,7 @@ targets:
       - path: Tests/FloeAppTests/FinalAnswerSpeechTests.swift
       - path: Tests/FloeAppTests/LocalSpeechModelStoreTests.swift
       - path: Tests/FloeAppTests/TTSSettingsServiceTests.swift
+      - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/VoiceConversationTests.swift
       - path: Tests/FloeAppTests/VoiceConversationAudioTests.swift
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift

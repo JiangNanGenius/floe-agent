@@ -395,16 +395,30 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             XCTAssertNotNil(window.rootViewController?.presentedViewController,
                             "the options sheet must stay mounted through the accepted automatic preview")
 
-            // Actual artifact and page evidence. The automatic generation is the
-            // default print of the verified frozen source; the direct baseline
-            // test above proves this exact fixture prints two horizontal A4
-            // slices, and Main's device trace measured 2 pages for this first
-            // automatic token. A different count means the automatic path
-            // silently changed scope, not that the private fixture grew.
+            // Actual artifact and page evidence. The automatic generation now
+            // runs the product default: document-settings scope, printed grid
+            // on and fit-to-page-width scaling (the previous gridless
+            // two-slice default was the reported defect). Assert the exact
+            // plan the proposed form builds, measure THAT plan directly on the
+            // same verified source, and require the automatic artifact to
+            // match its real page count — no hardcoded guess and no weakened
+            // assertion. The direct baseline test above still pins the
+            // document-settings/actual-scale fixture at two A4 slices.
+            let automaticPlan = try OfficePDFExportChoices().plan(activeSheetName: nil)
+            XCTAssertEqual(automaticPlan.scope, .documentSettings)
+            XCTAssertEqual(automaticPlan.pageSetup.fit, .fitToWidth,
+                           "the untouched workbook form must print fit-to-width")
+            XCTAssertEqual(automaticPlan.pageSetup.printGridlines, true,
+                           "the untouched workbook form must print the cell grid")
+            let measuredDefault = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: automaticPlan, ownedDirectory: root))
+            attach(measuredDefault.pdfURL, "provided-product-default.pdf")
             let generateOK = try XCTUnwrap(a.first { $0.stage == "export.generate.ok" })
             let pages = try XCTUnwrap(Int(generateOK.detail["pages"] ?? ""))
             let bytes = try XCTUnwrap(Int(generateOK.detail["bytes"] ?? ""))
-            XCTAssertEqual(pages, 2)
+            XCTAssertEqual(pages, measuredDefault.pageCount,
+                           "the automatic preview must use the same product default plan the form builds")
             XCTAssertGreaterThan(bytes, 4_096)
             let sheetViewA = try XCTUnwrap(window.rootViewController?.presentedViewController?.view)
             try await wait("accepted artifact surfaced in the dock (request A)") {
@@ -541,6 +555,148 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             await session.release()
             return
         }
+    }
+
+    /// Real-owner regression for the reported on-device preview trigger.
+    ///
+    /// Main's build-290 observation: after the first automatic preview, a
+    /// scaling change showed the orange "設定已修改/Settings changed" state and
+    /// the manual Update button; tapping Update produced the new preview. The
+    /// automatic queue therefore did not re-arm on its own. No stage trace of
+    /// that manual interaction exists, so this test pins the required behavior
+    /// rather than claiming a proven causal event: drive the REAL scaling
+    /// Picker in the mounted options sheet (public accessibility activation,
+    /// never view state) and require a second accepted generation, with the
+    /// new measured page count, while the sheet stays mounted and the test
+    /// never taps Update preview.
+    func testScalingChangeRegeneratesPreviewWithoutManualUpdate() async throws {
+        let (source, sha, root) = try input()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive }))
+        let previous = scene.windows.first(where: \.isKeyWindow)
+        let session = OfficeFileSession()
+        let window = UIWindow(windowScene: scene)
+        window.frame = scene.coordinateSpace.bounds
+        let environment = AppEnvironment.preview()
+        window.rootViewController = UIHostingController(rootView: NavigationStack {
+            OfficeDocumentEditorView(relativePath: "provided.xlsx", session: session,
+                                     onSaved: nil, requestsEditingOnAppear: true)
+                .environmentObject(environment)
+        })
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKey() }
+        do {
+            await session.open(source)
+            try await wait("editable owner ready for the preview trigger") {
+                !session.readOnly && session.documentActionsReady && session.canAct
+            }
+            let native = try XCTUnwrap(session.controller as? FloeOfficeNativeViewController)
+            try await wait("actual Office tiles painted for the preview trigger") {
+                let facts = OfficeFileSession.hostRenderDiagnostics(native)
+                return facts["stage"] == "visible-render" && facts["docLoaded"] == "1"
+            }
+            let web = try XCTUnwrap(OfficeExplicitSaveBridge.findWebView(in: native.view))
+            let posted = try await requestNativePrint(web: web, session: session,
+                                                      baseGeneration: session.printRequestGeneration)
+            try await wait("options sheet mounted for the preview trigger") {
+                window.rootViewController?.presentedViewController != nil
+            }
+            try await wait("automatic preview accepted before any settings change") {
+                ownerEvents(for: session, since: posted).contains {
+                    $0.stage == "export.preview.generationAccepted"
+                }
+            }
+            let before = ownerEvents(for: session, since: posted)
+            let firstGeneration = try XCTUnwrap(before.first {
+                $0.stage == "export.preview.generationAccepted"
+            })
+            let firstGenerateOK = try XCTUnwrap(before.first { $0.stage == "export.generate.ok" })
+            let firstPages = try XCTUnwrap(Int(firstGenerateOK.detail["pages"] ?? ""))
+            XCTAssertGreaterThan(firstPages, 0)
+            let sheet = try XCTUnwrap(window.rootViewController?.presentedViewController)
+            attachWindow(window, "preview-trigger-before-change")
+
+            // Real setting change through the production Picker. Fit-on-one-
+            // page is deterministic for the single visible fixture sheet
+            // (one page) and differs from the product default (fit-width), so
+            // the second artifact must be measurably new.
+            try await selectScalingOption(in: sheet.view, labels: ["适合一页", "Fit on one page"])
+
+            try await wait("a real settings change regenerated the preview with no Update tap") {
+                ownerEvents(for: session, since: posted).contains { event in
+                    event.stage == "export.preview.generationAccepted"
+                        && event.at > firstGeneration.at
+                }
+            }
+            let after = ownerEvents(for: session, since: posted)
+            attachStages(after, "preview-trigger-window.json")
+            let acceptedAfter = after.filter {
+                $0.stage == "export.preview.generationAccepted" && $0.at > firstGeneration.at
+            }
+            XCTAssertFalse(acceptedAfter.isEmpty,
+                           "the automatic queue must re-arm after a real settings change")
+            let secondGenerateOK = try XCTUnwrap(after.last { $0.stage == "export.generate.ok" })
+            XCTAssertEqual(Int(secondGenerateOK.detail["pages"] ?? ""), 1,
+                           "the changed fit-on-one-page plan must produce its own one-page artifact")
+            XCTAssertGreaterThanOrEqual(
+                after.filter { $0.stage == "export.generate.started" }.count, 2,
+                "the new settings must own a second real generation")
+            XCTAssertNil(after.first { $0.stage == "export.preview.retryExhausted" })
+            XCTAssertNotNil(window.rootViewController?.presentedViewController,
+                            "the options sheet must stay mounted through the regeneration")
+            try await wait("the dock is no longer reported stale after the new artifact") {
+                !Self.accessibilityNodes(in: sheet.view).contains {
+                    $0.identifier == "office.pdf.stale"
+                }
+            }
+            attachWindow(window, "preview-trigger-after-change")
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha,
+                           "previewing and changing settings never edits the source workbook")
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            window.rootViewController?.dismiss(animated: false)
+            try await Task.sleep(for: .milliseconds(300))
+            await session.release()
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            attachWindow(window, "preview-trigger-failure")
+            let ax = Self.sceneAccessibilityNodes()
+                .map { ["identifier": $0.identifier, "label": $0.label] }
+            if let data = try? JSONSerialization.data(withJSONObject: ax, options: [.sortedKeys]) {
+                add(XCTAttachment(data: data, uniformTypeIdentifiers: ["public.json"]))
+            }
+            await session.release()
+            XCTFail("Settings-change preview trigger regression failed: \(error)")
+        }
+    }
+
+    /// Opens the real scaling Picker and activates one of its options through
+    /// the public accessibility tree. It never reaches into view state and
+    /// never taps the manual Update button. Picker menus can be hosted in a
+    /// separate window, so every visible scene window is searched.
+    private func selectScalingOption(in sheet: UIView, labels: Set<String>) async throws {
+        let deadline = Date().addingTimeInterval(30)
+        var opened = false
+        while Date() < deadline {
+            if !opened {
+                if let picker = Self.accessibilityNodes(in: sheet).first(where: {
+                    $0.identifier == "office.pdf.scaling" }) {
+                    opened = picker.activate()
+                }
+            }
+            for node in Self.sceneAccessibilityNodes() where labels.contains(node.label) {
+                if node.activate() { return }
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        let visible = Self.sceneAccessibilityNodes()
+            .map { "\($0.identifier)|\($0.label)" }
+            .filter { !$0.isEmpty }
+            .prefix(80)
+        throw CocoaError(.featureUnsupported, userInfo: [
+            NSLocalizedDescriptionKey:
+                "the scaling option must be reachable (opened=\(opened)): \(visible.joined(separator: ", "))"])
     }
 
     func testPreparationCancellationAndOwnershipRemainFenced() async throws {
@@ -943,6 +1099,20 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             }
         }
         walk(view, depth: 0)
+        return nodes
+    }
+
+    /// Accessibility nodes of every visible window in the active scene. A
+    /// Picker option menu can be hosted outside the sheet's own window, so the
+    /// trigger regression searches the whole scene instead of one window.
+    private static func sceneAccessibilityNodes() -> [HostedAccessibilityNode] {
+        var nodes: [HostedAccessibilityNode] = []
+        let windows = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+        for window in windows where !window.isHidden {
+            nodes += accessibilityNodes(in: window)
+        }
         return nodes
     }
 

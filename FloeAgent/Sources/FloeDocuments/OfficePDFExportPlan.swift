@@ -139,9 +139,10 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
     /// private print copy: `nil` keeps the worksheet's own printOptions
     /// member byte-identical, `true`/`false` declares printed gridlines
     /// on/off. Cell borders and the source package are never touched.
-    /// Excel defaults to NOT printing gridlines regardless of the screen
-    /// display (Microsoft: "Print gridlines in a worksheet"), so the UI
-    /// default must stay `nil` unless the user chooses explicitly.
+    /// The App's options form defaults to `true`: a printed spreadsheet is
+    /// expected to show a practical cell grid, and this choice never edits
+    /// the user's file. `.document` (nil here) stays selectable when a
+    /// workbook's own saved print options must be honoured exactly.
     public var printGridlines: Bool?
 
     public init(paper: OfficePDFPaper? = nil,

@@ -10,6 +10,7 @@ import FloeCore
 struct SpeechPackInstallState: View {
     let model: LocalSpeechModel
     @EnvironmentObject private var settings: TTSSettingsService
+    @EnvironmentObject private var playback: SpeechService
 
     var body: some View {
         let installation = settings.localInstallation
@@ -39,7 +40,13 @@ struct SpeechPackInstallState: View {
         } else if !model.isHidden {
             Button(installation.modelID == model.id && installation.failureKey != nil ? "voice.action.retry" : "voice.local.download",
                    systemImage: "arrow.down.circle") {
-                Task { await settings.install(model) }
+                Task {
+                    // Replacement of an installed revision needs the warm
+                    // lease released first; install is otherwise a no-op on
+                    // an idle engine.
+                    await playback.releaseLocalModelForPackManagement()
+                    await settings.install(model)
+                }
             }.disabled(installation.running)
         }
     }
@@ -108,7 +115,11 @@ struct SpeechPackDetailView: View {
                     Button("voice.local.remove", role: .destructive) {
                         Task {
                             do {
-                                if playback.activeLocalModelID == model.id { await playback.stopAndWait() }
+                                // Pack removal is lease-coordinated: stop the
+                                // current answer and release the warm engine
+                                // first, otherwise the retained lease reports
+                                // the pack busy forever.
+                                await playback.releaseLocalModelForPackManagement()
                                 try await LocalSpeechModelStore.shared.remove(model)
                                 if settings.snapshot.provider == .onDevice && settings.snapshot.modelID == model.id {
                                     settings.choose(.systemDefault)

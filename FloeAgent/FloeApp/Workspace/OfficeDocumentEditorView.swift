@@ -1271,8 +1271,29 @@ final class OfficeFileSession: ObservableObject {
                     }
                 }.value
                 try Task.checkCancellation()
-                let plan = OfficePDFPrintPlan(scope: formatExtension == "xlsx"
-                                              ? .allVisibleSheets : .documentSettings)
+                // The thumbnail is page 1 of the actual PDF, so a workbook
+                // cover prints the first visible tab's own full content on
+                // one page with its grid: the card shows grid and every piece
+                // of ink instead of a gridless slice with the right edge cut.
+                // The sheet list is read from the verified copy only; the
+                // plan never crops content and never touches the source.
+                let plan: OfficePDFPrintPlan
+                if formatExtension == "xlsx" {
+                    let sheets = try await Task.detached(priority: .userInitiated) {
+                        try cancellation.throwIfCancelled()
+                        guard try FloeDigest.sha256Hex(ofFileAt: source) == expectedSHA256 else {
+                            throw CocoaError(.fileReadCorruptFile)
+                        }
+                        return try OfficeRegionExport.workbookSheets(
+                            sourceURL: source, expectedSHA256: expectedSHA256)
+                    }.value
+                    plan = OfficePDFExportService.savedCoverPlan(
+                        formatExtension: formatExtension,
+                        firstVisibleSheetName: sheets.first(where: \.isVisible)?.name)
+                } else {
+                    plan = OfficePDFExportService.savedCoverPlan(
+                        formatExtension: formatExtension, firstVisibleSheetName: nil)
+                }
                 let result = try await OfficePDFExportService.export(.init(
                     sourceURL: source, sourceSHA256: expectedSHA256,
                     formatExtension: formatExtension, plan: plan,
