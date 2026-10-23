@@ -214,6 +214,65 @@ public struct VolcengineSpeechAdapter: TTSSpeechProviding {
         return []
     }
 
+    // MARK: Agent-plan frame disposition (pure, fixture-tested)
+
+    /// Downstream session events of the plan unidirectional flow (official
+    /// protocols.py EventType): the terminal event is only in the frame
+    /// header — the 152 payload is `{}`.
+    static let sessionFinishedEvent = 152
+    static let sessionFailedEvent = 153
+
+    /// One decoded plan-stream frame resolved to its lifecycle action. The
+    /// receive loop applies exactly this decision, so captured-layout fixtures
+    /// can pin termination and error propagation without a live socket.
+    enum PlanFrameOutcome: Sendable, Equatable {
+        case audio(Data)
+        case continueSession
+        case finish
+        case reject(code: Int?, logID: String?)
+        case ignore
+    }
+
+    /// Resolves a decoded server frame. Termination comes from the header event
+    /// (152), never from a payload string: the captured SessionFinished body is
+    /// `{}`, so the old "Finish" substring sniffing never matched and the
+    /// session only ended through the server close (a transport failure).
+    static func planFrameOutcome(_ frame: VolcSpeechFrame) -> PlanFrameOutcome {
+        switch frame {
+        case .serverAudio(let payload, _):
+            return .audio(payload)
+        case .serverJSON(let payload, let event):
+            if event == sessionFinishedEvent { return .finish }
+            let json = TTSSpeechJSON.dictionary(payload)
+            if event == sessionFailedEvent {
+                return .reject(
+                    code: json.flatMap { TTSSpeechJSON.int($0, "code") } ?? sessionFailedEvent,
+                    logID: planLogID(json))
+            }
+            // Non-terminal JSON events keep the strict code check: only a
+            // documented success code (or no code at all) may pass.
+            if let code = json.flatMap({ TTSSpeechJSON.int($0, "code") }),
+               !isProviderSuccess(code: code) {
+                return .reject(code: code, logID: planLogID(json))
+            }
+            return .continueSession
+        case .serverError(let code, let payload):
+            // Binary Error frames carry the numeric code in the header; only a
+            // sanitized trace token leaves the adapter.
+            return .reject(code: code, logID: planLogID(TTSSpeechJSON.dictionary(payload)))
+        case .clientRequest, .clientFinish:
+            return .ignore
+        }
+    }
+
+    static func planLogID(_ json: [String: Any]?) -> String? {
+        guard let json else { return nil }
+        return TTSSynthesisError.sanitizedLogID(
+            TTSSpeechJSON.string(json, "conn_id")
+                ?? TTSSpeechJSON.string(json, "trace_id")
+                ?? TTSSpeechJSON.string(json, "session_id"))
+    }
+
     // MARK: Agent-plan WebSocket (unidirectional streaming)
 
 #if !canImport(FoundationNetworking)
@@ -241,7 +300,11 @@ public struct VolcengineSpeechAdapter: TTSSpeechProviding {
             defer { socket.cancel(with: .goingAway, reason: nil) }
 
             try await sendFrame(.clientRequest(Self.makeBody(for: request)), via: socket)
-            try await sendFrame(.clientFinish(Data("{}".utf8)), via: socket)
+            // The documented plan unidirectional flow is one FullClientRequest:
+            // the server streams 352 audio and closes the session with header
+            // event 152. Sending a second "finish" frame is not part of that
+            // flow (the captured run received all audio plus 152 after the
+            // single request frame), so no extra frame is sent.
 
             var sequence = 0
             var received = 0
@@ -250,8 +313,8 @@ public struct VolcengineSpeechAdapter: TTSSpeechProviding {
                 let message = try await receiveMessage(socket)
                 guard case .data(let frameBytes) = message else { continue receiveLoop }
                 let frame = try VolcSpeechFrame.decode(frameBytes)
-                switch frame {
-                case .serverAudio(let payload, _):
+                switch Self.planFrameOutcome(frame) {
+                case .audio(let payload):
                     received += payload.count
                     if received > TTSSpeechLimits.maxSegmentAudioBytes {
                         throw TTSSynthesisError.streamTruncated(provider: .volcengine)
@@ -263,24 +326,13 @@ public struct VolcengineSpeechAdapter: TTSSpeechProviding {
                             sampleRate: request.format.sampleRate))
                         sequence += 1
                     }
-                case .serverJSON(let payload, _):
-                    let dict = TTSSpeechJSON.dictionary(payload) ?? [:]
-                    let code = TTSSpeechJSON.int(dict, "code")
-                    if !Self.isProviderSuccess(code: code) {
-                        throw TTSSynthesisError.providerRejected(
-                            provider: .volcengine, code: code,
-                            logID: TTSSynthesisError.sanitizedLogID(
-                                TTSSpeechJSON.string(dict, "conn_id")
-                                    ?? TTSSpeechJSON.string(dict, "session_id")))
-                    }
-                    if (TTSSpeechJSON.string(dict, "event") ?? "").contains("Finish") {
-                        sawFinalEvent = true
-                    }
-                case .serverError(let code, _):
+                case .continueSession, .ignore:
+                    break
+                case .finish:
+                    sawFinalEvent = true
+                case .reject(let code, let logID):
                     throw TTSSynthesisError.providerRejected(
-                        provider: .volcengine, code: code, logID: nil)
-                case .clientRequest, .clientFinish:
-                    continue receiveLoop
+                        provider: .volcengine, code: code, logID: logID)
                 }
                 if sawFinalEvent { break receiveLoop }
             }

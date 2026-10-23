@@ -93376,13 +93376,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "The API address changed. Enter the key for the new service before saving."
+            "value": "The API address changed. Enter the key for the new service."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "API 地址已更换，请输入新服务的密钥后再保存。"
+            "value": "API 地址已更换，请输入新服务的密钥。"
           }
         }
       }
