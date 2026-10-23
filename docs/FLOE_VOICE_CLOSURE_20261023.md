@@ -42,8 +42,7 @@ or physical-device speech acceptance for these repairs.
 | Milestone | State |
 | --- | --- |
 | Actual microphone and physical-device voice | Deferred while the user's iPhone is unavailable; no synthetic-I/O substitution |
-| Generic iOS Release build and recoverable device product | Pending |
-| Versioned delivery, merge and cleanup | Pending |
+| Versioned delivery | Awaiting the remaining physical voice check; signing/upload/submission have not run |
 
 ## Completed component evidence
 
@@ -79,6 +78,12 @@ or physical-device speech acceptance for these repairs.
   speech settings were inspected on the same canonical iPad; this is not an
   actual iPhone geometry check. All task-owned synthetic inputs were moved into
   recovery storage, and the task-started Simulator was shut down afterward.
+- Generic `iphoneos` Release compilation passed at `855ec031` with Xcode 27.1.
+  The arm64 App and 13 symbol bundles were saved immediately. All five App/
+  extension products report 1.7.48 (289), `iphoneos`, and matching symbols.
+  This is an unsigned recoverable device product, not an uploaded or installable
+  TestFlight build. The Simulator build cache was removed after its evidence
+  export (6.68 GiB); the device cache is retained for the next archive/package step.
 
 ## Verification and closeout
 
