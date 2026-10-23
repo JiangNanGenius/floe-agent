@@ -41,8 +41,13 @@ or physical-device speech acceptance for these repairs.
 
 | Milestone | State |
 | --- | --- |
-| Actual microphone and physical-device voice | Deferred while the user's iPhone is unavailable; no synthetic-I/O substitution |
-| Versioned delivery | Awaiting the remaining physical voice check; signing/upload/submission have not run |
+| Versioned delivery | 1.7.48 (289) archive and transport package verified; signing/upload, public beta submission and unsigned publication in progress |
+| Final distribution cleanup | Pending consumer completion; build cache already removed |
+
+Validation uses the one existing canonical iPad Simulator. The user explicitly
+requires Simulator-only agent validation and prohibits using their physical
+iPhone. Actual physical microphone, on-device inference and subjective voice
+quality remain unverified limitations, rather than a hardware waiting gate.
 
 ## Completed component evidence
 
@@ -55,8 +60,8 @@ or physical-device speech acceptance for these repairs.
 - Nine reference styles passed native Chinese, English, Japanese and mixed-text
   generation checks (36 outputs). Product previews remain live synthesis;
   qualification recordings are not bundled in the App.
-- Physical-phone testing is currently deferred at the user's request. The Mac
-  phone-audio relay was stopped; this does not qualify the new microphone path.
+- The user requires Simulator-only validation. The Mac phone-audio relay is stopped;
+  no physical-device voice acceptance is claimed.
 - Full Swift 6 App/test-target object compilation passed with Xcode 27.1
   (`27A9275`) at `1e34d43e`. All 407 scoped App-host checks passed with
   zero failures, skips or omitted declared functions. Coverage includes final
@@ -101,3 +106,21 @@ and Feather independently. No production App Store publication is authorized
 by this batch. Retain exact artifacts/symbols and essential failure evidence;
 merge/push main and remove only merged task-owned branches and unused outputs.
 Remove completed milestones from the active list and retain their evidence.
+
+## Build 289 archive milestone
+
+The immutable `v1.7.48` tag resolves to
+`855ec031a396e6a5c4d62017c9bad527349ee62a`. Local Xcode 27.1
+(`27A9275`, iphoneos 27.1) archive and package checks passed for all five
+App/extension bundles at 1.7.48 (289). The App and 14 symbol bundles were
+preserved before packaging. The private transport is 975,150,016 bytes with
+SHA-256 `7c51a6107dc0368518ec6e7b0c1fa3a19259f9aafabfaf1219eb26378f6f038e`.
+This milestone is not signing, Apple processing, beta availability or public
+installation acceptance. The formal App Store submission is unchanged.
+
+The finished archive build cache was removed after artifact export and an
+open-file check: 8,540,770,304 allocated bytes; measured free-space increase
+8,493,486,080 bytes. The existing six Simulators are all shut down; none was
+created, reset or deleted. Existing app data and other owners' devices remain
+protected. Public beta reviewer text is recorded separately from the immutable
+App source in `docs/public-beta/build289/REVIEW_NOTES.txt`.
