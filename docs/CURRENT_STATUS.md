@@ -3,9 +3,15 @@
 
 文档更新时间 / Document updated: 2026-10-23. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前实施批次为**连续语音、增强语音模型替换、个性化管理、更新管理及外部文件导入去向**。先集成代码，再统一验证和发布；当前改动尚未交付。[活动计划](FLOE_VOICE_CLOSURE_20261023.md)。此前阶段的完成记录继续保留。
+当前批次为 **1.7.49（290）后台位置短修复**。代码已合并 main；Swift 6 完整 App／测试目标编译、80 项定向测试与复用 iPad 模拟器的权限／设置检查已完成，设备归档及匹配符号已保存。当前正在分发，尚不能据此认定 290 已可安装。[本轮记录](FLOE_LOCATION_SHORTFIX_20261023.md)。
 
-The active batch covers continuous voice, the smaller enhanced speech pack, personalization retention, Settings updates and Notes/task/Canvas import destinations. Code integration precedes unified qualification and distribution; this batch is not delivered yet.
+The active location short fix is merged. Local qualification and exact-source archiving are complete; distribution is in progress. Build 290 availability is not yet asserted.
+
+## 1.7.48（289）内部与无签名已交付，公测待审 / Delivered; external review pending
+
+[289 完成记录](FLOE_VOICE_CLOSURE_20261023.md#build-289-completed-delivery)保留连续语音、小语音包、个性化、更新管理及外部导入的交付证据。内部 Floe QA 可安装，稳定无签名 Release 与 Feather 已回读；现有 publictest1 已送审一次，记录时为 `WAITING_FOR_BETA_REVIEW`，不代表外部已批准。原活动计划已经完成，不再列作未交付批次。
+
+Build 289 completed its internal and unsigned delivery. One publictest1 submission was independently verified waiting for review; see the linked completion record for qualification and cleanup boundaries.
 
 ## 1.7.47（288）内部可安装，无签名包与 Feather 已交付 / Internal and unsigned available
 
