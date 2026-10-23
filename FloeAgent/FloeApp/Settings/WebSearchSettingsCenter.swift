@@ -574,10 +574,15 @@ final class WebSearchSettingsCenter: ObservableObject {
         readyConfigurations()
     }
 
+    nonisolated static func toolIsAvailable(_ name: String) -> Bool {
+        toolIsAvailable(name, defaults: .standard,
+                        cloudData: { NSUbiquitousKeyValueStore.default.data(forKey: $0) })
+    }
+
     nonisolated static func toolIsAvailable(
         _ name: String,
-        defaults: UserDefaults = .standard,
-        cloudData: (String) -> Data? = { NSUbiquitousKeyValueStore.default.data(forKey: $0) }
+        defaults: UserDefaults,
+        cloudData: (String) -> Data?
     ) -> Bool {
         let ready = readyConfigurations(defaults: defaults, cloudData: cloudData)
         if name == WebSearchTool.name { return !ready.isEmpty }
