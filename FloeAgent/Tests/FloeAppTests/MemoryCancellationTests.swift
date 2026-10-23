@@ -56,16 +56,20 @@ struct MemoryCancellationTests {
         // A failed manual save shows a banner; an unrelated successful
         // background reload must not silently erase it.
         state.recordError(scope: .save)
-        #expect(!state.clearError(onSuccessFor: .load))
+        let loadClearedSaveError = state.clearError(onSuccessFor: .load)
+        #expect(!loadClearedSaveError)
         #expect(state.errorScope == .save)
         // A retry of the same operation succeeding clears its own error.
-        #expect(state.clearError(onSuccessFor: .save))
+        let saveClearedOwnError = state.clearError(onSuccessFor: .save)
+        #expect(saveClearedOwnError)
         #expect(state.errorScope == nil)
         // Load errors survive an unrelated successful write.
         state.recordError(scope: .load)
-        #expect(!state.clearError(onSuccessFor: .retention))
+        let retentionClearedLoadError = state.clearError(onSuccessFor: .retention)
+        #expect(!retentionClearedLoadError)
         #expect(state.errorScope == .load)
-        #expect(state.clearError(onSuccessFor: .load))
+        let loadClearedOwnError = state.clearError(onSuccessFor: .load)
+        #expect(loadClearedOwnError)
     }
 
     @Test("lifecycle failures surface as product copy, not debug text")
