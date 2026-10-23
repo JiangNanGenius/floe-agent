@@ -60,10 +60,31 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         scope.launch(Dispatchers.IO) { owner.requestStop() }
     }
 
+    /** Counters are the ORIGINAL restore pass's SUCCESSFUL reverse file
+     *  operations; planned or post-hoc actions are never counted here. */
+    internal data class FailedStartEvidence(val failureCode: String, val recovery: JsonObject)
+
     private inner class OwnedSession(val controlID: String, val nativeEpoch: Long, val runID: String, val toolCallID: String?) {
         lateinit var lease: ForegroundLease
         var client: RuntimeConnection? = null
         var workspaceGrant: CoreWorkspaceGrant? = null
+        /** The Core grant's session key captured at mint time (before finish
+         *  nulls the grant). ONE failed-start receipt handoff re-binds its
+         *  identity against this exact value; it is never re-derived from
+         *  the exception or any later object. */
+        @Volatile var grantSessionKey: String? = null
+        /** The kernel's own failed terminal for EXACTLY this control request,
+         *  captured BEFORE the throw (the first real failed terminal wins;
+         *  queued/running/unknown/completed states capture nothing). Held
+         *  ONLY until the original failed-start claim is completed after the
+         *  REAL drain/quiescence AND the original grant/CoreIO close inside
+         *  [finish]. A captured-but-unbound receipt is never published. */
+        @Volatile private var failedStartEvidence: FailedStartEvidence? = null
+        fun recordStartFailure(value: JSONObject) {
+            if (failedStartEvidence != null) return
+            failedStartEvidence = sanitizeFailedStartReceipt(value.toString(), controlID)
+        }
+        fun failedStartEvidenceOrNull(): FailedStartEvidence? = failedStartEvidence
         val connectionLock = Mutex()
         val settlementLock = Mutex()
         private var settledProof: String? = null
@@ -305,6 +326,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     epoch.get() == acceptedEpoch && work[owned.controlID] === owned && !owned.lease.isClosed
                 }, authority = CoreWorkspaceNativeAuthority()) ?: error("Owned workspace unavailable")
             owned.workspaceGrant = grant
+            // Failed-start receipt binding identity, captured at mint (the
+            // grant object itself is nulled by finish before the claim is
+            // completed; the key must survive that close ordering).
+            owned.grantSessionKey = grant.sessionKey
             check(grant.projectID == payload.getString("projectID"))
             RuntimeExecutionTrace.mark(Stage.PUMP_GRANT_READY)
             // A transport failure may follow accepted dispatch. Never replay it.
@@ -354,6 +379,11 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     if (owned.stop.get()) owned.requestStop()
                     if (owned.sessionID == null) {
                         val receipt = owned.exchange("request.status", JSONObject().put("requestID", owned.controlID))
+                        // The SAME control request's real failed terminal is
+                        // the only origin for the bounded evidence (a generic
+                        // quiescence, an unknown record or another request
+                        // never qualifies — see sanitizeFailedStartReceipt).
+                        owned.recordStartFailure(receipt)
                         val stage = when (receipt.optString("state")) {
                             "completed" -> Stage.PUMP_WATCH_COMPLETED
                             "failed" -> Stage.PUMP_WATCH_FAILED
@@ -372,7 +402,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                         if (page.getBoolean("leaseReleased")) {
                             owned.finish(terminalProof(page))
                             RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
-                            failedStartClaim?.let { complete(it, 1, JSONObject().put("code", "runtime_start_stopped")) }
+                            failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_stopped")) }
                             return@withContext
                         }
                     }
@@ -383,7 +413,7 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
                     if (!owned.exchange("status").getBoolean("active")) {
                         owned.finish(JSONObject().put("state", "quiescent"))
                         RuntimeExecutionTrace.mark(Stage.PUMP_FINISHED)
-                        failedStartClaim?.let { complete(it, 1, JSONObject().put("code", "runtime_start_interrupted")) }
+                        failedStartClaim?.let { complete(it, 1, failedStartProof(owned, "runtime_start_interrupted")) }
                         return@withContext
                     }
                 } catch (_: Exception) {
@@ -980,6 +1010,90 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         private fun JsonObject.longValue(key: String): Long? =
             (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.contentOrNull?.toLongOrNull()
 
+        // ---- G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1) ----
+        // The ORIGINAL import transaction's own journal-measured reverse
+        // restore (RuntimeWorkspaceSession's WorkspaceBridgeException.recovery)
+        // rides the kernel's failed terminal as `failureCode` + `recovery`.
+        // The pump captures it ONLY for the same control request's REAL
+        // failed state, re-binds it to the original grant session key, this
+        // run's exact UUID identity and the current native epoch at the
+        // actual claim completion — which happens only after the real
+        // drain/quiescence AND the grant/CoreIO close inside finish(). A
+        // foreign, unbound, stale, unknown-state or malformed object is
+        // dropped outright: absence stays absence, nothing is zeroed or
+        // fabricated, and every legacy failure keeps its old value bytes.
+
+        private val FAILED_START_TOKEN = Regex("^[!-~]{1,48}$")
+        private val FAILED_START_SESSION_KEY = Regex("^[0-9a-f]{32}$")
+        private val FAILED_START_RUN =
+            Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+        private val FAILED_START_CLOSED_FIELDS = setOf(
+            "record", "sessionKey", "runID", "trigger",
+            "restoredPriorChanges", "revertedNewEntries", "retainedFailures",
+        )
+        private const val FAILED_START_MAX_EVIDENCE_BYTES = 4_096
+
+        /** Strict closed-grammar capture of the kernel failed terminal for
+         *  exactly [controlID]. Returns null for ANY violation (wrong state,
+         *  foreign requestID, unbounded code, unknown/missing field names,
+         *  bad grammar, Bool/fraction/negative/overflow counters, oversized
+         *  envelope): the caller keeps the legacy settlement untouched. */
+        internal fun sanitizeFailedStartReceipt(receiptJson: String, controlID: String): FailedStartEvidence? {
+            val value = runCatching {
+                kotlinx.serialization.json.Json.parseToJsonElement(receiptJson) as? JsonObject
+            }.getOrNull() ?: return null
+            if (value.stringValue("state") != "failed") return null
+            if (value.stringValue("requestID") != controlID) return null
+            val failureCode = value.stringValue("failureCode")?.takeIf { FAILED_START_TOKEN.matches(it) } ?: return null
+            val recovery = value["recovery"] as? JsonObject ?: return null
+            if (recovery.keys.toSet() != FAILED_START_CLOSED_FIELDS) return null
+            if (recovery.stringValue("record") != "importRestore") return null
+            val sessionKey = recovery.stringValue("sessionKey")?.takeIf { FAILED_START_SESSION_KEY.matches(it) }
+                ?: return null
+            val runText = recovery.stringValue("runID")?.takeIf { FAILED_START_RUN.matches(it) } ?: return null
+            runCatching { UUID.fromString(runText) }.getOrNull() ?: return null
+            val trigger = recovery.stringValue("trigger")?.takeIf { FAILED_START_TOKEN.matches(it) } ?: return null
+            // Exact non-negative integers: strings and booleans are not
+            // numbers, fractional/truncated values are refused (never
+            // rounded), overflow beyond Long is refused.
+            fun counter(key: String): Long? {
+                val raw = recovery[key] as? JsonPrimitive ?: return null
+                if (raw.isString) return null
+                if (raw.contentOrNull?.toBooleanStrictOrNull() != null) return null
+                val parsed = raw.contentOrNull?.toLongOrNull() ?: return null
+                return parsed.takeIf { it >= 0 }
+            }
+            val restored = counter("restoredPriorChanges") ?: return null
+            val reverted = counter("revertedNewEntries") ?: return null
+            val retained = counter("retainedFailures") ?: return null
+            val clean = JsonObject(linkedMapOf<String, JsonElement>(
+                "record" to JsonPrimitive("importRestore"),
+                "sessionKey" to JsonPrimitive(sessionKey),
+                "runID" to JsonPrimitive(runText),
+                "trigger" to JsonPrimitive(trigger),
+                "restoredPriorChanges" to JsonPrimitive(restored),
+                "revertedNewEntries" to JsonPrimitive(reverted),
+                "retainedFailures" to JsonPrimitive(retained),
+            ))
+            return if (clean.toString().toByteArray(Charsets.UTF_8).size <= FAILED_START_MAX_EVIDENCE_BYTES)
+                FailedStartEvidence(failureCode, clean)
+            else null
+        }
+
+        /** Completion-time re-bind: the evidence belongs to THIS original
+         *  grant session, THIS run (exact canonical UUID identity, never a
+         *  case accident — Core echoes UPPER-case while the pump stores
+         *  Java-normalised lower-case), and the CURRENT native generation.
+         *  A stale epoch drops the addendum; the generic settlement code and
+         *  every ownership rule stay untouched either way. */
+        internal fun bindsFailedStartEvidence(evidence: FailedStartEvidence, grantSessionKey: String?,
+                                              runID: String, epochMatches: Boolean): Boolean {
+            if (!epochMatches || grantSessionKey == null) return false
+            if (evidence.recovery.stringValue("sessionKey") != grantSessionKey) return false
+            val echoed = evidence.recovery.stringValue("runID") ?: return false
+            return runCatching { UUID.fromString(echoed) == UUID.fromString(runID) }.getOrDefault(false)
+        }
+
         internal fun boundedCode(failure: Exception): String =
             failure.message?.takeIf { it.isNotEmpty() && it.length <= 32 &&
                 it.all { c -> c.code in 0x21..0x7e } } ?: "preflight_failed"
@@ -1022,6 +1136,22 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             else -> error("Invalid job ownership action")
         }
         return JSONObject().put("accepted", accepted).put("epoch", acceptedEpoch)
+    }
+
+    /** The status-1 failed-start settlement skeleton: the generic code stays
+     *  EXACTLY as before; only the kernel's own failed terminal for this
+     *  control request (captured BEFORE the throw) may add the original
+     *  `failureCode` + `recovery` evidence, and only after every binding
+     *  re-checks at completion time. Any absent/unbound/stale/malformed
+     *  evidence keeps the legacy value byte-identical — never fake zeros. */
+    private fun failedStartProof(owned: OwnedSession, genericCode: String): JSONObject {
+        val value = JSONObject().put("code", genericCode)
+        val evidence = owned.failedStartEvidenceOrNull() ?: return value
+        if (!bindsFailedStartEvidence(evidence, owned.grantSessionKey, owned.runID,
+                                      epoch.get() == owned.nativeEpoch)) return value
+        value.put("failureCode", evidence.failureCode)
+        value.put("recovery", JSONObject(evidence.recovery.toString()))
+        return value
     }
 
     private fun copyWorkspaceProof(target: JSONObject, proof: JSONObject) {
@@ -1076,7 +1206,14 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
     private suspend fun awaitReceipt(owned: OwnedSession, first: JSONObject, onWaiting: suspend () -> Unit = {}): JSONObject {
         when (first.optString("state")) {
             "completed" -> return first.getJSONObject("result")
-            "failed", "unknown" -> error("Runtime operation failed")
+            "failed", "unknown" -> {
+                // Capture BEFORE the throw (no-op unless the terminal is a
+                // REAL failed receipt bound to this exact control request),
+                // so the failed-start claim can later carry the original
+                // bounded evidence after the real drain and grant close.
+                owned.recordStartFailure(first)
+                error("Runtime operation failed")
+            }
             "queued", "running" -> Unit
             else -> return first // progress may contain a historical requestID
         }
@@ -1085,7 +1222,10 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             val value = owned.exchange("request.status", JSONObject().put("requestID", id))
             when (value.getString("state")) {
                 "completed" -> return value.getJSONObject("result")
-                "failed", "unknown" -> error("Runtime operation did not settle successfully")
+                "failed", "unknown" -> {
+                    owned.recordStartFailure(value)
+                    error("Runtime operation did not settle successfully")
+                }
             }
             onWaiting(); delay(100)
         }

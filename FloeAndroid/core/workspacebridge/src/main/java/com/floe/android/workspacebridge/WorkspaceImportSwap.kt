@@ -83,6 +83,8 @@ class WorkspaceImportSwap(
     private val journalFile: File,
     private val manifest: WorkspaceSyncManifest?,
     private val ops: WorkspaceSwapOps,
+    /** Observational finite phase only; never controls admission or cancellation. */
+    private val onFirstAppliedChange: () -> Unit = {},
 ) {
     data class SwapOutcome(
         val created: Int,
@@ -112,6 +114,7 @@ class WorkspaceImportSwap(
         var unchanged = 0
         val conflicts = mutableListOf<String>()
         val preservedFacts = mutableListOf<SwappedCopy>()
+        var changeObserved = false
         for ((index, entry) in ordered.withIndex()) {
             if (shouldCancel()) {
                 appendJournal(JSONObject().put("record", "cancel").put("i", index))
@@ -168,6 +171,12 @@ class WorkspaceImportSwap(
                             }
                         }
                     }
+            }
+            if (!changeObserved && created + replacedSynced + preservedUnsynced > 0) {
+                changeObserved = true
+                // Every counted change has already landed AND been journaled.
+                // Diagnostic failure cannot change the transaction or its restore.
+                runCatching { onFirstAppliedChange() }
             }
         }
         ops.fsyncDirectory(destination)

@@ -76,14 +76,16 @@ fun interface WorkspaceCancelSignal {
  *  `recovery` optionally carries the transaction's OWN measured terminal
  *  evidence (for example the reverse-restore counts of a cancelled import
  *  swap). It is produced ONLY by the original journal engine on the failing
- *  path and is bounded to relative identities and counters. HONESTY LIMIT
- *  (as of job-5b987a08b1df40b2): the CURRENT failure-result path surfaces
- *  only `operation_failed` for a failed start (RuntimeKernel's generic
- *  catch), so this payload is COMPONENT-LOCAL evidence plus a journal audit
- *  record — it is NOT yet a user-visible rollback proof. Making it visible
- *  requires exactly one bounded failed-receipt handoff (see this packet's
- *  PROPOSED-HANDOFF patch; Main owns that merge). Absent means unobserved;
- *  no consumer may fabricate it. */
+ *  path and is bounded to relative identities and counters. HANDOFF STATUS
+ *  (job-150dee8e1ed14ba1): the kernel failed terminal now carries this
+ *  object plus the original typed code additively, and the host pump
+ *  publishes it on the ORIGINAL failed-start claim ONLY after the real
+ *  drain/quiescence AND the original grant/CoreIO close, re-bound to the
+ *  exact grant session key, run UUID and current native epoch; anything
+ *  foreign/unbound/stale/malformed stays ABSENT (never zeroed) and every
+ *  legacy failure keeps its old generic settlement. The journal remains the
+ *  audit truth; calling it device-proven rollback requires Main's actual
+ *  supported mid-import cancel fixture on the installed build. */
 class WorkspaceBridgeException(
     val code: String,
     cause: Throwable? = null,

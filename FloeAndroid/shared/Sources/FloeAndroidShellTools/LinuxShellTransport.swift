@@ -490,6 +490,117 @@ public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
     }
 }
 
+/// The ORIGINAL import transaction's own journal-measured reverse-restore
+/// evidence, riding the failed-start claim's status-1 frame ADDITIVELY next
+/// to the unchanged settlement skeleton (G03-R3 failed-start receipt
+/// handoff, job-150dee8e1ed14ba1). The counters are the ACTUAL SUCCESSFUL
+/// reverse file operations the original swap engine performed when its
+/// import was interrupted — planned or post-hoc actions are never counted,
+/// nothing is fabricated, and a stale/duplicate object is refused by the
+/// engine-side binding before it ever reaches this frame.
+///
+/// Strict by design: `parse` returns nil for ANY violation (closed field
+/// names, exact nonnegative integers, 32-hex session key, canonical UUID
+/// echo, bounded printable trigger token, <=4096 UTF-8 bytes), and the
+/// caller then delivers the legacy `.remoteFailed(code:)` byte-identically.
+/// A malformed supplementary object can therefore NEVER poison the settled
+/// failure contract itself.
+public struct LinuxShellImportRestore: Sendable, Equatable {
+    /// The original bounded runtime failure token (e.g. the real cancel
+    /// code), NOT the generic settlement code.
+    public var failureCode: String
+    public var sessionKey: String
+    /// The exact run identity echo (canonical UUID text, case as emitted).
+    public var runID: String
+    /// The original typed swap-trigger token.
+    public var trigger: String
+    /// Prior destination entries whose bytes were genuinely renamed back by
+    /// the original restore pass (successful operations only).
+    public var restoredPriorChanges: Int
+    /// New entries the restore pass genuinely reverted.
+    public var revertedNewEntries: Int
+    /// Reverse operations that FAILED and stay retained in the preserve
+    /// journal for recovery/sweep — surfaced honestly, never hidden.
+    public var retainedFailures: Int
+
+    private static let tokenPattern = "^[!-~]{1,48}$"
+    private static let sessionKeyPattern = "^[0-9a-f]{32}$"
+    private static let runPattern =
+        "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+
+    /// Public for the same reason `LinuxShellPollReply`'s init is public:
+    /// test fakes of the typed transport seam construct typed values directly.
+    /// Production consumers receive instances ONLY through the strict `parse`
+    /// of a settled status-1 frame (there is no other construction path in
+    /// the shipped code).
+    public init(failureCode: String, sessionKey: String, runID: String, trigger: String,
+                restoredPriorChanges: Int, revertedNewEntries: Int, retainedFailures: Int) {
+        self.failureCode = failureCode
+        self.sessionKey = sessionKey
+        self.runID = runID
+        self.trigger = trigger
+        self.restoredPriorChanges = restoredPriorChanges
+        self.revertedNewEntries = revertedNewEntries
+        self.retainedFailures = retainedFailures
+    }
+
+    /// The CLOSED field-name set: anything extra or missing drops the whole
+    /// object (absence stays absence; partial evidence is never published).
+    private static let closedFieldNames: Set<String> = [
+        "record", "sessionKey", "runID", "trigger",
+        "restoredPriorChanges", "revertedNewEntries", "retainedFailures",
+    ]
+
+    /// Strict bounded parse of the OPTIONAL `failureCode` + `recovery` pair
+    /// from one settled status-1 frame. Returns nil when either part is
+    /// absent or violates the grammar — the legacy failure path is then
+    /// delivered byte-identically and nothing is zeroed or invented.
+    public static func parse(failureCode rawCode: Any?, recovery rawRecovery: Any?) -> LinuxShellImportRestore? {
+        guard let code = rawCode as? String,
+              code.range(of: tokenPattern, options: .regularExpression) != nil,
+              let object = rawRecovery as? [String: Any],
+              Set(object.keys) == closedFieldNames,
+              JSONSerialization.isValidJSONObject(object) else { return nil }
+        guard let encoded = try? JSONSerialization.data(withJSONObject: object),
+              encoded.count <= 4_096 else { return nil }
+        func exactCounter(_ key: String) -> Int? {
+            guard let number = object[key] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite else { return nil }
+            let integer = number.int64Value
+            guard integer >= 0,
+                  number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+            return Int(integer)
+        }
+        guard object["record"] as? String == "importRestore",
+              let sessionKey = object["sessionKey"] as? String,
+              sessionKey.range(of: sessionKeyPattern, options: .regularExpression) != nil,
+              sessionKey.count == 32,
+              let runText = object["runID"] as? String,
+              runText.range(of: runPattern, options: .regularExpression) != nil,
+              UUID(uuidString: runText) != nil,
+              let trigger = object["trigger"] as? String,
+              trigger.range(of: tokenPattern, options: .regularExpression) != nil,
+              let restored = exactCounter("restoredPriorChanges"),
+              let reverted = exactCounter("revertedNewEntries"),
+              let retained = exactCounter("retainedFailures") else { return nil }
+        return LinuxShellImportRestore(
+            failureCode: code, sessionKey: sessionKey, runID: runText, trigger: trigger,
+            restoredPriorChanges: restored, revertedNewEntries: reverted, retainedFailures: retained)
+    }
+
+    /// Bounded technical evidence for the EXPLICITLY-OPENED tool failure
+    /// detail (no host paths, no content; every field is grammar-bounded so
+    /// this block has a fixed small size and never truncates a value).
+    public var evidenceText: String {
+        "failed-start-recovery session=\(sessionKey) run=\(runID)\n"
+            + "import-restore code=\(failureCode) trigger=\(trigger)"
+            + " restoredPriorChanges=\(restoredPriorChanges)"
+            + " revertedNewEntries=\(revertedNewEntries)"
+            + " retainedFailures=\(retainedFailures)"
+    }
+}
+
 public struct LinuxShellPollReply: Sendable, Equatable {
     public var sessionID: String
     /// MERGED PTY output bytes for this cursor window (stdout and stderr
@@ -641,6 +752,16 @@ public enum LinuxShellTransportError: Error, Equatable, Sendable {
     /// (for example "operation_failed"); the engine never reflects command
     /// lines, paths or output into codes.
     case remoteFailed(code: String)
+    /// G03-R3 failed-start receipt handoff: the engine settled a FAILED
+    /// START with this generic code AND the ORIGINAL import transaction's
+    /// own journal-measured reverse-restore evidence re-bound by the trusted
+    /// host pump to the exact grant/session/run/epoch and delivered ONLY on
+    /// that same claim after the real drain/quiescence and grant close.
+    /// Absent or malformed evidence NEVER lands here — those failures stay
+    /// the unchanged `.remoteFailed(code:)` above (legacy byte-identical).
+    /// A DISTINCT case (not an extra associated value on `remoteFailed`) so
+    /// every existing single-binding pattern site keeps its exact meaning.
+    case remoteFailedWithRestore(code: String, restore: LinuxShellImportRestore)
     /// The reply frame could not be decoded: ownership reconciliation rules
     /// apply (the backend must not assume a stop or an exit).
     case replyMalformed

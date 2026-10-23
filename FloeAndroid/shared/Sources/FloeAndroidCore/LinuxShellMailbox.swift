@@ -38,7 +38,13 @@
 //   -> for slow controls (shell.start/input/resize) the host polls
 //      operation "request.status" until state completed (complete status=0
 //      with the result OBJECT) or failed (complete status=1 with
-//      {"code": bounded-code}); direct snapshots (shell.poll) and the urgent
+//      {"code": bounded-code}, plus — for the ORIGINAL failed-start claim
+//      only, after the real drain/quiescence and grant close — the optional
+//      additive {"failureCode": bounded-token, "recovery": {closed
+//      importRestore fields}} pair which this mailbox parses strictly and
+//      delivers as the typed `.remoteFailedWithRestore(code:restore:)` evidence case;
+//      anything malformed stays the legacy `.remoteFailed(code:)`); direct
+//      snapshots (shell.poll) and the urgent
 //      stop request (shell.cancel) complete directly from the immediate
 //      reply. Nothing is retried blindly: the kernel rejects duplicate
 //      request IDs by receipt identity.
@@ -453,7 +459,17 @@ public final class LinuxShellMailbox: @unchecked Sendable {
 
     /// Settle exactly one claimed ticket. status: 0 = completed (value is
     /// the engine result OBJECT JSON), 1 = failed (value is
-    /// {"code":"<bounded-code>"}). Re-validation: live claimed ticket of the
+    /// {"code":"<bounded-code>"}; since job-150dee8e1ed14ba1 the trusted
+    /// host may ALSO settle a failed START with the additive optional pair
+    /// "failureCode"+"recovery" carrying the ORIGINAL import transaction's
+    /// journal-measured reverse-restore evidence, already identity-bound by
+    /// the pump. That pair is parsed STRICTLY (see LinuxShellImportRestore):
+    /// a well-formed pair delivers the typed evidence alongside the SAME
+    /// code; a missing, foreign or malformed pair delivers the legacy
+    /// `.remoteFailed(code:)` byte-identically. Settlement itself never
+    /// fails because of the supplementary object — the legacy failed
+    /// terminal is never poisoned, and nothing is zeroed or invented.)
+    /// Re-validation: live claimed ticket of the
     /// CURRENT epoch, value within the frame bound and a JSON object.
     public func complete(claim: Int64, status: Int32, value: UnsafePointer<UInt8>?, valueLen: Int32) -> Int32 {
         condition.lock()
@@ -498,8 +514,23 @@ public final class LinuxShellMailbox: @unchecked Sendable {
         if status == 0 {
             continuation?.resume(returning: data)
         } else {
-            let code = ((object as? [String: Any])?["code"] as? String) ?? "operation_failed"
-            continuation?.resume(throwing: .remoteFailed(code: code))
+            let frame = object as? [String: Any]
+            let code = (frame?["code"] as? String) ?? "operation_failed"
+            // Typed failed-start handoff (job-150dee8e1ed14ba1): ONLY a
+            // strictly well-formed additive pair becomes the typed evidence
+            // case. Absent/foreign/malformed stays the legacy
+            // remoteFailed(code:) byte-identically — the settled failure
+            // terminal itself can never be poisoned or re-interpreted.
+            if ticket.operation == "shell.start",
+               let restore = LinuxShellImportRestore.parse(failureCode: frame?["failureCode"],
+                                                           recovery: frame?["recovery"]),
+               let payload = try? JSONSerialization.jsonObject(with: ticket.payload) as? [String: Any],
+               let runText = payload["runID"] as? String,
+               UUID(uuidString: runText) == UUID(uuidString: restore.runID) {
+                continuation?.resume(throwing: .remoteFailedWithRestore(code: code, restore: restore))
+            } else {
+                continuation?.resume(throwing: .remoteFailed(code: code))
+            }
         }
         return 0
     }

@@ -107,7 +107,8 @@ class WorkspaceImportSwapTest {
     private data class Fixture(val destination: File, val journal: File, val stage: File, val preserve: File,
                                val manifest: WorkspaceSyncManifest, val swap: WorkspaceImportSwap, val ops: JvmSwapOps)
 
-    private fun fixture(projectID: String = "A1B2C3D4-0000-4000-8000-000000000001"): Fixture {
+    private fun fixture(projectID: String = "A1B2C3D4-0000-4000-8000-000000000001",
+                        onFirstAppliedChange: () -> Unit = {}): Fixture {
         val parent = tempRoot()
         val destination = File(parent, "Workspaces/" + projectID.lowercase())
         assertTrue(destination.mkdirs())
@@ -118,7 +119,7 @@ class WorkspaceImportSwapTest {
         val preserve = File(journal, "preserve")
         assertTrue(stage.mkdirs() && preserve.mkdirs())
         val manifest = WorkspaceSyncManifest(destination.parentFile, projectID, ops)
-        val swap = WorkspaceImportSwap(destination, stage, preserve, File(journal, "swap.jsonl"), manifest, ops)
+        val swap = WorkspaceImportSwap(destination, stage, preserve, File(journal, "swap.jsonl"), manifest, ops, onFirstAppliedChange)
         return Fixture(destination, journal, stage, preserve, manifest, swap, ops)
     }
 
@@ -133,6 +134,29 @@ class WorkspaceImportSwapTest {
         target.write(content)
         val digest = fixture.ops.streamDigest(target)!!.first
         return StagedEntry(path, "file", mode, null, digest, content.toByteArray(Charsets.UTF_8).size.toLong())
+    }
+
+    @Test
+    fun progressAfterRealJournaledChangeIsFiniteAndCannotPoisonRestore() {
+        var events = 0
+        var journaled = false
+        var observedBytes: String? = null
+        lateinit var f: Fixture
+        f = fixture(onFirstAppliedChange = {
+            events += 1
+            journaled = File(f.journal, "swap.jsonl").readText().contains("created")
+            observedBytes = File(f.destination, "a.txt").text()
+            error("observational sink failed")
+        })
+        val outcome = f.swap.apply(listOf(stagedFile(f, "a.txt", "one"),
+                                          stagedFile(f, "b.txt", "two"))) { false }
+        assertEquals(2, outcome.created)
+        assertEquals(1, events)
+        assertTrue(journaled)
+        assertEquals("one", observedBytes)
+        assertEquals(2, f.swap.restoreDetailed().revertedNewEntries)
+        assertFalse(File(f.destination, "a.txt").exists())
+        assertFalse(File(f.destination, "b.txt").exists())
     }
 
     @Test
