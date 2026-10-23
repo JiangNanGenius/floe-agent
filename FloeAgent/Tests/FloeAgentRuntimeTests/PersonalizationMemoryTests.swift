@@ -129,7 +129,8 @@ struct PersonalizationMemoryTests {
         let third = try await documentStore.applyCurrent(kind: .soul, workspaceID: nil,
             content: "third", source: .oneClick, evidenceDigest: "",
             expectedRevision: nil, now: Date())
-        #expect([first.document.revision, second.document.revision, third.document.revision] == [1, 2, 3])
+        let revisions: [Int] = [first.document.revision, second.document.revision, third.document.revision]
+        #expect(revisions == [1, 2, 3])
 
         var retention = try await documentStore.retention(kind: .soul, workspaceID: nil)
         #expect(retention.current?.content == "third")
@@ -376,7 +377,7 @@ struct PersonalizationMemoryTests {
         let service = PersonalizationService(documents: documentStore, memories: memoryStore)
         _ = try await service.saveManual(kind: .userProfile, content: "keep me", expectedRevision: 0)
         try await service.recordActivity(completedRuns: 10)
-        let oversized = await service.generateIfDue(kind: .userProfile,
+        let oversized = try await service.generateIfDue(kind: .userProfile,
             generator: FixedGenerator(content: String(repeating: "x", count: 24_001)))
         #expect(oversized == nil)
         #expect(try await documentStore.activeDocument(kind: .userProfile, workspaceID: nil)?.content == "keep me")
