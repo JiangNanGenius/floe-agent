@@ -291,6 +291,9 @@ final class TTSSettingsService: ObservableObject {
             } else if status.record == nil {
                 localMigrationNote = nil
             }
+        case .complete:
+            pendingLocalMigration = false
+            localMigrationNote = nil
         }
         await refreshLocalSpeechState()
     }

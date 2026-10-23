@@ -1016,7 +1016,7 @@ final class ComposerDraftStore: ObservableObject {
         expectedRevision: Int?,
         handoff: ShortcutHandoffReceipt? = nil,
         landingProof: ImportedDraftProof? = nil,
-        onPlacement: (@MainActor @escaping (Int) -> Void)? = nil
+        onPlacement: (@MainActor (Int) -> Void)? = nil
     ) async -> Bool {
         let previous = bucket(for: conversationID)[conversationID]
         let previousReceipt = handoff.flatMap { handoffs[$0.entryID] }

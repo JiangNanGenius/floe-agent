@@ -47,7 +47,7 @@ enum SpeechVoiceNames {
     /// default voice is never shown as a hardcoded non-localized string.
     static func voice(_ voice: LocalSpeechModel.Voice) -> String {
         if voice.reference != nil, !voice.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return voice.name }
-        return voice(voice.id)
+        return Self.voice(voice.id)
     }
     static func current(_ s: TTSSettingsSnapshot) -> String {
         if s.voiceID.isEmpty { return s.provider.title }
