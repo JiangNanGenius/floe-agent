@@ -405,7 +405,24 @@ android {
     }
     buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    packaging { jniLibs { useLegacyPackaging = false } }
+    packaging {
+        jniLibs.useLegacyPackaging = false
+        // Product-packaging boundary for the Swift SDK runtime staging: the
+        // four test-only Swift runtime libraries are staged inside
+        // core/swiftbridge jniLibs for host qualification and are byte-pinned
+        // by the accepted Core12 native manifest, but no product library's
+        // DT_NEEDED closure references them (verified against the actual
+        // candidate ELF data) and the stage-release packager refuses any
+        // formal APK that ships them. Exclude them from the product APK only;
+        // the native producer, its staging script and its manifest binding
+        // stay byte-identical.
+        jniLibs.excludes += setOf(
+            "**/libTesting.so",
+            "**/libXCTest.so",
+            "**/lib_TestingInterop.so",
+            "**/lib_Testing_Foundation.so",
+        )
+    }
 }
 
 // GitHub has one public APK asset. The separate-UID execution component is

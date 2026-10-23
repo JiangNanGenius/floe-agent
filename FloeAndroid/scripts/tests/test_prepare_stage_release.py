@@ -30,6 +30,7 @@ import json
 import os
 import shutil
 import stat
+import struct
 import sys
 import tempfile
 import unittest
@@ -188,6 +189,125 @@ def valid_facts():
         "native": valid_native_facts(),
         "toolVersions": {"aapt2": "fake-aapt2", "apksigner": "fake-apksigner"},
     }
+
+
+RUNTIME_CHILD_PACKAGE = "com.floe.agent.runtime.full"
+GENERIC_NESTED_PROBLEM = {
+    "id": "zip.entry.nested-package",
+    "message": "APK contains a nested package artifact {!r}".format(
+        tool.RUNTIME_CHILD_ASSET
+    ),
+}
+
+
+def valid_child_zip_facts():
+    return {
+        "entryCount": 49,
+        "uncompressedBytes": 40_000_000,
+        "abis": [tool.ANDROID_ABI],
+        "nativeEntries": [
+            "lib/arm64-v8a/libFloeAndroidLinuxAuthority.so",
+            "lib/arm64-v8a/libfloe_linux_authority_jni.so",
+            "lib/arm64-v8a/libfloepty.so",
+            "lib/arm64-v8a/libproot.so",
+            "lib/arm64-v8a/libproot_loader.so",
+        ],
+        "nestedPackageEntries": [],
+        "dexEntries": ["classes.dex"],
+        "licenseEntries": [],
+        "hasManifest": True,
+        "problems": [],
+    }
+
+
+def valid_child_manifest_facts():
+    return {
+        "package": RUNTIME_CHILD_PACKAGE,
+        "versionCode": 8,
+        "versionName": VERSION,
+        "minSdk": 28,
+        "targetSdk": 37,
+        "debuggable": False,
+        "testOnly": False,
+        "split": None,
+        "extractNativeLibs": True,
+        "sharedUserId": None,
+        "hasInstrumentation": False,
+        "applicationLabel": "@0x7f090004",
+    }
+
+
+def valid_child_native_facts():
+    return {
+        "abi": tool.ANDROID_ABI,
+        "libraries": [
+            {
+                "name": "lib/arm64-v8a/lib" + name + ".so",
+                "bytes": 4096,
+                "sha256": "cc" * 32,
+                "compressionMethod": 8,
+                "minLoadAlignment": 16384,
+                "loadAlignments": [16384, 16384, 16384],
+                "needed": ["libc.so", "libm.so"],
+            }
+            for name in (
+                "FloeAndroidLinuxAuthority",
+                "floe_linux_authority_jni",
+                "floepty",
+                "proot",
+                "proot_loader",
+            )
+        ],
+        "problems": [],
+        "testOnlyLibraries": [],
+    }
+
+
+def valid_child_facts():
+    return {
+        "assetEntry": tool.RUNTIME_CHILD_ASSET,
+        "sidecarEntry": tool.RUNTIME_CHILD_SIDECAR,
+        "bytes": 34_000_000,
+        "computedSha256": "aa" * 32,
+        "sidecarSha256": "aa" * 32,
+        "sidecarMalformed": False,
+        "digestMatched": True,
+        "zip": valid_child_zip_facts(),
+        "manifest": valid_child_manifest_facts(),
+        "badging": {
+            "package": RUNTIME_CHILD_PACKAGE,
+            "versionCode": "8",
+            "versionName": VERSION,
+            "abis": [tool.ANDROID_ABI],
+        },
+        "signing": {
+            "verified": True,
+            "schemes": {"v1": False, "v2": True, "v3": True, "v3.1": False},
+            "modernScheme": True,
+            "signerCount": 1,
+            "certSha256": CERT,
+            "dn": "CN=Formal Floe, O=Floe",
+            "debugCertificate": False,
+            "problems": [],
+        },
+        "native": valid_child_native_facts(),
+    }
+
+
+def facts_with_runtime_child(child=None):
+    """Parent facts embedding the known asset plus deep child facts.
+
+    The generic zip refusal problem remains in the facts exactly as the
+    unmodified zip_structure_facts emits it; evaluation decides whether the
+    deeply verified child may stand in for that refusal.
+    """
+    facts = valid_facts()
+    facts["zip"]["nestedPackageEntries"] = [tool.RUNTIME_CHILD_ASSET]
+    facts["zip"]["problems"] = [dict(GENERIC_NESTED_PROBLEM)]
+    facts["runtimeChild"] = (
+        copy.deepcopy(valid_child_facts()) if child is None else child
+    )
+    return facts
 
 
 class FakeInspector:
@@ -1162,6 +1282,657 @@ class RealArtifactIntegrationTests(unittest.TestCase):
         self.assertEqual(facts["minLoadAlignment"], 16384)
         self.assertTrue(facts["buildId"])
         self.assertEqual(facts["debugSectionBytes"], 76)
+
+
+class RuntimeChildEvaluationTests(BaseTempTest):
+    """Fake-inspector matrix for the strict embedded-runtime qualification."""
+
+    def evaluate(self, facts):
+        return tool.evaluate(
+            self.policy(), facts, self.apk_sha, len(self.apk_bytes)
+        )
+
+    def assert_child_rejected(self, facts, identifier):
+        report = self.evaluate(facts)
+        self.assertFalse(report["ok"], report["failures"])
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertIn(identifier, ids, report["failures"])
+        self.assertIn(
+            "zip.entry.nested-package", ids, report["failures"]
+        )  # the ORIGINAL refusal is never suppressed for a bad child
+        nested = [
+            failure
+            for failure in report["failures"]
+            if failure["id"] == "zip.entry.nested-package"
+        ]
+        self.assertEqual(
+            nested[0]["message"], GENERIC_NESTED_PROBLEM["message"]
+        )
+        return report
+
+    def test_absent_child_keeps_previous_report_shape(self):
+        report = self.evaluate(valid_facts())
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertIsNone(report["embeddedRuntime"])
+        self.assertEqual(report["zip"]["nestedPackageEntries"], [])
+
+    def test_legitimate_child_is_allowed(self):
+        report = self.evaluate(facts_with_runtime_child())
+        self.assertTrue(report["ok"], report["failures"])
+        section = report["embeddedRuntime"]
+        self.assertTrue(section["validated"])
+        self.assertTrue(section["digestMatched"])
+        self.assertEqual(section["package"], RUNTIME_CHILD_PACKAGE)
+        self.assertEqual(section["expectedPackage"], RUNTIME_CHILD_PACKAGE)
+        self.assertEqual(section["bytes"], 34_000_000)
+        # The zip problem stays visible as packaging evidence:
+        self.assertEqual(report["zip"]["problems"], [GENERIC_NESTED_PROBLEM])
+
+    def test_missing_sidecar_match_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["digestMatched"] = False
+        facts["runtimeChild"]["sidecarSha256"] = "bb" * 32
+        self.assert_child_rejected(facts, "runtime.child.digest")
+
+    def test_malformed_sidecar_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["sidecarMalformed"] = True
+        facts["runtimeChild"]["sidecarSha256"] = None
+        facts["runtimeChild"]["digestMatched"] = False
+        self.assert_child_rejected(facts, "runtime.child.sidecar")
+
+    def test_child_signer_mismatch_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["signing"]["certSha256"] = "cd" * 32
+        self.assert_child_rejected(facts, "runtime.child.cert-mismatch")
+
+    def test_child_signing_problem_is_rejected(self):
+        facts = facts_with_runtime_child()
+        signing = facts["runtimeChild"]["signing"]
+        signing["verified"] = False
+        signing["problems"] = [
+            {
+                "id": "signing.not-verified",
+                "message": "apksigner did not verify the APK (unsigned, corrupt, "
+                "or unsupported signature)",
+            }
+        ]
+        self.assert_child_rejected(facts, "runtime.child.signing")
+
+    def test_child_debug_certificate_is_rejected(self):
+        facts = facts_with_runtime_child()
+        signing = facts["runtimeChild"]["signing"]
+        signing["certSha256"] = DEBUG_CERT
+        signing["debugCertificate"] = True
+        signing["verified"] = False
+        signing["problems"] = [
+            {
+                "id": "signing.debug-certificate",
+                "message": "APK is signed by the known developer debug "
+                "certificate; it cannot be a formal release",
+            }
+        ]
+        report = self.assert_child_rejected(facts, "runtime.child.signing")
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertIn("runtime.child.cert-mismatch", ids)
+
+    def test_child_package_impersonation_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["package"] = PACKAGE
+        facts["runtimeChild"]["badging"]["package"] = PACKAGE
+        self.assert_child_rejected(facts, "runtime.child.package")
+
+    def test_child_wrong_channel_package_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["package"] = "com.floe.agent.runtime.play"
+        facts["runtimeChild"]["badging"]["package"] = "com.floe.agent.runtime.play"
+        self.assert_child_rejected(facts, "runtime.child.package")
+
+    def test_child_version_identity_is_bound_to_policy(self):
+        for field, value, identifier in (
+            ("versionCode", 9, "runtime.child.version-code"),
+            ("versionName", "9.9.9", "runtime.child.version-name"),
+            ("minSdk", 29, "runtime.child.min-sdk"),
+            ("targetSdk", 36, "runtime.child.target-sdk"),
+        ):
+            with self.subTest(field=field):
+                facts = facts_with_runtime_child()
+                facts["runtimeChild"]["manifest"][field] = value
+                if field == "versionCode":
+                    facts["runtimeChild"]["badging"]["versionCode"] = "9"
+                self.assert_child_rejected(facts, identifier)
+
+    def test_child_debuggable_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["debuggable"] = True
+        self.assert_child_rejected(facts, "runtime.child.debuggable")
+
+    def test_child_shared_user_id_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["sharedUserId"] = "android.uid.system"
+        self.assert_child_rejected(facts, "runtime.child.shared-user-id")
+
+    def test_child_instrumentation_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["hasInstrumentation"] = True
+        self.assert_child_rejected(facts, "runtime.child.instrumentation")
+
+    def test_child_extraction_flag_is_enforced(self):
+        # The installer must keep package-manager extraction of its
+        # executables; the app-formal false requirement must not be
+        # blindly reused, and an absent flag must fail closed.
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["extractNativeLibs"] = False
+        self.assert_child_rejected(facts, "runtime.child.extract-native-libs")
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["manifest"]["extractNativeLibs"] = None
+        self.assert_child_rejected(facts, "runtime.child.extract-native-libs")
+
+    def test_child_cannot_nest_another_package(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["zip"]["nestedPackageEntries"] = [
+            "assets/linux-runtime/runtime.apk",
+            "assets/grandchild.apk",
+        ]
+        facts["runtimeChild"]["zip"]["problems"] = [
+            {
+                "id": "zip.entry.nested-package",
+                "message": "APK contains a nested package artifact "
+                "'assets/grandchild.apk'",
+            }
+        ]
+        self.assert_child_rejected(facts, "runtime.child.zip")
+
+    def test_child_test_only_library_is_rejected(self):
+        facts = facts_with_runtime_child()
+        native = facts["runtimeChild"]["native"]
+        native["testOnlyLibraries"] = ["libTesting.so"]
+        native["problems"] = [
+            {
+                "id": "runtime.child.native.test-only",
+                "message": "libTesting.so is a test-only native library and "
+                "must not ship inside the embedded runtime installer",
+            }
+        ]
+        report = self.assert_child_rejected(
+            facts, "runtime.child.native.test-only"
+        )
+        self.assertEqual(
+            report["embeddedRuntime"]["nativeTestOnlyLibraries"],
+            ["libTesting.so"],
+        )
+
+    def test_child_unresolved_needed_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["native"]["problems"] = [
+            {
+                "id": "runtime.child.native.needed",
+                "message": "embedded runtime lib/arm64-v8a/libswiftCore.so "
+                "depends on unresolved libTest.so",
+            }
+        ]
+        self.assert_child_rejected(facts, "runtime.child.native.needed")
+
+    def test_child_missing_authority_library_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["native"]["problems"] = [
+            {
+                "id": "runtime.child.native.required",
+                "message": "required embedded runtime library libproot.so is "
+                "missing",
+            }
+        ]
+        self.assert_child_rejected(facts, "runtime.child.native.required")
+
+    def test_child_elf_alignment_problem_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["native"]["problems"] = [
+            {
+                "id": "runtime.child.native.elf-alignment",
+                "message": "lib/arm64-v8a/libproot.so does not use 16 "
+                "KiB-multiple PT_LOAD alignment",
+            }
+        ]
+        self.assert_child_rejected(facts, "runtime.child.native.elf-alignment")
+
+    def test_child_without_manifest_or_dex_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["zip"]["hasManifest"] = False
+        facts["runtimeChild"]["zip"]["dexEntries"] = []
+        report = self.assert_child_rejected(facts, "runtime.child.manifest")
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertIn("runtime.child.dex", ids)
+
+    def test_unknown_nested_path_keeps_generic_refusal_only(self):
+        facts = valid_facts()
+        facts["zip"]["nestedPackageEntries"] = ["assets/evil/payload.apk"]
+        facts["zip"]["problems"] = [
+            {
+                "id": "zip.entry.nested-package",
+                "message": "APK contains a nested package artifact "
+                "'assets/evil/payload.apk'",
+            }
+        ]
+        facts["runtimeChild"] = None
+        report = self.evaluate(facts)
+        self.assertFalse(report["ok"])
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertEqual(ids, {"zip.entry.nested-package"})
+        self.assertFalse(report["embeddedRuntime"]["validated"])
+
+    def test_second_nested_entry_alongside_known_asset_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["zip"]["nestedPackageEntries"].append("assets/extra.apk")
+        facts["zip"]["problems"].append(
+            {
+                "id": "zip.entry.nested-package",
+                "message": "APK contains a nested package artifact "
+                "'assets/extra.apk'",
+            }
+        )
+        report = self.assert_child_rejected(facts, "zip.entry.nested-package")
+        ids = [f["id"] for f in report["failures"]]
+        self.assertEqual(ids.count("zip.entry.nested-package"), 2)
+
+    def test_known_asset_without_deep_child_fails_closed(self):
+        facts = facts_with_runtime_child(child=None)
+        facts["runtimeChild"] = None
+        report = self.assert_child_rejected(facts, "zip.entry.nested-package")
+        self.assertFalse(report["embeddedRuntime"]["validated"])
+        self.assertIn("not deeply extracted", report["embeddedRuntime"]["note"])
+
+    def test_child_extraction_error_is_reported(self):
+        facts = facts_with_runtime_child(
+            child={
+                "error": {
+                    "id": "runtime.child.asset-siblings",
+                    "message": (
+                        "assets/linux-runtime/ must contain exactly the "
+                        "runtime.apk asset and its digest sidecar; found "
+                        "['assets/linux-runtime/runtime.apk', "
+                        "'assets/linux-runtime/runtime.apk.sha256', "
+                        "'assets/linux-runtime/runtime.apk.extra']"
+                    ),
+                }
+            }
+        )
+        report = self.assert_child_rejected(facts, "runtime.child.asset-siblings")
+        self.assertFalse(report["embeddedRuntime"]["validated"])
+
+    def test_app_package_without_full_channel_tail_cannot_bind_child(self):
+        facts = facts_with_runtime_child()
+        policy = policy_for(
+            self.apk_path,
+            self.apk_sha,
+            package="com.floe.agent.app",
+            version_code=8,
+            version_name=VERSION,
+            tag=TAG,
+            cert_sha256=CERT,
+        )
+        report = tool.evaluate(policy, facts, self.apk_sha, len(self.apk_bytes))
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertIn("runtime.child.package-undeterminable", ids)
+        self.assertIn("zip.entry.nested-package", ids)
+
+    def test_parent_shared_user_id_is_reported_without_new_parent_failure(self):
+        facts = valid_facts()
+        facts["manifest"]["sharedUserId"] = "android.uid.shared"
+        report = self.evaluate(facts)
+        self.assertTrue(report["ok"], report["failures"])
+        self.assertEqual(
+            report["manifest"]["sharedUserId"], "android.uid.shared"
+        )
+
+    def test_badging_package_disagreement_is_rejected(self):
+        facts = facts_with_runtime_child()
+        facts["runtimeChild"]["badging"]["package"] = "com.other.runtime.full"
+        self.assert_child_rejected(facts, "runtime.child.badging.package")
+
+
+class RuntimeChildExtractionTests(BaseTempTest):
+    """Bounded stdlib extraction tests using real synthetic zip layouts."""
+
+    def write_parent(self, entries, path=None):
+        """entries: list of (name, bytes, zipfile compress type, flag_bits)."""
+        target = path or self.tmp / "parent-with-child.apk"
+        with zipfile.ZipFile(str(target), "w") as archive:
+            for name, payload, method, flags in entries:
+                info = zipfile.ZipInfo(name)
+                info.compress_type = method
+                info.external_attr = 0o600 << 16
+                archive.writestr(info, payload)
+                if flags:
+                    continue
+        return target
+
+    def child_payload(self, blob=b"SYNTHETIC-RUNTIME-APK-BYTES"):
+        return blob
+
+    def valid_entries(self):
+        child = self.child_payload()
+        sidecar = (hashlib.sha256(child).hexdigest() + "\n").encode("ascii")
+        return [
+            ("AndroidManifest.xml", b"MANIFEST", zipfile.ZIP_DEFLATED, 0),
+            (tool.RUNTIME_CHILD_SIDECAR, sidecar, zipfile.ZIP_STORED, 0),
+            (tool.RUNTIME_CHILD_ASSET, child, zipfile.ZIP_DEFLATED, 0),
+        ]
+
+    def test_absent_asset_returns_none(self):
+        parent = self.write_parent([("AndroidManifest.xml", b"MANIFEST", 0, 0)])
+        self.assertIsNone(tool.runtime_child_extraction(parent))
+
+    def test_valid_pair_extracts_with_digest_equality(self):
+        parent = self.write_parent(self.valid_entries())
+        facts = tool.runtime_child_extraction(parent)
+        self.assertEqual(facts["bytes"], len(self.child_payload()))
+        self.assertEqual(
+            facts["computedSha256"],
+            hashlib.sha256(self.child_payload()).hexdigest(),
+        )
+        self.assertTrue(facts["digestMatched"])
+        self.assertFalse(facts["sidecarMalformed"])
+        self.assertEqual(facts["childBytes"], self.child_payload())
+
+    def test_directory_marker_sibling_is_ignored(self):
+        entries = self.valid_entries() + [("assets/linux-runtime/", b"", 0, 0)]
+        parent = self.write_parent(entries)
+        facts = tool.runtime_child_extraction(parent)
+        self.assertTrue(facts["digestMatched"])
+
+    def test_orphan_sidecar_raises_asset_missing(self):
+        child = self.child_payload()
+        sidecar = (hashlib.sha256(child).hexdigest() + "\n").encode("ascii")
+        parent = self.write_parent([(tool.RUNTIME_CHILD_SIDECAR, sidecar, 0, 0)])
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(parent)
+        self.assertEqual(caught.exception.code, "runtime.child.asset-missing")
+
+    def test_asset_without_sidecar_raises_entries_error(self):
+        parent = self.write_parent(
+            [(tool.RUNTIME_CHILD_ASSET, self.child_payload(), 0, 0)]
+        )
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(parent)
+        self.assertEqual(caught.exception.code, "runtime.child.entries")
+
+    def test_unexpected_sibling_is_rejected(self):
+        entries = self.valid_entries() + [
+            ("assets/linux-runtime/runtime.apk.cert-sha256", b"ab" * 32 + b"\n", 0, 0)
+        ]
+        parent = self.write_parent(entries)
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(parent)
+        self.assertEqual(caught.exception.code, "runtime.child.asset-siblings")
+
+    def test_malformed_sidecar_is_reported_not_raised(self):
+        entries = self.valid_entries()
+        entries[1] = (tool.RUNTIME_CHILD_SIDECAR, b"not-a-hash\n", 0, 0)
+        parent = self.write_parent(entries)
+        facts = tool.runtime_child_extraction(parent)
+        self.assertTrue(facts["sidecarMalformed"])
+        self.assertIsNone(facts["sidecarSha256"])
+        self.assertFalse(facts["digestMatched"])
+
+    def test_tampered_child_digest_mismatch_is_reported(self):
+        entries = self.valid_entries()
+        entries[2] = (
+            tool.RUNTIME_CHILD_ASSET,
+            self.child_payload(b"TAMPERED-CHILD-BYTES"),
+            zipfile.ZIP_DEFLATED,
+            0,
+        )
+        parent = self.write_parent(entries)
+        facts = tool.runtime_child_extraction(parent)
+        self.assertFalse(facts["digestMatched"])
+        self.assertFalse(facts["sidecarMalformed"])
+
+    def test_oversized_child_is_rejected_before_full_read(self):
+        original = tool.MAX_RUNTIME_CHILD_BYTES
+        try:
+            tool.MAX_RUNTIME_CHILD_BYTES = 8
+            parent = self.write_parent(self.valid_entries())
+            with self.assertRaises(tool.StageReleaseError) as caught:
+                tool.runtime_child_extraction(parent)
+            self.assertEqual(caught.exception.code, "runtime.child.size")
+        finally:
+            tool.MAX_RUNTIME_CHILD_BYTES = original
+
+    def test_oversized_sidecar_is_rejected(self):
+        entries = self.valid_entries()
+        entries[1] = (tool.RUNTIME_CHILD_SIDECAR, b"ab" * 4096, 0, 0)
+        parent = self.write_parent(entries)
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(parent)
+        self.assertEqual(caught.exception.code, "runtime.child.size")
+
+    def patch_child_central(self, target, mutate):
+        with open(str(target), "rb") as handle:
+            data = bytearray(handle.read())
+        marker = tool.RUNTIME_CHILD_ASSET.encode("ascii")
+        name_offset = data.rfind(marker)
+        self.assertGreater(name_offset, 0)
+        header_start = name_offset - 46
+        self.assertEqual(bytes(data[header_start:header_start + 4]), b"PK\x01\x02")
+        mutate(data, header_start)
+        with open(str(target), "wb") as handle:
+            handle.write(bytes(data))
+
+    def test_overclaimed_child_size_is_rejected(self):
+        # A central directory that OVER-declares the child size must be
+        # caught by the bounded read's declared-versus-actual comparison.
+        child = self.child_payload(b"SHORTER-THAN-DECLARED-CHILD-BYTES")
+        sidecar = (hashlib.sha256(child).hexdigest() + "\n").encode("ascii")
+        target = self.tmp / "parent-overclaim.apk"
+        with zipfile.ZipFile(str(target), "w") as archive:
+            archive.writestr(tool.RUNTIME_CHILD_SIDECAR, sidecar)
+            archive.writestr(tool.RUNTIME_CHILD_ASSET, child)
+
+        def overclaim(data, header_start):
+            data[header_start + 24:header_start + 28] = struct.pack("<I", 99999999)
+
+        self.patch_child_central(target, overclaim)
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(target)
+        self.assertEqual(caught.exception.code, "runtime.child.size")
+
+    def test_underdeclared_child_size_fails_closed_at_the_read(self):
+        # An UNDER-declared size makes Python's zipfile itself reject the
+        # entry (Bad CRC-32) before the tool's own size counter is reached;
+        # the bounded reader maps that to the fail-closed
+        # runtime.child.read refusal. Assert the exact observed behaviour.
+        child = self.child_payload(b"LONGER-THAN-DECLARED-CHILD-BYTES")
+        sidecar = (hashlib.sha256(child).hexdigest() + "\n").encode("ascii")
+        target = self.tmp / "parent-underdeclare.apk"
+        with zipfile.ZipFile(str(target), "w") as archive:
+            archive.writestr(tool.RUNTIME_CHILD_SIDECAR, sidecar)
+            archive.writestr(tool.RUNTIME_CHILD_ASSET, child)
+
+        def underdeclare(data, header_start):
+            data[header_start + 24:header_start + 28] = struct.pack("<I", 10)
+
+        self.patch_child_central(target, underdeclare)
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(target)
+        self.assertEqual(caught.exception.code, "runtime.child.read")
+
+    def test_encrypted_child_asset_is_rejected(self):
+        # zipfile.writestr silently CLEARS a supplied encryption flag, so
+        # the only faithful crafted fixture patches GPBF bit0 into BOTH
+        # the central header (offset +8) and the corresponding local
+        # header (offset +6, located via the central relative offset at
+        # +42). The tool must refuse the child on this metadata before
+        # any decryption path, with both header magics verified.
+        child = self.child_payload()
+        sidecar = (hashlib.sha256(child).hexdigest() + "\n").encode("ascii")
+        target = self.tmp / "parent-encrypted.apk"
+        with zipfile.ZipFile(str(target), "w") as archive:
+            archive.writestr(tool.RUNTIME_CHILD_SIDECAR, sidecar)
+            archive.writestr(tool.RUNTIME_CHILD_ASSET, child)
+
+        def set_encrypted(data, header_start):
+            central_flags = struct.unpack_from("<H", data, header_start + 8)[0]
+            data[header_start + 8:header_start + 10] = struct.pack(
+                "<H", central_flags | 0x0001
+            )
+            local_offset = struct.unpack_from("<I", data, header_start + 42)[0]
+            self.assertEqual(bytes(data[local_offset:local_offset + 4]), b"PK\x03\x04")
+            local_flags = struct.unpack_from("<H", data, local_offset + 6)[0]
+            data[local_offset + 6:local_offset + 8] = struct.pack(
+                "<H", local_flags | 0x0001
+            )
+
+        self.patch_child_central(target, set_encrypted)
+        with self.assertRaises(tool.StageReleaseError) as caught:
+            tool.runtime_child_extraction(target)
+        self.assertEqual(caught.exception.code, "runtime.child.encrypted")
+
+    def test_end_to_end_fake_inspector_rejects_tampered_child(self):
+        child = self.child_payload(b"TAMPERED")
+        sidecar = (
+            hashlib.sha256(self.child_payload()).hexdigest() + "\n"
+        ).encode("ascii")
+        parent = self.write_parent(
+            [
+                ("AndroidManifest.xml", b"MANIFEST", 0, 0),
+                (tool.RUNTIME_CHILD_SIDECAR, sidecar, 0, 0),
+                (tool.RUNTIME_CHILD_ASSET, child, 0, 0),
+            ]
+        )
+        facts = valid_facts()
+        extraction = tool.runtime_child_extraction(parent)
+        facts["zip"]["nestedPackageEntries"] = [tool.RUNTIME_CHILD_ASSET]
+        facts["zip"]["problems"] = [dict(GENERIC_NESTED_PROBLEM)]
+        extraction.pop("childBytes")
+        extraction.update(
+            {
+                "zip": valid_child_zip_facts(),
+                "manifest": valid_child_manifest_facts(),
+                "badging": {
+                    "package": RUNTIME_CHILD_PACKAGE,
+                    "versionCode": "8",
+                    "versionName": VERSION,
+                    "abis": [tool.ANDROID_ABI],
+                },
+                "signing": valid_child_facts()["signing"],
+                "native": valid_child_native_facts(),
+            }
+        )
+        facts["runtimeChild"] = extraction
+        report = tool.evaluate(
+            self.policy(), facts, self.apk_sha, len(self.apk_bytes)
+        )
+        ids = {failure["id"] for failure in report["failures"]}
+        self.assertIn("runtime.child.digest", ids)
+        self.assertIn("zip.entry.nested-package", ids)
+
+
+def synthetic_aarch64_elf(load_alignment):
+    """Minimal AArch64 ELF64 with one PT_LOAD at the given p_align.
+
+    Only the fields the tool's elf_facts reads are populated, so this
+    exercises the real ELF parser and the real 16 KiB PT_LOAD gate rather
+    than a mocked fact dictionary.
+    """
+    header = bytearray(64)
+    header[0:4] = b"\x7fELF"
+    header[4] = 2  # ELFCLASS64
+    header[5] = 1  # little endian
+    header[6] = 1  # e_version
+    struct.pack_into("<H", header, 16, 3)  # e_type = ET_DYN
+    struct.pack_into("<H", header, 18, 183)  # e_machine = AArch64
+    struct.pack_into("<I", header, 20, 1)  # e_version
+    phoff = 64
+    total = 64 + 56
+    struct.pack_into("<Q", header, 32, phoff)
+    struct.pack_into("<Q", header, 40, 0)  # shoff = 0 (no section headers)
+    struct.pack_into("<H", header, 54, 56)  # phentsize
+    struct.pack_into("<H", header, 56, 1)  # phnum
+    struct.pack_into("<H", header, 58, 0)  # shentsize
+    struct.pack_into("<H", header, 60, 0)  # shnum
+    struct.pack_into("<H", header, 62, 0)  # shstrndx
+    program_header = struct.pack(
+        "<IIQQQQQQ",
+        1,  # p_type = PT_LOAD
+        5,  # p_flags = PF_R | PF_X
+        0,  # p_offset
+        0,  # p_vaddr
+        0,  # p_paddr
+        total,  # p_filesz
+        total,  # p_memsz
+        load_alignment,
+    )
+    return bytes(header) + program_header
+
+
+class RuntimeChildNativeFactsTests(BaseTempTest):
+    """Function-level gate tests over the real ELF parser."""
+
+    REQUIRED_NAMES = [
+        "libFloeAndroidLinuxAuthority.so",
+        "libfloe_linux_authority_jni.so",
+        "libfloepty.so",
+        "libproot.so",
+        "libproot_loader.so",
+    ]
+
+    def write_child_apk(self, alignment_by_name, extra=None):
+        target = self.tmp / "child-runtime.apk"
+        with zipfile.ZipFile(str(target), "w") as archive:
+            for name, alignment in alignment_by_name.items():
+                info = zipfile.ZipInfo("lib/arm64-v8a/" + name)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, synthetic_aarch64_elf(alignment))
+            for name, payload in (extra or {}).items():
+                archive.writestr("lib/arm64-v8a/" + name, payload)
+        return target
+
+    def test_sixteen_kib_child_passes_alignment(self):
+        child = self.write_child_apk({name: 16384 for name in self.REQUIRED_NAMES})
+        facts = tool.runtime_native_facts(child)
+        self.assertEqual(facts["problems"], [], facts["problems"])
+        self.assertEqual(facts["testOnlyLibraries"], [])
+        for library in facts["libraries"]:
+            self.assertEqual(library["minLoadAlignment"], 16384)
+            self.assertEqual(library["loadAlignments"], [16384])
+
+    def test_four_kib_load_alignment_is_rejected(self):
+        alignments = {name: 16384 for name in self.REQUIRED_NAMES}
+        alignments["libproot.so"] = 4096
+        child = self.write_child_apk(alignments)
+        facts = tool.runtime_native_facts(child)
+        ids = {problem["id"] for problem in facts["problems"]}
+        self.assertEqual(ids, {"runtime.child.native.elf-alignment"})
+        offending = [
+            problem
+            for problem in facts["problems"]
+            if problem["id"] == "runtime.child.native.elf-alignment"
+        ]
+        self.assertIn("libproot.so", offending[0]["message"])
+        by_name = {library["name"]: library for library in facts["libraries"]}
+        self.assertEqual(
+            by_name["lib/arm64-v8a/libproot.so"]["minLoadAlignment"], 4096
+        )
+        self.assertEqual(
+            by_name["lib/arm64-v8a/libproot.so"]["loadAlignments"], [4096]
+        )
+
+    def test_child_still_rejects_test_only_and_unresolved_needed(self):
+        alignments = {name: 16384 for name in self.REQUIRED_NAMES}
+        child = self.write_child_apk(
+            alignments,
+            extra={"libTesting.so": synthetic_aarch64_elf(16384)},
+        )
+        facts = tool.runtime_native_facts(child)
+        ids = {problem["id"] for problem in facts["problems"]}
+        self.assertIn("runtime.child.native.test-only", ids)
+        self.assertEqual(facts["testOnlyLibraries"], ["libTesting.so"])
+
+    def test_child_requires_the_runtime_authority_set(self):
+        child = self.write_child_apk({"libfloepty.so": 16384})
+        facts = tool.runtime_native_facts(child)
+        ids = {problem["id"] for problem in facts["problems"]}
+        self.assertIn("runtime.child.native.required", ids)
 
 
 if __name__ == "__main__":

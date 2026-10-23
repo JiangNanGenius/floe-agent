@@ -423,6 +423,19 @@ android {
         jniLibs.keepDebugSymbols += setOf("**/libproot.so", "**/libproot_loader.so")
         jniLibs.excludes += "**/libfloeprobe.so" // R1 qualification executable is test-only.
         jniLibs.excludes += "**/libfloe_qualification_jni.so"
+        // The Swift SDK runtime staging (byte-pinned native producer) keeps
+        // the full SDK library set for qualification hosts, but the four
+        // test-only Swift runtime libraries are referenced by no product or
+        // component library's DT_NEEDED closure (verified against the actual
+        // embedded-component ELF data) and the stage-release packager
+        // refuses them inside the embedded installer child as well. Product
+        // packaging only; staging and Core12 bindings stay byte-identical.
+        jniLibs.excludes += setOf(
+            "**/libTesting.so",
+            "**/libXCTest.so",
+            "**/lib_TestingInterop.so",
+            "**/lib_Testing_Foundation.so",
+        )
     }
 }
 

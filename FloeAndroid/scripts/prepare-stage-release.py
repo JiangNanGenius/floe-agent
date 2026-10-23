@@ -123,6 +123,35 @@ TEST_ONLY_NATIVE = {
 }
 REQUIRED_NATIVE = ("libFloeAndroidCore.so", "libfloe_jni.so")
 
+# The ONE exception to the generic nested-package refusal. The formal
+# full-channel app embeds exactly one independently signed Linux runtime
+# installer component (the G03 architecture): the digest sidecar pair
+# assets/linux-runtime/runtime.apk + runtime.apk.sha256. Only this exact
+# layout may pass, and only after strict deep verification of the child:
+# sidecar SHA-256 equality, a real apksigner verification whose signer
+# certificate equals the formal identity, the expected runtime package
+# (app package .full -> .runtime.full), versionCode/versionName/minSdk/
+# targetSdk equality with the parent policy, arm64-v8a only, non-
+# debuggable, non-test-only, no split, no instrumentation, no sharedUserId,
+# legacy package-manager extraction of its executables, and no nested
+# package or test-only native library inside the child, all with bounded
+# extraction and sizes. Every other nested .apk/.aab entry, every
+# unexpected asset sibling, every malformed or mismatched sidecar and every
+# failed child check keeps the ORIGINAL generic
+# ``zip.entry.nested-package`` refusal unchanged. There is no skip switch.
+RUNTIME_CHILD_ASSET = "assets/linux-runtime/runtime.apk"
+RUNTIME_CHILD_SIDECAR = "assets/linux-runtime/runtime.apk.sha256"
+RUNTIME_CHILD_ASSET_DIR = "assets/linux-runtime/"
+MAX_RUNTIME_CHILD_BYTES = 1024 * 1024 * 1024
+MAX_RUNTIME_CHILD_SIDECAR_BYTES = 128
+RUNTIME_REQUIRED_NATIVE = (
+    "libFloeAndroidLinuxAuthority.so",
+    "libfloe_linux_authority_jni.so",
+    "libfloepty.so",
+    "libproot.so",
+    "libproot_loader.so",
+)
+
 # The pinned checkout debug identity observed on the qualification APK. The
 # digest is public certificate metadata, not a secret. It is denied in
 # addition to the Android Debug DN so a debug-signed artifact cannot be
@@ -215,6 +244,13 @@ LIMITATIONS = [
     "this offline tool.",
     "No Android update feed or update.json is implemented or emitted; this "
     "stage asset set supports manual installation only.",
+    "The single embedded runtime installer asset is accepted only by deep "
+    "child verification: exact asset plus digest sidecar pair, bounded "
+    "extraction, real apksigner verification with signer-certificate "
+    "equality against the formal identity, and the expected component "
+    "package/version/SDK/ABI/UID/non-debuggable/extraction layout. There is "
+    "no generic nested-package acceptance and no skip switch; every other "
+    "nested artifact keeps the original refusal.",
 ]
 
 
@@ -781,6 +817,9 @@ def manifest_tree_facts(root: Dict[str, Any]) -> Dict[str, Any]:
         "testOnly": test_only is True,
         "split": attrs.get("split") or None,
         "extractNativeLibs": _bool_attr(app_attrs.get("extractNativeLibs")),
+        "sharedUserId": attrs.get("sharedUserId")
+        or app_attrs.get("sharedUserId")
+        or None,
         "hasInstrumentation": any(node["tag"] == "instrumentation" for node in nodes),
         "applicationLabel": app_attrs.get("label"),
     }
@@ -951,6 +990,9 @@ def zip_structure_facts(path: Path) -> Dict[str, Any]:
     native_entries = sorted(
         name for name in names if name.startswith("lib/") and name.endswith(".so")
     )
+    nested_package_entries = sorted(
+        name for name in names if name.lower().endswith((".apk", ".aab"))
+    )
     abis = set()
     for name in native_entries:
         parts = name.split("/")
@@ -971,6 +1013,7 @@ def zip_structure_facts(path: Path) -> Dict[str, Any]:
         "uncompressedBytes": total_uncompressed,
         "abis": sorted(abis),
         "nativeEntries": native_entries,
+        "nestedPackageEntries": nested_package_entries,
         "dexEntries": dex_entries,
         "licenseEntries": license_entries,
         "hasManifest": "AndroidManifest.xml" in names,
@@ -1713,6 +1756,286 @@ def native_facts(path: Path) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Embedded runtime installer component (the ONE nested-package exception)
+# ---------------------------------------------------------------------------
+
+
+def _read_zip_entry_bounded(
+    archive: zipfile.ZipFile, info: zipfile.ZipInfo, limit: int, label: str
+) -> bytes:
+    if info.file_size > limit:
+        raise StageReleaseError(
+            "runtime.child.size",
+            "{} claims {} bytes (limit {})".format(label, info.file_size, limit),
+        )
+    chunks = []
+    total = 0
+    try:
+        with archive.open(info, "r") as handle:
+            while True:
+                block = handle.read(COPY_CHUNK)
+                if not block:
+                    break
+                total += len(block)
+                if total > limit:
+                    raise StageReleaseError(
+                        "runtime.child.size",
+                        "{} decompressed beyond {} bytes while reading".format(
+                            label, limit
+                        ),
+                    )
+                chunks.append(block)
+    except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+        raise StageReleaseError(
+            "runtime.child.read",
+            "{} could not be read: {}".format(label, exc),
+        )
+    if total != info.file_size:
+        raise StageReleaseError(
+            "runtime.child.size",
+            "{} decompressed to {} bytes but the zip directory claims {}".format(
+                label, total, info.file_size
+            ),
+        )
+    return b"".join(chunks)
+
+
+def runtime_child_extraction(apk: Path) -> Optional[Dict[str, Any]]:
+    """Bounded extraction of the single legitimate embedded runtime installer.
+
+    Returns None only when the parent APK embeds neither the exact asset nor
+    its digest sidecar; the generic nested-package refusal then applies to
+    any other nested entry exactly as before. Layout problems raise with
+    ``runtime.child.*`` codes. A malformed or mismatched sidecar is reported
+    (not raised) so the evaluation records explicit digest evidence plus the
+    retained generic refusal.
+    """
+    with zipfile.ZipFile(str(apk), "r") as archive:
+        infos = archive.infolist()
+        assets = [i for i in infos if i.filename == RUNTIME_CHILD_ASSET]
+        sidecars = [i for i in infos if i.filename == RUNTIME_CHILD_SIDECAR]
+        if not assets and not sidecars:
+            return None
+        if not assets:
+            raise StageReleaseError(
+                "runtime.child.asset-missing",
+                "the embedded runtime digest sidecar exists without the "
+                "expected runtime.apk asset",
+            )
+        if len(assets) != 1 or len(sidecars) != 1:
+            raise StageReleaseError(
+                "runtime.child.entries",
+                "expected exactly one {} asset and one {} sidecar; got {} "
+                "and {}".format(
+                    RUNTIME_CHILD_ASSET, RUNTIME_CHILD_SIDECAR,
+                    len(assets), len(sidecars),
+                ),
+            )
+        siblings = sorted(
+            info.filename
+            for info in infos
+            if info.filename.startswith(RUNTIME_CHILD_ASSET_DIR)
+            and not (info.filename.endswith("/") and info.file_size == 0)
+        )
+        if siblings != sorted([RUNTIME_CHILD_ASSET, RUNTIME_CHILD_SIDECAR]):
+            raise StageReleaseError(
+                "runtime.child.asset-siblings",
+                "{} must contain exactly the runtime.apk asset and its "
+                "digest sidecar; found {}".format(
+                    RUNTIME_CHILD_ASSET_DIR, siblings
+                ),
+            )
+        asset = assets[0]
+        sidecar = sidecars[0]
+        if asset.flag_bits & 0x1:
+            raise StageReleaseError(
+                "runtime.child.encrypted", "the embedded runtime asset is encrypted"
+            )
+        if sidecar.flag_bits & 0x1:
+            raise StageReleaseError(
+                "runtime.child.encrypted",
+                "the embedded runtime digest sidecar is encrypted",
+            )
+        sidecar_raw = _read_zip_entry_bounded(
+            archive, sidecar, MAX_RUNTIME_CHILD_SIDECAR_BYTES,
+            "embedded runtime digest sidecar",
+        )
+        try:
+            sidecar_text = sidecar_raw.decode("ascii").strip()
+        except UnicodeDecodeError:
+            sidecar_text = ""
+        sidecar_valid = SHA256_RE.fullmatch(sidecar_text) is not None
+        child_bytes = _read_zip_entry_bounded(
+            archive, asset, MAX_RUNTIME_CHILD_BYTES, "embedded runtime APK"
+        )
+    computed = hashlib.sha256(child_bytes).hexdigest()
+    return {
+        "assetEntry": RUNTIME_CHILD_ASSET,
+        "sidecarEntry": RUNTIME_CHILD_SIDECAR,
+        "bytes": len(child_bytes),
+        "childBytes": child_bytes,
+        "computedSha256": computed,
+        "sidecarSha256": sidecar_text if sidecar_valid else None,
+        "sidecarMalformed": not sidecar_valid,
+        "digestMatched": bool(sidecar_valid and computed == sidecar_text),
+    }
+
+
+def runtime_native_facts(path: Path) -> Dict[str, Any]:
+    """Focused native evidence for the embedded runtime installer child.
+
+    The installer legitimately ships legacy package-manager-extracted
+    executables: its libraries may be deflate-compressed, carry no 16 KiB
+    ZIP data-offset alignment and the qualified proot payloads intentionally
+    retain debug symbols, so the formal app's ZIP-storage and stripping
+    gates are deliberately not reused. The gates that protect any embedded
+    product ARE enforced: one arm64-v8a ABI set, valid AArch64 ELF per
+    library, 16 KiB-multiple ELF PT_LOAD alignment (an extractNativeLibs
+    layout exemption never waives the API37 16 KiB page load requirement),
+    bounded sizes, resolvable DT_NEEDED (the dependency proof that removed
+    SDK test libraries were never required), no test-only native library
+    and the required runtime authority set.
+    """
+    problems = []
+    libraries = []
+    test_only_libraries = []
+    with zipfile.ZipFile(str(path), "r") as archive:
+        infos = [
+            info
+            for info in archive.infolist()
+            if info.filename.startswith("lib/") and info.filename.endswith(".so")
+        ]
+        infos.sort(key=lambda info: info.filename)
+        abis = sorted(
+            {
+                info.filename.split("/")[1]
+                for info in infos
+                if len(info.filename.split("/")) >= 3
+            }
+        )
+        if abis != [ANDROID_ABI]:
+            problems.append(
+                {
+                    "id": "runtime.child.native.abi",
+                    "message": "embedded runtime native ABI set must be exactly "
+                    "['{}']; got {}".format(ANDROID_ABI, abis),
+                }
+            )
+        packaged_names = {info.filename.rsplit("/", 1)[-1] for info in infos}
+        for info in infos:
+            name = info.filename
+            basename = name.rsplit("/", 1)[-1]
+            if info.file_size > MAX_NATIVE_LIB_BYTES:
+                problems.append(
+                    {
+                        "id": "runtime.child.native.size",
+                        "message": "{} exceeds the bounded native library "
+                        "size".format(name),
+                    }
+                )
+                continue
+            try:
+                data = archive.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                problems.append(
+                    {
+                        "id": "runtime.child.native.read",
+                        "message": "{} could not be read: {}".format(name, exc),
+                    }
+                )
+                continue
+            try:
+                elf = elf_facts(data)
+            except ElfError as exc:
+                problems.append(
+                    {
+                        "id": "runtime.child.native.elf",
+                        "message": "{} is not valid AArch64 ELF: {}".format(
+                            name, exc
+                        ),
+                    }
+                )
+                continue
+            if (
+                elf["minLoadAlignment"] < PAGE_16K
+                or any(align % PAGE_16K for align in elf["loadAlignments"])
+            ):
+                problems.append(
+                    {
+                        "id": "runtime.child.native.elf-alignment",
+                        "message": "{} does not use 16 KiB-multiple PT_LOAD "
+                        "alignment".format(name),
+                    }
+                )
+            for needed in elf["needed"]:
+                if (
+                    "/" in needed
+                    or (
+                        needed not in packaged_names
+                        and needed not in ANDROID_PUBLIC_LIBRARIES
+                    )
+                ):
+                    problems.append(
+                        {
+                            "id": "runtime.child.native.needed",
+                            "message": "embedded runtime {} depends on "
+                            "unresolved {}".format(name, needed),
+                        }
+                    )
+            if basename in TEST_ONLY_NATIVE:
+                test_only_libraries.append(basename)
+                problems.append(
+                    {
+                        "id": "runtime.child.native.test-only",
+                        "message": "{} is a test-only native library and must "
+                        "not ship inside the embedded runtime installer".format(
+                            basename
+                        ),
+                    }
+                )
+            libraries.append(
+                {
+                    "name": name,
+                    "bytes": len(data),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "compressionMethod": info.compress_type,
+                    "minLoadAlignment": elf["minLoadAlignment"],
+                    "loadAlignments": elf["loadAlignments"],
+                    "needed": elf["needed"],
+                }
+            )
+        for required in RUNTIME_REQUIRED_NATIVE:
+            if required not in packaged_names:
+                problems.append(
+                    {
+                        "id": "runtime.child.native.required",
+                        "message": "required embedded runtime library {} is "
+                        "missing".format(required),
+                    }
+                )
+    return {
+        "abi": ANDROID_ABI,
+        "libraries": libraries,
+        "problems": problems,
+        "testOnlyLibraries": sorted(set(test_only_libraries)),
+    }
+
+
+def expected_runtime_package(package: str) -> Optional[str]:
+    """Derive the embedded runtime installer package from the app package.
+
+    Mirrors the Gradle applicationId composition exactly: the full-channel
+    app is ``<prefix>.full`` and its component installer is
+    ``<prefix>.runtime.full``. Anything that cannot be derived fails closed,
+    because the embedded child can then not be bound to this policy.
+    """
+    prefix, _, channel = package.rpartition(".")
+    if not prefix or channel != FULL_DISTRIBUTION:
+        return None
+    return "{}.runtime.{}".format(prefix, channel)
+
+
+# ---------------------------------------------------------------------------
 # Inspection / policy evaluation
 # ---------------------------------------------------------------------------
 
@@ -1729,7 +2052,7 @@ class ApkInspector:
         }
 
     def inspect(self, apk: Path) -> Dict[str, Any]:
-        return {
+        facts = {
             "zip": zip_structure_facts(apk),
             "manifest": manifest_facts(self.aapt2, apk),
             "badging": badging_facts(self.aapt2, apk),
@@ -1738,6 +2061,61 @@ class ApkInspector:
             "native": native_facts(apk),
             "toolVersions": dict(self.versions),
         }
+        facts["runtimeChild"] = self._inspect_runtime_child(apk)
+        return facts
+
+    def _inspect_runtime_child(self, apk: Path) -> Optional[Dict[str, Any]]:
+        """Bounded extraction and real-tool verification of the embedded child.
+
+        Extraction or tooling failures are returned as an ``error`` record;
+        they never raise out of the inspector because the generic nested-
+        package refusal must still be reported by evaluation. The child is
+        verified exactly like an APK through the same read-only aapt2 and
+        apksigner helpers, in a private 0700 temporary directory that is
+        always removed.
+        """
+        try:
+            extraction = runtime_child_extraction(apk)
+        except StageReleaseError as exc:
+            return {"error": {"id": exc.code, "message": exc.message}}
+        if extraction is None:
+            return None
+        child_bytes = extraction.pop("childBytes")
+        temp_dir = tempfile.mkdtemp(prefix=".prepare-stage-release-child-")
+        try:
+            os.chmod(temp_dir, 0o700)
+            child_path = Path(temp_dir) / "runtime.apk"
+            descriptor = os.open(
+                str(child_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o600,
+            )
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(child_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+            child_facts = {
+                "zip": zip_structure_facts(child_path),
+                "manifest": manifest_facts(self.aapt2, child_path),
+                "badging": badging_facts(self.aapt2, child_path),
+                "signing": signing_facts(self.apksigner, child_path),
+                "native": runtime_native_facts(child_path),
+            }
+        except StageReleaseError as exc:
+            return {"error": {"id": exc.code, "message": exc.message}}
+        except (OSError, ValueError, zipfile.BadZipFile) as exc:
+            return {
+                "error": {
+                    "id": "runtime.child.inspect",
+                    "message": "embedded runtime child could not be verified: "
+                    "{}: {}".format(type(exc).__name__, exc),
+                }
+            }
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        facts = dict(extraction)
+        facts.update(child_facts)
+        return facts
 
 
 def _failure(failures: List[Dict[str, str]], identifier: str, message: str) -> None:
@@ -1797,6 +2175,273 @@ def _compare_native_manifest(
     }
 
 
+def _evaluate_runtime_child(
+    policy: ReleasePolicy,
+    facts: Dict[str, Any],
+    failures: List[Dict[str, str]],
+) -> Optional[Dict[str, Any]]:
+    """Strictly qualify the one legitimate embedded runtime installer.
+
+    Returns None when the APK contains no nested package and no embedded
+    runtime asset. A nested entry that is not exactly the known asset, or a
+    known asset whose deep child facts are absent, keeps the original
+    generic ``zip.entry.nested-package`` refusal. Child problems are added
+    as ``runtime.child.*`` failures and never suppress that refusal; only a
+    fully validated child does.
+    """
+    zip_facts = facts.get("zip", {})
+    child = facts.get("runtimeChild")
+    nested_entries = list(zip_facts.get("nestedPackageEntries", []))
+    known_asset_only = nested_entries == [RUNTIME_CHILD_ASSET]
+
+    if isinstance(child, dict) and child.get("error"):
+        _failure(
+            failures,
+            child["error"].get("id", "runtime.child.inspect"),
+            child["error"].get("message", "embedded runtime child could not be verified"),
+        )
+        return {
+            "assetEntry": RUNTIME_CHILD_ASSET,
+            "nestedPackageEntries": nested_entries,
+            "extractionError": child["error"],
+            "validated": False,
+        }
+    if not nested_entries and child is None:
+        return None
+    if not known_asset_only:
+        return {
+            "nestedPackageEntries": nested_entries,
+            "assetEntry": (
+                RUNTIME_CHILD_ASSET
+                if isinstance(child, dict)
+                else None
+            ),
+            "validated": False,
+            "note": (
+                "nested package entries are not exactly the one legitimate "
+                "embedded runtime asset; the generic nested-package refusal "
+                "applies unchanged"
+            ),
+        }
+    if not isinstance(child, dict):
+        return {
+            "assetEntry": RUNTIME_CHILD_ASSET,
+            "nestedPackageEntries": nested_entries,
+            "validated": False,
+            "note": (
+                "the embedded runtime asset was not deeply extracted and "
+                "verified; failing closed with the generic nested-package "
+                "refusal"
+            ),
+        }
+
+    problems: List[Dict[str, str]] = []
+
+    def fail(identifier: str, message: str) -> None:
+        problems.append({"id": identifier, "message": message})
+
+    expected_package = expected_runtime_package(policy.package)
+    if expected_package is None:
+        fail(
+            "runtime.child.package-undeterminable",
+            "the embedded runtime package cannot be derived from the app "
+            "package {!r}; expected the <prefix>.full full-channel "
+            "layout".format(policy.package),
+        )
+    if child.get("sidecarMalformed"):
+        fail(
+            "runtime.child.sidecar",
+            "the embedded runtime digest sidecar is not exactly one "
+            "lowercase SHA-256 hex string",
+        )
+    elif not child.get("digestMatched"):
+        fail(
+            "runtime.child.digest",
+            "embedded runtime SHA-256 {} does not match its digest sidecar "
+            "{!r}".format(child.get("computedSha256"), child.get("sidecarSha256")),
+        )
+
+    child_manifest = child.get("manifest") or {}
+    child_zip = child.get("zip") or {}
+    child_badging = child.get("badging") or {}
+    child_signing = child.get("signing") or {}
+    child_native = child.get("native") or {}
+
+    if expected_package is not None and child_manifest.get("package") != expected_package:
+        fail(
+            "runtime.child.package",
+            "embedded runtime manifest package {!r} does not match the "
+            "expected component package {!r}".format(
+                child_manifest.get("package"), expected_package
+            ),
+        )
+    if child_manifest.get("versionCode") != policy.version_code:
+        fail(
+            "runtime.child.version-code",
+            "embedded runtime versionCode {!r} does not match the release "
+            "versionCode {!r}".format(
+                child_manifest.get("versionCode"), policy.version_code
+            ),
+        )
+    if child_manifest.get("versionName") != policy.version_name:
+        fail(
+            "runtime.child.version-name",
+            "embedded runtime versionName {!r} does not match the release "
+            "versionName {!r}".format(
+                child_manifest.get("versionName"), policy.version_name
+            ),
+        )
+    if child_manifest.get("minSdk") != policy.min_sdk:
+        fail(
+            "runtime.child.min-sdk",
+            "embedded runtime minSdk {!r} does not match the release minSdk "
+            "{!r}".format(child_manifest.get("minSdk"), policy.min_sdk),
+        )
+    if child_manifest.get("targetSdk") != policy.target_sdk:
+        fail(
+            "runtime.child.target-sdk",
+            "embedded runtime targetSdk {!r} does not match the release "
+            "targetSdk {!r}".format(child_manifest.get("targetSdk"), policy.target_sdk),
+        )
+    if child_manifest.get("debuggable"):
+        fail("runtime.child.debuggable", "embedded runtime manifest is debuggable")
+    if child_manifest.get("testOnly"):
+        fail("runtime.child.test-only", "embedded runtime manifest is test-only")
+    if child_manifest.get("split"):
+        fail(
+            "runtime.child.split",
+            "embedded runtime APK is a split APK (split={!r})".format(
+                child_manifest.get("split")
+            ),
+        )
+    if child_manifest.get("hasInstrumentation"):
+        fail(
+            "runtime.child.instrumentation",
+            "embedded runtime APK declares instrumentation (test APK)",
+        )
+    if child_manifest.get("sharedUserId"):
+        fail(
+            "runtime.child.shared-user-id",
+            "embedded runtime declares android:sharedUserId {!r}; the "
+            "component installer must run under its own UID".format(
+                child_manifest.get("sharedUserId")
+            ),
+        )
+    if child_manifest.get("extractNativeLibs") is not True:
+        fail(
+            "runtime.child.extract-native-libs",
+            "embedded runtime installer must keep package-manager "
+            "extraction of its executables "
+            "(android:extractNativeLibs=true); got {!r}".format(
+                child_manifest.get("extractNativeLibs")
+            ),
+        )
+    if not child_zip.get("hasManifest"):
+        fail("runtime.child.manifest", "embedded runtime APK has no AndroidManifest.xml")
+    if not child_zip.get("dexEntries"):
+        fail("runtime.child.dex", "embedded runtime APK has no classes*.dex")
+    if sorted(child_zip.get("abis", [])) != [ANDROID_ABI]:
+        fail(
+            "runtime.child.abi",
+            "embedded runtime ABI set is {}; exactly one {} artifact is "
+            "required".format(child_zip.get("abis"), ANDROID_ABI),
+        )
+    for problem in child_zip.get("problems", []):
+        fail(
+            "runtime.child.zip",
+            "embedded runtime zip problem: {}".format(
+                problem.get("message", "zip problem")
+            ),
+        )
+    if child_badging:
+        badging_package = child_badging.get("package")
+        if badging_package is not None and badging_package != child_manifest.get("package"):
+            fail(
+                "runtime.child.badging.package",
+                "embedded runtime badging package {!r} does not match the "
+                "binary manifest {!r}".format(
+                    badging_package, child_manifest.get("package")
+                ),
+            )
+        try:
+            badging_version_code = int(child_badging.get("versionCode"))
+        except (TypeError, ValueError):
+            badging_version_code = None
+        if (
+            badging_version_code is not None
+            and badging_version_code != child_manifest.get("versionCode")
+        ):
+            fail(
+                "runtime.child.badging.version-code",
+                "embedded runtime badging versionCode {!r} does not match "
+                "the binary manifest {!r}".format(
+                    badging_version_code, child_manifest.get("versionCode")
+                ),
+            )
+    for problem in child_signing.get("problems", []):
+        fail(
+            "runtime.child.signing",
+            "embedded runtime signing problem: {}".format(
+                problem.get("message", "signing problem")
+            ),
+        )
+    if child_signing.get("certSha256") != policy.cert_sha256:
+        fail(
+            "runtime.child.cert-mismatch",
+            "embedded runtime signer certificate {!r} does not equal the "
+            "formal signer certificate {!r}".format(
+                child_signing.get("certSha256"), policy.cert_sha256
+            ),
+        )
+    for problem in child_native.get("problems", []):
+        fail(
+            problem.get("id", "runtime.child.native"),
+            problem.get("message", "embedded runtime native problem"),
+        )
+
+    for problem in problems:
+        _failure(failures, problem["id"], problem["message"])
+    return {
+        "assetEntry": RUNTIME_CHILD_ASSET,
+        "sidecarEntry": RUNTIME_CHILD_SIDECAR,
+        "bytes": child.get("bytes"),
+        "computedSha256": child.get("computedSha256"),
+        "sidecarSha256": child.get("sidecarSha256"),
+        "digestMatched": bool(child.get("digestMatched")),
+        "expectedPackage": expected_package,
+        "package": child_manifest.get("package"),
+        "versionCode": child_manifest.get("versionCode"),
+        "versionName": child_manifest.get("versionName"),
+        "minSdk": child_manifest.get("minSdk"),
+        "targetSdk": child_manifest.get("targetSdk"),
+        "debuggable": child_manifest.get("debuggable"),
+        "testOnly": child_manifest.get("testOnly"),
+        "sharedUserId": child_manifest.get("sharedUserId"),
+        "split": child_manifest.get("split"),
+        "extractNativeLibs": child_manifest.get("extractNativeLibs"),
+        "hasInstrumentation": child_manifest.get("hasInstrumentation"),
+        "abis": child_zip.get("abis"),
+        "entryCount": child_zip.get("entryCount"),
+        "nativeLibraryCount": len(child_native.get("libraries", [])),
+        "nativeTestOnlyLibraries": child_native.get("testOnlyLibraries", []),
+        "signing": {
+            "verified": child_signing.get("verified"),
+            "modernScheme": child_signing.get("modernScheme"),
+            "signerCount": child_signing.get("signerCount"),
+            "certSha256": child_signing.get("certSha256"),
+            "dn": child_signing.get("dn"),
+            "debugCertificate": child_signing.get("debugCertificate"),
+        },
+        "validationFailures": problems,
+        "validated": not problems,
+        "note": (
+            "strict single-component verification with bounded extraction; "
+            "the generic nested-package refusal remains in effect for every "
+            "other nested artifact"
+        ),
+    }
+
+
 def evaluate(
     policy: ReleasePolicy,
     facts: Dict[str, Any],
@@ -1812,7 +2457,14 @@ def evaluate(
     dex = facts.get("dex", {})
     native = facts.get("native", {})
 
+    runtime_section = _evaluate_runtime_child(policy, facts, failures)
     for problem in zip_facts.get("problems", []):
+        if (
+            runtime_section is not None
+            and runtime_section.get("validated")
+            and problem.get("id") == "zip.entry.nested-package"
+        ):
+            continue
         _failure(failures, problem.get("id", "zip.problem"), problem.get("message", "zip problem"))
     if not zip_facts.get("hasManifest"):
         _failure(failures, "zip.manifest", "APK has no AndroidManifest.xml")
@@ -2036,6 +2688,7 @@ def evaluate(
             "uncompressedBytes": zip_facts.get("uncompressedBytes"),
             "nativeLibraryCount": len(zip_facts.get("nativeEntries", [])),
             "nativeEntries": zip_facts.get("nativeEntries", []),
+            "nestedPackageEntries": zip_facts.get("nestedPackageEntries", []),
             "dexFiles": zip_facts.get("dexEntries", []),
             "licenseEntries": zip_facts.get("licenseEntries", []),
             "problems": zip_facts.get("problems", []),
@@ -2050,6 +2703,7 @@ def evaluate(
             "debuggable": manifest.get("debuggable"),
             "testOnly": manifest.get("testOnly"),
             "split": manifest.get("split"),
+            "sharedUserId": manifest.get("sharedUserId"),
             "extractNativeLibs": manifest.get("extractNativeLibs"),
             "hasInstrumentation": manifest.get("hasInstrumentation"),
         },
@@ -2083,6 +2737,7 @@ def evaluate(
             "redistribution obligations remains Main's review.",
         },
         "native": native_report,
+        "embeddedRuntime": runtime_section,
         "upgrade": {
             "previousVersionCode": policy.previous_version_code,
             "previousCertSha256": policy.previous_cert_sha256,
