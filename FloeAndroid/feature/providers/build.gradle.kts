@@ -65,3 +65,14 @@ dependencies {
     androidTestImplementation(libs.androidx.test.espresso.core)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
 }
+
+// Provider editor ABI changes exposed incomplete Release package-part metadata
+// in incremental/cache outputs. Recompile this small module only when dirty;
+// other modules and unchanged-task outputs retain their normal warm caches.
+gradle.projectsEvaluated {
+    // AGP finalizes this task after ordinary configureEach actions.
+    tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileReleaseKotlin").configure {
+        incremental = false
+        outputs.cacheIf("Provider Release requires complete package-part metadata") { false }
+    }
+}

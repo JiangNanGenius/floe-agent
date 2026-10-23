@@ -40,7 +40,7 @@ Public tag/source, certificate, APK download hash and the two release assets wer
 
 G02 code and representative integration are closed, with every canonical operation
 accounted for in [the exit ledger](planning/G02_EXIT_LEDGER.json). This is not a claim
-that all 41 operations passed individual App acceptance. Samsung remains on Alpha4;
+that all 41 operations passed individual App acceptance. Samsung was on Alpha4 at that handoff;
 full device, visual and input qualification stays with G12/G13/G14. Reusable task,
 project and host approval scopes need the native authority contract before being exposed.
 Linux, IDE, Office, system control and automatic updates remain later targets.
@@ -61,6 +61,25 @@ the runtime authority excludes the full Core backend. Actual App qualification
 is pending; these checks built no new
 product APK and made no paid App-provider calls. G03-R3 consumes the frozen batch
 for product integration and the next Android Alpha.
+
+G03-R3 now has locally signed ordinary Full candidates with the embedded, separately
+signed runtime. On the API37 / 16 KiB tablet emulator, actual App flows passed local
+commands, stdin EOF, persistent jobs and cancellation, notification Stop with real
+process/service/wake-lock release, system DNS, offline local execution, file-conflict
+preservation and an observed reverse rollback after import had changed files.
+Python 3.11.2, Node 18.20.4, npm 9.2.0 and offline package imports passed in their
+selected environment; this does not install them into every conversation snapshot.
+Samsung API33 retained its original data during upgrade and installed the bundled
+runtime through the App and Android confirmation. Its local command acceptance is
+pending a provider-edit repair. Task deletion now completes, but runtime workspace
+cleanup still retains the target because ownership is unproven. That boundary and
+provider credential preservation remain open; Alpha8 has not been published.
+These App checks use a deterministic local provider and make no paid model calls.
+The provider credential/first-seed revision fixes and runtime ownership fix have
+now passed 65 focused JVM cases and all four Full/Play production Kotlin consumers.
+The original failures are retained; the updated APK still needs target-specific
+cleanup and Samsung command acceptance. The final Alpha8 candidate uses internal
+versionCode 9 so the bundled component follows the real upgrade path.
 
 ## Layout and ownership
 

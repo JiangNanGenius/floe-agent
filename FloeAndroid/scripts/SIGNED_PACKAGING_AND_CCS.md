@@ -52,7 +52,7 @@ Rules (all fail-closed):
 read (with `-P` override for one invocation):
 
 ```properties
-floe.version.code=8
+floe.version.code=9
 floe.version.name=0.1.0-alpha.8
 ```
 

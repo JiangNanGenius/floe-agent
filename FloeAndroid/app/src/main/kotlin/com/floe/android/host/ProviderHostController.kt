@@ -117,6 +117,13 @@ class ProviderHostController internal constructor(
     /** New-provider editor → the ONE provider UUID minted for its save. */
     private val newProviderIDs = ConcurrentHashMap<String, String>()
 
+    /** editorId → the provider CAS revision OBSERVED when this editor was
+     * seeded. A frozen draft must present the token it actually saw, never
+     * a later live-cache value: concurrent editors/list refreshes still
+     * refuse with the original staleRevision CAS. Bound in [editorOpened]
+     * from the seed's own row, released in [editorClosed]/[stop]. */
+    private val editorBaselines = ConcurrentHashMap<String, HostRevision>()
+
     /** providerID|draftModelId → the stable ModelProfile UUID used on save. */
     private val modelProfileIDs = ConcurrentHashMap<String, String>()
 
@@ -165,9 +172,11 @@ class ProviderHostController internal constructor(
         permissionActions.clear()
         draftProbeHandles.clear()
         draftProbeIDs.clear()
+        editorBaselines.clear()
         // Un-consumed model-set stages are App-side records only; the
         // native epoch/route fences retire the real slots.
         modelSets.discardAll()
+        listActionFailure = null
         countObservation?.cancel()
         countObservation = null
     }
@@ -176,6 +185,8 @@ class ProviderHostController internal constructor(
     private var lastProviderPageValue: JsonElement? = null
     private var lastModelCounts: Map<String, Int> = emptyMap()
     private var countObservation: kotlinx.coroutines.Job? = null
+    /** Last failed list action; read/count reconciliation must not erase it. */
+    @Volatile private var listActionFailure: String? = null
     /** Fences provider/catalog page continuation chains (latest wins). */
     private val providerPageGeneration = java.util.concurrent.atomic.AtomicLong(0)
     private val catalogPageGeneration = java.util.concurrent.atomic.AtomicLong(0)
@@ -193,6 +204,7 @@ class ProviderHostController internal constructor(
                     conversationProviders = rows.conversationProviders,
                     imageProviders = rows.imageProviders,
                     videoProviders = rows.videoProviders,
+                    errorMessage = listActionFailure,
                 ),
             )
         }
@@ -217,8 +229,9 @@ class ProviderHostController internal constructor(
      * stays and an honest load failure is shown; malformed/foreign
      * continuations refuse rather than coerce to page 1).
      */
-    internal fun refreshProviders() {
+    internal fun refreshProviders(retainActionFailure: Boolean = false) {
         if (!admitted()) return
+        if (!retainActionFailure) listActionFailure = null
         fetchProviderPage(providerPageGeneration.incrementAndGet(),
                           cursor = null, pages = 0, accumulated = ArrayList())
     }
@@ -312,7 +325,7 @@ class ProviderHostController internal constructor(
                         ?: state.list.imageProviders,
                     videoProviders = rows?.videoProviders
                         ?: state.list.videoProviders,
-                    errorMessage = if (rows == null) loadFailureCopy() else null,
+                    errorMessage = if (rows == null) loadFailureCopy() else listActionFailure,
                 ),
             )
         }
@@ -534,12 +547,12 @@ class ProviderHostController internal constructor(
                     // The row must NOT silently look successful: the switch
                     // keeps the persisted truth after the refresh, and the
                     // list carries an actionable bilingual message now.
-                    updateDestination {
-                        it.copy(list = it.list.copy(errorMessage = runCatching {
-                            host.appContext.getString(com.floe.android.R.string.providers_toggle_failed)
-                        }.getOrElse { "Couldn't update this provider. It stayed unchanged — try again." }))
-                    }
-                    refreshProviders()
+                    val message = runCatching {
+                        host.appContext.getString(com.floe.android.R.string.providers_toggle_failed)
+                    }.getOrElse { "Couldn't update this provider. It stayed unchanged — try again." }
+                    listActionFailure = message
+                    updateDestination { it.copy(list = it.list.copy(errorMessage = message)) }
+                    refreshProviders(retainActionFailure = true)
                 }
                 HostOperationOutcome.Cancelled,
                 HostOperationOutcome.Superseded -> Unit
@@ -613,7 +626,7 @@ class ProviderHostController internal constructor(
             }
             return null
         }
-        val snapshot = snapshotForExistingProvider(providerID, role) ?: return null
+        val snapshot = snapshotForExistingProvider(row, role) ?: return null
         val catalog = destinationState.value.catalog
         return ProviderEditorSeedUi(
             snapshot = snapshot,
@@ -622,13 +635,15 @@ class ProviderHostController internal constructor(
             discoverySupported = role == ProviderServiceRoleUi.CONVERSATION,
             offers = ProviderWire.offersForRole(row, role),
             officialMediaModels = ProviderWire.officialMediaModels(catalog, role),
+            providerRevisionVersion = row.revisionVersion,
         )
     }
 
     /**
-     * The ONE secret-free reconstruction of a persisted provider used by both
-     * the editor seed and the list-level enable/disable Keep candidate. Every
-     * field comes from the actual persisted projection:
+     * The ONE secret-free reconstruction of a persisted provider, built from
+     * the EXACT row object the caller captured (a background page publish
+     * between row read and reconstruction must not mix two pages into one
+     * draft). Every field comes from the actual persisted projection:
      * `config.providers.list` (identity/kind/protocol/endpoint/name/region/
      * enablement/plain-http/tool-name flags/presetID/non-secret headers) and
      * `config.models.list` (complete saved rows incl. disabled/hidden ones
@@ -637,10 +652,10 @@ class ProviderHostController internal constructor(
      * model or a role string.
      */
     private fun snapshotForExistingProvider(
-        providerID: String,
+        row: ProviderListRowUi,
         role: ProviderServiceRoleUi,
     ): ProviderDraftSnapshot? {
-        val row = findProviderRow(providerID) ?: return null
+        val providerID = row.providerId
         val extras = ProviderWire.extrasFor(providerID)
         val protocol = WireProtocolUi.entries.firstOrNull {
             it.swiftRaw == extras?.wireProtocol
@@ -706,6 +721,10 @@ class ProviderHostController internal constructor(
     }
 
     override fun editorOpened(identity: ProviderEditorIdentity) {
+        editorOpened(identity, null)
+    }
+
+    override fun editorOpened(identity: ProviderEditorIdentity, seededFrom: ProviderEditorSeedUi?) {
         // Epoch fencing is holder-owned; the host resets attempt metadata.
         saveFailureSequencer.reset(identity.editorId, identity.epoch)
         if (identity.editorId.startsWith("new")) {
@@ -713,11 +732,39 @@ class ProviderHostController internal constructor(
             // editor (the native candidate requires a real UUID).
             newProviderIDs.putIfAbsent(identity.editorId, UUID.randomUUID().toString())
         }
+        // Use the holder's FIRST seed (the exact object already placed into
+        // drafts.open) whenever one is supplied; only seed-less direct callers
+        // recompute here. This keeps the draft fields and the CAS baseline on
+        // the same row read even if a list refresh lands between seed and open.
+        val seed = seededFrom ?: seedEditorFor(identity.role, existingProviderID(identity))
+        // Bind this editor's FROZEN CAS baseline from that seed's own row:
+        // the moving VERSION comes from the exact seeded row object, the
+        // stable RESOURCE identity from the remembered token (same provider
+        // identity either way). A later list refresh can never rebind a
+        // newer version onto this draft, and Save never adopts a live-cache
+        // token; the native durable CAS still arbitrates.
+        existingProviderID(identity)?.let { providerID ->
+            val version = seed?.providerRevisionVersion
+            val remembered = ProviderHostControllerRevisions.revision(providerID)
+            if (version != null) {
+                editorBaselines[identity.editorId] = HostRevision(
+                    remembered?.resourceID ?: "provider.${providerID.uppercase()}",
+                    version,
+                )
+            } else if (seededFrom == null && remembered != null) {
+                // Seed-less direct open (no holder-provided seed): freeze the
+                // currently remembered token ONCE here. It is still presented
+                // frozen at Save and CAS-arbitrated natively; production
+                // editor opens always arrive with the holder's seed.
+                editorBaselines[identity.editorId] = remembered
+            } else {
+                editorBaselines.remove(identity.editorId)
+            }
+        }
         // Publish the editor projection so the form leaves the
         // "Loading configuration…" placeholder. Values come from the REAL
         // seed (saved rows + catalog offers); mutations keep transforming
         // this projection through publishEditor().
-        val seed = seedEditorFor(identity.role, existingProviderID(identity))
         publishEditor(identity) { seeded ->
             seeded.copy(
                 isEditingExisting = existingProviderID(identity) != null,
@@ -752,6 +799,8 @@ class ProviderHostController internal constructor(
             editorRoute(identity)?.let { route -> draftProbe.cancel(handle, route) }
         }
         draftProbeIDs.remove(identity.editorId)
+        // Frozen baseline lives only as long as this editor incarnation.
+        editorBaselines.remove(identity.editorId)
         modelSets.discardFor(identity.editorId)
         endEditorRoute(identity.editorId)
     }
@@ -784,8 +833,30 @@ class ProviderHostController internal constructor(
             draft = draft,
             modelUUID = { draftModelID -> modelUUIDFor(providerID, draft, draftModelID) },
         )
-        val existingRevision = existingProviderID(identity)
-            ?.let { ProviderHostControllerRevisions.revision(it) }
+        val isExistingProvider = existingProviderID(identity) != null
+        // The intent branch is chosen from the provider IDENTITY plus this
+        // editor's frozen baseline revision, never from a raw revision-memory
+        // hit/miss. A miss on an existing row used to fall into the
+        // new-provider create/clear branch and could drop the persisted
+        // credential reference.
+        val existingRevision =
+            if (isExistingProvider) editorBaselines[identity.editorId] else null
+        if (providerSaveIntentBranch(
+                isExistingProvider, existingRevision, credentialDraft,
+            ) == ProviderSaveIntentBranch.REFUSE_MISSING_BASELINE
+        ) {
+            // Fail closed BEFORE any ingress consumption or dispatch: an
+            // existing provider whose CAS token this editor never observed
+            // must not degrade into create/clear and must not blindly adopt
+            // a newer live-cache revision. The draft (including any typed
+            // credential) stays untouched; a re-open after a real list read
+            // re-seeds the baseline.
+            runCatching {
+                android.util.Log.w("FloeProviders", "save_refused:saveBaselineUnavailable")
+            }
+            onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, reopenSettingsCopy())
+            return true
+        }
         // Large profile (Main direction B): an inline candidate over the
         // frozen 16,384-byte bound stages the FULL selected-model body
         // through the trusted host — ordered, idempotent chunks within the
@@ -965,15 +1036,16 @@ class ProviderHostController internal constructor(
 
     private fun onSaveFailed(identity: ProviderEditorIdentity, phase: SaveFailurePhaseUi, message: String) {
         val sequence = saveFailureSequencer.next(identity.editorId, identity.epoch)
+        val displayMessage = if (message == "staleRevision") reopenSettingsCopy() else message
         publishEditor(identity) {
             it.copy(
                 saveInFlight = false,
-                saveError = message,
-                saveOutcome = SaveOutcomeUi.Failed(phase, message),
+                saveError = displayMessage,
+                saveOutcome = SaveOutcomeUi.Failed(phase, displayMessage),
                 saveFailureSequence = sequence,
             )
         }
-        flowHolder.applyHostSaveOutcome(identity, SaveOutcomeUi.Failed(phase, message))
+        flowHolder.applyHostSaveOutcome(identity, SaveOutcomeUi.Failed(phase, displayMessage))
         flowHolder.noteSaveAttemptFinished(identity)
     }
 
@@ -1233,6 +1305,11 @@ class ProviderHostController internal constructor(
         runCatching {
             host.appContext.getString(com.floe.android.R.string.providers_probe_unavailable)
         }.getOrElse { "Couldn't start the connection test. Try again." }
+
+    private fun reopenSettingsCopy(): String =
+        runCatching {
+            host.appContext.getString(com.floe.android.R.string.providers_save_reopen_required)
+        }.getOrElse { "Reopen these settings and try again." }
 
     private fun stagingUnavailableCopy(): String =
         runCatching {
@@ -1796,6 +1873,7 @@ internal object ProviderWire {
                 modelCount = modelCount,
                 enabled = enabled,
                 credentialState = credential,
+                revisionVersion = revision?.version,
             )
             when {
                 "conversation" in roles -> conversation.add(row)
@@ -2324,13 +2402,54 @@ internal object ProviderWire {
     private fun JsonElement.intValue(): Int? = (this as? JsonPrimitive)?.longOrNull?.toInt()
 }
 
-/** Process-wide revision memory for provider rows (identity-only). */
+/** Process-wide revision memory for provider rows (identity-only).
+ *
+ * The native `config.providers.list` projection carries Foundation's
+ * UPPERCASE `uuidString` ids, while `existingProviderID` normalizes through
+ * `java.util.UUID.toString()` (LOWERCASE). UUID identity is case-insensitive,
+ * so the map keys canonicalize to the uppercase form: a case-sensitive miss
+ * here made every existing-provider Save fall into the new-provider
+ * create/clear branch (the branch is keyed on this lookup). No wire shape,
+ * CAS rule or credential authority changed. */
 internal object ProviderHostControllerRevisions {
     private val revisions = ConcurrentHashMap<String, HostRevision>()
+
+    private fun key(providerID: String): String = providerID.uppercase()
+
     fun remember(providerID: String, revision: HostRevision) {
-        revisions[providerID] = revision
+        revisions[key(providerID)] = revision
     }
 
-    fun revision(providerID: String): HostRevision? = revisions[providerID]
+    fun revision(providerID: String): HostRevision? = revisions[key(providerID)]
 
+}
+
+/** Closed save-intent decision: the branch is chosen from the provider
+ * IDENTITY (is this editor editing a persisted row?) plus this editor's
+ * frozen baseline revision — never from a live-cache adoption or a
+ * missing-lookup fallback. An existing provider whose baseline is
+ * unavailable REFUSES fail-closed; it must never degrade into the
+ * create/clear branch, and only a genuinely new provider may create. */
+internal enum class ProviderSaveIntentBranch {
+    SET_EXISTING,
+    SET_CREATE,
+    KEEP_EXISTING,
+    CREATE_WITHOUT_SECRET,
+    REFUSE_MISSING_BASELINE,
+}
+
+internal fun providerSaveIntentBranch(
+    isExistingProvider: Boolean,
+    saveBaseline: HostRevision?,
+    credentialDraft: String?,
+): ProviderSaveIntentBranch = when {
+    credentialDraft != null -> when {
+        !isExistingProvider -> ProviderSaveIntentBranch.SET_CREATE
+        saveBaseline != null -> ProviderSaveIntentBranch.SET_EXISTING
+        else -> ProviderSaveIntentBranch.REFUSE_MISSING_BASELINE
+    }
+    isExistingProvider ->
+        if (saveBaseline != null) ProviderSaveIntentBranch.KEEP_EXISTING
+        else ProviderSaveIntentBranch.REFUSE_MISSING_BASELINE
+    else -> ProviderSaveIntentBranch.CREATE_WITHOUT_SECRET
 }

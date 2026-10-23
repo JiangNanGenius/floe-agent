@@ -175,6 +175,11 @@ data class ProviderListRowUi(
     val modelCount: Int,
     val enabled: Boolean,
     val credentialState: ProviderCredentialStateUi,
+    /** The persisted CAS revision token of THIS row (decimal
+     * `syncRevision` as published by the real list page; null only when the
+     * projection carried no token). Travels with the row object so a draft
+     * seeded from it can present the exact token it was built from. */
+    val revisionVersion: String? = null,
 )
 
 /** ⇄ ProviderListViewModel projection (three role sections + loading). */
@@ -418,6 +423,11 @@ data class ProviderEditorSeedUi(
     val discoverySupported: Boolean,
     val offers: List<ServiceOfferUi>,
     val officialMediaModels: List<OfficialMediaModelUi>,
+    /** The persisted CAS revision token of the exact row this seed was
+     * reconstructed from (null = not seeded from a persisted row). The host
+     * binds this editor's frozen Save baseline from here, so a later list
+     * refresh can never re-pair a newer token with this older draft. */
+    val providerRevisionVersion: String? = null,
 )
 
 /* --------------------------------- editor --------------------------------- */

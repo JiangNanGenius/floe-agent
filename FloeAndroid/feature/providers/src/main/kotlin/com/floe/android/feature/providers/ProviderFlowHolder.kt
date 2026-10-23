@@ -102,7 +102,9 @@ class ProviderFlowHolder(
         )
         drafts.open(identity, seed)
         navigation.push(ProviderPane.EDITOR, identity.editorId)
-        host.editorOpened(identity)
+        // Pass the seed the draft was built FROM: the host binds any frozen
+        // provider CAS baseline from this exact object, never a second read.
+        host.editorOpened(identity, seed)
         return ProviderFlowResult.Accepted
     }
 
@@ -117,7 +119,7 @@ class ProviderFlowHolder(
         )
         drafts.open(identity, seed)
         navigation.push(ProviderPane.EDITOR, identity.editorId)
-        host.editorOpened(identity)
+        host.editorOpened(identity, seed)
         return ProviderFlowResult.Accepted
     }
 
@@ -133,7 +135,7 @@ class ProviderFlowHolder(
         )
         drafts.open(identity, editorSeed)
         navigation.push(ProviderPane.EDITOR, identity.editorId)
-        host.editorOpened(identity)
+        host.editorOpened(identity, editorSeed)
         return ProviderFlowResult.Accepted
     }
 

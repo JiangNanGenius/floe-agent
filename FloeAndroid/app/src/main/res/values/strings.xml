@@ -437,4 +437,5 @@
     <string name="diagnostics_owned_wake">CPU wake held</string>
     <string name="diagnostics_details_note_targets">Only a target row in lane state settled with a full receipt digest proves that particular data was cleared. Counts describe the whole lane and never prove a single target; obligations this device has not yet processed appear only in the queued count.</string>
     <string name="diagnostics_details_note_readonly">Opening or refreshing this page only reads current status. It runs no command, installs nothing, retries nothing, resumes no paused work and does not mark any tool ready.</string>
+    <string name="providers_save_reopen_required">Reopen these settings and try again.</string>
 </resources>

@@ -437,4 +437,5 @@
     <string name="diagnostics_owned_wake">CPU 唤醒保持</string>
     <string name="diagnostics_details_note_targets">只有通道状态为 settled 且带有完整回执摘要的目标条目，才能证明该目标数据确已清除。计数只描述整条清理通道，不能证明某个具体目标；本设备尚未处理到的清理义务只会出现在排队计数中。</string>
     <string name="diagnostics_details_note_readonly">打开或刷新本页只读取当前状态：不执行任何命令、不安装、不重试、不恢复已暂停的任务，也不会把任何工具标记为就绪。</string>
+    <string name="providers_save_reopen_required">请重新打开此设置后重试。</string>
 </resources>

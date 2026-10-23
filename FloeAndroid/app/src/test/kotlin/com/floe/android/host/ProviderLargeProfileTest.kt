@@ -89,6 +89,8 @@ class ProviderLargeProfileTest {
         var saveOutcome: String = "committed"
         val commands = CopyOnWriteArrayList<String>()
         val saveEnvelopes = CopyOnWriteArrayList<String>()
+        val providerPageReads = CopyOnWriteArrayList<String>()
+        val roleModelPageReads = CopyOnWriteArrayList<String>()
         /** (providerID, cursor) -> page JSON for the role models read. */
         var modelsResponder: ((providerID: String?, cursor: String?) -> String)? = null
         var providersPage: String? = null
@@ -122,6 +124,8 @@ class ProviderLargeProfileTest {
                 else -> return error(correlation, "unscripted")
             }
             commands.add(command)
+            if (command == "plist" && correlation.startsWith("plist-")) providerPageReads.add(request)
+            if (command == "models" && correlation.startsWith("rolesmlist-")) roleModelPageReads.add(request)
             val number = receiptSequence.incrementAndGet()
             val receipt = "op:v1:$command$number"
             receiptKinds[receipt] = command
@@ -323,6 +327,7 @@ class ProviderLargeProfileTest {
         val exchange = Exchange()
         val h = host(exchange)
         load(h)
+        val plistBefore = exchange.providerPageReads.size
         assertTrue(h.providers.setProviderEnabled(PROVIDER_ID, true))
         waitUntil { exchange.saveEnvelopes.isNotEmpty() }
         val payload = payloadOf(exchange.saveEnvelopes.last())
@@ -338,8 +343,8 @@ class ProviderLargeProfileTest {
             (revision!!["resourceID"] as? JsonPrimitive)?.contentOrNull)
         assertEquals("3", (revision["version"] as? JsonPrimitive)?.contentOrNull)
         // The refreshed list (never an optimistic flip) owns the surface.
-        val plistBefore = exchange.commands.count { it == "plist" }
-        waitUntil { exchange.commands.count { it == "plist" } > plistBefore }
+        // Capture before the action: its refresh can settle before payload assertions.
+        waitUntil { exchange.providerPageReads.size > plistBefore }
     }
 
     @Test
@@ -539,7 +544,13 @@ class ProviderLargeProfileTest {
         }
         val h = host(exchange)
         h.settings.roles.refresh()
-        waitUntil { !h.settings.roles.state.value.loading }
+        // Preferences finish before the model sweep. Await this request's
+        // choices or terminal error; keep the full pagination assertions.
+        waitUntil {
+            val current = h.settings.roles.state.value
+            current.choices.containsKey(SettingsRoleModelController.RoleSlot.DEFAULT_AGENT) ||
+                current.error != null
+        }
         val state = h.settings.roles.state.value
         assertNull("per-provider sweep must not hit the old 400-row tail refusal: ${state.error}",
             state.error)
@@ -552,7 +563,13 @@ class ProviderLargeProfileTest {
         // Every models read carried the provider filter (bounded per
         // provider; one chain per enabled provider, no unbounded global
         // first chain).
-        assertEquals(4, exchange.commands.count { it == "models" })
+        // Count this role sweep's four filtered pages, not independent
+        // background conversation-cache reads sharing the same transport.
+        assertEquals(4, exchange.roleModelPageReads.size)
+        assertTrue(exchange.roleModelPageReads.all { request ->
+            val provider = payloadOf(request)["providerID"]?.jsonPrimitive?.content
+            provider == "p1" || provider == "p2"
+        })
     }
 
     @Test

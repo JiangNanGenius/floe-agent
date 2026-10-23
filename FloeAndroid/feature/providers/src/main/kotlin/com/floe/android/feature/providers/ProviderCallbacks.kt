@@ -89,6 +89,19 @@ interface ProviderUiCallbacks {
 
     fun editorOpened(identity: ProviderEditorIdentity)
 
+    /**
+     * Seed-aware open: the holder passes the EXACT seed object it just put
+     * into the draft store. A host that tracks a frozen provider CAS
+     * baseline binds it from THIS seed (the same row read that produced the
+     * draft), never from a second read that a background list refresh could
+     * advance in between. The default delegates to the identity-only
+     * [editorOpened], so existing host doubles and baseline behavior stay
+     * source-compatible.
+     */
+    fun editorOpened(identity: ProviderEditorIdentity, seededFrom: ProviderEditorSeedUi?) {
+        editorOpened(identity)
+    }
+
     /** Editor dismissed. discarded=true = Cancel (draft thrown away); a save
      * in flight may still commit in the host, but its late result cannot touch
      * this closed editor (epoch guard in [ProviderDraftStore]). */
