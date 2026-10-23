@@ -98,6 +98,192 @@ public struct TTSAudioFormat: Codable, Sendable, Hashable {
     }
 }
 
+/// Optional OpenAI-compatible TTS API base address.
+///
+/// The official route stays the default: an absent (`nil`) value always
+/// resolves to `https://api.openai.com/v1/audio/speech`, and persisted
+/// settings written before this option existed keep decoding unchanged. A
+/// configured value is the API base documented by the compatible service
+/// (for example `https://api.openai-proxy.org/v1`); the speech path
+/// (`/audio/speech`) is composed onto it exactly once.
+///
+/// The same rules are applied at save time and again before any dispatch, so
+/// a corrupted persisted value can never reach the network:
+/// * HTTPS only, an explicit host is required, and embedded user info, query
+///   parameters and fragments are rejected. No plain-HTTP path or ATS bypass
+///   is introduced, and no key can be smuggled into the URL.
+/// * Reverse-proxy path prefixes are preserved. A base that already ends in
+///   the speech path (a full endpoint URL) is used verbatim, and a repeated
+///   trailing `/v1` is collapsed, so `/v1/v1` or
+///   `/audio/speech/audio/speech` can never be produced.
+public enum TTSOpenAISpeechEndpoint {
+    public static let officialBaseURL = "https://api.openai.com/v1"
+    public static let speechPath = "/audio/speech"
+    /// User input bound: longer values are rejected, never truncated.
+    public static let maxBaseURLCharacters = 2_048
+
+    /// The official endpoint used when no override is configured.
+    public static let officialSpeechURL = URL(string: officialBaseURL + speechPath)!
+
+    /// Short, lane-internal English reason an address is unusable, or nil
+    /// when the value is blank (official default) or valid. Never contains
+    /// the offending value.
+    public static func validationProblem(for raw: String) -> String? {
+        guard let trimmed = trimmed(raw) else { return nil }
+        if case .problem(let problem) = problemOrParse(trimmed) { return problem }
+        return nil
+    }
+
+    /// Canonical stored form: `https` + lowercased host + explicit non-default
+    /// port + the entered path without trailing slashes. Blank input returns
+    /// nil (official default). Throws `invalidConfiguration` for unusable
+    /// input so callers fail before writing a credential or a profile.
+    public static func normalized(_ raw: String?) throws -> String? {
+        guard let trimmed = trimmed(raw) else { return nil }
+        switch problemOrParse(trimmed) {
+        case .problem(let problem):
+            throw TTSSynthesisError.invalidConfiguration(problem)
+        case .parsed(let parsed):
+            return parsed.canonicalBase
+        }
+    }
+
+    /// Final speech endpoint for one request. nil/blank → the official URL;
+    /// otherwise the validated compatible base + `/audio/speech`.
+    public static func speechURL(base raw: String?) throws -> URL {
+        guard try normalized(raw) != nil, let trimmed = trimmed(raw) else {
+            return officialSpeechURL
+        }
+        switch problemOrParse(trimmed) {
+        case .problem(let problem):
+            throw TTSSynthesisError.invalidConfiguration(problem)
+        case .parsed(let parsed):
+            return try parsed.speechURL()
+        }
+    }
+
+    /// True when the API origin (host + port, official default included)
+    /// differs between two configured values. Path-only changes on the same
+    /// origin are the same connection and may reuse the stored key; a host or
+    /// port change must not silently reuse a key issued by another service.
+    public static func originChanged(from old: String?, to new: String?) -> Bool {
+        originKey(old) != originKey(new)
+    }
+
+    // MARK: - Parsing
+
+    private struct Parsed {
+        let host: String
+        let port: Int?
+        let percentEncodedPath: String
+
+        var origin: String { "\(host):\(port ?? 443)" }
+
+        var canonicalBase: String {
+            var path = percentEncodedPath
+            while path.hasSuffix("/") { path.removeLast() }
+            var value = "https://" + host
+            if let port { value += ":" + String(port) }
+            return value + path
+        }
+
+        /// Speech path with the version/endpoint guards applied once.
+        var composedSpeechPath: String {
+            var path = percentEncodedPath
+            while path.hasSuffix("/") { path.removeLast() }
+            while path.hasSuffix("/v1/v1") { path.removeLast("/v1".count) }
+            if path.hasSuffix(TTSOpenAISpeechEndpoint.speechPath) {
+                return path
+            }
+            if path.isEmpty {
+                path = "/v1"
+            } else if !path.hasSuffix("/v1") {
+                path += "/v1"
+            }
+            return path + TTSOpenAISpeechEndpoint.speechPath
+        }
+
+        func speechURL() throws -> URL {
+            var components = URLComponents()
+            components.scheme = "https"
+            components.host = host
+            components.port = port
+            components.percentEncodedPath = composedSpeechPath
+            guard let url = components.url else {
+                throw TTSSynthesisError.invalidConfiguration(
+                    "endpoint is not a valid URL")
+            }
+            return url
+        }
+    }
+
+    private static let officialOriginKey = "api.openai.com:443"
+
+    private static func originKey(_ raw: String?) -> String {
+        guard let trimmed = trimmed(raw) else { return officialOriginKey }
+        switch problemOrParse(trimmed) {
+        case .problem: return "invalid"
+        case .parsed(let parsed): return parsed.origin
+        }
+    }
+
+    private static func trimmed(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    /// Parse outcome for one candidate address. Kept as a local enum instead
+    /// of `Result` so the failure side can carry plain lane text.
+    private enum ParseOutcome {
+        case parsed(Parsed)
+        case problem(String)
+    }
+
+    private static func problemOrParse(_ value: String) -> ParseOutcome {
+        guard value.count <= maxBaseURLCharacters else {
+            return .problem("endpoint is too long")
+        }
+        // A URL carries no whitespace; reject any interior whitespace or
+        // control scalar instead of letting Foundation reinterpret it.
+        if value.unicodeScalars.contains(where: {
+            CharacterSet.whitespacesAndNewlines.contains($0)
+                || CharacterSet.controlCharacters.contains($0)
+        }) {
+            return .problem("endpoint must be a single URL without spaces")
+        }
+        guard let components = URLComponents(string: value) else {
+            return .problem("endpoint is not a valid URL")
+        }
+        guard components.scheme?.lowercased() == "https" else {
+            return .problem("endpoint must use https")
+        }
+        guard let host = components.host, !host.isEmpty,
+              !host.hasPrefix(".") else {
+            return .problem("endpoint must include a host name")
+        }
+        if components.user != nil || components.password != nil {
+            return .problem(
+                "endpoint credentials belong in the API key field, not in the URL")
+        }
+        if components.query != nil {
+            return .problem("endpoint must not include query parameters")
+        }
+        if components.fragment != nil {
+            return .problem("endpoint must not include a fragment")
+        }
+        if let port = components.port, !(1...65_535).contains(port) {
+            return .problem("endpoint port is invalid")
+        }
+        return .parsed(Parsed(
+            host: host.lowercased(),
+            // Drop the explicit default HTTPS port so it cannot create a
+            // false "different connection" result.
+            port: components.port == 443 ? nil : components.port,
+            percentEncodedPath: components.percentEncodedPath))
+    }
+}
+
 /// One ordered synthesis request for one bounded text segment of an utterance.
 /// `sessionID` is the cancellation/late-event fence: every chunk, completion
 /// and error callback must carry the active sessionID or be dropped.
@@ -111,6 +297,11 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
     /// Provider service region (Alibaba pay-as-you-go only). `nil` = the
     /// provider's documented default region.
     public var region: String?
+    /// Optional OpenAI-compatible API base address (see
+    /// `TTSOpenAISpeechEndpoint`). `nil` = official OpenAI endpoint. Frozen
+    /// into a request when the answer's speech configuration is captured, so
+    /// editing the setting never moves an in-flight utterance.
+    public var openAIBaseURL: String?
     /// Provider model ID (e.g. `qwen-audio-3.0-tts-plus`, `gpt-4o-mini-tts`).
     public var modelID: String
     /// Provider voice/speaker ID. Custom (cloned/designed) IDs are supported
@@ -137,6 +328,7 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
         provider: TTSSpeakerProvider,
         billingRoute: TTSBillingRoute,
         region: String? = nil,
+        openAIBaseURL: String? = nil,
         modelID: String,
         voiceID: String,
         text: String,
@@ -149,6 +341,8 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
         self.provider = provider
         self.billingRoute = billingRoute
         self.region = region
+        let trimmedBaseURL = openAIBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openAIBaseURL = (trimmedBaseURL?.isEmpty == false) ? trimmedBaseURL : nil
         self.modelID = modelID
         self.voiceID = voiceID
         self.text = text
@@ -182,6 +376,13 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
         }
         if modelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "model ID is required"
+        }
+        // OpenAI-compatible base address: validated here so an unusable URL
+        // fails before the request is dispatched (the adapter repeats the
+        // same rule defensively before any network access).
+        if provider == .openAI, let openAIBaseURL,
+           let problem = TTSOpenAISpeechEndpoint.validationProblem(for: openAIBaseURL) {
+            return problem
         }
         return nil
     }
@@ -290,6 +491,12 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
     public var billingRoute: TTSBillingRoute
     /// Alibaba pay-as-you-go region; ignored elsewhere.
     public var alibabaRegion: String?
+    /// Optional OpenAI-compatible API base address (OpenAI route only,
+    /// canonical form from `TTSOpenAISpeechEndpoint`). nil = official OpenAI
+    /// endpoint; the key is absent from older persisted settings, which keeps
+    /// decoding backward compatible. Other providers store nil so their
+    /// behavior and stored shape stay unchanged.
+    public var openAIBaseURL: String?
     public var modelID: String
     public var voiceID: String
     /// Relative speech rate for every route (0.5…2.0). The system path maps it
@@ -317,6 +524,7 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         provider: TTSSpeakerProvider = .apple,
         billingRoute: TTSBillingRoute = .payAsYouGo,
         alibabaRegion: String? = nil,
+        openAIBaseURL: String? = nil,
         modelID: String = "",
         voiceID: String = "",
         speechRateRatio: Double = 1.0,
@@ -328,6 +536,8 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         self.provider = provider
         self.billingRoute = billingRoute
         self.alibabaRegion = alibabaRegion
+        let trimmedBaseURL = openAIBaseURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.openAIBaseURL = (trimmedBaseURL?.isEmpty == false) ? trimmedBaseURL : nil
         self.modelID = modelID
         self.voiceID = voiceID
         self.speechRateRatio = speechRateRatio

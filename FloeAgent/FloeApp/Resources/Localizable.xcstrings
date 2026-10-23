@@ -92877,6 +92877,23 @@
         }
       }
     },
+    "voice.settings.api.url": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API address"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 地址"
+          }
+        }
+      }
+    },
     "voice.settings.key": {
       "extractionState": "manual",
       "localizations": {
@@ -93332,6 +93349,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "密钥未能更新，请重试。"
+          }
+        }
+      }
+    },
+    "voice.error.endpoint_invalid": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API address is not valid. Use an https URL such as https://api.example.com/v1."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 地址无效，请使用 https 地址，例如 https://api.example.com/v1。"
+          }
+        }
+      }
+    },
+    "voice.error.endpoint_key_required": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The API address changed. Enter the key for the new service before saving."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "API 地址已更换，请输入新服务的密钥后再保存。"
           }
         }
       }

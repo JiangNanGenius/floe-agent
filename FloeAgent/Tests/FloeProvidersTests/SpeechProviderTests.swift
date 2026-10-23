@@ -40,10 +40,12 @@ private func cloudRequest(
     text: String = "Hello world.",
     region: String? = nil,
     rate: Double = 1.0,
-    language: String? = nil
+    language: String? = nil,
+    openAIBaseURL: String? = nil
 ) -> TTSSynthesisRequest {
     TTSSynthesisRequest(
         provider: provider, billingRoute: route, region: region,
+        openAIBaseURL: openAIBaseURL,
         modelID: model, voiceID: voice, text: text,
         speechRateRatio: rate, language: language)
 }
@@ -183,20 +185,26 @@ struct TTSSpeakerMatrixTests {
         #expect(defaults.allowBargeIn == true)
         #expect(defaults.language == nil)
         #expect(defaults.connectionProviderID == nil)
+        #expect(defaults.openAIBaseURL == nil)
 
         var snapshot = TTSSettingsSnapshot(provider: .onDevice, modelID: "local-1", voiceID: "v",
                                            language: "zh-CN")
         snapshot.autoReadEnabled = true
+        snapshot.openAIBaseURL = "https://api.openai-proxy.org/v1"
         let data = try JSONEncoder().encode(snapshot)
         let decoded = try JSONDecoder().decode(TTSSettingsSnapshot.self, from: data)
         #expect(decoded == snapshot)
+        #expect(decoded.openAIBaseURL == "https://api.openai-proxy.org/v1")
 
         // Backward compatibility: a v1 payload WITHOUT the optional `language`
         // key must decode with language == nil (settled multilingual contract).
+        // The same payload predates the optional OpenAI base URL, which must
+        // also decode as nil so the official endpoint stays the default.
         let legacy = Data("{\"provider\":\"volcengine\",\"billingRoute\":\"agentPlan\",\"alibabaRegion\":null,\"modelID\":\"doubao-seed-tts-2.0\",\"voiceID\":\"zh_female_vv_uranus_bigtts\",\"speechRateRatio\":1.0,\"autoReadEnabled\":false,\"allowBargeIn\":true,\"connectionProviderID\":null}".utf8)
         let legacySnapshot = try JSONDecoder().decode(TTSSettingsSnapshot.self, from: legacy)
         #expect(legacySnapshot.provider == .volcengine)
         #expect(legacySnapshot.language == nil)
+        #expect(legacySnapshot.openAIBaseURL == nil)
     }
 
     @Test func onDeviceRawValueIsStable() throws {
@@ -535,6 +543,138 @@ struct ElevenOpenMatrixTests {
         #expect(openAI["Cache-Control"] == "no-cache")
         let eleven = ElevenLabsSpeechAdapter.makeHeaders(credential: "xi")
         #expect(eleven["xi-api-key"] == "xi")
+    }
+}
+
+// MARK: - OpenAI-compatible endpoint (optional base URL)
+
+@Suite("OpenAI-compatible speech endpoint")
+struct OpenAICompatibleEndpointTests {
+    @Test func absentOverrideKeepsTheOfficialEndpoint() throws {
+        #expect(TTSOpenAISpeechEndpoint.officialBaseURL == "https://api.openai.com/v1")
+        #expect(try TTSOpenAISpeechEndpoint.speechURL(base: nil) == OpenAISpeechAdapter.endpoint)
+        #expect(try TTSOpenAISpeechEndpoint.speechURL(base: "   ") == OpenAISpeechAdapter.endpoint)
+        #expect(try OpenAISpeechAdapter.speechURL(for: cloudRequest(provider: .openAI))
+            .absoluteString == "https://api.openai.com/v1/audio/speech")
+        #expect(try TTSSpeechService().suggestedModels(for: .openAI)
+            == OpenAISpeechAdapter.supportedModels)
+        // Model IDs stay manual: a provider whose /models list omits a speech
+        // model must not disable it (verified against the CloseAI proxy).
+        #expect(TTSOpenAISpeechEndpoint.validationProblem(for: "") == nil)
+    }
+
+    @Test func closeAIBaseURLResolvesToTheDocumentedSpeechPath() throws {
+        // Vendor-documented base (verified in primary's paid probe):
+        // https://api.openai-proxy.org/v1 → POST /v1/audio/speech.
+        let request = cloudRequest(
+            provider: .openAI, model: "tts-1", voice: "alloy",
+            openAIBaseURL: "https://api.openai-proxy.org/v1")
+        #expect(request.validationProblem() == nil)
+        #expect(try OpenAISpeechAdapter.speechURL(for: request).absoluteString
+            == "https://api.openai-proxy.org/v1/audio/speech")
+        // Canonical stored form trims, lowercases scheme/host and drops the
+        // trailing slash; the adapter accepts documented vendor spellings.
+        #expect(try TTSOpenAISpeechEndpoint.normalized("  HTTPS://API.OpenAI-Proxy.org/v1/ ")
+            == "https://api.openai-proxy.org/v1")
+        #expect(try OpenAISpeechAdapter.speechURL(for: cloudRequest(
+            provider: .openAI, openAIBaseURL: "  HTTPS://API.OpenAI-Proxy.org/v1/ "))
+            .absoluteString == "https://api.openai-proxy.org/v1/audio/speech")
+        // Official body shape is unchanged by the address override.
+        let body = try #require(jsonDictionary(OpenAISpeechAdapter.makeBody(for: request)))
+        #expect(body["model"] as? String == "tts-1")
+        #expect(body["voice"] as? String == "alloy")
+        #expect(body["response_format"] as? String == "pcm")
+    }
+
+    @Test func reverseProxyPrefixesAndFullEndpointsArePreserved() throws {
+        let cases: [(String, String)] = [
+            // Bare host: the conventional /v1 prefix is added once.
+            ("https://api.openai-proxy.org", "https://api.openai-proxy.org/v1/audio/speech"),
+            // Reverse-proxy path prefixes survive verbatim.
+            ("https://gw.example.com/proxy", "https://gw.example.com/proxy/v1/audio/speech"),
+            ("https://gw.example.com/proxy/v1", "https://gw.example.com/proxy/v1/audio/speech"),
+            // No duplicated /v1 or /audio/speech can be produced.
+            ("https://gw.example.com/proxy/v1/v1", "https://gw.example.com/proxy/v1/audio/speech"),
+            ("https://gw.example.com/proxy/v1/v1/v1", "https://gw.example.com/proxy/v1/audio/speech"),
+            ("https://api.openai.com/v1/audio/speech", "https://api.openai.com/v1/audio/speech"),
+            ("https://gw.example.com/audio/speech", "https://gw.example.com/audio/speech"),
+            // A non-default port is part of the address and is kept.
+            ("https://gw.example.com:8443/v1", "https://gw.example.com:8443/v1/audio/speech"),
+        ]
+        for (raw, expected) in cases {
+            #expect(try TTSOpenAISpeechEndpoint.speechURL(base: raw).absoluteString == expected,
+                    "unexpected resolution for \(raw)")
+        }
+    }
+
+    @Test func unusableAddressesFailBeforeRequestOrCredentialUse() async {
+        let invalid = [
+            "http://api.openai-proxy.org/v1",         // plain HTTP is never enabled
+            "https://user:pass@api.example.com/v1",   // credentials embedded in URL
+            "https://api.example.com/v1?key=1",       // query parameters
+            "https://api.example.com/v1#frag",        // fragment
+            "https://api.example.com:0/v1",           // invalid port
+            "https://api.example.com:70000/v1",
+            "ftp://api.example.com/v1",
+            "not a url",
+            "https:///v1",                            // missing host
+            "https://api example.com/v1",             // interior space
+        ]
+        for raw in invalid {
+            #expect(TTSOpenAISpeechEndpoint.validationProblem(for: raw) != nil,
+                    "expected rejection for \(raw)")
+            #expect(throws: (any Error).self) {
+                try TTSOpenAISpeechEndpoint.speechURL(base: raw)
+            }
+            #expect(cloudRequest(provider: .openAI, openAIBaseURL: raw).validationProblem() != nil,
+                    "dispatch validation must reject \(raw)")
+        }
+        // The router rejects the frozen request before it reaches the
+        // credential-bearing adapter call: no network is attempted.
+        let request = cloudRequest(
+            provider: .openAI, openAIBaseURL: "http://insecure.example/v1")
+        let error = await speechError(from: TTSSpeechService().synthesize(
+            request, credential: "synthetic-should-not-be-sent"))
+        guard case .invalidConfiguration(let reason)? = error else {
+            Issue.record("expected invalidConfiguration, got \(String(describing: error))")
+            return
+        }
+        #expect(reason.contains("https"))
+    }
+
+    @Test func blankAddressFallsBackToOfficialAndIsNotStored() throws {
+        #expect(cloudRequest(provider: .openAI, openAIBaseURL: "   ").openAIBaseURL == nil)
+        #expect(TTSSettingsSnapshot(openAIBaseURL: " \n ").openAIBaseURL == nil)
+        #expect(try TTSOpenAISpeechEndpoint.normalized("   ") == nil)
+        #expect(try TTSOpenAISpeechEndpoint.normalized(nil) == nil)
+        #expect(try TTSOpenAISpeechEndpoint.speechURL(base: "  ") == OpenAISpeechAdapter.endpoint)
+    }
+
+    @Test func originChangeRequiresANewKeyButPathChangeDoesNot() {
+        #expect(!TTSOpenAISpeechEndpoint.originChanged(from: nil, to: "https://api.openai.com/v1"))
+        #expect(!TTSOpenAISpeechEndpoint.originChanged(from: "https://api.openai.com:443/v1", to: nil))
+        #expect(TTSOpenAISpeechEndpoint.originChanged(from: nil, to: "https://api.openai-proxy.org/v1"))
+        #expect(TTSOpenAISpeechEndpoint.originChanged(
+            from: "https://api.openai-proxy.org/v1", to: "https://api.openai-proxy.org:8443/v1"))
+        #expect(!TTSOpenAISpeechEndpoint.originChanged(
+            from: "https://api.openai-proxy.org/v1", to: "https://api.openai-proxy.org/gateway/v1"))
+    }
+
+    @Test func otherProvidersKeepTheirEndpointsAndIgnoreTheAddress() throws {
+        // The override belongs to the OpenAI route only: a stray value on
+        // another profile can never retarget its documented endpoint.
+        let volc = cloudRequest(
+            provider: .volcengine, model: "doubao-seed-tts-2.0", voice: "v",
+            openAIBaseURL: "https://ignored.example/v1")
+        #expect(volc.validationProblem() == nil)
+        #expect(VolcengineSpeechAdapter.resourceID(forModel: "doubao-seed-tts-2.0", route: .payAsYouGo) != nil)
+        let alibaba = cloudRequest(
+            provider: .alibaba, route: .tokenPlan, openAIBaseURL: "https://ignored.example/v1")
+        #expect(try AlibabaSpeechAdapter.endpoint(request: alibaba).absoluteString
+            .hasPrefix(AlibabaSpeechAdapter.tokenPlanBase + AlibabaSpeechAdapter.speechPath))
+        let eleven = cloudRequest(provider: .elevenLabs, openAIBaseURL: "https://ignored.example/v1")
+        #expect(try ElevenLabsSpeechAdapter.streamURL(voiceID: eleven.voiceID).host
+            == "api.elevenlabs.io")
     }
 }
 

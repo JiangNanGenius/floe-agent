@@ -119,6 +119,10 @@ public struct TTSSpeechVoice: Sendable, Hashable, Identifiable {
 // supported and is never approximated. Note tts-1 / tts-1-hd / gpt-4o-mini-tts
 // are the current Speech-API models; the guide flags tts-1/tts-1-hd
 // deprecated for 2027 — the default is therefore gpt-4o-mini-tts.
+// The official endpoint stays the default. A profile may configure an
+// OpenAI-compatible service base URL (resolved by TTSOpenAISpeechEndpoint);
+// the endpoint is frozen per request, so settings edits never move an
+// in-flight utterance.
 
 public struct OpenAISpeechAdapter: TTSSpeechProviding {
     public static let endpoint = URL(string: "https://api.openai.com/v1/audio/speech")!
@@ -137,6 +141,34 @@ public struct OpenAISpeechAdapter: TTSSpeechProviding {
         // shared URLCache/cookie/credential storage, so speech traffic never
         // writes provider responses to disk (temporary-chat privacy rule too).
         self.session = session ?? ProviderTransport.session(ephemeral: true)
+    }
+
+    /// Dedicated session for user-configured compatible endpoints. CFNetwork
+    /// copies request headers (including `Authorization`) onto redirects, so
+    /// the same rule as the video adapters applies: follow only an HTTPS
+    /// redirect that stays on the configured origin, and stop on anything
+    /// else (the 3xx then surfaces as a redacted HTTP failure) instead of
+    /// handing the key to another host. Retention matches the ephemeral
+    /// speech transport: no cache, cookies or URL credentials.
+    private static let compatibleEndpointSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return URLSession(
+            configuration: configuration,
+            delegate: SameHostHTTPSRedirectPolicy.shared,
+            delegateQueue: nil)
+    }()
+
+    /// Speech endpoint for one request: the frozen per-answer override when a
+    /// compatible base URL was configured, otherwise the official endpoint.
+    /// Re-validates before any network access so a corrupted persisted value
+    /// can never dispatch.
+    public static func speechURL(for request: TTSSynthesisRequest) throws -> URL {
+        try TTSOpenAISpeechEndpoint.speechURL(base: request.openAIBaseURL)
     }
 
     public static func makeBody(
@@ -173,17 +205,52 @@ public struct OpenAISpeechAdapter: TTSSpeechProviding {
                 throw TTSSynthesisError.invalidConfiguration(
                     request.validationProblem() ?? "invalid request")
             }
+            // Resolve and re-validate the frozen endpoint before the body or
+            // the credential-bearing headers are built: nothing is sent for
+            // an unusable address.
+            let url = try Self.speechURL(for: request)
             let body = try OpenAISpeechAdapter.makeBody(for: request)
             let opened = try await TTSSpeechHTTP.post(
-                url: Self.endpoint,
+                url: url,
                 headers: Self.makeHeaders(credential: credential),
                 body: body,
-                session: session,
+                // A custom origin uses the redirect-guarded ephemeral
+                // session; the official route keeps its existing transport.
+                session: request.openAIBaseURL == nil ? session : Self.compatibleEndpointSession,
                 provider: .openAI,
                 route: .payAsYouGo   // OpenAI speech has no plan channel
             )
             try await ttssForwardRawPCM(opened.chunks, request: request, sender: sender)
         }
+    }
+}
+
+/// Same-origin HTTPS redirect policy for user-configured TTS endpoints.
+/// Follows only redirects that keep the scheme, host and port of the original
+/// request and never carry URL user info; every other redirect is refused so
+/// the `Authorization` header cannot be forwarded to a third party.
+private final class SameHostHTTPSRedirectPolicy: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    static let shared = SameHostHTTPSRedirectPolicy()
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        guard let original = task.originalRequest?.url,
+              let target = request.url,
+              target.scheme?.lowercased() == "https",
+              target.user == nil, target.password == nil,
+              let originalHost = original.host?.lowercased(),
+              let targetHost = target.host?.lowercased(),
+              targetHost == originalHost,
+              (target.port ?? 443) == (original.port ?? 443) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
     }
 }
 

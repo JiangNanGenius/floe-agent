@@ -131,7 +131,25 @@ final class TTSSettingsService: ObservableObject {
     }
     func saveProfile(_ value: TTSSettingsSnapshot, credential: String) throws {
         var saved = value
+        // The compatible-endpoint override belongs to the OpenAI route only.
+        // Canonicalize (or reject) it here, before the credential or the
+        // profile is written; other providers always store nil so their
+        // persisted shape and dispatch stay unchanged.
+        if saved.provider == .openAI {
+            saved.openAIBaseURL = try TTSOpenAISpeechEndpoint.normalized(saved.openAIBaseURL)
+        } else {
+            saved.openAIBaseURL = nil
+        }
         let key = credential.trimmingCharacters(in: .whitespacesAndNewlines)
+        // A key issued by one service is never silently reused for another:
+        // a host/port change requires entering the new service's key even
+        // when a dedicated key or a reused connection is already stored.
+        // Path-only changes on the same origin keep the stored key.
+        if saved.provider == .openAI, key.isEmpty,
+           TTSOpenAISpeechEndpoint.originChanged(
+               from: profiles[profileID(saved)]?.openAIBaseURL, to: saved.openAIBaseURL) {
+            throw TTSSettingsFailure.credentialChangedRequiresNewKey
+        }
         if !key.isEmpty { try keychain.store(account: account(saved), secret: Data(key.utf8)); saved.connectionProviderID = nil }
         guard hasCredential(for: saved) || saved.connectionProviderID != nil else { throw TTSSettingsFailure.missingCredential }
         objectWillChange.send()
@@ -382,6 +400,14 @@ final class TTSSettingsService: ObservableObject {
 
     func credential(for settings: TTSSettingsSnapshot) async throws -> String {
         guard settings.provider.requiresCloudCredential else { return "" }
+        // Draft previews and in-flight snapshots must not carry a stored key
+        // across origins, even before an edited profile is saved.
+        if settings.provider == .openAI,
+           TTSOpenAISpeechEndpoint.originChanged(
+               from: profiles[profileID(settings)]?.openAIBaseURL,
+               to: settings.openAIBaseURL) {
+            throw TTSSettingsFailure.credentialChangedRequiresNewKey
+        }
         if let id = settings.connectionProviderID { return try await resolveConnection(id) }
         guard let data = try? keychain.read(account: account(settings)),
               let value = String(data: data, encoding: .utf8), !value.isEmpty else {
@@ -395,7 +421,7 @@ final class TTSSettingsService: ObservableObject {
     }
 }
 
-enum TTSSettingsFailure: Error { case missingCredential }
+enum TTSSettingsFailure: Error { case missingCredential; case credentialChangedRequiresNewKey }
 
 /// One utterance segment's forwarding channel plus its explicit close handle.
 ///
@@ -422,6 +448,13 @@ struct TTSConfiguredStream {
         let (stream, sender) = TTSAudioChunkStream.make()
         let producer = Task { @MainActor in
             do {
+                // Configuration (including the frozen OpenAI-compatible
+                // endpoint) is validated before the credential is resolved:
+                // an unusable request must report its configuration problem
+                // and never read or hand off a key.
+                if let problem = request.validationProblem() {
+                    throw TTSSynthesisError.invalidConfiguration(problem)
+                }
                 let value = try await credential()
                 try Task.checkCancellation()
                 for try await chunk in service.synthesize(request, credential: value) {
@@ -452,7 +485,8 @@ struct ConfiguredTTSSpeechSource {
         let request = TTSSynthesisRequest(
             sessionID: sessionID, segmentIndex: segmentIndex,
             provider: snapshot.provider, billingRoute: snapshot.billingRoute,
-            region: snapshot.alibabaRegion, modelID: snapshot.modelID,
+            region: snapshot.alibabaRegion, openAIBaseURL: snapshot.openAIBaseURL,
+            modelID: snapshot.modelID,
             voiceID: snapshot.voiceID, text: text, speechRateRatio: snapshot.speechRateRatio, language: snapshot.language
         )
         let settings = self.settings

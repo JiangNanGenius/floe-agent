@@ -68,15 +68,30 @@ private struct SpeechProfileEditor: View {
                             Text("voice.settings.region.international").tag("ap-southeast-1")
                         }
                     }
+                    if draft.provider == .openAI {
+                        TextField("voice.settings.api.url", text: Binding(
+                            get: { draft.openAIBaseURL ?? "" },
+                            set: { draft.openAIBaseURL = $0 }
+                        ), prompt: Text(verbatim: "https://api.openai.com/v1"))
+                            .keyboardType(.URL)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                     SecureField(settings.hasCredential(for: draft) ? "voice.settings.key.replace" : "voice.settings.key", text: $key)
+                        .keyboardType(.asciiCapable)
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                 }
                 Section {
-                    TextField("voice.settings.model", text: $draft.modelID).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("voice.settings.model", text: $draft.modelID)
+                        .keyboardType(.asciiCapable)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
                     Menu("voice.settings.model.choose") {
                         ForEach(suggestedModels, id: \.self) { model in Button(model) { draft.modelID = model } }
                     }
-                    TextField("voice.settings.voice.id", text: $draft.voiceID).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    TextField("voice.settings.voice.id", text: $draft.voiceID)
+                        .keyboardType(.asciiCapable)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
                     if draft.provider == .elevenLabs {
                         Button("voice.settings.voice.refresh") { Task { await fetchVoices() } }.disabled(fetching || !canAuthenticate)
                         if fetching { ProgressView() }
@@ -85,6 +100,22 @@ private struct SpeechProfileEditor: View {
                     Button(testing && playback.isSpeaking ? "voice.settings.audition.stop" : "voice.online.test", systemImage: testing && playback.isSpeaking ? "stop.fill" : "play.fill") {
                         if testing && playback.isSpeaking { playback.stop(); testing = false }
                         else {
+                            // Validate the endpoint before spending a request:
+                            // the router repeats this check, but the editor can
+                            // name the field that needs attention.
+                            if draft.provider == .openAI, let base = draft.openAIBaseURL,
+                               TTSOpenAISpeechEndpoint.validationProblem(for: base) != nil {
+                                failure = "voice.error.endpoint_invalid"
+                                return
+                            }
+                            if draft.provider == .openAI, enteredCredential.isEmpty,
+                               TTSOpenAISpeechEndpoint.originChanged(
+                                   from: settings.profile(provider: draft.provider, route: draft.billingRoute).openAIBaseURL,
+                                   to: draft.openAIBaseURL) {
+                                failure = "voice.error.endpoint_key_required"
+                                return
+                            }
+                            failure = nil
                             testing = true
                             playback.preview(FloeL10n.l("voice.settings.audition.sample"), settings: draft, credential: enteredCredential.isEmpty ? nil : enteredCredential)
                         }
@@ -108,7 +139,7 @@ private struct SpeechProfileEditor: View {
                             if let name = voices[draft.voiceID] { settings.rememberVoiceName(name, for: draft) }
                             key = ""; dismiss()
                         }
-                        catch { failure = "voice.error.key_save" }
+                        catch { failure = Self.saveFailureKey(for: error) }
                     }.disabled(!canAuthenticate || draft.modelID.isEmpty || draft.voiceID.isEmpty) }
                 }
                 .onAppear { prepareDefaults() }
@@ -137,6 +168,23 @@ private struct SpeechProfileEditor: View {
             guard owner == draft.profileIdentity else { return }
             voices = Dictionary(result.map { ($0.voiceID, $0.displayName) }, uniquingKeysWith: { a, _ in a })
         } catch { failure = SpeechFailureCopy.key(for: error) }
+    }
+
+    /// Save failures name the field that needs attention instead of folding
+    /// every outcome into one key error. Endpoint messages stay short and
+    /// actionable in both languages.
+    private static func saveFailureKey(for error: Error) -> String {
+        if let failure = error as? TTSSettingsFailure {
+            switch failure {
+            case .credentialChangedRequiresNewKey: return "voice.error.endpoint_key_required"
+            case .missingCredential: return "voice.error.key_save"
+            }
+        }
+        if let synthesis = error as? TTSSynthesisError,
+           case .invalidConfiguration = synthesis {
+            return "voice.error.endpoint_invalid"
+        }
+        return "voice.error.key_save"
     }
 }
 #endif

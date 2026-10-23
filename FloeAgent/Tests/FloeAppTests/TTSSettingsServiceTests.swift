@@ -2,6 +2,7 @@
 import XCTest
 import CryptoKit
 import FloeCore
+import FloeProviders
 import FloeSecurity
 import Synchronization
 @testable import FloeApp
@@ -268,6 +269,214 @@ final class TTSSettingsServiceTests: XCTestCase {
         XCTAssertEqual(fixture.settings.snapshot.voiceID, "serena")
         let legacyInstalled = await fixture.store.isInstalled(fixture.legacy)
         XCTAssertFalse(legacyInstalled, "A matching qualified replacement no longer needs the old pack")
+    }
+
+    // MARK: - Optional OpenAI-compatible endpoint
+
+    private func openAIProfile(baseURL: String?, model: String = "tts-1",
+                               voice: String = "alloy") -> TTSSettingsSnapshot {
+        var profile = TTSSettingsSnapshot.systemDefault
+        profile.provider = .openAI
+        profile.billingRoute = .payAsYouGo
+        profile.modelID = model
+        profile.voiceID = voice
+        profile.openAIBaseURL = baseURL
+        return profile
+    }
+
+    private func makeSettings() throws -> (name: String, defaults: UserDefaults, keychain: SpeechSettingsTestKeychain, settings: TTSSettingsService) {
+        let name = "tts-endpoint-test." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        let keychain = SpeechSettingsTestKeychain()
+        return (name, defaults, keychain, TTSSettingsService(defaults: defaults, keychain: keychain))
+    }
+
+    func testOpenAIEndpointPersistsCanonicalFormAndKeepsOfficialDefault() throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        // Default: no override, official endpoint.
+        XCTAssertNil(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL)
+        XCTAssertNil(settings.snapshot.openAIBaseURL)
+
+        try settings.saveProfile(
+            openAIProfile(baseURL: "  HTTPS://API.OpenAI-Proxy.org/v1/ "),
+            credential: "synthetic-key")
+        XCTAssertEqual(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL,
+                       "https://api.openai-proxy.org/v1",
+                       "The saved profile keeps the canonical address")
+        // Saving an account never selects it and never rewrites the active
+        // (system voice) snapshot.
+        XCTAssertEqual(settings.snapshot.provider, .apple)
+        XCTAssertNil(settings.snapshot.openAIBaseURL)
+
+        // A relaunch reads the same value back from persisted settings.
+        let reloaded = TTSSettingsService(defaults: fixture.defaults, keychain: fixture.keychain)
+        XCTAssertEqual(reloaded.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL,
+                       "https://api.openai-proxy.org/v1")
+    }
+
+    func testUnusableEndpointIsRejectedBeforeCredentialOrProfileWrite() throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        let draft = openAIProfile(baseURL: "http://insecure.example/v1")
+        XCTAssertThrowsError(try settings.saveProfile(draft, credential: "synthetic-key")) { error in
+            guard case .invalidConfiguration(let reason)? = error as? TTSSynthesisError else {
+                XCTFail("expected invalidConfiguration, got \(error)")
+                return
+            }
+            XCTAssertTrue(reason.contains("https"))
+        }
+        XCTAssertFalse(settings.hasCredential(for: draft), "A rejected address must not store the key")
+        XCTAssertNil(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL)
+        XCTAssertTrue(settings.configuredProfiles.isEmpty)
+    }
+
+    func testEndpointOriginChangeRequiresANewKeyAndNeverReusesTheStoredOne() async throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        try settings.saveProfile(openAIProfile(baseURL: nil), credential: "key-for-official")
+        let moved = openAIProfile(baseURL: "https://api.openai-proxy.org/v1")
+        XCTAssertThrowsError(try settings.saveProfile(moved, credential: "")) { error in
+            guard let failure = error as? TTSSettingsFailure,
+                  case .credentialChangedRequiresNewKey = failure else {
+                XCTFail("expected credentialChangedRequiresNewKey, got \(error)")
+                return
+            }
+        }
+        XCTAssertNil(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL,
+                     "The rejected save must not move the endpoint")
+        do {
+            _ = try await settings.credential(for: moved)
+            XCTFail("An unsaved preview must not send the official key to a different host")
+        } catch TTSSettingsFailure.credentialChangedRequiresNewKey {}
+        let untouched = try await settings.credential(for: openAIProfile(baseURL: nil))
+        XCTAssertEqual(untouched, "key-for-official")
+
+        // Supplying the new service's key completes the move.
+        try settings.saveProfile(moved, credential: "key-for-proxy")
+        XCTAssertEqual(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL,
+                       "https://api.openai-proxy.org/v1")
+        let replaced = try await settings.credential(for: moved)
+        XCTAssertEqual(replaced, "key-for-proxy")
+    }
+
+    func testStaleSnapshotCannotReadReplacementOriginCredential() async throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let old = openAIProfile(baseURL: "https://old.example/v1")
+        try fixture.settings.saveProfile(old, credential: "old-key")
+        try fixture.settings.saveProfile(openAIProfile(baseURL: "https://new.example/v1"), credential: "new-key")
+        do {
+            _ = try await fixture.settings.credential(for: old)
+            XCTFail("An old utterance must not send the replacement key to the former host")
+        } catch TTSSettingsFailure.credentialChangedRequiresNewKey {}
+    }
+
+    func testOrphanCredentialCannotAuthenticateCustomOrigin() async throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        try fixture.keychain.store(account: "tts.openAI.payAsYouGo", secret: Data("orphan-key".utf8))
+        let custom = openAIProfile(baseURL: "https://custom.example/v1")
+        XCTAssertThrowsError(try fixture.settings.saveProfile(custom, credential: ""))
+        do {
+            _ = try await fixture.settings.credential(for: custom)
+            XCTFail("A key without a saved origin cannot authenticate a custom host")
+        } catch TTSSettingsFailure.credentialChangedRequiresNewKey {}
+    }
+
+    func testSameOriginPathChangeKeepsTheStoredKey() async throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        try settings.saveProfile(
+            openAIProfile(baseURL: "https://api.openai-proxy.org/v1"), credential: "key-1")
+        let sameOrigin = openAIProfile(baseURL: "https://api.openai-proxy.org/gateway/v1")
+        try settings.saveProfile(sameOrigin, credential: "")
+        XCTAssertEqual(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL,
+                       "https://api.openai-proxy.org/gateway/v1")
+        let reused = try await settings.credential(for: sameOrigin)
+        XCTAssertEqual(reused, "key-1")
+    }
+
+    func testClearingEndpointBackToOfficialRequiresANewKey() throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        try settings.saveProfile(
+            openAIProfile(baseURL: "https://api.openai-proxy.org/v1"), credential: "key-proxy")
+        let official = openAIProfile(baseURL: "")
+        XCTAssertThrowsError(try settings.saveProfile(official, credential: "")) { error in
+            guard let failure = error as? TTSSettingsFailure,
+                  case .credentialChangedRequiresNewKey = failure else {
+                XCTFail("expected credentialChangedRequiresNewKey, got \(error)")
+                return
+            }
+        }
+        try settings.saveProfile(official, credential: "key-official")
+        XCTAssertNil(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL)
+    }
+
+    func testOtherProvidersNeverStoreTheOpenAIEndpoint() throws {
+        let fixture = try makeSettings()
+        defer { fixture.defaults.removePersistentDomain(forName: fixture.name) }
+        let settings = fixture.settings
+        var volc = TTSSettingsSnapshot.systemDefault
+        volc.provider = .volcengine
+        volc.billingRoute = .payAsYouGo
+        volc.modelID = "doubao-seed-tts-2.0"
+        volc.voiceID = "zh_female_vv_uranus_bigtts"
+        volc.openAIBaseURL = "https://ignored.example/v1"
+        try settings.saveProfile(volc, credential: "synthetic-volc")
+        XCTAssertNil(settings.profile(provider: .volcengine, route: .payAsYouGo).openAIBaseURL,
+                     "The address belongs to the OpenAI route only")
+    }
+
+    func testLegacyStoredSettingsDecodeWithoutAnEndpoint() throws {
+        let name = "tts-endpoint-legacy." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let legacy = #"{"provider":"openAI","billingRoute":"payAsYouGo","alibabaRegion":null,"modelID":"tts-1","voiceID":"alloy","speechRateRatio":1,"autoReadEnabled":false,"allowBargeIn":true,"connectionProviderID":null}"#
+        defaults.set(Data(legacy.utf8), forKey: "voice.output.settings.v1")
+        defaults.set(Data("{\"openAI.payAsYouGo\":\(legacy)}".utf8), forKey: "voice.output.profiles.v1")
+        let keychain = SpeechSettingsTestKeychain()
+        try keychain.store(account: "tts.openAI.payAsYouGo", secret: Data("legacy-key".utf8))
+        let settings = TTSSettingsService(defaults: defaults, keychain: keychain)
+        XCTAssertEqual(settings.snapshot.provider, .openAI)
+        XCTAssertNil(settings.snapshot.openAIBaseURL)
+        XCTAssertNil(settings.profile(provider: .openAI, route: .payAsYouGo).openAIBaseURL)
+        XCTAssertTrue(settings.hasCredential(for: settings.snapshot))
+    }
+
+    func testFrozenSnapshotEndpointIsValidatedBeforeDispatch() async throws {
+        // A corrupt persisted address (written before validation existed, or
+        // by an older build) must fail on dispatch without any network use.
+        let name = "tts-endpoint-dispatch." + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let legacy = #"{"provider":"openAI","billingRoute":"payAsYouGo","alibabaRegion":null,"openAIBaseURL":"http://insecure.example/v1","modelID":"tts-1","voiceID":"alloy","speechRateRatio":1,"autoReadEnabled":false,"allowBargeIn":true,"connectionProviderID":null}"#
+        defaults.set(Data(legacy.utf8), forKey: "voice.output.settings.v1")
+        let settings = TTSSettingsService(defaults: defaults, keychain: SpeechSettingsTestKeychain())
+        XCTAssertEqual(settings.snapshot.openAIBaseURL, "http://insecure.example/v1")
+
+        // No credential override and an empty keychain: if the configuration
+        // check ran after credential resolution this would surface
+        // credentialMissing instead.
+        let source = ConfiguredTTSSpeechSource(
+            snapshot: settings.snapshot, settings: settings,
+            service: TTSSpeechService())
+        let configured = source.synthesize(text: "hello", sessionID: UUID(), segmentIndex: 0)
+        var caught: Error?
+        do {
+            for try await _ in configured.stream {}
+        } catch { caught = error }
+        guard case .invalidConfiguration(let reason)? = caught as? TTSSynthesisError else {
+            XCTFail("expected invalidConfiguration, got \(String(describing: caught))")
+            return
+        }
+        XCTAssertTrue(reason.contains("https"))
     }
 
 }
