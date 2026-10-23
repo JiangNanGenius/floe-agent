@@ -7,8 +7,8 @@ remain unchanged. This is a small location-focused repair, not a full-App audit.
 
 | Outcome | State |
 | --- | --- |
-| Exact-source archive, internal/external beta, unsigned package and Feather | Pending qualified packaging |
-| Final artifact/export cleanup and main integration | Pending distribution |
+| Internal/external beta, unsigned package and Feather | Upload accepted; Apple processing, channel readback pending |
+| Final private-transport cleanup and delivery readback | Pending distribution |
 
 Implementation, generated metadata, focused tests and UI inspection are complete.
 Completed outcomes have been removed from the active table.
@@ -87,3 +87,14 @@ selected; no physical-phone display/audio action occurred. After evidence export
 and an open-reference check, the finished Simulator cache was removed:
 6,821,691,392 allocated bytes; observed free-space increase 6,804,406,272 bytes.
 Installed Simulator apps/data and the original failure evidence remain intact.
+
+## Archive and integration milestone
+
+Immutable `v1.7.49` binds `fb0b7626`. Xcode 27.1 device archive and package
+checks passed; original App, normalized recovery ZIP and 14 DWARFs are retained.
+The signed TestFlight upload was accepted in run 39928706037, with no App rebuild;
+Apple processing and group availability remain pending. See the
+[delivery record](releases/testflight/BUILD_290_DELIVERY.md) for independent gates.
+Source merged and pushed to main through `fb1616b6`; the merged task branch was
+retired. Finished Release DerivedData, uncompressed archive/App duplicates and
+transfer staging were cleaned after SHA-256/full ZIP CRC checks.
