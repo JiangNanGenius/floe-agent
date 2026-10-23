@@ -924,6 +924,17 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             return "the request exceeded the frozen 64 KiB engine wire bound"
         case LinuxShellTransportError.remoteFailed(let code):
             return "engine reported the request failed (code=\(code))"
+        case LinuxShellTransportError.remoteFailedWithRestore(let code, let restore):
+            // G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1):
+            // the SAME concise first line the legacy failure shows, then the
+            // bounded technical evidence in the explicitly-opened tool
+            // failure detail — the ORIGINAL import transaction's own
+            // measured reverse-restore counters, re-bound to this exact
+            // session/run by the trusted host pump before it settled the
+            // claim. Relative identities and counts only: no paths, no
+            // content, no args, no raw errors. Absent evidence NEVER lands
+            // here (the legacy case above stays byte-identical).
+            return "engine reported the request failed (code=\(code))\n" + restore.evidenceText
         case LinuxShellTransportError.replyMalformed:
             return "the engine reply frame could not be decoded; no outcome was assumed"
         case LinuxShellTransportError.hostFenced:

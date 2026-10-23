@@ -120,7 +120,10 @@ class RuntimeWorkspaceSession(
         val manifest = WorkspaceSyncManifest(destination.parentFile ?: throw WorkspaceBridgeException("destinationRootInvalid"),
                                             expectedProjectID, ops)
         val swap = WorkspaceImportSwap(destination, stageRoot, preserveRoot, File(journal, "swap.jsonl"),
-                                       manifest, ops)
+                                       manifest, ops, onFirstAppliedChange = {
+            com.floe.android.runtimeipc.RuntimeExecutionTrace.mark(
+                com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage.WORKSPACE_IMPORT_FIRST_CHANGE_APPLIED)
+        })
 
         val staged = mutableListOf<StagedEntry>()
         var stagedBytes = 0L
@@ -203,16 +206,35 @@ class RuntimeWorkspaceSession(
                 swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
             } catch (failure: WorkspaceSwapException) {
                 val restore = swap.restoreDetailed()
+                // Finite, data-free phase observations from SUCCESSFUL reverse
+                // operations, never planned changes. User cancellation may
+                // retire the native waiter before the original drain settles;
+                // diagnostics must not resurrect that waiter to report recovery.
+                if (restore.restoredPriorChanges > 0) {
+                    com.floe.android.runtimeipc.RuntimeExecutionTrace.mark(
+                        com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage.WORKSPACE_IMPORT_PRIOR_RESTORED)
+                }
+                if (restore.revertedNewEntries > 0) {
+                    com.floe.android.runtimeipc.RuntimeExecutionTrace.mark(
+                        com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage.WORKSPACE_IMPORT_NEW_REVERTED)
+                }
+                if (restore.retainedFailures > 0) {
+                    com.floe.android.runtimeipc.RuntimeExecutionTrace.mark(
+                        com.floe.android.runtimeipc.RuntimeExecutionTrace.Stage.WORKSPACE_IMPORT_RESTORE_INCOMPLETE)
+                }
                 // The reverse restore's ACTUAL typed outcome: how many prior
                 // changes were genuinely renamed back, how many new entries
                 // were genuinely reverted, how many failures stay retained in
                 // the preserve journal. Counters increment only on successful
-                // operations. This structured evidence rides the exception
-                // and remains COMPONENT-LOCAL + journal truth: the CURRENT
-                // failed-start path reaches the app only as the generic
-                // kernel "operation_failed" receipt, so nothing here may be
-                // described as a surfaced rollback proof until Main merges
-                // the bounded failed-receipt handoff (PROPOSED-HANDOFF).
+                // operations. This structured evidence rides the exception.
+                // Since job-150dee8e1ed14ba1 it reaches the app through the
+                // bounded failed-start receipt handoff (kernel terminal
+                // addenda -> host pump re-bind -> ORIGINAL claim status-1
+                // -> typed mailbox failure -> explicit tool-failure detail),
+                // published ONLY after the real drain/quiescence and the
+                // original grant close. Until Main runs the actual supported
+                // mid-import cancel fixture on an installed build, this stays
+                // component/journal truth, not a device-proven rollback.
                 // The legacy code string below is byte-identical to before.
                 val restoreEvidence = JSONObject()
                     .put("record", "importRestore")

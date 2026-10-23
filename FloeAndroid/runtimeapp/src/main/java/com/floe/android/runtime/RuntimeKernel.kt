@@ -165,11 +165,31 @@ class RuntimeKernel(context: Context) {
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
                     update(request.id, JSONObject().put("state", "completed").put("result", result))
-                } catch (_: Exception) {
+                } catch (failure: Exception) {
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_EXCEPTION)
                     // Never reflect command lines, paths, output or native error
                     // descriptions into Android system logs or generic notices.
-                    update(request.id, JSONObject().put("state", "failed").put("code", "operation_failed"))
+                    // The generic terminal skeleton stays byte-identical.
+                    // G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1):
+                    // ONLY the original workspace-bridge transaction may add
+                    // its own bounded typed code plus its OWN journal-measured
+                    // reverse-restore evidence to THIS kernel record, and only
+                    // within the closed size bound. The host pump re-binds the
+                    // identity to the exact grant session key, run and native
+                    // epoch and publishes it on the ORIGINAL claim only after
+                    // the real drain/quiescence and grant close; anything it
+                    // cannot bind is dropped. No other exception type can
+                    // reach these keys, and nothing here is a new reader,
+                    // registry or authority: it is the same transient receipt.
+                    val failed = JSONObject().put("state", "failed").put("code", "operation_failed")
+                    (failure as? com.floe.android.workspacebridge.WorkspaceBridgeException)
+                        ?.let { bridge ->
+                            failedStartReceiptAddenda(bridge.code, bridge.recovery?.toString())?.let {
+                                failed.put("failureCode", it.first)
+                                failed.put("recovery", JSONObject(it.second))
+                            }
+                        }
+                    update(request.id, failed)
                 } finally {
                     pendingInstallID.compareAndSet(request.id, null)
                     pendingShellID.compareAndSet(request.id, null)
@@ -222,5 +242,31 @@ class RuntimeKernel(context: Context) {
          *  the exclusive-start admission above). Ingested as a FACT only
          *  while the engine additionally reports itself idle. */
         const val WORKLOAD_CONTRACT = "floe-single-workload-v1"
+
+        /**
+         * G03-R3 failed-start receipt handoff (job-150dee8e1ed14ba1): the
+         * closed bounded form of the ORIGINAL workspace-bridge failure's
+         * addenda. Purely local decision, no state: the typed token must be
+         * printable ASCII <= 48 chars (no paths, no output, no line breaks),
+         * and the transaction's own journal-measured recovery JSON must fit
+         * the 4 KiB envelope ceiling. Anything else (including a missing
+         * recovery object) returns null so the failed receipt stays the
+         * byte-identical legacy skeleton. The host pump performs the full
+         * closed-grammar parse, identity re-bind and drain-ordering before
+         * publication; this is only the emitter-side size/type ceiling.
+         */
+        internal fun failedStartReceiptAddenda(
+            code: String, recoveryJson: String?,
+        ): Pair<String, String>? {
+            val recovery = recoveryJson?.takeIf {
+                it.toByteArray(Charsets.UTF_8).size <= FAILED_START_MAX_JSON_BYTES
+            } ?: return null
+            val token = code.takeIf {
+                it.length in 1..48 && it.all { c -> c.code in 0x21..0x7e }
+            } ?: return null
+            return token to recovery
+        }
+
+        private const val FAILED_START_MAX_JSON_BYTES = 4_096
     }
 }
