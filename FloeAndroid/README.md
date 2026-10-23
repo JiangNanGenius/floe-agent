@@ -21,6 +21,27 @@ local LLM backend.
 
 ## Android Alpha
 
+### Current: Alpha8
+
+[Download 0.1.0-alpha.8](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.8)
+contains one signed ARM64 APK, SHA256SUMS and the Linux runtime corresponding-source
+archive. The app installs its separately signed Linux component through Android's
+installer. Representative App checks covered local commands, Python/Node packages,
+system DNS, offline execution, cancellation and file recovery. The final code-10 APK
+passed preserved-data upgrades and existing-file hash readback on the API37 / 16 KiB
+tablet emulator and Samsung Android 13 / 4 KiB phone. Published files were downloaded
+and their complete hashes verified. This is a prerelease; the iOS stable Latest stays
+unchanged. No paid App-provider calls were made for this round.
+
+**Known issue:** task deletion on the tested Samsung Android 13 phone removes the
+list entry but can leave workspace data retained after a Core path check refuses
+cleanup. List removal does not confirm erasure. The original failure is preserved
+and a focused repair is in progress. G03 remains active until that cleanup path and
+the round's final cleanup are verified. Some cancelled or failed tool cards may
+also show an old status until the conversation is reopened.
+
+### Previous: Alpha7 / G02
+
 [Download 0.1.0-alpha.7](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.7)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
 Alpha7 fixes attachment publication, real native-handle forwarding and Home-to-thread
@@ -47,6 +68,8 @@ Linux, IDE, Office, system control and automatic updates remain later targets.
 See [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md) and
 [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
 Later targets are a backlog, not prequeued worker tasks.
+
+### G03-R2 source-stage record (historical)
 
 G03-R2 uses a separate-UID Linux runtime component; Core retains credentials,
 conversation storage and the original persistent-job authority. PRoot provides
