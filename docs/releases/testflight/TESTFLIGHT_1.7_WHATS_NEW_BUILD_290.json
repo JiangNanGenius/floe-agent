@@ -1,0 +1,4 @@
+{
+  "en-US": "1.7.49 (290): Background location support for requested weather and nearby searches. Check first-launch location permission, Background execution status, switching background options, and repeated location requests after cancellation. Tasks stop location assistance when finished.",
+  "zh-Hans": "1.7.49（290）：新增后台定位支持，任务可按需查询当前位置的天气和附近地点。请体验首次定位授权、后台执行中的定位状态、后台功能开关，以及取消后的再次定位。任务结束后停止定位辅助。"
+}

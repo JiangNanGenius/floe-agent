@@ -534,6 +534,12 @@ struct RootView: View {
             // remote run.
             GitHubActionsJobCenter.shared.scenePhaseChanged(active: newPhase == .active, sceneID: sceneID)
             if newPhase == .active, environment.persistenceReady {
+                // First active rendered launch, after setup readiness: ask for
+                // When-In-Use location access exactly once. Denied/restricted
+                // never re-prompts, and the app never requests Always. The
+                // shared service suppresses this inside an App-hosted unit
+                // test process.
+                LocationServicesCenter.shared.requestInitialAuthorizationIfNeeded()
                 Task {
                     try? await environment.configurationSync.synchronize()
                     await environment.conversationCenter.reload()
@@ -574,6 +580,11 @@ struct RootView: View {
         .task(id: environment.persistenceReady) {
             entryNavigationReady = false
             guard environment.persistenceReady else { return }
+            if scenePhase == .active {
+                // Covers a launch where persistence readiness landed after the
+                // scene-phase report (and is an idempotent no-op otherwise).
+                LocationServicesCenter.shared.requestInitialAuthorizationIfNeeded()
+            }
             Self.importCanvasSyncPreferenceFromCloud()
             NSUbiquitousKeyValueStore.default.synchronize()
             // Repair only rows left by a previous process before settings or

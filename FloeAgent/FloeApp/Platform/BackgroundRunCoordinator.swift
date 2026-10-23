@@ -162,7 +162,7 @@ enum ContinuedProcessingExpirationSequence {
 @MainActor
 final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate {
     private unowned let environment: AppEnvironment
-    private struct ActiveRun {
+    struct ActiveRun {
         let conversationID: UUID?
         let title: String
         /// When this workload first reported itself; used for the completion
@@ -178,6 +178,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         /// updates, suspension, approval, error or finish. In-memory
         /// activity/PiP tracking is unaffected.
         let publishesContent: Bool
+        /// Provider/remote media generation resumes through the durable media
+        /// job machinery; it is not local model/tool execution and must never
+        /// hold a background-location session.
+        var isProviderRemoteMediaWork = false
+        /// A suspended run (checkpointed, waiting for the user) stays in
+        /// `activeRuns`, but it is not executing work. Only a real resumed
+        /// activity/progress/tool event clears this.
+        var isAwaitingUserAttention = false
         var stage: String = FloeL10n.l("platform.background_run_coordinator.running")
         var progress: Int64 = 5
         var stageStartedAt = Date()
@@ -193,6 +201,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         var pendingApprovalToolName: String?
         var toolCallCount = 0
         var toolFailureCount = 0
+
+        /// True only for actual local execution: an ordinary agent run that
+        /// is not waiting on an approval and not suspended awaiting the user.
+        var isEligibleForBackgroundLocationAssist: Bool {
+            !isProviderRemoteMediaWork
+                && pendingApprovalToolName == nil
+                && !isAwaitingUserAttention
+        }
 
         func presentation(now: Date = Date()) -> String {
             let elapsed = max(0, Int(now.timeIntervalSince(stageStartedAt)))
@@ -499,6 +515,105 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
     }
 
+    /// The exact three facts the coordinator pushes to the shared location
+    /// service. Kept as a value so regressions assert the ACTUAL production
+    /// decision (capability OR, real-work eligibility, multiwindow scene
+    /// aggregation) instead of a mirrored formula.
+    struct BackgroundLocationInputs: Sendable, Equatable {
+        var supportEnabled: Bool
+        var workEligible: Bool
+        var fullyBackgroundScene: Bool
+    }
+
+    nonisolated static func backgroundLocationInputs(
+        options: BackgroundExecutionOptions,
+        statusPiPEnabled: Bool,
+        runs: [ActiveRun],
+        enabledLinuxEnvironmentIDs: [String],
+        heldLinuxEnvironmentIDs: [String],
+        runningLinuxEnvironmentIDs: [String],
+        aggregateScenePhase: ScenePhase
+    ) -> BackgroundLocationInputs {
+        let honored = honoredOptions(options, statusPiPEnabled: statusPiPEnabled)
+        let eligibleLinux = locationEligibleLinuxEnvironmentIDs(
+            heldEnvironmentIDs: heldLinuxEnvironmentIDs,
+            runningEnvironmentIDs: runningLinuxEnvironmentIDs,
+            enabledEnvironmentIDs: enabledLinuxEnvironmentIDs
+        )
+        return BackgroundLocationInputs(
+            supportEnabled: backgroundLocationSupportEnabled(for: honored),
+            workEligible: hasLocationEligibleWork(
+                runs: runs,
+                heldLinuxEnvironmentIDs: eligibleLinux.held,
+                runningLinuxEnvironmentIDs: eligibleLinux.running
+            ),
+            fullyBackgroundScene: aggregateScenePhase == .background
+        )
+    }
+
+    /// Background location has NO separate switch. It follows the EXISTING
+    /// honored background capabilities: when the app already promises that
+    /// real work may continue, an explicit weather/nearby lookup may also
+    /// finish. A disabled status-PiP release gate strips the visual flags via
+    /// `honoredOptions`, so those already-downgraded choices cannot silently
+    /// re-enable the assist.
+    nonisolated static func backgroundLocationSupportEnabled(
+        for honored: BackgroundExecutionOptions
+    ) -> Bool {
+        honored.enhancedBackgroundEnabled
+            || honored.pictureInPictureEnabled
+            || honored.screenFeedbackEnabled
+    }
+
+    /// Eligible work is actual local execution:
+    ///  • an ordinary agent run that is not waiting on approval and not
+    ///    suspended awaiting the user, or
+    ///  • a Linux guest the user explicitly allowed to run in the background
+    ///    and that is really running/held.
+    /// Provider/remote media jobs are durable work recovered by the media job
+    /// machinery, not local execution. Pending or future schedule plans have no
+    /// entry here at all.
+    nonisolated static func hasLocationEligibleWork(
+        runs: [ActiveRun],
+        heldLinuxEnvironmentIDs: [String],
+        runningLinuxEnvironmentIDs: [String]
+    ) -> Bool {
+        if !runningLinuxEnvironmentIDs.isEmpty { return true }
+        if !heldLinuxEnvironmentIDs.isEmpty { return true }
+        return runs.contains { $0.isEligibleForBackgroundLocationAssist }
+    }
+
+    /// A guest only counts as eligible work when the user explicitly allowed
+    /// THAT environment to run in the background AND the guest is actually
+    /// running/held. A running VM the user never enabled for background work
+    /// (or a stale surface entry) must not retain the location assist.
+    nonisolated static func locationEligibleLinuxEnvironmentIDs(
+        heldEnvironmentIDs: [String],
+        runningEnvironmentIDs: [String],
+        enabledEnvironmentIDs: [String]
+    ) -> (held: [String], running: [String]) {
+        let enabled = Set(enabledEnvironmentIDs)
+        let runningEligible = runningEnvironmentIDs.filter(enabled.contains)
+        let runningSet = Set(runningEligible)
+        // A hold is authority only for a guest that is still both permitted
+        // and actually running; a stale hold cannot keep the assist alive.
+        let heldEligible = heldEnvironmentIDs.filter {
+            enabled.contains($0) && runningSet.contains($0)
+        }
+        return (held: heldEligible, running: runningEligible)
+    }
+
+    /// Multiwindow aggregation: a single active scene keeps the app
+    /// foreground. Inactive alone (Control Center, a system sheet, a scene
+    /// handoff) is NOT background. Only every-window-background is.
+    nonisolated static func aggregateScenePhase(
+        _ phases: [String: ScenePhase]
+    ) -> ScenePhase {
+        if phases.values.contains(.active) { return .active }
+        if phases.values.contains(.inactive) { return .inactive }
+        return .background
+    }
+
     /// Automatic inline arming is owned by the PiP capability ALONE: screen
     /// feedback runs concurrently and must never downgrade PiP to a
     /// manual-only surface. The legacy `.screenShare` projection therefore
@@ -596,6 +711,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             options,
             statusPiPEnabled: StatusPiPReleaseGate.isEnabled
         )
+        // Background location follows the honored capability OR; a settings
+        // change re-evaluates it immediately (including in the background).
+        reconcileLocationAssist()
         if #available(iOS 26.0, *) {
             let launchPreferencesLoaded = environment.settingsCenter.launchPreferencesLoaded
             let keepsConversationTask = Self.shouldKeepContinuedProcessing(
@@ -861,6 +979,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 runTitle: title
             )
         }
+        reconcileLocationAssist()
     }
 
     /// A user-started Canvas image request is also a long provider workload.
@@ -890,6 +1009,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // (Canvas/media task status). Only the system notification is
             // suppressed for media; the record itself is content-published.
             publishesContent: true,
+            isProviderRemoteMediaWork: true,
             stage: FloeL10n.l("platform.background_run_coordinator.generating_media"),
             progress: 10
         )
@@ -911,6 +1031,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             conversationID: nil,
             runTitle: title
         )
+        reconcileLocationAssist()
     }
 
     func didFinishMediaGeneration(
@@ -936,7 +1057,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             active.outputCharacters += characters
         }
         if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
+        if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
+        reconcileLocationAssist()
     }
 
     /// Live tool activity for the floating surface. `finished` clears the
@@ -953,10 +1076,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             if failed { active.toolFailureCount += 1 }
             active.lastActivityAt = Date()
         }
+        if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
+        reconcileLocationAssist()
     }
 
     func didUpdatePendingApproval(runID: UUID, toolName: String?) {
@@ -967,6 +1092,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
+        reconcileLocationAssist()
     }
 
     enum ToolSurfaceOutcome: Sendable, Equatable {
@@ -980,10 +1106,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard var active = activeRuns[runID],
               checklist.canReplace(active.checklist, conversationID: active.conversationID) else { return }
         active.checklist = checklist
+        if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
+        reconcileLocationAssist()
     }
 
     func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false) {
@@ -997,6 +1125,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         active.stage = stage
         active.isGenerating = isGenerating
         active.progress = progress
+        // Real progress proves the run resumed after a suspension.
+        active.isAwaitingUserAttention = false
         activeRuns[runID] = active
         if #available(iOS 26.0, *),
            active.allowsContinuedProcessing,
@@ -1006,6 +1136,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: active.presentation())
         }
+        reconcileLocationAssist()
         // Temporary runs never enter the shared work history — not on
         // progress updates either.
         if active.publishesContent {
@@ -1028,6 +1159,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         guard var active = activeRuns[runID] else { return }
         active.stage = message
         active.progress = max(active.progress, 60)
+        // A suspension is the run waiting for the user: it stays visible in
+        // `activeRuns` but is no longer executing work of its own.
+        active.isAwaitingUserAttention = true
         activeRuns[runID] = active
         retainedPausedRun = (runID, active)
         // A suspension is a real user-action boundary (browser takeover and
@@ -1059,6 +1193,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 progressText: message
             )
         }
+        reconcileLocationAssist()
     }
 
     /// The three terminal outcomes a provider run can reach. Cancellation is
@@ -1248,6 +1383,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 resumeBackgroundSurfaceIfNeeded()
             }
         }
+        reconcileLocationAssist()
     }
 
     /// Honest success caption for the completion dwell: the task name, the
@@ -1782,6 +1918,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             FloeLogger(category: .app).info(
                 "linuxBackgroundSessionEnabled environment=\(environmentID)"
             )
+            reconcileLocationAssist()
         } else {
             linuxBackgroundPreferences[environmentID] = LinuxBackgroundRunPreference(
                 environmentID: environmentID,
@@ -1801,6 +1938,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             FloeLogger(category: .app).info(
                 "linuxBackgroundSessionDisabled environment=\(environmentID)"
             )
+            reconcileLocationAssist()
         }
     }
 
@@ -1841,6 +1979,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // the floating surface; the next background transition does.
             linuxBackgroundHold.updateForegroundEligibleEnvironmentIDs(eligible)
             publishLinuxSurfacePager()
+            reconcileLocationAssist()
             return
         }
         let decision = linuxBackgroundHold.updateEligibleEnvironmentIDs(eligible)
@@ -1864,6 +2003,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         for environmentID in linuxBackgroundHold.heldEnvironmentIDs {
             await publishLinuxSurfaceWork(environmentID: environmentID)
         }
+        reconcileLocationAssist()
     }
 
     /// Prepares the supported PiP surface for one held VM and arms AVKit's
@@ -2242,6 +2382,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxSurfacePager.reconcile(
             with: linuxBackgroundHold.heldEnvironmentIDs.compactMap { linuxSurfaceEntries[$0] }
         )
+        // A VM stop/removal publishes here; the last real guest work ending
+        // must clear the location assist immediately instead of relying on a
+        // later unrelated transition.
+        reconcileLocationAssist()
     }
 
     /// Publishes the surface state into the shared work registry so the PiP,
@@ -2992,14 +3136,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     func handleScenePhase(_ phase: ScenePhase, sceneID: String) {
         scenePhases[sceneID] = phase
-        let effective: ScenePhase
-        if scenePhases.values.contains(.active) {
-            effective = .active
-        } else if scenePhases.values.contains(.inactive) {
-            effective = .inactive
-        } else {
-            effective = .background
-        }
+        let effective = Self.aggregateScenePhase(scenePhases)
         let pipPhase: BackgroundPiPEffectiveScenePhase = switch effective {
         case .active: .active
         case .inactive: .inactive
@@ -3016,6 +3153,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         FloeLogger(category: .app).info(
             "scenePhaseReconciled scene=\(sceneID) reported=\(String(describing: phase)) effective=\(String(describing: effective)) scenes=\(scenePhases.count)"
         )
+        reconcileLocationAssist()
         switch effective {
         case .background:
             isAppInBackground = true
@@ -3082,6 +3220,54 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             break
         }
     }
+
+    /// Every lifecycle transition that can change local work, background
+    /// support or the aggregate scene phase pushes the same three facts to the
+    /// shared location service. The service owns the actual session/update
+    /// lifecycle and never infers work from stage text or run counts.
+    private func reconcileLocationAssist() {
+        let inputs = Self.backgroundLocationInputs(
+            options: environment.settingsCenter.backgroundExecutionOptions,
+            statusPiPEnabled: StatusPiPReleaseGate.isEnabled,
+            runs: Array(activeRuns.values),
+            enabledLinuxEnvironmentIDs: linuxBackgroundEnabledEnvironmentIDs(),
+            heldLinuxEnvironmentIDs: linuxBackgroundHold.heldEnvironmentIDs,
+            runningLinuxEnvironmentIDs: linuxSurfaceEntries.compactMap {
+                $0.value.state == .running ? $0.key : nil
+            },
+            aggregateScenePhase: effectiveScenePhase
+        )
+        LocationServicesCenter.shared.applyBackgroundLocationInputs(
+            supportEnabled: inputs.supportEnabled,
+            workEligible: inputs.workEligible,
+            fullyBackgroundScene: inputs.fullyBackgroundScene
+        )
+    }
+
+    private func hasLocationEligibleWork() -> Bool {
+        let eligibleLinux = Self.locationEligibleLinuxEnvironmentIDs(
+            heldEnvironmentIDs: linuxBackgroundHold.heldEnvironmentIDs,
+            runningEnvironmentIDs: linuxSurfaceEntries.compactMap {
+                $0.value.state == .running ? $0.key : nil
+            },
+            enabledEnvironmentIDs: linuxBackgroundEnabledEnvironmentIDs()
+        )
+        return Self.hasLocationEligibleWork(
+            runs: Array(activeRuns.values),
+            heldLinuxEnvironmentIDs: eligibleLinux.held,
+            runningLinuxEnvironmentIDs: eligibleLinux.running
+        )
+    }
+
+    #if DEBUG
+    /// Focused regressions assert the ACTUAL eligibility decision without
+    /// starting a location session or synthesizing scene side effects.
+    var locationAssistWorkEligibleForTesting: Bool { hasLocationEligibleWork() }
+
+    /// Runs the same reconciliation the lifecycle paths run, after a test has
+    /// swapped in a controlled-driver service.
+    func reconcileLocationAssistForTesting() { reconcileLocationAssist() }
+    #endif
 
     private func persistVisualSurfacePolicy() {
         guard let data = try? JSONEncoder().encode(visualSurfacePolicy) else { return }
