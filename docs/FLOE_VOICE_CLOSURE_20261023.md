@@ -41,12 +41,8 @@ or physical-device speech acceptance for these repairs.
 
 | Milestone | State |
 | --- | --- |
-| Live continuous voice and direct entry | Code ready; full-App and actual microphone checks pending |
-| Enhanced speech pack, voices and migration | Code ready; native repeated-synthesis repair verified on Mac; unified App qualification pending |
-| Memory cancellation and bounded personalization history | Code ready; unified qualification pending |
-| Settings navigation and message-owned speech errors | Settings/direct-entry/paused-error UI checked; behavioral repairs pending |
-| Notes/task/Canvas destination for inbound documents | Actual Files share and destination pickers checked; durable import test failures under repair |
-| Unified Swift 6/App build, behavior and UI/audio qualification | App and all test targets compiled at `0250fb01`; actual scoped tests failed (374 passed, 31 failed, 1 skipped); no release qualification yet |
+| Actual microphone and physical-device voice | Deferred while the user's iPhone is unavailable; no synthetic-I/O substitution |
+| Generic iOS Release build and recoverable device product | Pending |
 | Versioned delivery, merge and cleanup | Pending |
 
 ## Completed component evidence
@@ -63,14 +59,26 @@ or physical-device speech acceptance for these repairs.
 - Physical-phone testing is currently deferred at the user's request. The Mac
   phone-audio relay was stopped; this does not qualify the new microphone path.
 - Full Swift 6 App/test-target object compilation passed with Xcode 27.1
-  (`27A9275`) at `0250fb01`. The subsequent 406-test App-host run failed;
-  original result and crash evidence are retained. Failures are being repaired
-  before repeating the affected checks, without a skip waiver.
+  (`27A9275`) at `1e34d43e`. All 407 scoped App-host checks passed with
+  zero failures, skips or omitted declared functions. Coverage includes final
+  speech ownership, voice startup/restarts/cancellation, model migration and
+  cleanup, Memory cancellation, transactional personalization retention,
+  import destination ownership, durable draft reconciliation and Canvas recovery.
+  Original failed runs and crash evidence remain retained.
+- Hardware-dependent resource readings are controlled only in synthetic lease
+  tests; separate checks prove zero-memory and critical-thermal refusal preserves
+  installed files and leaves no lease. Production defaults continue reading the
+  actual device. This does not qualify physical speech inference.
 - The canonical iPad Simulator's actual Files share extension saved the synthetic
   PDF, and Floe offered Notes, Task and Canvas. Task search and existing/new
   Canvas choices were observed; cancellation preserved the original draft and
   attachment. The fixture was moved to recoverable private evidence afterward.
   These checks do not prove destination commit/recovery or physical-device I/O.
+- Final iPad picker inspection confirmed readable labels for unnamed tasks and
+  preserved the original draft after cancellation. Compact root navigation and
+  speech settings were inspected on the same canonical iPad; this is not an
+  actual iPhone geometry check. All task-owned synthetic inputs were moved into
+  recovery storage, and the task-started Simulator was shut down afterward.
 
 ## Verification and closeout
 
