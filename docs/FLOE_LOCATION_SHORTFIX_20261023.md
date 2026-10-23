@@ -5,14 +5,10 @@ remain unchanged. This is a small location-focused repair, not a full-App audit.
 
 ## Current work
 
-| Outcome | State |
-| --- | --- |
-| Internal/external beta, unsigned package and Feather | Upload accepted; Apple processing, channel readback pending |
-| Final private-transport cleanup and delivery readback | Pending distribution |
-
-Implementation, generated metadata, focused tests and UI inspection are complete.
-Completed outcomes have been removed from the active table.
-
+No implementation, qualification or distribution work remains for this round.
+Completed outcomes have been removed from the active table. Publictest1 has one
+submission waiting for Apple Beta Review; approval is an external state, not a
+claim of completed external installability. No follow-up timer was created.
 
 ## Behavior
 
@@ -98,3 +94,15 @@ Apple processing and group availability remain pending. See the
 Source merged and pushed to main through `fb1616b6`; the merged task branch was
 retired. Finished Release DerivedData, uncompressed archive/App duplicates and
 transfer staging were cleaned after SHA-256/full ZIP CRC checks.
+
+## Completed delivery
+
+Build 290 is independently verified VALID, unexpired and IN_BETA_TESTING in
+existing Floe QA. Publictest1 has exactly one pending_review submission and
+WAITING_FOR_BETA_REVIEW. Stable unsigned v1.7.49, the actual downloaded arm64
+iPhoneOS IPA and live Feather URL/hash/source/size all pass independent checks.
+Both consumers completed before deleting the private transport draft; a GET
+returned404 and the public tag remained unchanged. Main is pushed, the merged
+task branch is retired, all finished task build/staging duplicates are cleaned,
+and the final Simulator/phone-display process inventory is empty.
+See [the completed delivery record](releases/testflight/BUILD_290_DELIVERY.md).

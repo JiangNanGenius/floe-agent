@@ -3,9 +3,13 @@
 
 文档更新时间 / Document updated: 2026-10-23. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前批次为 **1.7.49（290）后台位置短修复**。代码已合并 main；Swift 6 完整 App／测试目标编译、80 项定向测试与复用 iPad 模拟器的权限／设置检查已完成，设备归档及匹配符号已保存。当前正在分发，尚不能据此认定 290 已可安装。[本轮记录](FLOE_LOCATION_SHORTFIX_20261023.md)。
+## 1.7.49（290）内部与无签名已交付，公测待审 / Delivered; external review pending
 
-The active location short fix is merged. Local qualification and exact-source archiving are complete; distribution is in progress. Build 290 availability is not yet asserted.
+后台位置短修复已合并 main：首次授权、按需后台位置工具、天气／附近查询链路及取消／超时保护已完成。Swift 6 完整 App／测试编译、80 项定向测试、既有 iPad 模拟器检查和设备归档通过；真实 GPS 与后台时长未冒充已验收。[290 交付记录](releases/testflight/BUILD_290_DELIVERY.md)保留完整渠道、验证与清理边界。
+
+内部 Floe QA 已独立核验可安装；[稳定无签名 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.49)和 Feather 实际文件／在线订阅回读一致。publictest1 已提交一次，独立回查为 `WAITING_FOR_BETA_REVIEW`、一条 `pending_review`，外部可安装仍待 Apple 批准。源码与完成记录已推送，本轮分支和无用产物已清理。[本轮完成记录](FLOE_LOCATION_SHORTFIX_20261023.md)。
+
+The location short fix is delivered internally and as a verified stable unsigned Release with matching Feather data. Publictest1 has one submission waiting for review. Qualification used the existing iPad Simulator; physical GPS and background duration are not claimed. Source integration and scoped cleanup are complete.
 
 ## 1.7.48（289）内部与无签名已交付，公测待审 / Delivered; external review pending
 
