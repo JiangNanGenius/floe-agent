@@ -41,8 +41,11 @@ or physical-device speech acceptance for these repairs.
 
 | Milestone | State |
 | --- | --- |
-| Versioned delivery | 1.7.48 (289) archive and transport package verified; signing/upload, public beta submission and unsigned publication in progress |
-| Final distribution cleanup | Pending consumer completion; build cache already removed |
+| Apple external beta review | Build 289 submitted to existing publictest1; independently confirmed WAITING_FOR_BETA_REVIEW |
+
+All implementation, qualification, distribution and cleanup work in this batch
+is complete. The only remaining external state is Apple beta review. No timer
+or automatic production release was created.
 
 Validation uses the one existing canonical iPad Simulator. The user explicitly
 requires Simulator-only agent validation and prohibits using their physical
@@ -86,9 +89,9 @@ quality remain unverified limitations, rather than a hardware waiting gate.
 - Generic `iphoneos` Release compilation passed at `855ec031` with Xcode 27.1.
   The arm64 App and 13 symbol bundles were saved immediately. All five App/
   extension products report 1.7.48 (289), `iphoneos`, and matching symbols.
-  This is an unsigned recoverable device product, not an uploaded or installable
-  TestFlight build. The Simulator build cache was removed after its evidence
-  export (6.68 GiB); the device cache is retained for the next archive/package step.
+  This was the pre-archive milestone. The final archive below retained 14
+  symbol bundles. Its generic product copy and build cache were retired after
+  verified recovery packaging and distribution; no rebuild is pending.
 
 ## Verification and closeout
 
@@ -124,3 +127,54 @@ open-file check: 8,540,770,304 allocated bytes; measured free-space increase
 created, reset or deleted. Existing app data and other owners' devices remain
 protected. Public beta reviewer text is recorded separately from the immutable
 App source in `docs/public-beta/build289/REVIEW_NOTES.txt`.
+
+## Build 289 completed delivery
+
+- Internal TestFlight: signing/upload run [39913579809](https://github.com/JiangNanGenius/floe-agent/actions/runs/39913579809)
+  completed. Independent inspection confirmed Apple `VALID`, unexpired and
+  `IN_BETA_TESTING` in the existing Floe QA group.
+- External TestFlight: the existing owner Safari session submitted Build 289
+  once to `publictest1`. GET-only inspection
+  [39918186738](https://github.com/JiangNanGenius/floe-agent/actions/runs/39918186738)
+  independently confirmed group attachment, `WAITING_FOR_BETA_REVIEW`, one
+  `pending_review` submission and no reported issues. This is submission,
+  not approval or external installability. The existing public link remains
+  [unchanged](https://testflight.apple.com/join/nz6qeT2J).
+  The earlier API attachment attempt returned 403 before submission; its failure
+  is retained. No credential permissions were expanded or duplicate submission made.
+- [Stable unsigned Release v1.7.48](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.48)
+  is published and latest. Its canonical IPA is 811,867,163 bytes, SHA-256
+  `c8982b1e8c4b8615af6cf521c6226998ba432d14fc816c820cc0b002ccda3117`.
+  Independent download verification passed source/tag binding, checksum,
+  arm64 iPhoneOS executable, bundle version and latest pointer checks.
+- Publishing run [39915579553](https://github.com/JiangNanGenius/floe-agent/actions/runs/39915579553)
+  completed its awaited Feather reusable job. Independent live feed read-back
+  matched the exact IPA URL, size, source `855ec031` and checksum. Public assets
+  contain only the unsigned IPA, checksum and minimal provenance.
+- Source is merged and pushed to main; the completed task branch was removed
+  locally and remotely after ancestry checks. The annotated release tag remains
+  immutable. Later reviewer-copy, policy and completion records are separate
+  from the frozen App artifact source. Production App Store state is unchanged.
+
+## Final retained artifacts and cleanup
+
+The current unsigned IPA/checksum, exact original App ZIP, normalized recovery
+transport with all 14 DWARF symbol bundles, provenance, archive metadata,
+original failures and focused qualification evidence remain retained. Build 288
+is retained as the necessary rollback package. Full ZIP CRC and SHA-256 checks
+passed before redundant uncompressed products were removed.
+
+Task-owned Simulator DerivedData, finished device/archive build cache, transfer
+staging, obsolete generic device product and redundant uncompressed archive/App
+copies were removed. Measured free-space increases at those cleanup boundaries
+were 7,117,766,656 internal bytes, 8,493,486,080 internal bytes, and respectively
+2,449,408, 2,168,156,160 and 2,000,773,120 external bytes. These are observed
+filesystem deltas, not a claim that nominal allocated sizes were all reclaimed
+on APFS. Shared useful dependency caches and qualified model inputs are retained.
+The private transport draft was deleted after both consumers finished; the
+public release and immutable tag were independently checked afterward.
+
+Final inventory confirms no booted Simulator and no Device Hub, QuickTime,
+iPhone Mirroring or xcodebuild process. Only the existing canonical iPad was
+used; no Simulator was created, cloned, erased or deleted. Existing Simulator
+apps/data, independent worktrees and the user's physical phone remain untouched.
