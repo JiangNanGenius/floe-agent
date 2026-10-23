@@ -172,3 +172,13 @@ Swift 6 object compilation with Xcode 27.1 (27A9275), arm64 Simulator.
   bytes with the original digest. Only the existing canonical iPad Simulator
   was used and it was shut down afterward. These are Simulator results; full
   App playback on the authorized M4 iPad and build 291 distribution remain pending.
+
+
+## Build 291 delivery readback — 2026-10-24
+
+- Immutable `v1.7.50` binds source `5bad82a68c26e9032bda1a82316804c675f75f5c`; the final delta from qualified `ff2150c5` is documentation only. All 41 focused cases and the local full Swift 6 App build passed before packaging.
+- Signing/upload run `40025195492` succeeded. Apple reports build 291 VALID, unexpired and available to Floe QA; the actual TestFlight build was installed on the authorized M4 iPad. Public group `publictest1` was submitted once and independently read back as waiting for review. This is not public beta approval.
+- Stable/latest unsigned [Release v1.7.50](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.50) and the awaited Feather downstream completed in run `40028688394`. The canonical IPA is 812,005,690 bytes, SHA-256 `d8dfd6272e035a0bfbc5df672106f8f215df954457dcc5e2570cde293648b5bd`. Primary post-publication verification passed, including immutable tag/source binding, remote digest, actual arm64 iOS device executable, latest pointer and the live feed's exact URL/source/hash. The consumed private transport draft was removed.
+- Actual build 291 search settings automatically refreshed the four official preset titles, preserving their enabled state and order. No name-only update badges or duplicate official subtitles remained; no configuration was renamed for testing.
+- M4 voice UI observation reached preparation, active playback and stopped states for the enhanced default voice; a separate Vivian preview returned to idle, preserving the selected Serena voice. These observations do not establish audible continuity or precise latency. Full-App cloud audition was not completed; production-adapter host evidence above remains distinct.
+- Main was pushed and the merged task branch removed. Canonical Simulator cleanup removed only generated wallpaper snapshot caches, symbolication and thumbnail caches: 38,174,179,328 allocated bytes, with 37,203,427,328 bytes measured free-space increase. Wallpaper settings/originals, all App data and the protected Promo environment remain intact. All Simulators remain shut down. Current installable artifacts, symbols, rollback material and original failures are retained; finished duplicate builds are removed after verified export.
