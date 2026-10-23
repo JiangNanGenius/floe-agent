@@ -747,7 +747,7 @@ final class ImportDestinationCenter: ObservableObject {
         switch outcome {
         case .applied, .alreadyApplied:
             return .taskReady(target: .existing(conversationID: conversationID))
-        case .deferred(let reason):
+        case .deferred(_, let reason):
             switch reason {
             case .unavailable:
                 return .failed(message: FloeL10n.l("app.entry.task_unavailable"))
@@ -797,6 +797,7 @@ final class ImportDestinationCenter: ObservableObject {
             case .imported(_, let count): result = .notesImported(documentCount: count)
             case .settled: result = .notesImported(documentCount: 0)
             case .deferredBusy: result = .deferred
+            case .unavailable: result = .failed(message: FloeL10n.l("app.entry.share_unavailable"))
             case .failed(_, let message):
                 result = .failed(message: message ?? FloeL10n.l("share.intake.failed"))
             case nil: result = .failed(message: ledgerMessage)
@@ -1267,7 +1268,7 @@ final class ImportDestinationCenter: ObservableObject {
             }
             var proven = decision
             proven.canvasTarget = operation.target
-            proven.plannedCanvasID = proven.plannedCanvasID ?? (operation.target.conversationID == nil ? canvasID : nil)
+            proven.plannedCanvasID = proven.plannedCanvasID ?? (operation.target.canvasID == nil ? canvasID : nil)
             proven.canvasOperationID = operation.operationID
             proven.units = proven.units.map { unit in
                 var updated = unit
@@ -1407,7 +1408,7 @@ final class ImportDestinationCenter: ObservableObject {
                 units: units,
                 canvasTarget: chosenTarget,
                 canvasOperationID: UUID(),
-                plannedCanvasID: chosenTarget.conversationID == nil ? UUID() : nil,
+                plannedCanvasID: chosenTarget.canvasID == nil ? UUID() : nil,
                 updatedAt: now()
             )
             do {
@@ -1455,7 +1456,7 @@ final class ImportDestinationCenter: ObservableObject {
                 units: [.init(key: Self.eventFileUnitKey, plannedNodeID: UUID())],
                 canvasTarget: chosenTarget,
                 canvasOperationID: UUID(),
-                plannedCanvasID: chosenTarget.conversationID == nil ? UUID() : nil,
+                plannedCanvasID: chosenTarget.canvasID == nil ? UUID() : nil,
                 updatedAt: now()
             )
             do {
@@ -1526,7 +1527,7 @@ final class ImportDestinationCenter: ObservableObject {
             var proven = decision
             proven.canvasOperationID = operation.operationID
             proven.plannedCanvasID = proven.plannedCanvasID
-                ?? (operation.target.conversationID == nil ? canvasID : nil)
+                ?? (operation.target.canvasID == nil ? canvasID : nil)
             proven.units = [.init(
                 key: Self.eventFileUnitKey,
                 plannedNodeID: plannedNodeID,
@@ -1645,14 +1646,14 @@ final class ImportDestinationCenter: ObservableObject {
         }
 
         guard let staged = try? await queue.pendingPayload(id: eventID),
-              let record = staged?.record,
-              record.state == .pending,
-              record.destinationChoiceRequired == true,
-              record.kind.requiresDestinationChoice,
-              let payloadURL = staged?.payloadURL else {
+              staged.record.state == .pending,
+              staged.record.destinationChoiceRequired == true,
+              staged.record.kind.requiresDestinationChoice else {
             return .failed(message: FloeL10n.l("app.entry.share_unavailable"))
         }
 
+        let record = staged.record
+        let payloadURL = staged.payloadURL
         let session: ShareInbox.StagingSession
         do {
             session = try inbox.beginStaging(producer: "Floe")
