@@ -149,6 +149,21 @@ public enum JobProcessorIdentity {
         guard let toolCallID, toolCallID.hasPrefix("jobs.") else { return nil }
         return UUID(uuidString: String(toolCallID.dropFirst("jobs.".count)))
     }
+
+    /// The INVERSE of `jobID(fromToolCallID:)`: the ORIGINAL durable
+    /// processor call identity the service freezes for a job row's
+    /// ToolContext (`BackgroundJobService.start`). Canonical uppercase
+    /// `jobs.<UUID uuidString>` — owner UUID strings ride UNCHANGED through
+    /// the grant lane (the same rule as the shell mailbox and the grant
+    /// identity echo), so every consumer re-derives the expected identity
+    /// from the ORIGINAL proven row instead of trusting a wire-echoed
+    /// variant, and a lowercase or foreign-shape claim is a mismatch,
+    /// never a near-hit. (G03-R3 jobs grant admission: this is the ONE
+    /// grammar definition; `LinuxWorkspaceAuthority` session-open job
+    /// fence and the service producer both use it.)
+    public static func callID(jobID: UUID) -> String {
+        "jobs." + jobID.uuidString
+    }
 }
 
 /// Wraps a job-target runner so the live index counts EXACTLY the real

@@ -549,6 +549,17 @@ public enum LinuxWorkspaceAuthority {
                                  requireRunActive: false)
     }
 
+    /// The ORIGINAL durable processor call identity the owning service
+    /// freezes for a job row (`BackgroundJobService.start`'s ToolContext).
+    /// One grammar, delegated to `JobProcessorIdentity.callID` (whose
+    /// `jobID(fromToolCallID:)` is the exact inverse): the session-open job
+    /// fence re-derives the expected claim from the ORIGINAL PROVEN ROW,
+    /// never from a wire echo, and the service producer mints through the
+    /// same accessor, so the two sides cannot drift.
+    internal static func durableJobCallID(rowID: UUID) -> String {
+        JobProcessorIdentity.callID(jobID: rowID)
+    }
+
     static func mintBindingShared(runID: UUID, grantID: String, toolCallID: String?, jobID: UUID?,
                                   requireRunActive: Bool) -> WorkspaceGrantBinding? {
         guard let proofSecret = currentProofSecret(), isInstalled,
@@ -888,10 +899,14 @@ public func floe_linux_workspace_session_open(_ bindingJson: UnsafePointer<CChar
           binding.runID == runID else {
         return workspaceError("bindingUnresolved", buffer: outBuffer, capacity: capacity)
     }
-    // Exact job identity: the opened grant's toolCallID must equal the row's
-    // ORIGINAL captured host call id when the row carries one.
-    if let row = resolution.jobRow, let recorded = row.toolCallID,
-       let claim = dictionary["toolCallID"] as? String, claim != recorded {
+    // Bind the claim to the proven row's durable processor identity.
+    // row.toolCallID is the submitting provider call's idempotency key;
+    // it belongs to a different identity space from jobs.<row UUID>.
+    // Mint/HMAC, live ownership, frozen workspace and single-use checks
+    // still bind this exact row and claim before the session opens.
+    if let row = resolution.jobRow,
+       let claim = dictionary["toolCallID"] as? String,
+       claim != LinuxWorkspaceAuthority.durableJobCallID(rowID: row.id) {
         return workspaceError("jobCallMismatch", buffer: outBuffer, capacity: capacity)
     }
     guard LinuxWorkspaceAuthority.consumeMint(grantID: grantID, binding: binding) else {

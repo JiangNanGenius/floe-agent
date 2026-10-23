@@ -14,8 +14,12 @@ import org.junit.Test
 /**
  * G03-R3 authored-not-run regressions for the FIRST-USE PREFLIGHT executor's
  * pure decision core. Covers Main's required cases: the faithful non-empty
- * baseline round-trip versus the forbidden EMPTY-export deletion plan, a
- * zero-entry export honest ONLY for a truly empty baseline, the canonical
+ * baseline round-trip versus the forbidden applied DELETION/staged-refusal
+ * plans (the forbidden EMPTY guest mirror of a non-empty baseline is pinned
+ * at the precommit layer below, where the pipeline actually refuses it),
+ * the honest zero-delta re-mirror of an in-sync workspace (G03-R3
+ * cold-start repair: the applied plan is zero because the ORIGINAL engine
+ * writes nothing that already matches), the canonical
  * lease evidence being real-event bound (never a hash of "true"), and the
  * bounded export verdict mapping. The harness/native paths (authority,
  * census, session IO) are exercised by Main's grouped compile + device
@@ -32,13 +36,30 @@ class RuntimeWorkspacePreflightGuardTest {
             stagedRefusals = 0))
     }
 
-    @Test fun nonEmptyBaselineExportingNothingIsADeletionPlanAndRefuses() {
-        // The headline forbidden case: the mirror would apply an EMPTY
-        // export against a NON-EMPTY baseline.
-        assertNotNull(RuntimeWorkspacePreflight.mirrorHonestyViolation(
+    /**
+     * G03-R3 cold-start repair (candidate09 deadlock). The ORIGINAL
+     * assertion pinned `mirrored = 3` with an all-zero APPLIED plan
+     * (deleted = 0, stagedRefusals = 0) as a refusal ("mirror_empty").
+     * That was the WRONG layer: the applied plan is zero exactly when the
+     * engine deduped every unchanged entry ("nothing to write"), which is
+     * the ordinary first preflight of an existing in-sync conversation.
+     * The refusal looped the generation back into an identical zero-delta
+     * round trip forever (stage:mirror_empty persisted through UI Retry;
+     * exec.shell honestly un-advertised; the candidate09 device evidence is
+     * COLD_READINESS_DISCOVERY_FAILURE_09.json + ui/alpha8-09-ingress-*.xml).
+     * The forbidden "non-empty baseline whose guest
+     * mirror stages NOTHING" is pinned HONESTLY at the precommit layer
+     * below (faithfulMirrorViolation(baseline, emptyMap()) == "deletion_plan",
+     * BEFORE any Core commit). The genuinely dangerous applied-plan shapes
+     * (real deletions, staged refusals) stay refused here.
+     */
+    @Test fun zeroAppliedFaithfulRemirrorOfInSyncWorkspaceIsHonest() {
+        // Complete faithful commit, every entry deduped unchanged: honest.
+        assertNull(RuntimeWorkspacePreflight.mirrorHonestyViolation(
             mirrored = 3, created = 0, replaced = 0, directories = 0, deleted = 0, links = 0,
             stagedRefusals = 0))
-        // Any explicit deletion is refused even when the rest looks fine.
+        // Any explicit deletion against the imported baseline is refused
+        // even when the rest looks fine.
         assertNotNull(RuntimeWorkspacePreflight.mirrorHonestyViolation(
             mirrored = 3, created = 1, replaced = 1, directories = 0, deleted = 2, links = 0,
             stagedRefusals = 0))
@@ -48,7 +69,7 @@ class RuntimeWorkspacePreflightGuardTest {
             stagedRefusals = 1))
     }
 
-    @Test fun zeroEntryExportIsHonestOnlyForATrulyEmptyBaseline() {
+    @Test fun zeroEntryExportOfEmptyBaselineStaysHonest() {
         assertNull(RuntimeWorkspacePreflight.mirrorHonestyViolation(
             mirrored = 0, created = 0, replaced = 0, directories = 0, deleted = 0, links = 0,
             stagedRefusals = 0))

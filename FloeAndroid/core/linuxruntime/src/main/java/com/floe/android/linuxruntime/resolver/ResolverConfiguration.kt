@@ -157,10 +157,11 @@ data class OwnedResolverFile(
 )
 
 /** The complete owned resolver file plan for one session. Always contains
- *  exactly one resolv.conf; bridged sessions additionally carry the
- *  deliberate no-`dns`-fallback nsswitch and require the runtime to bind
- *  the private per-work socket directory at [socketGuestPath] plus the
- *  verified helper .so at [helperGuestPath]. */
+ *  exactly one resolv.conf and exactly one minimal loopback-only hosts
+ *  file; bridged sessions additionally carry the deliberate
+ *  no-`dns`-fallback nsswitch and require the runtime to bind the private
+ *  per-work socket directory at [socketGuestPath] plus the verified
+ *  helper .so at [helperGuestPath]. */
 data class OwnedResolverPlan(
     val files: List<OwnedResolverFile>,
     val requiresHelperModule: Boolean,
@@ -202,6 +203,12 @@ object ResolverConfiguration {
      *  base image's baked systemd-resolved stub configuration. */
     const val GUEST_RESOLV_PATH = "/etc/resolv.conf"
 
+    /** Always bound with an owned file: the pinned base image ships
+     *  without /etc/hosts, which would leave the `files` NSS layer unable
+     *  to answer even `localhost`. A base image that does ship one is
+     *  replaced deterministically, exactly like resolv.conf/nsswitch.conf. */
+    const val GUEST_HOSTS_PATH = "/etc/hosts"
+
     /** Bridged NSS override: `files floe` with NO `dns` fallback (Main
      *  review). If the helper or bridge fails, resolution stops truthfully;
      *  there is deliberately no plaintext res_query tail that a stale or
@@ -227,6 +234,19 @@ object ResolverConfiguration {
         "rpc:            db files\n" +
         "\n" +
         "netgroup:       nis\n"
+
+    /** Minimal loopback-only hosts content, bound in EVERY resolver state
+     *  (including the offline/unsupported markers): answering `localhost`
+     *  is a local-command fact, never a network fact, and offline local
+     *  commands must keep working. It deliberately contains NO public
+     *  name and NO non-loopback address, so it can never authorize,
+     *  redirect or fabricate non-loopback resolution, and it never
+     *  shadows the bridged/direct paths for real names (those are not
+     *  listed here). Debian-conventional loopback aliases only. */
+    fun hostsOverrideText(): String =
+        "# floe-runtime owned hosts file (loopback only)\n" +
+        "127.0.0.1\tlocalhost\n" +
+        "::1\tlocalhost ip6-localhost ip6-loopback\n"
 
     fun decide(inputs: ResolverInputs): ResolverDecision {
         // 1. Preferred: the authenticated bridge whenever it is capable.
@@ -308,6 +328,10 @@ object ResolverConfiguration {
     fun ownedFilePlan(decision: ResolverDecision): OwnedResolverPlan {
         val files = mutableListOf(
             OwnedResolverFile("resolv.conf", decision.resolvConfText, GUEST_RESOLV_PATH),
+            // The base image ships without /etc/hosts; bind the owned
+            // loopback-only file in EVERY state so the `files` layer can
+            // answer localhost offline and no state depends on the network.
+            OwnedResolverFile("hosts", hostsOverrideText(), GUEST_HOSTS_PATH),
         )
         if (decision.state == ResolverState.BRIDGED) {
             files += OwnedResolverFile("nsswitch.conf", nsswitchOverrideText(), "/etc/nsswitch.conf")

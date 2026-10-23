@@ -17,6 +17,11 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -106,6 +111,24 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             } ?: "unknown"
             proof.put("workspaceStatus", status)
             if (status != "synced" && grant != null) proof.put("workspaceRecoveryRef", grant.sessionKey)
+            // Additive OPTIONAL recovery projection: the runtime's own import
+            // facts (kept ONLY when the exact session/run identity matches)
+            // merged with the ACTUAL Core-side EXPORT_FINISH reply when this
+            // grant captured one. Missing/unbound → the field stays absent;
+            // nothing is zeroed or fabricated.
+            val pageRecovery = proof.optJSONObject("workspaceRecovery")
+            proof.remove("workspaceRecovery")
+            val merged = runCatching {
+                mergeWorkspaceRecovery(
+                    pageRecovery?.let { kotlinx.serialization.json.Json.parseToJsonElement(it.toString())
+                        as? kotlinx.serialization.json.JsonObject },
+                    saved?.let { kotlinx.serialization.json.Json.parseToJsonElement(it.toString())
+                        as? kotlinx.serialization.json.JsonObject },
+                    grant?.sessionKey,
+                    runID,
+                )
+            }.getOrNull()?.toString()
+            if (merged != null) proof.put("workspaceRecovery", JSONObject(merged))
             workspaceGrant = null
             proof.put("epoch", nativeEpoch)
             synchronized(terminals) {
@@ -862,6 +885,101 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         internal fun isPeerRetirementProven(dispatchedToken: String?, currentIdentity: String?): Boolean =
             dispatchedToken != null && currentIdentity != null && currentIdentity != dispatchedToken
 
+        // ---- OPTIONAL per-execution recovery projection (merge authority) ----
+        // Bounds are diagnostic ceilings ONLY; they never widen the real
+        // workspace budgets and never truncate a status/identity skeleton.
+        private const val RECOVERY_MAX_JSON_BYTES = 8_192
+        private const val RECOVERY_MAX_PATH_BYTES = 256
+        private val RECOVERY_INDEX_DIGEST = Regex("^[0-9a-f]{64}$")
+        private val RECOVERY_TOKEN = Regex("^[!-~]{1,48}$")
+
+        /**
+         * Merge the runtime page's recovery projection with THIS grant's
+         * ACTUAL Core-side EXPORT_FINISH reply. Strict identity binding:
+         * the page must echo the exact grant sessionKey and this run's
+         * runID — a foreign or unbound projection is DROPPED, never
+         * attached to another run/conversation. When no matching Core
+         * terminal reply exists, the runtime's own typed view is retained
+         * as-is. Missing metadata stays missing; nothing is zeroed or
+         * cleared. A merged envelope over the diagnostic budget falls back
+         * to the (already bounded) runtime view.
+         */
+        internal fun mergeWorkspaceRecovery(page: JsonObject?, coreReply: JsonObject?,
+                                            sessionKey: String?, runID: String): JsonObject? {
+            if (page == null || sessionKey == null) return null
+            if (page.stringValue("sessionKey") != sessionKey) return null
+            // The page echoes the CORE canonical (UPPER-case) run UUID while
+            // this pump stores Java-normalised lower-case; compare the SAME
+            // UUID identity exactly, never a case-sensitive string accident.
+            val pageRun = page.stringValue("runID") ?: return null
+            try { if (UUID.fromString(pageRun) != UUID.fromString(runID)) return null }
+            catch (_: IllegalArgumentException) { return null }
+            val merged = LinkedHashMap<String, JsonElement>(page.toMap())
+            coreExportSection(coreReply, sessionKey)?.let { authoritative ->
+                merged["export"] = authoritative
+            }
+            val candidate = JsonObject(merged)
+            return if (candidate.toString().toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_JSON_BYTES)
+                candidate else page
+        }
+
+        /** The Core-side authority section: built ONLY from a terminal
+         *  EXPORT_FINISH reply whose recovery block names THIS session.
+         *  Relative paths, kinds, bounded counters and hex digests only. */
+        private fun coreExportSection(reply: JsonObject?, sessionKey: String): JsonObject? {
+            if (reply == null) return null
+            if (reply["ok"] ?.let { (it as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() } != true) return null
+            val result = reply.stringValue("result") ?: return null
+            if (result !in setOf("synced", "conflict", "aborted")) return null
+            val recovery = reply["recovery"] as? JsonObject ?: return null
+            if (recovery.stringValue("sessionKey") != sessionKey) return null
+            val out = LinkedHashMap<String, JsonElement>()
+            out["source"] = JsonPrimitive("core-export-finish")
+            out["result"] = JsonPrimitive(result)
+            (reply["applied"] as? JsonObject)?.let { applied ->
+                val counters = LinkedHashMap<String, JsonElement>()
+                for (key in listOf("created", "replaced", "directories", "deleted", "links")) {
+                    applied.longValue(key)?.takeIf { it >= 0 }?.let { counters[key] = JsonPrimitive(it) }
+                }
+                if (counters.isNotEmpty()) out["applied"] = JsonObject(counters)
+            }
+            (reply["counts"] as? JsonObject)?.let { counts ->
+                counts.longValue("failed")?.takeIf { it >= 0 }?.let { out["failed"] = JsonPrimitive(it) }
+                counts.longValue("stagedRefusals")?.takeIf { it >= 0 }?.let { out["stagedRefusals"] = JsonPrimitive(it) }
+            }
+            (reply["preview"] as? JsonObject)?.let { preview ->
+                val conflicts = preview["conflicts"] as? JsonArray
+                val shown = conflicts?.mapNotNull { element ->
+                    val item = element as? JsonObject ?: return@mapNotNull null
+                    val path = item.stringValue("path")?.takeIf {
+                        it.toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_PATH_BYTES
+                    } ?: return@mapNotNull null
+                    val kind = item.stringValue("kind")?.takeIf { RECOVERY_TOKEN.matches(it) } ?: return@mapNotNull null
+                    val artifact = item["artifact"]?.let { (it as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() } == true
+                    JsonObject(linkedMapOf<String, JsonElement>("path" to JsonPrimitive(path),
+                                                               "kind" to JsonPrimitive(kind),
+                                                               "artifact" to JsonPrimitive(artifact)))
+                }?.take(16)
+                if (!shown.isNullOrEmpty()) {
+                    out["conflicts"] = JsonArray(shown)
+                    if ((conflicts?.size ?: 0) > 16 ||
+                        preview["truncated"]?.let { (it as? JsonPrimitive)?.contentOrNull?.toBooleanStrictOrNull() } == true
+                    ) out["conflictsTruncated"] = JsonPrimitive(true)
+                }
+            }
+            reply.stringValue("planDigest")?.takeIf { RECOVERY_INDEX_DIGEST.matches(it) }
+                ?.let { out["planDigest"] = JsonPrimitive(it) }
+            recovery.stringValue("indexDigest")?.takeIf { RECOVERY_INDEX_DIGEST.matches(it) }
+                ?.let { out["indexDigest"] = JsonPrimitive(it) }
+            return JsonObject(out)
+        }
+
+        private fun JsonObject.stringValue(key: String): String? =
+            (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+
+        private fun JsonObject.longValue(key: String): Long? =
+            (this[key] as? JsonPrimitive)?.takeIf { !it.isString }?.contentOrNull?.toLongOrNull()
+
         internal fun boundedCode(failure: Exception): String =
             failure.message?.takeIf { it.isNotEmpty() && it.length <= 32 &&
                 it.all { c -> c.code in 0x21..0x7e } } ?: "preflight_failed"
@@ -908,12 +1026,17 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
 
     private fun copyWorkspaceProof(target: JSONObject, proof: JSONObject) {
         target.remove("workspaceStatus"); target.remove("workspaceRecoveryRef")
+        target.remove("workspaceRecovery")
         target.put("workspaceStatus", proof.optString("workspaceStatus", "unknown"))
         if (proof.has("workspaceRecoveryRef")) target.put("workspaceRecoveryRef", proof.getString("workspaceRecoveryRef"))
+        // The OPTIONAL merged recovery projection rides the same terminal
+        // proof channel (never a second registry); absence is preserved.
+        proof.optJSONObject("workspaceRecovery")?.let { target.put("workspaceRecovery", it) }
     }
 
     private fun terminalProof(page: JSONObject): JSONObject = JSONObject().put("state", "released").also { proof ->
-        for (key in listOf("sessionID", "cancelled", "stopReason", "exitCode", "termSig", "waitErrno", "workspaceStatus", "workspaceRecoveryRef")) {
+        for (key in listOf("sessionID", "cancelled", "stopReason", "exitCode", "termSig", "waitErrno",
+                           "workspaceStatus", "workspaceRecoveryRef", "workspaceRecovery")) {
             if (page.has(key)) proof.put(key, page.get(key))
         }
     }

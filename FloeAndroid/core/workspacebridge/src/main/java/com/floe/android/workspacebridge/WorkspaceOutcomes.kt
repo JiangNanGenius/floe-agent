@@ -41,13 +41,27 @@ data class WorkspaceBudgetsView(
     }
 }
 
+/** One regular-file copy the ORIGINAL import swap ACTUALLY preserved, with
+ *  the digests/byte sizes the engine measured on the real custody moves
+ *  (diverged prior bytes now in the owner-marked preserve tree, and the Core
+ *  baseline revision that took their place). Paths are workspace-relative;
+ *  no absolute path, no content, and nothing is reported for an entry whose
+ *  bytes the engine never actually hashed. */
+data class WorkspacePreservedCopy(
+    val path: String,
+    val preservedSha256: String,
+    val preservedBytes: Long,
+    val installedBaselineSha256: String,
+    val installedBaselineBytes: Long,
+)
+
 /** What `importBeforeLaunch` actually applied, from the Core baseline.
  *  A repeat import into the STABLE lease directory swaps transactionally:
  *  `replacedSynced` prior copies were already proven synced (their backups
  *  were pruned on acknowledge); `preservedUnsynced` prior bytes remain
  *  recoverable in the owner-marked preserve tree; `independentUntouched`
  *  counts destination entries the snapshot never collided with (never
- *  touched — later exports may legitimately sync them). */
+ *  touched — later exports may legitimately sync it). */
 data class WorkspaceImportReceipt(
     val sessionKey: String,
     val createdCount: Int,
@@ -61,6 +75,21 @@ data class WorkspaceImportReceipt(
      *  unreadables). Reported honestly; they never appeared in the guest. */
     val skippedCount: Int,
     val budgets: WorkspaceBudgetsView,
+    /** EXACT run identity the grant echoed at import (owner binding for the
+     *  bounded recovery projection). Defaults to ABSENT so any legacy
+     *  constructor keeps compiling and parsing byte-identically; an
+     *  absent/empty value is NEVER published as recoverable metadata — the
+     *  envelope omits the key and the Core-side pump merge rejects an
+     *  unbound projection outright (LinuxShellPump.mergeWorkspaceRecovery
+     *  plus its regression prove absence means unavailable, not zero). */
+    val runID: String = "",
+    /** Up to 16 digest-verified `swappedPreserved` copies (bounded, relative
+     *  paths only). Entries the engine could not measure — symlink preserves,
+     *  kind mismatches, pre-fact legacy journals — are simply ABSENT; the
+     *  full `preservedUnsyncedCount` still reports the total honestly. */
+    val preservedCopies: List<WorkspacePreservedCopy> = emptyList(),
+    /** True when MORE verified preserved copies existed than the bound shows. */
+    val preservedCopiesTruncated: Boolean = false,
 )
 
 data class WorkspaceConflictRecord(val path: String, val kind: String, val hasArtifact: Boolean)

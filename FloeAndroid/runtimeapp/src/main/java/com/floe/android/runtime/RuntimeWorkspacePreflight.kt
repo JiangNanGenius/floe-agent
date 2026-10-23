@@ -49,12 +49,15 @@ internal object RuntimeProcessIdentity {
  * command/cwd/env/stdin field is accepted (the closed payload field set
  * makes a command structurally impossible), no process is ever spawned,
  * and no network is touched — offline/denied-LAN states cannot block a
- * local preflight. Zero-entry export is honest ONLY when the baseline
- * mirrored zero entries; a non-empty baseline whose mirror stages nothing,
+ * local preflight. A non-empty baseline whose guest mirror stages NOTHING,
  * or whose imported baseline entries are missing/changed in the guest tree,
  * is refused as a deletion plan BEFORE any Core commit (the ORIGINAL
- * session pipeline's precommit faithful-mirror guard), with the applied-plan
- * check retained as the second layer.
+ * session pipeline's precommit faithful-mirror guard); the applied-plan
+ * check is retained as the second layer for real deletions and staged
+ * refusals. A COMPLETE faithful re-mirror that commits zero changes (the
+ * workspace already in sync — unchanged entries are planned with no
+ * effect by the ORIGINAL engine) is honest and settles ready (G03-R3
+ * cold-start repair; see mirrorHonestyViolation).
  *
  * Lease evidence: the ORIGINAL lease is acquired exclusively (the kernel's
  * single-workload admission already fences shells/installs) and released
@@ -199,16 +202,48 @@ internal object RuntimeWorkspacePreflight {
     }
 
     /** Faithful-mirror decision, pure and testable: returns the refusal
-     *  code when the applied export plan is NOT a faithful mirror of the
-     *  imported baseline. A DELETION plan (non-empty baseline losing
-     *  entries) is the headline forbidden case; zero export is honest only
-     *  for a truly empty baseline. */
+     *  code when the APPLIED export plan actually damaged the mirror: a
+     *  real DELETION against the imported baseline, or a staged entry the
+     *  engine refused to commit.
+     *
+     *  G03-R3 cold-start repair (candidate09 device deadlock,
+     *  COLD_READINESS_DISCOVERY_FAILURE_09.json): the previous
+     *  `mirror_empty` branch treated a legitimate NO-CHANGE re-mirror as
+     *  dishonest. The ORIGINAL engine dedupes per path — an unchanged
+     *  file/directory/link is planned with NO effect
+     *  (WorkspaceCommitPlanner: "Unchanged everywhere: nothing to write"),
+     *  so EVERY first-use preflight of an existing conversation whose
+     *  workspace is already in sync applied exactly zero entries on a
+     *  COMPLETE, faithful, zero-conflict commit. That reply was aborted as
+     *  mirror_empty, the pump invalidated the whole generation's facts on
+     *  it, and the next attempt produced the identical zero-delta —
+     *  exec.shell stayed honestly un-advertised forever (UI Retry re-runs
+     *  the same round trip; no Linux command can ever change the workspace
+     *  it cannot run). Cold-existing AND new-task turns after the first
+     *  in-sync run share this deadlock; it, not the schema loading, is why
+     *  real tools.search answers "No matching executable tool".
+     *  The forbidden case this branch tried to catch — a non-empty
+     *  baseline whose guest mirror silently staged NOTHING — is already
+     *  refused BEFORE any Core commit by the precommit faithful-mirror
+     *  guard (RuntimeWorkspaceSession.faithfulMirrorViolation: missing
+     *  entries -> deletion_plan, including the empty mirror of a non-empty
+     *  baseline; changed representation -> mirror_unfaithful), by the
+     *  budget-complete walk (a truncating walk returns budgetExceeded
+     *  before EXPORT_BEGIN) and by skippedCount==0 enforced in the
+     *  executor. With all of those passed, a Synced outcome carrying zero
+     *  applied entries and zero deletions/refusals has exactly one sound
+     *  reading: baseline == guest == Core current, an honest zero-delta
+     *  sync. NOTHING is hardened here: the real grant, real whole-UID
+     *  quiescence proofs, real commit settlement, real abandonUnstarted
+     *  lease release and the real index-read-back digest are all still
+     *  required for the ready reply. The `mirror_empty` token stays in the
+     *  closed diagnostic vocabulary for historical records; no producer in
+     *  this lane can still emit it. */
     internal fun mirrorHonestyViolation(mirrored: Long, created: Long, replaced: Long,
                                         directories: Long, deleted: Long, links: Long,
                                         stagedRefusals: Int): String? = when {
         deleted > 0 -> "deletion_plan"
         stagedRefusals > 0 -> "mirror_refused"
-        mirrored > 0 && created + replaced + directories + links == 0L -> "mirror_empty"
         else -> null
     }
 

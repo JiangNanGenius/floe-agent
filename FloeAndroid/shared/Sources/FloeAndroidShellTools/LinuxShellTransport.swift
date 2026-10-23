@@ -64,6 +64,7 @@
 // defines the vocabulary only.
 
 import Foundation
+import CoreFoundation
 import FloeCore
 
 // MARK: - Typed requests and replies
@@ -225,6 +226,270 @@ public enum LinuxShellSessionState: Sendable, Equatable {
     public var isTerminalQuiescent: Bool { self == .terminated }
 }
 
+/// One digest-verified prior copy the ORIGINAL import swap actually
+/// preserved for this execution: the unsynced guest-side bytes moved into
+/// the owner-marked preserve journal (`preservedSHA256/preservedBytes`) and
+/// the installed Core baseline revision (`installedBaselineSHA256/
+/// installedBaselineBytes`). Paths are workspace-relative only; bytes are
+/// counts, never content.
+public struct LinuxShellRecoveryCopy: Sendable, Equatable {
+    public var path: String
+    public var preservedSHA256: String
+    public var preservedBytes: Int
+    public var installedBaselineSHA256: String
+    public var installedBaselineBytes: Int
+}
+
+/// A typed refused-entry line from the ORIGINAL export committer preview
+/// (relative path + kind + whether a user-file artifact was retained).
+public struct LinuxShellExportConflictRecord: Sendable, Equatable {
+    public var path: String
+    public var kind: String
+    public var artifact: Bool
+}
+
+/// The OPTIONAL bounded per-execution recovery projection riding the
+/// existing start/poll/terminal envelope. Every field is a fact the engine
+/// itself measured on a real custody move or a typed terminal outcome;
+/// anything unobserved stays ABSENT (never a fake zero). Strict by design:
+/// `parse` returns nil for any violation so a malformed supplementary
+/// object can never poison the legacy poll contract or cross sessions.
+public struct LinuxShellWorkspaceRecovery: Sendable, Equatable {
+    public var sessionKey: String
+    public var runID: String?
+    /// Original typed import outcome: "swappedPreserved" | "swappedSynced"
+    /// | "conflict" | "clean".
+    public var importOutcome: String
+    public var created: Int
+    public var replacedSynced: Int
+    public var preservedUnsynced: Int
+    public var unchanged: Int
+    public var appliedBytes: Int
+    public var preserved: [LinuxShellRecoveryCopy]
+    public var preservedTruncated: Bool
+    public var preservedDroppedForBudget: Bool
+    public var conflictPaths: [String]
+    public var conflictsTruncated: Bool
+    public var conflictsDroppedForBudget: Bool
+    /// Typed export views. `exportResult` is present only when a terminal
+    /// result was actually reported ("synced" | "conflict" | "aborted");
+    /// `exportFailureCode` carries the original runtime failure token;
+    /// `fromCoreReceipt` marks the Core-side EXPORT_FINISH authority.
+    public var exportResult: String?
+    public var exportFailureCode: String?
+    public var exportStagedPreserved: Bool?
+    public var exportPlanDigest: String?
+    public var exportIndexDigest: String?
+    public var exportConflicts: [LinuxShellExportConflictRecord]
+    public var exportConflictsTruncated: Bool
+    public var fromCoreReceipt: Bool
+
+    /// True when there is something non-trivial worth surfacing: a not
+    /// synced export, or an import that preserved diverged bytes.
+    public var hasActionableEvidence: Bool {
+        exportResult != "synced" || exportFailureCode != nil || preservedUnsynced > 0
+    }
+
+    private static let digestPattern = "^[0-9a-f]{64}$"
+    private static let sessionKeyPattern = "^[0-9a-f]{32}$"
+    private static let tokenPattern = "^[!-~]{1,48}$"
+
+    /// Strict bounded parse; returns nil when absent OR anything violates
+    /// the grammar (the poll/settlement contract itself is unaffected).
+    public static func parse(_ value: Any?) -> LinuxShellWorkspaceRecovery? {
+        guard let object = value as? [String: Any] else { return nil }
+        guard JSONSerialization.isValidJSONObject(object),
+              let encoded = try? JSONSerialization.data(withJSONObject: object),
+              encoded.count <= 8_192 else { return nil }
+        func exactCounter(_ fields: [String: Any], _ key: String) -> Int? {
+            guard let number = fields[key] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  number.doubleValue.isFinite else { return nil }
+            let integer = number.int64Value
+            guard integer >= 0,
+                  number.compare(NSNumber(value: integer)) == .orderedSame else { return nil }
+            return Int(integer)
+        }
+        func validRelativePath(_ path: String) -> Bool {
+            guard !path.isEmpty, path.utf8.count <= 256,
+                  path.unicodeScalars.allSatisfy({ $0.value >= 0x20 && $0.value != 0x7f }) else { return false }
+            return path.split(separator: "/", omittingEmptySubsequences: false)
+                .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+        }
+        guard let sessionKey = object["sessionKey"] as? String,
+              sessionKey.range(of: sessionKeyPattern, options: .regularExpression) != nil,
+              sessionKey.count == 32 else { return nil }
+        var runID: String?
+        if let rawRun = object["runID"] as? String {
+            guard rawRun.range(of: "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$",
+                               options: .regularExpression) != nil else { return nil }
+            runID = rawRun
+        }
+        guard let section = object["import"] as? [String: Any],
+              let outcome = section["outcome"] as? String,
+              ["swappedPreserved", "swappedSynced", "conflict", "clean"].contains(outcome) else { return nil }
+        // Numeric fields use the SAME trust idiom as the existing strict
+        // poll counters (NSNumber bridge; the emitter is the peer-verified
+        // runtime and the pump's identity binding was already enforced).
+        func counter(_ key: String) -> Int? {
+            exactCounter(section, key)
+        }
+        guard let created = counter("created"), let replacedSynced = counter("replacedSynced"),
+              let preservedUnsynced = counter("preservedUnsynced"), let unchanged = counter("unchanged"),
+              let appliedBytes = counter("appliedBytes") else { return nil }
+        var preserved: [LinuxShellRecoveryCopy] = []
+        if let array = section["preserved"] as? [Any] {
+            guard array.count <= 16 else { return nil }
+            for item in array {
+                guard let copy = item as? [String: Any],
+                      let path = copy["path"] as? String,
+                      validRelativePath(path),
+                      copy["action"] as? String == "swappedPreserved",
+                      let preservedSHA256 = copy["preservedSha256"] as? String,
+                      preservedSHA256.range(of: digestPattern, options: .regularExpression) != nil,
+                      let installed = copy["installedBaselineSha256"] as? String,
+                      installed.range(of: digestPattern, options: .regularExpression) != nil,
+                      let preservedBytes = exactCounter(copy, "preservedBytes"),
+                      preservedBytes >= 0,
+                      let installedBytes = exactCounter(copy, "installedBaselineBytes"),
+                      installedBytes >= 0 else { return nil }
+                preserved.append(LinuxShellRecoveryCopy(path: path, preservedSHA256: preservedSHA256,
+                                                        preservedBytes: Int(preservedBytes),
+                                                        installedBaselineSHA256: installed,
+                                                        installedBaselineBytes: Int(installedBytes)))
+            }
+        }
+        var conflictPaths: [String] = []
+        if let array = section["conflicts"] as? [Any] {
+            guard array.count <= 16 else { return nil }
+            for item in array {
+                guard let path = item as? String, validRelativePath(path) else { return nil }
+                conflictPaths.append(path)
+            }
+        }
+        guard let export = object["export"] as? [String: Any] else { return nil }
+        var exportResult: String?
+        if let result = export["result"] as? String {
+            guard ["synced", "conflict", "aborted"].contains(result) else { return nil }
+            exportResult = result
+        }
+        var exportFailureCode: String?
+        if let code = export["failureCode"] as? String {
+            guard code.range(of: tokenPattern, options: .regularExpression) != nil else { return nil }
+            exportFailureCode = code
+        }
+        let stagedPreserved = export["stagedPreserved"] as? Bool
+        func exportDigest(_ key: String) -> String? {
+            guard let raw = export[key] as? String else { return nil }
+            return raw.range(of: digestPattern, options: .regularExpression) != nil ? raw : nil
+        }
+        var exportConflicts: [LinuxShellExportConflictRecord] = []
+        if let array = export["conflicts"] as? [Any] {
+            guard array.count <= 16 else { return nil }
+            for item in array {
+                guard let record = item as? [String: Any],
+                      let path = record["path"] as? String, validRelativePath(path),
+                      let kind = record["kind"] as? String,
+                      kind.range(of: tokenPattern, options: .regularExpression) != nil else { return nil }
+                exportConflicts.append(LinuxShellExportConflictRecord(path: path, kind: kind,
+                                                                       artifact: record["artifact"] as? Bool ?? false))
+            }
+        }
+        return LinuxShellWorkspaceRecovery(
+            sessionKey: sessionKey, runID: runID, importOutcome: outcome,
+            created: created, replacedSynced: replacedSynced, preservedUnsynced: preservedUnsynced,
+            unchanged: unchanged, appliedBytes: appliedBytes,
+            preserved: preserved,
+            preservedTruncated: section["preservedTruncated"] as? Bool ?? false,
+            preservedDroppedForBudget: section["preservedDroppedForBudget"] as? Bool ?? false,
+            conflictPaths: conflictPaths,
+            conflictsTruncated: section["conflictsTruncated"] as? Bool ?? false,
+            conflictsDroppedForBudget: section["conflictsDroppedForBudget"] as? Bool ?? false,
+            exportResult: exportResult, exportFailureCode: exportFailureCode,
+            exportStagedPreserved: stagedPreserved,
+            exportPlanDigest: exportDigest("planDigest"),
+            exportIndexDigest: exportDigest("indexDigest"),
+            exportConflicts: exportConflicts,
+            exportConflictsTruncated: export["conflictsTruncated"] as? Bool ?? false,
+            fromCoreReceipt: export["source"] as? String == "core-export-finish")
+    }
+
+    /// Concise, actionable first-line state for ordinary tool summaries
+    /// (no host paths, no implementation jargon). Returns nil when there is
+    /// nothing honest to add beyond the existing status/recovery sentence.
+    public var recoverableSummary: String? {
+        preservedUnsynced > 0
+            ? "Unsaved changes were preserved and remain recoverable."
+            : nil
+    }
+
+    /// Bounded technical evidence (explicitly-opened tool detail only).
+    /// Shows the FULL measured SHA-256 values for the entries it lists —
+    /// both-revision verification needs exact digests, never prefixes. When
+    /// the size cap is reached it DROPS WHOLE LINES (entry or optional
+    /// digest fields) and says so honestly; it never truncates a digest.
+    /// Nil when there is nothing to show.
+    public var evidenceText: String? {
+        guard hasActionableEvidence else { return nil }
+        let cap = 2_560
+        var result: [String] = []
+        var used = 0
+        func push(_ line: String) -> Bool {
+            let extra = line.utf8.count + (result.isEmpty ? 0 : 1)
+            guard used + extra <= cap else { return false }
+            result.append(line); used += extra
+            return true
+        }
+        push("recovery-evidence session=\(sessionKey)\(runID.map { " run=\($0)" } ?? "")")
+        push("import: outcome=\(importOutcome) created=\(created) replacedSynced=\(replacedSynced)"
+             + " preservedUnsynced=\(preservedUnsynced) unchanged=\(unchanged) appliedBytes=\(appliedBytes)")
+        var exportLine = "export:"
+        if let exportResult { exportLine += " result=\(exportResult)" }
+        if let exportFailureCode { exportLine += " failure=\(exportFailureCode)" }
+        if let exportStagedPreserved { exportLine += " stagedPreserved=\(exportStagedPreserved)" }
+        if fromCoreReceipt { exportLine += " source=core-receipt" }
+        var exportDigests = ""
+        if let exportIndexDigest { exportDigests += " baselineIndex=\(exportIndexDigest)" }
+        if let exportPlanDigest { exportDigests += " plan=\(exportPlanDigest)" }
+        if !push(exportLine + exportDigests) {
+            push(exportLine)
+            if !exportDigests.isEmpty { push("export digests omitted for size (full values stay in the session journal)") }
+        }
+        if preserved.isEmpty && preservedUnsynced > 0 {
+            push("preserved entries lack measured digests (unhashed kinds or pre-fact journals)")
+        }
+        if preservedTruncated { push("preserved list truncated by the engine cap (more exist in the session journal)") }
+        if preservedDroppedForBudget { push("preserved list dropped for envelope budget") }
+        var shown = 0
+        var omittedEntries = 0
+        var stop = false
+        for copy in preserved {
+            if stop { omittedEntries += 1; continue }
+            let line = "preserved: \(copy.path) unsaved=\(copy.preservedSHA256) bytes=\(copy.preservedBytes)"
+                + " baseline=\(copy.installedBaselineSHA256) baselineBytes=\(copy.installedBaselineBytes)"
+            if push(line) { shown += 1 } else { stop = true; omittedEntries += 1 }
+        }
+        if omittedEntries > 0 {
+            push("\(omittedEntries) preserved line(s) omitted for size (full digests stay in the session journal)")
+        }
+        if !conflictPaths.isEmpty {
+            let line = "import conflicts: \(conflictPaths.joined(separator: ", "))\(conflictsTruncated ? " (truncated)" : "")"
+            if !push(line) { push("import conflict list omitted for size") }
+        }
+        if conflictsDroppedForBudget { push("import conflict list dropped for envelope budget") }
+        var omittedExports = 0
+        var stopExports = false
+        for record in exportConflicts {
+            if stopExports { omittedExports += 1; continue }
+            let line = "export conflict: \(record.path) (\(record.kind)\(record.artifact ? ", user file retained" : ""))"
+            if push(line) { continue } else { stopExports = true; omittedExports += 1 }
+        }
+        if omittedExports > 0 { push("\(omittedExports) export conflict line(s) omitted for size") }
+        if exportConflictsTruncated { push("export conflict list truncated by the engine cap") }
+        return result.isEmpty ? nil : result.joined(separator: "\n")
+    }
+}
+
 public struct LinuxShellPollReply: Sendable, Equatable {
     public var sessionID: String
     /// MERGED PTY output bytes for this cursor window (stdout and stderr
@@ -255,13 +520,18 @@ public struct LinuxShellPollReply: Sendable, Equatable {
     /// File exchange settles separately from process/lease termination.
     public var workspaceStatus: String?
     public var workspaceRecoveryRef: String?
+    /// OPTIONAL bounded per-execution recovery projection already validated
+    /// by the transport (`nil` when absent, foreign or malformed — a bad
+    /// supplementary object NEVER fails the legacy poll contract).
+    public var workspaceRecovery: LinuxShellWorkspaceRecovery?
 
     public init(sessionID: String, mergedOutput: Data, cursor: UInt64,
                 gapBytes: Int, more: Bool, droppedBytes: Int,
                 state: LinuxShellSessionState, leaseReleased: Bool,
                 cancelled: Bool = false, stopReason: String? = nil,
                 exitCode: Int32? = nil, termSig: Int32? = nil, waitErrno: Int32? = nil,
-                workspaceStatus: String? = nil, workspaceRecoveryRef: String? = nil) {
+                workspaceStatus: String? = nil, workspaceRecoveryRef: String? = nil,
+                workspaceRecovery: LinuxShellWorkspaceRecovery? = nil) {
         self.sessionID = sessionID
         self.mergedOutput = mergedOutput
         self.cursor = cursor
@@ -277,6 +547,7 @@ public struct LinuxShellPollReply: Sendable, Equatable {
         self.waitErrno = waitErrno
         self.workspaceStatus = workspaceStatus
         self.workspaceRecoveryRef = workspaceRecoveryRef
+        self.workspaceRecovery = workspaceRecovery
     }
 }
 

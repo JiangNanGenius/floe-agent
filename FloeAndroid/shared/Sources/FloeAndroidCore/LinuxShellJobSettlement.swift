@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 import Foundation
 import FloeAndroidJobTools
+import FloeAndroidShellTools
 
 /// Private Core-host proof query. Not a runtime completion operation or model tool.
 public enum LinuxShellJobSettlement {
@@ -41,9 +42,17 @@ public enum LinuxShellJobSettlement {
                       let cancelled = proof.cancelled, proof.waitErrno == 0 else {
                     return .unconfirmed(reason: "incomplete-terminal-proof")
                 }
+                // The typed Reply above decodes legacy and new proofs
+                // UNCHANGED; the OPTIONAL recovery projection is strict-
+                // parsed from the same raw bytes SEPARATELY, so a malformed
+                // supplementary object can never turn a real release into an
+                // unconfirmed settlement (it just stays absent).
+                let recoveryObject = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any]
+                let recovery = LinuxShellWorkspaceRecovery.parse(recoveryObject?["workspaceRecovery"])
                 return .released(sessionID: session, cancelled: cancelled, stopReason: proof.stopReason,
                     exitCode: proof.exitCode, termSig: proof.termSig, waitErrno: proof.waitErrno,
-                    workspaceStatus: proof.workspaceStatus, workspaceRecoveryRef: proof.workspaceRecoveryRef)
+                    workspaceStatus: proof.workspaceStatus, workspaceRecoveryRef: proof.workspaceRecoveryRef,
+                    recovery: recovery)
             case "quiescent": return .quiescent(note: "Runtime recovery proved no owned workload; command outcome is unknown.")
             default: return .unconfirmed(reason: "runtime-work-unresolved")
             }

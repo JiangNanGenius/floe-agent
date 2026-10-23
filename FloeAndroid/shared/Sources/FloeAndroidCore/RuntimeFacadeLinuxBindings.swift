@@ -172,14 +172,27 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// shell/Core export callback is still running. Dispatch without the
     /// original conversation binding fails closed at admission (nil hook
     /// receipt ⇒ LocalShellService refuses).
-    private var ledgerIndex: [String: (runID: UUID, callID: String?, epoch: UInt64,
-                                       dispatchSettled: Bool, conversationID: UUID,
-                                       workToken: RuntimeOwnedWorkToken)] = [:]
+    private struct LedgerEntry: Sendable {
+        let runID: UUID
+        let callID: String?
+        let epoch: UInt64
+        var dispatchSettled: Bool
+        let conversationID: UUID
+        let workToken: RuntimeOwnedWorkToken
+        // Recomposition may replace current components before an old
+        // dispatch settles. Only its original actors can prove release.
+        let backend: AndroidLinuxShellBackend
+        let coordinator: FacadeToolWorkCoordinator
+    }
+    private var ledgerIndex: [String: LedgerEntry] = [:]
     /// Workers for which the conversation-deletion fence has already issued
     /// ONE cooperative stop request (re-requesting is harmless but the
     /// insert guard keeps the tick honest and side-effect-free after the
     /// first). Cleared when the worker really ends.
     private var conversationStopRequested: Set<String> = []
+    /// One service-owned proof recheck for each settled dispatch; an
+    /// unproven lease retains its exact ledger entry and registry token.
+    private var releaseReconcileScheduled: Set<String> = []
 
     /// Internal for tests; production uses `.shared` (one per process).
     init() {}
@@ -334,18 +347,17 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// closed: the cleanup/proof channel stays available until real
     /// settlement.
     public func fenceGeneration(epoch: UInt64) {
-        let coordinator: FacadeToolWorkCoordinator? = withState {
-            guard epoch != 0, boundEpoch == epoch else { return nil }
+        let coordinators: [FacadeToolWorkCoordinator] = withState {
+            guard epoch != 0, boundEpoch == epoch else { return [] }
             boundEpoch = 0
             LinuxShellMailbox.shared.close()
-            // Exact-generation fence only: an old generation's fence must
-            // never strip the CURRENT generation's live facts (the reads
-            // re-verify the epoch anyway, this removal is hygiene).
             LinuxReadinessIngress.shared.invalidate(nil, reason: "generationFenced")
-            return coordinatorStorage
+            var seen: Set<ObjectIdentifier> = []
+            var owners = ledgerIndex.values.filter { $0.epoch == epoch }.map { $0.coordinator }
+            if let current = coordinatorStorage { owners.append(current) }
+            return owners.filter { seen.insert(ObjectIdentifier($0)).inserted }
         }
-        guard let coordinator, epoch != 0 else { return }
-        Task { await coordinator.fenceEpoch(epoch: epoch) }
+        Task { for coordinator in coordinators { await coordinator.fenceEpoch(epoch: epoch) } }
     }
 
     /// Honest drain checkpoint for lifecycle gates (shutdown / generation
@@ -419,11 +431,11 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
         await coordinator.attachTaskCancel(workerID) {
             context.cancellation.cancel()
         }
-        withState { ledgerIndex[workerID] = (runID: runID, callID: callID, epoch: epoch,
-                                             dispatchSettled: false,
-                                             conversationID: conversationID,
-                                             workToken: workToken) }
         let backend = components.backend
+        withState { ledgerIndex[workerID] = LedgerEntry(
+            runID: runID, callID: callID, epoch: epoch, dispatchSettled: false,
+            conversationID: conversationID, workToken: workToken,
+            backend: backend, coordinator: coordinator) }
         return { [coordinator, backend, workerID, runID, workToken] in
             Task { [weak self] in
                 guard let self else { return }
@@ -437,15 +449,14 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
                 let pendingLease = !(await backend.ownedSessions(runID: runID).isEmpty)
                     || LinuxShellMailbox.shared.hasLiveTickets(runID: runID)
                 if pendingLease {
-                    // A lease or claim from this call is still unreconciled:
-                    // keep the ledger AND the registry token attached;
-                    // `reconcileLedger()`/the deletion-fence tick end them
-                    // only on the real release proof.
+                    // Keep ownership until this dispatch's real release
+                    // proof arrives, including while its root is paused.
+                    self.scheduleReleaseReconcile(workerID: workerID)
                     return
                 }
                 await coordinator.end(workerID)
                 let ended = self.withState { () -> Bool in
-                    guard self.ledgerIndex[workerID] != nil else { return false }
+                    guard self.ledgerIndex[workerID]?.workToken == workToken else { return false }
                     self.ledgerIndex.removeValue(forKey: workerID)
                     self.conversationStopRequested.remove(workerID)
                     return true
@@ -460,28 +471,63 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// lifecycle drain); idempotent and bounded by the ledger itself.
     @discardableResult
     public func reconcileLedger() async -> Int {
-        let (coordinator, components, snapshot) = withState { (coordinatorStorage, componentsStorage, ledgerIndex) }
-        guard let coordinator, let components, !snapshot.isEmpty else { return 0 }
+        let snapshot = withState { ledgerIndex }
         var ended = 0
         for (workerID, entry) in snapshot {
-            // Run-scoped evidence only (same predicate as the settlement
-            // closure): an unrelated conversation's live ticket must never
-            // wedge THIS run's release bookkeeping.
             guard entry.dispatchSettled,
                   !LinuxShellMailbox.shared.hasLiveTickets(runID: entry.runID) else { continue }
-            let pendingLease = !(await components.backend.ownedSessions(runID: entry.runID).isEmpty)
+            let pendingLease = !(await entry.backend.ownedSessions(runID: entry.runID).isEmpty)
             if pendingLease { continue }
-            await coordinator.end(workerID)
+            await entry.coordinator.end(workerID)
             let removed = withState { () -> Bool in
-                guard ledgerIndex[workerID] != nil else { return false }
+                guard ledgerIndex[workerID]?.workToken == entry.workToken else { return false }
                 ledgerIndex.removeValue(forKey: workerID)
                 conversationStopRequested.remove(workerID)
                 return true
             }
-            if removed { RuntimeOwnedWorkRegistry.shared.detach(entry.workToken) }
-            ended += 1
+            if removed {
+                RuntimeOwnedWorkRegistry.shared.detach(entry.workToken)
+                ended += 1
+            }
         }
         return ended
+    }
+
+    /// A paused root has no external drain pump. Recheck only the original
+    /// dispatch's actors; a new empty backend is not proof about old work.
+    private func scheduleReleaseReconcile(workerID: String) {
+        let first = withState { () -> Bool in
+            guard ledgerIndex[workerID] != nil else { return false }
+            return releaseReconcileScheduled.insert(workerID).inserted
+        }
+        guard first else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.withState { _ = self.releaseReconcileScheduled.remove(workerID) } }
+            while true {
+                let owned = self.withState { () -> LedgerEntry? in
+                    guard let entry = self.ledgerIndex[workerID], entry.dispatchSettled else { return nil }
+                    return entry
+                }
+                guard let owned else { return }
+                let leaseFree = await owned.backend.ownedSessions(runID: owned.runID).isEmpty
+                let ticketFree = !LinuxShellMailbox.shared.hasLiveTickets(runID: owned.runID)
+                if leaseFree && ticketFree {
+                    await owned.coordinator.end(workerID)
+                    let removed = self.withState { () -> Bool in
+                        guard self.ledgerIndex[workerID]?.workToken == owned.workToken else { return false }
+                        self.ledgerIndex.removeValue(forKey: workerID)
+                        self.conversationStopRequested.remove(workerID)
+                        return true
+                    }
+                    if removed { RuntimeOwnedWorkRegistry.shared.detach(owned.workToken) }
+                    return
+                }
+                // No time budget can convert an unproven lease to release.
+                do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                catch { return } // ownership remains for the existing drain/fence
+            }
+        }
     }
 
     // MARK: Conversation-deletion surface (ORIGINAL fence, target-only)
@@ -510,51 +556,29 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// never counts as quiescence, and an unrelated conversation can never
     /// block (or be blocked by) this tick.
     public func drainConversationTick(conversationID: UUID, epoch: UInt64) async -> Bool {
-        struct Target {
-            let workerID: String
-            let runID: UUID
-            let callID: String?
-            let settled: Bool
-            let token: RuntimeOwnedWorkToken
+        let snapshot = withState {
+            ledgerIndex.filter { _, entry in entry.conversationID == conversationID && entry.epoch == epoch }
         }
-        let snapshot: [Target] = withState {
-            ledgerIndex.compactMap { workerID, entry in
-                guard entry.conversationID == conversationID, entry.epoch == epoch else { return nil }
-                return Target(workerID: workerID, runID: entry.runID, callID: entry.callID,
-                              settled: entry.dispatchSettled, token: entry.workToken)
-            }
-        }
-        guard !snapshot.isEmpty else { return true }
-        let (coordinator, components) = withState { (coordinatorStorage, componentsStorage) }
-        guard let coordinator, let components else {
-            // Components retired WHILE retained target work exists: the
-            // fence must keep waiting (entries and tokens stay attached);
-            // there is no honest way to release proof we do not have.
-            return false
-        }
-        let backend = components.backend
-        for target in snapshot {
-            if !target.settled {
-                let firstRequest = withState {
-                    conversationStopRequested.insert(target.workerID).inserted
-                }
-                if firstRequest {
-                    _ = await coordinator.cancelOwnedToolMatches(
-                        runID: target.runID, callID: target.callID, epoch: epoch)
+        for (workerID, entry) in snapshot {
+            if !entry.dispatchSettled {
+                let first = withState { conversationStopRequested.insert(workerID).inserted }
+                if first {
+                    _ = await entry.coordinator.cancelOwnedToolMatches(
+                        runID: entry.runID, callID: entry.callID, epoch: epoch)
                 }
                 continue
             }
-            let pendingLease = !(await backend.ownedSessions(runID: target.runID).isEmpty)
-                || LinuxShellMailbox.shared.hasLiveTickets(runID: target.runID)
+            let pendingLease = !(await entry.backend.ownedSessions(runID: entry.runID).isEmpty)
+                || LinuxShellMailbox.shared.hasLiveTickets(runID: entry.runID)
             if pendingLease { continue }
-            await coordinator.end(target.workerID)
+            await entry.coordinator.end(workerID)
             let removed = withState { () -> Bool in
-                guard ledgerIndex[target.workerID] != nil else { return false }
-                ledgerIndex.removeValue(forKey: target.workerID)
-                conversationStopRequested.remove(target.workerID)
+                guard ledgerIndex[workerID]?.workToken == entry.workToken else { return false }
+                ledgerIndex.removeValue(forKey: workerID)
+                conversationStopRequested.remove(workerID)
                 return true
             }
-            if removed { RuntimeOwnedWorkRegistry.shared.detach(target.token) }
+            if removed { RuntimeOwnedWorkRegistry.shared.detach(entry.workToken) }
         }
         return withState {
             !ledgerIndex.values.contains { $0.conversationID == conversationID && $0.epoch == epoch }
@@ -572,25 +596,18 @@ public final class RuntimeFacadeLinuxBindings: @unchecked Sendable {
     /// worker token chain and the worker stays attached until the real
     /// lease release (`reconcileLedger`).
     public func cancelOwnedShellTool(runID: UUID, callID: String?, epoch: UInt64) async -> Bool {
-        let (coordinator, matching) = withState {
-            (coordinatorStorage, ledgerIndex.filter { _, entry in
+        let matching = withState {
+            ledgerIndex.filter { _, entry in
                 entry.epoch == epoch && entry.runID == runID
                     && (callID == nil || entry.callID == callID)
-            })
+            }
         }
-        guard let coordinator, !matching.isEmpty else { return false }
-        let match = await coordinator.cancelOwnedToolMatches(runID: runID, callID: callID, epoch: epoch)
-        switch match {
-        case .cancelled(let workerIDs):
-            // Keep only shell-owned ids in our index accounting; the
-            // coordinator cancelled whatever matched under the same run/call
-            // (its documented semantics). Workers stay un-ended until lease
-            // proof; reconcileLedger ends them.
-            let shellCancelled = workerIDs.filter { matching[$0] != nil }
-            return !shellCancelled.isEmpty
-        case .none:
-            return false
+        var accepted = false
+        for (workerID, entry) in matching {
+            let match = await entry.coordinator.cancelOwnedToolMatches(runID: runID, callID: callID, epoch: epoch)
+            if case .cancelled(let ids) = match, ids.contains(workerID) { accepted = true }
         }
+        return accepted
     }
 
     // MARK: Diagnostics (typed counts only; never payloads/commands/output)

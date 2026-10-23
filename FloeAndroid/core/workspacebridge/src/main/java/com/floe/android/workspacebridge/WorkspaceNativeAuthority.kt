@@ -72,5 +72,20 @@ fun interface WorkspaceCancelSignal {
     fun shouldCancel(): Boolean
 }
 
-/** Transport/native refusal with a bounded code (no paths, no payloads). */
-class WorkspaceBridgeException(val code: String, cause: Throwable? = null) : Exception(code, cause)
+/** Transport/native refusal with a bounded code (no paths, no payloads).
+ *  `recovery` optionally carries the transaction's OWN measured terminal
+ *  evidence (for example the reverse-restore counts of a cancelled import
+ *  swap). It is produced ONLY by the original journal engine on the failing
+ *  path and is bounded to relative identities and counters. HONESTY LIMIT
+ *  (as of job-5b987a08b1df40b2): the CURRENT failure-result path surfaces
+ *  only `operation_failed` for a failed start (RuntimeKernel's generic
+ *  catch), so this payload is COMPONENT-LOCAL evidence plus a journal audit
+ *  record — it is NOT yet a user-visible rollback proof. Making it visible
+ *  requires exactly one bounded failed-receipt handoff (see this packet's
+ *  PROPOSED-HANDOFF patch; Main owns that merge). Absent means unobserved;
+ *  no consumer may fabricate it. */
+class WorkspaceBridgeException(
+    val code: String,
+    cause: Throwable? = null,
+    val recovery: org.json.JSONObject? = null,
+) : Exception(code, cause)

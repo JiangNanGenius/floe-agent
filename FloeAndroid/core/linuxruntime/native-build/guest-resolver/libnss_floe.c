@@ -434,7 +434,7 @@ static int dns_parse_response(const unsigned char *msg, unsigned len,
     uint16_t flags = be16(msg + 2);
     if ((flags & 0x8000u) == 0)
         return FLOE_BADBRIDGE;                      /* not a response */
-    if ((flags >> 11) != 0)
+    if ((flags & 0x7800u) != 0)
         return FLOE_BADBRIDGE;                      /* only standard opcode */
     int rcode = flags & 0x0fu;
     if (rcode == 3)

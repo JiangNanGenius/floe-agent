@@ -427,7 +427,7 @@ public actor BackgroundJobService {
                 } else if let runner = registry.runner(named: job.targetTool) {
                     let context = ToolContext(
                         runID: job.runID,
-                        toolCallID: "jobs.\(job.id.uuidString)",
+                        toolCallID: JobProcessorIdentity.callID(jobID: job.id),
                         toolIdempotencyKey: "job:\(job.id.uuidString)",
                         scope: scope,
                         allowedToolNames: allowedToolNames,

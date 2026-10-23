@@ -23,8 +23,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import org.json.JSONObject
 
-/** Service-owned composition. Original Swift registry + lease, real installer + PTY. */
-internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOperations {
+/** Service-owned composition. Original Swift registry + lease, real installer + PTY.
+ *
+ *  [onOwnedWorkReleased] — G03-R3 first-start admission repair: the kernel's
+ *  stopping-fence convergence note. Invoked ONLY after finish() has REALLY
+ *  released the held lease/running slot through the ORIGINAL authority
+ *  hand-back (never on a pending-proof return, never on a failed release),
+ *  so a stop that arrived while this pump thread was still draining no
+ *  longer leaves a stale kernel fence refusing the next admission. The
+ *  default keeps every other constructor call site byte-compatible. */
+internal class LinuxRuntimeOperations(
+    private val context: Context,
+    private val onOwnedWorkReleased: () -> Unit = {},
+) : RuntimeOperations {
     private val root = context.filesDir.canonicalFile
     private val catalog = FloeRootfsCatalog.debianBookwormAarch64PdV470
     private val revision = "debian-bookworm-" + catalog.archiveSha256.take(16)
@@ -427,7 +438,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
                 }) } catch (_: Exception) {
                     WorkspaceExportOutcome.RecoverableFailure("exportUnknown", true, owned.imported.sessionKey)
                 }
-                owned.workspaceResult = workspaceResult(outcome, owned.imported.sessionKey)
+                owned.workspaceResult = workspaceResult(outcome, owned.imported)
                 runCatching { owned.workspace.close() }
             }
             try {
@@ -440,10 +451,21 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             heldLease.compareAndSet(owned.lease, null); running.compareAndSet(owned, null)
             RuntimeNetworkConfiguration.release() // the owned session's real resolver use has ended
             owned.cleanupDeferred = !cleanupScratch(owned.scratch, owned.lease.id)
+            // G03-R3 first-start admission repair: notify the kernel that the
+            // REAL owned-work release landed — exactly the completion the stop
+            // executor's finally may have evaluated too early while this pump
+            // thread was still draining (candidate08: the leaked fence then
+            // refused the brand-new New task's first start). Lock order here
+            // is owned-monitor -> fence-monitor and strictly one-way; the
+            // fence re-checks the engine's OWN live ownership under its own
+            // monitor, so a failed or duplicate notification can never
+            // un-release the lease, admit work or bypass any stop.
+            runCatching { onOwnedWorkReleased() }
         }
     }
 
-    private fun workspaceResult(outcome: WorkspaceExportOutcome, sessionKey: String): JSONObject {
+    private fun workspaceResult(outcome: WorkspaceExportOutcome, receipt: WorkspaceImportReceipt): JSONObject {
+        val sessionKey = receipt.sessionKey
         val status = when (outcome) {
             is WorkspaceExportOutcome.Synced -> "synced"
             is WorkspaceExportOutcome.Conflict -> if (outcome.status == "aborted") "aborted" else "conflict"
@@ -452,6 +474,13 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
         return JSONObject().put("workspaceStatus", status).also {
             if (status != "synced" && sessionKey.matches(Regex("^[0-9a-f]{32}$"))) {
                 it.put("workspaceRecoveryRef", sessionKey)
+            }
+            // Additive OPTIONAL per-execution recovery projection built ONLY
+            // from this session's OWN original receipt + typed outcome. It
+            // never changes workspaceStatus semantics; consumers treat a
+            // missing object exactly like the pre-feature legacy results.
+            RuntimeWorkspaceSession.executionRecoveryJSON(receipt, outcome)?.let { recovery ->
+                it.put("workspaceRecovery", recovery)
             }
         }
     }
@@ -479,6 +508,7 @@ internal class LinuxRuntimeOperations(private val context: Context) : RuntimeOpe
             .also { result -> owned.workspaceResult?.let { files ->
                 result.put("workspaceStatus", files.getString("workspaceStatus"))
                 if (files.has("workspaceRecoveryRef")) result.put("workspaceRecoveryRef", files.getString("workspaceRecoveryRef"))
+                if (files.has("workspaceRecovery")) result.put("workspaceRecovery", files.getJSONObject("workspaceRecovery"))
             } }
             .also { result -> (owned.terminal.get() as? WorkloadTerminal.Cancelled)?.let { result.put("stopReason", it.reason) } }
             .also { result -> owned.job.exitResult?.let { result.put("exitCode", it.exitCode).put("termSig", it.termSig).put("waitErrno", it.waitErrno) } }
