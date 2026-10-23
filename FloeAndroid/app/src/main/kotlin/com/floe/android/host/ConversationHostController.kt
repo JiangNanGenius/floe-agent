@@ -4127,21 +4127,29 @@ class ConversationHostController internal constructor(
 
     /**
      * Resolves the CURRENT conversation-row revision for a history mutation.
-     * A row the user never opened has no holder, so the previous code refused
-     * it outright; the real revision is instead read with one
-     * `conversation.get` at action time (the frozen CAS source). An unreadable
-     * row surfaces a typed failure — never a fabricated version and never a
-     * silent stale success.
+     *
+     * The real revision MUST be re-read with one `conversation.get` at action
+     * time (the frozen CAS source), never from the holder cache. A holder
+     * cache only proves the digest at the moment it was last applied; the
+     * durable run/message commit advances the row digest on every accepted
+     * launch, so reusing the cached value for a LATER `conversation.delete`
+     * is exactly the stale-revision defect already fixed for the second
+     * `run.start` (ConversationSecondSendRevisionTest): the native deletion
+     * CAS `digest == revision.version` then refuses with the typed
+     * `staleRevision`, the row is untouched, and — because the single-row
+     * completion observer only records the Completed path — no typed deletion
+     * is ever captured. This mirrors the fresh-read contract the existing
+     * `withFreshConversationRevision` comment states verbatim ("the
+     * conversation row's digest advances on every real launch/message commit,
+     * so a cached revision cannot be reused for a later … CAS") and keeps
+     * an unreadable row surfacing a typed failure — never a fabricated
+     * version and never a silent stale success.
      */
     private fun resolveConversationRevision(
         conversationId: String,
         onReady: (HostRevision?) -> Unit,
     ) {
-        val known = holders[conversationId]?.builder?.conversationRevision
-        if (known != null) {
-            onReady(HostRevision(known.resourceID, known.version))
-            return
-        }
+        // NO cached fast path: always read the CURRENT row revision here.
         host.trackOperation(
             HostCommandRequest(
                 command = "conversation.get",
@@ -4154,7 +4162,10 @@ class ConversationHostController internal constructor(
                 val reply = outcome.value?.let { ConversationWire.decodeSessionReply(it) }
                 val revision = reply?.revision
                 if (reply != null && revision != null) {
-                    // Keep the real revision so a following action can reuse it.
+                    // Re-publish the fresh revision into the holder so the
+                    // thread view and any following action see the SAME digest
+                    // this delete was admitted under (an authoritative echo,
+                    // never the CAS source for a later action).
                     holders[conversationId]?.builder?.conversationRevision = revision
                     onReady(HostRevision(revision.resourceID, revision.version))
                     return@trackOperation
@@ -4223,10 +4234,16 @@ class ConversationHostController internal constructor(
                                     ),
                                 ),
                             )
-                            releaseHolder(conversationId)
-                        }
-                        refreshHistory()
-                        onSettled(true, null)
+                             releaseHolder(conversationId)
+                         }
+                         // A fresh single-row success replaces the last real
+                         // settlement failure on this surface (the bulk lane
+                         // reports per-item truth through the receipt).
+                         if (correlationPrefix != "blk") {
+                             historyHolder.dismissActionError()
+                         }
+                         refreshHistory()
+                         onSettled(true, null)
                     }
                     is HostOperationOutcome.Rejected -> {
                         // A stale revision means the row advanced after the

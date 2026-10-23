@@ -102,6 +102,22 @@ fun FloeConversationHistoryDestination(
         )
         FloeDivider()
 
+        // ⇄ errorBanner: the host already publishes ONLY a REAL typed
+        // settlement code into holder.actionError (a rejected/failed
+        // archive/delete/rename, or "revision_unavailable"/
+        // "runtime_unavailable" for a refusal before dispatch). The surface
+        // shows that existing truth; it re-derives nothing and never claims
+        // an outcome the host did not report.
+        holder.actionError?.let { code ->
+            InlineBanner(
+                icon = FloeIcons.XOctagon,
+                text = historyActionErrorText(code),
+                tint = Floe.colors.destructive,
+                onDismiss = holder::dismissActionError,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
         // Search field: LIST and MANAGE both expose it (ARCHIVE keeps the
         // simpler archive list, matching the native archived sheet).
         if (mode != HistoryDestinationMode.ARCHIVE) {
@@ -291,6 +307,19 @@ fun FloeConversationHistoryDestination(
 }
 
 /* --------------------------------- toolbar ---------------------------------- */
+
+/** Closed-set localization for the REAL typed settlement code published by
+ * the host ([ConversationHistoryHolder.applyActionError]). The exact wire
+ * code stays in the holder/diagnostics; the ordinary surface says what
+ * happened and what the user can do, and unknown codes get the honest
+ * generic line — nothing is ever presented as success here. */
+@Composable
+private fun historyActionErrorText(code: String): String = when (code) {
+    "staleRevision" -> stringResource(R.string.history_action_failed_stale)
+    "revision_unavailable", "runtime_unavailable", "runtimeUnavailable",
+    "exchangeUnavailable" -> stringResource(R.string.history_action_failed_unavailable)
+    else -> stringResource(R.string.history_action_failed)
+}
 
 @Composable
 private fun HistoryToolbar(

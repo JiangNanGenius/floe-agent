@@ -284,6 +284,9 @@
     <string name="history_running_impact">%1$d selected tasks are currently running.</string>
     <string name="history_working">Working… %1$d/%2$d</string>
     <string name="history_stop_batch">Stop</string>
+    <string name="history_action_failed_stale">The task changed. Try again.</string>
+    <string name="history_action_failed_unavailable">Unable to access the task. Try again shortly.</string>
+    <string name="history_action_failed">Unable to complete this action. Try again.</string>
     <string name="bulk_result_archived">%1$d archived</string>
     <string name="bulk_result_restored">%1$d restored</string>
     <string name="bulk_result_deleted">%1$d deleted</string>

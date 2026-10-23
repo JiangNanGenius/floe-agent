@@ -257,22 +257,34 @@ class ConversationHistoryHolder(
         pendingDeletionId.value = null
     }
 
-    /** Dialog confirm → single-target delete (⇄ viewModel.delete(target)). */
+    /** Dialog confirm → single-target delete (⇄ viewModel.delete(target)).
+     * A synchronous host refusal (runtime not admitted) publishes the SAME
+     * typed code the async settlement lane uses, so the destination shows an
+     * honest failure instead of closing the dialog as if nothing happened. */
     fun confirmSingleDeletion(): ConversationFlowResult {
         val id = pendingDeletionId.value ?: return ConversationFlowResult.Stale
         pendingDeletionId.value = null
         return if (host.deleteConversation(id)) ConversationFlowResult.Accepted
-        else ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        else {
+            applyActionError("runtime_unavailable")
+            ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
     }
 
     /** ⇄ swipe archive (single row, no dialog on iOS). */
     fun archiveConversation(id: String): ConversationFlowResult =
         if (host.archiveConversation(id)) ConversationFlowResult.Accepted
-        else ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        else {
+            applyActionError("runtime_unavailable")
+            ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
 
     fun restoreConversation(id: String): ConversationFlowResult =
         if (host.restoreConversation(id)) ConversationFlowResult.Accepted
-        else ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        else {
+            applyActionError("runtime_unavailable")
+            ConversationFlowResult.Rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
 
     /* --------------------------------- bulk ops --------------------------------- */
 
