@@ -1024,7 +1024,7 @@ final class ImportDestinationCenter: ObservableObject {
 
         // Every Notes commit is proven durable. Only now the source leaves
         // the active namespace.
-        await settleClaimedEnvelope(
+        return await settleClaimedEnvelope(
             claim: claim,
             origin: origin,
             inbox: inbox,
