@@ -1070,6 +1070,7 @@ private final class FakeDestinationImportHandler: ShareEnvelopeDestinationImport
 }
 
 @Suite("FloeApp.ShareIntakeDestinationActions")
+@MainActor
 struct ShareIntakeDestinationActionTests {
 
     @Test("Card Notes/Canvas actions forward to the handler and publish this envelope's result")

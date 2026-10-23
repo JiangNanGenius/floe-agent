@@ -86,7 +86,7 @@ struct MemoryCancellationTests {
     }
 
     @Test("a cancelled personalization reload publishes nothing and reports nothing",
-          arguments: [.loadPersonalization, .search])
+          arguments: [CancelledOperation.loadPersonalization, CancelledOperation.search])
     @MainActor
     func cancelledReadsStaySilent(_ kind: CancelledOperation) async throws {
         let environment = try await appQualificationEnvironment()

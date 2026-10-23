@@ -279,8 +279,7 @@ private final class FakeTaskProvider: TaskDestinationProviding, @unchecked Senda
 }
 
 @MainActor
-@MainActor
-private final class RecordingLiveDraftOwner: ImportedDraftLiveAccepting {
+private final class RecordingLiveDraftOwner: ComposerDraftStore.ImportedDraftLiveAccepting {
     var landings: [ComposerDraftStore.ImportedDraftLanding] = []
     func acceptImportedDraftLanding(_ landing: ComposerDraftStore.ImportedDraftLanding) {
         landings.append(landing)
@@ -405,6 +404,7 @@ struct ImportDestinationLedgerTests {
 // MARK: - Queue requirement + gate
 
 @Suite("FloeApp.ImportDestinationGate")
+@MainActor
 struct ImportDestinationGateTests {
 
     @Test("Ambiguous intake persists the requirement atomically; explicit intake does not")
@@ -777,6 +777,7 @@ struct ImportDestinationGateTests {
 // MARK: - Envelope choices
 
 @Suite("FloeApp.ImportDestinationEnvelope")
+@MainActor
 struct ImportDestinationEnvelopeTests {
 
     @Test("Notes choice imports every unit by planned identity, joins text, acks only after")
