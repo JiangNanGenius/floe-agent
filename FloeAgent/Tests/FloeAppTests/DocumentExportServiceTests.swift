@@ -369,6 +369,54 @@ struct DocumentExportServiceTests {
         }
     }
 
+    @Test func notebookRejectsOfficeInkOptionWithoutPublishingOutput() async throws {
+        let harness = try makeHarness()
+        defer { harness.cleanup() }
+        let created = try await harness.store.create(NoteDocument(title: "Ink scope"))
+        try await harness.store.grantAccess(
+            conversationID: conversationID, documentID: created.id, canEdit: false)
+        let context = makeContext(workspace: harness.workspace)
+        for included in [false, true] {
+            let path = "exports/ink-\(included).pdf"
+            await #expect(throws: (any Error).self) {
+                _ = try await DocumentExportService.export(
+                    .init(documentID: created.id, format: .pdf,
+                          scope: .init(includeInk: included),
+                          expectedRevision: created.revision, targetPath: path),
+                    store: harness.store, context: context,
+                    artifactRoot: harness.artifactRoot)
+            }
+            #expect(!FileManager.default.fileExists(
+                atPath: harness.workspace.appendingPathComponent(path).path))
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: harness.artifactRoot.path).isEmpty)
+    }
+
+    @Test func documentConversionInkChoiceIsOfficePDFOnly() throws {
+        for ext in ["docx", "xlsx", "pptx"] {
+            for includeInk in [false, true] {
+                try DocumentFileConverter.validate(
+                    .init(inputPath: "inputs/book.\(ext)", outputPath: "out/book.pdf",
+                          format: "pdf", includeInk: includeInk), requiresPDF: true)
+            }
+        }
+        for (input, output, format, requiresPDF) in [
+            ("note.md", "out.pdf", "pdf", true),
+            ("book.pdf", "out.txt", "text", true),
+            ("book.docx", "out.html", "html", false)
+        ] {
+            #expect(throws: (any Error).self) {
+                try DocumentFileConverter.validate(
+                    .init(inputPath: input, outputPath: output, format: format,
+                          includeInk: false), requiresPDF: requiresPDF)
+            }
+        }
+        let schema = try #require(JSONSerialization.jsonObject(
+            with: Data(PDFConvertTool.parametersJSON.utf8)) as? [String: Any])
+        let properties = try #require(schema["properties"] as? [String: Any])
+        #expect(properties["includeInk"] != nil)
+    }
+
     // MARK: - Opt-in actual Office producer (parent native host)
 
     /// Real pinned-engine `notes.export` on the same private runtime workbook

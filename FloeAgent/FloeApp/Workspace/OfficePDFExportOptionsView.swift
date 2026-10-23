@@ -156,24 +156,83 @@ struct OfficePDFExportChoices: Sendable, Equatable {
     var fitPagesTallText = "1"
     var margins: Margins = .document
     var gridlines: Gridlines = .on
+    /// Optional per-output handwriting choice, default on. `true` prints
+    /// exactly like before. `false` removes only the app's proven ink strokes
+    /// (pen, marker and highlighter freeform paths) from the prepared export
+    /// copy: typed cells and text, charts, images, preset shapes, printed
+    /// gridlines and cell borders all stay, the automatic fit bounds shrink
+    /// with the omitted ink, and the source document keeps every stroke.
+    /// Honored wherever the prepared isolated copy route exists
+    /// (`OfficePDFExportPreparation.supportsInkOmission`); the value is part
+    /// of this struct, so changing it makes the accepted preview stale and
+    /// forces a fresh generation through the same fence — preview and final
+    /// output always share one choice set.
+    var includeInk = true
+    // Physical print layout for a generated Word/Presentation PDF. These are
+    // separate from the workbook `paper`/`orientation`/`fit` above because
+    // that route writes real OOXML page setup while this one re-lays the
+    // produced PDF's pages. All default to "as produced" so a workbook (or a
+    // Word/PPT that never opens these controls) carries no layout override.
+    /// Word/PPT physical paper, or `.document` to keep each page's own size.
+    var physicalPaper: Paper = .document
+    /// Word/PPT physical orientation, or `.document` to follow each page.
+    var physicalOrientation: Orientation = .document
+    /// Word/PPT scaling. `.automatic` fits each whole page to the paper
+    /// (never enlarges, never clips); `.actualSize` prints at 100%; `.percent`
+    /// uses `scalePercentText`.
+    var physicalScale: PhysicalScale = .automatic
+    enum PhysicalScale: String, CaseIterable {
+        case automatic, actualSize, percent
+    }
     var pages = ""
 
     /// Keeps Word/Presentation documents on their own page setup: the
     /// workbook grid/scaling defaults above are product choices for
-    /// spreadsheets only and are reset before the first plan of any other
-    /// format is built, because this backend writes no page setup there.
+    /// spreadsheets only, and the physical layout defaults are product
+    /// choices for Word/Presentation only. Each group is reset before the
+    /// first plan of a format whose real route does not use it, because the
+    /// backend writes no OOXML page setup for paginated formats and never
+    /// re-lays a workbook's generated PDF.
     mutating func applyDocumentSetupDefaults(forFormatExtension ext: String) {
-        guard OfficePDFFormatSupport.resolve(forExtension: ext)?
-                .supportsCustomPageSetup != true else { return }
-        scope = .document
-        sheetContent = .full
-        cellRange = ""
-        selectedSheetNames = []
-        paper = .document
-        orientation = .document
-        fit = .document
-        margins = .document
-        gridlines = .document
+        let support = OfficePDFFormatSupport.resolve(forExtension: ext)
+        if support?.supportsCustomPageSetup != true {
+            scope = .document
+            sheetContent = .full
+            cellRange = ""
+            selectedSheetNames = []
+            paper = .document
+            orientation = .document
+            fit = .document
+            margins = .document
+            gridlines = .document
+        }
+        if support?.supportsPhysicalPageLayout != true {
+            physicalPaper = .document
+            physicalOrientation = .document
+            physicalScale = .automatic
+        }
+    }
+
+    /// The physical print layout for a Word/Presentation generated PDF, or
+    /// nil when every member keeps the engine's own output. `.automatic`
+    /// scaling resolves to the safe whole-page fit in the backend.
+    func resolvedPhysicalLayout() throws -> OfficePDFPaginatedLayout? {
+        var layout = OfficePDFPaginatedLayout()
+        layout.paper = physicalPaper == .document ? nil : OfficePDFPaper(rawValue: physicalPaper.rawValue)
+        layout.orientation = physicalOrientation == .document ? nil : OfficePDFOrientation(rawValue: physicalOrientation.rawValue)
+        switch physicalScale {
+        case .automatic:
+            layout.scale = nil
+        case .actualSize:
+            layout.scale = .actualSize
+        case .percent:
+            guard let percent = Int(scalePercentText.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  (OfficePDFScale.minimumPercent...OfficePDFScale.maximumPercent).contains(percent) else {
+                throw CocoaError(.coderInvalidValue)
+            }
+            layout.scale = .percent(percent)
+        }
+        return layout.hasOverrides ? layout : nil
     }
 
     /// Builds the pure plan. `sheetTabOrder` is the saved workbook's own tab
@@ -262,7 +321,9 @@ struct OfficePDFExportChoices: Sendable, Equatable {
         default:
             break
         }
-        return OfficePDFPrintPlan(scope: resolvedScope, pageSetup: setup, pageRange: range)
+        return OfficePDFPrintPlan(scope: resolvedScope, pageSetup: setup,
+                                  pageRange: range, includeInk: includeInk,
+                                  paginatedLayout: try resolvedPhysicalLayout())
     }
 }
 
@@ -295,6 +356,19 @@ struct OfficePDFExportPreparation {
     let lease: OfficePDFExportLease
     let isCurrent: @MainActor () async -> Bool
     var supportsWorkbookSetup: Bool { fileExtension == "xlsx" }
+    /// The handwriting toggle is real exactly where the prepared isolated
+    /// copy route exists: the saved-file export host (`.xlsx`, `.docx`,
+    /// `.pptx`). Legacy live-session formats keep ink and never show it,
+    /// so no control is displayed when its capability is false.
+    var supportsInkOmission: Bool {
+        ["xlsx", "docx", "pptx"].contains(fileExtension.lowercased())
+    }
+    /// Physical print layout (paper, orientation, scaling of the generated
+    /// PDF) is real only for `.docx`/`.pptx`. Show no control when false.
+    var supportsPaginatedLayout: Bool {
+        OfficePDFFormatSupport.resolve(forExtension: fileExtension)?
+            .supportsPhysicalPageLayout == true
+    }
     var tabOrder: [String] { sheets.map(\.name) }
 }
 
@@ -307,6 +381,12 @@ struct OfficePDFPreparedDelivery: Identifiable {
     let pageCount: Int
     let byteCount: Int
     let pdfSHA256: String
+    /// Pages whose EXPLICIT actual-size/percent scaling ran past the paper
+    /// edge in the laid-out output, measured by the shared service. nil when
+    /// no physical layout ran; 0 for the always-unclipped automatic
+    /// whole-page fit. Drives a concise inline preview notice (never a
+    /// blocking dialog).
+    var layoutExceedingPages: Int? = nil
 }
 
 /// The preview fence. One generated artifact at a time may feed the final
@@ -320,6 +400,10 @@ struct OfficePDFExportPreviewState: Equatable {
         let pageCount: Int
         let byteCount: Int
         let pdfSHA256: String
+        /// Measured pages whose explicit scaling ran past the paper edge
+        /// (nil without a physical layout). Drives the inline preview
+        /// notice; the preview itself already shows the same result.
+        var layoutExceedingPages: Int? = nil
     }
     private(set) var artifact: Artifact?
     private(set) var choicesForArtifact: OfficePDFExportChoices?
@@ -800,6 +884,52 @@ struct OfficePDFExportOptionsView: View {
                         Text(t("页面设置", "Page setup"))
                     }
                 }
+                if source.supportsPaginatedLayout {
+                    Section {
+                        Picker(t("纸张", "Paper"), selection: $choices.physicalPaper) {
+                            Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Paper.document)
+                            Text("A4").tag(OfficePDFExportChoices.Paper.a4)
+                            Text("A3").tag(OfficePDFExportChoices.Paper.a3)
+                            Text("Letter").tag(OfficePDFExportChoices.Paper.letter)
+                            Text("Legal").tag(OfficePDFExportChoices.Paper.legal)
+                        }
+                        .accessibilityIdentifier("office.pdf.physicalPaper")
+                        Picker(t("方向", "Orientation"), selection: $choices.physicalOrientation) {
+                            Text(t("文档设置", "Document settings")).tag(OfficePDFExportChoices.Orientation.document)
+                            Text(t("纵向", "Portrait")).tag(OfficePDFExportChoices.Orientation.portrait)
+                            Text(t("横向", "Landscape")).tag(OfficePDFExportChoices.Orientation.landscape)
+                        }
+                        .accessibilityIdentifier("office.pdf.physicalOrientation")
+                        Picker(t("缩放", "Scaling"), selection: $choices.physicalScale) {
+                            Text(t("自动（适合整页）", "Automatic (fit whole page)")).tag(OfficePDFExportChoices.PhysicalScale.automatic)
+                            Text(t("实际大小", "Actual size")).tag(OfficePDFExportChoices.PhysicalScale.actualSize)
+                            Text(t("指定百分比", "Exact scale")).tag(OfficePDFExportChoices.PhysicalScale.percent)
+                        }
+                        .accessibilityIdentifier("office.pdf.physicalScaling")
+                        if choices.physicalScale == .percent {
+                            HStack {
+                                TextField(t("缩放百分比", "Scale percent"), text: $choices.scalePercentText)
+                                    .keyboardType(.numbersAndPunctuation)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .frame(width: 72)
+                                    .multilineTextAlignment(.trailing)
+                                    .accessibilityIdentifier("office.pdf.scalePercent")
+                                Text("%")
+                                    .font(.body.monospacedDigit())
+                            }
+                            Slider(value: scalePercentSlider,
+                                   in: Double(OfficePDFScale.minimumPercent)...Double(OfficePDFScale.maximumPercent),
+                                   step: 5)
+                                .accessibilityIdentifier("office.pdf.scaleSlider")
+                            Text(t("范围 \(OfficePDFScale.minimumPercent)–\(OfficePDFScale.maximumPercent)%。",
+                                   "Valid range: \(OfficePDFScale.minimumPercent)–\(OfficePDFScale.maximumPercent)%."))
+                                .font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } header: {
+                        Text(t("页面设置", "Page setup"))
+                    }
+                }
                 Section {
                     TextField(t("PDF 页码（留空为全部）", "PDF pages (blank for all)"), text: $choices.pages)
                         .keyboardType(.numbersAndPunctuation)
@@ -808,6 +938,16 @@ struct OfficePDFExportOptionsView: View {
                         .accessibilityIdentifier("office.pdf.pages")
                 } header: {
                     Text(t("PDF 页码", "PDF pages"))
+                }
+                if source.supportsInkOmission {
+                    Section {
+                        Toggle(isOn: $choices.includeInk) {
+                            Text(t("包含手写标注", "Include handwriting"))
+                        }
+                        .accessibilityIdentifier("office.pdf.includeInk")
+                    } header: {
+                        Text(t("输出内容", "Output content"))
+                    }
                 }
             }
             if let error {
@@ -872,6 +1012,27 @@ struct OfficePDFExportOptionsView: View {
                     .font(.footnote).foregroundStyle(.red)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            // Explicit actual-size/percent scaling that runs past the paper
+            // is shown as a measured, actionable notice — never a dialog,
+            // and the automatic whole-page fit never produces it.
+            if let artifact = preview.artifact,
+               let exceeding = artifact.layoutExceedingPages,
+               exceeding > 0,
+               !preview.isStale(currentChoices: choices) {
+                HStack(spacing: 8) {
+                    Text(t("部分内容超出纸张，可降低比例或适应纸张。",
+                           "Content extends beyond the paper. Reduce the scale or fit to paper."))
+                        .font(.footnote).foregroundStyle(.orange)
+                        .accessibilityIdentifier("office.pdf.exceedsNotice")
+                    Spacer()
+                    Button(t("改为适合整页", "Fit to page")) {
+                        choices.physicalScale = .automatic
+                    }
+                    .font(.footnote.weight(.medium))
+                    .accessibilityIdentifier("office.pdf.fitToPageAction")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack(spacing: 8) {
                 if let artifact = preview.artifact {
@@ -1029,7 +1190,8 @@ struct OfficePDFExportOptionsView: View {
                     token: token,
                     artifact: OfficePDFExportPreviewState.Artifact(
                         url: result.url, pageCount: result.pageCount,
-                        byteCount: result.byteCount, pdfSHA256: result.pdfSHA256),
+                        byteCount: result.byteCount, pdfSHA256: result.pdfSHA256,
+                        layoutExceedingPages: result.layoutExceedingPages),
                     choices: snapshot)
                 guard accepted else {
                     // A fenced generation's late completion never publishes:
@@ -1292,6 +1454,8 @@ struct OfficePDFExportOptionsView: View {
                 return t("请检查 PDF 页码后重试。", "Check the PDF pages and try again.")
             case .savedExportUnavailable:
                 return t("此格式不支持所选导出设置。", "This format does not support the selected export settings.")
+            case .physicalLayoutFailed:
+                return t("无法应用所选页面排版，请调整后重试。", "The selected page layout could not be applied. Adjust it and try again.")
             default: break
             }
         }

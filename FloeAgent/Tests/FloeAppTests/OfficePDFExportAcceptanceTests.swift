@@ -557,6 +557,119 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
         }
     }
 
+    /// Real-output proof for the handwriting choice on the ACTUAL supplied
+    /// workbook (fixture sha edcf6e2d… per
+    /// Local/Private/speech-performance-20261023/office-ink-source-facts.json:
+    /// 52 drawing shapes — 51 proven native freeform strokes including two
+    /// closed named Bézier annotations, 1 unrelated preset object, 0 text
+    /// shapes). The qualified stroke count is pinned to this digest; if the
+    /// runtime fixture is ever replaced, re-derive the inventory before
+    /// touching these numbers.
+    func testIncludeInkFalseOmitsProvenHandwritingFromRealArtifact() async throws {
+        let (source, sha, root) = try input()
+        do {
+            let setup = OfficePDFPageSetup(paper: .a4, orientation: .landscape,
+                                           fit: .fitToOnePage)
+            let on = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .allVisibleSheets, pageSetup: setup),
+                ownedDirectory: root))
+            let off = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .allVisibleSheets, pageSetup: setup,
+                                         includeInk: false),
+                ownedDirectory: root))
+            // The default choice changes nothing: no omission is reported and
+            // the drawing members stay byte-preserved, exactly as before.
+            XCTAssertNil(on.omittedInkShapeCount)
+            XCTAssertFalse(on.notes.contains(.handwritingOmitted))
+            XCTAssertEqual(on.appliedPrintPlan?.drawingPartsPreserved, true)
+            // The omitted run reports the exact measured fact: every proven
+            // qualified stroke left the rendered copy — including the two
+            // closed named Bézier annotations — while the single unrelated
+            // preset object stayed.
+            XCTAssertEqual(off.omittedInkShapeCount, 51,
+                           "the qualified freeform stroke inventory for this digest is 51 of 52 shapes")
+            XCTAssertTrue(off.notes.contains(.handwritingOmitted))
+            XCTAssertEqual(off.appliedPrintPlan?.drawingPartsPreserved, false,
+                           "intentional omission is not reported as byte-preserved drawings")
+            XCTAssertEqual(off.appliedPrintPlan?.copySHA256.count, 64,
+                           "the applied plan must describe the ACTUAL rendered copy")
+            XCTAssertNotEqual(off.appliedPrintPlan?.copySHA256,
+                              on.appliedPrintPlan?.copySHA256)
+            // Highlighter ink is gone; typed text survives.
+            let onPixels = try raster(on.pdfURL)
+            let offPixels = try raster(off.pdfURL)
+            XCTAssertGreaterThan(onPixels.yellow, 500, "baseline must contain the off-cell highlighter ink")
+            XCTAssertEqual(offPixels.yellow, 0, "omitted output may carry no highlighter ink")
+            XCTAssertLessThan(offPixels.inked, onPixels.inked,
+                              "pen/marker strokes must leave the pages, not stay underneath")
+            XCTAssertEqual(offPixels.text, onPixels.text,
+                           "typed content is never affected by the handwriting choice")
+            // Automatic bounds exclusion proof: at actual size the far-away
+            // qualified ink inflates the printed extent; with the ink omitted
+            // the same sheet never spans MORE pages, and it must not keep
+            // pages that only the ink was inflating. The preset object stays
+            // inside the remaining content, so the floor is the cell-only
+            // extent: pagesOff >= the explicit A1:B1 cell export below.
+            let actualSizeOn = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .allVisibleSheets,
+                                         pageSetup: OfficePDFPageSetup(paper: .a4,
+                                                                       orientation: .landscape,
+                                                                       fit: .actualSize)),
+                ownedDirectory: root))
+            let actualSizeOff = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .allVisibleSheets,
+                                         pageSetup: OfficePDFPageSetup(paper: .a4,
+                                                                       orientation: .landscape,
+                                                                       fit: .actualSize),
+                                         includeInk: false),
+                ownedDirectory: root))
+            XCTAssertLessThanOrEqual(actualSizeOff.pageCount, actualSizeOn.pageCount,
+                                     "omitted ink may never add pages")
+            let sheets = try OfficeRegionExport.workbookSheets(sourceURL: source, expectedSHA256: sha)
+            let visible = try XCTUnwrap(sheets.first(where: \.isVisible))
+            let cellsOnly = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .sheet(name: visible.name, cellRange: "A1:B1"),
+                                         pageSetup: OfficePDFPageSetup(paper: .a4,
+                                                                       orientation: .landscape,
+                                                                       fit: .actualSize)),
+                ownedDirectory: root))
+            XCTAssertGreaterThanOrEqual(actualSizeOff.pageCount, cellsOnly.pageCount,
+                                        "the retained preset object and full-sheet cells still bound the no-ink pages")
+            XCTAssertLessThan(actualSizeOff.pageCount, actualSizeOn.pageCount,
+                              "this fixture's far-away qualified ink inflates the automatic print bounds; omitting it must shrink them")
+            // Explicit user ranges stay honored with the choice off: the
+            // user's own bounds are never re-derived from the omission.
+            let explicit = try await OfficePDFExportService.export(.init(
+                sourceURL: source, sourceSHA256: sha, formatExtension: "xlsx",
+                plan: OfficePDFPrintPlan(scope: .sheet(name: visible.name, cellRange: "A1:R37"),
+                                         includeInk: false),
+                ownedDirectory: root))
+            XCTAssertEqual(explicit.appliedPrintPlan?.printAreaReference?.hasSuffix("!$A$1:$R$37"), true,
+                           "an explicit cell range keeps constraining the print exactly")
+            XCTAssertEqual(explicit.omittedInkShapeCount ?? 0, 51,
+                           "omission and the explicit range are independent, honored choices")
+            // Every export above verified it; state it once explicitly.
+            XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha,
+                           "the source workbook keeps every stroke regardless of the output choice")
+            attach(on.pdfURL, "provided-includeInk-on.pdf")
+            attach(off.pdfURL, "provided-includeInk-off.pdf")
+            attach(offPixels.png, "provided-includeInk-off.png")
+            let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
+            XCTAssertFalse(quarantined)
+            try FileManager.default.removeItem(at: root)
+        } catch {
+            if !(await OfficeAutomaticExecutionGate.shared.isQuarantined) {
+                try? FileManager.default.removeItem(at: root)
+            }
+            throw error
+        }
+    }
+
     /// Real-owner regression for the reported on-device preview trigger.
     ///
     /// Main's build-290 observation: after the first automatic preview, a
@@ -571,6 +684,10 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
     /// never taps Update preview.
     func testScalingChangeRegeneratesPreviewWithoutManualUpdate() async throws {
         let (source, sha, root) = try input()
+        // Source-preservation evidence: snapshot the exact pristine bytes now,
+        // before any product step can touch the file. The xcresult is private
+        // verification evidence only; workbook bytes never reach Git.
+        try attachBytes(source, "provided-workbook-pristine.xlsx")
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive }))
         let previous = scene.windows.first(where: \.isKeyWindow)
@@ -651,6 +768,11 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
                 }
             }
             attachWindow(window, "preview-trigger-after-change")
+            // Retain the exact final bytes before the trailing cleanup
+            // deletes them, whichever way the unchanged-source assertion
+            // below lands. The expected digest stays pinned to the pristine
+            // input; nothing here weakens it.
+            try attachBytes(source, "provided-workbook-final.xlsx")
             XCTAssertEqual(try FloeDigest.sha256Hex(ofFileAt: source), sha,
                            "previewing and changing settings never edits the source workbook")
             let quarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
@@ -661,6 +783,7 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             try FileManager.default.removeItem(at: root)
         } catch {
             attachWindow(window, "preview-trigger-failure")
+            try? attachBytes(source, "provided-workbook-failure.xlsx")
             let ax = Self.sceneAccessibilityNodes()
                 .map { ["identifier": $0.identifier, "label": $0.label] }
             if let data = try? JSONSerialization.data(withJSONObject: ax, options: [.sortedKeys]) {
@@ -1164,6 +1287,16 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
     }
     private func attach(_ data: Data, _ name: String) {
         let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "public.png")
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
+    /// Immediate in-memory snapshot of a file's bytes at the call site.
+    /// XCTAttachment(contentsOfFile:) cannot reliably retain bytes of a file
+    /// the test later deletes; this copies the exact bytes into the private
+    /// result container at capture time.
+    private func attachBytes(_ url: URL, _ name: String) throws {
+        let attachment = XCTAttachment(data: try Data(contentsOf: url),
+                                       uniformTypeIdentifier: "org.openxmlformats.spreadsheetml.sheet")
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
     }
 

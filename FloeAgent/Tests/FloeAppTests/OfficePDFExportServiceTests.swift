@@ -142,6 +142,104 @@ struct OfficePDFExportServiceTests {
         }
     }
 
+    // MARK: - Handwriting choice (includeInk)
+
+    @Test("the handwriting choice defaults on, reaches the plan and survives legacy payloads")
+    func includeInkPlanContract() throws {
+        // Default: printing exactly as before, no prepared copy is forced.
+        let plain = OfficePDFExportChoices()
+        #expect(plain.includeInk == true)
+        let plainPlan = try plain.plan(activeSheetName: nil)
+        #expect(plainPlan.includeInk == true)
+
+        // Off: the same scope/setup, only the output ink changes; the plan
+        // still validates for every prepared format and never invents a scope.
+        var omitted = OfficePDFExportChoices()
+        omitted.includeInk = false
+        let omittedPlan = try omitted.plan(activeSheetName: nil)
+        #expect(omittedPlan.includeInk == false)
+        #expect(omittedPlan.scope == plainPlan.scope)
+        #expect(omittedPlan.pageSetup == plainPlan.pageSetup)
+        for ext in ["xlsx", "docx", "pptx"] {
+            try omittedPlan.validate(forExtension: ext)
+        }
+        // A prepared copy is required even for pure document settings now.
+        #expect(omittedPlan.requiresPrintCopy)
+
+        // The Word/Presentation defaults never touch the handwriting choice.
+        var word = OfficePDFExportChoices()
+        word.includeInk = false
+        word.applyDocumentSetupDefaults(forFormatExtension: "docx")
+        #expect(word.includeInk == false)
+        #expect(try word.plan(activeSheetName: nil).includeInk == false)
+
+        // Legacy persisted payloads without the key decode as "on", so saved
+        // jobs keep byte-identical behavior.
+        let encoded = try JSONEncoder().encode(plainPlan)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "includeInk")
+        let legacy = try JSONDecoder().decode(
+            OfficePDFPrintPlan.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        #expect(legacy.includeInk == true)
+    }
+
+    @Test("changing only the handwriting choice makes the accepted preview stale")
+    func includeInkParticipatesInPreviewFence() throws {
+        var state = OfficePDFExportPreviewState()
+        let token = state.beginGeneration()
+        let accepted = OfficePDFExportChoices()
+        let artifact = OfficePDFExportPreviewState.Artifact(
+            url: URL(fileURLWithPath: "/tmp/floe-ink-fence.pdf"),
+            pageCount: 1, byteCount: 64,
+            pdfSHA256: String(repeating: "b", count: 64))
+        #expect(state.accept(token: token, artifact: artifact, choices: accepted))
+        #expect(state.isStale(currentChoices: accepted) == false)
+        var omitted = accepted
+        omitted.includeInk = false
+        #expect(state.isStale(currentChoices: omitted),
+                "the handwriting choice is part of the preview identity")
+        // Ruled out: the choice alone never leaks into existing fields.
+        #expect(omitted.scope == accepted.scope)
+        #expect((try omitted.plan(activeSheetName: nil)).pageSetup
+                == (try accepted.plan(activeSheetName: nil)).pageSetup)
+    }
+
+    @Test("ink omission is advertised only for the prepared saved formats")
+    func includeInkCapabilityTruthTable() throws {
+        for ext in ["xlsx", "docx", "pptx"] {
+            let capability = try #require(OfficePDFExportService.capability(forExtension: ext))
+            #expect(capability.inkOmission, "expected ink omission for .\(ext)")
+            #expect(capability.savedIsolatedExport)
+        }
+        for ext in ["xls", "ods", "doc", "odt", "rtf", "ppt", "odp"] {
+            let capability = try #require(OfficePDFExportService.capability(forExtension: ext))
+            #expect(capability.inkOmission == false,
+                    "legacy .\(ext) must never claim a re-render without ink")
+            #expect(capability.liveSessionFinalize)
+        }
+    }
+
+    @Test("finalize refuses the handwriting choice before any file work")
+    func finalizeRefusesInkOmission() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = try writeSource(root, name: "book.xlsx")
+        let sha = try FloeDigest.sha256Hex(ofFileAt: source)
+        let owned = root.appendingPathComponent("owned", isDirectory: true)
+        await #expect(throws: OfficePDFExportError.self) {
+            _ = try await OfficePDFExportService.finalizeExistingPDF(
+                OfficePDFFinalizeRequest(
+                    exportedPDFURL: root.appendingPathComponent("missing.pdf"),
+                    sourceURL: source, sourceSHA256: sha,
+                    formatExtension: "xlsx",
+                    plan: OfficePDFPrintPlan(includeInk: false),
+                    ownedDirectory: owned))
+        }
+        #expect(childDirectories(in: owned).isEmpty)
+    }
+
     // MARK: - Build 285 preview round: choices, scopes and the preview fence
 
     @Test("every supported Excel choice maps into the validated plan")

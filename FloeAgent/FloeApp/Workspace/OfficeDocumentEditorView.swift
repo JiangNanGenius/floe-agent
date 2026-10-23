@@ -898,10 +898,81 @@ final class OfficeFileSession: ObservableObject {
                     throw FloeError.validationFailed(proof.error ?? OfficeInkText.t("尚未保存完成，请稍后重试。", "Saving has not finished. Try again shortly."))
                 }
             } else {
-                guard await saveInPlace() else {
-                    recordStage("export.prepare.refused",
-                                exportRefusalFacts(stage: "prepare", guardAt: "saveInPlace", fence: fence))
-                    throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
+                // Mirror the coordinator's strict clean no-op contract for an
+                // owner-less editable session: `hasLocalEditsToProtect()` is
+                // false only when the working copy matches the committed
+                // baseline AND the engine's own ModifiedStatus reads clean;
+                // unknown state fails safe to dirty and keeps today's save.
+                // With nothing to commit, an unconditional engine save would
+                // re-serialize and promote bytes the user never changed —
+                // the real-edit path is untouched.
+                if await hasLocalEditsToProtect() {
+                    guard await saveInPlace() else {
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "saveInPlace", fence: fence))
+                        throw FloeError.validationFailed(error ?? OfficeInkText.t("未能保存文档，请重试。", "The document could not be saved. Try again."))
+                    }
+                } else {
+                    // A clean working copy plus a clean engine flag still does
+                    // not prove the ORIGINAL on disk matches the committed
+                    // baseline: `save` is where that digest is CAS-checked.
+                    // `hasLocalEditsToProtect()` fails safe to dirty when the
+                    // workspace or session is missing, so this branch is only
+                    // reached with a live pair. Prove the original read-only
+                    // under the same coordination and mutation lock before
+                    // claiming the no-op. A failure refuses instead of
+                    // falling back to an unconditional save: the old save
+                    // path refused these same underlying errors too.
+                    guard let workspace else {
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "verifyCommittedOriginal", fence: fence)
+                                        .merging(["claim": "proofUnavailable"]) { _, latest in latest })
+                        throw FloeError.validationFailed(OfficeInkText.t("无法确认文档的已保存版本，请重新打开后重试。", "The document's saved version could not be verified. Reopen the document and try again."))
+                    }
+                    var proofFailure: Error?
+                    do {
+                        try await workspace.verifyCommittedOriginal(currentSession)
+                    } catch {
+                        proofFailure = error
+                    }
+                    // The proof awaits on the workspace actor. Re-establish
+                    // this generation's ownership BEFORE inspecting or
+                    // mutating shared editor state: a failed proof for an old
+                    // session after navigation or a new open must never mark
+                    // the new document conflicted. `claimPDFExportWindow`
+                    // below protects publication but cannot undo such an
+                    // earlier mutation, so the stale surface refuses here.
+                    try Task.checkCancellation()
+                    guard passiveExitFenceIsCurrent(fence) else {
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "verifyCommittedOriginal", fence: fence)
+                                        .merging(["claim": "staleSurface"]) { _, latest in latest })
+                        throw OfficePDFExportScreenError.sourceChanged
+                    }
+                    if let proofFailure {
+                        var originalChanged = false
+                        if let officeError = proofFailure as? OfficeDocumentError, case .revisionConflict = officeError {
+                            originalChanged = true
+                            // Same actionable conflict marking as
+                            // `saveInPlace`, now proven about this generation.
+                            hasSaveConflict = true
+                        }
+                        recordStage("export.prepare.refused",
+                                    exportRefusalFacts(stage: "prepare", guardAt: "verifyCommittedOriginal", fence: fence)
+                                        .merging(["claim": originalChanged ? "staleOriginal" : "proofUnavailable"]) { _, latest in latest })
+                        if originalChanged {
+                            // Existing export-screen behavior: localized
+                            // "document changed, refresh" refusal that
+                            // invalidates the frozen source (`needsSourceRefresh`).
+                            throw OfficePDFExportScreenError.sourceChanged
+                        }
+                        // The exact underlying reason stays in the
+                        // content-free guardAt/claim breadcrumb; the ordinary
+                        // screen gets the actionable reopen wording.
+                        throw FloeError.validationFailed(OfficeInkText.t("无法确认文档的已保存版本，请重新打开后重试。", "The document's saved version could not be verified. Reopen the document and try again."))
+                    }
+                    recordStage("export.prepare.cleanNoop",
+                                ["guardAt": "saveInPlace", "originalProof": "verified"])
                 }
             }
             // Claim only after the save settled, so the current-part read and
@@ -1103,7 +1174,11 @@ final class OfficeFileSession: ObservableObject {
             return OfficePDFPreparedDelivery(
                 url: delivery, lease: source.lease,
                 pageCount: result.pageCount, byteCount: result.byteCount,
-                pdfSHA256: producedSHA)
+                pdfSHA256: producedSHA,
+                // Measured fact from the shared service's laid-out file;
+                // nil without a physical paginated layout. The preview dock
+                // turns a positive count into the inline exceed notice.
+                layoutExceedingPages: result.layoutExceedingPages)
         } catch {
             if await OfficeAutomaticExecutionGate.shared.isQuarantined {
                 // The service retained a native session that did not close.
@@ -2105,7 +2180,21 @@ final class OfficeFileSession: ObservableObject {
             if saveAttempts > 1 {
                 recordStage("save.busyRetry.ok", ["attempts": "\(saveAttempts)"])
             }
+            #if DEBUG
+            let captureCommitProof = ProcessInfo.processInfo.environment["FLOE_OFFICE_EXPORT_QUALIFICATION"] == "1"
+            let commitOriginalBefore = captureCommitProof
+                ? (try? FloeDigest.sha256Hex(ofFileAt: session.originalURL)) : nil
+            #endif
             try await workspace.save(session)
+            #if DEBUG
+            if captureCommitProof {
+                let commitOriginalAfter = try? FloeDigest.sha256Hex(ofFileAt: session.originalURL)
+                let changed = commitOriginalBefore.flatMap { before in commitOriginalAfter.map { before != $0 } }
+                recordStage("save.commitProof", ["originalBefore": commitOriginalBefore ?? "unavailable",
+                                                 "originalAfter": commitOriginalAfter ?? "unavailable",
+                                                 "changed": changed.map { $0 ? "true" : "false" } ?? "unknown"])
+            }
+            #endif
             hasSaveConflict = false
             hasUncommittedChanges = try await workspace.hasUncommittedWorkingCopy(session)
             if !hasUncommittedChanges { await OfficeExplicitSaveBridge.didCommit(controller: native) }
@@ -4689,7 +4778,8 @@ struct OfficeDocumentEditorView: View {
             .sheet(item: $shareSnapshot, onDismiss: {
                 Task { await session.finishSaveCopy() }
             }) { snapshot in
-                OfficeDocumentShareSheet(url: snapshot.fileURL)
+                OfficeDocumentShareSheet(url: snapshot.fileURL,
+                                         allowsSystemPrint: session.readOnly)
             }
             .alert("workspace.office_document_editor_view.copy_saved", isPresented: $savedCopyNotice) {
                 Button("workspace.office_document_editor_view.ok", role: .cancel) {}
@@ -5038,8 +5128,18 @@ private struct OfficeConvertedExport: Identifiable {
 /// session reclaims the snapshot when the sheet dismisses.
 struct OfficeDocumentShareSheet: UIViewControllerRepresentable {
     let url: URL
+    /// Original EDITABLE Office shares exclude the system Print activity:
+    /// printing the raw package would hand the system an unfiltered render
+    /// that bypasses the app's print options (including the handwriting
+    /// choice). Prepared-PDF deliveries, read-only and remote-snapshot
+    /// shares keep Print, and every other activity is untouched.
+    var allowsSystemPrint: Bool = true
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if !allowsSystemPrint {
+            controller.excludedActivityTypes = [.print]
+        }
+        return controller
     }
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }

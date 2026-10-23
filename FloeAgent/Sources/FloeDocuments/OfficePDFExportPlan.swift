@@ -25,8 +25,11 @@
 //    sheet to its real workbook tab identity first; the backend never assumes
 //    the first sheet.
 //  * No page setup is invented for formats whose engine support is not
-//    implemented. `validate(for:)` refuses non-XLSX custom settings instead
-//    of silently dropping them.
+//    implemented. `validate(for:)` refuses a control on a format whose real
+//    route cannot apply it, instead of silently dropping it: worksheet page
+//    setup stays `.xlsx`-only, and the physical print layout of the
+//    GENERATED PDF (`OfficePDFPaginatedLayout`: paper, orientation and one
+//    scaling choice for `.docx`/`.pptx`) is refused for every other format.
 
 import Foundation
 
@@ -188,7 +191,11 @@ public struct OfficePDFPageSetup: Codable, Sendable, Equatable {
 /// `workbook` (`.xlsx`) supports the full plan: sheet/workbook scope, cell
 /// ranges, page setup and a final PDF page selection.
 /// `paginated` (`.docx`, `.pptx`) supports the document's own page setup and
-/// a final PDF page selection, but no sheet/cell or custom page setup.
+/// a final PDF page selection, no sheet/cell or worksheet page setup, and —
+/// through `OfficePDFPaginatedLayout` applied by the App service to the
+/// GENERATED PDF — a physical print layout of paper, orientation and one
+/// scaling choice. That is re-laid print output, not a reflowed source
+/// document; the plan itself stays pure geometry with no engine claims.
 /// `documentSettingsOnly` (legacy `.xls`, `.ods`, `.doc`, `.odt`, `.rtf`,
 /// `.ppt`, `.odp`) supports the document's own settings plus a final page
 /// selection. Those formats are exported from an already-open live session
@@ -208,6 +215,14 @@ public enum OfficePDFFormatSupport: String, Codable, Sendable, Equatable {
     /// name the qualified cell-range and assistant region routes write.
     public var supportsPrintAreaScope: Bool { self == .workbook }
     public var supportsCustomPageSetup: Bool { self == .workbook }
+    /// Physical print layout (paper, orientation, one scaling choice) of the
+    /// PDF the App service GENERATES for a `.docx`/`.pptx` through the saved
+    /// isolated export. The source document is never reflowed and its bytes
+    /// are never written; the layout applies to the produced pages only.
+    public var supportsPhysicalPageLayout: Bool { self == .paginated }
+    /// Exact scale percent for a physical layout request — the same
+    /// `OfficePDFScale` bounds the workbook route declares on a worksheet.
+    public var supportsPhysicalExactScale: Bool { self == .paginated }
     /// Exact `pageSetup@scale` percent — the same member a source worksheet's
     /// own settings already carry and the engine prints from.
     public var supportsExactScale: Bool { self == .workbook }
@@ -380,15 +395,25 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
     /// `.pptx`); a live-session finalize (legacy formats) keeps ink and
     /// the service refuses `false` there instead of silently ignoring it.
     public var includeInk: Bool
+    /// Physical print layout for the PDF generated from a `.docx`/`.pptx`
+    /// source (`nil` keeps the engine output exactly as produced). The
+    /// workbook route never uses it — its page setup writes real OOXML
+    /// members through `OfficePrintCopy` instead — and the live-session
+    /// finalize route refuses it. Legacy formats keep document settings
+    /// only. Decoded plans that predate this member get `nil`, i.e. the
+    /// previous behavior, byte-for-byte unchanged.
+    public var paginatedLayout: OfficePDFPaginatedLayout?
 
     public init(scope: OfficePDFScope = .documentSettings,
                 pageSetup: OfficePDFPageSetup = .documentSettings,
                 pageRange: OfficePDFPageRange? = nil,
-                includeInk: Bool = true) {
+                includeInk: Bool = true,
+                paginatedLayout: OfficePDFPaginatedLayout? = nil) {
         self.scope = scope
         self.pageSetup = pageSetup
         self.pageRange = pageRange
         self.includeInk = includeInk
+        self.paginatedLayout = paginatedLayout
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -396,6 +421,7 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
         case pageSetup
         case pageRange
         case includeInk
+        case paginatedLayout
     }
 
     /// Plans encoded before this key existed decode as `includeInk == true`
@@ -406,6 +432,8 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
         pageSetup = try container.decode(OfficePDFPageSetup.self, forKey: .pageSetup)
         pageRange = try container.decodeIfPresent(OfficePDFPageRange.self, forKey: .pageRange)
         includeInk = try container.decodeIfPresent(Bool.self, forKey: .includeInk) ?? true
+        paginatedLayout = try container.decodeIfPresent(
+            OfficePDFPaginatedLayout.self, forKey: .paginatedLayout)
     }
 
     /// The plan needs an XLSX print copy instead of exporting the source
@@ -444,6 +472,16 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
         }
         if !support.supportsCustomPageSetup, pageSetup.hasOverrides {
             throw OfficePDFPlanError.unsupportedPageSetup(format: ext)
+        }
+        // A physical print layout request is truthful only on the saved
+        // isolated Word/Presentation route. The workbook route writes real
+        // OOXML page setup instead, and the live-session finalize route
+        // never re-lays an already-produced PDF.
+        if let paginatedLayout, paginatedLayout.hasOverrides {
+            guard support.supportsPhysicalPageLayout else {
+                throw OfficePDFPlanError.unsupportedPhysicalLayout(format: ext)
+            }
+            try paginatedLayout.validated()
         }
         // Exactly one scaling control at most: `scale` and
         // `fitToWidth`/`fitToHeight` cannot both be declared truthfully.
@@ -544,6 +582,7 @@ public enum OfficePDFPlanError: LocalizedError, Sendable, Equatable {
     case rangeOutsideWorksheetBounds(requested: String, maximumColumn: Int, maximumRow: Int)
     case unsupportedScope(format: String)
     case unsupportedPageSetup(format: String)
+    case unsupportedPhysicalLayout(format: String)
     case conflictingScalingControls
     case scalePercentOutOfRange(requested: Int, minimum: Int, maximum: Int)
     case fitPagesOutOfRange(requested: OfficePDFFitPages, maximum: Int)
@@ -572,6 +611,8 @@ public enum OfficePDFPlanError: LocalizedError, Sendable, Equatable {
             "Sheet and workbook scopes are available for .xlsx workbooks only (requested .\(format))."
         case .unsupportedPageSetup(let format):
             "Custom paper, orientation, fit, margin and printed-gridlines settings are available for .xlsx workbooks only (requested .\(format))."
+        case .unsupportedPhysicalLayout(let format):
+            "Physical print layout of the generated PDF is available for .docx and .pptx saved exports only (requested .\(format))."
         case .conflictingScalingControls:
             "Choose only one scaling control: a fit preset, an exact scale, or a fit-to-pages size."
         case .scalePercentOutOfRange(let requested, let minimum, let maximum):

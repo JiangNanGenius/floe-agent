@@ -16,6 +16,8 @@ struct DocumentConversionArguments: Decodable, Sendable {
     /// Office -> PDF only: strict 1-based selection of the actual final PDF
     /// pages (e.g. "2-4,7"). Nil keeps every page.
     var pages: String? = nil
+    /// Saved Office PDF only; nil preserves handwriting.
+    var includeInk: Bool? = nil
 }
 
 /// App-target helper for S3-D run-output publication at producer commit
@@ -105,8 +107,8 @@ struct DocumentConvertTool: AgentTool {
 struct PDFConvertTool: AgentTool {
     typealias Arguments = DocumentConversionArguments
     static let name = "document.pdf.convert"
-    static let toolDescription = "Convert Markdown, Word DOCX, Excel XLSX, PowerPoint PPTX, HTML, RTF or text files to a paginated PDF, or extract a copy-permitted text PDF into Markdown, DOCX, HTML, RTF or text. DOCX/XLSX/PPTX inputs use the shared pinned Office engine for a real layout-preserving PDF of the saved package; other inputs use the offline HTML renderer. Optional pages (1-based, e.g. 2-4,7) selects the final PDF pages of an Office-generated PDF. Operates offline on existing files without model rewriting. Source is preserved and output must be new. PDF extraction retains page order and searchable text, not original layout, tables or images; image-only/scanned pages fail with an OCR-required message instead of silently disappearing. For non-PDF conversions use document.convert."
-    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["pdf","markdown","docx","html","rtf","text"]},"pages":{"type":"string","maxLength":1024,"description":"Office -> PDF only: strict 1-based final page selection like 2-4,7."}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
+    static let toolDescription = "Convert Markdown, Word DOCX, Excel XLSX, PowerPoint PPTX, HTML, RTF or text files to a paginated PDF, or extract a copy-permitted text PDF into Markdown, DOCX, HTML, RTF or text. DOCX/XLSX/PPTX inputs use the shared pinned Office engine for a real layout-preserving PDF of the saved package; other inputs use the offline HTML renderer. Optional includeInk=false omits handwriting from Office PDF output while preserving the saved file. Optional pages (1-based, e.g. 2-4,7) selects the final PDF pages of an Office-generated PDF. Operates offline on existing files without model rewriting. Source is preserved and output must be new. PDF extraction retains page order and searchable text, not original layout, tables or images; image-only/scanned pages fail with an OCR-required message instead of silently disappearing. For non-PDF conversions use document.convert."
+    static let parametersJSON = #"{"type":"object","properties":{"inputPath":{"type":"string"},"outputPath":{"type":"string","description":"New workspace-relative file; extension must match format"},"format":{"type":"string","enum":["pdf","markdown","docx","html","rtf","text"]},"pages":{"type":"string","maxLength":1024,"description":"Office -> PDF only: strict 1-based final page selection like 2-4,7."},"includeInk":{"type":"boolean","description":"Office -> PDF only: false omits handwriting from the output; omit or true preserves it. The source is unchanged."}},"required":["inputPath","outputPath","format"],"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = [.readsFiles, .writesFiles]
     static let isSideEffecting = true
     static let toolEffect: ToolEffect = .mutating
@@ -148,6 +150,12 @@ enum DocumentFileConverter {
         if ["xlsx", "pptx"].contains(sourceExtension), args.format != "pdf" {
             throw FloeError.validationFailed("Excel and PowerPoint inputs convert to PDF only")
         }
+        if args.includeInk != nil {
+            guard args.format == "pdf",
+                  ["docx", "xlsx", "pptx"].contains(sourceExtension) else {
+                throw FloeError.validationFailed("includeInk applies only to an Office DOCX/XLSX/PPTX to PDF conversion")
+            }
+        }
         if let pages = args.pages, !pages.isEmpty {
             guard args.format == "pdf",
                   ["docx", "xlsx", "pptx"].contains(sourceExtension),
@@ -172,7 +180,7 @@ enum DocumentFileConverter {
         if args.format == "pdf", let officeFormat = OfficeDocumentFormat(fileExtension: sourceURL.pathExtension) {
             return try await convertOfficePDF(
                 sourceURL: sourceURL, outputURL: outputURL, format: officeFormat,
-                pages: args.pages, outputPath: args.outputPath,
+                pages: args.pages, includeInk: args.includeInk, outputPath: args.outputPath,
                 context: context, producerTool: producerTool)
         }
         guard args.pages == nil else {
@@ -236,6 +244,7 @@ enum DocumentFileConverter {
     /// policy and published as a run-owned file when a real binding exists.
     private static func convertOfficePDF(sourceURL: URL, outputURL: URL,
                                          format: OfficeDocumentFormat, pages: String?,
+                                         includeInk: Bool?,
                                          outputPath: String, context: ToolContext,
                                          producerTool: String) async throws -> ToolExecutionOutput {
         #if canImport(UIKit) && canImport(WebKit) && canImport(FloeOfficeNative)
@@ -245,7 +254,7 @@ enum DocumentFileConverter {
               size > 0, size <= 128 * 1_024 * 1_024 else {
             throw FloeError.validationFailed("Office PDF input must be a regular file up to 128 MiB")
         }
-        var plan = OfficePDFPrintPlan()
+        var plan = OfficePDFPrintPlan(includeInk: includeInk ?? true)
         if let pages, !pages.isEmpty {
             guard let range = OfficePDFPageRange.parse(pages) else {
                 throw FloeError.validationFailed("pages must be a 1-based selection like 2-4,7")
@@ -285,6 +294,9 @@ enum DocumentFileConverter {
             NotificationCenter.default.post(name: .floePDFDocumentDidChange, object: outputURL)
             let digest = exported.pdfSHA256
             var summary = "converted=\(outputPath) format=pdf bytes=\(data.count) sha256=\(digest) pages=\(exported.pageCount) officeEngine=true originalPreserved=true modelRewrite=false"
+            if let omitted = exported.omittedInkShapeCount {
+                summary += " includeInk=false omittedInkShapes=\(omitted)"
+            }
             if let applied = exported.appliedPageRange {
                 summary += " finalPages=\(applied.map(String.init).joined(separator: ","))"
             }

@@ -8,7 +8,11 @@
 //    package. XLSX first prepares a private print copy through
 //    `OfficePrintCopy` (sheet/workbook scope, exact cell range, page setup),
 //    then `OfficeIsolatedPDFExport` opens a read-only engine session on that
-//    copy. DOCX/PPTX export their own document settings.
+//    copy. DOCX/PPTX export their own document settings; when the plan asks
+//    for a `paginatedLayout`, the produced pages then go through the guarded
+//    `OfficePDFPhysicalLayout` pass (physical paper, orientation and one
+//    scaling choice applied to the GENERATED PDF — vector content replayed,
+//    the source package never touched).
 //  * `finalizeExistingPDF` validates and finalizes a PDF that an ALREADY-OPEN
 //    live session produced with the existing native export. That keeps the
 //    baseline legacy formats (.xls, .ods, .doc, .odt, .rtf, .ppt, .odp)
@@ -21,6 +25,18 @@
 // and never delete the caller's directory. The caller leases the returned
 // file and owns presentation (share sheet, system print panel, assistant
 // artifact transport).
+//
+// One plan flag re-shapes what the ENGINE reads, never what the user owns:
+// `plan.includeInk == false` routes every qualified saved format through an
+// export-only isolated copy prepared by `OfficeInkOmission` — the workbook
+// copy goes through `OfficePrintCopy` first, then the same omission pass;
+// `.docx`/`.pptx` get their own ink-omitted copy of the frozen source. Only
+// proven freeform ink strokes (see the module header) leave the output;
+// typed cells/text, charts, images, preset shapes, gridlines and borders
+// stay, the automatic fit bounds shrink with the omitted ink, and the exact
+// source bytes — every saved stroke — are verified unchanged around the
+// operation. Legacy live-session formats refuse the flag instead of
+// silently ignoring it, because their PDF is the engine's own rendering.
 //
 // This service has no view, no SwiftUI state and no live controller. The UI
 // adapter resolves live-only facts (current sheet, pen-up/save fence) before
@@ -99,7 +115,10 @@ struct OfficePDFExportResult: Sendable {
     var pdfSHA256: String
     var byteCount: Int
     var pageCount: Int
-    /// PDF points, cropBox, one entry per final page.
+    /// PDF points, cropBox, one entry per final page. With a physical
+    /// paginated layout these are the MEASURED laid-out paper boxes — the
+    /// applied result is proven from the real file, never restated from the
+    /// request.
     var pageSizes: [CGSize]
     var sourceSHA256: String
     var sourceFormatExtension: String
@@ -108,6 +127,18 @@ struct OfficePDFExportResult: Sendable {
     var appliedPrintPlan: OfficePrintCopyPlan?
     /// nil = every page of the produced PDF; otherwise the exact final order.
     var appliedPageRange: [Int]?
+    /// Set only when the output was rendered from an ink-omitted export copy:
+    /// the exact number of proven freeform shapes removed from that copy.
+    /// Never a restatement of the request.
+    var omittedInkShapeCount: Int? = nil
+    /// Non-nil only when the generated PDF pages were physically re-laid
+    /// through the guarded `OfficePDFPhysicalLayout` pass for this plan's
+    /// `paginatedLayout`. The measured `pageSizes` above describe the real
+    /// result; this records which request produced it.
+    var appliedPaginatedLayout: OfficePDFPaginatedLayout? = nil
+    /// Pages whose explicitly scaled content exceeds the paper box for the
+    /// applied layout (nil without a layout; 0 for any whole-page fit).
+    var layoutExceedingPages: Int? = nil
     var notes: [OfficePDFExportNote]
 }
 
@@ -120,6 +151,20 @@ enum OfficePDFExportNote: String, Codable, Sendable, Equatable {
     case printTitlesPreserved
     case finalPageSelectionApplied
     case legacyFormatFinalized
+    /// The prepared output was rendered from an export-only isolated copy
+    /// whose proven freeform ink strokes were removed
+    /// (`plan.includeInk == false`). Typed text, charts, images, gridlines,
+    /// borders and the source package are untouched.
+    case handwritingOmitted
+    /// The generated Word/Presentation PDF pages were physically re-laid on
+    /// the requested paper through the guarded layout pass. The measured
+    /// result (page boxes, count and digest) always describes the laid-out
+    /// file — this note records that the layout route actually ran.
+    case physicalLayoutApplied
+    /// An explicit `actualSize`/`percent` scaling left content larger than
+    /// the paper on at least one page. The preview shows exactly this and
+    /// the count is in the result; a whole-page fit never reports it.
+    case physicalLayoutContentExceedsPaper
 }
 
 enum OfficePDFExportError: LocalizedError, Sendable, Equatable {
@@ -131,6 +176,7 @@ enum OfficePDFExportError: LocalizedError, Sendable, Equatable {
     case outputAlreadyExists(String)
     case invalidPDF(reason: String)
     case pageSelectionFailed(reason: String)
+    case physicalLayoutFailed(reason: String)
 
     var errorDescription: String? {
         switch self {
@@ -150,6 +196,8 @@ enum OfficePDFExportError: LocalizedError, Sendable, Equatable {
             "The exported PDF failed validation (\(reason))."
         case .pageSelectionFailed(let reason):
             "The PDF page selection failed (\(reason))."
+        case .physicalLayoutFailed(let reason):
+            "The requested physical print layout was not applied (\(reason)); the original document was preserved."
         }
     }
 }
@@ -171,6 +219,23 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
     /// the source package. False for every non-XLSX format.
     var printGridlines: Bool
     var finalPageRange: Bool
+    /// Explicit handwriting choice honored through an export-only isolated
+    /// copy: the prepared copy's proven freeform ink strokes are removed by
+    /// `OfficeInkOmission` while typed cells/text, charts, images, printed
+    /// gridlines, cell borders and the source package all stay untouched.
+    /// True exactly where the saved isolated export host is qualified
+    /// (`.xlsx`, `.docx`, `.pptx`); false for the legacy live-session
+    /// formats, which cannot re-render without ink and refuse the choice.
+    var inkOmission: Bool
+    /// Physical print layout of the GENERATED PDF (paper, orientation and one
+    /// scaling choice) is applied for `.docx`/`.pptx` through the guarded
+    /// `OfficePDFPhysicalLayout` pass. This is re-laid print output, never a
+    /// claim to reflow the source; false for `.xlsx` (which writes real OOXML
+    /// page setup instead) and for the legacy live-session formats.
+    var physicalPageLayout: Bool
+    /// Exact `OfficePDFScale` percent and actual-size scaling for a physical
+    /// layout request — true exactly where `physicalPageLayout` is true.
+    var physicalExactScale: Bool
 
     static func resolve(forExtension ext: String) -> OfficePDFExportCapability? {
         guard let support = OfficePDFFormatSupport.resolve(forExtension: ext) else {
@@ -187,7 +252,10 @@ struct OfficePDFExportCapability: Codable, Sendable, Equatable {
             exactScale: support.supportsExactScale,
             fitPageCount: support.supportsFitPageCount,
             printGridlines: support.supportsPrintGridlines,
-            finalPageRange: support.supportsFinalPageRange)
+            finalPageRange: support.supportsFinalPageRange,
+            inkOmission: support.supportsSavedIsolatedExport,
+            physicalPageLayout: support.supportsPhysicalPageLayout,
+            physicalExactScale: support.supportsPhysicalExactScale)
     }
 }
 
@@ -238,6 +306,8 @@ enum OfficePDFExportService {
         let wasQuarantined = await OfficeAutomaticExecutionGate.shared.isQuarantined
         do {
             var copyPlan: OfficePrintCopyPlan?
+            var inkOutcome: OfficeInkOmissionOutcome?
+            var preparedCopies: [URL] = []
             let exportSource: URL
             if support == .workbook, request.plan.requiresPrintCopy {
                 let copyURL = child.appendingPathComponent("print-copy.xlsx")
@@ -246,7 +316,46 @@ enum OfficePDFExportService {
                     destinationURL: copyURL,
                     expectedSHA256: request.sourceSHA256,
                     plan: request.plan)
-                exportSource = copyURL
+                preparedCopies.append(copyURL)
+                if request.plan.includeInk {
+                    exportSource = copyURL
+                } else {
+                    // Omit the proven ink strokes from the ALREADY private
+                    // print copy only. The source keeps every stroke; the
+                    // engine prints from this second, export-only copy. The
+                    // engine derives its automatic print bounds at print time
+                    // from THIS copy, so the omitted ink is already gone from
+                    // the bounds input — no extent is computed from the
+                    // un-omitted copy anywhere in this pipeline.
+                    let strippedURL = child.appendingPathComponent(
+                        "print-copy-ink-omitted.xlsx")
+                    inkOutcome = try OfficeInkOmission.prepareOmittedCopy(
+                        sourceURL: copyURL,
+                        destinationURL: strippedURL,
+                        expectedSHA256: copyPlan?.copySHA256)
+                    preparedCopies.append(strippedURL)
+                    if let inkOutcome {
+                        // Receipt truth: the applied plan must describe the
+                        // file the engine ACTUALLY rendered, and an omission
+                        // that rewrote drawing members means those members
+                        // are no longer byte-preserved in the rendered copy.
+                        if !inkOutcome.changedParts.isEmpty {
+                            copyPlan?.drawingPartsPreserved = false
+                        }
+                        copyPlan?.copySHA256 = inkOutcome.copySHA256
+                    }
+                    exportSource = strippedURL
+                }
+            } else if !request.plan.includeInk {
+                // Only `.docx`/`.pptx` reach here: a workbook that omits ink
+                // always requires the print copy above (`requiresPrintCopy`).
+                let omittedURL = child.appendingPathComponent("ink-omitted.\(ext)")
+                inkOutcome = try OfficeInkOmission.prepareOmittedCopy(
+                    sourceURL: request.sourceURL,
+                    destinationURL: omittedURL,
+                    expectedSHA256: request.sourceSHA256)
+                preparedCopies.append(omittedURL)
+                exportSource = omittedURL
             } else {
                 exportSource = request.sourceURL
             }
@@ -270,14 +379,14 @@ enum OfficePDFExportService {
                 sourceFormatExtension: ext,
                 plan: request.plan,
                 appliedPrintPlan: copyPlan,
+                omittedInkShapeCount: inkOutcome?.omittedInkDrawings,
                 baseNotes: notes(for: request.plan, copyPlan: copyPlan, legacy: false),
                 cancellation: request.cancellation)
-            // The private print copy is no longer needed once the PDF is
-            // final; the engine's own staging directory is removed by
+            // The private preparation copies are no longer needed once the
+            // PDF is final; the engine's own staging directory is removed by
             // OfficeIsolatedPDFExport on its safe path.
-            if copyPlan != nil {
-                try? FileManager.default.removeItem(
-                    at: child.appendingPathComponent("print-copy.xlsx"))
+            for copy in preparedCopies {
+                try? FileManager.default.removeItem(at: copy)
             }
             return result
         } catch {
@@ -306,14 +415,27 @@ enum OfficePDFExportService {
             throw OfficePDFPlanError.unsupportedFormat(ext)
         }
         try request.plan.validate(forExtension: ext)
-        // A PDF that already exists cannot be re-scoped or re-paginated by
-        // this path: it is the already-open session's actual output. Only
-        // document settings plus a final page range are truthful here.
+        // A PDF that already exists cannot be re-scoped, re-paginated or
+        // physically re-laid by this path: it is the already-open session's
+        // actual output. Only document settings plus a final page range are
+        // truthful here. (The editor adapter only reaches this route for the
+        // legacy formats, which never carry a physical paginated layout; this
+        // guard keeps a hand-built request from silently ignoring one.)
         guard request.plan.scope == .documentSettings,
-              !request.plan.pageSetup.hasOverrides else {
+              !request.plan.pageSetup.hasOverrides,
+              request.plan.paginatedLayout?.hasOverrides != true else {
             throw OfficePDFExportError.savedExportUnavailable(
                 format: ext,
                 reason: "finalizing an existing PDF supports document settings and a final page range only")
+        }
+        // Omitting handwriting needs an export-only package copy. A
+        // live-session PDF is the engine's own rendering of the open
+        // document, so the choice is refused truthfully instead of being
+        // silently ignored — the UI never offers it for this route.
+        guard request.plan.includeInk else {
+            throw OfficePDFExportError.savedExportUnavailable(
+                format: ext,
+                reason: "omitting handwriting is available only through the prepared export copy route")
         }
         let sourceSHA = try verifySource(request.sourceURL,
                                          expectedSHA256: request.sourceSHA256,
@@ -405,16 +527,48 @@ enum OfficePDFExportService {
         sourceFormatExtension: String,
         plan: OfficePDFPrintPlan,
         appliedPrintPlan: OfficePrintCopyPlan?,
+        omittedInkShapeCount: Int? = nil,
         baseNotes: [OfficePDFExportNote],
         cancellation: CancellationToken?
     ) throws -> OfficePDFExportResult {
         try validatePDFFile(exportedPDFURL)
-        let producedFacts = try OfficePDFPageSelection.inspect(exportedPDFURL)
+        // Physical print layout of a generated paginated PDF runs BEFORE the
+        // final page selection: the guarded pass is 1:1 in page count, so a
+        // requested final page number still names the same document page.
+        // On failure the partial layout output is removed, the produced engine
+        // PDF stays for the caller's own cleanup rules, and the source Office
+        // package has already been digest-verified untouched.
+        var producedURL = exportedPDFURL
+        var appliedPaginatedLayout: OfficePDFPaginatedLayout?
+        var layoutExceedingPages: Int?
+        if let layout = plan.paginatedLayout, layout.hasOverrides {
+            try checkCancellation(cancellation)
+            let laidURL = child.appendingPathComponent(
+                ".floe-layout-\(UUID().uuidString).pdf")
+            do {
+                let outcome = try OfficePDFPhysicalLayout.apply(
+                    layout: layout, sourceURL: exportedPDFURL, outputURL: laidURL,
+                    cancellation: cancellation)
+                try checkCancellation(cancellation)
+                appliedPaginatedLayout = layout
+                layoutExceedingPages = outcome.exceedingPages
+                try? FileManager.default.removeItem(at: exportedPDFURL)
+                producedURL = laidURL
+            } catch let error as OfficePDFPhysicalLayout.LayoutError {
+                try? FileManager.default.removeItem(at: laidURL)
+                throw OfficePDFExportError.physicalLayoutFailed(
+                    reason: error.errorDescription ?? "unknown")
+            } catch {
+                try? FileManager.default.removeItem(at: laidURL)
+                throw error
+            }
+        }
+        let producedFacts = try OfficePDFPageSelection.inspect(producedURL)
         var finalName = outputFileName(for: sourceURL)
         var finalURL = child.appendingPathComponent(finalName)
         // The isolated engine always names its raw output `region.pdf`; make
         // sure that private name can never be the final user-facing name.
-        if finalURL.standardizedFileURL.path == exportedPDFURL.standardizedFileURL.path {
+        if finalURL.standardizedFileURL.path == producedURL.standardizedFileURL.path {
             finalName = (finalName as NSString).deletingPathExtension + "-export.pdf"
             finalURL = child.appendingPathComponent(finalName)
         }
@@ -429,19 +583,19 @@ enum OfficePDFExportService {
             let selected = try range.validated(pageCount: producedFacts.pageCount)
             let allPages = Array(1...producedFacts.pageCount)
             if selected == allPages {
-                try moveItem(from: exportedPDFURL, to: finalURL)
+                try moveItem(from: producedURL, to: finalURL)
                 pageCount = producedFacts.pageCount
                 pageSizes = producedFacts.pageSizes
             } else {
                 let outcome = try OfficePDFPageSelection.select(
-                    sourceURL: exportedPDFURL, pages: selected, outputURL: finalURL)
+                    sourceURL: producedURL, pages: selected, outputURL: finalURL)
                 appliedPages = outcome.selectedPages
                 pageCount = outcome.pageCount
                 pageSizes = outcome.pageSizes
-                try? FileManager.default.removeItem(at: exportedPDFURL)
+                try? FileManager.default.removeItem(at: producedURL)
             }
         } else {
-            try moveItem(from: exportedPDFURL, to: finalURL)
+            try moveItem(from: producedURL, to: finalURL)
             pageCount = producedFacts.pageCount
             pageSizes = producedFacts.pageSizes
         }
@@ -471,6 +625,15 @@ enum OfficePDFExportService {
         if appliedPages != nil {
             notes.append(.finalPageSelectionApplied)
         }
+        if omittedInkShapeCount != nil {
+            notes.append(.handwritingOmitted)
+        }
+        if appliedPaginatedLayout != nil {
+            notes.append(.physicalLayoutApplied)
+            if (layoutExceedingPages ?? 0) > 0 {
+                notes.append(.physicalLayoutContentExceedsPaper)
+            }
+        }
         return OfficePDFExportResult(
             pdfURL: finalURL,
             pdfSHA256: pdfSHA,
@@ -482,6 +645,9 @@ enum OfficePDFExportService {
             plan: plan,
             appliedPrintPlan: appliedPrintPlan,
             appliedPageRange: appliedPages,
+            omittedInkShapeCount: omittedInkShapeCount,
+            appliedPaginatedLayout: appliedPaginatedLayout,
+            layoutExceedingPages: layoutExceedingPages,
             notes: notes)
     }
 

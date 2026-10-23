@@ -85,6 +85,13 @@ struct DocumentExportScope: Sendable, Equatable {
     var fitPagesTall: Int? = nil
     /// Workbook PDF only: nil preserves the saved print-gridline setting.
     var printGridlines: Bool? = nil
+    /// Office PDF only, for the saved isolated export formats: nil and true
+    /// print exactly as before. `false` omits only the app's proven ink
+    /// strokes (pen, marker and highlighter freeforms) from the prepared
+    /// output copy; typed cells/text, charts, images, printed gridlines,
+    /// cell borders and the source package all stay unchanged. Refused
+    /// early for formats whose route cannot honor it.
+    var includeInk: Bool? = nil
 }
 
 struct DocumentExportRequest: Sendable, Equatable {
@@ -151,6 +158,10 @@ struct DocumentExportCapabilities: Encodable, Sendable, Equatable {
         var fitPageCountSupported: Bool = false
         var fitPagesMaximum: Int? = nil
         var printGridlinesSupported: Bool = false
+        /// Office `.xlsx/.docx/.pptx` PDF only: the prepared isolated copy
+        /// can omit the app's handwriting strokes. Legacy formats stay false
+        /// — the live-session finalize route never re-renders without ink.
+        var inkOmissionSupported: Bool = false
         var supportedPaper: [String]
         var supportedOrientation: [String]
         var supportedFit: [String]
@@ -305,6 +316,7 @@ enum DocumentExportService {
                     fitPagesMaximum: canExportPDF && capability.fitPageCount
                         ? OfficePDFFitPages.maximum : nil,
                     printGridlinesSupported: canExportPDF && capability.printGridlines,
+                    inkOmissionSupported: canExportPDF && OfficeInkOmission.supports(formatExtension: ext),
                     supportedPaper: capability.customPageSetup ? OfficePDFPaper.allCases.map(\.rawValue) : [],
                     supportedOrientation: capability.customPageSetup ? OfficePDFOrientation.allCases.map(\.rawValue) : [],
                     supportedFit: capability.customPageSetup ? OfficePDFFit.allCases.map(\.rawValue) : [],
@@ -702,6 +714,16 @@ enum DocumentExportService {
             plan.pageSetup.margins = value
         }
         plan.pageSetup.printGridlines = request.scope.printGridlines
+        // One optional per-output handwriting choice; nil means "as before".
+        // The refusal below must happen before any engine work so an
+        // unsupported route can never silently ignore `includeInk == false`.
+        if request.scope.includeInk == false,
+           !OfficeInkOmission.supports(formatExtension: fileExtension) {
+            throw NoteError.invalidOperation(OfficeInkText.t(
+                "不打印手写仅支持 .xlsx、.docx、.pptx 的 PDF 导出。",
+                "Omitting handwriting is available only for .xlsx, .docx and .pptx saved PDF exports."))
+        }
+        plan.includeInk = request.scope.includeInk ?? true
         if let scalePercent = request.scope.scalePercent {
             plan.pageSetup.scalePercent = scalePercent
         }
@@ -916,6 +938,9 @@ enum DocumentExportService {
     private static func validate(request: DocumentExportRequest, document: NoteDocument) throws {
         let scope = request.scope
         let isPDF = request.format == .pdf
+        guard scope.includeInk == nil || (isPDF && document.kind == .office) else {
+            throw invalidScope()
+        }
         let hasSheetsSelection = scope.sheets?.isEmpty == false
         let hasSheetScope = scope.sheet != nil || scope.sheetIndex != nil
             || scope.cellRange != nil || scope.workbook == true

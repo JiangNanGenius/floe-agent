@@ -20,6 +20,8 @@ round, overriding Simulator-only for this iPad. The human subsequently connected
 and explicitly authorized their iPhone for this round, including iPad-to-iPhone
 settings synchronization. Primary owns all device operations and credential entry;
 workers own bounded source/tests.
+The human subsequently withdrew iPhone access; no further iPhone operations or
+unlock requests are permitted. The iPad remains temporarily authorized.
 No existing Floe data is erased for testing. Existing corresponding service keys
 may be configured on the authorized iPad; values never enter source or evidence.
 
@@ -46,14 +48,16 @@ private transport and task-owned cache cleanup follow existing repository policy
 ## Additional acceptance
 
 - Excel: real gridline controls, automatic embedded preview, cell/ink/drawing union
-  bounds and useful auto-fit; preview matches print/export. Word stays scoped.
+  bounds and useful auto-fit; preview matches print/export. Word and PowerPoint
+  use the same upper-right entry, automatic preview and handwriting option.
 - Office native File panel retains Repair, Properties and Signature; preserve the
   upper-left quick Save and autosave. Other actions use the outer upper-right menu.
 - Save As preserves the original and saves another on-device file; Export hands
   the result to external Files/share destinations. Keep distinct labels/actions.
 - Search smoke uses actual configured providers and checks returned results.
-- Sync verifies actual iPad edits arriving on iPhone and usable credentials;
-  enabled toggles alone do not count as synchronization evidence.
+- Sync records the iPad edits already observed on iPhone. Further iPhone testing
+  is deferred after access was withdrawn; enabled toggles alone do not count as
+  synchronization evidence.
 
 ## Focused native M4 evidence
 
@@ -91,3 +95,33 @@ pending. Original build/signing failures and actual reports are retained private
   refused an older catalog package and preserved the installed version. The
   bounded repair makes the action truthful while retaining downgrade and
   permission-expansion protection.
+
+## Speech integration checks — 2026-10-24
+
+- Source `fb7ee70ac482f6706e626158693ef9ff4f6e049d`: complete App and test host
+  compiled with Swift 6 / Xcode 27.1 (27A9275) for arm64 Simulator. All 19 focused
+  speech-settings tests passed, including credential fencing after endpoint changes.
+- One real Agent Plan request through the corrected production Volcengine speech
+  adapter completed normally: first audio 1.38 s, 124,690 PCM bytes at 24 kHz mono,
+  2.60 s of non-silent audio. This is a macOS module-host check, not iPad App playback.
+- Native Excel preview regenerated after changing the scaling option. Its test
+  still failed the original-file hash assertion; the failure is retained and being
+  investigated before this path is accepted.
+- The task's diagnostic iPad app was removed after exporting its measurements.
+  The installed Floe app and user data were preserved. The canonical Simulator
+  was shut down after the checks.
+
+## Original-file protection follow-up — 2026-10-24
+
+The ownerless editable preview path previously saved even an unchanged working
+copy. It now skips that write only when the working copy and engine both report
+clean, and separately verifies the current original against the committed digest
+under file coordination. An external change refuses export; cancellation and
+editor identity are rechecked before any conflict state is changed.
+
+Four focused macOS Core tests passed with Swift 6 object compilation: repeated
+read-only proof, a same-size external rewrite with restored timestamp, closed or
+foreign sessions, and missing/substituted originals. The final App build and
+native preview check remain pending. The original preview failure and unchanged
+source-digest assertion remain retained; final tests capture the actual before/after
+bytes rather than weakening that assertion.
