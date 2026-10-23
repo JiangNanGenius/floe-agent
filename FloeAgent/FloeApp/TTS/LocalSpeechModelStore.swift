@@ -429,7 +429,7 @@ actor LocalSpeechModelStore {
                   record.stage != .complete else { return nil }
             return record
         }
-        nonmutating set {
+        set {
             if let newValue {
                 if let data = try? JSONEncoder().encode(newValue) { defaults.set(data, forKey: Self.migrationKey) }
             } else {
