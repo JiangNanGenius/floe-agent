@@ -1700,20 +1700,56 @@ extension LinuxWorkspaceAuthority {
         guard let storage = effectiveStorageRootPath() else {
             return .refused("authorityNotInstalled")
         }
-        let canonicalRootURL = URL(fileURLWithPath: storage, isDirectory: true)
+        // G03-R3 user-0 repair (2026-10-23, Samsung field failure):
+        // canonicalize the trusted BASE once, then derive the target
+        // lexically from it. The deletion lifecycle's filesystem step removed
+        // the owned leaf BEFORE this call, and on an install whose declared
+        // storage root carries a symlinked ancestor (Android user 0 reports
+        // the app home through the `/data/data` alias of `/data/user/0`) a
+        // whole-path symlink resolution of that MISSING-leaf target keeps the
+        // alias spelling while the existing storage root resolves normally —
+        // the previous mixed comparison then refused the legitimate owned
+        // scope (`transferPurge.scopePathShape`) and the SAME alias spelling
+        // would also have fed a different digest into the deterministic
+        // project mapping (marker/ledger mismatch: owned transfer copies
+        // silently preserved even if containment had passed). Resolving ONLY
+        // the existing base is existence-stable on every platform, and the
+        // managed chain is then validated non-following, so the target leaf
+        // is never followed and nothing escapes the registered root.
+        let canonicalBase = URL(fileURLWithPath: storage, isDirectory: true)
+            .resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalRootURL = URL(fileURLWithPath: canonicalBase, isDirectory: true)
             .appendingPathComponent("Workspace", isDirectory: true)
             .appendingPathComponent(expectedRelativePath, isDirectory: true)
             .standardizedFileURL
-        // Containment is checked in the SAME resolved representation the
-        // deterministic mapping uses (host temp roots can be symlinked;
-        // production app-private roots are not — equality either way).
-        let resolvedStorage = URL(fileURLWithPath: storage, isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL.path
-        let canonical = canonicalRootURL.resolvingSymlinksInPath().standardizedFileURL.path
-        guard canonical.hasPrefix(resolvedStorage + "/Workspace/") else {
+        let canonical = canonicalRootURL.path
+        guard canonical.hasPrefix(canonicalBase + "/Workspace/") else {
             return .refused("scopePathShape")
         }
-        // The SAME deterministic mapping shell.start grants used.
+        // Non-following managed-chain discipline under the canonical base —
+        // the same gate the grant-side materialization (`ensureManagedDirectory`)
+        // enforces: `Workspace` and `PrivateTasks` must be real directories
+        // or legitimately absent (a never-run target has nothing bound here;
+        // the transfer-root/ledger checks below still own that case), and the
+        // leaf may additionally already be removed by the lifecycle. A
+        // symlink, file, special or unreadable entry at ANY managed level
+        // refuses with the frozen scope-shape token and touches NOTHING.
+        let managedWorkspaceRoot = canonicalBase + "/Workspace"
+        let managedPrivateTasksRoot = managedWorkspaceRoot + "/PrivateTasks"
+        for managed in [managedWorkspaceRoot, managedPrivateTasksRoot, canonical] {
+            switch WorkspaceNoFollow.kind(managed) {
+            case .directory, .missing:
+                break
+            default:
+                return .refused("scopePathShape")
+            }
+        }
+        // The SAME deterministic mapping shell.start grants used. The base is
+        // alias-normalized and the managed chain proven non-symlinked, so the
+        // digest equals the grant-time binding whether or not the leaf still
+        // exists, under `/data/data`, `/data/user/<n>` or a symlinked host
+        // temp root alike (the mapping's own resolution of the derived path
+        // is now a no-op on the canonical base in every platform variant).
         let projectID = LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: canonicalRootURL)
         let projectText = projectID.uuidString
         let transferRoot = WorkspaceTransferPaths.transferRoot(storageRoot: storage)

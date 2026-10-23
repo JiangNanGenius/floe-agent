@@ -13,13 +13,52 @@ visual parity and full CJK IME/TalkBack are not claimed. That G01 evidence did n
 cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
 G01 and G02 code-stage handoff and cleanup are closed. G03-R1 execution
 qualification and G03-R2 environment, jobs and workspace source integration
-are complete; product App qualification belongs to G03-R3. Current
+are complete. G03-R3 representative App qualification, Alpha9 delivery and round
+cleanup are now closed. G04 file/IDE/Git/browser work is next. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
 local LLM backend.
 
 ## Android Alpha
+
+### Current: Alpha9 / G03
+
+[Download 0.1.0-alpha.9](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.9)
+contains one signed ARM64 APK, SHA256SUMS and the required runtime corresponding-source
+archive. Build 11 comes from immutable source
+[8355a33f](https://github.com/JiangNanGenius/floe-agent/commit/8355a33fe595c89d8445ba3971f9f2f61d2ca7f6).
+It fixes cleanup when the installed storage root uses a path alias. Upgrading retried
+the original retained Samsung Android 13 obligation and produced its complete clearance
+receipt; the unrelated API37 / 16 KiB tablet workspace kept its existing file hash and
+completed a local command. Fifteen focused Swift checks and actual Android object/link,
+signing, native-layout and embedded-component checks passed. All three public assets
+were downloaded and their complete hashes verified. No paid App-provider calls were
+made. G03 is closed; this does not claim full Android feature or visual parity.
+
+The app prompts for its bundled runtime-component update through the Android installer.
+Some stopped or failed task cards may retain an old status until the conversation is
+reopened. This is a prerelease; the iOS stable Latest stays unchanged.
+
+### Previous: Alpha8
+
+[Download 0.1.0-alpha.8](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.8)
+contains one signed ARM64 APK, SHA256SUMS and the Linux runtime corresponding-source
+archive. The app installs its separately signed Linux component through Android's
+installer. Representative App checks covered local commands, Python/Node packages,
+system DNS, offline execution, cancellation and file recovery. The final code-10 APK
+passed preserved-data upgrades and existing-file hash readback on the API37 / 16 KiB
+tablet emulator and Samsung Android 13 / 4 KiB phone. Published files were downloaded
+and their complete hashes verified. This is a prerelease; the iOS stable Latest stays
+unchanged. No paid App-provider calls were made for this round.
+
+**Alpha8 historical limitation, fixed in Alpha9:** deleting a task on the tested
+Samsung Android 13 phone could remove its list entry while retaining workspace data
+after a path-check refusal. The original Alpha8 tag, package and failure record remain
+unchanged. Upgrade to Alpha9 to retry retained cleanup obligations; list removal alone
+does not confirm erasure.
+
+### Previous: Alpha7 / G02
 
 [Download 0.1.0-alpha.7](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.7)
 contains one signed ARM64 APK and SHA256SUMS. Install updates manually for now.
@@ -47,6 +86,8 @@ Linux, IDE, Office, system control and automatic updates remain later targets.
 See [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md) and
 [current sequential targets](../docs/FLOE_ANDROID_IMPLEMENTATION_PLAN.zh-CN.md#g02-current-plan).
 Later targets are a backlog, not prequeued worker tasks.
+
+### G03-R2 source-stage record (historical)
 
 G03-R2 uses a separate-UID Linux runtime component; Core retains credentials,
 conversation storage and the original persistent-job authority. PRoot provides
