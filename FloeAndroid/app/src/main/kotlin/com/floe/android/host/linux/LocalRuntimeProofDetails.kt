@@ -261,6 +261,47 @@ private fun CleanupSection(cleanup: JsonObject?) {
         ProofRow(stringResource(R.string.diagnostics_row_cleanup_host_retained), numberValue(host, "retained"))
         ProofRow(stringResource(R.string.diagnostics_row_cleanup_last_reason), tokenValue(host, "lastReason"))
     }
+    val lastDeletion = cleanup["lastDeletion"] as? JsonObject
+    if (lastDeletion == null) {
+        ProofRow(
+            stringResource(R.string.diagnostics_cleanup_last_deletion_title),
+            stringResource(R.string.diagnostics_cleanup_last_deletion_empty),
+        )
+    } else {
+        SectionHeader(stringResource(R.string.diagnostics_cleanup_last_deletion_title))
+        ProofRow(stringResource(R.string.diagnostics_row_availability),
+            tokenValue(lastDeletion, "availability"))
+        if (lastDeletion["conversation"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_target_conversation),
+                tokenValue(lastDeletion, "conversation"))
+        }
+        ProofRow(stringResource(R.string.diagnostics_row_cleanup_deletion_epoch),
+            numberValue(lastDeletion, "epoch"))
+        if (lastDeletion["workspaceCleanup"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_cleanup_workspace),
+                tokenValue(lastDeletion, "workspaceCleanup"))
+        }
+        if (lastDeletion["workspaceCleanupReason"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_cleanup_workspace_reason),
+                tokenValue(lastDeletion, "workspaceCleanupReason"))
+        }
+        if (lastDeletion["runtimeHandoff"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_cleanup_handoff),
+                tokenValue(lastDeletion, "runtimeHandoff"))
+        }
+        if (lastDeletion["runtimeHandoffReason"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_cleanup_handoff_reason),
+                tokenValue(lastDeletion, "runtimeHandoffReason"))
+        }
+        if (lastDeletion["runtimeRequestID"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_cleanup_handoff_ticket),
+                tokenValue(lastDeletion, "runtimeRequestID"))
+        }
+        if (lastDeletion["runtimeReceiptDigest"] != null) {
+            ProofRow(stringResource(R.string.diagnostics_row_target_digest),
+                tokenValue(lastDeletion, "runtimeReceiptDigest"))
+        }
+    }
     val targets = cleanup["targets"] as? JsonArray
     if (targets == null || targets.isEmpty()) {
         ProofRow(

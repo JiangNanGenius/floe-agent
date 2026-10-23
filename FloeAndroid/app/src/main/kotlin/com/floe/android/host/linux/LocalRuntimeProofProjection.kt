@@ -134,6 +134,53 @@ internal object LocalRuntimeProofProjection {
         "receiptMalformed", "internal", "unreadable",
     )
 
+    /** ConversationDeleteCleanupStatus wire tokens (the ORIGINAL typed
+     *  `conversation.delete` reply's `workspaceCleanup` values). */
+    val WORKSPACE_CLEANUP_TOKENS = setOf(
+        "none", "removed", "deferredQueueRetained", "failed",
+    )
+
+    /** ConversationRuntimeCleanupHandoff.wireToken values (the reply's
+     *  `runtimeCleanupHandoff`). */
+    val RUNTIME_HANDOFF_TOKENS = setOf(
+        "notApplicable", "awaitingReceipt", "settled", "retrying", "unavailable",
+    )
+
+    /** The exact bounded literals the ORIGINAL
+     *  ConversationPrivateWorkspaceCleanup lifecycle writes into its
+     *  deferred/failed outcomes. */
+    val DELETION_CLEANUP_REASONS = setOf(
+        "workspaceCleaningUnbound", "workspaceOwnershipSurvivors",
+        "workspaceOwnershipChanged", "workspaceCleanupQueueConflict",
+        "workspaceOwnershipUnknown", "workspaceCleanupQueueUnsettled",
+        "runtimeCleanupTombstoneUnsettled", "runtimeCleanupAwaitingReceipt",
+        "runtimeCleanupRetrying", "cleanupThrew",
+    )
+
+    /** LinuxWorkspaceAuthority.purgeTargetOwnedTransferState's bounded
+     *  refused/retained tokens (the `transferPurge.<code>` family). */
+    val PURGE_CODES = setOf(
+        "epochUnbound", "epochUnprovable", "epochStale", "scopePathShape",
+        "authorityNotInstalled", "transferRootUnsafe",
+        "pendingPurgeLedgerUnreadable", "pendingPurgeLedgerUnwritable",
+        "ledgerProjectConflict", "sessionsTreeUnsafe",
+        "pendingPurgeLedgerOverflow", "pendingPurgeEnumerationTruncated",
+        "transferSessionsLive", "transferPurgeIO",
+    )
+
+    /** requestRuntimeCleanup's bounded unavailable literals. */
+    val HANDOFF_UNAVAILABLE_REASONS = setOf(
+        "scopeUnproven", "handoffSaturated", "handoffEvicted",
+    )
+
+    /** Frozen ConversationDomainError.wireCode vocabulary. */
+    val DOMAIN_WIRE_CODES = setOf(
+        "invalidEnvelope", "notFound", "staleRevision", "sessionFenced",
+        "duplicateInFlight", "payloadTooLarge", "persistenceUnavailable",
+        "runtimeUnavailable",
+    )
+    private val MAX_BYTES_REASON = Regex("^maxBytes:[0-9]{1,10}$")
+
     /** OperationKind names (lowercased). */
     val OPERATION_KINDS = setOf(
         "environment_install", "local_execution", "agent_run", "durable_job",
@@ -273,6 +320,90 @@ internal object LocalRuntimeProofProjection {
 
     // MARK: cleanup (lane aggregate + per-target ticket bindings)
 
+    /** One bounded deletion/handoff reason token from the ORIGINAL frozen
+     *  reply vocabulary: enumerated literals pass; the bounded
+     *  `transferPurge.<code>` / `runtimeCleanupHandoff.<reason>` families
+     *  pass ONLY with an enumerated suffix (fixed in-family redaction
+     *  otherwise); host/ack/runtime retention families keep the provenance
+     *  prefix via the same closed rule the target rows already use.
+     *  No path, content or argument ever passes and nothing is
+     *  length-truncated-and-passed-through. */
+    fun boundedDeletionReason(raw: String?): String {
+        if (raw == null) return UNAVAILABLE
+        if (raw.length > 128) return REDACTED
+        if (raw in DELETION_CLEANUP_REASONS || raw in DOMAIN_WIRE_CODES ||
+            raw in PURGE_CODES || raw in HANDOFF_UNAVAILABLE_REASONS ||
+            MAX_BYTES_REASON.matches(raw)) return raw
+        if (raw.startsWith("transferPurge.")) {
+            val code = raw.removePrefix("transferPurge.")
+            return if (code in PURGE_CODES) raw else "transferPurge:$REDACTED"
+        }
+        if (raw.startsWith("runtimeCleanupHandoff.")) {
+            val suffix = raw.removePrefix("runtimeCleanupHandoff.")
+            if (suffix in HANDOFF_UNAVAILABLE_REASONS) return raw
+            val closed = boundedDeletionReason(suffix)
+            return if (closed == suffix) raw else "runtimeCleanupHandoff:$REDACTED"
+        }
+        return closedReasonToken(raw)
+    }
+
+    /** Project the EXISTING original `conversation.delete` completed reply
+     *  (HostOperationOutcome.Completed.value — a read of bytes the host
+     *  already receives; no new reader, no re-instruction, no retry) into
+     *  the closed bounded view above. The reply must echo the EXACT
+     *  operation target UUID (normalized case) or NOTHING from it claims
+     *  anything: the view keeps `echo_mismatch` and projects no
+     *  cleanup/handoff fields at all. A missing dispatch epoch stays
+     *  honestly `unavailable` (never a defaulted 0). */
+    fun projectTypedDeletion(
+        reply: JsonObject?,
+        operationConversationID: String,
+        dispatchEpoch: Long?,
+    ): JsonObject {
+        val rows = LinkedHashMap<String, JsonElement>()
+        val epochRow = if (dispatchEpoch != null && dispatchEpoch > 0)
+            JsonPrimitive(dispatchEpoch) else JsonPrimitive(UNAVAILABLE)
+        if (reply == null) {
+            rows["availability"] = JsonPrimitive("reply_unreadable")
+            rows["epoch"] = epochRow
+            return JsonObject(rows)
+        }
+        val echoed = stringOf(reply, "conversationID")
+        val echoOk = echoed != null && UUID_TOKEN.matches(echoed) &&
+            UUID_TOKEN.matches(operationConversationID) &&
+            echoed.equals(operationConversationID, ignoreCase = true)
+        if (!echoOk) {
+            rows["availability"] = JsonPrimitive("echo_mismatch")
+            rows["conversation"] = JsonPrimitive(UNAVAILABLE)
+            rows["epoch"] = epochRow
+            return JsonObject(rows)
+        }
+        rows["availability"] = JsonPrimitive("observed")
+        rows["conversation"] = JsonPrimitive(echoed!!.uppercase())
+        rows["epoch"] = epochRow
+        rows["workspaceCleanup"] = JsonPrimitive(
+            closedToken(stringOf(reply, "workspaceCleanup"), WORKSPACE_CLEANUP_TOKENS))
+        if (reply.containsKey("workspaceCleanupReason")) {
+            rows["workspaceCleanupReason"] = JsonPrimitive(
+                boundedDeletionReason(stringOf(reply, "workspaceCleanupReason")))
+        }
+        rows["runtimeHandoff"] = JsonPrimitive(
+            closedToken(stringOf(reply, "runtimeCleanupHandoff"), RUNTIME_HANDOFF_TOKENS))
+        if (reply.containsKey("runtimeCleanupReason")) {
+            rows["runtimeHandoffReason"] = JsonPrimitive(
+                boundedDeletionReason(stringOf(reply, "runtimeCleanupReason")))
+        }
+        if (reply.containsKey("runtimeCleanupRequestID")) {
+            val id = stringOf(reply, "runtimeCleanupRequestID")
+            rows["runtimeRequestID"] = JsonPrimitive(if (id != null && HEX32.matches(id)) id else REDACTED)
+        }
+        if (reply.containsKey("runtimeCleanupReceiptDigest")) {
+            rows["runtimeReceiptDigest"] = JsonPrimitive(
+                strictDigest(stringOf(reply, "runtimeCleanupReceiptDigest")))
+        }
+        return JsonObject(rows)
+    }
+
     /** One host-observed obligation as retained by the pump's bounded
      *  observation table (scope facts measured from the real claimed
      *  payload — never minted here). [lane] is the decoded lane readback
@@ -371,6 +502,7 @@ internal object LocalRuntimeProofProjection {
         hostSettledCleared: Long,
         hostRetained: Long,
         hostLastReason: String?,
+        lastDeletion: JsonObject? = null,
         fenceTripped: Boolean = false,
     ): JsonObject {
         val view = LinkedHashMap<String, JsonElement>()
@@ -407,6 +539,7 @@ internal object LocalRuntimeProofProjection {
             if (hostRetained >= 0) JsonPrimitive(hostRetained) else JsonPrimitive(UNAVAILABLE)
         host["lastReason"] = JsonPrimitive(closedReasonToken(hostLastReason))
         view["host"] = JsonObject(host)
+        lastDeletion?.let { view["lastDeletion"] = it }
         view["targets"] = JsonArray(if (fenceTripped) emptyList() else targets.take(MAX_TARGETS))
         return JsonObject(view)
     }

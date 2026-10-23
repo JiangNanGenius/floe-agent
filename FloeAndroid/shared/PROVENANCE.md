@@ -868,3 +868,15 @@ authorities, no new stores:
   (`LinuxShellMailbox.hasLiveTickets(runID:)` + `ownedSessions(runID:)`),
   while process retirement (`isDrained()`) keeps the conservative global
   view.
+
+### G03-R3 independent Android cohort (2026-10-23)
+
+`FloeAgentRuntime/Personalization.swift` is an exact regular mirror of the
+previously qualified e3b0d629 Android input (SHA-256
+`666d80cc6c8721f28543cd1a268001b0e41f2693e5d7dfca25f24cfd63467f9c`).
+The concurrent iOS update replaces revision-history APIs and requires its
+new persistence migration. Android retains its existing API and schema for
+this Linux-runtime delivery; importing that independent feature is deferred
+to a complete API/persistence integration batch. No iOS file is modified.
+The Android implementation bytes are unchanged; only the source link is
+replaced so builds from the published commit remain reproducible.

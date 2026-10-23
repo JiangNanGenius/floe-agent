@@ -415,6 +415,14 @@
     <string name="diagnostics_row_cleanup_last_reason">最近保留原因</string>
     <string name="diagnostics_cleanup_targets_title">已处理目标</string>
     <string name="diagnostics_cleanup_targets_empty">本次启动后尚未处理任何清理义务</string>
+    <string name="diagnostics_cleanup_last_deletion_title">最近一次类型化删除</string>
+    <string name="diagnostics_cleanup_last_deletion_empty">本次启动后尚未观察到类型化删除</string>
+    <string name="diagnostics_row_cleanup_deletion_epoch">删除代次</string>
+    <string name="diagnostics_row_cleanup_workspace">工作区清理</string>
+    <string name="diagnostics_row_cleanup_workspace_reason">工作区清理原因</string>
+    <string name="diagnostics_row_cleanup_handoff">运行时移交</string>
+    <string name="diagnostics_row_cleanup_handoff_reason">运行时移交原因</string>
+    <string name="diagnostics_row_cleanup_handoff_ticket">移交凭单号</string>
     <string name="diagnostics_row_target_conversation">会话</string>
     <string name="diagnostics_row_target_ticket">凭单号</string>
     <string name="diagnostics_row_target_epoch">义务代次</string>

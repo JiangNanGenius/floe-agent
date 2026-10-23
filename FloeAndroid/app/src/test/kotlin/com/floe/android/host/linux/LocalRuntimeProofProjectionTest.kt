@@ -394,6 +394,128 @@ class LocalRuntimeProofProjectionTest {
         assertFalse(view.containsKey("operationCount"))
     }
 
+    // MARK: - typed deletion projection (existing conversation.delete reply)
+
+    private val deletionReply = json(
+        """{"conversationID":"0F66A2F0-6CFA-4B6E-9E5F-3E9D2B5C7A11",
+           "workspaceCleanup":"deferredQueueRetained",
+           "workspaceCleanupReason":"transferPurge.epochStale",
+           "runtimeCleanupHandoff":"unavailable",
+           "runtimeCleanupReason":"epochStale"}""",
+    )
+
+    @Test fun typedDeletionProjectsClosedWireTokensOnly() {
+        val view = LocalRuntimeProofProjection.projectTypedDeletion(
+            deletionReply, conversation, dispatchEpoch = 5,
+        )
+        assertEquals("observed", text(view, "availability"))
+        assertEquals(conversation, text(view, "conversation"))
+        assertEquals("5", content(view, "epoch"))
+        assertEquals("deferredQueueRetained", text(view, "workspaceCleanup"))
+        assertEquals("transferPurge.epochStale", text(view, "workspaceCleanupReason"))
+        assertEquals("unavailable", text(view, "runtimeHandoff"))
+        assertEquals("epochStale", text(view, "runtimeHandoffReason"))
+        assertFalse(view.containsKey("runtimeRequestID"))
+        assertFalse(view.containsKey("runtimeReceiptDigest"))
+    }
+
+    @Test fun typedDeletionSettledReceiptNeedsFullHexDigest() {
+        val reply = json(
+            """{"conversationID":"0F66A2F0-6CFA-4B6E-9E5F-3E9D2B5C7A11",
+               "workspaceCleanup":"removed",
+               "runtimeCleanupHandoff":"settled",
+               "runtimeCleanupReceiptDigest":"${digest}"}""",
+        )
+        val view = LocalRuntimeProofProjection.projectTypedDeletion(reply, conversation, 5)
+        assertEquals("removed", text(view, "workspaceCleanup"))
+        assertEquals("settled", text(view, "runtimeHandoff"))
+        assertEquals(digest, text(view, "runtimeReceiptDigest"))
+    }
+
+    @Test fun typedDeletionRedactsOpenVocabularyAndBadShapes() {
+        val reply = json(
+            """{"conversationID":"0F66A2F0-6CFA-4B6E-9E5F-3E9D2B5C7A11",
+               "workspaceCleanup":"weird",
+               "workspaceCleanupReason":"/data/user/10/private/something",
+               "runtimeCleanupHandoff":"cleared",
+               "runtimeCleanupReason":"runtime:unsafeEvil:/data/x",
+               "runtimeCleanupRequestID":"NOT-HEX",
+               "runtimeCleanupReceiptDigest":"abc"}""",
+        )
+        val view = LocalRuntimeProofProjection.projectTypedDeletion(reply, conversation, 5)
+        assertEquals("redacted", text(view, "workspaceCleanup"))
+        assertEquals("redacted", text(view, "workspaceCleanupReason"))
+        assertEquals("redacted", text(view, "runtimeHandoff"))
+        assertEquals("runtime:redacted", text(view, "runtimeHandoffReason"))
+        assertEquals("redacted", text(view, "runtimeRequestID"))
+        assertEquals("unreadable", text(view, "runtimeReceiptDigest"))
+    }
+
+    @Test fun typedDeletionEchoMismatchProjectsNoClaims() {
+        val other = json(
+            """{"conversationID":"11111111-2222-3333-4444-555555555555",
+               "workspaceCleanup":"removed",
+               "runtimeCleanupHandoff":"settled",
+               "runtimeCleanupReceiptDigest":"${digest}"}""",
+        )
+        val view = LocalRuntimeProofProjection.projectTypedDeletion(other, conversation, 5)
+        assertEquals("echo_mismatch", text(view, "availability"))
+        assertEquals("unavailable", text(view, "conversation"))
+        assertFalse(view.containsKey("workspaceCleanup"))
+        assertFalse(view.containsKey("runtimeHandoff"))
+        assertFalse(view.containsKey("runtimeReceiptDigest"))
+    }
+
+    @Test fun typedDeletionMissingReplyAndEpochStayUnavailable() {
+        val missing = LocalRuntimeProofProjection.projectTypedDeletion(null, conversation, null)
+        assertEquals("reply_unreadable", text(missing, "availability"))
+        assertEquals("unavailable", text(missing, "epoch"))
+        // A case-different but EXACT echo still matches (producers upper-case
+        // canonical UUIDs; the host id is the same identity).
+        val lower = json(
+            """{"conversationID":"0f66a2f0-6cfa-4b6e-9e5f-3e9d2b5c7a11",
+               "workspaceCleanup":"none","runtimeCleanupHandoff":"notApplicable"}""",
+        )
+        val view = LocalRuntimeProofProjection.projectTypedDeletion(lower, conversation, 0)
+        assertEquals("observed", text(view, "availability"))
+        assertEquals(conversation, text(view, "conversation"))
+        assertEquals("unavailable", text(view, "epoch"))
+        assertEquals("notApplicable", text(view, "runtimeHandoff"))
+    }
+
+    @Test fun boundedDeletionReasonFamiliesAreClosedOrRedacted() {
+        assertEquals("redacted", LocalRuntimeProofProjection.boundedDeletionReason("runtimeCleanupHandoff.".repeat(2000)))
+        assertEquals("cleanupThrew", LocalRuntimeProofProjection.boundedDeletionReason("cleanupThrew"))
+        assertEquals("maxBytes:8192", LocalRuntimeProofProjection.boundedDeletionReason("maxBytes:8192"))
+        assertEquals("runtimeCleanupHandoff.scopeUnproven",
+            LocalRuntimeProofProjection.boundedDeletionReason("runtimeCleanupHandoff.scopeUnproven"))
+        assertEquals("runtimeCleanupHandoff:redacted",
+            LocalRuntimeProofProjection.boundedDeletionReason("runtimeCleanupHandoff.something /data/x"))
+        assertEquals("transferPurge:redacted",
+            LocalRuntimeProofProjection.boundedDeletionReason("transferPurge.surprise"))
+        assertEquals("ack:staleClaim", LocalRuntimeProofProjection.boundedDeletionReason("ack:staleClaim"))
+        assertEquals("runtime:ownedWorkActive",
+            LocalRuntimeProofProjection.boundedDeletionReason("runtime:ownedWorkActive"))
+        assertEquals("redacted", LocalRuntimeProofProjection.boundedDeletionReason("maxBytes:abc"))
+    }
+
+    @Test fun projectCleanupCarriesBoundedLastDeletion() {
+        val deletion = LocalRuntimeProofProjection.projectTypedDeletion(deletionReply, conversation, 5)
+        val withRow = LocalRuntimeProofProjection.projectCleanup(
+            stats = json("""{"boundEpoch":5,"queued":0,"claimed":0,"settled":0}"""),
+            hostBoundEpoch = 5, targets = emptyList(),
+            hostSettledCleared = 0, hostRetained = 0, hostLastReason = null,
+            lastDeletion = deletion,
+        )
+        assertEquals("observed", text(objOf(withRow, "lastDeletion"), "availability"))
+        val without = LocalRuntimeProofProjection.projectCleanup(
+            stats = json("""{"boundEpoch":5,"queued":0,"claimed":0,"settled":0}"""),
+            hostBoundEpoch = 5, targets = emptyList(),
+            hostSettledCleared = 0, hostRetained = 0, hostLastReason = null,
+        )
+        assertFalse(without.containsKey("lastDeletion"))
+    }
+
     // MARK: - helpers
 
     private fun text(view: JsonObject, key: String): String? =

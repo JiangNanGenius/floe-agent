@@ -415,6 +415,14 @@
     <string name="diagnostics_row_cleanup_last_reason">Last retention reason</string>
     <string name="diagnostics_cleanup_targets_title">Processed targets</string>
     <string name="diagnostics_cleanup_targets_empty">No obligation processed since launch</string>
+    <string name="diagnostics_cleanup_last_deletion_title">Last typed deletion</string>
+    <string name="diagnostics_cleanup_last_deletion_empty">No typed deletion observed since launch</string>
+    <string name="diagnostics_row_cleanup_deletion_epoch">Deletion epoch</string>
+    <string name="diagnostics_row_cleanup_workspace">Workspace cleanup</string>
+    <string name="diagnostics_row_cleanup_workspace_reason">Workspace cleanup reason</string>
+    <string name="diagnostics_row_cleanup_handoff">Runtime handoff</string>
+    <string name="diagnostics_row_cleanup_handoff_reason">Runtime handoff reason</string>
+    <string name="diagnostics_row_cleanup_handoff_ticket">Handoff ticket</string>
     <string name="diagnostics_row_target_conversation">Conversation</string>
     <string name="diagnostics_row_target_ticket">Ticket</string>
     <string name="diagnostics_row_target_epoch">Obligation epoch</string>

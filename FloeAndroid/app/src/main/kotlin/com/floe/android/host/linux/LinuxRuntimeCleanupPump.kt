@@ -145,6 +145,14 @@ class LinuxRuntimeCleanupPump internal constructor(
         val stats = runCatching { decodeObject(queue.stats()) }.getOrNull()
         val host = Triple(settledCleared.get(), retainedTotal.get(), lastRetentionReason)
         if (epoch.get() != bound) return refusedGenerationReading(bound, host)
+        // RAM-only bounded outcome of the ORIGINAL typed conversation.delete
+        // reply (projection only; no new reader). An unbound or different
+        // Root generation NEVER presents itself as a current cleared-target
+        // claim: it reduces to the honest unavailable marker.
+        val lastDeletion = LinuxTypedDeletionRecord.snapshot()?.let { entry ->
+            if (bound > 0 && entry.epoch != null && entry.epoch == bound) entry.projected
+            else LocalRuntimeProofProjection.unavailable("deletion_generation_unproven")
+        }
         // Root-generation fence at READ time too: while a generation is
         // bound, only THAT generation's observed tickets may surface; while
         // none is bound, no generation's tickets surface.
@@ -172,6 +180,7 @@ class LinuxRuntimeCleanupPump internal constructor(
             hostSettledCleared = host.first,
             hostRetained = host.second,
             hostLastReason = host.third,
+            lastDeletion = lastDeletion,
         )
     }
 
@@ -183,6 +192,7 @@ class LinuxRuntimeCleanupPump internal constructor(
             hostSettledCleared = host.first,
             hostRetained = host.second,
             hostLastReason = host.third,
+            lastDeletion = null,
             fenceTripped = true,
         )
 

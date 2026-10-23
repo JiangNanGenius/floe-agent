@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.host
 
+import com.floe.android.host.linux.LinuxTypedDeletionRecord
+import com.floe.android.host.linux.LocalRuntimeProofProjection
 import com.floe.android.feature.conversation.ApprovalModeUi
 import com.floe.android.feature.conversation.GoalDefinitionUi
 import com.floe.android.design.SidebarSelection
@@ -4184,6 +4186,12 @@ class ConversationHostController internal constructor(
                 onSettled(false, "revision_unavailable")
                 return@resolveConversationRevision
             }
+            // Dispatch-time ACTUAL native Root epoch, read BEFORE the
+            // operation is handed to the command client. A completion-time
+            // read could label an OLD terminal under a NEWER root, so the
+            // value captured here is the one carried through the callback;
+            // a null read stays honestly `unavailable` downstream.
+            val dispatchEpoch = host.nativeRootEpoch()
             host.trackOperation(
                 HostCommandRequest(
                     command = command,
@@ -4197,6 +4205,24 @@ class ConversationHostController internal constructor(
                 when (outcome) {
                     is HostOperationOutcome.Completed -> {
                         if (command == "conversation.delete") {
+                            // Bounded READ-ONLY projection of the ORIGINAL
+                            // typed deletion reply into the existing
+                            // diagnostics surface (the all-zero lane counts
+                            // are missing proof, not a cause). Only the
+                            // closed wire tokens already in the reply are
+                            // kept — no new reader, retry, control or
+                            // authority path is added here. The epoch is
+                            // the dispatch-time value captured above.
+                            LinuxTypedDeletionRecord.observe(
+                                LinuxTypedDeletionRecord.Entry(
+                                    epoch = dispatchEpoch,
+                                    projected = LocalRuntimeProofProjection.projectTypedDeletion(
+                                        reply = outcome.value as? JsonObject,
+                                        operationConversationID = conversationId,
+                                        dispatchEpoch = dispatchEpoch,
+                                    ),
+                                ),
+                            )
                             releaseHolder(conversationId)
                         }
                         refreshHistory()

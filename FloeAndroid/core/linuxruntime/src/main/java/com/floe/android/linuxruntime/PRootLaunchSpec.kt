@@ -63,6 +63,12 @@ data class PRootLaunchSpec(
         val loader = File(nativeLibraryDirectory, "libproot_loader.so").absolutePath
         val arguments = mutableListOf(proot, "--kill-on-exit", "-r", rootfs.absolutePath)
         if (emulateGuestRoot) arguments += "-0"
+        // This pinned fork's -0 changes identity only. Its -l emulates
+        // hard links where Android storage refuses link()/linkat(), such as
+        // dpkg backups. Leave PROOT_L2S_DIR unset: backing entries stay next
+        // to their originals, survive run-scratch cleanup and retain the
+        // original directory's ownership and cleanup scope.
+        arguments += "-l"
         for (bind in binds) arguments += listOf("-b", "${bind.host.absolutePath}:${bind.guest}")
         arguments += listOf("-w", guestWorkingDirectory)
         arguments += argv
