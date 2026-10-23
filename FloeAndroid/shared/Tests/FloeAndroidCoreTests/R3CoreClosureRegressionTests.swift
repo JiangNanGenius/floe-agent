@@ -898,6 +898,160 @@ final class LinuxWorkspaceTransferPurgeR3Tests: XCTestCase {
             rootEpoch: epoch)
         XCTAssertEqual(refuseCode(result), "scopePathShape")
     }
+// G03-R3 Samsung user-0 cleanup repair — focused regression cases.
+// Append INSIDE the existing `LinuxWorkspaceTransferPurgeR3Tests` class in
+// FloeAndroid/shared/Tests/FloeAndroidCoreTests/R3CoreClosureRegressionTests.swift
+// (reuses the suite's own `root`, `project(for:)`, `makeSession`, `purge`,
+// `refuseCode`, `epoch` helpers verbatim; no new imports, no new seams, no
+// production API changes beyond the patched LinuxWorkspaceAuthority.swift).
+//
+// Coverage:
+//  * POSITIVE device-shape contract: an alias-spelled storage root (the
+//    Android user-0 `/data/data` alias shape of `/data/user/0`) with the
+//    owned leaf ALREADY REMOVED by the lifecycle's filesystem step still
+//    purges the marker-proven scope (the exact Samsung refusal class).
+//  * POSITIVE never-materialized chain: a legitimately absent `Workspace`
+//    component is not a refusal (nothing bound here; transfer tree owners
+//    are still processed).
+//  * DIGEST contract: alias spelling and canonical spelling bind the SAME
+//    deterministic project UUID through LinuxShellProjectMapping.
+//  * NEGATIVE boundaries: a symlink at the owned leaf is refused with the
+//    frozen scope-shape token and touches NOTHING (the old representation
+//    check silently absorbed it as `preservedForeign` with `provenTotal 0`);
+//    lowercase/traversal relative-path spellings refuse; all existing
+//    epoch/foreign/live/ledger negatives in the suite stay green unchanged.
+//
+// These are CONTRACT tests for the host run: macOS Foundation resolves a
+// missing-leaf prefix through symlinks, so the alias positives also passed
+// pre-patch on Darwin — their gate is the Android device (Main's Core13
+// Samsung receipt). The leaf-symlink refusal IS a host-observable
+// behavior change (old: silent completed/foreign-absorb; new: refused).
+
+    // MARK: - User-0 alias repair (Samsung 2026-10-23 field failure)
+
+    func testAliasSpelledRootWithRemovedLeafStillPurgesOwnedScope() throws {
+        // Android user 0 reports the app home through the `/data/data`
+        // symlink alias; the lifecycle removed `Workspace/PrivateTasks/<uuid>`
+        // immediately BEFORE this call. The purge must still find and remove
+        // the marker-proven transfer copies.
+        let conversation = UUID()
+        let sessionKey = String(repeating: "7", count: 32)
+        _ = try makeSession(conversationID: conversation, sessionKey: sessionKey)
+        // The leaf is never created here — exactly the post-removal state.
+        let aliasRoot = root.appendingPathComponent("dataAlias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(atPath: aliasRoot.path,
+                                                   withDestinationPath: root.path)
+        LinuxWorkspaceAuthority.storageRootOverrideForTesting = aliasRoot.standardizedFileURL.path
+        switch purge(conversation) {
+        case .completed(let report):
+            XCTAssertEqual(report.provenTotal, 1,
+                           "alias-spelled declared root with removed leaf must bind the SAME scope")
+            XCTAssertTrue(report.ledgerCoreSettled)
+        case .refused(let code):
+            XCTFail("alias-root removed-leaf purge must complete, got refused:\(code)")
+        case .retained(_, let reason):
+            XCTFail("alias-root removed-leaf purge must complete, got retained:\(reason)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("WorkspaceTransfers/sessions/\(sessionKey)").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recoveredPath(sessionKey)))
+    }
+
+    func testNeverMaterializedWorkspaceChainIsNotARefusal() throws {
+        // A durable queue row whose workspace tree never materialized (or was
+        // already fully removed) must NOT be a scope refusal: the managed
+        // chain may legitimately be absent, and the transfer-tree owners are
+        // still processed under the canonical base.
+        let conversation = UUID()
+        let sessionKey = String(repeating: "8", count: 32)
+        _ = try makeSession(conversationID: conversation, sessionKey: sessionKey)
+        try FileManager.default.removeItem(
+            at: root.appendingPathComponent("Workspace", isDirectory: true))
+        switch purge(conversation) {
+        case .completed(let report):
+            XCTAssertEqual(report.provenTotal, 1)
+        default:
+            XCTFail("absent managed chain must not refuse an owned purge")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: root.appendingPathComponent("WorkspaceTransfers/sessions/\(sessionKey)").path))
+    }
+
+    func testAliasAndCanonicalSpellingsBindTheSameProjectDigest() throws {
+        let conversation = UUID()
+        let ownedPath = "Workspace/PrivateTasks/\(conversation.uuidString)"
+        let aliasRoot = root.appendingPathComponent("digestAlias", isDirectory: true)
+        try FileManager.default.createSymbolicLink(atPath: aliasRoot.path,
+                                                   withDestinationPath: root.path)
+        let ownedLeaf = root.appendingPathComponent(ownedPath, isDirectory: true)
+        try FileManager.default.createDirectory(at: ownedLeaf, withIntermediateDirectories: true)
+        // Bind the marker while the authorized leaf exists, as shell.start does.
+        let grantedProject = LinuxShellProjectMapping.projectID(
+            forCanonicalCoreWorkspaceRoot: aliasRoot.appendingPathComponent(ownedPath,
+                                                                          isDirectory: true))
+        XCTAssertEqual(grantedProject, project(for: conversation))
+        let sessionKey = String(repeating: "b", count: 32)
+        let session = try makeSession(conversationID: conversation, sessionKey: sessionKey,
+                                      project: grantedProject)
+        try FileManager.default.removeItem(at: ownedLeaf)
+        LinuxWorkspaceAuthority.storageRootOverrideForTesting = aliasRoot.standardizedFileURL.path
+        // The real purge must match the grant-time marker after leaf removal.
+        switch purge(conversation) {
+        case .completed(let report):
+            XCTAssertEqual(report.provenTotal, 1)
+            XCTAssertTrue(report.ledgerCoreSettled)
+        case .refused(let code):
+            XCTFail("grant-time alias binding must survive leaf removal: \(code)")
+        case .retained(_, let reason):
+            XCTFail("grant-time owned scope must settle: \(reason)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: session))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recoveredPath(sessionKey)))
+    }
+
+    func testSymlinkedOwnedLeafRefusesFrozenShapeTokenAndTouchesNothing() throws {
+        // Boundary STRICTENING: a symlink at the owned leaf pointing at a
+        // SIBLING conversation's directory previously resolved back inside
+        // the root, passed containment, derived the SIBLING's project digest,
+        // and the pass "completed" with provenTotal 0 while the real owned
+        // copies were silently counted foreign. The repaired purge refuses
+        // with the frozen scope-shape token (row retained, NOTHING touched).
+        let conversation = UUID()
+        let sibling = UUID()
+        let sessionKey = String(repeating: "9", count: 32)
+        let session = try makeSession(conversationID: conversation, sessionKey: sessionKey)
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Workspace/PrivateTasks/\(sibling.uuidString)",
+                                            isDirectory: true),
+            withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("Workspace/PrivateTasks/\(conversation.uuidString)").path,
+            withDestinationPath: root.appendingPathComponent("Workspace/PrivateTasks/\(sibling.uuidString)").path)
+        XCTAssertEqual(refuseCode(purge(conversation)), "scopePathShape",
+                       "a symlinked managed leaf must refuse, never resolve-and-absorb")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: session), "refusal touches NOTHING")
+        XCTAssertNil(LinuxWorkspaceAuthority.pendingPurgeLedger(conversationID: conversation),
+                     "no ledger was written by a refused pass")
+    }
+
+    func testLowercaseAndTraversalSpellingsRefuseShapeGuard() {
+        // The ORIGINAL owned shape stays exact: guard 1 keeps rejecting the
+        // canonical-case-normalized-but-different spellings and traversal —
+        // the repair derives paths ONLY from a base that already passed both
+        // shape guards, so widening nothing.
+        let conversation = UUID(uuidString: "ABCDEF12-3456-4789-ABCD-0123456789AB")!
+        let lowercase = LinuxWorkspaceAuthority.purgeTargetOwnedTransferState(
+            conversationID: conversation,
+            expectedRelativePath: "PrivateTasks/\(conversation.uuidString.lowercased())",
+            rootEpoch: epoch)
+        XCTAssertEqual(refuseCode(lowercase), "scopePathShape")
+        let traversal = LinuxWorkspaceAuthority.purgeTargetOwnedTransferState(
+            conversationID: conversation,
+            expectedRelativePath: "PrivateTasks/\(conversation.uuidString)/..",
+            rootEpoch: epoch)
+        XCTAssertEqual(refuseCode(traversal), "scopePathShape")
+    }
+
 }
 
 // MARK: - Lifecycle (real store + ORIGINAL port + lane ACK)
