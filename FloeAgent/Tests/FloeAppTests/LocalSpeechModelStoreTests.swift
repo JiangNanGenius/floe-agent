@@ -219,7 +219,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let freshArtifacts = LocalSpeechModelStore.transferArtifacts(for: try XCTUnwrap(fresh.files.first?.url), transfersRoot: transfers)
         try Data("keep-me".utf8).write(to: freshArtifacts[1])
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                          root: modelsRoot, defaults: defaults,
+                                          root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: transfers, bytes: Data(freshBytes)),
                                           transfersRoot: transfers)
         await store.beginInstallation(fresh, selectionRevision: 7)
@@ -231,7 +231,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         XCTAssertEqual(record?.legacy.map(\.id), [legacy.id])
         // Process death: the same durable state is visible to a fresh instance.
         let relaunched = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                               root: modelsRoot, defaults: defaults,
+                                               root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                                downloader: DownloadFixture(root: transfers, bytes: Data(freshBytes)),
                                                transfersRoot: transfers)
         await relaunched.restoreInstallation()
@@ -263,7 +263,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let modelsRoot = root.appendingPathComponent("models")
         try seedInstalledPack(legacy, root: modelsRoot, bytes: Data(legacyBytes))
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                          root: modelsRoot, defaults: defaults,
+                                          root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         await store.beginInstallation(fresh, selectionRevision: 1)
@@ -296,7 +296,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let modelsRoot2 = root.appendingPathComponent("models2")
         try seedInstalledPack(legacy, root: modelsRoot2, bytes: Data(legacyBytes))
         let pre = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                        root: modelsRoot2, defaults: defaults2,
+                                        root: modelsRoot2, defaults: try Self.transferredDefaults(suiteName: suite2),
                                         downloader: DownloadFixture(root: root.appendingPathComponent("transfers2"), bytes: Data(freshBytes)),
                                         transfersRoot: root.appendingPathComponent("transfers2"))
         await pre.beginInstallation(fresh, selectionRevision: 1)
@@ -314,7 +314,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         // "Process death": the lease disappears with the old instance; a fresh
         // store reconciles at launch and finishes the removal.
         let launch = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                           root: modelsRoot2, defaults: defaults2,
+                                           root: modelsRoot2, defaults: try Self.transferredDefaults(suiteName: suite2),
                                            downloader: DownloadFixture(root: root.appendingPathComponent("transfers3"), bytes: Data(freshBytes)),
                                            transfersRoot: root.appendingPathComponent("transfers3"))
         await launch.restoreInstallation()
@@ -336,7 +336,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         try Data("foreign-resume".utf8).write(to: decoy)
         defaults.set(legacy.id, forKey: "voice.local.pendingInstallation")
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy]),
-                                          root: root.appendingPathComponent("models"), defaults: defaults,
+                                          root: root.appendingPathComponent("models"), defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: transfers, bytes: Data(legacyBytes)),
                                           transfersRoot: transfers)
         await store.restoreInstallation()
@@ -360,7 +360,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let modelsRoot = root.appendingPathComponent("models")
         try seedInstalledPack(legacy, root: modelsRoot, bytes: Data(legacyBytes))
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                          root: modelsRoot, defaults: defaults,
+                                          root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes), delays: true),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         await store.beginInstallation(fresh, selectionRevision: 2)
@@ -384,7 +384,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = visiblePack()
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]),
-                                          root: root.appendingPathComponent("models"), defaults: defaults,
+                                          root: root.appendingPathComponent("models"), defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: TimedDownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         await store.beginInstallation(model)
@@ -419,7 +419,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let modelsRoot = root.appendingPathComponent("models")
         try seedInstalledPack(legacy, root: modelsRoot, bytes: Data(legacyBytes))
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                          root: modelsRoot, defaults: defaults,
+                                          root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: GatedRetireFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         await store.beginInstallation(fresh, selectionRevision: 1)
@@ -450,16 +450,20 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         let modelsRoot = root.appendingPathComponent("models")
         try seedInstalledPack(legacy, root: modelsRoot, bytes: Data(legacyBytes))
         let fault = CleanupFault()
+        // Real injected failure: CleanupFault is NSLock-synchronized and the
+        // closure's type is explicitly @Sendable (captures are Sendable), so the
+        // store actor can run it without a main-actor isolation conflict.
+        let cleanupFaultRemover: @Sendable (URL) throws -> Void = { url in
+            if fault.isArmed, url.lastPathComponent.contains(legacy.id), !url.lastPathComponent.hasPrefix(".") {
+                throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
-                                          root: modelsRoot, defaults: defaults,
+                                          root: modelsRoot, defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: DownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
                                           transfersRoot: root.appendingPathComponent("transfers"),
-                                          remover: { url in
-                                              if fault.isArmed, url.lastPathComponent.contains(legacy.id), !url.lastPathComponent.hasPrefix(".") {
-                                                  throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
-                                              }
-                                              try FileManager.default.removeItem(at: url)
-                                          })
+                                          remover: cleanupFaultRemover)
         await store.beginInstallation(fresh, selectionRevision: 1)
         try await waitForCompletion(store)
         await store.migrationLoadValidated(legacyStillSelected: false)
@@ -521,7 +525,7 @@ final class LocalSpeechModelStoreTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let model = visiblePack()
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]),
-                                          root: root.appendingPathComponent("models"), defaults: defaults,
+                                          root: root.appendingPathComponent("models"), defaults: try Self.transferredDefaults(suiteName: suite),
                                           downloader: FrequentCallbackDownloadFixture(root: root.appendingPathComponent("transfers"), bytes: Data(freshBytes)),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         await store.beginInstallation(model)
@@ -539,6 +543,14 @@ final class LocalSpeechModelStoreTests: XCTestCase {
     }
 
     // MARK: - Fixtures
+
+    // Construct a distinct instance for the model actor, transferring ownership,
+    // while the main-actor test body keeps its own instance of the same suite for
+    // seeding, assertions and cleanup (same pattern as TTSSettingsServiceTests;
+    // UserDefaults for one suite name share the per-process backing store).
+    private nonisolated static func transferredDefaults(suiteName: String) throws -> sending UserDefaults {
+        try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    }
 
     private let legacyBytes = Data("legacy-qwen-weights".utf8)
     private let freshBytes = Data("fresh-moss-weights".utf8)
