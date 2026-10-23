@@ -69,7 +69,7 @@ struct ContinuousVoiceSpeechBridgeTests {
                     sender.finish()
                 } catch { sender.finish(throwing: error) }
             })
-            return stream
+            return TTSConfiguredStream(stream: stream, close: { sender.finish() })
         }, onFailure: { _ in errors += 1 })
         bridge.connect()
         output.events.yield(.roundStarted(token))
@@ -102,7 +102,7 @@ struct ContinuousVoiceSpeechBridgeTests {
                     } catch { sender.finish(throwing: error) }
                 })
             }
-            return stream
+            return TTSConfiguredStream(stream: stream, close: { sender.finish() })
         }, onFailure: { _ in Issue.record("Unexpected synthesis failure") })
         bridge.connect()
         output.events.yield(.roundStarted(old))
@@ -113,7 +113,7 @@ struct ContinuousVoiceSpeechBridgeTests {
         output.events.yield(.unitQueued(newUnit))
         output.events.yield(.roundTextCompleted(token: fresh, unitCount: 1))
         try await waitUntil { output.endedRounds == 1 }
-        _ = oldSource?.sendBounded(chunk(oldUnit, [0xFF, 0x7F], sequence: 0, final: true))
+        #expect(oldSource?.sendBounded(chunk(oldUnit, [0xFF, 0x7F], sequence: 0, final: true)) == false)
         oldSource?.finish()
         #expect(output.accepted.map(\.0) == [newUnit.id])
         bridge.stop()

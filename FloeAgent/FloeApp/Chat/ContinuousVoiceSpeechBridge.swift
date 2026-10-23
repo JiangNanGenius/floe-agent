@@ -9,7 +9,7 @@ import FloeProviders
 /// owns real playback completion and records what actually reached the speaker.
 @MainActor
 final class ContinuousVoiceSpeechBridge {
-    typealias Synthesize = @MainActor (VoiceConversationSpeechUnit) -> TTSAudioChunkStream
+    typealias Synthesize = @MainActor (VoiceConversationSpeechUnit) -> TTSConfiguredStream
 
     private weak var output: (any VoiceConversationSpeechOutput)?
     private let synthesize: Synthesize
@@ -17,6 +17,7 @@ final class ContinuousVoiceSpeechBridge {
     private let onRoundEnded: @MainActor (UUID) -> Void
     private var eventsTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
+    private var activeSource: TTSConfiguredStream?
     private var activeRound: VoiceConversationRoundToken?
     private var activeUnitID: UUID?
     private var queue: [VoiceConversationSpeechUnit] = []
@@ -67,6 +68,8 @@ final class ContinuousVoiceSpeechBridge {
     private func invalidateRound() {
         generation &+= 1
         let ended = activeRound?.id
+        activeSource?.closeStream()
+        activeSource = nil
         synthesisTask?.cancel()
         synthesisTask = nil
         activeUnitID = nil
@@ -127,8 +130,10 @@ final class ContinuousVoiceSpeechBridge {
                 var lastSequence = -1
                 var finalSeen = false
                 var sampleRate: Int?
-                let chunks = self.synthesize(unit)
-                for try await chunk in chunks {
+                let source = self.synthesize(unit)
+                self.activeSource = source
+                defer { source.closeStream() }
+                for try await chunk in source.stream {
                     try Task.checkCancellation()
                     guard self.isCurrent(unit, attempt: attempt) else { return }
                     guard chunk.sessionID == unit.token.id,
@@ -176,6 +181,7 @@ final class ContinuousVoiceSpeechBridge {
                 guard self.isCurrent(unit, attempt: attempt) else { return }
                 guard finalSeen, carry.isEmpty else { throw Failure.truncatedAudio }
                 guard byteCount > 0 else { throw Failure.emptyAudio }
+                self.activeSource = nil
                 self.output?.endUnit(unit)
                 self.producedUnits += 1
                 self.activeUnitID = nil

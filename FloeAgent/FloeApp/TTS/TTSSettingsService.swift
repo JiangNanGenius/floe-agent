@@ -408,6 +408,11 @@ struct TTSConfiguredStream {
     let stream: TTSAudioChunkStream
     private let close: @Sendable () -> Void
 
+    init(stream: TTSAudioChunkStream, close: @escaping @Sendable () -> Void) {
+        self.stream = stream
+        self.close = close
+    }
+
     func closeStream() { close() }
 
     /// Wraps a routed provider stream into an explicitly closable segment.

@@ -115,7 +115,7 @@ final class ContinuousVoiceScreenSession: ObservableObject {
             guard let self else {
                 let (stream, sender) = TTSAudioChunkStream.make()
                 sender.finish(throwing: CancellationError())
-                return stream
+                return TTSConfiguredStream(stream: stream, close: { sender.finish() })
             }
             if self.sourceRound != unit.token.id {
                 self.sourceRound = unit.token.id
