@@ -1,8 +1,8 @@
 {
  "binary": {
-  "bytes": 25568,
+  "bytes": 48064,
   "name": "libnss_floe.so.2",
-  "sha256": "ec15b5b2fbafc4a4c044deb370c27032a77281075c060999110096014881d550"
+  "sha256": "2e6cf6765fe24dd549b08405f85e8be578eeb148a3cad2293b7cc0d6d32d0a5e"
  },
  "exports": [
   "_nss_floe_gethostbyname2_r",
@@ -16,7 +16,7 @@
  "protocol": "floe-guest-dns-v1",
  "schemaVersion": 1,
  "soname": "libnss_floe.so.2",
- "sourceTreeSha256": "67ce9d6e7c040665c3c2594f2a9a545236ed75601621b6d3137f6019ecf88a26",
+ "sourceTreeSha256": "285439c63801bc6e9fadd7f004e78c986207fcc2bba6a1a1415325632a72926e",
  "sources": [
   {
    "bytes": 5042,
@@ -29,9 +29,9 @@
    "sha256": "682e34598e09155e195228891f1a124137e229d6804503fd8674805f1b8bdce3"
   },
   {
-   "bytes": 36190,
+   "bytes": 36194,
    "path": "libnss_floe.c",
-   "sha256": "89e154dceff33d0c6e73973947b8dcc56e262022ae2ff7035261d281f15e3551"
+   "sha256": "162add07e3d5701033173b09597ca6b6d74e5c17de3c3809776dd0809d45cf40"
   },
   {
    "bytes": 329,
