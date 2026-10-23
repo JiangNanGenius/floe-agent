@@ -167,7 +167,7 @@ final class TTSSettingsServiceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [legacy, fresh]),
                                           root: root.appendingPathComponent("models"),
-                                          defaults: defaults,
+                                          defaults: try XCTUnwrap(UserDefaults(suiteName: name)),
                                           downloader: MultiDownloadFixture(root: root.appendingPathComponent("transfers"), payloads: [legacy.files[0].url.absoluteString: legacyBytes, fresh.files[0].url.absoluteString: freshBytes]),
                                           transfersRoot: root.appendingPathComponent("transfers"))
         // Mark the store as a previous first install so legacy selection is

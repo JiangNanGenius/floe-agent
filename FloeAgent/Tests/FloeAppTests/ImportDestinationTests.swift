@@ -289,6 +289,7 @@ private final class RecordingLiveDraftOwner: ComposerDraftStore.ImportedDraftLiv
 // MARK: - Ledger
 
 @Suite("FloeApp.ImportDestinationLedger")
+@MainActor
 struct ImportDestinationLedgerTests {
 
     @Test("Decision roundtrip, corrupt entry and removal")
@@ -429,9 +430,8 @@ struct ImportDestinationGateTests {
         let plainEvent = try #require(doc.submit(plain, sceneID: "scene-a"))
 
         let flaggedOK = await poll {
-            guard let staged = try? await queue.pendingPayload(id: flaggedEvent),
-                  let record = staged?.record else { return false }
-            return record.destinationChoiceRequired == true
+            guard let staged = try? await queue.pendingPayload(id: flaggedEvent) else { return false }
+            return staged.record.destinationChoiceRequired == true
         }
         #expect(flaggedOK)
         let plainStaged = try #require(await queue.pendingPayload(id: plainEvent))
@@ -729,7 +729,7 @@ struct ImportDestinationGateTests {
         let request = try #require(center.peekDestinationRequest())
         center.confirmPresentation(request)
         center.cancelPresentation(request)
-        center.observeShareArrival(focusedEnvelopeID: envelope.id)
+        await center.observeShareArrival(focusedEnvelopeID: envelope.id)
         #expect(center.peekDestinationRequest()?.origin != .shareEnvelope(envelope.id))
         #expect(sharePending(inbox, envelope.id))
     }
