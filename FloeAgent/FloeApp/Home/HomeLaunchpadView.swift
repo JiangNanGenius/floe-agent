@@ -94,9 +94,26 @@ struct HomeLaunchpadView: View {
             // specific handoff receipt is verified on disk beside the placed
             // text, and keeps every other entry safely queued.
             await viewModel.acceptShortcutInbox()
-            // Review-first inbound shares: refresh the app-owned queue; the
-            // card only adds to THIS window's live composer on explicit Use.
+            // Only an already confirmed New Task choice is consumed here.
             await center.environment.shareIntakeCenter.refresh()
+            if acceptsExternalTaskImports {
+                await environment.importDestinationCenter
+                    .applyConfirmedNewTaskEnvelopes(to: viewModel)
+            }
+        }
+        .onReceive(environment.importDestinationCenter.$confirmedNewTaskRevision) { revision in
+            guard revision > 0, acceptsExternalTaskImports else { return }
+            Task {
+                await environment.importDestinationCenter
+                    .applyConfirmedNewTaskEnvelopes(to: viewModel)
+            }
+        }
+        .onReceive(environment.shareIntakeCenter.$pending) { _ in
+            guard acceptsExternalTaskImports else { return }
+            Task {
+                await environment.importDestinationCenter
+                    .applyConfirmedNewTaskEnvelopes(to: viewModel)
+            }
         }
         .onReceive(environment.continuousVoicePresentation.$returnedDraft) { returned in
             guard let returned, returned.windowID == voiceWindowID,
@@ -170,6 +187,10 @@ struct HomeLaunchpadView: View {
 
     // MARK: - Composer (centered, prominent)
 
+    private var acceptsExternalTaskImports: Bool {
+        !designStart && viewModel.draftStorageID == ComposerDraftStore.homeDraftID
+    }
+
     private var launchTitleKey: String {
         if designStart { return "design.conversation.start_title" }
         return viewModel.agentMode == .chat ? "chat.new.title" : "workbench.new_task"
@@ -239,10 +260,20 @@ struct HomeLaunchpadView: View {
     private func openContinuousVoice() {
         guard let voiceWindowID,
               let (_, model) = center.providerAndModel(modelID: viewModel.selectedModelID) else { return }
+        // Direct entry for every mode: the voice round itself always runs as
+        // a chat turn through the driver; the Home composer selection follows
+        // (this replaces the old "switch to Chat and start" menu step).
+        if viewModel.agentMode != .chat { viewModel.agentMode = .chat }
+        // CARRY THE ACTUAL TEMPORARY IDENTITY: while a RAM-only 临时聊天
+        // session exists, voice continues THAT conversation — a first
+        // utterance must never defer-create a persisted thread. Temporary
+        // sessions own a text-only ceiling: Home's staged attachments are
+        // never granted to a temporary voice round.
+        let temporaryConversationID = center.temporarySession?.conversation.id
         let request = ContinuousVoiceRequest(
-            windowID: voiceWindowID, conversationID: nil, modelID: model.id,
+            windowID: voiceWindowID, conversationID: temporaryConversationID, modelID: model.id,
             workspaceID: viewModel.selectedProjectID,
-            attachments: viewModel.attachments,
+            attachments: temporaryConversationID == nil ? viewModel.attachments : [],
             onConversationCreated: { id in router.openThreadFromHome(id) },
             draftOwnerID: viewModel.draftStorageID,
             onAttachmentsConsumed: { files in

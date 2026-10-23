@@ -180,6 +180,28 @@ final class AppEnvironment: ObservableObject {
     private lazy var _documentIntakeCenter = DocumentIntakeCenter(
         root: DocumentIntakeCenter.applicationSupportRoot()
     )
+    /// Durable 导入手记 / 导入任务 / 导入画布 chooser for ambiguous inbound
+    /// entries. It owns only the explicit-decision ledger and the choice
+    /// execution; the share card's Task pipeline, the queue's Notes
+    /// pipeline and the existing material/Canvas services stay the single
+    /// importers. Never navigates by itself and never mutates editor state.
+    private lazy var _importDestinationCenter = ImportDestinationCenter(
+        inbox: try? ShareInbox.applicationGroup(),
+        // Real Canvas-owned committer (nodes + new canvas under the
+        // ledger's planned identities; CAS + sync outbox + notification).
+        canvas: CanvasExternalImportCommitter(
+            ingestion: CreativeAssetIngestionService(assetStore: creativeAssetStore),
+            assets: creativeAssetStore,
+            sync: canvasSyncOperationStore
+        ),
+        // Read-only persisted-target list over the existing conversation
+        // store (all ordinary, non-archived tasks; the picker pages them).
+        taskProvider: ConversationStoreTaskDestinationProvider(store: conversationStore)
+        // Existing-task landings go through the unified
+        // ComposerDraftStore.acceptImportedDraft entrypoint owned by the
+        // draft-sync job — closed slots commit durably and open composers
+        // fold in the same turn; no parallel live-owner plumbing here.
+    )
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
@@ -286,6 +308,7 @@ final class AppEnvironment: ObservableObject {
     var filesCenter: FilesCenter { _filesCenter }
     var shareIntakeCenter: ShareIntakeCenter { _shareIntakeCenter }
     var documentIntakeCenter: DocumentIntakeCenter { _documentIntakeCenter }
+    var importDestinationCenter: ImportDestinationCenter { _importDestinationCenter }
     var sharedDocumentsCenter: SharedDocumentsCenter { .shared }
     var workspaceCenter: WorkspaceCenter { _workspaceCenter }
     var sourceControlCenter: SourceControlCenter { _sourceControlCenter }
@@ -2238,8 +2261,16 @@ final class AppEnvironment: ObservableObject {
             // Inbound shares are app-owned (never View-owned). Start the
             // foreground refresh once launch reached a usable state; the
             // center itself performs the App Group maintenance pass.
+            // The destination chooser must install its durable decision
+            // gate BEFORE stores start the automatic drain, so a cold
+            // ambiguous arrival waits for an explicit 手记/任务 choice
+            // instead of silently importing.
             if !isEphemeral {
                 shareIntakeCenter.start()
+                importDestinationCenter.start(
+                    shareCenter: shareIntakeCenter,
+                    documentCenter: documentIntakeCenter
+                )
                 documentIntakeCenter.markStoresReady()
                 sharedDocumentsCenter.start()
             }

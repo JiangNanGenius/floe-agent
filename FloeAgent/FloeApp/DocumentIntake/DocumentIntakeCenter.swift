@@ -72,6 +72,12 @@ final class DocumentIntakeCenter: ObservableObject {
     /// consults this closure.
     private var routingEligibility: (@MainActor (DocumentIntakePresentation) -> Bool)?
 
+    /// Optional auto-drain gate for ambiguous external arrivals. Returning
+    /// false keeps a pending record durable and UNCLAIMED until the import
+    /// destination chooser records the user's explicit selection; un-gated
+    /// builds (focused tests, other producers) import exactly as before.
+    private var destinationGate: (@Sendable (DocumentIntakeRecord) -> Bool)?
+
     init(
         root: URL?,
         limits: DocumentIntakeLimits = .production,
@@ -171,7 +177,17 @@ final class DocumentIntakeCenter: ObservableObject {
     /// returns the stable intake event id. Duplicate callbacks for the same
     /// URL within the short coalescing window share one event.
     @discardableResult
-    func submit(_ url: URL, sceneID: String?) -> UUID? {
+    /// - Parameter destinationChoiceRequired: true only for ambiguous
+    ///   external entries (system "Open In" of common file formats). The
+    ///   requirement is written into the entry atomically before publish,
+    ///   so the automatic drain fails CLOSED: without a durable ledger
+    ///   decision the staged input simply stays recoverable. Explicit
+    ///   in-product importers keep the default (bypasses the chooser).
+    func submit(
+        _ url: URL,
+        sceneID: String?,
+        destinationChoiceRequired: Bool = false
+    ) -> UUID? {
         guard queue != nil, let stagingRoot else {
             showNotice(DocumentIntakeNotice(
                 kind: .failure,
@@ -211,7 +227,8 @@ final class DocumentIntakeCenter: ObservableObject {
             plannedRootDocumentID: plannedRootDocumentID,
             sceneID: sceneID,
             requestSequence: sequence,
-            receivedAt: timestamp
+            receivedAt: timestamp,
+            destinationChoiceRequired: destinationChoiceRequired
         )
         let stagingLimits = limits
         // Acquire the provider scope in the open-URL callback, not later in a
@@ -292,7 +309,7 @@ final class DocumentIntakeCenter: ObservableObject {
         while !Task.isCancelled {
             let claim: DocumentIntakeClaim?
             do {
-                claim = try await queue.claimNext()
+                claim = try await queue.claimNext(where: destinationGate)
             } catch {
                 break
             }
@@ -659,6 +676,28 @@ final class DocumentIntakeCenter: ObservableObject {
         _ body: @escaping @MainActor (DocumentIntakePresentation) -> Bool
     ) {
         routingEligibility = body
+    }
+
+    /// Registers the import-destination gate for ambiguous external
+    /// arrivals. Installed once during App bootstrap, BEFORE
+    /// `markStoresReady()`, so a cold ambiguous entry can never be claimed
+    /// by the automatic drain before its durable decision exists.
+    func configureDestinationGate(
+        _ gate: @escaping @Sendable (DocumentIntakeRecord) -> Bool
+    ) {
+        destinationGate = gate
+    }
+
+    /// Re-arms the bounded drain after a destination decision changes (the
+    /// gate released an entry, or a hand-off removed one). Idempotent:
+    /// `drainIfPossible` never runs a second worker while one is active.
+    func resumeDraining() {
+        drainIfPossible()
+    }
+
+    /// Re-reads the durable queue state for the chooser's observation pass.
+    func refreshSnapshot() async {
+        await refresh()
     }
 
     private func retainOpenOffer(

@@ -16,9 +16,15 @@ final class ChatAutomaticReadController: ObservableObject {
     private var endedRuns = Set<UUID>()
     private var endedRunOrder: [UUID] = []
     private var baselineMessageIDs: Set<UUID>?
+    private var historicalCompletedRunIDs = Set<UUID>()
 
-    func establishHistoryBaseline(_ messageIDs: [UUID]) {
-        if baselineMessageIDs == nil { baselineMessageIDs = Set(messageIDs) }
+    func establishHistoryBaseline(_ messageIDs: [UUID], completedRunIDs: [UUID] = []) {
+        guard baselineMessageIDs == nil else { return }
+        baselineMessageIDs = Set(messageIDs)
+        // Event bodies load after the first message page. Remember the
+        // already-completed runs even when their final event is not loaded
+        // yet, so hydration cannot replay a historical answer.
+        historicalCompletedRunIDs = Set(completedRunIDs)
     }
 
     /// Call only with the typed final-answer projection after run completion.
@@ -35,11 +41,12 @@ final class ChatAutomaticReadController: ObservableObject {
         baselineMessageIDs = identifiers
         guard enabled, let message = messages.last,
               !previous.contains(message.id), let owner = message.runID,
+              !historicalCompletedRunIDs.contains(owner),
               !endedRuns.contains(owner),
               !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         stream?.cancel()
         markEnded(owner)
-        let completed = makeStream(owner)
+        let completed = makeStream(message.id)
         completed.append(message.text)
         completed.finish()
         // Synthesis/input completion is not playback completion. Retain the

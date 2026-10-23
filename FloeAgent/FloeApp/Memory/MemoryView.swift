@@ -19,14 +19,53 @@ enum MemoryOrganizationMode: String, CaseIterable, Identifiable {
     }
 }
 
+/// Pure publication bookkeeping for `MemoryCenter`: which in-flight read is
+/// still allowed to publish on ITS OWN channel, and which operation owned the
+/// currently shown error banner. Reads on one channel (memories,
+/// personalization, search) never invalidate an in-flight read on another;
+/// within a channel only the newest operation publishes. The error banner
+/// scope stays shared across channels. Kept free of views and stores so the
+/// stale/cancel/scope rules are directly testable.
+struct MemoryPublicationState {
+    enum Channel: Hashable { case memories, personalization, search }
+    enum Scope: Hashable {
+        case load, search, save, generate, organize, memoryMutation, review, retention, settings
+    }
+    private var sequence: UInt64 = 0
+    private var current: [Channel: UInt64] = [:]
+    private(set) var errorScope: Scope?
+
+    mutating func begin(_ channel: Channel = .memories) -> UInt64 {
+        sequence += 1
+        current[channel] = sequence
+        return sequence
+    }
+
+    /// A result may only publish while it remains the newest operation on
+    /// its own channel.
+    func isCurrent(_ candidate: UInt64, in channel: Channel = .memories) -> Bool {
+        current[channel] == candidate
+    }
+
+    /// A success clears only the error its own scope previously raised, so an
+    /// unrelated failed write is never silently erased by a background reload.
+    mutating func clearError(onSuccessFor scope: Scope) -> Bool {
+        guard errorScope == scope else { return false }
+        errorScope = nil
+        return true
+    }
+
+    mutating func recordError(scope: Scope) { errorScope = scope }
+}
+
 @MainActor
 final class MemoryCenter: ObservableObject {
     @Published private(set) var entries: [MemoryEntry] = []
     @Published private(set) var pendingCandidates: [DurableMemoryCandidate] = []
     @Published private(set) var profile: PersonalizationDocument?
+    @Published private(set) var profilePrevious: PersonalizationDocument?
     @Published private(set) var soul: PersonalizationDocument?
-    @Published private(set) var profileRevisions: [PersonalizationDocument] = []
-    @Published private(set) var soulRevisions: [PersonalizationDocument] = []
+    @Published private(set) var soulPrevious: PersonalizationDocument?
     @Published private(set) var profileAutomaticUpdates = true
     @Published private(set) var soulAutomaticUpdates = true
     @Published private(set) var searchResults: [HybridMemoryRecallItem] = []
@@ -43,6 +82,7 @@ final class MemoryCenter: ObservableObject {
     private let personalizationStore: SQLitePersonalizationStore
     private let personalizationService: PersonalizationService
     private let candidatePipeline: MemoryCandidatePipeline
+    private var publication = MemoryPublicationState()
     private static let organizationModeKey = "memory.organization.mode"
 
     init(environment: AppEnvironment) {
@@ -56,37 +96,86 @@ final class MemoryCenter: ObservableObject {
         ) ?? .reviewFirst
     }
 
+    /// Maps machine-readable lifecycle failures to product copy; everything
+    /// else keeps its own description.
+    static func userMessage(for error: Error) -> String {
+        switch error {
+        case PersonalizationLifecycleFailure.revisionConflict:
+            FloeL10n.l("memory.memory_view.content_updated_elsewhere")
+        case PersonalizationLifecycleFailure.noPrevious:
+            FloeL10n.l("memory.memory_view.no_previous_version")
+        case PersonalizationLifecycleFailure.contentTooLong(let limit):
+            FloeL10n.l("memory.memory_view.content_too_long", limit)
+        default:
+            error.localizedDescription
+        }
+    }
+
+    private func canPublish(_ token: UInt64,
+                            in channel: MemoryPublicationState.Channel) -> Bool {
+        publication.isCurrent(token, in: channel) && !Task.isCancelled
+    }
+
+    /// A cancelled read (view navigation, superseded reload, GRDB
+    /// interruption) publishes nothing and shows nothing; it keeps the last
+    /// complete data instead.
+    private func finishLoad(_ error: Error, token: UInt64,
+                            channel: MemoryPublicationState.Channel,
+                            scope: MemoryPublicationState.Scope) {
+        guard canPublish(token, in: channel) else { return }
+        if PersonalizationCancellation.isCancellation(error) { return }
+        errorMessage = Self.userMessage(for: error)
+        publication.recordError(scope: scope)
+    }
+
     func load() async {
-        var result: [MemoryEntry] = []
-        result += (try? await environment.intelligenceStore.memories(scope: .userProfile, status: nil)) ?? []
-        result += (try? await environment.intelligenceStore.memories(scope: .agentGlobal, status: nil)) ?? []
-        if let workspace = environment.workspaceCenter.currentWorkspace {
-            result += (try? await environment.intelligenceStore.memories(scope: .workspace(workspace.id), status: nil)) ?? []
+        let token = publication.begin(.memories)
+        do {
+            var result: [MemoryEntry] = []
+            result += try await environment.intelligenceStore.memories(scope: .userProfile, status: nil)
+            result += try await environment.intelligenceStore.memories(scope: .agentGlobal, status: nil)
+            if let workspace = environment.workspaceCenter.currentWorkspace {
+                result += try await environment.intelligenceStore.memories(scope: .workspace(workspace.id), status: nil)
+            }
+            if let conversationID = environment.browserCenter.conversationID {
+                result += try await environment.intelligenceStore.memories(scope: .task(conversationID), status: nil)
+            }
+            guard canPublish(token, in: .memories) else { return }
+            entries = result.sorted { $0.updatedAt > $1.updatedAt }
+            if publication.clearError(onSuccessFor: .load) { errorMessage = nil }
+        } catch {
+            finishLoad(error, token: token, channel: .memories, scope: .load)
         }
-        if let conversationID = environment.browserCenter.conversationID {
-            result += (try? await environment.intelligenceStore.memories(scope: .task(conversationID), status: nil)) ?? []
-        }
-        entries = result.sorted { $0.updatedAt > $1.updatedAt }
+        // Only the newest live memories load chains the personalization read;
+        // a cancelled or superseded one must not fence newer work.
+        guard publication.isCurrent(token, in: .memories), !Task.isCancelled else { return }
         await loadPersonalization()
     }
 
+    /// Reads every personalization lane atomically and publishes the complete
+    /// snapshot only when it is still the newest personalization operation.
+    /// Any error leaves the last-good data untouched; normal cancellation
+    /// never shows a message. Independent of the memories and search channels.
     func loadPersonalization() async {
+        let token = publication.begin(.personalization)
         do {
-            async let activeProfile = personalizationStore.activeDocument(kind: .userProfile, workspaceID: nil)
-            async let activeSoul = personalizationStore.activeDocument(kind: .soul, workspaceID: nil)
-            async let profiles = personalizationStore.documentRevisions(kind: .userProfile, workspaceID: nil)
-            async let souls = personalizationStore.documentRevisions(kind: .soul, workspaceID: nil)
-            async let candidates = personalizationStore.candidates(status: .pending)
-            async let profileCursor = personalizationStore.cursor(kind: .userProfile, workspaceID: nil)
-            async let soulCursor = personalizationStore.cursor(kind: .soul, workspaceID: nil)
-            profile = try await activeProfile
-            soul = try await activeSoul
-            profileRevisions = try await profiles
-            soulRevisions = try await souls
-            pendingCandidates = try await candidates
-            profileAutomaticUpdates = try await profileCursor.automaticUpdatesEnabled
-            soulAutomaticUpdates = try await soulCursor.automaticUpdatesEnabled
-        } catch { errorMessage = error.localizedDescription }
+            let profileRetention = try await personalizationStore.retention(kind: .userProfile, workspaceID: nil)
+            let soulRetention = try await personalizationStore.retention(kind: .soul, workspaceID: nil)
+            let candidates = try await personalizationStore.candidates(status: .pending)
+            let profileCursor = try await personalizationStore.cursor(kind: .userProfile, workspaceID: nil)
+            let soulCursor = try await personalizationStore.cursor(kind: .soul, workspaceID: nil)
+            guard canPublish(token, in: .personalization) else { return }
+            profile = profileRetention.current
+            profilePrevious = profileRetention.previous
+            soul = soulRetention.current
+            soulPrevious = soulRetention.previous
+            pendingCandidates = candidates
+            profileAutomaticUpdates = profileCursor.automaticUpdatesEnabled
+            soulAutomaticUpdates = soulCursor.automaticUpdatesEnabled
+            if publication.clearError(onSuccessFor: .load) { errorMessage = nil }
+        } catch {
+            finishLoad(error, token: token, channel: .personalization, scope: .load)
+        }
     }
 
     func remember(_ content: String, workspaceOnly: Bool, taskOnly: Bool = false) async {
@@ -107,6 +196,7 @@ final class MemoryCenter: ObservableObject {
                     == normalized
             }) {
                 operationNotice = FloeL10n.l("memory.memory_view.earlier_memories_checked_identical_content_already")
+                if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
                 return
             }
             try await environment.intelligenceStore.saveMemory(MemoryEntry(
@@ -116,39 +206,68 @@ final class MemoryCenter: ObservableObject {
                 originWorkspaceID: environment.workspaceCenter.currentWorkspace?.id
             ), evidence: [])
             await load()
-        } catch { errorMessage = error.localizedDescription }
+            if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
+        } catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = error.localizedDescription
+            publication.recordError(scope: .memoryMutation)
+        }
     }
 
     func delete(_ entry: MemoryEntry) async {
-        do { try await environment.intelligenceStore.deleteMemory(id: entry.id, syncRevision: 1); await load() }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            try await environment.intelligenceStore.deleteMemory(id: entry.id, syncRevision: 1)
+            await load()
+            if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
+        }
+        catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = error.localizedDescription
+            publication.recordError(scope: .memoryMutation)
+        }
     }
 
     func delete(ids: Set<UUID>) async {
         guard !ids.isEmpty else { return }
         isWorking = true
-        errorMessage = nil
+        if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
         operationNotice = nil
         defer { isWorking = false }
         do {
             try await environment.intelligenceStore.deleteMemories(ids: ids, syncRevision: 1)
             await load()
             operationNotice = FloeL10n.plural("memory.memory_view.memories_deleted", count: ids.count)
+            if publication.clearError(onSuccessFor: .memoryMutation) { errorMessage = nil }
         } catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            publication.recordError(scope: .memoryMutation)
         }
     }
 
+    /// Search results are only replaced by the newest completed search on the
+    /// search channel — personalization or memory reloads never fence an
+    /// in-flight search. A cancelled or superseded search keeps the last-good
+    /// result list and never surfaces a cancellation as a user-facing error.
     func search(_ query: String) async {
+        let token = publication.begin(.search)
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { searchResults = []; return }
+        guard !query.isEmpty else {
+            if canPublish(token, in: .search) { searchResults = [] }
+            return
+        }
         do {
-            searchResults = try await environment.intelligenceStore.hybridRecall(
+            let results = try await environment.intelligenceStore.hybridRecall(
                 HybridMemoryRecallRequest(query: query,
                     workspaceID: environment.workspaceCenter.currentWorkspace?.id,
                     conversationID: environment.browserCenter.conversationID, limit: 20)
             )
-        } catch { errorMessage = error.localizedDescription }
+            guard canPublish(token, in: .search) else { return }
+            searchResults = results
+            if publication.clearError(onSuccessFor: .search) { errorMessage = nil }
+        } catch {
+            finishLoad(error, token: token, channel: .search, scope: .search)
+        }
     }
 
     func generate(_ kind: PersonalizationDocumentKind) async {
@@ -157,13 +276,18 @@ final class MemoryCenter: ObservableObject {
             let generator = try modelGenerator()
             _ = try await personalizationService.generateNow(kind: kind, generator: generator)
             await loadPersonalization()
+            if publication.clearError(onSuccessFor: .generate) { errorMessage = nil }
         }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = Self.userMessage(for: error)
+            publication.recordError(scope: .generate)
+        }
     }
 
     func quickOrganize() async {
         isWorking = true
-        errorMessage = nil
+        if publication.clearError(onSuccessFor: .organize) { errorMessage = nil }
         organizationPhase = FloeL10n.l("memory.memory_view.scan")
         operationNotice = FloeL10n.l("memory.memory_view.scanning_long_term_memories")
         defer { isWorking = false }
@@ -232,10 +356,13 @@ final class MemoryCenter: ObservableObject {
             let reviewCount = proposal.suggestions.filter { !$0.canApplyAutomatically }.count
             let warning = semanticWarning.map { " \($0)" } ?? ""
             operationNotice = FloeL10n.l("memory.memory_view.organization_complete_scanned_cleaned_automatically_pending", proposal.scannedCount, autoCount, reviewCount, warning)
+            if publication.clearError(onSuccessFor: .organize) { errorMessage = nil }
         } catch {
             organizationPhase = nil
             operationNotice = nil
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            publication.recordError(scope: .organize)
         }
     }
 
@@ -266,7 +393,7 @@ final class MemoryCenter: ObservableObject {
         }
         guard !deleteIDs.isEmpty else { return }
         isWorking = true
-        errorMessage = nil
+        if publication.clearError(onSuccessFor: .organize) { errorMessage = nil }
         defer { isWorking = false }
         do {
             let result = try await environment.intelligenceStore.applyMaintenanceBatch(
@@ -279,8 +406,11 @@ final class MemoryCenter: ObservableObject {
             await load()
             operationNotice = FloeL10n.l("memory.memory_view.applied_the_reviewed_organization_suggestions_and", result.deletedCount)
             organizationPhase = FloeL10n.l("memory.memory_view.done")
+            if publication.clearError(onSuccessFor: .organize) { errorMessage = nil }
         } catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
             errorMessage = error.localizedDescription
+            publication.recordError(scope: .organize)
         }
     }
 
@@ -296,24 +426,65 @@ final class MemoryCenter: ObservableObject {
         )
     }
 
-    func save(_ kind: PersonalizationDocumentKind, content: String) async -> Bool {
-        do { _ = try await personalizationService.saveManual(kind: kind, content: content); await loadPersonalization(); return true }
-        catch { errorMessage = error.localizedDescription; return false }
+    /// Manual editor save with revision CAS: `expectedRevision` is the
+    /// current revision the editor loaded (0 for an empty lane). A background
+    /// update that raced ahead of the draft makes the store reject the write
+    /// instead of silently overwriting the user's unsaved edits.
+    @discardableResult
+    func save(_ kind: PersonalizationDocumentKind, content: String,
+              expectedRevision: Int?) async -> Bool {
+        do {
+            _ = try await personalizationService.saveManual(kind: kind, content: content,
+                expectedRevision: expectedRevision)
+            await loadPersonalization()
+            if publication.clearError(onSuccessFor: .save) { errorMessage = nil }
+            return true
+        } catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return false }
+            errorMessage = Self.userMessage(for: error)
+            publication.recordError(scope: .save)
+            return false
+        }
     }
 
-    func rollback(_ document: PersonalizationDocument) async {
-        do { _ = try await personalizationService.rollback(to: document.revision, kind: document.kind); await loadPersonalization() }
-        catch { errorMessage = error.localizedDescription }
+    /// Re-activates the backup content under a fresh revision; the replaced
+    /// current becomes the backup.
+    func restorePrevious(_ kind: PersonalizationDocumentKind) async {
+        do {
+            _ = try await personalizationService.restorePrevious(kind: kind)
+            await loadPersonalization()
+            if publication.clearError(onSuccessFor: .retention) { errorMessage = nil }
+        } catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = Self.userMessage(for: error)
+            publication.recordError(scope: .retention)
+        }
     }
 
     func setAutomaticUpdates(_ enabled: Bool, kind: PersonalizationDocumentKind) async {
-        do { try await personalizationService.setAutomaticUpdates(enabled, kind: kind); await loadPersonalization() }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            try await personalizationService.setAutomaticUpdates(enabled, kind: kind)
+            await loadPersonalization()
+            if publication.clearError(onSuccessFor: .settings) { errorMessage = nil }
+        }
+        catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = error.localizedDescription
+            publication.recordError(scope: .settings)
+        }
     }
 
     func resolve(_ candidate: DurableMemoryCandidate, activate: Bool) async {
-        do { try await candidatePipeline.resolvePending(id: candidate.id, activate: activate); await load() }
-        catch { errorMessage = error.localizedDescription }
+        do {
+            try await candidatePipeline.resolvePending(id: candidate.id, activate: activate)
+            await load()
+            if publication.clearError(onSuccessFor: .review) { errorMessage = nil }
+        }
+        catch {
+            if PersonalizationCancellation.isCancellation(error) || Task.isCancelled { return }
+            errorMessage = error.localizedDescription
+            publication.recordError(scope: .review)
+        }
     }
 }
 
@@ -860,20 +1031,50 @@ private struct PersonalizationDocumentView: View {
     @ObservedObject var center: MemoryCenter
     let kind: PersonalizationDocumentKind
     @State private var content = ""
+    /// The revision of the current document when the editor last adopted it.
+    /// Passed back as the CAS token on save (0 = the lane was empty).
     @State private var loadedRevision: Int?
+    /// The exact text adopted from the current document, used to detect
+    /// unsaved manual edits without re-parsing the TextEditor buffer.
+    @State private var loadedContent = ""
 
     private var document: PersonalizationDocument? { kind == .soul ? center.soul : center.profile }
-    private var revisions: [PersonalizationDocument] { kind == .soul ? center.soulRevisions : center.profileRevisions }
+    private var previousDocument: PersonalizationDocument? { kind == .soul ? center.soulPrevious : center.profilePrevious }
     private var automatic: Bool { kind == .soul ? center.soulAutomaticUpdates : center.profileAutomaticUpdates }
     private var title: String { kind == .soul ? "SOUL.md" : FloeL10n.l("memory.memory_view.user_profile") }
+    private var isDirty: Bool { content != loadedContent }
+    /// A background generation (or another device of the same lane) replaced
+    /// the current document while the editor holds an unsaved draft.
+    private var hasRemoteUpdate: Bool {
+        document?.revision != loadedRevision
+    }
 
     var body: some View {
         Form {
             Section {
                 TextEditor(text: $content).frame(minHeight: 260).font(.body.monospaced()).accessibilityLabel(title)
-            } header: { HStack { Text("memory.memory_view.installed_version"); Spacer(); Text("v\(document?.revision ?? 0)") } }
+            } header: {
+                HStack {
+                    Text("memory.memory_view.current_version")
+                    Spacer()
+                    if isDirty {
+                        Text("memory.memory_view.unsaved_edits")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                }
+            }
+            if isDirty, hasRemoteUpdate {
+                Section {
+                    Text("memory.memory_view.newer_version_available")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("memory.memory_view.reload_latest_version") { adoptCurrent() }
+                        .buttonStyle(.bordered)
+                } header: {
+                    Text("memory.memory_view.current_version_changed")
+                }
+            }
             Section("memory.memory_view.generate_and_update") {
-                Button { Task { await center.generate(kind) } } label: {
+                Button { Task { await center.generate(kind); refreshEditor() } } label: {
                     Label(document == nil ? "memory.memory_view.generate" : "skills.update.now", systemImage: "wand.and.stars")
                 }.disabled(center.isWorking)
                 Toggle("memory.memory_view.low_frequency_automatic_updates", isOn: Binding(get: { automatic }, set: { value in
@@ -882,46 +1083,52 @@ private struct PersonalizationDocumentView: View {
                 Text("memory.memory_view.updates_only_after_at_least_7")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if !revisions.isEmpty {
-                Section("memory.memory_view.version_history") {
-                    ForEach(revisions) { revision in
-                        DisclosureGroup {
-                            Text(revision.content).font(.caption).textSelection(.enabled)
-                            if !revision.isActive {
-                                Button(revision.source == .automatic ? "memory.memory_view.confirm_and_enable" : "memory.memory_view.restore_this_version") {
-                                    Task { await center.rollback(revision) }
-                                }.buttonStyle(.bordered)
-                            }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(FloeL10n.l("memory.memory_view.v", revision.revision, sourceName(revision.source)))
-                                    Text(revision.createdAt, style: .date).font(.caption).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if revision.isActive { Text("memory.memory_view.active").font(.caption).foregroundStyle(.secondary) }
-                                else if revision.source == .automatic { Text("memory.memory_view.pending_confirmation").font(.caption).foregroundStyle(.orange) }
-                            }
-                        }
-                    }
-                }
+            if let error = center.errorMessage {
+                Section { Text(error).foregroundStyle(.red).font(.footnote) }
             }
         }
         .navigationTitle(title)
         .toolbar {
-            Button("workspace.workspace_canvas_view.save") { Task { _ = await center.save(kind, content: content) } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("workspace.workspace_canvas_view.save") {
+                    Task {
+                        let saved = await center.save(kind, content: content,
+                            expectedRevision: loadedRevision ?? 0)
+                        if saved { adoptCurrent() }
+                    }
+                }
                 .disabled(content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu("file.preview.more") {
+                    if previousDocument != nil {
+                        Button("memory.memory_view.restore_previous_version") {
+                            Task {
+                                await center.restorePrevious(kind)
+                                refreshEditor()
+                            }
+                        }
+                    }
+                }
+                .disabled(previousDocument == nil || center.isWorking)
+                .accessibilityIdentifier("memory.document_more")
+            }
         }
-        .task { sync() }
-        .onChange(of: document?.revision) { _, _ in sync() }
+        .task { adoptCurrent() }
+        .onChange(of: document) { _, _ in refreshEditor() }
     }
 
-    private func sync() {
-        guard let document, loadedRevision != document.revision else { return }
-        content = document.content; loadedRevision = document.revision
+    /// Adopts the stored current document into the editor. Only called when
+    /// the draft is clean (or explicitly requested), so background updates
+    /// never discard unsaved manual edits.
+    private func refreshEditor() {
+        guard !isDirty else { return }
+        adoptCurrent()
     }
-    private func sourceName(_ source: PersonalizationDocumentSource) -> String {
-        switch source { case .automatic: FloeL10n.l("settings.general_settings_view.automatic"); case .oneClick: FloeL10n.l("memory.memory_view.generate"); case .manual: FloeL10n.l("providers.source_manual"); case .rollback: FloeL10n.l("memory.memory_view.roll_back") }
+    private func adoptCurrent() {
+        loadedRevision = document?.revision
+        content = document?.content ?? ""
+        loadedContent = content
     }
 }
 

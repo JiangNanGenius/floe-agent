@@ -6,8 +6,7 @@
 // `floe.prompts.core` package.
 // ContentUpdateCenter owns verification, version policy, install and
 // rollback; this view renders its state and never parses, verifies or
-// compares versions itself. The safety/permission rules below are compiled
-// into the app and are deliberately not editable or remotely updateable.
+// compares versions itself. It is reached from the Updates prompt entry.
 //
 // Failure presentation: a failed check — automatic, pull-to-refresh or
 // button — is an inline status, never a modal alert; built-in content stays
@@ -46,9 +45,8 @@ struct InternalPromptsSettingsView: View {
             if let error = center.errorMessage {
                 inlineErrorSection(error)
             }
-            fixedRulesSection
         }
-        .navigationTitle(FloeL10n.l("settings.section.internal_prompts"))
+        .navigationTitle(FloeL10n.l("settings.content_updates.prompts"))
         .task {
             center.load()
             manualFailure = false
@@ -261,30 +259,5 @@ struct InternalPromptsSettingsView: View {
         .accessibilityIdentifier("settings.internal_prompts.inline_error")
     }
 
-    // MARK: - Fixed code-owned rules
-
-    private var fixedRulesSection: some View {
-        Section {
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 10) {
-                    ruleRow("settings.internal_prompts.fixed_rules.permission")
-                    ruleRow("settings.internal_prompts.fixed_rules.tool_protocol")
-                    ruleRow("settings.internal_prompts.fixed_rules.truthfulness")
-                    ruleRow("settings.internal_prompts.fixed_rules.recovery")
-                }
-                .padding(.vertical, 4)
-            } label: {
-                Text("settings.internal_prompts.fixed_rules.header")
-            }
-            .accessibilityIdentifier("settings.internal_prompts.fixed_rules")
-        } footer: {
-            Text("settings.internal_prompts.fixed_rules.note")
-        }
-    }
-
-    private func ruleRow(_ key: LocalizedStringKey) -> some View {
-        Label(key, systemImage: "lock.fill")
-            .font(FloeTheme.Typography.body)
-    }
 }
 #endif

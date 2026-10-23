@@ -1,0 +1,4 @@
+{
+  "zh-Hans": "1.7.48（289）：修复连续语音连接与短句识别，声波按钮直接进入当前会话。更新更小的增强语音模型及实时音色试听，下载显示百分比、大小和速度，成功迁移后清理旧模型。修复朗读旧消息和记忆取消报错，简化用户画像与 SOUL.md，提供恢复上次内容。更新管理集中到设置底部。外部文件可导入手记、已有／新建任务或画布。请重点体验连续对话、打断、下载迁移和外部导入。",
+  "en-US": "1.7.48 (289): Repaired continuous voice startup and short-utterance handling. Open voice directly in the current conversation. Added a smaller enhanced speech model, live voice previews and download percentage, size and speed, with old-pack cleanup after migration. Fixed historical read-aloud and memory cancellation errors. Simplified user profile and SOUL.md with Restore Previous. Content updates are together at the bottom of Settings. Import external files into Notes or an existing/new Task or Canvas. Please try continuous voice, interruptions, migration and external imports."
+}

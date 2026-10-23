@@ -430,14 +430,32 @@ struct ThreadComposerView: View {
             ) {
                 draftRevision = revision
             } else {
-                // An async merge landed while this edit was in flight. The
-                // field is the newer truth, so persist it unguarded rather
-                // than dropping the keystroke.
-                draftRevision = draftStore.save(
+                // The durable entry moved under this view: an external import
+                // landed (or another writer saved) while this edit was in
+                // flight. Rebase onto the durable truth instead of blind-
+                // overwriting: this keystroke's text remains the human truth,
+                // durable refs (landed imported attachments included) are
+                // unioned by stable id so the next edit can never drop them,
+                // and the newest proven landing this slot has not absorbed
+                // yet is folded in exactly once.
+                let rebased = draftStore.liveRebasedDraft(
                     text: newValue,
                     attachments: attachments,
+                    conversationID: draftKey,
+                    knownRevision: draftRevision
+                )
+                draftRevision = draftStore.save(
+                    text: rebased.text,
+                    attachments: rebased.attachments,
                     conversationID: draftKey
                 )
+                // Field first, refs second: the follow-up attachment change
+                // then persists the newest text too, so the two coalesced
+                // writes cannot leave a stale text snapshot behind. This
+                // composer is shared by the thread and the Home launchpad,
+                // so both live owners get the same landing-safe rebase.
+                if rebased.text != newValue { draft = rebased.text }
+                if rebased.attachments != attachments { attachments = rebased.attachments }
             }
         }
         .onChange(of: attachments) { _, newValue in
@@ -450,11 +468,23 @@ struct ThreadComposerView: View {
             ) {
                 draftRevision = revision
             } else {
-                draftRevision = draftStore.save(
+                // Same landing-safe rebase as the text path above: a picked
+                // or removed chip never races a landed import out of the
+                // durable slot, because the durable refs are unioned in
+                // before the field's newer truth is written.
+                let rebased = draftStore.liveRebasedDraft(
                     text: draft,
                     attachments: newValue,
+                    conversationID: draftKey,
+                    knownRevision: draftRevision
+                )
+                draftRevision = draftStore.save(
+                    text: rebased.text,
+                    attachments: rebased.attachments,
                     conversationID: draftKey
                 )
+                if rebased.text != draft { draft = rebased.text }
+                if rebased.attachments != newValue { attachments = rebased.attachments }
             }
         }
         .onChange(of: contextID) { _, _ in
@@ -526,15 +556,26 @@ struct ThreadComposerView: View {
                 draftRevision = revision
                 draft = merged
             } else {
+                // Rebase onto the freshest stored draft (never clobber a
+                // concurrent durable write), then apply the same landing-safe
+                // merge as the keystroke path: a transcript landing while an
+                // import was being verified must not drop the landed refs, and
+                // an unabsorbed proven landing folds in exactly once.
                 let freshest = draftStore.text(for: draftKey)
                 let separator = freshest.isEmpty || freshest.last?.isWhitespace == true ? "" : " "
-                let rebased = freshest + separator + transcript
-                draftRevision = draftStore.save(
-                    text: rebased,
+                let rebased = draftStore.liveRebasedDraft(
+                    text: freshest + separator + transcript,
                     attachments: attachments,
+                    conversationID: draftKey,
+                    knownRevision: draftRevision
+                )
+                draftRevision = draftStore.save(
+                    text: rebased.text,
+                    attachments: rebased.attachments,
                     conversationID: draftKey
                 )
-                draft = rebased
+                draft = rebased.text
+                if rebased.attachments != attachments { attachments = rebased.attachments }
             }
         }
         .onDisappear {
@@ -952,21 +993,12 @@ struct ThreadComposerView: View {
             .accessibilityIdentifier("composer.voice")
 
             if let onContinuousVoice, !documentAssistant {
-                if agentMode == .chat || temporary {
-                    continuousVoiceButton(action: onContinuousVoice)
-                } else {
-                    Menu {
-                        Button("voice.conversation.switch_and_start") {
-                            agentMode = .chat
-                            onContinuousVoice()
-                        }
-                    } label: {
-                        continuousVoiceIcon
-                    }
-                    .disabled(!providerConfigured || isRunning || continuousVoiceActive || isSavingChatReasoning)
-                    .accessibilityLabel("voice.conversation.open")
-                    .accessibilityIdentifier("composer.continuous_voice")
-                }
+                // DIRECT entry for EVERY mode: one tap opens the voice sheet.
+                // Voice rounds launch through the conversation driver
+                // independent of the composer mode, and the host's
+                // `onContinuousVoice` applies the chat-tool mode selection
+                // internally — no intermediate "switch and start" menu.
+                continuousVoiceButton(action: onContinuousVoice)
             }
 
             if isRunning {

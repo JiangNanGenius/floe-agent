@@ -121,6 +121,7 @@ final class HomeLaunchpadViewModel: ObservableObject {
     }
     /// Monotonic identity of the live composer text. See `draft`.
     private(set) var draftGeneration = 0
+    private var adoptedImportRevision: Int?
     @Published var selectedModelID: UUID?
     @Published var selectedProjectID: UUID?
     @Published var executionTarget: AgentExecutionTarget = .local
@@ -196,12 +197,16 @@ final class HomeLaunchpadViewModel: ObservableObject {
         // under the stable launchpad identity — not the per-launch staging
         // UUID, which rotates after each send.
         let stored = draftStore.entry(for: draftStorageID)
+        adoptedImportRevision = stored?.revision
         _draft = Published(initialValue: stored?.text ?? initialDraft ?? "")
         _attachments = Published(initialValue: stored?.attachments ?? [])
         // Default the draft policy to the user's global default agent mode so
         // "自动审批" actually takes effect on new tasks started from Home.
         if environment.settingsCenter.defaultAgentMode == .approvalModel {
             draftPolicy = DraftTaskPolicy(approvalMode: .automatic)
+        }
+        if acceptsShortcutInbox {
+            draftStore.registerLiveDraftOwner(self, for: draftStorageID)
         }
     }
 
@@ -753,40 +758,39 @@ extension HomeLaunchpadViewModel: ShareIntakeDestination {
         guard Self.destinationsInHandoff.insert(destination).inserted else { return .busy }
         defer { Self.destinationsInHandoff.remove(destination) }
         let stored = draftStore.entry(for: draftStorageID)
-        let preAcceptanceDraft = draft
-        let preAcceptanceAttachments = attachments
-        let mergedText = ShareDraftMerger.mergedText(
-            existing: preAcceptanceDraft,
-            incoming: application.incomingText
-        )
-        let mergedAttachments = ShareDraftMerger.mergedAttachments(
-            existing: preAcceptanceAttachments,
-            incoming: application.stagedAttachments
-        )
-        // Render synchronously before the durable commit. A text change bumps
-        // draftGeneration through didSet; an attachment-only share does not,
-        // so a failed commit can still roll back exactly this attempt.
-        let renderedGeneration = draftGeneration &+ (mergedText == preAcceptanceDraft ? 0 : 1)
-        draft = mergedText
-        attachments = mergedAttachments
-        let committed = await draftStore.commitDurable(
-            text: mergedText,
-            attachments: mergedAttachments,
+        // Capture this window's human draft before adding an unproven import.
+        // The shared landing API publishes imported content only after disk
+        // proof, and folds it into every registered live owner before ack.
+        guard draftStore.save(text: draft, attachments: attachments,
+                              conversationID: draftStorageID,
+                              expectedRevision: stored?.revision) != nil else { return .busy }
+        let result = await draftStore.acceptImportedDraft(
             conversationID: draftStorageID,
-            expectedRevision: stored?.revision,
-            handoff: application.receipt
+            incomingText: application.incomingText,
+            incomingAttachments: application.stagedAttachments,
+            receipt: application.receipt
         )
-        guard committed, draftStore.handoffReceiptOnDisk(application.receipt) else {
-            // Restore only while no human edit happened during the await.
-            if draftGeneration == renderedGeneration {
-                draft = preAcceptanceDraft
-                if attachments == mergedAttachments {
-                    attachments = preAcceptanceAttachments
-                }
-            }
-            return .failed
+        switch result {
+        case .landed:
+            return draftStore.handoffReceiptOnDisk(application.receipt) ? .applied : .failed
+        case .deferredBusy: return .busy
+        case .rejectedTarget: return .unavailable
+        case .failed: return .failed
         }
-        return .applied
+    }
+}
+
+extension HomeLaunchpadViewModel: ComposerDraftStore.ImportedDraftLiveAccepting {
+    func acceptImportedDraftLanding(_ landing: ComposerDraftStore.ImportedDraftLanding) {
+        guard acceptsShortcutInbox, landing.conversationID == draftStorageID,
+              let folded = ImportedDraftLiveFold.fold(
+                landing, intoText: draft, attachments: attachments,
+                adoptedRevision: adoptedImportRevision
+              ) else { return }
+        adoptedImportRevision = landing.landedRevision
+        draftStore.markImportLandingAbsorbed(landing.landingID)
+        draft = folded.text
+        attachments = folded.attachments
     }
 }
 #endif

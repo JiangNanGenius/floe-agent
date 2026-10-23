@@ -261,6 +261,242 @@ struct VoiceConversationSentenceSplitter {
     }
 }
 
+// MARK: - End-of-utterance gate (short-speech flush)
+
+/// Pure voice-activity tracker behind the transcription backends' END-OF-
+/// UTTERANCE FLUSH decision. Chunked local recognizers (Whisper path) decode
+/// on fixed windows; without this gate a SHORT utterance ("你好", ~1 s) that
+/// ends before the next 3 s boundary — or quiet speech under the coarse
+/// energy gate — never produces a staged transcript, so the conversation
+/// endpoint never fires and "speaking does nothing".
+///
+/// The gate observes the REAL converted audio energy per appended buffer:
+/// once at least `voicedSamplesRequired` samples of speech-like energy have
+/// accumulated AND the tail has been quiet for `silenceTailSamplesRequired`
+/// samples (the utterance ended), `shouldFlush` asks the decode loop to run
+/// the window immediately, even below the regular chunk boundary. Pure
+/// Foundation + deterministic counts — host tests drive exact sample runs.
+struct VoiceConversationUtteranceGate: Sendable, Equatable {
+    /// 16 kHz domain thresholds.
+    var sampleRate: Int = 16_000
+    /// Speech-like tail energy: RMS at/above this counts a buffer as voiced.
+    /// Deliberately below the display noise gate so quiet speakers still
+    /// count; the decode-side energy gate still skips pure silence.
+    var voicedRMS: Float = 0.002
+    /// Minimum voiced samples inside the pending region before a flush is
+    /// meaningful (~0.5 s at 16 kHz).
+    var voicedSamplesRequired: Int = 8_000
+    /// Trailing quiet samples that mark the utterance as ended (~0.5 s).
+    var silenceTailSamplesRequired: Int = 8_000
+
+    private(set) var voicedSamplesSinceDecode = 0
+    private(set) var silenceTailSamples = 0
+
+    /// One converted buffer observed at the append point (tap thread, under
+    /// the caller's lock). `rms` is the buffer's measured RMS, `samples` its
+    /// frame count in the recognizer's domain rate.
+    mutating func process(rms: Float, samples: Int) {
+        guard samples > 0 else { return }
+        if rms.isFinite, rms >= voicedRMS {
+            voicedSamplesSinceDecode += samples
+            silenceTailSamples = 0
+        } else {
+            silenceTailSamples += samples
+        }
+    }
+
+    /// True when a REAL utterance appears to have just ended: enough voiced
+    /// audio pending and a quiet tail. Pure silence never flushes (silence is
+    /// legitimate; flushing it would only burn inference on nothing).
+    var shouldFlush: Bool {
+        voicedSamplesSinceDecode >= voicedSamplesRequired
+            && silenceTailSamples >= silenceTailSamplesRequired
+    }
+
+    /// The pending region's minimum duration for a VAD flush decode.
+    var minimumFlushSamples: Int { voicedSamplesRequired }
+
+    /// A decode consumed the window up to the current tail: both runs restart
+    /// from zero so the same utterance is never flushed twice in a row.
+    mutating func noteDecoded() {
+        voicedSamplesSinceDecode = 0
+        silenceTailSamples = 0
+    }
+
+    mutating func reset() { noteDecoded() }
+}
+
+// MARK: - Bounded drain race
+
+/// Exactly-once resolution for a drain/deadline race. Three events compete —
+/// operation completion, deadline elapse and caller cancellation — and only
+/// the FIRST one to write is recorded; every later event is ignored. A drain
+/// released after its deadline therefore can never complete the race twice.
+/// Foundation-only (one NSLock, no clock, no frameworks), so the pure gate
+/// and the async race below are deterministic and host-testable.
+final class VoiceConversationDrainGate: @unchecked Sendable {
+    enum Outcome: Equatable, Sendable {
+        /// The drain finished before the deadline.
+        case completed
+        /// The deadline fired first. The drain was cancellation-requested
+        /// (best effort) and then ABANDONED — it is never awaited.
+        case deadline
+        /// The awaiting task was cancelled (e.g. a cancelled start). The
+        /// race resolves promptly; a noncooperative drain is abandoned
+        /// exactly like the deadline case.
+        case cancelled
+    }
+
+    private let lock = NSLock()
+    private var settled: Outcome?
+
+    /// True only for the FIRST event; later events return false and change
+    /// nothing.
+    @discardableResult
+    func resolve(_ candidate: Outcome) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard settled == nil else { return false }
+        settled = candidate
+        return true
+    }
+
+    var outcome: Outcome? {
+        lock.lock()
+        defer { lock.unlock() }
+        return settled
+    }
+}
+
+/// Real bounded join for engines whose PHYSICAL stop already ran
+/// synchronously: races an unstructured drain task against a deadline and
+/// returns without ever awaiting the loser.
+enum VoiceConversationBoundedDrain {
+    /// Runs `operation` in an UNSTRUCTURED task and resumes the caller with
+    /// the first of: completion, `seconds` elapsing, caller cancellation.
+    ///
+    /// This replaces a `withTaskGroup { addTask(op); addTask(sleep);
+    /// group.next(); cancelAll() }` race, which is NOT bounded: a structured
+    /// group scope cannot exit until EVERY child ends, `cancelAll` only sets
+    /// a flag, and a drain parked on `oldTask.value` — a TTS/dictation
+    /// finalization that never checks cancellation — blocks the parent
+    /// forever, so "Connecting…" could stay unbounded behind one. Here the
+    /// loser is cancelled and abandoned instead of awaited; resolution goes
+    /// through one exactly-once gate, so a late release cannot resume the
+    /// caller again, and the services' own identity fences (`isCurrent`
+    /// generation tokens, the captured older session id passed to
+    /// `endSession`) keep an abandoned tail from touching the new owner.
+    ///
+    /// Contract: `operation` must perform its synchronous physical stop
+    /// BEFORE its first suspension (SpeechService.stop and
+    /// VoiceInputController.stop do), so abandoning it mid-drain never leaves
+    /// the old engine holding a live microphone or playback owner.
+    @discardableResult
+    static func race(
+        seconds: Double,
+        operation: @escaping @Sendable () async -> Void
+    ) async -> VoiceConversationDrainGate.Outcome {
+        let link = DrainLink()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<VoiceConversationDrainGate.Outcome, Never>) in
+                // false: the caller was already cancelled during handler
+                // registration; the continuation was resumed with .cancelled.
+                guard link.attach(continuation) else { return }
+                let operationTask = Task {
+                    await operation()
+                    link.settle(.completed)
+                }
+                let nanoseconds = DrainLink.deadlineNanoseconds(seconds)
+                let deadlineTask = Task {
+                    try? await Task.sleep(nanoseconds: nanoseconds)
+                    if Task.isCancelled {
+                        // Cancelled because the operation won or the caller
+                        // went away; the gate keeps the first answer.
+                        link.settle(.cancelled)
+                    } else {
+                        link.settle(.deadline)
+                    }
+                }
+                link.install(operation: operationTask, deadline: deadlineTask)
+            }
+        } onCancel: {
+            link.cancelChildrenAndSettle(.cancelled)
+        }
+    }
+
+    /// Lock-protected wiring between the exactly-once gate and the awaiting
+    /// continuation. Events may arrive from any task/thread, including caller
+    /// cancellation BEFORE the continuation is attached or BEFORE the child
+    /// tasks exist; whichever path first wins the gate resumes EXACTLY once
+    /// and cancellation-requests the other children (never awaits them).
+    private final class DrainLink: @unchecked Sendable {
+        private let lock = NSLock()
+        private let gate = VoiceConversationDrainGate()
+        private var continuation: CheckedContinuation<VoiceConversationDrainGate.Outcome, Never>?
+        private var operationTask: Task<Void, Never>?
+        private var deadlineTask: Task<Void, Never>?
+
+        static func deadlineNanoseconds(_ seconds: Double) -> UInt64 {
+            guard seconds.isFinite, seconds > 0 else { return 0 }
+            return UInt64(min(seconds, 3_600) * 1_000_000_000)
+        }
+
+        /// Returns false when the race had already settled (caller cancelled
+        /// during registration): the continuation was resumed immediately.
+        func attach(_ continuation: CheckedContinuation<VoiceConversationDrainGate.Outcome, Never>) -> Bool {
+            lock.lock()
+            if let settled = gate.outcome {
+                lock.unlock()
+                continuation.resume(returning: settled)
+                return false
+            }
+            self.continuation = continuation
+            lock.unlock()
+            return true
+        }
+
+        func install(operation: Task<Void, Never>, deadline: Task<Void, Never>) {
+            lock.lock()
+            operationTask = operation
+            deadlineTask = deadline
+            let settled = gate.outcome != nil
+            lock.unlock()
+            if settled {
+                operation.cancel()
+                deadline.cancel()
+            }
+        }
+
+        func settle(_ outcome: VoiceConversationDrainGate.Outcome) {
+            lock.lock()
+            guard gate.resolve(outcome) else { lock.unlock(); return }
+            let pending = continuation
+            continuation = nil
+            var losers: [Task<Void, Never>] = []
+            switch outcome {
+            case .completed:
+                if let deadlineTask { losers.append(deadlineTask) }
+            case .deadline:
+                if let operationTask { losers.append(operationTask) }
+            case .cancelled:
+                if let operationTask { losers.append(operationTask) }
+                if let deadlineTask { losers.append(deadlineTask) }
+            }
+            lock.unlock()
+            losers.forEach { $0.cancel() }
+            pending?.resume(returning: outcome)
+        }
+
+        func cancelChildrenAndSettle(_ outcome: VoiceConversationDrainGate.Outcome) {
+            lock.lock()
+            let children = [operationTask, deadlineTask].compactMap { $0 }
+            lock.unlock()
+            children.forEach { $0.cancel() }
+            settle(outcome)
+        }
+    }
+}
+
 // MARK: - Frame accounting
 
 /// Converts a chunk's frames to the engine output-rate frame count used by

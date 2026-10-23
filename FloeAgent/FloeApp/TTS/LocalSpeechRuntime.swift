@@ -20,6 +20,18 @@ final class LocalSpeechRuntime: TTSSpeechProviding, Sendable {
     }
     func endSession(_ id: UUID) async { await engine.endSession(id) }
     func handleMemoryWarning() async { await engine.releaseForMemoryPressure() }
+
+    /// Load-validation hook: acquire a store lease (byte verification runs
+    /// inside), load the engine, and resolve the selection voice's reference
+    /// asset when it declares one. Uses a private engine instance so a probe
+    /// never disturbs an in-flight session. Simulator cannot host these packs.
+    nonisolated static func validateLocalPack(modelID: String, voiceID: String?) async -> LocalPackValidation {
+        #if targetEnvironment(simulator)
+        return .failed
+        #else
+        return await LocalSpeechInferenceOwner().probe(modelID: modelID, voiceID: voiceID)
+        #endif
+    }
 }
 
 /// The Qwen model is explicitly not thread-safe. A new request cancels and
@@ -34,6 +46,9 @@ private actor LocalSpeechInferenceOwner {
     private var active: Task<Void, Never>?
     private var generation: UInt64 = 0
     private var sessionID: UUID?
+    /// Validated reference voices, keyed by voice id + asset digest. Cleared
+    /// with the model lease so a remount can never reuse stale codes.
+    private var references: [String: MossTTSNanoReference] = [:]
 
     func enqueue(_ request: TTSSynthesisRequest, sender: TTSAudioChunkSender) async {
         generation &+= 1
@@ -77,6 +92,7 @@ private actor LocalSpeechInferenceOwner {
     private func unload() async {
         let wasQwen = if case .qwen? = loaded { true } else { false }
         loaded = nil
+        references = [:]
         if wasQwen {
             do { try Qwen3TTSModel.reclaimGenerationCache() }
             catch { FloeLogger(category: .providers).warning("localSpeechCacheReclaimFailed") }
@@ -168,7 +184,11 @@ private actor LocalSpeechInferenceOwner {
                 case .moss(let moss):
                     // MOSS infers language from text. The UI preference selects
                     // compatible voices; it is never sent as an unsupported knob.
-                    let session = moss.synthesizeStreamSession(text: text, options: .init(maxFrames: 300, seed: 0))
+                    // A published reference voice contributes its validated codec
+                    // codes; the catalog default timbre passes nil. Any envelope,
+                    // size or hash mismatch fails closed before synthesis.
+                    let reference = try referenceVoice(for: voice)
+                    let session = moss.synthesizeStreamSession(text: text, reference: reference, options: .init(maxFrames: 300, seed: 0))
                     do {
                       for try await chunk in session.stream {
                         try Task.checkCancellation()
@@ -194,6 +214,62 @@ private actor LocalSpeechInferenceOwner {
             else if let failure = error as? LocalSpeechModelStore.Failure { sender.finish(throwing: failure) }
             else if let failure = error as? LocalSpeechRuntime.Failure { sender.finish(throwing: failure) }
             else { sender.finish(throwing: LocalSpeechRuntime.Failure.invalidAudio) }
+        }
+    }
+
+    /// Resolve the selection voice's reference codes (bundled or downloaded),
+    /// validating hash and envelope every mount; cache per revision+digest.
+    private func referenceVoice(for voice: LocalSpeechModel.Voice) throws -> MossTTSNanoReference? {
+        guard let asset = voice.reference else { return nil }
+        let key = voice.id + "@" + asset.sha256
+        if let cached = references[key] { return cached }
+        guard let directory = lease?.directory,
+              let codes = try? LocalSpeechVoiceReference.load(reference: asset, modelDirectory: directory)
+        else { throw LocalSpeechRuntime.Failure.voice }
+        guard let reference = try? MossTTSNanoReference(codes: codes) else { throw LocalSpeechRuntime.Failure.voice }
+        references[key] = reference
+        return reference
+    }
+
+    /// One-shot load-validation for the migration hook. Never touches `loaded`
+    /// or `lease`; only reports the outcome.
+    func probe(modelID: String, voiceID: String?) async -> LocalPackValidation {
+        #if targetEnvironment(simulator)
+        return .failed
+        #else
+        let acquired: LocalSpeechModelStore.Lease
+        do { acquired = try await LocalSpeechModelStore.shared.acquire(modelID) }
+        catch let failure as LocalSpeechModelStore.Failure {
+            switch failure {
+            case .busy, .memory, .thermal: return .deferred
+            case .unavailable, .corrupt, .space: return .failed
+            }
+        } catch { return .deferred }
+        let result = Self.loadEngine(acquired: acquired, voiceID: voiceID)
+        await LocalSpeechModelStore.shared.release(acquired.id)
+        return result
+        #endif
+    }
+
+    private static func loadEngine(acquired: LocalSpeechModelStore.Lease, voiceID: String?) -> LocalPackValidation {
+        switch acquired.model.engine {
+        case "mossTTSNano":
+            do {
+                _ = try MossTTSNanoModel(modelDirectory: acquired.directory, computeUnits: .cpuAndGPU)
+                if let voice = acquired.model.voices.first(where: { $0.id == voiceID }), let asset = voice.reference {
+                    guard let codes = try? LocalSpeechVoiceReference.load(reference: asset, modelDirectory: acquired.directory),
+                          (try? MossTTSNanoReference(codes: codes)) != nil else { return .failed }
+                }
+                return .passed
+            } catch { return .failed }
+        case "qwen3TTS":
+            guard let tokenizer = acquired.model.tokenizerRelativePath else { return .failed }
+            do {
+                _ = try Qwen3TTSModel.fromLocal(modelDirectory: acquired.directory,
+                    tokenizerDirectory: acquired.directory.appendingPathComponent(tokenizer), wiredMemoryPolicy: .none)
+                return .passed
+            } catch { return .failed }
+        default: return .failed
         }
     }
 

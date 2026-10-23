@@ -20,8 +20,14 @@
 // * If the process dies after the draft commit but before the ack, the next
 //   pass sees the persisted receipt and settles the source without appending
 //   the content a second time.
-// * A failed/busy destination discards only this attempt's staged copies and
-//   releases the claim; the envelope stays pending and recoverable.
+// * A failed/busy destination releases the claim and keeps the envelope
+//   pending and recoverable. Its staged copies are discarded ONLY while the
+//   destination proves nothing durable for this envelope; if a landing of
+//   THIS envelope already reached disk (its receipt is proven on disk and
+//   the durable draft still carries the landed delta), deleting the staged
+//   bytes would leave the durable draft pointing at removed files, so they
+//   are retained until a later apply settles the proven receipt or the user
+//   explicitly discards the envelope.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Combine
@@ -202,6 +208,10 @@ final class ShareIntakeCenter: ObservableObject {
     @Published private(set) var lastOutcome: ShareIntakeOutcome?
     /// Concise, user-facing follow-up (never a path or protocol detail).
     @Published private(set) var lastErrorMessage: String?
+    /// Last result of an explicit durable destination card action (Notes or
+    /// Canvas), so the card can show exactly the status of THIS envelope
+    /// (nil until tapped).
+    @Published private(set) var lastDestinationOutcome: ShareDestinationOutcome?
 
     let inbox: ShareInbox?
     private let staging: any ShareAttachmentStaging
@@ -209,6 +219,10 @@ final class ShareIntakeCenter: ObservableObject {
     private let availabilityError: ShareInboxError?
     private var didStart = false
     private var foregroundObserver: NSObjectProtocol?
+    /// Injected once during App bootstrap. The card's durable destination
+    /// actions only forward here; the ledger-backed executors live in
+    /// `ImportDestinationCenter` (shared ledger, planned identities, ack).
+    private var destinationHandler: (any ShareEnvelopeDestinationImporting)?
 
     init(
         inbox: ShareInbox?,
@@ -251,6 +265,7 @@ final class ShareIntakeCenter: ObservableObject {
             pending = []
             diagnostics = []
             lastErrorMessage = availabilityError?.localizedDescription
+            lastDestinationOutcome = nil
             return
         }
         let report = inbox.maintain(now: now())
@@ -264,6 +279,13 @@ final class ShareIntakeCenter: ObservableObject {
                 detail: "pending"
             ))
             FloeLogger(category: .app).error("shareIntakePendingReadFailed")
+        }
+        // A Notes status about an envelope that already left the inbox
+        // (acknowledged, discarded or expired) must not describe the next
+        // share; success feedback lives on the destination surfaces.
+        if let identity = lastDestinationOutcome?.result.envelopeIdentity,
+           !pending.contains(where: { $0.id == identity }) {
+            lastDestinationOutcome = nil
         }
     }
 
@@ -279,6 +301,56 @@ final class ShareIntakeCenter: ObservableObject {
             textPreview: textPreview,
             fileNames: names
         )
+    }
+
+    // MARK: Explicit durable destinations (forwarded)
+
+    func configureDestinationHandler(_ handler: any ShareEnvelopeDestinationImporting) {
+        destinationHandler = handler
+    }
+
+    /// The card's "Import to Notes" action. This center deliberately owns no
+    /// import logic: the chooser's ledger-backed executor claims, imports by
+    /// planned identity, and acknowledges. The card just forwards and
+    /// reflects the outcome for this envelope.
+    @discardableResult
+    func importEnvelopeToNotes(_ envelope: ShareEnvelope) async -> ShareNotesImportResult {
+        guard let destinationHandler else { return .unavailable }
+        let result = await destinationHandler.importEnvelopeToNotes(envelope)
+        lastDestinationOutcome = ShareDestinationOutcome(destination: .notes, result: result)
+        return result
+    }
+
+    /// The card's "Import to Canvas" action through the same ledger-backed
+    /// chooser; `target` comes from the card's compact canvas menu.
+    @discardableResult
+    func importEnvelopeToCanvas(
+        _ envelope: ShareEnvelope,
+        target: CanvasDestinationTarget
+    ) async -> ShareNotesImportResult {
+        guard let destinationHandler else { return .unavailable }
+        let result = await destinationHandler.importEnvelopeToCanvas(envelope, target: target)
+        lastDestinationOutcome = ShareDestinationOutcome(destination: .canvas, result: result)
+        return result
+    }
+
+    /// Lets `ImportDestinationCenter` (deep-link / sheet / recovery paths)
+    /// publish its outcome on the card status line when the same center
+    /// observes the envelope afterwards.
+    func destinationImportFinished(
+        destination: ImportDestination,
+        result: ShareNotesImportResult
+    ) {
+        lastDestinationOutcome = ShareDestinationOutcome(destination: destination, result: result)
+    }
+
+    func clearDestinationOutcome() {
+        lastDestinationOutcome = nil
+    }
+
+    /// Canvas picker data for the card's compact menu.
+    func canvasImportTargets() -> [CanvasImportTarget] {
+        destinationHandler?.canvasImportTargets() ?? []
     }
 
     // MARK: Explicit apply
@@ -334,6 +406,22 @@ final class ShareIntakeCenter: ObservableObject {
             }
             if releaseClaim, let claim {
                 try? inbox.release(claim)
+            }
+        }
+
+        /// The durable destination may still reference THIS attempt's staged
+        /// bytes even when the apply did not end in an acknowledged landing:
+        /// a verified placement can be followed by a failed, cancelled or
+        /// busy reconciliation, and the store only reports a receipt as
+        /// disk-proven while the most recent landed snapshot actually
+        /// carries the landed delta. Deleting the staged copies in that
+        /// state would leave the durable draft pointing at removed files
+        /// while the envelope is still pending. Retention is bounded: the
+        /// next pass either settles the proven receipt with an ack or
+        /// re-lands the envelope against fresh copies.
+        func retainStagedIfDurableProofExists() {
+            if destination.shareIntakeAppliedClaimToken(envelopeID: envelope.id) != nil {
+                keepStagedAttachments = true
             }
         }
 
@@ -508,6 +596,7 @@ final class ShareIntakeCenter: ObservableObject {
             return outcome
 
         case .busy:
+            retainStagedIfDurableProofExists()
             await discardOwnedState(releaseClaim: true)
             await refresh()
             lastErrorMessage = FloeL10n.l("share.intake.deferred_busy")
@@ -519,6 +608,7 @@ final class ShareIntakeCenter: ObservableObject {
             return outcome
 
         case .unavailable:
+            retainStagedIfDurableProofExists()
             await discardOwnedState(releaseClaim: true)
             await refresh()
             lastErrorMessage = FloeL10n.l("share.intake.unavailable")
@@ -530,6 +620,7 @@ final class ShareIntakeCenter: ObservableObject {
             return outcome
 
         case .failed:
+            retainStagedIfDurableProofExists()
             await discardOwnedState(releaseClaim: true)
             await refresh()
             let message = FloeL10n.l("share.intake.failed")

@@ -142,8 +142,18 @@ actor DocumentIntakeQueue {
     // MARK: - Claim
 
     func claimNext() throws -> DocumentIntakeClaim? {
+        try claimNext(where: nil)
+    }
+
+    /// FIFO over records the caller's readiness predicate accepts. A held
+    /// entry (ambiguous arrival without a destination decision) is skipped
+    /// without being claimed, damaged or expired; younger ready entries
+    /// still import in order. Skipping is a scheduling decision only: no
+    /// state changes for a record the predicate rejects.
+    func claimNext(where isReady: (@Sendable (DocumentIntakeRecord) -> Bool)?) throws -> DocumentIntakeClaim? {
         try withGlobalLock {
             for (directory, record) in try pendingRecordsUnlocked() where record.state == .pending {
+                if let isReady, !isReady(record) { continue }
                 do {
                     return try claimUnlocked(directory: directory, record: record, at: now())
                 } catch DocumentIntakeError.claimBusy {
@@ -160,6 +170,20 @@ actor DocumentIntakeQueue {
                 }
             }
             return nil
+        }
+    }
+
+    /// Read-only access to one still-pending staged entry for an explicit
+    /// destination hand-off (Task branch of the import chooser). Returns nil
+    /// unless the entry is pending and its payload is byte-exact; takes no
+    /// claim, so the automatic drain can still never double-process it — the
+    /// chooser gate is what holds that entry unclaimed.
+    func pendingPayload(id: UUID) throws -> (record: DocumentIntakeRecord, payloadURL: URL)? {
+        try withGlobalLock {
+            guard let directory = pendingDirectoryIfExists(id: id),
+                  let record = try? loadRecord(at: directory),
+                  record.state == .pending else { return nil }
+            return (record, try validatePayload(record, in: directory))
         }
     }
 

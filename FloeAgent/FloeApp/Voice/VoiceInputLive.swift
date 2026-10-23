@@ -68,11 +68,54 @@ final class StreamingSpeechRecognizerTranscriber: SpeechTranscribing, @unchecked
         }
     }
 
+    /// Why the recognition task ENDED WITH AN ERROR, so consumers can tell a
+    /// healthy stream end (`.isFinal` after recognized speech, or a
+    /// no-speech auto-end) from a dead recognizer. Without this the
+    /// continuous session restarts invisibly forever and drops tap audio on
+    /// every rebuild window. Shared file-wide: both Speech-framework
+    /// transcribers report through it.
+    fileprivate final class FailureBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: VoiceInputFailure?
+
+        var value: VoiceInputFailure? {
+            lock.withLock { stored }
+        }
+        func store(_ failure: VoiceInputFailure) {
+            lock.withLock {
+                guard stored == nil else { return }
+                stored = failure
+            }
+        }
+    }
+
+    /// True only for BENIGN stream endings, which are legitimate session
+    /// renewals, never failures (see the authoritative table in
+    /// `SFSpeechRecognitionTask.h`, iOS 27 SDK):
+    /// - `kAFAssistantErrorDomain` 1110 — "Failed to recognize any speech":
+    ///   the recognizer gave up on a stretch that contained no speech.
+    /// - `kLSRErrorDomain` 301 — "Request was canceled": our own retirement
+    ///   /teardown cancel surfacing through the callback.
+    /// Everything else (1101/1107 speech-process connection loss, 203
+    /// recognition failure, 1100 overlapping instance, 1700 unauthorized,
+    /// 102/201/300 asset/Siri/initialization problems…) means the recognizer
+    /// path is NOT working and surfaces as `.recognizerFailed`, so the
+    /// session fails visibly with a retry affordance instead of silently
+    /// restarting forever on dropped audio (airplane mode included).
+    static func isBenignStreamEnd(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == "kAFAssistantErrorDomain", nsError.code == 1110 { return true }
+        if nsError.domain == "kLSRErrorDomain", nsError.code == 301 { return true }
+        return false
+    }
+
     private let request = SFSpeechAudioBufferRecognitionRequest()
     private var recognitionTask: SFSpeechRecognitionTask?
     private let continuation: AsyncStream<String>.Continuation
     private let diagnostics: (any VoiceInputDiagnostics)?
+    private let failureBox = FailureBox()
     let transcripts: AsyncStream<String>
+    var failure: VoiceInputFailure? { failureBox.value }
 
     init(locale: Locale = .current, diagnostics: (any VoiceInputDiagnostics)? = nil) throws {
         guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
@@ -90,16 +133,19 @@ final class StreamingSpeechRecognizerTranscriber: SpeechTranscribing, @unchecked
         // result while the asset is absent or being evicted.
         request.requiresOnDeviceRecognition = false
         let firstResult = FirstResultFlag()
-        recognitionTask = recognizer.recognitionTask(with: request) { [continuation, diagnostics, firstResult] result, error in
+        recognitionTask = recognizer.recognitionTask(with: request) { [continuation, diagnostics, firstResult, failureBox] result, error in
             if let result {
                 diagnostics?.voiceTranscriptReceived(first: firstResult.consume())
                 continuation.yield(result.bestTranscription.formattedString)
                 if result.isFinal { continuation.finish() }
             }
             if let error {
+                let benign = StreamingSpeechRecognizerTranscriber.isBenignStreamEnd(error)
+                let nsError = error as NSError
                 FloeLogger(category: .app).warning(
-                    "speechRecognizerEnded domain=voice error=\(String(describing: type(of: error)))"
+                    "speechRecognizerEnded domain=voice benign=\(benign ? 1 : 0) code=\(nsError.code)"
                 )
+                if !benign { failureBox.store(.recognizerFailed) }
                 continuation.finish()
             }
         }
@@ -134,8 +180,10 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
     private let convertBuffer: (AVAudioPCMBuffer) throws -> [AnalyzerInput]
     private let flushConverter: () throws -> [AnalyzerInput]
     private let diagnostics: (any VoiceInputDiagnostics)?
+    private let failureBox = StreamingSpeechRecognizerTranscriber.FailureBox()
 
     let transcripts: AsyncStream<String>
+    var failure: VoiceInputFailure? { failureBox.value }
 
     /// Builds the analyzer for the given locale. Throws
     /// `VoiceSessionError` (never traps) when the locale is unsupported or
@@ -203,7 +251,7 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
         // Forward ordered results into the transcript stream. The analyzer
         // delivers results in audio order, so the composer never sees a
         // transcript older than the one it already has.
-        Task { [transcripts = self.transcriptContinuation, diagnostics] in
+        Task { [transcripts = self.transcriptContinuation, diagnostics, failureBox] in
             do {
                 var isFirst = true
                 for try await result in transcriber.results {
@@ -216,6 +264,9 @@ final class SpeechAnalyzerTranscriber: SpeechTranscribing, @unchecked Sendable {
                 FloeLogger(category: .app).warning(
                     "speechResultFailed domain=voice error=\(String(describing: type(of: error)))"
                 )
+                // A dead analyzer stream is an actionable recognizer failure,
+                // never a silently invisible restart.
+                failureBox.store(.recognizerFailed)
                 transcripts.finish()
             }
         }
@@ -538,7 +589,8 @@ extension VoiceInputController {
         let method = VoiceRecognitionPreferences.method
         #if canImport(WhisperKit)
         if method != .system {
-            do { return try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics) }
+            do { return try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics,
+                allowSystemFallback: method == .automatic) }
             catch is CancellationError { throw CancellationError() }
             catch {
                 if method == .enhanced { throw VoiceSessionError.failure(.modelNotReady) }

@@ -4,7 +4,8 @@ import FloeCore
 import FloePersistence
 
 /// Active documents for the next logical model request. Empty values remove
-/// previous personalization; drafts awaiting review never enter this snapshot.
+/// previous personalization; only the CAS-applied current documents enter
+/// this snapshot.
 public struct LivePersonalizationSnapshot: Sendable, Hashable {
     public var soul: String?
     public var profile: String?
@@ -24,6 +25,10 @@ public enum PersonalizationDocumentSource: String, Sendable, Codable, Hashable {
 }
 
 public struct PersonalizationDocument: Sendable, Codable, Hashable, Identifiable {
+    /// Established domain limit for a personalization document body. The new
+    /// editor/apply API validates against this limit and rejects over-length
+    /// input explicitly instead of silently truncating user text.
+    public static let maxContentCharacters = 24_000
     public var id: UUID
     public var kind: PersonalizationDocumentKind
     public var workspaceID: UUID?
@@ -49,7 +54,7 @@ public struct PersonalizationDocument: Sendable, Codable, Hashable, Identifiable
         self.kind = kind
         self.workspaceID = workspaceID
         self.revision = max(1, revision)
-        self.content = String(content.prefix(24_000))
+        self.content = String(content.prefix(Self.maxContentCharacters))
         self.source = source
         self.evidenceDigest = String(evidenceDigest.prefix(160))
         self.isActive = isActive
@@ -217,7 +222,8 @@ public struct LocalPersonalizationGenerator: PersonalizationGenerator {
 
                 - Personality never expands authority or tool permissions.
                 - Do not infer sensitive traits from conversation or images.
-                - Ask before applying a conflicting or high-impact personalization change.
+                - Routine personalization updates apply silently; ask before any
+                  conflicting or high-impact action.
                 """, evidenceDigest: digest)
         }
     }
@@ -285,12 +291,82 @@ public struct UserAttachedImageMemoryInput: Sendable, Hashable {
     }
 }
 
+/// The bounded retention state of one (kind, workspace) personalization lane.
+/// A lane keeps at most two documents: the active `current` and the last
+/// confidently activated `previous` backup. Automatic updates apply silently
+/// under CAS; older or never-activated revisions no longer exist.
+public struct PersonalizationRetention: Sendable, Hashable {
+    public var current: PersonalizationDocument?
+    public var previous: PersonalizationDocument?
+
+    public init(current: PersonalizationDocument? = nil,
+                previous: PersonalizationDocument? = nil) {
+        self.current = current
+        self.previous = previous
+    }
+}
+
+/// Outcome of an operation that could become the lane's current document.
+/// `didCreateRevision` is false when the applied content already equals the
+/// current document, so no new history entry was written.
+public struct PersonalizationApplyResult: Sendable, Hashable {
+    public var document: PersonalizationDocument
+    public var didCreateRevision: Bool
+
+    public init(document: PersonalizationDocument, didCreateRevision: Bool) {
+        self.document = document
+        self.didCreateRevision = didCreateRevision
+    }
+}
+
+/// Machine-readable lifecycle failures. UI layers map these to localized
+/// copy; callers match them instead of parsing message strings.
+public enum PersonalizationLifecycleFailure: Error, Equatable, Sendable {
+    /// The lane changed after the caller loaded it. `currentRevision` is the
+    /// revision now stored, or 0 when the lane has no current document.
+    case revisionConflict(currentRevision: Int)
+    /// There is no confidently activated backup to restore.
+    case noPrevious
+    /// The submitted content exceeds the document character limit. Nothing
+    /// was written; the caller's draft and the stored document stay intact.
+    case contentTooLong(characterLimit: Int)
+}
+
+/// Classifies errors that a cooperative-cancellation path is expected to
+/// produce, so UI loads treat them as "this operation went away" instead of
+/// a user-visible failure. A normal cancellation surfaces as
+/// `CancellationError`, or as any error while the calling Task is already
+/// cancelled (the fenced operation can no longer publish, and the next live
+/// attempt re-reads the true state). A genuine database abort or interrupt
+/// observed by a live, uncancelled task is NOT cancellation and stays visible.
+public enum PersonalizationCancellation {
+    public static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return Task.isCancelled
+    }
+}
+
 public protocol PersonalizationDocumentStore: Sendable {
     func activeDocument(kind: PersonalizationDocumentKind, workspaceID: UUID?) async throws
         -> PersonalizationDocument?
-    func documentRevisions(kind: PersonalizationDocumentKind, workspaceID: UUID?) async throws
-        -> [PersonalizationDocument]
-    func saveDocument(_ document: PersonalizationDocument) async throws -> PersonalizationDocument
+    func retention(kind: PersonalizationDocumentKind, workspaceID: UUID?) async throws
+        -> PersonalizationRetention
+    /// Writes a new activated current document, rotating the old current into
+    /// the single previous backup slot and trimming the superseded backup.
+    /// Same content creates no revision; content over the character limit is
+    /// rejected explicitly (never silently truncated), leaving the lane intact.
+    /// `expectedRevision` implements the manual-edit CAS: 0 expects "no
+    /// current yet", nil applies unconditionally (user-initiated writes only).
+    func applyCurrent(kind: PersonalizationDocumentKind, workspaceID: UUID?, content: String,
+                      source: PersonalizationDocumentSource, evidenceDigest: String,
+                      expectedRevision: Int?, now: Date) async throws -> PersonalizationApplyResult
+    /// Discards the current document in favour of the retained backup by
+    /// applying the backup's content as a NEW activated revision (the replaced
+    /// current becomes the single previous backup). No old row is reactivated
+    /// with its old revision token, which would reopen a CAS ABA window for
+    /// stale editors. Identical content is a no-op.
+    func restorePrevious(kind: PersonalizationDocumentKind, workspaceID: UUID?) async throws
+        -> PersonalizationDocument
     func cursor(kind: PersonalizationDocumentKind, workspaceID: UUID?) async throws
         -> PersonalizationUpdateCursor
     func saveCursor(_ cursor: PersonalizationUpdateCursor) async throws
@@ -316,7 +392,8 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
     }
 
     /// Read both active documents in one database snapshot. A workspace
-    /// override shadows the global document; inactive review drafts never do.
+    /// override shadows the global document; only activated documents are
+    /// ever live.
     public func liveSnapshot(workspaceID: UUID?) async throws -> LivePersonalizationSnapshot {
         try await database.reader { db in
             let documents = try Row.fetchAll(db, sql: """
@@ -335,47 +412,119 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
         }
     }
 
-    public func documentRevisions(
+    public func retention(
         kind: PersonalizationDocumentKind,
         workspaceID: UUID?
-    ) async throws -> [PersonalizationDocument] {
+    ) async throws -> PersonalizationRetention {
         try await database.reader { db in
-            try Row.fetchAll(db, sql: """
+            var result = PersonalizationRetention()
+            let rows = try Row.fetchAll(db, sql: """
                 SELECT * FROM personalization_documents
-                WHERE kind = ? AND workspace_id IS ? ORDER BY revision DESC
-                """, arguments: [kind.rawValue, workspaceID?.uuidString]).map(Self.document)
+                WHERE kind = ? AND workspace_id IS ?
+                  AND lifecycle IN ('current', 'previous')
+                ORDER BY revision DESC
+                """, arguments: [kind.rawValue, workspaceID?.uuidString])
+            for row in rows {
+                let document = try Self.document(row)
+                let slot: String? = row["lifecycle"]
+                switch slot {
+                case "current": result.current = document
+                case "previous": result.previous = document
+                default: break
+                }
+            }
+            return result
         }
     }
 
+    public func applyCurrent(
+        kind: PersonalizationDocumentKind,
+        workspaceID: UUID?,
+        content: String,
+        source: PersonalizationDocumentSource,
+        evidenceDigest: String,
+        expectedRevision: Int?,
+        now: Date = Date()
+    ) async throws -> PersonalizationApplyResult {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw FloeError.validationFailed("Personalization document must not be empty")
+        }
+        guard trimmed.count <= PersonalizationDocument.maxContentCharacters else {
+            throw PersonalizationLifecycleFailure
+                .contentTooLong(characterLimit: PersonalizationDocument.maxContentCharacters)
+        }
+        return try await database.writer { db in
+            let current = try Self.lifecycleDocument(db, kind: kind.rawValue,
+                workspaceID: workspaceID, slot: .current)
+            if let expectedRevision, expectedRevision != (current?.revision ?? 0) {
+                throw PersonalizationLifecycleFailure
+                    .revisionConflict(currentRevision: current?.revision ?? 0)
+            }
+            if let current, current.content == trimmed {
+                return PersonalizationApplyResult(document: current, didCreateRevision: false)
+            }
+            let revision = try Self.nextRevision(db, kind: kind.rawValue, workspaceID: workspaceID)
+            let document = PersonalizationDocument(id: UUID(), kind: kind,
+                workspaceID: workspaceID, revision: revision, content: trimmed,
+                source: source, evidenceDigest: evidenceDigest, isActive: true,
+                createdAt: now)
+            try Self.rotateCurrent(db, kind: kind.rawValue, workspaceID: workspaceID,
+                document: document)
+            try Self.recordRevision(db, kind: kind.rawValue, workspaceID: workspaceID,
+                revision: revision, now: now)
+            return PersonalizationApplyResult(document: document, didCreateRevision: true)
+        }
+    }
+
+    public func restorePrevious(
+        kind: PersonalizationDocumentKind,
+        workspaceID: UUID?
+    ) async throws -> PersonalizationDocument {
+        try await database.writer { db in
+            guard let previous = try Self.lifecycleDocument(db, kind: kind.rawValue,
+                workspaceID: workspaceID, slot: .previous) else {
+                throw PersonalizationLifecycleFailure.noPrevious
+            }
+            let current = try Self.lifecycleDocument(db, kind: kind.rawValue,
+                workspaceID: workspaceID, slot: .current)
+            if let current, current.content == previous.content {
+                // Nothing changes; keep the live revision token untouched.
+                return current
+            }
+            // Activating a backup is a rotation, never a reactivation of the
+            // backup's old row: the content re-enters as a fresh monotonic
+            // revision, so an editor that loaded a superseded revision stays
+            // fenced by CAS even after update → restore.
+            let revision = try Self.nextRevision(db, kind: kind.rawValue, workspaceID: workspaceID)
+            let activated = PersonalizationDocument(id: UUID(), kind: kind,
+                workspaceID: workspaceID, revision: revision, content: previous.content,
+                source: .rollback, evidenceDigest: previous.evidenceDigest,
+                isActive: true, createdAt: Date())
+            try Self.rotateCurrent(db, kind: kind.rawValue, workspaceID: workspaceID,
+                document: activated)
+            try Self.recordRevision(db, kind: kind.rawValue, workspaceID: workspaceID,
+                revision: revision, now: activated.createdAt)
+            return activated
+        }
+    }
+
+    /// Legacy compatibility shim for pre-v52 callers (kept out of the live
+    /// protocol): an activated save rotates through `applyCurrent`; the
+    /// allocator and retention rules are identical. Inactive draft staging no
+    /// longer exists — such writes are rejected instead of silently becoming
+    /// review state or losing the caller's bytes.
     public func saveDocument(_ document: PersonalizationDocument) async throws
         -> PersonalizationDocument {
-        let content = document.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else { throw FloeError.validationFailed("Personalization document must not be empty") }
-        return try await database.writer { db in
-            let nextRevision = (try Int.fetchOne(db, sql: """
-                SELECT MAX(revision) FROM personalization_documents
-                WHERE kind = ? AND workspace_id IS ?
-                """, arguments: [document.kind.rawValue, document.workspaceID?.uuidString]) ?? 0) + 1
-            if document.isActive {
-                try db.execute(sql: """
-                    UPDATE personalization_documents SET is_active = 0
-                    WHERE kind = ? AND workspace_id IS ? AND is_active = 1
-                    """, arguments: [document.kind.rawValue, document.workspaceID?.uuidString])
-            }
-            var stored = document
-            stored.revision = nextRevision
-            stored.content = content
-            try db.execute(sql: """
-                INSERT INTO personalization_documents (
-                    id, kind, workspace_id, revision, content, source_kind,
-                    evidence_digest, is_active, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, arguments: [stored.id.uuidString, stored.kind.rawValue,
-                    stored.workspaceID?.uuidString, stored.revision, stored.content,
-                    stored.source.rawValue, stored.evidenceDigest, stored.isActive,
-                    Self.date(stored.createdAt)])
-            return stored
+        guard document.isActive else {
+            throw FloeError.validationFailed(
+                "Inactive personalization drafts are no longer retained")
         }
+        let applied = try await applyCurrent(kind: document.kind,
+            workspaceID: document.workspaceID, content: document.content,
+            source: document.source, evidenceDigest: document.evidenceDigest,
+            expectedRevision: nil, now: document.createdAt)
+        return applied.document
     }
 
     public func cursor(
@@ -465,6 +614,73 @@ public actor SQLitePersonalizationStore: PersonalizationDocumentStore {
             sql += " ORDER BY importance DESC, created_at DESC"
             return try Row.fetchAll(db, sql: sql, arguments: arguments).map(Self.candidate)
         }
+    }
+
+    private enum LifecycleSlot: String { case current, previous }
+
+    private static func lifecycleDocument(_ db: Database, kind rawKind: String,
+        workspaceID: UUID?, slot: LifecycleSlot) throws -> PersonalizationDocument? {
+        guard let row = try Row.fetchOne(db, sql: """
+            SELECT * FROM personalization_documents
+            WHERE kind = ? AND workspace_id IS ? AND lifecycle = ?
+            """, arguments: [rawKind, workspaceID?.uuidString, slot.rawValue]) else { return nil }
+        return try document(row)
+    }
+
+    /// Allocates the next revision from the lane's monotonic sequence, never
+    /// from MAX(revision) of the (possibly trimmed) retained rows.
+    private static func nextRevision(_ db: Database, kind rawKind: String,
+        workspaceID: UUID?) throws -> Int {
+        let last = try Int.fetchOne(db, sql: """
+            SELECT last_revision FROM personalization_revision_sequences
+            WHERE kind = ? AND workspace_key = ?
+            """, arguments: [rawKind, workspaceKey(workspaceID)]) ?? 0
+        return last + 1
+    }
+
+    private static func recordRevision(_ db: Database, kind rawKind: String,
+        workspaceID: UUID?, revision: Int, now: Date) throws {
+        try db.execute(sql: """
+            INSERT INTO personalization_revision_sequences (
+                kind, workspace_key, workspace_id, last_revision, updated_at
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(kind, workspace_key) DO UPDATE SET
+                last_revision = MAX(personalization_revision_sequences.last_revision,
+                                    excluded.last_revision),
+                updated_at = excluded.updated_at
+            """, arguments: [rawKind, workspaceKey(workspaceID), workspaceID?.uuidString,
+                revision, date(now)])
+    }
+
+    /// Rotates a fresh activated document into the lane: the superseded backup
+    /// is trimmed, the old current becomes the single previous row and the new
+    /// document takes the current slot. Statements are ordered so no partial
+    /// unique lifecycle index is ever violated.
+    private static func rotateCurrent(_ db: Database, kind rawKind: String,
+        workspaceID: UUID?, document: PersonalizationDocument) throws {
+        try db.execute(sql: """
+            DELETE FROM personalization_documents
+            WHERE kind = ? AND workspace_id IS ? AND lifecycle = 'previous'
+            """, arguments: [rawKind, workspaceID?.uuidString])
+        try db.execute(sql: """
+            UPDATE personalization_documents
+            SET lifecycle = 'previous', is_active = 0
+            WHERE kind = ? AND workspace_id IS ? AND lifecycle = 'current'
+            """, arguments: [rawKind, workspaceID?.uuidString])
+        try insert(db, document, lifecycle: "current")
+    }
+
+    private static func insert(_ db: Database, _ document: PersonalizationDocument,
+        lifecycle: String) throws {
+        try db.execute(sql: """
+            INSERT INTO personalization_documents (
+                id, kind, workspace_id, revision, content, source_kind,
+                evidence_digest, is_active, created_at, lifecycle
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [document.id.uuidString, document.kind.rawValue,
+                document.workspaceID?.uuidString, document.revision, document.content,
+                document.source.rawValue, document.evidenceDigest, document.isActive,
+                date(document.createdAt), lifecycle])
     }
 
     private static func document(_ row: Row) throws -> PersonalizationDocument {
@@ -580,17 +796,25 @@ public actor PersonalizationService {
         source: PersonalizationDocumentSource = .oneClick,
         now: Date = Date()
     ) async throws -> PersonalizationDocument {
-        let (result, _) = try await generationResult(kind: kind, workspaceID: workspaceID,
+        let (result, current) = try await generationResult(kind: kind, workspaceID: workspaceID,
             generator: generator)
-        let stored = try await documents.saveDocument(PersonalizationDocument(
-            kind: kind, workspaceID: workspaceID, revision: 1,
+        // CAS against the revision captured before the model call: a manual
+        // save that lands while the generator is in flight wins, and this
+        // explicit generate surfaces the conflict instead of overwriting it.
+        let applied = try await documents.applyCurrent(kind: kind, workspaceID: workspaceID,
             content: result.content, source: source,
-            evidenceDigest: result.evidenceDigest, createdAt: now
-        ))
+            evidenceDigest: result.evidenceDigest,
+            expectedRevision: current?.revision ?? 0, now: now)
         try await resetCursor(kind: kind, workspaceID: workspaceID, now: now)
-        return stored
+        return applied.document
     }
 
+    /// Background cadence generation applies silently over the current
+    /// document (user policy: no second confirmation, even for substantial
+    /// rewrites or the initial generation). The write is CAS-checked against
+    /// the revision captured before generation, so an intervening manual edit
+    /// is never overwritten: on conflict the new content is dropped and the
+    /// cadence simply waits for its next window.
     public func generateIfDue(
         kind: PersonalizationDocumentKind,
         workspaceID: UUID? = nil,
@@ -601,24 +825,30 @@ public actor PersonalizationService {
         guard cadence.isDue(cursor, now: now) else { return nil }
         let (result, current) = try await generationResult(kind: kind,
             workspaceID: workspaceID, generator: generator)
-        guard current?.content != result.content else {
+        do {
+            let applied = try await documents.applyCurrent(kind: kind, workspaceID: workspaceID,
+                content: result.content, source: .automatic,
+                evidenceDigest: result.evidenceDigest,
+                expectedRevision: current?.revision ?? 0, now: now)
             try await resetCursor(kind: kind, workspaceID: workspaceID, now: now)
-            return nil
+            return applied.didCreateRevision ? applied.document : nil
+        } catch let failure as PersonalizationLifecycleFailure {
+            switch failure {
+            case .revisionConflict:
+                // An intervening manual edit keeps authority over the lane.
+                // Drop this silent update and consume the cadence window so
+                // the next attempt regenerates over the newer current.
+                try await resetCursor(kind: kind, workspaceID: workspaceID, now: now)
+                return nil
+            case .contentTooLong:
+                // Oversized model output must never corrupt the lane; treat
+                // it like a skipped window.
+                try await resetCursor(kind: kind, workspaceID: workspaceID, now: now)
+                return nil
+            case .noPrevious:
+                throw failure
+            }
         }
-        // Large rewrites are durable drafts, never silently activated. The
-        // user can inspect and activate them from version history. Automatic
-        // activation is reserved for small changes over already-reviewed data.
-        let requiresReview = current == nil || Self.isSubstantialChange(
-            from: current?.content ?? "", to: result.content
-        )
-        let stored = try await documents.saveDocument(PersonalizationDocument(
-            kind: kind, workspaceID: workspaceID, revision: 1,
-            content: result.content, source: .automatic,
-            evidenceDigest: result.evidenceDigest, isActive: !requiresReview,
-            createdAt: now
-        ))
-        try await resetCursor(kind: kind, workspaceID: workspaceID, now: now)
-        return stored
     }
 
     public func recordActivity(
@@ -660,29 +890,32 @@ public actor PersonalizationService {
             globalSoul: soul, workspaceSoul: nil)
     }
 
+    /// Manual editor save. `expectedRevision` is the revision the editor
+    /// loaded (0 when it started from an empty lane); the live editor always
+    /// passes it so a background silent update that raced ahead of the draft
+    /// is rejected instead of being overwritten by the stale manual text.
     @discardableResult
     public func saveManual(
         kind: PersonalizationDocumentKind,
         content: String,
-        workspaceID: UUID? = nil
+        workspaceID: UUID? = nil,
+        expectedRevision: Int? = nil
     ) async throws -> PersonalizationDocument {
-        try await documents.saveDocument(PersonalizationDocument(kind: kind,
-            workspaceID: workspaceID, revision: 1, content: content, source: .manual))
+        let applied = try await documents.applyCurrent(kind: kind, workspaceID: workspaceID,
+            content: content, source: .manual, evidenceDigest: "",
+            expectedRevision: expectedRevision, now: Date())
+        return applied.document
     }
 
+    /// Activates the retained backup's content as a fresh monotonic revision
+    /// (the replaced current becomes the backup). Old revision tokens are
+    /// never reactivated, so stale editors stay fenced across update→restore.
     @discardableResult
-    public func rollback(
-        to revision: Int,
+    public func restorePrevious(
         kind: PersonalizationDocumentKind,
         workspaceID: UUID? = nil
     ) async throws -> PersonalizationDocument {
-        let revisions = try await documents.documentRevisions(kind: kind, workspaceID: workspaceID)
-        guard let target = revisions.first(where: { $0.revision == revision }) else {
-            throw FloeError.validationFailed("Personalization revision does not exist")
-        }
-        return try await documents.saveDocument(PersonalizationDocument(kind: kind,
-            workspaceID: workspaceID, revision: 1, content: target.content,
-            source: .rollback, evidenceDigest: target.evidenceDigest))
+        try await documents.restorePrevious(kind: kind, workspaceID: workspaceID)
     }
 
     private func generationResult(
@@ -714,19 +947,6 @@ public actor PersonalizationService {
         cursor.userMessagesSinceUpdate = 0
         cursor.updatedAt = now
         try await documents.saveCursor(cursor)
-    }
-
-    private static func isSubstantialChange(from old: String, to new: String) -> Bool {
-        guard !old.isEmpty else { return true }
-        if new.count > old.count + max(400, old.count / 4) { return true }
-        let oldLines = Set(old.split(separator: "\n").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty })
-        let newLines = Set(new.split(separator: "\n").map {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines)
-        }.filter { !$0.isEmpty })
-        let total = max(1, oldLines.union(newLines).count)
-        return Double(oldLines.symmetricDifference(newLines).count) / Double(total) > 0.25
     }
 }
 

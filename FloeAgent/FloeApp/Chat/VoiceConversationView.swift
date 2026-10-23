@@ -139,12 +139,35 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         guard presentation.request?.id == request.id else { return }
         presentation.installTeardown(for: request.id) { [weak self] in self?.end() }
         state = .preparing
-        await environment.voiceInput.stopAndWait()
-        await environment.speechService.stopAndWait()
+        // BOUNDED handoff: both `stop()` calls are synchronous engine
+        // teardowns; only their trailing async drains are raced against the
+        // deadline. A structured task-group join is NOT bounded — its scope
+        // awaits every child at exit, and a drain parked on `oldTask.value`
+        // without honouring cancellation would wedge "Connecting…" forever.
+        // `VoiceConversationBoundedDrain.race` instead CANCELS AND ABANDONS
+        // the loser: proceeding after the cap is safe because the physical
+        // capture already stopped synchronously, every late drain tail is
+        // identity-fenced by its own service, and the shared audio session
+        // is generation-claimed by the newer owner.
+        await Self.boundedJoin(seconds: 2) { await environment.voiceInput.stopAndWait() }
+        await Self.boundedJoin(seconds: 2) { await environment.speechService.stopAndWait() }
         guard isActive, !Task.isCancelled else { return }
         bridge?.connect()
         refreshHistory()
         await coordinator.start()
+    }
+
+    private static func boundedJoin(
+        seconds: Double,
+        // Actor-isolated @Sendable: the operation touches MainActor state;
+        // isolation makes the capture legal and serialized. The race hop
+        // below stays MainActor (plain await inside the task-group-free
+        // deadline race), so the synchronous engine stop runs in order.
+        _ operation: @escaping @MainActor @Sendable () async -> Void
+    ) async {
+        await VoiceConversationBoundedDrain.race(seconds: seconds) {
+            await operation()
+        }
     }
 
     func recover() async {
@@ -153,6 +176,12 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         if failure == "voice.error.receipt" { await driver.retryPendingSpeechReceipts(); return }
         if failure == "voice.error.history" { refreshHistory(); return }
         if failure == "voice.error.turn", !stagedText.isEmpty { coordinator.sendNow(); return }
+        // An actionable FAILED session restarts from scratch (fresh capture
+        // readiness + fresh recognizer); only a PAUSED session resumes.
+        if case .failed = coordinator.state {
+            await coordinator.start()
+            return
+        }
         await coordinator.resume()
     }
 
@@ -372,7 +401,10 @@ struct VoiceConversationView: View {
     private var controls: some View {
         HStack(spacing: 28) {
             Button(session.muted ? "voice.action.unmute" : "voice.action.mute", systemImage: session.muted ? "mic.slash.fill" : "mic.fill") {
-                session.coordinator.setMuted(!session.muted)
+                // Unmute re-proves real capture readiness (may fail visibly —
+                // a microphone that died while muted must not silently
+                // "resume listening").
+                Task { await session.coordinator.setMuted(!session.muted) }
             }
             .tint(session.muted ? .orange : .primary)
             Button("voice.action.interrupt", systemImage: "stop.fill") { session.coordinator.interruptNow() }

@@ -124,6 +124,23 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     private var audioFinished = false
     private var terminalFailure: VoiceConversationFailure?
 
+    // Capture readiness + stall detection (same proof the dictation
+    // `AudioEngineCapturer` requires: installing a tap is NOT readiness;
+    // at least one REAL buffer arriving is).
+    private let captureLock = NSLock()
+    private var receivedFirstBuffer = false
+    private var readinessStopped = false
+    private var readinessWaiter: CheckedContinuation<Void, Error>?
+    private var readinessTimeout: Task<Void, Never>?
+    private var captureActive = false
+    private var lastBufferUptimeNanos: UInt64 = 0
+    private var stallTask: Task<Void, Never>?
+    /// Silence ALSO delivers buffers. If NO tap buffer arrives for this long
+    /// while capture is active, the microphone path is dead: report
+    /// `.captureStalled` so the coordinator fails visibly.
+    fileprivate let captureStallSeconds: Double = 10
+    fileprivate let captureReadinessSeconds: Double = 3
+
     // Played-frame accounting (epoch-fenced)
     private let playbackLock = NSLock()
     private var epoch: UInt64 = 0
@@ -259,33 +276,60 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
 
     // MARK: - Capture
 
-    func startCapture() throws(VoiceConversationFailure) {
+    /// Installs the microphone tap and returns ONLY after the first REAL
+    /// buffer arrives (≤3 s, the proven dictation readiness pattern). A tap
+    /// that never fires is a dead capture path: throw `.noAudioInput` so the
+    /// coordinator can rebuild once and then fail visibly. The stall
+    /// watchdog keeps watching for the rest of the capture stretch — a tap
+    /// that goes quiet mid-session reports `.captureStalled`.
+    func startCapture() async throws(VoiceConversationFailure) {
         #if targetEnvironment(simulator)
         throw .noAudioInput
         #else
-        graphLock.lock()
-        guard engineStarted, !tapInstalled, let inputFormat else {
-            let started = engineStarted
-            graphLock.unlock()
-            if !started { throw .noAudioInput }
+        let capture = graphLock.withLock {
+            let value = (started: engineStarted, installed: tapInstalled, format: inputFormat)
+            if value.started, !value.installed, value.format != nil { tapInstalled = true }
+            return value
+        }
+        guard capture.started, !capture.installed, let inputFormat = capture.format else {
+            if !capture.started || capture.format == nil { throw .noAudioInput }
+            // Idempotent re-entry: an already-installed tap must still be
+            // PROVEN alive before the coordinator presents "Listening".
+            do { try await waitCaptureReady() } catch { throw .noAudioInput }
             return
         }
-        tapInstalled = true
-        graphLock.unlock()
+        resetCaptureReadiness()
         engine.inputNode.installTap(
             onBus: 0,
             bufferSize: 4_096,
             format: inputFormat
         ) { [weak self] buffer, time in
             guard buffer.frameLength > 0 else { return }
+            self?.markCaptureBuffer()
             self?.publishMicLevel(of: buffer)
             self?.feedBackend(buffer, at: time)
         }
+        do {
+            try await waitCaptureReady()
+        } catch {
+            // Readiness timeout, cancellation or a stop racing the wait:
+            // the capture path is not proven alive either way.
+            stopCapture()
+            throw .noAudioInput
+        }
+        startCaptureStallWatchdog()
         #endif
     }
 
     func stopCapture() {
         #if !targetEnvironment(simulator)
+        captureLock.withLock {
+            captureActive = false
+            readinessStopped = true
+        }
+        stallTask?.cancel()
+        stallTask = nil
+        finishReadiness(.failure(VoiceSessionError.failure(.noAudioInput)))
         let hadTap = graphLock.withLock {
             let value = tapInstalled
             tapInstalled = false
@@ -295,6 +339,99 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             engine.inputNode.removeTap(onBus: 0)
         }
         #endif
+    }
+
+    // MARK: - Capture readiness (real first-buffer proof)
+
+    private func resetCaptureReadiness() {
+        captureLock.withLock {
+            captureActive = true
+            receivedFirstBuffer = false
+            readinessStopped = false
+            lastBufferUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        }
+    }
+
+    private nonisolated func markCaptureBuffer() {
+        captureLock.withLock {
+            receivedFirstBuffer = true
+            lastBufferUptimeNanos = DispatchTime.now().uptimeNanoseconds
+        }
+        finishReadiness(.success(()))
+    }
+
+    private func waitCaptureReady() async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (waiter: CheckedContinuation<Void, Error>) in
+                captureLock.lock()
+                if readinessStopped || Task.isCancelled {
+                    captureLock.unlock()
+                    waiter.resume(throwing: VoiceSessionError.failure(.noAudioInput))
+                    return
+                }
+                if receivedFirstBuffer {
+                    captureLock.unlock()
+                    waiter.resume()
+                    return
+                }
+                guard readinessWaiter == nil else {
+                    // A readiness wait is already running (only reachable by
+                    // racing callers): never overwrite the live continuation.
+                    captureLock.unlock()
+                    waiter.resume(throwing: VoiceSessionError.failure(.noAudioInput))
+                    return
+                }
+                readinessWaiter = waiter
+                readinessTimeout = Task { [weak self] in
+                    guard let self else { return }
+                    do { try await Task.sleep(for: .seconds(self.captureReadinessSeconds)) }
+                    catch { return }
+                    self.finishReadiness(.failure(VoiceSessionError.failure(.noAudioInput)))
+                }
+                captureLock.unlock()
+            }
+        } onCancel: { [weak self] in
+            guard let self else { return }
+            let pending = self.captureLock.withLock { () -> Bool in
+                self.readinessStopped = true
+                return self.readinessWaiter != nil
+            }
+            if pending {
+                self.finishReadiness(.failure(VoiceSessionError.failure(.noAudioInput)))
+            }
+        }
+    }
+
+    private func finishReadiness(_ result: Result<Void, Error>) {
+        captureLock.lock()
+        let waiter = readinessWaiter
+        readinessWaiter = nil
+        let timeout = readinessTimeout
+        readinessTimeout = nil
+        captureLock.unlock()
+        timeout?.cancel()
+        waiter?.resume(with: result)
+    }
+
+    private func startCaptureStallWatchdog() {
+        stallTask?.cancel()
+        let limitNanos = UInt64(captureStallSeconds * 1_000_000_000)
+        stallTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self, !Task.isCancelled else { return }
+                let snapshot = self.captureLock.withLock {
+                    (active: self.captureActive, last: self.lastBufferUptimeNanos)
+                }
+                guard snapshot.active else { return }
+                let elapsed = DispatchTime.now().uptimeNanoseconds &- snapshot.last
+                if elapsed >= limitNanos {
+                    self.systemEventContinuation.yield(.captureStalled)
+                    self.captureLock.withLock { self.captureActive = false }
+                    return
+                }
+            }
+        }
     }
 
     // MARK: - Transcription (existing backends through existing seams)

@@ -249,6 +249,14 @@ struct DocumentIntakeRecord: Codable, Sendable, Equatable, Identifiable {
     var updatedAt: Date
     var sceneID: String?
     var requestSequence: UInt64
+    /// Durable external-arrival choice requirement, written with the entry
+    /// before the atomic staging publish. nil means "not required": legacy
+    /// entries (key absent), own-format restores, and explicit in-product
+    /// importers that bypass the chooser. true blocks the automatic drain
+    /// until the import-destination ledger proves an explicit 手记/任务
+    /// choice; a missing or corrupt ledger entry therefore holds the
+    /// staged input instead of silently defaulting to Notes.
+    var destinationChoiceRequired: Bool?
     var state: DocumentIntakeState
     var attemptCount: Int
     var claimToken: String?
@@ -268,7 +276,8 @@ struct DocumentIntakeRecord: Codable, Sendable, Equatable, Identifiable {
         plannedRootDocumentID: UUID,
         createdAt: Date,
         sceneID: String?,
-        requestSequence: UInt64
+        requestSequence: UInt64,
+        destinationChoiceRequired: Bool? = nil
     ) {
         self.schemaVersion = Self.currentSchemaVersion
         self.id = id
@@ -283,6 +292,7 @@ struct DocumentIntakeRecord: Codable, Sendable, Equatable, Identifiable {
         self.updatedAt = createdAt
         self.sceneID = sceneID
         self.requestSequence = requestSequence
+        self.destinationChoiceRequired = destinationChoiceRequired
         self.state = .pending
         self.attemptCount = 0
         self.claimToken = nil
@@ -316,6 +326,9 @@ struct DocumentIntakeStagingRequest: Sendable, Equatable {
     var sceneID: String?
     var requestSequence: UInt64
     var receivedAt: Date
+    /// Persisted into the entry atomically: the requirement lives with the
+    /// staged bytes, not in a side journal.
+    var destinationChoiceRequired: Bool = false
 }
 
 struct DocumentIntakeStagedInput: Sendable {

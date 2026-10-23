@@ -22,6 +22,24 @@
 //   superseded snapshot is skipped. Lifecycle transitions flush the newest
 //   snapshot with a bounded wait, and a failed or corrupt write is
 //   reported (`lastWriteState`) instead of being swallowed.
+// - An EXTERNAL import into an already-open task composer lands through the
+//   bounded live/durable synchronization contract (`ImportedDraftLanding`):
+//   the proven-landing delta (stable receipt + item ids, never a content
+//   match) is published and synchronously absorbed by every live owner of
+//   exactly that conversation, and a live save whose revision was superseded
+//   rebases onto the durable entry instead of blind-overwriting it, so the
+//   next keystroke can never drop landed refs. A failed durable commit
+//   publishes nothing, so no source is ever acknowledged for bytes the disk
+//   does not hold. `.landed` requires the NEWEST reconciled snapshot to be
+//   verified on the serial writer: if a human edit interleaves during a
+//   placement's disk wait, the proven delta is re-applied onto the newer
+//   slot and THAT write is awaited and verified too (bounded attempts) —
+//   a mere `flush()` of the reconciliation is never accepted as proof, so
+//   the source can never be acknowledged ahead of the durable result. The
+//   durable snapshot also carries an `ImportedDraftProof` of the landed
+//   delta, which makes the disk receipt check content-aware: an earlier
+//   placement's receipt can no longer prove an ack after a later persisted
+//   human snapshot dropped the imported bytes (the source then re-lands).
 // - A Shortcuts inbox handoff is proven by an exact `ShortcutHandoffReceipt`
 //   (destination + entry id + claim token) serialized in the SAME snapshot
 //   as the placed text. The claim is acknowledged only against a receipt the
@@ -104,7 +122,11 @@ final class ComposerDraftStore: ObservableObject {
         if pendingSends[id] != nil { return }
         // Called before the first await, while the live editor is authoritative.
         // Flush a final keystroke whose SwiftUI onChange has not run yet.
-        let current = bucket(for: conversationID)[conversationID]
+        // Read the proven slot state: an import placement that is still
+        // awaiting disk verification must not be pulled into this send's
+        // content (the launch itself never carries it — the live field has
+        // not absorbed an unproven landing).
+        let current = provenStoredEntry(for: conversationID)
         let sentIDs = Set(attachments.map(\.id))
         if current?.text != text || !sentIDs.isSubset(of: Set(current?.attachments.map(\.id) ?? [])) {
             let existing = current?.attachments ?? []
@@ -180,6 +202,398 @@ final class ComposerDraftStore: ObservableObject {
         }
     }
 
+    // MARK: - External import live/durable synchronization
+
+    /// One PROVEN-durable external import landing for one conversation slot.
+    ///
+    /// `incomingText` and `addedAttachments` are the exact delta the intake
+    /// pipeline appended (stable receipt/item ids — never a text-containment
+    /// guess), so a live editor can fold the import into whatever the human
+    /// typed meanwhile without duplicating it or losing either side.
+    /// `landedRevision` is the durable revision the landing wrote: a live
+    /// owner compares its own adopted revision instead of guessing whether
+    /// its field already contains the import, and a reconstructed editor
+    /// (which read the durable entry at init) fences the same landing out.
+    /// A landing is published ONLY after `commitDurable` verified the bytes
+    /// on disk — a failed commit publishes nothing and the source is never
+    /// acknowledged. `landingID` is stable per receipt AND claim token, so a
+    /// retry after a disk failure is a fresh landing while an already
+    /// settled receipt can never fold twice.
+    struct ImportedDraftLanding: Equatable {
+        let landingID: String
+        let conversationID: UUID
+        /// Durable revision the landing replaced (nil: the slot was empty).
+        let baseRevision: Int?
+        /// Durable revision immediately after the verified commit.
+        let landedRevision: Int
+        /// Full merged text as committed durably.
+        let landedText: String
+        /// Full merged attachment list as committed durably.
+        let landedAttachments: [AttachmentRef]
+        /// Raw external text delta (may be empty for a files-only share).
+        let incomingText: String
+        /// Incoming refs that were NOT already durable at `baseRevision`.
+        let addedAttachments: [AttachmentRef]
+        let receipt: ShortcutHandoffReceipt
+    }
+
+    /// The exact landed delta of one external import, serialized in the
+    /// SAME snapshot as the placement it proves.
+    ///
+    /// `handoffReceiptOnDisk` is deliberately content-aware for a receipt
+    /// that has a proof: the receipt alone may only acknowledge an import
+    /// while the most recent snapshot that actually reached disk still
+    /// carries the incoming text and every incoming item id. A later
+    /// persisted human snapshot that dropped the imported bytes therefore
+    /// cannot acknowledge on an earlier placement's receipt — the intake
+    /// re-lands the envelope instead. Ordinary (non-import) handoff receipts
+    /// have no proof and keep their existing pure ledger semantics.
+    struct ImportedDraftProof: Codable, Equatable, Hashable {
+        let landingID: String
+        let conversationID: UUID
+        let receipt: ShortcutHandoffReceipt
+        let incomingText: String
+        let incomingAttachmentIDs: [UUID]
+    }
+
+    /// Outcome of `acceptImportedDraft`. `.landed` is the ONLY result that
+    /// may acknowledge the source envelope, and it is returned only after
+    /// the NEWEST reconciled snapshot — interleaved human content plus the
+    /// proven imported delta plus the receipt — is verified on the serial
+    /// writer (see `acceptImportedDraft`). `.deferredBusy` is a normal busy
+    /// deferral (never a user error): the slot is mid-send or a send
+    /// handoff is in flight, the source stays pending and recoverable.
+    /// `.rejectedTarget` refuses a non-durable destination (a temporary
+    /// chat); a failed durable write returns `.failed` with THIS attempt's
+    /// unverified placement rolled back (nothing of it staged as proven),
+    /// so the placement stays retryable. When the failure follows an
+    /// EARLIER verified placement in the same loop, that earlier landing
+    /// stays honestly proven: the intake must then retain the staged files
+    /// its durable snapshot references (ShareIntakeCenter's durable-proof
+    /// rule) instead of creating dangling refs.
+    enum ImportedDraftLandingResult: Equatable {
+        case landed(revision: Int)
+        case deferredBusy
+        case rejectedTarget
+        case failed
+    }
+
+    /// A live composer that can synchronously absorb an import landing in
+    /// the landing's own main-actor turn (render-before-ack). Implemented by
+    /// `ThreadDetailViewModel`; the weak owner registry below is also the
+    /// exact `hasLiveOwner` answer the import destination seam needs, so a
+    /// replaced view can neither be addressed nor clobber a landed import.
+    @MainActor
+    protocol ImportedDraftLiveAccepting: AnyObject {
+        func acceptImportedDraftLanding(_ landing: ComposerDraftStore.ImportedDraftLanding)
+    }
+
+    /// Stable identity of one landing: the destination slot plus the exact
+    /// envelope receipt. Two different envelopes never collapse, and a
+    /// re-claimed envelope after a failed commit carries a new claim token.
+    static func importedDraftLandingID(
+        conversationID: UUID, receipt: ShortcutHandoffReceipt
+    ) -> String {
+        "slot=\(conversationID.uuidString.lowercased())"
+            + "/dest=\(receipt.destinationID)"
+            + "/entry=\(receipt.entryID.uuidString)"
+            + "/token=\(receipt.claimToken)"
+    }
+
+    /// The most recent proven import landing across all slots. Published on
+    /// the main actor; readers MUST fence by `conversationID` (and by their
+    /// own adopted revision) so a landing for another task — or one a
+    /// reconstructed editor already restored from disk — is never folded.
+    @Published private(set) var latestImportedDraftLanding: ImportedDraftLanding?
+
+    @MainActor
+    private final class WeakLiveDraftOwner {
+        weak var owner: (any ImportedDraftLiveAccepting)?
+        init(_ owner: any ImportedDraftLiveAccepting) { self.owner = owner }
+    }
+
+    /// Weak registry of the composers currently open per conversation. A
+    /// released view model disappears without any explicit teardown, so a
+    /// replaced view cannot be addressed, and `hasLiveDraftOwner` stays
+    /// honest for the import destination's deferral decision.
+    private var liveDraftOwners: [UUID: [WeakLiveDraftOwner]] = [:]
+    /// Landing ids already folded into a live editor or a rebased live save.
+    /// Bounded FIFO: it only ever guards the small window between a durable
+    /// landing and the live fold that consumes it.
+    private var absorbedImportLandingIDs: Set<String> = []
+    private var absorbedImportLandingOrder: [String] = []
+    private static let absorbedImportLandingLimit = 64
+
+    /// Registers the composer currently open for a conversation. Ordinary
+    /// durable slots only; a temporary chat is never an import destination.
+    func registerLiveDraftOwner(
+        _ owner: any ImportedDraftLiveAccepting, for conversationID: UUID
+    ) {
+        guard !temporaryExcludedIDs.contains(conversationID) else { return }
+        var boxes = liveDraftOwners[conversationID] ?? []
+        boxes.removeAll { $0.owner == nil }
+        guard !boxes.contains(where: { $0.owner === owner }) else { return }
+        boxes.append(WeakLiveDraftOwner(owner))
+        liveDraftOwners[conversationID] = boxes
+    }
+
+    /// True while at least one live composer owns this conversation's draft.
+    func hasLiveDraftOwner(for conversationID: UUID) -> Bool {
+        guard var boxes = liveDraftOwners[conversationID] else { return false }
+        boxes.removeAll { $0.owner == nil }
+        liveDraftOwners[conversationID] = boxes.isEmpty ? nil : boxes
+        return !boxes.isEmpty
+    }
+
+    /// A durable import placement whose bytes are NOT yet verified on disk.
+    ///
+    /// `commitDurable` must write the merged text into the shared slot before
+    /// awaiting the serial write queue, because the receipt and its placed
+    /// text have to reach disk as ONE atomic snapshot. That creates a real
+    /// window in which the placement exists in memory but proves nothing yet,
+    /// so every external READ path treats the slot as its proven pre-placement
+    /// state while the commit is in flight: a live rebased save (which unions
+    /// durable refs), a reconstructed editor, `refreshDraftFromDurableStore`
+    /// and the destination snapshot can never absorb or union an unproven
+    /// imported ref — otherwise a failed write plus the source's staged-file
+    /// discard would leave the draft pointing at deleted bytes. The fence is
+    /// armed per placement attempt: once one snapshot's bytes are verified
+    /// the fence drops for it, and if a human edit during the suspension had
+    /// already replaced the slot, `acceptImportedDraft` re-applies the PROVEN
+    /// delta onto that newer content as a NEW placement — fenced and
+    /// disk-verified again — before it may report `.landed`.
+    private struct PendingImportedCommit {
+        let conversationID: UUID
+        /// The proven slot state before this placement (what readers see).
+        let baseEntry: Entry?
+        /// Revision the placement wrote; set synchronously by `commitDurable`.
+        var placementRevision: Int?
+        let incomingText: String
+        let incomingAttachments: [AttachmentRef]
+    }
+
+    private var pendingImportedCommit: PendingImportedCommit?
+
+    /// True while a durable import placement for this slot is still awaiting
+    /// disk verification. This is real in-flight import ownership (the answer
+    /// an import destination must treat as busy), NOT mere live-editor
+    /// presence: an open composer alone never blocks an import landing.
+    func isImportedDraftCommitInFlight(for conversationID: UUID) -> Bool {
+        guard let pending = pendingImportedCommit else { return false }
+        guard pending.conversationID == conversationID else { return false }
+        // Only the placement's own revision is unproven content; once any
+        // later writer moved the slot the fence no longer describes it.
+        return bucket(for: conversationID)[conversationID]?.revision == pending.placementRevision
+    }
+
+    /// Bounded reconciliation attempts. Every attempt is a full fenced,
+    /// disk-verified placement; exhaustion means the human writer keeps
+    /// moving the slot faster than the serial queue lands snapshots — a
+    /// normal busy deferral, never a false `.landed`.
+    private static let importLandingAttemptLimit = 4
+
+    /// The bounded live/durable landing entrypoint for ONE confirmed external
+    /// import into an existing durable task draft. It reuses the exact
+    /// `ShareDraftMerger` rules and the `commitDurable` receipt/CAS pipeline,
+    /// then — only on verified disk success — publishes the landing and
+    /// synchronously folds it into EVERY live owner of exactly this
+    /// conversation in the same main-actor turn (render-before-ack: the
+    /// source may be acknowledged only once the visible composer accepted
+    /// the placement). A human edit made while bytes staged or the durable
+    /// write ran is preserved: the merge base is the durable entry the live
+    /// editor itself last saved, and a landing the view has not absorbed is
+    /// re-applied by `liveRebasedDraft` on that editor's next save rather
+    /// than being silently overwritten.
+    ///
+    /// The ack guarantee: a verified placement whose slot was replaced by a
+    /// newer interleaved human write is NOT acked on its earlier receipt.
+    /// The proven delta is re-applied onto the newer slot content as a new
+    /// placement and THAT snapshot is awaited and disk-verified too, so
+    /// `.landed` means the most recent durable snapshot carries the human
+    /// content, the imported delta exactly once, and the receipt — a store
+    /// reconstructed from disk at that instant proves all of it. Ownership
+    /// while unresolved: every awaited placement suspends this call on the
+    /// serial writer's ACTUAL verdict — there is no wall-clock timeout that
+    /// could return a failure while the submitted write can still publish
+    /// imported refs to disk. Until that verdict arrives nothing is
+    /// published, no result reaches the intake, and therefore no source ack
+    /// or staged-file discard can race an in-flight placement; only the
+    /// bounded attempt loop can extend the deferral, and it never reports a
+    /// false `.landed`. It suspends instead of parking the main actor.
+    func acceptImportedDraft(
+        conversationID: UUID,
+        incomingText: String,
+        incomingAttachments: [AttachmentRef],
+        receipt: ShortcutHandoffReceipt
+    ) async -> ImportedDraftLandingResult {
+        // Imports are durable task drafts only: the ephemeral RAM bucket is
+        // never a durable destination, and a mid-send slot is owned by that
+        // send until its outcome is known (a normal busy deferral).
+        guard !temporaryExcludedIDs.contains(conversationID) else { return .rejectedTarget }
+        if let handoff = sendHandoffUpdate, handoff.conversationID == conversationID,
+           handoff.phase == .began {
+            return .deferredBusy
+        }
+        // One unverified placement per process: a second concurrent apply for
+        // any slot must wait for the first verdict (normal busy deferral).
+        guard pendingImportedCommit == nil else { return .deferredBusy }
+        guard !Task.isCancelled else { return .deferredBusy }
+        let base = bucket(for: conversationID)[conversationID]
+        let durableIDs = Set(base?.attachments.map(\.id) ?? [])
+        let landingID = Self.importedDraftLandingID(conversationID: conversationID, receipt: receipt)
+        let proof = ImportedDraftProof(
+            landingID: landingID,
+            conversationID: conversationID,
+            receipt: receipt,
+            incomingText: incomingText,
+            incomingAttachmentIDs: incomingAttachments.map(\.id)
+        )
+        var previous = base
+        for _ in 0..<Self.importLandingAttemptLimit {
+            if Task.isCancelled {
+                pendingImportedCommit = nil
+                return .deferredBusy
+            }
+            let mergedText = ShareDraftMerger.mergedText(
+                existing: previous?.text ?? "", incoming: incomingText
+            )
+            let mergedAttachments = ShareDraftMerger.mergedAttachments(
+                existing: previous?.attachments ?? [], incoming: incomingAttachments
+            )
+            pendingImportedCommit = PendingImportedCommit(
+                conversationID: conversationID,
+                baseEntry: previous,
+                placementRevision: nil,
+                incomingText: incomingText,
+                incomingAttachments: incomingAttachments
+            )
+            let committed = await commitDurable(
+                text: mergedText,
+                attachments: mergedAttachments,
+                conversationID: conversationID,
+                expectedRevision: previous?.revision,
+                handoff: receipt,
+                landingProof: proof,
+                onPlacement: { [weak self] revision in
+                    guard let self, self.pendingImportedCommit?.conversationID == conversationID else { return }
+                    self.pendingImportedCommit?.placementRevision = revision
+                }
+            )
+            let placementRevision = pendingImportedCommit?.placementRevision
+            pendingImportedCommit = nil
+            let slot = bucket(for: conversationID)[conversationID]
+            guard committed else {
+                // No bytes verified for this attempt: nothing published,
+                // nothing acked, and `commitDurable` rolled back this
+                // attempt's unverified placement, receipt AND proof. The
+                // unproven placement was never visible to a live rebased
+                // save, a reconstructed editor or a refresh (see
+                // `PendingImportedCommit`), so no draft can be holding a ref
+                // whose staged file the intake may now discard — unless an
+                // EARLIER attempt in this loop verified a placement that the
+                // disk still carries, which keeps the receipt proven and
+                // forces the intake side to retain the staged copies.
+                return .failed
+            }
+            if Task.isCancelled, slot?.revision == placementRevision {
+                // A cancel after the bytes landed but before the fold must
+                // not publish or ack: the envelope stays pending, and the
+                // next pass settles it against the proven, content-satisfied
+                // receipt (or re-lands it when the disk moved on).
+                return .deferredBusy
+            }
+            if let slot, slot.revision == placementRevision {
+                // Verified AND still authoritative: this snapshot is the
+                // newest durable state, so an immediate reconstruction from
+                // disk proves human content + imported delta + receipt.
+                let landing = ImportedDraftLanding(
+                    landingID: landingID,
+                    conversationID: conversationID,
+                    baseRevision: base?.revision,
+                    landedRevision: slot.revision,
+                    landedText: slot.text,
+                    landedAttachments: slot.attachments,
+                    incomingText: incomingText,
+                    addedAttachments: incomingAttachments.filter { !durableIDs.contains($0.id) },
+                    receipt: receipt
+                )
+                latestImportedDraftLanding = landing
+                let owners = (liveDraftOwners[conversationID] ?? []).compactMap { $0.owner }
+                for owner in owners {
+                    owner.acceptImportedDraftLanding(landing)
+                }
+                return .landed(revision: landing.landedRevision)
+            }
+            // Verified, but a newer human write (or a clear) replaced the
+            // slot during the disk wait. The human content is never rolled
+            // back; the proven delta is re-applied onto it as a fresh
+            // fenced placement that must itself reach disk before any ack.
+            previous = slot
+        }
+        // The human writer kept racing the serial queue through every
+        // bounded attempt: nothing published, nothing acked. The envelope
+        // stays pending and recoverable; a later retry merges onto the
+        // (now quiesced) slot exactly once through the same pipeline.
+        return .deferredBusy
+    }
+
+    /// True once a landing was folded into a live editor or a rebased live
+    /// save: the exact-delta fold must run at most once per landing, and
+    /// every later writer keeps whatever the durable entry already holds.
+    func isImportLandingAbsorbed(_ landingID: String) -> Bool {
+        absorbedImportLandingIDs.contains(landingID)
+    }
+
+    /// Called by the live owner after it absorbed the landing (or by a
+    /// rebased save that folded it), so no second writer appends the same
+    /// imported delta again.
+    func markImportLandingAbsorbed(_ landingID: String) {
+        guard absorbedImportLandingIDs.insert(landingID).inserted else { return }
+        absorbedImportLandingOrder.append(landingID)
+        while absorbedImportLandingOrder.count > Self.absorbedImportLandingLimit {
+            let retired = absorbedImportLandingOrder.removeFirst()
+            absorbedImportLandingIDs.remove(retired)
+        }
+    }
+
+    /// Rebase a live editor's save after its CAS was rejected — an external
+    /// landing (or another writer) advanced the durable entry while this
+    /// keystroke was in flight. The field stays the human truth for its own
+    /// text, but durable refs are unioned by stable id, so a landed import
+    /// can never be dropped by a stale live list, and the newest proven
+    /// landing THIS slot has not absorbed yet is folded in exactly once.
+    /// Ordinary multiwindow text last-writer behavior is deliberately
+    /// unchanged: only imported deltas get the fold fence.
+    func liveRebasedDraft(
+        text: String,
+        attachments: [AttachmentRef],
+        conversationID: UUID,
+        knownRevision: Int?
+    ) -> (text: String, attachments: [AttachmentRef]) {
+        // Read the PROVEN durable state: an import placement still awaiting
+        // disk verification is not unioned in (see `PendingImportedCommit`),
+        // so a failed write plus the source's staged-file discard can never
+        // leave a newer human revision pointing at deleted bytes.
+        let durable = entry(for: conversationID)
+        var mergedText = text
+        var mergedAttachments = ShareDraftMerger.mergedAttachments(
+            existing: durable?.attachments ?? [], incoming: attachments
+        )
+        if let landing = latestImportedDraftLanding,
+           landing.conversationID == conversationID,
+           (knownRevision ?? 0) < landing.landedRevision,
+           !isImportLandingAbsorbed(landing.landingID) {
+            mergedText = ShareDraftMerger.mergedText(
+                existing: mergedText, incoming: landing.incomingText
+            )
+            mergedAttachments = ShareDraftMerger.mergedAttachments(
+                existing: mergedAttachments, incoming: landing.addedAttachments
+            )
+            markImportLandingAbsorbed(landing.landingID)
+        }
+        return (mergedText, mergedAttachments)
+    }
+
     /// Stable identity for the Home launchpad draft. Independent of the
     /// per-launch draft conversation UUID that Home rotates after each send.
     static let homeDraftID = UUID(uuidString: "8F4D0A6E-3B1C-4E2A-9D55-2C8F1A77E010")!
@@ -199,6 +613,11 @@ final class ComposerDraftStore: ObservableObject {
     /// temporary-chat ids never receive inbox handoffs, and the receipt
     /// survives ordinary edits, clears and sends until its source settles.
     private var handoffs: [UUID: ShortcutHandoffReceipt] = [:]
+    /// Landed external-import deltas keyed by stable landing id. Serialized
+    /// with every snapshot (like the receipt ledger) so a placement's exact
+    /// delta reaches disk ATOMICALLY with its receipt, and `settleHandoff`
+    /// (after the source ack) retires both together.
+    private var landingProofs: [String: ImportedDraftProof] = [:]
     /// Temporary-chat drafts live in a RAM-only bucket: `submitSnapshot`
     /// serializes `entries` alone (plus the durable receipt ledger), so
     /// lifecycle flushes can never persist an ephemeral draft, regardless
@@ -256,12 +675,14 @@ final class ComposerDraftStore: ObservableObject {
         )
         var loaded: [UUID: Entry] = [:]
         var loadedHandoffs: [UUID: ShortcutHandoffReceipt] = [:]
+        var loadedLandingProofs: [String: ImportedDraftProof] = [:]
         var loadFailure: String?
         if FileManager.default.fileExists(atPath: fileURL.path) {
             do {
                 let document = try Self.decodeDocument(Self.readData(from: fileURL))
                 loaded = document.drafts
                 loadedHandoffs = document.handoffs
+                loadedLandingProofs = document.landingProofs
             } catch {
                 // Never discard the user's unreadable input: keep a copy for
                 // recovery, start from an empty map and report the failure.
@@ -275,13 +696,15 @@ final class ComposerDraftStore: ObservableObject {
         }
         self.entries = loaded
         self.handoffs = loadedHandoffs
+        self.landingProofs = loadedLandingProofs
         // A successfully loaded document IS the disk state: its receipts are
         // proven on disk (this is the crash-between-durable-write-and-ack
-        // recovery path). A missing file or a failed decode proves nothing,
-        // so the verified receipt set stays empty and no claim can be
+        // recovery path), and its draft map is the baseline the content-aware
+        // import proof reads. A missing file or a failed decode proves
+        // nothing, so the verified set stays empty and no claim can be
         // acknowledged until a future write lands.
-        if loadFailure == nil, !loadedHandoffs.isEmpty {
-            writer.seedPersisted(receipts: Set(loadedHandoffs.values))
+        if loadFailure == nil {
+            writer.seedPersisted(receipts: Set(loadedHandoffs.values), drafts: loaded)
         }
         if let loadFailure {
             self.pendingLoadFailure = loadFailure
@@ -314,8 +737,29 @@ final class ComposerDraftStore: ObservableObject {
 
     // MARK: - Reads
 
+    /// Slot state with any unverified in-flight import placement hidden, but
+    /// WITHOUT the pending-send projection. Send bookkeeping must keep its
+    /// own raw comparison semantics, yet it may never carry an unproven
+    /// imported ref into a newer revision: if the write then fails, the source
+    /// discards those staged bytes and the draft would point at deleted files.
+    /// A later successful landing re-applies the proven delta onto whatever
+    /// the send produced (see `acceptImportedDraft`).
+    private func provenStoredEntry(for conversationID: UUID) -> Entry? {
+        if let pending = pendingImportedCommit, pending.conversationID == conversationID,
+           bucket(for: conversationID)[conversationID]?.revision == pending.placementRevision {
+            return pending.baseEntry
+        }
+        return bucket(for: conversationID)[conversationID]
+    }
+
+    /// Public read surface. Live rebased saves, reconstructed editors,
+    /// `ThreadDetailViewModel.refreshDraftFromDurableStore` and the import
+    /// destination snapshot all read through here, so an unproven imported
+    /// ref is never unioned into a newer human revision or rendered as if it
+    /// were durable. The write pipeline itself uses `bucket(for:)`, so the
+    /// receipt and its placed text still reach disk as ONE snapshot.
     func entry(for conversationID: UUID) -> Entry? {
-        guard var value = bucket(for: conversationID)[conversationID] else { return nil }
+        guard var value = provenStoredEntry(for: conversationID) else { return nil }
         if let pending = pendingSend(for: conversationID), value.text == pending.text {
             value.text = ""
             let sentIDs = Set(pending.attachments.map(\.id))
@@ -496,7 +940,7 @@ final class ComposerDraftStore: ObservableObject {
         sentAttachments: [AttachmentRef] = [],
         sendToken: SendCommitToken? = nil
     ) -> Bool {
-        guard let current = bucket(for: conversationID)[conversationID] else { return false }
+        guard let current = provenStoredEntry(for: conversationID) else { return false }
         let sentIDs = Set(sentAttachments.map(\.id))
         let remaining = current.attachments.filter { !sentIDs.contains($0.id) }
         let identityMatches = sendToken.map {
@@ -544,45 +988,75 @@ final class ComposerDraftStore: ObservableObject {
     /// disk), and suspends — without blocking the main thread — until the
     /// newest snapshot is on disk.
     ///
-    /// Returns true ONLY when the bytes (text AND receipt) are verified
-    /// durable; callers may acknowledge their source record with that result
-    /// and nothing less. On a failed write the method rolls back exactly its
-    /// own mutation: the shared slot is restored (so the handoff stays
-    /// retryable and the failure does not leave an occupied slot that would
-    /// block every later delivery) ONLY while the slot still holds this
-    /// commit's content — a newer human edit, clear, or send during the
-    /// suspension always wins and is never rolled back — and the unverified
-    /// receipt is removed, so a disk failure can never produce a
-    /// receipt-backed ack later.
+    /// Returns true ONLY when the bytes (text, receipt AND landing proof)
+    /// are verified durable; callers may acknowledge their source record
+    /// with that result and nothing less. The wait resolves exactly on the
+    /// serial writer's ACTUAL completion of THIS snapshot — never a
+    /// fire-and-forget flush presented as proof, and never a wall-clock
+    /// timeout that could report failure while the submitted write can
+    /// still land later and publish imported refs (the ownership invariant
+    /// that makes the caller-side deferral safe: while this call is
+    /// suspended nothing is published, no result reaches the intake, and no
+    /// ack or staged-file discard can race an in-flight placement). It
+    /// suspends instead of parking the main actor; boundedness comes from
+    /// the serial pipeline itself (the must-land block runs exactly once)
+    /// and from the caller's attempt loop. On a failed write the method
+    /// rolls back exactly its own mutation: the shared slot is restored (so
+    /// the handoff stays retryable and the failure does not leave an
+    /// occupied slot that would block every later delivery) ONLY while the
+    /// slot still holds this commit's content — a newer human edit, clear,
+    /// or send during the suspension always wins and is never rolled back —
+    /// and the unverified receipt and landing proof are removed (back to
+    /// whatever a previous verified placement left), so a disk failure can
+    /// never produce a receipt-backed ack of bytes the disk does not hold.
     func commitDurable(
         text: String,
         attachments: [AttachmentRef] = [],
         conversationID: UUID,
         expectedRevision: Int?,
-        handoff: ShortcutHandoffReceipt? = nil
+        handoff: ShortcutHandoffReceipt? = nil,
+        landingProof: ImportedDraftProof? = nil,
+        onPlacement: (@MainActor @escaping (Int) -> Void)? = nil
     ) async -> Bool {
         let previous = bucket(for: conversationID)[conversationID]
         let previousReceipt = handoff.flatMap { handoffs[$0.entryID] }
+        let previousProof = landingProof.flatMap { landingProofs[$0.landingID] }
         guard save(
             text: text, attachments: attachments,
             conversationID: conversationID, expectedRevision: expectedRevision
         ) != nil else { return false }
         let commitRevision = bucket(for: conversationID)[conversationID]?.revision
+        if let commitRevision {
+            // Synchronous placement report BEFORE the disk wait: the import
+            // landing fence records exactly which revision is unproven, so no
+            // reader or rebased live save can treat the placement as durable
+            // while this call is suspended.
+            onPlacement?(commitRevision)
+        }
         if let handoff {
             // Same main-actor turn as the save above: the snapshot submitted
-            // below serializes text and receipt as ONE atomic document
-            // version. Distinct entry ids never collapse into each other.
+            // below serializes text, receipt and landing proof as ONE atomic
+            // document version. Distinct entry ids never collapse.
             handoffs[handoff.entryID] = handoff
+        }
+        if let landingProof {
+            landingProofs[landingProof.landingID] = landingProof
         }
         pendingWrite?.cancel()
         pendingWrite = nil
         let version = snapshotVersion
         submitSnapshot(requiringLanding: handoff != nil)
         let tracker = self.writer
-        let placed = await withCheckedContinuation { continuation in
+        let placed = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
             // The write queue is serial and the snapshot closure was enqueued
-            // synchronously above: this closure runs after it, so the
-            // bookkeeping it reads reflects exactly this snapshot's outcome.
+            // synchronously above: this closure runs directly after it, so
+            // the bookkeeping it reads reflects exactly this snapshot's own
+            // must-land attempt. There is deliberately NO timeout resume
+            // here: resolving early while this write could still land would
+            // hand the caller a failure verdict for bytes that may yet
+            // publish imported refs — the intake would discard staged files
+            // the disk then references. The await ends only on the writer's
+            // actual completion.
             writeQueue.async {
                 continuation.resume(
                     returning: tracker.persistedVersion >= version && tracker.lastFailure == nil
@@ -606,6 +1080,9 @@ final class ComposerDraftStore: ObservableObject {
         if let handoff, handoffs[handoff.entryID] == handoff {
             handoffs[handoff.entryID] = previousReceipt
         }
+        if let landingProof, landingProofs[landingProof.landingID] == landingProof {
+            landingProofs[landingProof.landingID] = previousProof
+        }
         markDirty()
         return false
     }
@@ -613,14 +1090,35 @@ final class ComposerDraftStore: ObservableObject {
     /// True only when the most recent write pipeline VERIFIED this exact
     /// receipt on disk: the same snapshot carried it, its bytes landed, and
     /// (for a fresh process) it came out of the readable draft document.
-    /// In-memory staging, text containment and equality inference are NOT
-    /// proof — a settle that acknowledges on anything less would credit an
-    /// undelivered or unrelated entry. Callers must ALSO hold the ownership
-    /// invariant that a receipt is only ever staged in the same main-actor
-    /// turn in which the live composer synchronously accepted the text;
-    /// disk proof then means a VISIBLE acceptance already happened.
+    /// In-memory staging and equality inference are NOT proof — a settle
+    /// that acknowledges on anything less would credit an undelivered or
+    /// unrelated entry. Callers must ALSO hold the ownership invariant that
+    /// a receipt is only ever staged in the same main-actor turn in which
+    /// the live composer synchronously accepted the text; disk proof then
+    /// means a VISIBLE acceptance already happened.
+    ///
+    /// For an EXTERNAL import landing (one with an `ImportedDraftProof`)
+    /// the check is deliberately content-aware: the most recent snapshot
+    /// that actually reached disk must still carry the landed delta (the
+    /// incoming text — a PRESENCE gate for an already-acked envelope, never
+    /// a merge/idempotence guess — and every incoming item id). A later
+    /// persisted human snapshot that dropped the imported bytes therefore
+    /// can no longer acknowledge on the earlier placement's receipt; the
+    /// intake re-lands instead, which is what closes the post-ack loss
+    /// window. Ordinary handoff receipts (Shortcuts inbox placements without
+    /// a landing proof) keep the pure ledger semantics.
     func handoffReceiptOnDisk(_ receipt: ShortcutHandoffReceipt) -> Bool {
-        writer.persistedReceipts.contains(receipt)
+        guard writer.persistedReceipts.contains(receipt) else { return false }
+        guard let proof = landingProofs.values.first(where: { $0.receipt == receipt }) else {
+            return true
+        }
+        let landed = writer.lastLandedDrafts[proof.conversationID]
+        let trimmed = proof.incomingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, landed?.text.contains(proof.incomingText) != true {
+            return false
+        }
+        let landedIDs = Set(landed?.attachments.map(\.id) ?? [])
+        return proof.incomingAttachmentIDs.allSatisfy { landedIDs.contains($0) }
     }
 
     /// Receipts still awaiting their source ack, in memory. The ledger is
@@ -644,8 +1142,14 @@ final class ComposerDraftStore: ObservableObject {
     /// tombstone that can never be re-claimed), so nothing can settle on the
     /// stale bytes a second time.
     func settleHandoff(entryID: UUID, claimToken: String) {
-        guard handoffs[entryID]?.claimToken == claimToken else { return }
+        guard let receipt = handoffs[entryID], receipt.claimToken == claimToken else { return }
         handoffs[entryID] = nil
+        // Retire the import landing proof together with its receipt: once
+        // the source is acknowledged, later human edits own the draft and
+        // no recovery pass may still consult this landing's disk proof.
+        if landingProofs.first(where: { $0.value.receipt == receipt }) != nil {
+            landingProofs = landingProofs.filter { $0.value.receipt != receipt }
+        }
         markDirty()
     }
 
@@ -713,6 +1217,7 @@ final class ComposerDraftStore: ObservableObject {
         submittedVersion = version
         let snapshot = entries
         let receiptSnapshot = handoffs
+        let proofSnapshot = landingProofs
         let verifiedReceipts = Set(receiptSnapshot.values)
         let url = fileURL
         let writer = self.writer
@@ -732,9 +1237,21 @@ final class ComposerDraftStore: ObservableObject {
                     at: url.deletingLastPathComponent(),
                     withIntermediateDirectories: true
                 )
-                let data = try Self.encodeDocument(drafts: snapshot, handoffs: receiptSnapshot)
+                let data = try Self.encodeDocument(
+                    drafts: snapshot,
+                    handoffs: receiptSnapshot,
+                    landingProofs: proofSnapshot
+                )
                 try data.write(to: url, options: .atomic)
-                writer.complete(version: version, receipts: verifiedReceipts)
+                // The tracker remembers the FULLY landed document state:
+                // drafts (for the content-aware disk proof of import
+                // landings) and receipts. A failed write leaves it at the
+                // last snapshot that really reached disk.
+                writer.complete(
+                    version: version,
+                    receipts: verifiedReceipts,
+                    drafts: snapshot
+                )
                 wrote = true
             } catch {
                 writer.fail(version: version, message: error.localizedDescription)
@@ -772,30 +1289,40 @@ final class ComposerDraftStore: ObservableObject {
     }
 
     /// The on-disk document. Version 2 wraps the draft map so a handoff
-    /// receipt serializes atomically with the text it proves. A version 1
-    /// document (a bare `[uuid: Entry]` JSON object — every file written
-    /// before this protocol existed) still loads, so a failed or never-
-    /// attempted v2 write leaves the recoverable bytes readable: each entry
-    /// survives a process restart and the missing receipt ledger simply
-    /// proves nothing, which is exactly the honest default.
+    /// receipt serializes atomically with the text it proves (and, for an
+    /// external import landing, with the `ImportedDraftProof` delta that
+    /// makes the disk receipt check content-aware). A version 1 document (a
+    /// bare `[uuid: Entry]` JSON object — every file written before this
+    /// protocol existed) still loads, so a failed or never-attempted v2
+    /// write leaves the recoverable bytes readable: each entry survives a
+    /// process restart and the missing receipt/proof ledgers simply prove
+    /// nothing, which is exactly the honest default.
     private struct PersistedDocument: Codable {
         var drafts: [String: Entry]
         var handoffs: [String: ShortcutHandoffReceipt]
+        /// Optional on decode: documents written before import proofs
+        /// existed carry no field, which decodes as an empty ledger.
+        var landingProofs: [String: ImportedDraftProof]?
     }
 
     private nonisolated static func decodeDocument(
         _ data: Data
-    ) throws -> (drafts: [UUID: Entry], handoffs: [UUID: ShortcutHandoffReceipt]) {
+    ) throws -> (
+        drafts: [UUID: Entry],
+        handoffs: [UUID: ShortcutHandoffReceipt],
+        landingProofs: [String: ImportedDraftProof]
+    ) {
         let decoder = JSONDecoder()
         if let document = try? decoder.decode(PersistedDocument.self, from: data) {
             return (
                 try decodeDrafts(document.drafts),
-                try decodeHandoffs(document.handoffs)
+                try decodeHandoffs(document.handoffs),
+                try decodeLandingProofs(document.landingProofs ?? [:])
             )
         }
-        // v1: the whole root object is the draft map; no receipts existed.
+        // v1: the whole root object is the draft map; no ledgers existed.
         let raw = try decoder.decode([String: Entry].self, from: data)
-        return (try decodeDrafts(raw), [:])
+        return (try decodeDrafts(raw), [:], [:])
     }
 
     private nonisolated static func decodeDrafts(
@@ -834,8 +1361,30 @@ final class ComposerDraftStore: ObservableObject {
         return decoded
     }
 
+    private nonisolated static func decodeLandingProofs(
+        _ raw: [String: ImportedDraftProof]
+    ) throws -> [String: ImportedDraftProof] {
+        var decoded: [String: ImportedDraftProof] = [:]
+        for (key, value) in raw where key == value.landingID {
+            decoded[key] = value
+        }
+        guard decoded.count == raw.count else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: FloeL10n.l(
+                        "chat.composer_draft_store.the_draft_key_is_not_a", "landing"
+                    )
+                )
+            )
+        }
+        return decoded
+    }
+
     private nonisolated static func encodeDocument(
-        drafts: [UUID: Entry], handoffs: [UUID: ShortcutHandoffReceipt]
+        drafts: [UUID: Entry],
+        handoffs: [UUID: ShortcutHandoffReceipt],
+        landingProofs: [String: ImportedDraftProof] = [:]
     ) throws -> Data {
         var rawDrafts: [String: Entry] = [:]
         for (key, value) in drafts {
@@ -847,7 +1396,13 @@ final class ComposerDraftStore: ObservableObject {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        return try encoder.encode(PersistedDocument(drafts: rawDrafts, handoffs: rawHandoffs))
+        return try encoder.encode(
+            PersistedDocument(
+                drafts: rawDrafts,
+                handoffs: rawHandoffs,
+                landingProofs: landingProofs
+            )
+        )
     }
 
     /// Moves an unreadable draft document aside (copy as a fallback) so the
@@ -878,10 +1433,12 @@ final class ComposerDraftStore: ObservableObject {
 
     /// Lock-protected write bookkeeping shared between the main actor and the
     /// serial write queue. Also the single authority on what is PROVEN ON
-    /// DISK: the receipt set of the most recent snapshot whose bytes actually
-    /// landed (seeded from the loaded document at init), plus the must-land
-    /// obligations that keep a handoff placement from being skipped as
-    /// "superseded" before it ever reached disk.
+    /// DISK: the receipt set AND the draft map of the most recent snapshot
+    /// whose bytes actually landed (seeded from the loaded document at
+    /// init), plus the must-land obligations that keep a handoff placement
+    /// from being skipped as "superseded" before it ever reached disk. The
+    /// landed draft map is what the content-aware import-receipt proof reads
+    /// — in-memory staging never substitutes for it.
     private final class DraftWriteTracker: @unchecked Sendable {
         private let lock = NSLock()
         private var requested: UInt64 = 0
@@ -889,6 +1446,7 @@ final class ComposerDraftStore: ObservableObject {
         private var failure: String?
         private var landingObligations: Set<UInt64> = []
         private var landedReceipts: Set<ComposerDraftStore.ShortcutHandoffReceipt> = []
+        private var landedDrafts: [UUID: Entry] = [:]
 
         func begin(version: UInt64, mustLand: Bool = false) {
             lock.lock()
@@ -927,20 +1485,40 @@ final class ComposerDraftStore: ObservableObject {
             return landedReceipts
         }
 
+        /// The draft map of the most recent snapshot that ACTUALLY landed
+        /// (or the document loaded at init — which IS disk state). The
+        /// content-aware import proof reads exactly this map, so an in-
+        /// memory newer-but-unlanded revision can never fake disk durability.
+        var lastLandedDrafts: [UUID: Entry] {
+            lock.lock()
+            defer { lock.unlock() }
+            return landedDrafts
+        }
+
         /// A successfully loaded document IS disk state: seed the verified
-        /// receipts from it (crash-after-write-before-ack recovery).
-        func seedPersisted(receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>) {
+        /// receipts AND the landed draft map from it (crash-after-write-
+        /// before-ack recovery, and the import proof's disk baseline).
+        func seedPersisted(
+            receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>,
+            drafts: [UUID: Entry]
+        ) {
             lock.lock()
             landedReceipts = receipts
+            landedDrafts = drafts
             lock.unlock()
         }
 
-        func complete(version: UInt64, receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>) {
+        func complete(
+            version: UInt64,
+            receipts: Set<ComposerDraftStore.ShortcutHandoffReceipt>,
+            drafts: [UUID: Entry]
+        ) {
             lock.lock()
             persisted = max(persisted, version)
             failure = nil
             landingObligations.remove(version)
             landedReceipts = receipts
+            landedDrafts = drafts
             lock.unlock()
         }
 
@@ -948,12 +1526,45 @@ final class ComposerDraftStore: ObservableObject {
             lock.lock()
             failure = message
             landingObligations.remove(version)
-            // `landedReceipts` deliberately stays at the last snapshot that
-            // ACTUALLY landed: a failed write changes nothing on disk, so
-            // receipts proven before the failure remain proven and the
-            // receipt the failed commit had staged proves nothing.
+            // `landedReceipts` and `landedDrafts` deliberately stay at the
+            // last snapshot that ACTUALLY landed: a failed write changes
+            // nothing on disk, so receipts and drafts proven before the
+            // failure remain proven and the receipt the failed commit had
+            // staged proves nothing.
             lock.unlock()
         }
     }
 }
+
+/// Pure fold rules for a live editor absorbing one proven import landing.
+/// Shared verbatim with the durable commit path (`ShareDraftMerger`), so the
+/// visible field and the durable entry apply the identical non-destructive
+/// merge. Returns nil when the landing is not newer than the content this
+/// owner already adopted: applying it again could only duplicate the exact
+/// imported delta, which is what the revision fence exists to refuse —
+/// never a text-containment guess.
+enum ImportedDraftLiveFold {
+    struct Folded {
+        let text: String
+        let attachments: [AttachmentRef]
+    }
+
+    static func fold(
+        _ landing: ComposerDraftStore.ImportedDraftLanding,
+        intoText existingText: String,
+        attachments existingAttachments: [AttachmentRef],
+        adoptedRevision: Int?
+    ) -> Folded? {
+        guard (adoptedRevision ?? 0) < landing.landedRevision else { return nil }
+        return Folded(
+            text: ShareDraftMerger.mergedText(
+                existing: existingText, incoming: landing.incomingText
+            ),
+            attachments: ShareDraftMerger.mergedAttachments(
+                existing: existingAttachments, incoming: landing.addedAttachments
+            )
+        )
+    }
+}
+
 #endif

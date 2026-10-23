@@ -19,6 +19,7 @@ struct AssistantMessageView: View {
     /// reparse instead of full-document parse per token).
     var isStreaming: Bool = false
     var allowsReadAloud: Bool = true
+    var speechOwnerID: UUID? = nil
     var onSaveToNotes: ((String) -> Void)? = nil
     /// Real file/image parts carried by the assistant notice. A returned
     /// adopted design result renders through this SAME shared chip surface
@@ -28,6 +29,9 @@ struct AssistantMessageView: View {
 
     @EnvironmentObject private var speechService: SpeechService
     @Environment(\.continuousVoiceActive) private var continuousVoiceActive
+    @State private var localSpeechOwnerID = UUID()
+
+    private var playbackOwnerID: UUID { speechOwnerID ?? localSpeechOwnerID }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -52,7 +56,7 @@ struct AssistantMessageView: View {
                     }
                 }
             }
-            if allowsReadAloud, let failed = speechService.failedText, AnswerSpeechText.plainText(failed) == AnswerSpeechText.plainText(text), let failureKey = speechService.failureKey {
+            if allowsReadAloud, speechService.failureOwnerID == playbackOwnerID, let failureKey = speechService.failureKey {
                 HStack {
                     Text(LocalizedStringKey(failureKey)).font(.footnote).foregroundStyle(.red)
                     Button("voice.action.retry") { speechService.retry() }
@@ -65,6 +69,7 @@ struct AssistantMessageView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(String(localized: "thread.role.assistant"))
         .accessibilityIdentifier("thread.assistant_message")
+        .onDisappear { speechService.clearFailure(ownerID: playbackOwnerID) }
     }
 
     private var copyButton: some View {
@@ -81,14 +86,13 @@ struct AssistantMessageView: View {
     }
 
     private var ownsPlayback: Bool {
-        guard let current = speechService.speakingText else { return false }
-        return AnswerSpeechText.plainText(current) == AnswerSpeechText.plainText(text)
+        speechService.activeOwnerID == playbackOwnerID
     }
 
     private var readAloudButton: some View {
         let isThisMessageSpeaking = speechService.isSpeaking && ownsPlayback
         return Button {
-            speechService.speak(text)
+            speechService.speak(text, ownerID: playbackOwnerID)
         } label: {
             Label(
                 isThisMessageSpeaking ? "chat.assistant_message_view.stop_reading" : "chat.assistant_message_view.read_aloud",

@@ -1,11 +1,17 @@
-<!-- docs-updated: 2026-10-22 -->
+<!-- docs-updated: 2026-10-23 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-22. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-10-23. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
-当前目标为 **S5～S7 合并交付：先完成全部代码与集成，再统一测试**。S4 已随 284 完成本地验证、内部可安装、稳定无签名 Release／同次 Feather 及本轮产物清理，移出活动目标；系统自动触发、锁屏、强退与长期行为仍按真实设备证据单独记录。283 已送审一次并等待审核，不重复查询或提交 281／282，不修改 275 正式提交。[当前计划](FLOE_IOS_CLOSURE_PLAN_20261018.zh-CN.md)。
+当前实施批次为**连续语音、增强语音模型替换、个性化管理、更新管理及外部文件导入去向**。先集成代码，再统一验证和发布；当前改动尚未交付。[活动计划](FLOE_VOICE_CLOSURE_20261023.md)。此前阶段的完成记录继续保留。
 
-Current goal: one combined S5–S7 delivery, with all code and integration completed before unified testing. S4 is delivered in build 284 with local qualification, internal availability, canonical unsigned publication/awaited Feather and output cleanup. Unattended triggering and physical-device behavior remain separately unverified. Earlier external-review submissions and the formal App Store submission are unchanged.
+The active batch covers continuous voice, the smaller enhanced speech pack, personalization retention, Settings updates and Notes/task/Canvas import destinations. Code integration precedes unified qualification and distribution; this batch is not delivered yet.
+
+## 1.7.47（288）内部可安装，无签名包与 Feather 已交付 / Internal and unsigned available
+
+[288 交付记录](releases/testflight/BUILD_288_DELIVERY.md)保留本地构建、207 项宿主测试、内部可安装、稳定 GitHub 安装包及 Feather 回读证据。公开 TestFlight 尚未提交：API 审核说明写入返回 403，网页路径等待 Apple 验证；这不是外部可安装状态。当前反馈涉及的真实语音链路和模型内存问题进入上述修复批次。The delivery record separates internal availability, unsigned publication and the unfinished external submission; current microphone and memory defects are being repaired in the active batch.
+
+以下保留此前发布时的记录。The entries below retain earlier release records.
 
 ## 1.7.44（285）候选集成中，尚未交付 / Candidate integration, not delivered
 

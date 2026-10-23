@@ -122,6 +122,7 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Persisted messages of the conversation (user goals, final answers).
     @Published private(set) var messages: [PersistedMessage] = [] { didSet { timelineRevision &+= 1 } }
     @Published private(set) var hasLoaded = false
+    @Published private(set) var hasLoadedSpeechHistory = false
     @Published private(set) var earlierEventRunIDs = Set<UUID>() { didSet { timelineRevision &+= 1 } }
     @Published private(set) var loadingEventRunIDs = Set<UUID>()
     @Published private(set) var loadingEarlierMessages = false
@@ -138,6 +139,12 @@ final class ThreadDetailViewModel: ObservableObject {
     /// Monotonic identity of the live composer text. See `draft`.
     private(set) var draftGeneration = 0
     private var draftHandoffObserver: AnyCancellable?
+    /// Durable draft revision this live editor last adopted, used ONLY as
+    /// the external-import landing fence: an editor initialized from the
+    /// store already contains every landing up to that revision, and a
+    /// landing newer than it is folded into the field exactly once (stable
+    /// landing id + revision comparison — never a text-containment guess).
+    private var adoptedDraftRevision: Int?
     /// Id membership indexes for the paged-in rows. Merging a page no longer
     /// rebuilds a dictionary over every loaded row just to dedup: pages are
     /// sequence-ordered, so only genuinely new rows are appended (earlier
@@ -298,6 +305,10 @@ final class ThreadDetailViewModel: ObservableObject {
         let stored = ComposerDraftStore.shared.entry(for: conversationID)
         _draft = Published(initialValue: stored?.text ?? "")
         _attachments = Published(initialValue: stored?.attachments ?? [])
+        // This view already contains everything the durable slot held at the
+        // landing fence revision; only a strictly newer import landing may
+        // fold into the field (see `adoptedDraftRevision`).
+        adoptedDraftRevision = stored?.revision
         let diagnostics = ThreadStreamingDiagnostics()
         self.animator = StreamingTextAnimator(diagnostics: diagnostics)
         self.reasoningAnimator = StreamingTextAnimator(diagnostics: diagnostics)
@@ -315,6 +326,56 @@ final class ThreadDetailViewModel: ObservableObject {
             // Any real edit, including typing then deleting, owns a newer epoch.
             self.draft = update.entry?.text ?? ""
             self.attachments = update.entry?.attachments ?? []
+        }
+        // Live owner registration: an already-open composer of THIS ordinary
+        // task absorbs external import landings synchronously in the landing
+        // turn (the durable commit itself never has to wait for this view),
+        // and the same registry is the exact `hasLiveOwner` answer the import
+        // destination seam reads. A temporary conversation registers nothing:
+        // RAM-only ephemeral drafts are never durable import destinations.
+        if !isTemporary {
+            ComposerDraftStore.shared.registerLiveDraftOwner(self, for: conversationID)
+        }
+    }
+
+    // MARK: - External import landing
+
+    /// Synchronous absorption of ONE proven external import landing for this
+    /// conversation (render-before-ack). The fold reuses the exact durable
+    /// merge rules (`ShareDraftMerger` through `ImportedDraftLiveFold`): the
+    /// live text and the attachments the user staged while bytes were being
+    /// staged or written are preserved, and only the imported delta (stable
+    /// receipt/item identity plus a revision fence — never a content guess)
+    /// is appended. A landing for another task, a temporary chat, or content
+    /// this editor already adopted is refused here, so a replaced or stale
+    /// view can neither double-append nor be written into.
+    func acceptImportedDraftLanding(_ landing: ComposerDraftStore.ImportedDraftLanding) {
+        guard landing.conversationID == conversationID, !isTemporary else { return }
+        guard let folded = ImportedDraftLiveFold.fold(
+            landing,
+            intoText: draft,
+            attachments: attachments,
+            adoptedRevision: adoptedDraftRevision
+        ) else { return }
+        adoptedDraftRevision = landing.landedRevision
+        ComposerDraftStore.shared.markImportLandingAbsorbed(landing.landingID)
+        draft = folded.text
+        attachments = folded.attachments
+    }
+
+    /// Explicit reconciliation entry point (route re-focus, foreground
+    /// restore): if the durable slot advanced past what this editor shows,
+    /// adopt the durable text and refs. Ordinary typing keeps its own
+    /// last-writer semantics — this only closes the navigation gap where a
+    /// route to the SAME conversation did not reconstruct the view.
+    func refreshDraftFromDurableStore() {
+        guard !isTemporary else { return }
+        let stored = ComposerDraftStore.shared.entry(for: conversationID)
+        let landedRevision = stored?.revision
+        if let landedRevision, (adoptedDraftRevision ?? -1) < landedRevision {
+            adoptedDraftRevision = landedRevision
+            draft = stored?.text ?? ""
+            attachments = stored?.attachments ?? []
         }
     }
 
@@ -571,6 +632,7 @@ final class ThreadDetailViewModel: ObservableObject {
             try Task.checkCancellation()
             guard generation == loadGeneration else { return }
             mergeMessagePage(page)
+            hasLoadedSpeechHistory = true
             hasLoaded = true
             logger.info("threadFirstPage elapsed=\(started.duration(to: .now)) messages=\(page.messages.count)")
             // Publish recent history before unrelated configuration and plan reads.
@@ -1886,6 +1948,12 @@ final class ThreadDetailViewModel: ObservableObject {
         isRunning = false
     }
 }
+
+/// Live/durable import synchronization: `ComposerDraftStore.acceptImportedDraft`
+/// addresses exactly the open composers registered here, in the landing's own
+/// main-actor turn, and the registry is the import destination's `hasLiveOwner`
+/// authority. A replaced view's released model drops out automatically.
+extension ThreadDetailViewModel: ComposerDraftStore.ImportedDraftLiveAccepting {}
 
 /// Forwards animator diagnostics into FloeLogger with the structured event
 /// names. Only counts and flags — never transcript content.

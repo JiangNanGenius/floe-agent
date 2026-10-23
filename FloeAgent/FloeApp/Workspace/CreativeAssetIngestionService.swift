@@ -34,12 +34,17 @@ actor CreativeAssetIngestionService {
     static let maximumPixelCount = 80_000_000
 
     private let assetStore: CreativeAssetStore
+    /// Focused-test seam that replaces the Application Support/FloeAgent
+    /// root so tests never write into (or delete from) real user material.
+    /// nil — every production call site — keeps the exact historical path.
+    private let baseDirectory: URL?
 
-    init(assetStore: CreativeAssetStore) {
+    init(assetStore: CreativeAssetStore, baseDirectory: URL? = nil) {
         self.assetStore = assetStore
+        self.baseDirectory = baseDirectory
     }
 
-    func importLocalFile(_ source: URL) async throws -> CreativeAssetRecord {
+    func importLocalFile(_ source: URL, displayName: String? = nil) async throws -> CreativeAssetRecord {
         let accessed = source.startAccessingSecurityScopedResource()
         defer { if accessed { source.stopAccessingSecurityScopedResource() } }
         guard FileManager.default.fileExists(atPath: source.path) else {
@@ -47,10 +52,18 @@ actor CreativeAssetIngestionService {
         }
         let data = try Data(contentsOf: source, options: .mappedIfSafe)
         let type = UTType(filenameExtension: source.pathExtension)
+        let suppliedName = displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Names reaching the material library are always non-empty and
+        // meaningful: a blank supplied name falls back to the payload's
+        // filename, and a filename that is itself blank resolves to the
+        // sanitizer's stable "asset" placeholder.
+        let fallbackName = source.deletingPathExtension().lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return try await persist(
             data: data,
             kind: Self.mediaKind(for: type),
-            displayName: source.deletingPathExtension().lastPathComponent,
+            displayName: suppliedName.flatMap { $0.isEmpty ? nil : $0 }
+                ?? (fallbackName.isEmpty ? Self.sanitizedFilename(fallbackName) : fallbackName),
             fileExtension: Self.safeExtension(type: type, fallback: source.pathExtension),
             mimeType: type?.preferredMIMEType,
             sourceURL: nil,
@@ -182,14 +195,29 @@ actor CreativeAssetIngestionService {
         }
     }
 
-    private func materialsDirectory() throws -> URL {
+    /// The FloeAgent-owned data root: Application Support/FloeAgent in
+    /// production, or the injected focused-test base directory.
+    private func floeRoot(create: Bool) throws -> URL {
+        if let baseDirectory {
+            if create {
+                try FileManager.default.createDirectory(
+                    at: baseDirectory, withIntermediateDirectories: true
+                )
+            }
+            return baseDirectory
+        }
         let support = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
-            create: true
+            create: create
         )
-        let directory = support.appendingPathComponent("FloeAgent/Materials", isDirectory: true)
+        return support.appendingPathComponent("FloeAgent", isDirectory: true)
+    }
+
+    private func materialsDirectory() throws -> URL {
+        let directory = try floeRoot(create: true)
+            .appendingPathComponent("Materials", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
@@ -198,14 +226,7 @@ actor CreativeAssetIngestionService {
         guard !relativePath.contains("..") else {
             throw CreativeAssetIngestionError.missingLocalFile
         }
-        let support = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: false
-        )
-        return support.appendingPathComponent("FloeAgent", isDirectory: true)
-            .appendingPathComponent(relativePath)
+        return try floeRoot(create: false).appendingPathComponent(relativePath)
     }
 
     private static func normalizedImage(_ data: Data) throws -> (data: Data, fileExtension: String, mimeType: String) {

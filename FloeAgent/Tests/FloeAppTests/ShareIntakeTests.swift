@@ -9,7 +9,10 @@
 // * FIFO claim, exclusive live lease, crash recovery grace and token ack
 // * TTL, queue/item/envelope limits, malformed paths, symlinks, corrupt manifests
 // * reviewed draft consumption: existing draft preserved, attachment rollback,
-//   busy/failed destinations keeping the envelope, discard without a task,
+//   busy/failed destinations keeping the envelope, staged copies retained
+//   whenever the envelope already has a durable disk proof (a verified
+//   landing whose reconciled follow-up failed or deferred must never leave
+//   the durable draft pointing at deleted files), discard without a task,
 //   crash-after-commit-before-ack idempotency and no auto-run.
 //
 // Synthetic content only. No provider is contacted and no real user file is
@@ -458,6 +461,12 @@ private final class FakeShareDestination: ShareIntakeDestination {
     var attachments: [AttachmentRef]
     var isBusy = false
     var resultOverride: ShareDraftApplyResult?
+    /// Simulates the reviewed durability job's shape: a placement of THIS
+    /// envelope verified durable on disk during this apply, and only then
+    /// the reconciled follow-up failed or deferred. With a failing/busy
+    /// override this marks the receipt proven BEFORE returning the override,
+    /// so the center's staged-file retention can be exercised deterministically.
+    var provesPlacementBeforeFailingOutcome = false
     private(set) var applyCount = 0
     private(set) var appliedEnvelopeIDs: Set<UUID> = []
     /// Receipts treated by this fake as PROVEN ON DISK.
@@ -492,7 +501,13 @@ private final class FakeShareDestination: ShareIntakeDestination {
     func shareIntakeApply(_ application: ShareDraftApplication) async -> ShareDraftApplyResult {
         applyCount += 1
         if isBusy { return .busy }
-        if let resultOverride { return resultOverride }
+        if let resultOverride {
+            if provesPlacementBeforeFailingOutcome,
+               resultOverride == .failed || resultOverride == .busy || resultOverride == .unavailable {
+                receipts[application.envelopeID] = application.receipt.claimToken
+            }
+            return resultOverride
+        }
         text = ShareDraftMerger.mergedText(
             existing: text,
             incoming: application.incomingText
@@ -717,6 +732,77 @@ struct ShareIntakeCenterTests {
         let retry = await center.apply(envelope, to: destination)
         #expect(retry == .applied(envelopeID: envelope.id))
         #expect(destination.text == "Human draft\n\nShared body")
+    }
+
+    @Test("A failed apply with a durably proven envelope keeps this attempt's staged copies")
+    func failedApplyKeepsStagedWhenDurableProofExists() async throws {
+        let (inbox, root) = makeInbox()
+        let sources = try makeSourceDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sources)
+        }
+        let envelope = try stageTextAndFile(in: inbox, sources: sources)
+        let destination = FakeShareDestination(text: "Human draft")
+        destination.resultOverride = .failed
+        destination.provesPlacementBeforeFailingOutcome = true
+        let staging = FakeShareAttachmentStaging()
+        let center = ShareIntakeCenter(inbox: inbox, staging: staging)
+
+        let outcome = await center.apply(envelope, to: destination)
+
+        #expect(outcome == .failed(
+            envelopeID: envelope.id,
+            message: FloeL10n.l("share.intake.failed")
+        ))
+        // The durable snapshot of THIS envelope references the staged copy
+        // (a verified landing whose reconciliation then failed). Deleting
+        // the staged bytes while the envelope is still pending would leave
+        // the durable draft pointing at removed files, so they stay owned;
+        // only the claim is released and the envelope remains recoverable.
+        #expect(staging.staged.count == 1)
+        #expect(staging.discardedIDs.isEmpty)
+        #expect(try inbox.pending().count == 1)
+
+        // The next pass settles the proven landing without staging or
+        // appending a second copy (the same crash-recovery authority).
+        destination.resultOverride = nil
+        let retry = await center.apply(envelope, to: destination)
+        #expect(retry == .alreadyApplied(envelopeID: envelope.id))
+        #expect(destination.applyCount == 1)
+        #expect(staging.staged.count == 1)
+        #expect(staging.discardedIDs.isEmpty)
+        #expect(try inbox.pending().isEmpty)
+    }
+
+    @Test("A busy apply with a durably proven envelope keeps this attempt's staged copies")
+    func busyApplyKeepsStagedWhenDurableProofExists() async throws {
+        let (inbox, root) = makeInbox()
+        let sources = try makeSourceDirectory()
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sources)
+        }
+        let envelope = try stageTextAndFile(in: inbox, sources: sources)
+        let destination = FakeShareDestination(text: "Human draft")
+        destination.resultOverride = .busy
+        destination.provesPlacementBeforeFailingOutcome = true
+        let staging = FakeShareAttachmentStaging()
+        let center = ShareIntakeCenter(inbox: inbox, staging: staging)
+
+        let outcome = await center.apply(envelope, to: destination)
+
+        #expect(outcome == .deferred(envelopeID: envelope.id, reason: .composerBusy))
+        // Bounded reconciliation exhaustion has the same ownership shape as
+        // a failed reconcile: an earlier placement may already be durable,
+        // so the staged files it references must survive the deferral.
+        #expect(staging.staged.count == 1)
+        #expect(staging.discardedIDs.isEmpty)
+        #expect(try inbox.pending().count == 1)
+        destination.resultOverride = nil
+        let retry = await center.apply(envelope, to: destination)
+        #expect(retry == .alreadyApplied(envelopeID: envelope.id))
+        #expect(try inbox.pending().isEmpty)
     }
 
     @Test("Crash after commit but before ack settles without a duplicate append")
@@ -956,4 +1042,86 @@ struct ShareHomePersistenceTests {
     }
 }
 #endif
+
+// MARK: - Durable destination actions (card forwarding)
+
+@MainActor
+private final class FakeDestinationImportHandler: ShareEnvelopeDestinationImporting {
+    var notesResult: ShareNotesImportResult = .unavailable
+    var canvasResult: ShareNotesImportResult = .unavailable
+    var notesCalls: [UUID] = []
+    var canvasCalls: [(UUID, CanvasDestinationTarget)] = []
+    var targets: [CanvasImportTarget] = []
+
+    func importEnvelopeToNotes(_ envelope: ShareEnvelope) async -> ShareNotesImportResult {
+        notesCalls.append(envelope.id)
+        return notesResult
+    }
+
+    func importEnvelopeToCanvas(
+        _ envelope: ShareEnvelope,
+        target: CanvasDestinationTarget
+    ) async -> ShareNotesImportResult {
+        canvasCalls.append((envelope.id, target))
+        return canvasResult
+    }
+
+    func canvasImportTargets() -> [CanvasImportTarget] { targets }
+}
+
+@Suite("FloeApp.ShareIntakeDestinationActions")
+struct ShareIntakeDestinationActionTests {
+
+    @Test("Card Notes/Canvas actions forward to the handler and publish this envelope's result")
+    func forwardingAndStatus() async throws {
+        let root = makeInboxRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inbox = ShareInbox(rootURL: root)
+        let envelope = try inbox.stage(inputs: [ShareInboxInput(kind: .text, payload: .text("x"))])
+        let handler = FakeDestinationImportHandler()
+        handler.notesResult = .imported(envelopeID: envelope.id, documentCount: 2)
+        let canvasID = UUID()
+        handler.canvasResult = .settled(envelopeID: envelope.id)
+        handler.targets = [.init(id: canvasID, name: "Study")]
+        let center = ShareIntakeCenter(inbox: inbox, staging: FakeShareAttachmentStaging())
+        center.configureDestinationHandler(handler)
+
+        let notes = await center.importEnvelopeToNotes(envelope)
+        #expect(notes == .imported(envelopeID: envelope.id, documentCount: 2))
+        #expect(center.lastDestinationOutcome
+                == ShareDestinationOutcome(destination: .notes, result: handler.notesResult))
+
+        let canvas = await center.importEnvelopeToCanvas(envelope, target: .existing(canvasID: canvasID))
+        #expect(canvas == .settled(envelopeID: envelope.id))
+        #expect(handler.canvasCalls.first?.1 == .existing(canvasID: canvasID))
+        #expect(center.lastDestinationOutcome?.destination == .canvas)
+        #expect(center.canvasImportTargets() == handler.targets)
+
+        center.clearDestinationOutcome()
+        #expect(center.lastDestinationOutcome == nil)
+
+        // A result about an envelope that already left the inbox is cleared
+        // by refresh; it must never describe the next share.
+        _ = await center.importEnvelopeToNotes(envelope)
+        let claim = try inbox.claim(id: envelope.id)
+        try inbox.ack(claim)
+        await center.refresh()
+        #expect(center.lastDestinationOutcome == nil)
+    }
+
+    @Test("Without an injected handler the durable action reports unavailable and copies nothing")
+    func unavailableWithoutHandler() async throws {
+        let root = makeInboxRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inbox = ShareInbox(rootURL: root)
+        let envelope = try inbox.stage(inputs: [ShareInboxInput(kind: .text, payload: .text("x"))])
+        let center = ShareIntakeCenter(inbox: inbox, staging: FakeShareAttachmentStaging())
+        let result = await center.importEnvelopeToNotes(envelope)
+        #expect(result == .unavailable)
+        #expect(center.lastDestinationOutcome == nil)
+        #expect(try inbox.pending().map(\.id) == [envelope.id])
+        #expect(center.canvasImportTargets().isEmpty)
+    }
+}
+
 #endif

@@ -299,6 +299,11 @@ enum VoiceConversationSystemEvent: Sendable, Equatable {
     case routeLost
     case mediaServicesReset
     case engineConfigurationChanged
+    /// The started microphone tap STOPPED delivering buffers: silence also
+    /// delivers (silent) buffers, so a long gap means the capture path is
+    /// dead, not that the user is quiet. The coordinator fails visibly —
+    /// indefinite "Listening" with a dead tap is never legitimate.
+    case captureStalled
 }
 
 enum VoiceConversationSceneEvent: Sendable, Equatable {
@@ -353,8 +358,16 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     /// with no host microphone must throw `.noAudioInput` BEFORE touching
     /// the input node (RemoteIO can abort the process below Swift errors).
     func activate() async throws(VoiceConversationFailure)
-    /// Begin/stop physical microphone collection (mute uses these). Idempotent.
-    func startCapture() throws(VoiceConversationFailure)
+    /// Begin physical microphone collection (mute/unmute uses this). Idempotent
+    /// for an already-installed tap. This returns ONLY after REAL capture
+    /// readiness: at least one actual tap buffer must have arrived within a
+    /// bounded window (≤3 s, the same proof the dictation capturer requires).
+    /// Installing a tap is not readiness — a tap that never fires is a dead
+    /// microphone path and must throw `.noAudioInput` so the coordinator can
+    /// rebuild once and then fail visibly.
+    func startCapture() async throws(VoiceConversationFailure)
+    /// Stop physical collection. Idempotent; cancels any pending readiness
+    /// wait with `.noAudioInput`.
     func stopCapture()
     /// Create the ASR session (reuses the installed/system transcription
     /// backends). May download locale assets, hence async + typed failure.

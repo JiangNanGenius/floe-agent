@@ -13,9 +13,6 @@ import FloeCore
 
 struct GeneralSettingsView: View {
     @ObservedObject var center: SettingsCenter
-    /// Optional content-update center. Present when the settings center hosts
-    /// this view; other call sites remain valid without it.
-    var contentUpdates: ContentUpdateCenter?
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var voiceMethod = VoiceRecognitionPreferences.Method.automatic.rawValue
     @EnvironmentObject private var speechSettings: TTSSettingsService
     /// Scene foldable capability snapshot. A plain environment value with an
@@ -24,9 +21,8 @@ struct GeneralSettingsView: View {
     @Environment(\.foldableDisplay) private var foldableDisplay
     @ObservedObject private var layoutPreferences = LayoutPreferences.shared
 
-    init(center: SettingsCenter, contentUpdates: ContentUpdateCenter? = nil) {
+    init(center: SettingsCenter) {
         self.center = center
-        self.contentUpdates = contentUpdates
     }
 
     var body: some View {
@@ -78,21 +74,6 @@ struct GeneralSettingsView: View {
                     get: { center.verifyFinalAnswer },
                     set: { value in Task { await center.setVerifyFinalAnswer(value) } }
                 ))
-            }
-
-            if let contentUpdates {
-                Section("settings.content_updates.section") {
-                    NavigationLink {
-                        ContentUpdatesSettingsView(center: contentUpdates)
-                    } label: {
-                        Label("settings.content_updates.row", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .frame(minHeight: FloeTheme.minimumTarget)
-                    .accessibilityIdentifier("settings.general.content_updates")
-                    Text("settings.content_updates.footer")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             // Foldable adaptation is automatic on system-detected folding

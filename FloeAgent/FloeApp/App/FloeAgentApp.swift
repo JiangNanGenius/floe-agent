@@ -341,6 +341,11 @@ struct RootView: View {
     @State private var entryNavigationReady = false
     @State private var entryNotice: String?
     @State private var continuousVoiceActive = false
+    /// Compact 导入手记 / 导入任务 / 导入画布 chooser for ambiguous inbound
+    /// entries. Presentation never navigates; only an explicit action may.
+    @State private var presentedDestination: ImportDestinationRequest?
+    @State private var lastPresentedDestination: ImportDestinationRequest?
+    @State private var destinationNoticeTask: Task<Void, Never>?
 
     /// UITest runs pin a deterministic layout: `-ui-testing` forces the
     /// compact (iPhone-style) tab layout; `-ui-testing-ipad` additionally
@@ -448,6 +453,61 @@ struct RootView: View {
         .onOpenURL { handleEntryURL($0) }
         .task(id: "\(entryNavigationReady)-\(pendingEntry?.id.uuidString ?? "none")") {
             await deliverPendingEntry()
+        }
+        .onReceive(environment.importDestinationCenter.$destinationRequest) { request in
+            if request != nil { takeDestinationRequestIfNeeded() }
+        }
+        .onChange(of: continuousVoiceActive) { _, active in
+            // A live continuous-voice session keeps its own modal surface;
+            // the chooser waits instead of interrupting it, then resumes.
+            if !active { takeDestinationRequestIfNeeded() }
+        }
+        .onChange(of: destinationPresentationBlocked) { _, blocked in
+            if !blocked { takeDestinationRequestIfNeeded() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { takeDestinationRequestIfNeeded() }
+        }
+        .onReceive(router.objectWillChange.receive(on: DispatchQueue.main)) { _ in
+            // Settings / setup / design page / canvas and other router
+            // presentations flip through here; after a dismissal hop the
+            // chooser retries itself if a request is still waiting. The
+            // peek/confirm design means a blocked attempt consumes nothing.
+            takeDestinationRequestIfNeeded()
+        }
+        .sheet(item: $presentedDestination, onDismiss: {
+            // Swipe-to-dismiss is an explicit "not now": it behaves exactly
+            // like Cancel (durable source untouched, banner/card path
+            // remains). A completed choice already settled the origin, so
+            // this never cancels what the destination now owns.
+            if let request = lastPresentedDestination {
+                environment.importDestinationCenter.cancelPresentation(request)
+            }
+            lastPresentedDestination = nil
+        }) { request in
+            ImportDestinationSheet(
+                request: request,
+                center: environment.importDestinationCenter,
+                onNotes: {
+                    Task { await resolveDestination(.notes, request) }
+                },
+                onTask: { target in
+                    Task { await resolveDestination(.task, request, taskTarget: target) }
+                },
+                onCanvas: { target in
+                    Task { await resolveDestination(.canvas, request, canvasTarget: target) }
+                },
+                onCancel: {
+                    environment.importDestinationCenter.cancelPresentation(request)
+                    presentedDestination = nil
+                },
+                onPresented: {
+                    // Consumption is confirmed only once the chooser truly
+                    // appeared; blocked presentations stay re-armable.
+                    environment.importDestinationCenter.confirmPresentation(request)
+                }
+            )
+            .presentationDetents([.medium, .large])
         }
         .onReceive(environment.documentIntakeCenter.$presentation) { _ in
             presentPendingDocument()
@@ -751,7 +811,18 @@ struct RootView: View {
                 // Acquire the provider scope in this callback, not after boot.
                 configureDocumentRouting()
                 DocumentIntakeRoutingRegistry.shared.setActive(scenePhase == .active, sceneID: sceneID)
-                if let eventID = environment.documentIntakeCenter.submit(file, sceneID: sceneID) {
+                // Common file formats opened from outside are ambiguous
+                // about their destination; own-format restores (.floenote /
+                // .floecanvas) keep their existing unambiguous destination.
+                let ambiguous = ImportDestinationCenter.isAmbiguousExternalOpen(file)
+                // The requirement is written into the staged entry
+                // atomically before publish (fail-closed), so no side
+                // journal can silently default an interrupted arrival.
+                if let eventID = environment.documentIntakeCenter.submit(
+                    file,
+                    sceneID: sceneID,
+                    destinationChoiceRequired: ambiguous
+                ) {
                     DocumentIntakeRoutingRegistry.shared.capture(
                         DocumentIntakeRouteSnapshot(router: router), sceneID: sceneID, eventID: eventID)
                 }
@@ -789,14 +860,17 @@ struct RootView: View {
                 await environment.shareIntakeCenter.refresh()
                 try Task.checkCancellation()
                 guard pendingEntry?.id == entry.id else { return }
-                guard router.workbenchSelection == selection else {
-                    pendingEntry = nil
-                    return
-                }
                 if let id, !environment.shareIntakeCenter.pending.contains(where: { $0.id == id }) {
                     entryNotice = FloeL10n.l("app.entry.share_unavailable")
                 } else {
-                    router.startNewTask()
+                    // Ambiguous arrival: never navigate on arrival alone
+                    // (a live Temporary Chat stays exactly where it is).
+                    // The durable envelope is already staged; this only
+                    // queues/presents the explicit destination choice over
+                    // the current context. Navigation happens only after
+                    // the user taps 导入任务.
+                    await environment.importDestinationCenter.observeShareArrival(focusedEnvelopeID: id)
+                    takeDestinationRequestIfNeeded()
                 }
             case .externalFile:
                 break
@@ -812,6 +886,113 @@ struct RootView: View {
             }
         }
         if pendingEntry?.id == entry.id { pendingEntry = nil }
+    }
+
+    // MARK: Inbound destination choice
+
+    /// While another modal surface (voice, Settings, setup, design page,
+    /// Canvas, batch/rename/delete sheets, execution environment) is
+    /// presented, SwiftUI cannot reliably present the chooser here. The
+    /// request is only PEEKED, never consumed, until the chooser actually
+    /// appears; these surfaces retry through the signals above. Nothing is
+    /// navigated away or discarded to force it onscreen.
+    private var destinationPresentationBlocked: Bool {
+        continuousVoiceActive
+            || router.presentedSettings
+            || router.presentedSetup != nil
+            || router.presentedDesignPage != nil
+            || presentedCanvasWorkspace != nil
+            || batchStartingConversation != nil
+            || renamingConversation != nil
+            || deletingConversation != nil
+            || deletingWorkspace != nil
+            || presentedExecutionEnvironment
+    }
+
+    /// Shows the chooser over the CURRENT surface only, and only when no
+    /// other modal owns the presentation slot.
+    private func takeDestinationRequestIfNeeded() {
+        guard presentedDestination == nil, !destinationPresentationBlocked else { return }
+        let center = environment.importDestinationCenter
+        guard let request = center.peekDestinationRequest() else { return }
+        center.beginPresentation()
+        lastPresentedDestination = request
+        presentedDestination = request
+    }
+
+    /// Only an explicit choice lands here, and only then may this scene
+    /// navigate. The durable ledger has already recorded the destination by
+    /// the time the action returns.
+    private func resolveDestination(
+        _ destination: ImportDestination,
+        _ request: ImportDestinationRequest,
+        canvasTarget: CanvasDestinationTarget? = nil,
+        taskTarget: TaskDestinationTarget? = nil
+    ) async {
+        let center = environment.importDestinationCenter
+        let result = await center.perform(
+            destination,
+            for: request,
+            canvasTarget: canvasTarget,
+            taskTarget: taskTarget
+        )
+        switch result {
+        case .taskReady(let target):
+            presentedDestination = nil
+            switch target {
+            case .newTask:
+                // Task destination = the existing Home draft / normal composer
+                // through the reviewed share card. This attaches nothing and
+                // starts nothing by itself.
+                router.startNewTask()
+            case .existing:
+                // The confirmed task's durable draft slot already holds the
+                // merge (receipt-verified). No navigation, no send.
+                showDestinationNotice(FloeL10n.l("import.destination.task_imported"))
+            }
+        case .notesQueued:
+            // Re-arm the routing fence at SELECTION time (not arrival), so
+            // the existing staged import completes without stealing
+            // navigation if the user moved on meanwhile.
+            if case .documentEvent(let eventID) = request.origin {
+                DocumentIntakeRoutingRegistry.shared.capture(
+                    DocumentIntakeRouteSnapshot(router: router),
+                    sceneID: sceneID,
+                    eventID: eventID
+                )
+            }
+            presentedDestination = nil
+        case .notesImported(let documentCount):
+            presentedDestination = nil
+            showDestinationNotice(FloeL10n.plural(
+                "share.intake.notes_imported",
+                count: documentCount
+            ))
+        case .canvasReady(let itemCount):
+            // No navigation: insertion into a canvas stays a user action in
+            // the Canvas surface. The files are durable material now.
+            presentedDestination = nil
+            showDestinationNotice(FloeL10n.plural(
+                "import.destination.canvas_imported",
+                count: itemCount
+            ))
+        case .deferred, .failed:
+            // Keep the sheet open with its concise reason line; the source
+            // stays exactly as it was (no task, no note, no canvas, no
+            // removal).
+            break
+        }
+        takeDestinationRequestIfNeeded()
+    }
+
+    private func showDestinationNotice(_ message: String) {
+        destinationNoticeTask?.cancel()
+        entryNotice = message
+        destinationNoticeTask = Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            if entryNotice == message { entryNotice = nil }
+        }
     }
 
     private func presentPendingDocument() {

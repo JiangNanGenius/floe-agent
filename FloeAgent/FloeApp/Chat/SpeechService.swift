@@ -22,6 +22,8 @@ final class SpeechService: NSObject, ObservableObject {
     @Published private(set) var speakingText: String?
     @Published private(set) var failureKey: String?
     @Published private(set) var failedText: String?
+    @Published private(set) var activeOwnerID: UUID?
+    @Published private(set) var failureOwnerID: UUID?
     @Published var rate: Float = AVSpeechUtteranceDefaultSpeechRate
     @Published var pitch: Float = 1
     @Published var voiceIdentifier: String?
@@ -41,6 +43,7 @@ final class SpeechService: NSObject, ObservableObject {
     private var manualMessageText: String?
     private var playerSampleRate: Double?
     private var retrySettings: TTSSettingsSnapshot?
+    private var retryOwnerID: UUID?
     private var notifications = Set<AnyCancellable>()
     private var localRuntime: LocalSpeechRuntime?
     private var localSessionID: UUID?
@@ -65,8 +68,10 @@ final class SpeechService: NSObject, ObservableObject {
                 MainActor.assumeIsolated {
                     guard let self, self.isSpeaking else { return }
                     let text = self.lastManualText
+                    let owner = self.activeOwnerID
                     self.stop()
                     self.failedText = text
+                    self.failureOwnerID = owner
                     self.failureKey = "voice.error.playback"
                 }
             }.store(in: &notifications)
@@ -78,13 +83,13 @@ final class SpeechService: NSObject, ObservableObject {
         self.localRuntime = localRuntime
     }
 
-    func speak(_ text: String) {
-        if isSpeaking, let speakingText, AnswerSpeechText.plainText(speakingText) == AnswerSpeechText.plainText(text) { stop(); return }
-        preview(text, settings: settings?.snapshot ?? .systemDefault)
+    func speak(_ text: String, ownerID: UUID? = nil) {
+        if isSpeaking, activeOwnerID == ownerID, let speakingText, AnswerSpeechText.plainText(speakingText) == AnswerSpeechText.plainText(text) { stop(); return }
+        preview(text, settings: settings?.snapshot ?? .systemDefault, ownerID: ownerID)
     }
 
-    func preview(_ text: String, settings: TTSSettingsSnapshot, credential: String? = nil) {
-        let handle = beginStream(id: UUID(), override: settings, credential: credential)
+    func preview(_ text: String, settings: TTSSettingsSnapshot, credential: String? = nil, ownerID: UUID? = nil) {
+        let handle = beginStream(id: ownerID ?? UUID(), override: settings, credential: credential)
         lastManualText = text
         manualMessageText = text
         speakingText = text
@@ -93,7 +98,7 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     func retry() {
-        if let text = lastManualText, let settings = retrySettings { preview(text, settings: settings) }
+        if let text = lastManualText, let settings = retrySettings { preview(text, settings: settings, ownerID: retryOwnerID) }
     }
 
     func useSystemVoice() {
@@ -102,7 +107,7 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     private func speakSystem(_ text: String) {
-        let handle = beginStream(id: UUID(), override: .systemDefault)
+        let handle = beginStream(id: retryOwnerID ?? UUID(), override: .systemDefault)
         lastManualText = text
         manualMessageText = text
         speakingText = text
@@ -119,10 +124,18 @@ final class SpeechService: NSObject, ObservableObject {
         let id = UUID()
         failureKey = nil
         failedText = nil
+        failureOwnerID = nil
+        activeOwnerID = logicalID
+        retryOwnerID = logicalID
         currentReadText = ""
         manualMessageText = nil
         generation = id
-        guard let settings, let speech else { return TTSSpeechStreamHandle(append: { _ in }, finish: {}, cancel: {}) }
+        guard let settings, let speech else {
+            finishPlayback()
+            failureOwnerID = logicalID
+            failureKey = "voice.error.configuration"
+            return TTSSpeechStreamHandle(append: { _ in }, finish: {}, cancel: {})
+        }
         let frozen = override ?? settings.snapshot
         retrySettings = frozen
         localSessionID = frozen.provider == .onDevice ? id : nil
@@ -151,9 +164,13 @@ final class SpeechService: NSObject, ObservableObject {
                 if generation == id { finishPlayback() }
             } catch {
                 guard generation == id else { return }
-                let cancelled = Task.isCancelled || (error as? TTSSynthesisError) == .cancelled
+                let cancelled = Task.isCancelled || error is CancellationError || (error as? TTSSynthesisError) == .cancelled
                 finishPlayback()
-                if !cancelled { failureKey = SpeechFailureCopy.key(for: error); failedText = lastManualText }
+                if !cancelled {
+                    failureKey = SpeechFailureCopy.key(for: error)
+                    failedText = lastManualText
+                    failureOwnerID = logicalID
+                }
                 generation = UUID()
             }
         }
@@ -164,6 +181,7 @@ final class SpeechService: NSObject, ObservableObject {
                     let failed = self.lastManualText
                     self.stop()
                     self.failedText = failed
+                    self.failureOwnerID = logicalID
                     self.failureKey = "voice.error.too_long"
                     return
                 }
@@ -192,15 +210,19 @@ final class SpeechService: NSObject, ObservableObject {
             isPaused = false
         } catch {
             let text = lastManualText
+            let owner = activeOwnerID
             stop()
             failedText = text
+            failureOwnerID = owner
             failureKey = "voice.error.playback"
         }
     }
 
     func stopAndWait() async {
         let id = localSessionID
+        let stoppedTask = task
         stop()
+        await stoppedTask?.value
         if let id, let localRuntime { await localRuntime.endSession(id) }
     }
 
@@ -209,10 +231,19 @@ final class SpeechService: NSObject, ObservableObject {
         task?.cancel(); task = nil
         input?.finish(); input = nil
         finishPlayback()
+        clearFailure()
+    }
+
+    func clearFailure(ownerID: UUID? = nil) {
+        guard ownerID == nil || failureOwnerID == ownerID else { return }
+        failureKey = nil
+        failedText = nil
+        failureOwnerID = nil
     }
 
     private func finishPlayback() {
         isPreparing = false
+        activeOwnerID = nil
         activeLocalModelID = nil
         if let localSessionID, let localRuntime {
             self.localSessionID = nil
@@ -337,6 +368,7 @@ enum SpeechFailureCopy {
         if let failure = error as? LocalSpeechModelStore.Failure {
             switch failure {
             case .memory: return "voice.local.error.memory"
+            case .thermal: return "voice.local.error.thermal"
             case .busy: return "voice.local.error.busy"
             case .space: return "voice.local.error.space"
             case .unavailable: return "voice.local.error.unavailable"

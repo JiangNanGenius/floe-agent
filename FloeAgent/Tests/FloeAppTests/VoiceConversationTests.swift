@@ -78,7 +78,13 @@ final class VoiceTestAuth: VoiceConversationAuthorizationProviding, @unchecked S
 final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
     var activateFailure: VoiceConversationFailure?
     var beginFailure: VoiceConversationFailure?
+    /// Thrown by EVERY startCapture call on this stack — models a capture
+    /// path that never delivers a real buffer (no readiness proof).
     var captureFailure: VoiceConversationFailure?
+    /// Scripted stream-end cause returned by transcriptionFailureSnapshot()
+    /// after `endTranscriptStream(failure:)`. Cleared by beginTranscription,
+    /// mirroring the live stack's fresh-session reset.
+    private var scriptedStreamFailure: VoiceConversationFailure?
 
     private let lock = NSLock()
     private var counts: [String: Int] = [:]
@@ -105,7 +111,12 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
 
     init() {
         (storedTranscripts, transcriptsSink) = AsyncStream.makeStream(of: String.self)
-        (storedLevels, levelsSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
+        // UNLIKE the live stack's droppable display sampling, the fake
+        // delivers EVERY scripted level: the coordinator's recognition-health
+        // clocks integrate REAL sample durations, so scripted bursts must
+        // arrive complete and exact (newest(1) would silently drop all but
+        // the last element of a synchronous test burst).
+        (storedLevels, levelsSink) = AsyncStream.makeStream(of: VoiceConversationLevel.self, bufferingPolicy: .unbounded)
         (storedPlayedLevels, playedSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
         (engineEvents, engineSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(64))
         (systemEvents, systemSink) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(16))
@@ -116,7 +127,10 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
         if let activateFailure { throw activateFailure }
     }
 
-    func startCapture() throws(VoiceConversationFailure) {
+    /// Async like the production seam: the real stack only returns after a
+    /// genuine first tap buffer. The fake returns immediately UNLESS a
+    /// scripted `captureFailure` models the dead-path readiness timeout.
+    func startCapture() async throws(VoiceConversationFailure) {
         increment("startCapture")
         if let captureFailure { throw captureFailure }
     }
@@ -126,6 +140,7 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
     func beginTranscription() async throws(VoiceConversationFailure) {
         let failure: VoiceConversationFailure? = lock.withLock {
             incrementLocked("begin")
+            scriptedStreamFailure = nil
             guard beginFailure == nil else { return beginFailure }
             // Fresh stream per ASR session — the coordinator resubscribes
             // after an in-place restart.
@@ -143,7 +158,9 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
         sink.finish()
     }
 
-    func transcriptionFailureSnapshot() -> VoiceConversationFailure? { nil }
+    func transcriptionFailureSnapshot() -> VoiceConversationFailure? {
+        lock.withLock { scriptedStreamFailure }
+    }
 
     @discardableResult
     func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool {
@@ -208,7 +225,10 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
         }
     }
     func endTranscriptStream(failure: VoiceConversationFailure?) {
-        let sink = lock.withLock { transcriptsSink }
+        let sink = lock.withLock { () -> AsyncStream<String>.Continuation in
+            scriptedStreamFailure = failure
+            return transcriptsSink
+        }
         sink.finish()
     }
 
@@ -279,6 +299,13 @@ private final class VoiceRig {
     let log = VoiceEventLog()
     private(set) var stacks: [VoiceTestStack] = []
     var pendingActivateFailure: VoiceConversationFailure?
+    /// Applied to the NEXT created stack exactly once (the rebuild scenario:
+    /// the first stack's capture never becomes ready, the rebuilt one works).
+    var pendingCaptureFailure: VoiceConversationFailure?
+    /// Applied to EVERY stack (nothing rebuilds successfully).
+    var stickyCaptureFailure: VoiceConversationFailure?
+    /// Applied to EVERY stack's activate (a permanently dead audio engine).
+    var stickyActivateFailure: VoiceConversationFailure?
     private(set) var coordinator: VoiceConversationCoordinator! = nil
 
     init(speechNormalizer: @escaping @Sendable (String) -> String = { $0 },
@@ -290,6 +317,16 @@ private final class VoiceRig {
                 if let failure = self?.pendingActivateFailure {
                     stack.activateFailure = failure
                     self?.pendingActivateFailure = nil
+                }
+                if let failure = self?.pendingCaptureFailure {
+                    stack.captureFailure = failure
+                    self?.pendingCaptureFailure = nil
+                }
+                if let failure = self?.stickyCaptureFailure {
+                    stack.captureFailure = failure
+                }
+                if let failure = self?.stickyActivateFailure {
+                    stack.activateFailure = failure
                 }
                 self?.stacks.append(stack)
                 return stack
@@ -581,7 +618,7 @@ struct VoiceConversationTests {
         let rig = VoiceRig()
         await rig.coordinator.start()
         await rig.say("好的")
-        rig.coordinator.setMuted(true)
+        await rig.coordinator.setMuted(true)
         await rig.settle()
         #expect(rig.stack.count("stopCapture") == 1)
         #expect(rig.coordinator.stagedTranscript == "好的")
@@ -589,7 +626,7 @@ struct VoiceConversationTests {
         await rig.settle()
         #expect(rig.driving.starts.isEmpty)
 
-        rig.coordinator.setMuted(false)
+        await rig.coordinator.setMuted(false)
         await rig.settle()
         #expect(rig.stack.count("startCapture") == 2)
         #expect(rig.driving.starts.isEmpty)   // no auto-submit of a muted draft
@@ -628,13 +665,215 @@ struct VoiceConversationTests {
         #expect(rig2.coordinator.state == .failed(.speechPermissionDenied))
     }
 
-    @Test("Activation failure (simulator/no audio) tears down and surfaces")
+    @Test("Activation failure (simulator/no audio) rebuilds once, then surfaces")
     func activationFailure() async {
         let rig = VoiceRig()
         rig.pendingActivateFailure = .noAudioInput
         await rig.coordinator.start()
+        // A one-shot failure is RECOVERED by the single rebuild budget.
+        #expect(rig.coordinator.state == .listening)
+        #expect(rig.stacks.count == 2)
+        #expect(rig.stacks[0].count("deactivate") == 1)
+
+        let dead = VoiceRig()
+        dead.stickyActivateFailure = .noAudioInput
+        await dead.coordinator.start()
+        #expect(dead.coordinator.state == .failed(.noAudioInput))
+        #expect(dead.stacks.count == 2)          // exactly one rebuild attempt
+        #expect(dead.stacks[1].count("deactivate") == 1)
+    }
+
+    // MARK: - Live-input no-response regressions (job 2026-10-23)
+
+    @Test("Dead capture readiness: one full recoverable rebuild, then visible failure")
+    func captureReadinessRebuildThenFail() async {
+        let rig = VoiceRig()
+        rig.stickyCaptureFailure = .noAudioInput
+        await rig.coordinator.start()
         #expect(rig.coordinator.state == .failed(.noAudioInput))
-        #expect(rig.stacks.count == 1)
+        #expect(rig.stacks.count == 2)
+        #expect(rig.stacks.allSatisfy { $0.count("deactivate") == 1 })
+    }
+
+    @Test("Capture readiness failure rebuilds successfully on the second stack")
+    func captureReadinessRebuildRecovers() async {
+        let rig = VoiceRig()
+        rig.pendingCaptureFailure = .noAudioInput
+        await rig.coordinator.start()
+        #expect(rig.coordinator.state == .listening)
+        #expect(rig.stacks.count == 2)
+        #expect(rig.stacks[0].count("deactivate") == 1)
+        #expect(rig.stacks[1].count("startCapture") == 1)
+    }
+
+    @Test("Model/locale preparation failures are NOT rebuild-recoverable")
+    func modelNotReadyFailsWithoutRebuild() async {
+        let rig = VoiceRig()
+        let first = VoiceTestStack()
+        first.beginFailure = .modelNotReady
+        let failingCoordinator = VoiceConversationCoordinator(
+            authorization: VoiceTestAuth(),
+            makeStack: { first },
+            driving: rig.driving,
+            clock: rig.clock,
+            diagnostics: nil,
+            timing: .init()
+        )
+        await failingCoordinator.start()
+        #expect(failingCoordinator.state == .failed(.modelNotReady))
+        #expect(first.count("begin") == 1)
+        #expect(first.count("deactivate") == 1)   // no second build
+    }
+
+    @Test("Speech with NO recognition fails visibly inside the limit")
+    func voicedWithoutTextFailsVisibly() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        // 41 × 0.2 s = 8.2 s of REAL voiced audio, zero transcripts.
+        for _ in 0..<41 {
+            rig.stack.yieldLevel(0.55, speech: true, duration: 0.2)
+        }
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .failed(.recognizerFailed))
+        #expect(rig.stack.count("begin") == 1)   // failed, not silently restarted
+    }
+
+    @Test("Transcript text resets the speech-without-recognition clock")
+    func voicedClockResetsOnText() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        for _ in 0..<30 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }  // 6 s
+        await rig.say("你好")
+        for _ in 0..<30 { rig.stack.yieldLevel(0.5, speech: true, duration: 0.2) }  // +6 s voiced
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .listening)
+        // And the utterance still endpoints normally.
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 1)
+    }
+
+    @Test("Pure silence is legitimate forever: no levels-timeout failure")
+    func silenceIsLegitimate() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        // 200 silent buffers spanning ~60 s + clock advance far past every
+        // failure window. Silence must stay "Listening".
+        for _ in 0..<200 { rig.stack.yieldLevel(0, speech: false, duration: 0.3) }
+        rig.clock.advance(by: 120)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .listening)
+        #expect(rig.stack.count("begin") == 1)
+        // Speech is still recognized afterwards.
+        await rig.say("安静之后说话")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 1)
+        #expect(rig.driving.starts[0].request.text == "安静之后说话")
+    }
+
+    @Test("Healthy long-silence Apple auto-end renews and still recognizes later speech")
+    func silenceRenewalKeepsSessionAlive() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        // Three renewal cycles: ~40 s of silent buffers, then the backend
+        // finalizes its stream on its own (no failure). Renewals never
+        // count as consecutive failures.
+        for _ in 0..<3 {
+            for _ in 0..<200 { rig.stack.yieldLevel(0, speech: false, duration: 0.2) }  // 40 s
+            rig.stack.endTranscriptStream(failure: nil)
+            await rig.settle(30)
+            #expect(rig.coordinator.state == .listening)
+        }
+        #expect(rig.stack.count("begin") == 4)
+        // The 60+ s-silence acceptance: speech after renewals is recognized
+        // and submitted.
+        await rig.say("很久之后说话了")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 1)
+        #expect(rig.driving.starts[0].request.text == "很久之后说话了")
+    }
+
+    @Test("Speech-with-no-recognition stream deaths are capped at two restarts")
+    func textlessSpeechfulRestartsCapped() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        for cycle in 1...3 {
+            for _ in 0..<2 { rig.stack.yieldLevel(0.6, speech: true, duration: 0.2) } // 0.4 s voiced
+            rig.stack.endTranscriptStream(failure: nil)
+            await rig.settle(30)
+            if cycle < 3 {
+                #expect(rig.coordinator.state == .listening)
+                #expect(rig.stack.count("begin") == cycle + 1)
+            }
+        }
+        #expect(rig.coordinator.state == .failed(.recognizerFailed))
+        #expect(rig.stack.count("begin") == 3)   // start + exactly two restarts
+    }
+
+    @Test("Rapid empty terminations (no speech, no text, short-lived) are capped")
+    func rapidEmptyRestartsCapped() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        for cycle in 1...3 {
+            for _ in 0..<5 { rig.stack.yieldLevel(0, speech: false, duration: 0.2) }  // 1 s lived
+            rig.stack.endTranscriptStream(failure: nil)
+            await rig.settle(30)
+            if cycle < 3 {
+                #expect(rig.coordinator.state == .listening)
+            }
+        }
+        #expect(rig.coordinator.state == .failed(.recognizerFailed))
+        #expect(rig.stack.count("begin") == 3)
+    }
+
+    @Test("A backend error (server unavailable) fails the session immediately")
+    func backendStreamErrorPropagates() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        rig.stack.endTranscriptStream(failure: .recognizerFailed)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .failed(.recognizerFailed))
+        #expect(rig.stack.count("begin") == 1)   // no silent restart over a dead backend
+    }
+
+    @Test("captureStalled (tap stopped firing) fails visibly with no-audio-input")
+    func captureStallFailsSession() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        rig.stack.yieldSystem(.captureStalled)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .failed(.noAudioInput))
+    }
+
+    @Test("A failed session can be explicitly retried with a fresh stack")
+    func failedSessionRetryStartsFresh() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        rig.stack.yieldSystem(.captureStalled)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .failed(.noAudioInput))
+        await rig.coordinator.start()
+        await rig.settle()
+        #expect(rig.coordinator.state == .listening)
+        #expect(rig.stacks.count == 2)
+        await rig.say("重试后说话")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 1)
+    }
+
+    @Test("Unmute re-proves readiness: a dead path fails visibly instead of listening")
+    func unmuteReadinessFailure() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        await rig.coordinator.setMuted(true)
+        await rig.settle()
+        rig.stack.captureFailure = .noAudioInput
+        await rig.coordinator.setMuted(false)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .failed(.noAudioInput))
     }
 
     @Test("ASR stream end restarts transcription in place and keeps the draft")
@@ -774,6 +1013,216 @@ struct VoiceConversationTests {
             samples: [0.1], channelCount: 1, sampleRate: 8_000
         )
         #expect(rig.coordinator.appendAudio(stale, to: units[2]) == .rejectedStale)
+    }
+}
+
+// MARK: - Bounded drain race (voice handoff deadline)
+
+/// Deliberately NONCOOPERATIVE suspension: no cancellation handler; only
+/// `release()` wakes it. Models `await stoppedTask.value` behind a drain
+/// task that never checks cancellation — the exact shape that made the old
+/// `withTaskGroup` join unbounded ("Connecting…" forever).
+private final class VoiceDrainSuspension: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var releaseCount = 0
+
+    func suspend() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if releaseCount > 0 {
+                lock.unlock()
+                c.resume()
+                return
+            }
+            continuation = c
+            lock.unlock()
+        }
+    }
+
+    func release() {
+        lock.lock()
+        releaseCount += 1
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume()
+    }
+}
+
+private final class VoiceDrainFlagBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    func set(_ v: Bool) { lock.lock(); value = v; lock.unlock() }
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+private final class VoiceDrainCounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    func increment() { lock.lock(); value += 1; lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// The exact `ContinuousVoiceScreenSession.boundedJoin` type pattern: a
+/// `@MainActor @Sendable` operation handed to the Foundation-only deadline
+/// race through a plain `{ await operation() }` hop.
+@MainActor
+private func voiceBoundedJoinReplica(
+    seconds: Double,
+    _ operation: @escaping @MainActor @Sendable () async -> Void
+) async {
+    await VoiceConversationBoundedDrain.race(seconds: seconds) {
+        await operation()
+    }
+}
+
+/// Self-bounding join so a wedged implementation FAILS instead of hanging the
+/// test run: the inner race is joined through the race itself with a watchdog.
+private func voiceDrainJoinWithWatchdog(
+    _ inner: Task<VoiceConversationDrainGate.Outcome, Never>,
+    watchdog: Double
+) async -> (returned: Bool, outcome: VoiceConversationDrainGate.Outcome?) {
+    let gate = await VoiceConversationBoundedDrain.race(seconds: watchdog) { _ = await inner.value }
+    guard gate == .completed else { return (false, nil) }
+    return (true, await inner.value)
+}
+
+@Suite("Bounded drain race (voice handoff deadline)")
+private struct VoiceBoundedDrainRaceTests {
+    @Test("The gate is exactly-once: only the first event settles it")
+    func gateExactlyOnce() {
+        let gate = VoiceConversationDrainGate()
+        #expect(gate.outcome == nil)
+        #expect(gate.resolve(.completed))
+        #expect(!gate.resolve(.deadline))
+        #expect(!gate.resolve(.cancelled))
+        #expect(gate.outcome == .completed)
+    }
+
+    @Test("A cooperative drain that finishes first wins before the deadline")
+    func completedWins() async {
+        let started = ContinuousClock.now
+        let outcome = await VoiceConversationBoundedDrain.race(seconds: 30) {}
+        #expect(outcome == .completed)
+        #expect(started.duration(to: .now) < .seconds(2))
+    }
+
+    @Test("Deadline returns despite a suspended uncooperative drain; a late release completes exactly once and never re-resolves")
+    func deadlineBeatsUncooperativeDrain() async throws {
+        let suspension = VoiceDrainSuspension()
+        let cancelledAtRelease = VoiceDrainFlagBox()
+        let lateCompletions = VoiceDrainCounterBox()
+        let started = ContinuousClock.now
+        let inner = Task {
+            await VoiceConversationBoundedDrain.race(seconds: 0.2) {
+                await suspension.suspend()
+                cancelledAtRelease.set(Task.isCancelled)
+                lateCompletions.increment()
+            }
+        }
+        let joined = await voiceDrainJoinWithWatchdog(inner, watchdog: 5)
+        #expect(joined.returned, "watchdog fired: the structured-scope wait regressed (uncooperative drain blocked the join)")
+        guard joined.returned, let outcome = joined.outcome else { return }
+        #expect(outcome == .deadline)
+        #expect(started.duration(to: .now) < .seconds(4), "resolved near the 0.2 s deadline, not the watchdog")
+        // Late release of the ABANDONED drain: it must not resume the caller
+        // again (a double CheckedContinuation resume would crash the process)
+        // and must not flip the settled outcome.
+        suspension.release()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        #expect(lateCompletions.count == 1)
+        #expect(cancelledAtRelease.isSet, "the deadline loser must receive cancellation")
+        let restated = await inner.value
+        #expect(restated == .deadline, "a late completion cannot re-resolve the race")
+    }
+
+    @Test("A cancelled start resolves promptly; the abandoned drain stays fenced and harmless")
+    func cancelledStartResolvesPromptly() async throws {
+        let suspension = VoiceDrainSuspension()
+        let started = ContinuousClock.now
+        let racer = Task {
+            await VoiceConversationBoundedDrain.race(seconds: 60) { await suspension.suspend() }
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        racer.cancel()
+        let joined = await voiceDrainJoinWithWatchdog(racer, watchdog: 5)
+        #expect(joined.returned, "cancellation must resolve the race promptly, not wait the 60 s deadline")
+        #expect(joined.outcome == .cancelled)
+        #expect(started.duration(to: .now) < .seconds(4))
+        // Teardown: releasing the abandoned drain late must be swallowed by
+        // the exactly-once gate (no crash, no re-resolution).
+        suspension.release()
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
+
+    @Test("Cancellation arriving during registration still resolves exactly once")
+    func cancellationDuringRegistration() async throws {
+        let suspension = VoiceDrainSuspension()
+        let racer = Task {
+            await VoiceConversationBoundedDrain.race(seconds: 30) { await suspension.suspend() }
+        }
+        racer.cancel()
+        let joined = await voiceDrainJoinWithWatchdog(racer, watchdog: 5)
+        #expect(joined.returned)
+        if let outcome = joined.outcome {
+            #expect(outcome == .cancelled || outcome == .completed)
+        }
+        suspension.release()
+        try await Task.sleep(nanoseconds: 50_000_000)
+    }
+
+    @Test("MainActor handoff ordering: the synchronous engine stop happens before proceeding, despite the abandoned drain")
+    @MainActor func synchronousStopBeforeNewOwnership() async throws {
+        let suspension = VoiceDrainSuspension()
+        let stopDone = VoiceDrainFlagBox()
+        let newOwnerActive = VoiceDrainFlagBox()
+        newOwnerActive.set(true)
+        let handoff = Task { @MainActor in
+            await voiceBoundedJoinReplica(seconds: 0.2) {
+                stopDone.set(true)      // the synchronous physical stop
+                await suspension.suspend() // trailing async drain, uncooperative
+            }
+        }
+        let gate = await VoiceConversationBoundedDrain.race(seconds: 5) { _ = await handoff.value }
+        #expect(gate == .completed, "the MainActor handoff must return at the deadline")
+        #expect(stopDone.isSet, "proceeding is only safe because the synchronous stop already ran")
+        suspension.release()
+        try await Task.sleep(nanoseconds: 150_000_000)
+        #expect(newOwnerActive.isSet, "the late drain tail must not touch the new owner")
+    }
+
+    @Test("Degenerate deadlines and repeated stress resolve without deadlock or double resume")
+    func edgesAndStress() async throws {
+        let zero = await VoiceConversationBoundedDrain.race(seconds: 0) {}
+        #expect(zero == .deadline || zero == .completed)
+        let negative = await VoiceConversationBoundedDrain.race(seconds: -5) {}
+        #expect(negative == .deadline || negative == .completed)
+        let nan = await VoiceConversationBoundedDrain.race(seconds: Double.nan) {}
+        #expect(nan == .deadline || nan == .completed)
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 {
+                group.addTask {
+                    let suspension = VoiceDrainSuspension()
+                    let inner = Task {
+                        await VoiceConversationBoundedDrain.race(seconds: 0.15) { await suspension.suspend() }
+                    }
+                    let joined = await voiceDrainJoinWithWatchdog(inner, watchdog: 4)
+                    #expect(joined.returned && joined.outcome == .deadline)
+                    suspension.release()
+                }
+                group.addTask {
+                    let suspension = VoiceDrainSuspension()
+                    let racer = Task {
+                        await VoiceConversationBoundedDrain.race(seconds: 30) { await suspension.suspend() }
+                    }
+                    racer.cancel()
+                    let joined = await voiceDrainJoinWithWatchdog(racer, watchdog: 4)
+                    #expect(joined.returned)
+                    suspension.release()
+                }
+            }
+        }
     }
 }
 #endif

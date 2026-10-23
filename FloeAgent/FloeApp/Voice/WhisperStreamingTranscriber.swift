@@ -17,33 +17,43 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
     private var inputDescription = ""
     private var ending = false
     private var overflow = false
+    /// End-of-utterance VAD: short/quiet speech flushes the pending window
+    /// immediately instead of waiting for the next 3 s boundary, so a brief
+    /// "你好" still reaches the conversation endpoint. Pure silence never
+    /// flushes (and never counts as a failed attempt).
+    private var utteranceGate = VoiceConversationUtteranceGate()
     private var terminalFailure: VoiceInputFailure?
     private var fallback: StreamingSpeechRecognizerTranscriber?
     private var fallbackObserver: Task<Void, Never>?
     private var worker: Task<Void, Never>?
     private let outputFormat: AVAudioFormat
     private let diagnostics: (any VoiceInputDiagnostics)?
-    var failure: VoiceInputFailure? { lock.withLock { terminalFailure } }
+    private let allowSystemFallback: Bool
+    var failure: VoiceInputFailure? {
+        let state = lock.withLock { (terminalFailure, fallback) }
+        return state.0 ?? state.1?.failure
+    }
 
-    static func make(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?) async throws -> WhisperStreamingTranscriber {
+    static func make(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?, allowSystemFallback: Bool = false) async throws -> WhisperStreamingTranscriber {
         let (lease, folder) = try await WhisperModelStore.shared.acquire()
         do {
             try Task.checkCancellation()
             let kit = try await WhisperKit(WhisperKitConfig(modelFolder: folder.appendingPathComponent("model").path,
                 tokenizerFolder: folder.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
             try Task.checkCancellation()
-            return try WhisperStreamingTranscriber(kit: kit, lease: lease, language: language, diagnostics: diagnostics)
+            return try WhisperStreamingTranscriber(kit: kit, lease: lease, language: language, diagnostics: diagnostics, allowSystemFallback: allowSystemFallback)
         } catch {
             await WhisperModelStore.shared.release(lease)
             throw error
         }
     }
 
-    private init(kit: WhisperKit, lease: UUID, language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?) throws {
+    private init(kit: WhisperKit, lease: UUID, language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?, allowSystemFallback: Bool) throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else {
             throw VoiceSessionError.failure(.noAudioInput)
         }
         outputFormat = format; self.diagnostics = diagnostics
+        self.allowSystemFallback = allowSystemFallback
         (transcripts, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
         (signals, signal) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
         worker = Task { [self] in
@@ -85,6 +95,7 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
             overflow = true; terminalFailure = .recognizerFailed; signal.yield(()); return
         }
         samples.append(contentsOf: UnsafeBufferPointer(start: channel, count: Int(buffer.frameLength)))
+        utteranceGate.process(rms: VoiceBufferMeter.rms(of: buffer), samples: Int(buffer.frameLength))
         signal.yield(())
     }
 
@@ -117,27 +128,56 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
         continuation.finish()
     }
 
+    /// Uncommitted-region mean-square floor: below this the pending audio is
+    /// silence, never a speech attempt. Deliberately lower than the previous
+    /// whole-window 1e-5 so QUIET speech is decoded instead of suppressed —
+    /// suppressing short quiet utterances is exactly the "speaking does
+    /// nothing" defect. (0.002 RMS² ≈ 4e-6, aligned with the VAD gate.)
+    private static let voicedEnergyFloor: Float = 0.000_004_1
+
     private func run(kit: WhisperKit, language: VoiceRecognitionLanguage) async {
         var committed = ""
         var decodedCount = 0
         var emptyAttempts = 0
         let code: String? = language.recognitionCode
         let options = DecodingOptions(language: code, detectLanguage: code == nil, skipSpecialTokens: true, withoutTimestamps: true)
+        func meanSquare(_ values: ArraySlice<Float>) -> Float {
+            guard !values.isEmpty else { return 0 }
+            return values.reduce(Float(0)) { $0 + $1 * $1 } / Float(values.count)
+        }
         do {
             for await _ in signals {
                 while true {
-                    let state = lock.withLock { (samples, ending, terminalFailure, overflow) }
+                    let state = lock.withLock { (samples, ending, terminalFailure, overflow, utteranceGate.shouldFlush) }
                     if state.2 != nil || state.3 { throw VoiceSessionError.failure(.recognizerFailed) }
                     guard !state.0.isEmpty else {
                         if state.1 { continuation.finish(); return }
                         break
                     }
                     let count = min(400_000, state.0.count)
-                    guard state.1 || count - decodedCount >= 48_000 || count == 400_000 else { break }
+                    let newSamples = count - decodedCount
+                    // END-TURN FLUSH: a real utterance that ended (voiced ≥
+                    // ~0.5 s then quiet ≥ ~0.5 s) decodes immediately even
+                    // below the 3 s chunk boundary.
+                    // 8_000 = 0.5 s @16 kHz, matching the VAD gate's minimum
+                    // voiced region; read only from the lock-held snapshot.
+                    guard state.1 || newSamples >= 48_000 || count == 400_000
+                        || (state.4 && newSamples >= 8_000) else { break }
                     let audio = Array(state.0.prefix(count))
-                    let energy = audio.reduce(Float(0)) { $0 + $1 * $1 } / Float(audio.count)
+                    let energy = meanSquare(audio[0..<count])
+                    let regionEnergy = decodedCount < count
+                        ? meanSquare(audio[decodedCount..<count])
+                        : energy
+                    let decisionEnergy = state.1 ? energy : regionEnergy
+                    if decisionEnergy < Self.voicedEnergyFloor && !state.1 {
+                        // Quiet uncommitted region: do not transcribe silence,
+                        // do not advance the debounce, do not count an empty
+                        // attempt, and — critically — never auto-submit: the
+                        // endpoint only ever sees real staged text.
+                        break
+                    }
                     let text: String
-                    if energy < 0.000_01 { text = "" }
+                    if decisionEnergy < Self.voicedEnergyFloor { text = "" }
                     else {
                         let results = try await kit.transcribe(audioArray: audio, decodeOptions: options)
                         text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -148,11 +188,15 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
                     diagnostics?.voiceTranscriptReceived(first: committed.isEmpty && decodedCount == 0)
                     if count == 400_000 || state.1 {
                         if !text.isEmpty { committed += text + " " }
-                        lock.withLock { samples.removeFirst(min(count, samples.count)) }
+                        lock.withLock {
+                            samples.removeFirst(min(count, samples.count))
+                            utteranceGate.noteDecoded()
+                        }
                         decodedCount = 0
                         continue
                     }
                     decodedCount = count
+                    lock.withLock { utteranceGate.noteDecoded() }
                     break
                 }
             }
@@ -160,8 +204,13 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
         } catch {
             // Replay only the uncommitted window. Previously emitted partial text is replaced
             // with the Apple result, so the same speech isn't appended twice.
-            guard !lock.withLock({ overflow || terminalFailure != nil }) else {
-                diagnostics?.voiceFailed(reason: .recognizerFailed); continuation.finish(); return
+            guard !Task.isCancelled, allowSystemFallback,
+                  !lock.withLock({ overflow || terminalFailure != nil }) else {
+                if !Task.isCancelled {
+                    lock.withLock { terminalFailure = terminalFailure ?? .recognizerFailed }
+                    diagnostics?.voiceFailed(reason: .recognizerFailed)
+                }
+                continuation.finish(); return
             }
             do {
                 guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else { throw VoiceSessionError.failure(.speechPermissionDenied) }

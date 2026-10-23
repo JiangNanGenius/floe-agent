@@ -32,7 +32,7 @@ struct ContentUpdatesSettingsView: View {
             providerCatalogSection
             searchProviderCatalogSection
         }
-        .navigationTitle(FloeL10n.l("settings.content_updates.title"))
+        .navigationTitle(FloeL10n.l("settings.section.updates"))
         .task {
             center.load()
             manualFailure = false
@@ -107,12 +107,26 @@ struct ContentUpdatesSettingsView: View {
         ForEach(SignedContentKind.allCases, id: \.self) { kind in
             Section {
                 let ids = entryIDs(for: kind)
-                if ids.isEmpty {
+                if kind == .prompts {
+                    NavigationLink {
+                        InternalPromptsSettingsView(center: center)
+                    } label: {
+                        LabeledContent("settings.content_updates.prompts") {
+                            if let record = center.installed["floe.prompts.core"] {
+                                Text("v\(record.version)")
+                            } else {
+                                Text("settings.content_updates.built_in")
+                            }
+                        }
+                    }
+                    .accessibilityIdentifier("settings.updates.prompts")
+                }
+                if ids.isEmpty && kind != .prompts {
                     Text("settings.content_updates.kind.none")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(ids, id: \.self) { id in
-                        entryRow(id: id)
+                        entryRow(id: id, kind: kind)
                     }
                 }
             } header: {
@@ -124,18 +138,18 @@ struct ContentUpdatesSettingsView: View {
     private func entryIDs(for kind: SignedContentKind) -> [String] {
         var ids = Set(center.installed.values.filter { $0.kind == kind.rawValue }.map(\.id))
         ids.formUnion(center.available.values.filter { $0.entry.kind == kind }.map(\.id))
+        if kind == .prompts { ids.remove("floe.prompts.core") }
+        ids.remove(ContentUpdateCenter.searchProviderPackageID)
         return ids.sorted()
     }
 
-    private func entryRow(id: String) -> some View {
+    private func entryRow(id: String, kind: SignedContentKind) -> some View {
         let record = center.installed[id]
         let availableContent = center.available[id]
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text(id)
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                Text(entryTitle(id: id, kind: kind))
+                    .font(.body)
                 Spacer()
                 if center.pinnedVersions[id] != nil {
                     Text("settings.content_updates.pinned_badge")
@@ -154,10 +168,13 @@ struct ContentUpdatesSettingsView: View {
                     .font(FloeTheme.Typography.evidence)
                     .textSelection(.enabled)
             }
-            if let entry = availableContent?.entry, !entry.releaseNotes.isEmpty {
-                releaseNotesView(entry)
-            }
             actionRow(id: id, record: record, availableContent: availableContent)
+            DisclosureGroup("settings.content_updates.details") {
+                Text(id).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                if let entry = availableContent?.entry, !entry.releaseNotes.isEmpty {
+                    releaseNotesView(entry)
+                }
+            }
         }
         .padding(.vertical, 2)
         .accessibilityIdentifier("settings.content_updates.entry.\(id)")
@@ -327,6 +344,16 @@ struct ContentUpdatesSettingsView: View {
     }
 
     // MARK: - Titles and decisions
+
+    private func entryTitle(id: String, kind: SignedContentKind) -> LocalizedStringKey {
+        switch id {
+        case "floe.help.quickstart": "settings.content_updates.name.help"
+        case "floe.models.catalog-metadata": "settings.content_updates.name.models"
+        case "floe.providers.compatibility": "settings.content_updates.name.compatibility"
+        case "floe.templates.report": "settings.content_updates.name.report"
+        default: kindTitle(kind)
+        }
+    }
 
     private func kindTitle(_ kind: SignedContentKind) -> LocalizedStringKey {
         switch kind {

@@ -896,28 +896,65 @@ enum WorkspaceCanvasRegistry {
         }
     }
 
+    /// Legacy best-effort library listing: a corrupt or unreadable canvas
+    /// file is skipped and every other valid canvas still appears. Passive
+    /// callers must never see the whole library vanish because one file is
+    /// damaged.
     static func summaries() -> [CanvasSummary] {
-        guard let directory = try? projectURL(canvasID: privateCanvasID, createDirectory: false).deletingLastPathComponent(),
-              let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return [] }
+        guard let directory = try? projectURL(canvasID: privateCanvasID, createDirectory: false).deletingLastPathComponent() else {
+            return []
+        }
+        return (try? readSummaries(in: directory, strict: false)) ?? []
+    }
+
+    /// Destination selection must distinguish an empty library from an
+    /// unreadable one: strict listing throws when ANY canvas file fails to
+    /// load, so a damaged entry is never presented as "no canvases".
+    static func checkedSummaries() throws -> [CanvasSummary] {
+        try readSummaries(
+            in: projectURL(canvasID: privateCanvasID, createDirectory: false).deletingLastPathComponent(),
+            strict: true
+        )
+    }
+
+    /// The one shared per-file reader for both listing modes. Files that
+    /// are not UUID-named canvas JSON (for example
+    /// `library-organization.json`) are not canvases and are skipped in
+    /// both modes. Read-only: this never mutates canvas files. The
+    /// directory parameter doubles as the focused-test seam; production
+    /// callers use the two wrappers above.
+    static func readSummaries(in directory: URL, strict: Bool) throws -> [CanvasSummary] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        )
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return urls.compactMap { url in
-            guard url.pathExtension == "json", let data = try? Data(contentsOf: url),
-                  let fileID = UUID(uuidString: url.deletingPathExtension().lastPathComponent),
-                  let project = try? CanvasProjectCodec.decode(
-                    data, fallbackID: fileID, decoder: decoder
-                  ) else { return nil }
-            return CanvasSummary(
-                id: project.id, name: project.name,
-                workspaceID: project.workspaceID, updatedAt: project.updatedAt,
-                syncEnabled: project.sync.isEnabled,
-                pendingMediaJobs: project.documents.flatMap(\.nodes).filter {
-                    $0.kind == .generationTask && $0.generationJobID != nil
-                }.count,
-                searchableText: ([project.name] + project.documents.flatMap { document in
-                    [document.name] + document.nodes.flatMap { [$0.title ?? "", $0.text] }
-                }).joined(separator: "\n")
-            )
+        return try urls.compactMap { url in
+            guard url.pathExtension == "json",
+                  let fileID = UUID(uuidString: url.deletingPathExtension().lastPathComponent)
+            else { return nil }
+            do {
+                let project = try CanvasProjectCodec.decode(
+                    Data(contentsOf: url), fallbackID: fileID, decoder: decoder
+                )
+                return CanvasSummary(
+                    id: project.id, name: project.name,
+                    workspaceID: project.workspaceID, updatedAt: project.updatedAt,
+                    syncEnabled: project.sync.isEnabled,
+                    pendingMediaJobs: project.documents.flatMap(\.nodes).filter {
+                        $0.kind == .generationTask && $0.generationJobID != nil
+                    }.count,
+                    searchableText: ([project.name] + project.documents.flatMap { document in
+                        [document.name] + document.nodes.flatMap { [$0.title ?? "", $0.text] }
+                    }).joined(separator: "\n")
+                )
+            } catch {
+                guard strict else { return nil }
+                throw FloeError.validationFailed(
+                    "Canvas library entry \(url.lastPathComponent) is unreadable"
+                )
+            }
         }
     }
 
@@ -1602,7 +1639,23 @@ private final class CanvasDocumentStore: ObservableObject {
     private var globalSyncEnabled = true
     private var undoStack: [FloeCanvasProject] = []
     private var redoStack: [FloeCanvasProject] = []
-    private var interactiveMutationRecorded = false
+    private var interactiveMutationRecorded = false {
+        // The external-import bridge consults this registry before touching
+        // a canvas: a gesture in flight owns the in-memory draft, so its
+        // strokes can never be orphaned by a revision bump mid-draw. Weak
+        // ownership (see CanvasInteractiveActivityRegistry) guarantees a
+        // deallocated store never pins a canvas busy.
+        didSet {
+            guard interactiveMutationRecorded != oldValue else { return }
+            if interactiveMutationRecorded {
+                CanvasInteractiveActivityRegistry.shared.begin(
+                    owner: self, canvasID: project.id
+                )
+            } else {
+                CanvasInteractiveActivityRegistry.shared.end(owner: self)
+            }
+        }
+    }
     private var lastExternalModificationDate: Date?
     private var lastExternalFileSize: Int?
 
@@ -1922,7 +1975,21 @@ private final class CanvasDocumentStore: ObservableObject {
 
     func beginInteractiveMutation() {
         guard !interactiveMutationRecorded else { return }
-        recordHistory()
+        // An unattended import can publish while this editor idles between
+        // gestures, and the change notification may be lost. Never begin a
+        // gesture from a base revision the bridge already moved: consult
+        // the registry's marks (cheap MainActor read — no per-stroke file
+        // IO) and rebase first. reloadExternalChange owns its own history
+        // entry when it actually replaces the project.
+        var rebased = false
+        if CanvasInteractiveActivityRegistry.shared.hasNewerPublishedRevision(
+            for: project.id, than: project.revision
+        ) {
+            let revisionBefore = project.revision
+            reloadExternalChange(force: true)
+            rebased = project.revision != revisionBefore
+        }
+        if !rebased { recordHistory() }
         interactiveMutationRecorded = true
     }
 

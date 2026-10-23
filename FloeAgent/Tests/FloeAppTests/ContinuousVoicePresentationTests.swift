@@ -46,6 +46,31 @@ struct ContinuousVoicePresentationTests {
         #expect(presenter.activeConversationID == currentConversation)
         #expect(!presenter.isRecording)
     }
+    @Test func conversationIdentityIsCarriedFromTheRequestAndTemporaryBindingNeverDefersToANewThread() {
+        let presenter = ContinuousVoicePresentation()
+        // Entry WITH a conversation id (thread entry, or Home while a RAM-only
+        // temporary chat exists — the identity is carried, never hardcoded
+        // nil): the presentation binds it immediately, before any round.
+        let existing = UUID()
+        let continuing = ContinuousVoiceRequest(
+            windowID: "one", conversationID: existing, modelID: UUID(),
+            workspaceID: nil, attachments: [], onConversationCreated: { _ in }
+        )
+        #expect(presenter.present(continuing))
+        #expect(presenter.activeConversationID == existing)
+        presenter.dismiss(continuing.id)
+
+        // Deferred entry (no conversation yet): nothing is bound until the
+        // first accepted utterance actually creates one.
+        let deferred = request()
+        #expect(presenter.present(deferred))
+        #expect(presenter.activeConversationID == nil)
+        let created = UUID()
+        presenter.bindConversation(created, for: deferred.id)
+        #expect(presenter.activeConversationID == created)
+        presenter.dismiss(deferred.id)
+    }
+
     @Test func lateDraftAcknowledgementCannotClearANewerReturnedDraft() {
         let presenter = ContinuousVoicePresentation()
         let first = ContinuousVoiceReturnedDraft(windowID: "one", ownerID: UUID(), text: "first", attachments: [])

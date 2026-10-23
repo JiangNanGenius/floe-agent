@@ -45,6 +45,24 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         var preparationWatchdog: Double = 25
         var drainWatchdog: Double = 20
         var maxQueuedSeconds: Double = 45
+        /// Cumulative SECONDS of voiced microphone audio that may pass with
+        /// zero ASR text inside one listening stretch before the recognizer
+        /// is declared dead. Silence costs nothing (silence is legitimate);
+        /// speech-with-no-recognition is not indefinitely survivable.
+        var voicedWithoutTextLimit: Double = 8
+        /// Consecutive transcription-stream restarts that carried SPEECH but
+        /// produced NO text before the session fails visibly.
+        var maxTextlessSpeechRestarts: Int = 2
+        /// Consecutive restarts of streams that died WITHOUT speech and
+        /// WITHOUT text FASTER than this (a stream that lived longer is a
+        /// healthy Apple auto-end after a quiet period, NOT an error: pure
+        /// silence renewals must never become a failure). Chosen well below
+        /// the real auto-end window (~35–60 s) so even if the droppable
+        /// levels stream undercounts durations under load, a healthy renewal
+        /// is not misclassified.
+        var rapidStreamWindow: Double = 5
+        /// Consecutive rapid empty terminations before the session fails.
+        var maxRapidEmptyRestarts: Int = 2
         /// Bounded lookahead: at most this many emitted-but-not-yet-played
         /// units are outstanding. Remaining split text stays in the round's
         /// `pendingUnitTexts` cursor and refills only on `unitCompleted`, so
@@ -210,6 +228,26 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// rebuilt transcription session so the pending utterance completes.
     private var resumePrefix: String?
 
+    // Recognition-health bookkeeping (per backend stream / per attempt).
+    // Silence is legitimate; speech that produces NO recognition is not
+    // indefinitely survivable. These counters turn a silent dead ASR path
+    // into a visible, actionable failure.
+    /// True once ANY transcript text arrived on the current backend stream.
+    private var transcriptTextSeen = false
+    /// Cumulative duration of voiced (isSpeech) capture samples since the
+    /// last transcript text — resets on text, restart, mute-off and when a
+    /// listening stretch re-arms. Silence never adds to this.
+    private var voicedSecondsWithoutText: Double = 0
+    /// Cumulative duration of ALL capture samples since the last transcript
+    /// text — the stream's observed age, used to tell a healthy long-silence
+    /// Apple auto-end (RENEWAL) from a rapid dying backend.
+    private var observedSecondsWithoutText: Double = 0
+    /// Consecutive restarts that had speech but no text (capped).
+    private var textlessSpeechRestarts = 0
+    /// Consecutive rapid no-speech no-text terminations (capped). A healthy
+    /// silence renewal RESETS this — silence alone never becomes an error.
+    private var rapidEmptyRestarts = 0
+
     // Speech event channel (single consumer: the app TTS bridge).
     private let speechContinuation: AsyncStream<VoiceConversationSpeechEvent>.Continuation
     let speechEvents: AsyncStream<VoiceConversationSpeechEvent>
@@ -290,8 +328,45 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         interruptedRoundContext = nil
         playingUnitProgress = nil
         lastSubmittedText = ""
+        transcriptTextSeen = false
+        voicedSecondsWithoutText = 0
+        observedSecondsWithoutText = 0
+        textlessSpeechRestarts = 0
+        rapidEmptyRestarts = 0
         state = .requestingPermission
         return attempt
+    }
+
+    /// Recovery budget for session preparation: a dead capture path is
+    /// rebuilt ONCE with a fresh stack; a second failure is actionable.
+    /// Permission, locale and model failures are never rebuild-recoverable —
+    /// they need the user, not another engine.
+    private static func recoverablePreparationFailure(_ failure: VoiceConversationFailure) -> Bool {
+        switch failure {
+        case .noAudioInput, .recognizerFailed: return true
+        case .microphonePermissionDenied, .speechPermissionDenied,
+             .localeUnsupported, .modelNotReady, .interrupted, .routeLost:
+            return false
+        }
+    }
+
+    /// activate → beginTranscription → startCapture with the REAL first-buffer
+    /// readiness proof inside `startCapture`. Returns nil when the attempt was
+    /// superseded mid-build (the caller must simply stop).
+    private func buildCaptureStack(attempt: UInt64) async throws(VoiceConversationFailure) -> (any VoiceConversationStack)? {
+        let stack = makeStack()
+        do {
+            try await stack.activate()
+            guard isCurrent(attempt) else { stack.deactivate(); return nil }
+            try await stack.beginTranscription()
+            guard isCurrent(attempt) else { stack.deactivate(); return nil }
+            try await stack.startCapture()
+            guard isCurrent(attempt) else { stack.deactivate(); return nil }
+            return stack
+        } catch let failure {
+            stack.deactivate()
+            throw failure
+        }
     }
 
     private func prepareSession(attempt: UInt64) async {
@@ -321,24 +396,40 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             self.failCurrentSession(.recognizerFailed)
         }
 
-        let stack = makeStack()
+        // TRUE readiness first: a tap that never delivers a buffer is a dead
+        // microphone path, not "listening". One full recoverable rebuild,
+        // then a visible actionable failure — never an indefinite silent
+        // Listening state behind a cancelled preparation watchdog.
+        let built: (any VoiceConversationStack)?
         do {
-            try await stack.activate()
-            guard isCurrent(attempt) else { stack.deactivate(); return }
-            try await stack.beginTranscription()
-            guard isCurrent(attempt) else { stack.deactivate(); return }
-            try stack.startCapture()
-            guard isCurrent(attempt) else { stack.deactivate(); return }
+            built = try await buildCaptureStack(attempt: attempt)
+        } catch let failure where Self.recoverablePreparationFailure(failure) {
+            guard isCurrent(attempt) else { return }
+            report("preparationRebuild", failure.rawValue)
+            do {
+                built = try await buildCaptureStack(attempt: attempt)
+            } catch let second {
+                guard isCurrent(attempt) else { return }
+                failCurrentSession(second)
+                return
+            }
         } catch let failure {
-            stack.deactivate()
             guard isCurrent(attempt) else { return }
             failCurrentSession(failure)
             return
         }
+        guard let stack = built else { return }
 
         preparationTimer?.cancel()
         preparationTimer = nil
         self.stack = stack
+        // Fresh capture + fresh backend stream: re-arm the recognition-health
+        // bookkeeping for this listening stretch.
+        transcriptTextSeen = false
+        voicedSecondsWithoutText = 0
+        observedSecondsWithoutText = 0
+        textlessSpeechRestarts = 0
+        rapidEmptyRestarts = 0
         startObserving(stack, attempt: attempt)
         state = .listening
         report("listeningStarted")
@@ -446,6 +537,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             pauseSession(reason: .recognizerFailed)
         case .engineConfigurationChanged:
             report("engineConfigurationChanged")
+        case .captureStalled:
+            // Silence ALSO delivers buffers; a long gap means the tap path
+            // is dead. Fail visibly (retry affordance), never keep an
+            // indefinite "Listening" over a microphone that stopped firing.
+            guard state.hasSession else { return }
+            report("captureStalled")
+            failCurrentSession(.noAudioInput)
         }
     }
 
@@ -521,8 +619,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
 
     /// Mute physically stops microphone collection — no hidden capture.
     /// Answer playback remains available; no muted draft is auto-submitted.
-    func setMuted(_ on: Bool) {
+    /// Unmute re-arms capture through the SAME real first-buffer readiness
+    /// proof as session start: a microphone path that died while muted fails
+    /// visibly instead of silently "listening".
+    func setMuted(_ on: Bool) async {
         guard state.hasSession, on != isMuted else { return }
+        let attempt = activeAttempt
         isMuted = on
         if on {
             stack?.stopCapture()
@@ -537,11 +639,17 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             }
         } else {
             do {
-                try stack?.startCapture()
+                try await stack?.startCapture()
             } catch let failure {
+                guard isCurrent(attempt), state.hasSession else { return }
                 failCurrentSession(failure)
                 return
             }
+            guard isCurrent(attempt), state.hasSession else { return }
+            // The capture window while muted proves nothing: restart the
+            // recognition-health clocks for the new capture stretch.
+            voicedSecondsWithoutText = 0
+            observedSecondsWithoutText = 0
             // No endpoint timer for a pre-mute draft: only NEW transcript
             // activity continues automatic endpointing ("no auto-submit
             // muted draft" — the draft waits for the user to speak or send).
@@ -642,14 +750,49 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     }
 
     /// Recognition backends may end their stream on their own schedule (the
-    /// Speech recognizer task stops after ~1 minute of no speech). A live
-    /// conversation session must not die with it: restart the transcription
-    /// session in place, carrying the pending draft across the boundary.
+    /// Speech recognizer task auto-finalizes after ~1 minute of no speech).
+    /// A live conversation session must not die with it: restart the
+    /// transcription session IN PLACE, carrying the pending draft across the
+    /// boundary.
+    ///
+    /// What is BOUNDED: rapid empty terminations and speech-without-
+    /// recognition restarts — two consecutive of each are tolerated, the
+    /// next fails visibly with a retry affordance. What is NOT an error:
+    /// healthy Apple auto-end renewals after long quiet periods. Silence
+    /// alone must never escalate into a failure; the user must still be
+    /// recognized after 60+ s of quiet, so a stream that lived well past
+    /// the rapid window with no speech RESETS the consecutive streaks.
     private func restartTranscription(stack: any VoiceConversationStack, attempt: UInt64) async {
+        guard isCurrent(attempt), state.hasSession, !teardownInFlight else { return }
         if let failure = stack.transcriptionFailureSnapshot() {
             report("transcriptStreamFailed", failure.rawValue)
             failCurrentSession(failure)
             return
+        }
+        // Classify the stream that just ended BEFORE resetting its clocks.
+        if transcriptTextSeen {
+            textlessSpeechRestarts = 0
+            rapidEmptyRestarts = 0
+        } else if voicedSecondsWithoutText >= 0.25 {
+            rapidEmptyRestarts = 0
+            textlessSpeechRestarts += 1
+            if textlessSpeechRestarts > timing.maxTextlessSpeechRestarts {
+                report("transcriptRestartCapped", "speechless")
+                failCurrentSession(.recognizerFailed)
+                return
+            }
+        } else if observedSecondsWithoutText < timing.rapidStreamWindow {
+            textlessSpeechRestarts = 0
+            rapidEmptyRestarts += 1
+            if rapidEmptyRestarts > timing.maxRapidEmptyRestarts {
+                report("transcriptRestartCapped", "rapidempty")
+                failCurrentSession(.recognizerFailed)
+                return
+            }
+        } else {
+            // Healthy silence renewal: clear the streaks, keep going.
+            textlessSpeechRestarts = 0
+            rapidEmptyRestarts = 0
         }
         report("transcriptStreamRestart")
         if !stagedTranscript.isEmpty { resumePrefix = stagedTranscript }
@@ -663,6 +806,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             return
         }
         guard isCurrent(attempt), state.hasSession else { return }
+        // New backend stream: re-arm its recognition-health clocks.
+        transcriptTextSeen = false
+        voicedSecondsWithoutText = 0
+        observedSecondsWithoutText = 0
         observeTranscripts(stack, attempt: attempt)
         if state == .listening, !isMuted, !stagedTranscript.isEmpty {
             scheduleEndpoint(for: stagedTranscript)
@@ -690,6 +837,20 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     private func consume(_ level: VoiceConversationLevel) {
         audioLevel = level.level
         isSpeechDetected = level.isSpeech
+        // Recognition-health clocks. Silence contributes ONLY to the stream-
+        // age accumulator; the voiced-without-text accumulator stops the
+        // session when actual speech produces no recognition for too long.
+        let sampleSeconds = min(max(level.duration, 0), 0.5)
+        if !isMuted, state.hasSession {
+            observedSecondsWithoutText += sampleSeconds
+            if level.isSpeech { voicedSecondsWithoutText += sampleSeconds }
+            if state == .listening, round == nil,
+               voicedSecondsWithoutText >= timing.voicedWithoutTextLimit {
+                report("voicedWithoutText", "seconds=\(Int(voicedSecondsWithoutText))")
+                failCurrentSession(.recognizerFailed)
+                return
+            }
+        }
         let roundActive = round != nil && !isMuted && (state == .waitingModel || state == .answering)
         let edge = bargeGate.process(level)
         switch edge {
@@ -724,6 +885,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     }
 
     private func consumeTranscript(_ raw: String) {
+        // ANY backend text proves the recognizer path is producing output:
+        // re-arm the speech-without-recognition clocks.
+        if !raw.isEmpty {
+            transcriptTextSeen = true
+            voicedSecondsWithoutText = 0
+            observedSecondsWithoutText = 0
+        }
         rawTranscript = raw
         var display: String
         if raw.hasPrefix(transcriptBaseline) {

@@ -26,6 +26,32 @@ final class ChatAutomaticReadControllerTests: XCTestCase {
         XCTAssertEqual(sink.finishes, 1)
     }
 
+    func testPlaybackIsOwnedByFinalMessageRatherThanRun() {
+        let controller = ChatAutomaticReadController(), sink = Sink()
+        let messageID = UUID(), runID = UUID()
+        controller.establishHistoryBaseline([])
+        var playbackOwner: UUID?
+        controller.observeFinalMessages([(messageID, runID, "final body")], enabled: true) { owner in
+            playbackOwner = owner
+            return sink.handle
+        }
+        XCTAssertEqual(playbackOwner, messageID)
+        XCTAssertNotEqual(playbackOwner, runID)
+    }
+
+    func testLateHistoricalEventHydrationDoesNotAutoplay() {
+        let controller = ChatAutomaticReadController(), sink = Sink()
+        let oldRun = UUID(), oldMessage = UUID(), lateEvent = UUID(), newRun = UUID()
+        controller.establishHistoryBaseline([oldMessage], completedRunIDs: [oldRun])
+        // The final event UUID was absent from the first message page.
+        controller.observeFinalMessages([(lateEvent, oldRun, "historical answer")], enabled: true) { _ in sink.handle }
+        XCTAssertTrue(sink.texts.isEmpty)
+        // Later refreshes must not classify a newly completed run as history.
+        controller.establishHistoryBaseline([UUID()], completedRunIDs: [oldRun, newRun])
+        controller.observeFinalMessages([(UUID(), newRun, "new answer")], enabled: true) { _ in sink.handle }
+        XCTAssertEqual(sink.texts, ["new answer"])
+    }
+
     func testNavigationStopsAudioEvenAfterAllTextWasSubmitted() {
         let controller = ChatAutomaticReadController(), sink = Sink()
         controller.establishHistoryBaseline([])

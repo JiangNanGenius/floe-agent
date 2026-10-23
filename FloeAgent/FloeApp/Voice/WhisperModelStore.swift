@@ -158,10 +158,13 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
     }
     private let lock = NSLock()
     private var pending: [String: Pending] = [:]
+    private static let retiredTransfersKey = "speech.transfers.retired.v1"
+    private var retiredTransfers = Set<String>()
     private var backgroundCompletion: (() -> Void)?
     private var session: URLSession!
     private override init() {
         super.init()
+        retiredTransfers = Set(UserDefaults.standard.stringArray(forKey: Self.retiredTransfersKey) ?? [])
         let configuration = URLSessionConfiguration.background(withIdentifier: Self.identifier)
         configuration.isDiscretionary = false
         configuration.sessionSendsLaunchEvents = true
@@ -178,22 +181,61 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
     func registerBackgroundCompletion(_ completion: @escaping () -> Void) {
         lock.withLock { backgroundCompletion = completion }
     }
+
+    /// Persist the fence before cancelling the background transfer: delegate
+    /// callbacks can arrive after cancellation, including after process restore.
+    /// Only this URL's transfer is retired; ASR and other pack downloads survive.
+    func cancelAndRemovePendingTransfer(for url: URL) async {
+        let key = Self.transferKey(url)
+        let waiter = lock.withLock {
+            retiredTransfers.insert(key)
+            UserDefaults.standard.set(retiredTransfers.sorted(), forKey: Self.retiredTransfersKey)
+            return pending.removeValue(forKey: key)
+        }
+        waiter?.continuation.resume(throwing: CancellationError())
+        let tasks = await withCheckedContinuation { continuation in
+            session.getAllTasks { tasks in continuation.resume(returning: tasks) }
+        }
+        for task in tasks where task.taskDescription == key || task.originalRequest?.url == url {
+            if let download = task as? URLSessionDownloadTask {
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    download.cancel { _ in continuation.resume() }
+                }
+            } else { task.cancel() }
+        }
+        // The model store verifies removal and keeps cleanup pending on error.
+        // Late callbacks cannot recreate either file because of the fence above.
+        for suffix in [".download", ".resume"] {
+            if let artifact = try? file(key, suffix: suffix) { try? FileManager.default.removeItem(at: artifact) }
+        }
+    }
+
+    private static func transferKey(_ url: URL) -> String {
+        SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
-        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
+        let key = Self.transferKey(url)
+        guard !lock.withLock({ retiredTransfers.contains(key) }) else { throw CancellationError() }
         let destination = try file(key, suffix: ".download")
         if FileManager.default.fileExists(atPath: destination.path) { return destination }
         let id = UUID()
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
-                lock.withLock { pending[key] = Pending(id: id, continuation: continuation, progress: progress) }
+                let registered = lock.withLock {
+                    guard !retiredTransfers.contains(key) else { return false }
+                    pending[key] = Pending(id: id, continuation: continuation, progress: progress)
+                    return true
+                }
+                guard registered else { continuation.resume(throwing: CancellationError()); return }
                 if Task.isCancelled {
                     lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: CancellationError())
                     return
                 }
                 session.getAllTasks { [self] tasks in
                     lock.withLock {
-                        guard let waiter = pending[key], waiter.id == id, !waiter.cancelled else { return }
+                        guard !retiredTransfers.contains(key), let waiter = pending[key], waiter.id == id, !waiter.cancelled else { return }
                         // A completion may have arrived between the disk check
                         // and listener registration on process restoration.
                         if FileManager.default.fileExists(atPath: destination.path) {
@@ -225,7 +267,10 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
                 }
                 for task in matches {
                     task.cancel { data in
-                        if let data, let target = try? self.file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
+                        self.lock.withLock {
+                            guard !self.retiredTransfers.contains(key) else { return }
+                            if let data, let target = try? self.file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
+                        }
                     }
                 }
             }
@@ -239,19 +284,27 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         guard let key = downloadTask.taskDescription else { return }
         do {
-            guard let response = downloadTask.response as? HTTPURLResponse, (response.statusCode == 200 || response.statusCode == 206) else { throw WhisperModelStore.Failure.corrupt }
-            let target = try file(key, suffix: ".download")
-            if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
-            try FileManager.default.moveItem(at: location, to: target)
-            if let resume = try? file(key, suffix: ".resume") { try? FileManager.default.removeItem(at: resume) }
-            lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(returning: target)
+            let (waiter, target) = try lock.withLock {
+                guard !retiredTransfers.contains(key) else { throw CancellationError() }
+                guard let response = downloadTask.response as? HTTPURLResponse, (response.statusCode == 200 || response.statusCode == 206) else { throw WhisperModelStore.Failure.corrupt }
+                let target = try file(key, suffix: ".download")
+                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+                try FileManager.default.moveItem(at: location, to: target)
+                if let resume = try? file(key, suffix: ".resume") { try? FileManager.default.removeItem(at: resume) }
+                return (pending.removeValue(forKey: key), target)
+            }
+            waiter?.continuation.resume(returning: target)
         } catch { lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: error) }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let key = task.taskDescription, let error else { return }
-        if let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
-           let target = try? file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
-        if let waiter = lock.withLock({ pending.removeValue(forKey: key) }) {
+        let waiter = lock.withLock {
+            if !retiredTransfers.contains(key),
+               let data = (error as NSError).userInfo[NSURLSessionDownloadTaskResumeData] as? Data,
+               let target = try? file(key, suffix: ".resume") { try? data.write(to: target, options: .atomic) }
+            return pending.removeValue(forKey: key)
+        }
+        if let waiter {
             waiter.continuation.resume(throwing: waiter.cancelled ? CancellationError() : error)
         }
     }

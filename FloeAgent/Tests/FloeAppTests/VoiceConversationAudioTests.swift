@@ -108,6 +108,45 @@ struct VoiceConversationAudioTests {
         #expect(units.reduce(0) { $0 + $1.count } + (tail.first?.count ?? 0) == long.count + 1)
     }
 
+    // MARK: End-of-utterance flush gate
+
+    @Test("A short voiced utterance followed by ~0.5 s of tail flushes; pure silence never does")
+    func utteranceGateFlushesShortSpeech() {
+        var gate = VoiceConversationUtteranceGate()
+        // ~1 s of quiet-but-real speech (RMS 0.004 ≥ voiced floor 0.002).
+        for _ in 0..<8 { gate.process(rms: 0.004, samples: 1_000) }
+        #expect(!gate.shouldFlush)              // still mid-utterance
+        // ~0.5 s of tail silence: the utterance ended → flush NOW, even
+        // though the 3 s chunk boundary was never reached.
+        for _ in 0..<4 { gate.process(rms: 0.0001, samples: 1_000) }
+        #expect(gate.shouldFlush)
+        gate.noteDecoded()
+        #expect(!gate.shouldFlush)              // counted once, never replayed
+    }
+
+    @Test("The gate is driven by real energy: room-tone silence never asks for a decode")
+    func utteranceGateIgnoresSilence() {
+        var gate = VoiceConversationUtteranceGate()
+        for _ in 0..<400 { gate.process(rms: 0.0002, samples: 1_000) }  // 25 s of silence
+        #expect(!gate.shouldFlush)
+        // Noise blips under the voiced RMS floor accumulate as SILENCE.
+        for _ in 0..<40 { gate.process(rms: 0.001, samples: 1_000) }
+        #expect(!gate.shouldFlush)
+    }
+
+    @Test("Silence mid-utterance resets only the tail, the voiced run keeps counting until decode")
+    func utteranceGateTracksRunsExactly() {
+        var gate = VoiceConversationUtteranceGate()
+        for _ in 0..<5 { gate.process(rms: 0.01, samples: 2_000) }   // 10_000 voiced
+        gate.process(rms: 0.01, samples: 2_000)                       // tail reset to 0
+        #expect(gate.silenceTailSamples == 0)
+        #expect(gate.voicedSamplesSinceDecode == 12_000)
+        gate.process(rms: 0, samples: 4_000)
+        #expect(!gate.shouldFlush)                                    // tail 4 k < 8 k
+        gate.process(rms: 0, samples: 4_000)
+        #expect(gate.shouldFlush)                                     // tail 8 k, voiced 12 k
+    }
+
     // MARK: Frame math and joining
 
     @Test("Chunk frames convert to output-rate frames with rounding")

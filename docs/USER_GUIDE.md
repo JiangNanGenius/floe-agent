@@ -82,7 +82,7 @@ Models that support it also carry a reasoning/thinking effort setting. With **Au
 
 ### Web search providers
 
-Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Content Updates**; downloaded directory updates preserve saved accounts and keys. Review available changes before applying them to an existing account.
+Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Review available changes before applying them to an existing account.
 
 In the Volcengine editor, choose the account that matches your key:
 
@@ -181,6 +181,8 @@ For text, resolve save errors before running. For Office, preserve and compare b
 *Notes showing a workshop PDF with handwriting and annotation controls.* Open Notes from the sidebar, import a sample PDF, and try a short pen stroke before editing an important document.
 
 Open Notes from the sidebar, then use + to create or import. For task files, select Import from Floe Workspace, choose the project or task, then the file. Check pages, text and attachments after import. The Notes copy is independently stored, not a live mirror of the source.
+
+When sharing from another app or opening a file with Floe, choose Notes, Task or Canvas. For Task or Canvas, select an existing target or create one. Existing task drafts are preserved. The import action inside Notes goes directly to Notes; the attachment action inside a task adds to that task. Importing does not send a message automatically.
 
 Search titles and document text from the library. Snippets help identify a result; unfinished indexes can omit matches. Use the document menu to rebuild the text index when needed. Tabs switch documents; closing a tab does not delete its document. Select an in-document search result to jump to its page and highlight matching text. Some PDFs support page-level navigation only.
 
@@ -413,11 +415,13 @@ Live input, file transcription and video subtitles are separate paths. Check tex
 
 Choose **Chat** for conversation, writing, public web search and reading files you attach. Fast answering is the default; the thinking control applies to this conversation. Switch to Agent for edits or execution.
 
-The microphone dictates an editable draft. The separate voice button starts a continuous conversation in the same chat. Mute, interrupt or end from the voice controls, expand the text history, or type and attach files while talking. Temporary chats keep their existing attachment restrictions. The Floe voice orb responds to microphone input and audio actually being played. Backgrounding or locking pauses voice; resume manually after returning.
+The microphone dictates an editable draft. The separate voice button opens voice conversations directly in the same chat and context. Ordinary chats save normally; existing temporary chats remain unsaved. Mute, interrupt or end from the voice controls, expand the text history, or type and attach files while talking. Temporary chats keep their existing attachment restrictions. The Floe voice orb responds to microphone input and audio actually being played. Backgrounding or locking pauses voice; resume manually after returning.
+
+Edit your user profile and SOUL.md under **Settings → Memories & Personalization**. Each keeps the current content and one recovery copy. Use **Restore Previous** from the More menu. When automatic updates are enabled, background changes take effect without confirmation. You can turn automatic updates off or restore the previous content.
 
 **Read aloud** reads the selected final answer. Automatic reading, when enabled, starts after the final answer is complete. Tool activity, reasoning and intermediate progress are excluded. You can pause, continue or stop playback.
 
-Under **Settings → General → Voice Output**, open **Voice** to choose an enhanced on-device, system or configured online voice. The separate play button generates a fresh preview from your editable text without changing the selection. Chinese, English, Japanese and mixed-language preview text is available. The first successful enhanced speech model download selects Vivian; later downloads preserve your choice. Manage downloads under **Voice Packs** and accounts under **Online Speech Services**. Each billing channel keeps separate credentials; failures never silently switch services. On-device speech synthesis does not make a cloud chat model offline.
+Under **Settings → General → Voice Output**, open **Voice** to choose an enhanced on-device, system or configured online voice. The separate play button generates a fresh preview from your editable text without changing the selection. Chinese, English, Japanese and mixed-language preview text is available. The first successful enhanced speech model download selects its default voice unless you changed the selection while downloading. Later downloads preserve your choice. Downloads show percentage, size and speed; a successful replacement cleans up the retired voice model when it is no longer in use. Manage downloads under **Voice Packs** and accounts under **Online Speech Services**. Each billing channel keeps separate credentials; failures never silently switch services. On-device speech synthesis does not make a cloud chat model offline.
 
 [↑ Back to contents](#contents)
 

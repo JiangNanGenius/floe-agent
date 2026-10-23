@@ -151,7 +151,9 @@
         }
       ],
       "totalBytes": 2498413436,
-      "minimumMemoryBytes": 5368709120
+      "minimumMemoryBytes": 5368709120,
+      "visibility": "hidden",
+      "defaultVoiceID": "vivian"
     },
     {
       "id": "moss-tts-nano-100m-coreml",
@@ -184,11 +186,174 @@
       "voices": [
         {
           "id": "default",
-          "name": "内置默认音色",
+          "name": "Default",
           "languages": [
             "zh",
-            "en"
+            "en",
+            "ja"
           ]
+        },
+        {
+          "id": "vivian",
+          "name": "Vivian",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/vivian.json",
+            "sha256": "f378e522c65c15f1eeb73cf29209fd926bb44b4892987158f3dbfd719f64aae3",
+            "byteCount": 3929,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "serena",
+          "name": "Serena",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/serena.json",
+            "sha256": "037da886d0e93f88f195048d365e325de4f4a0ddc6e910de6971a5eac6386bd6",
+            "byteCount": 3912,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "uncle_fu",
+          "name": "Uncle Fu",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/uncle_fu.json",
+            "sha256": "4c5e7de13c5e7eff09004ae5ae9cbab2c75c5fd03d85e3a2c4ecc6f9edf35b55",
+            "byteCount": 3886,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "dylan",
+          "name": "Dylan",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/dylan.json",
+            "sha256": "82d2086bc6f2f66213c861d9909b3971dd61ebe1ee966c6a2e57cb95bcbbad78",
+            "byteCount": 4366,
+            "frames": 57,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "eric",
+          "name": "Eric",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/eric.json",
+            "sha256": "215c47edc08e9838be8498255ef8c337382d9cee2b09a49697a71e13f090f247",
+            "byteCount": 3930,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "ryan",
+          "name": "Ryan",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/ryan.json",
+            "sha256": "53f70c5d9eaaf9033801a22e2111a505a6f0077582febfa22c2d25b6966be427",
+            "byteCount": 3936,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "aiden",
+          "name": "Aiden",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/aiden.json",
+            "sha256": "ad929fb7cf744a12297896fc572f47f5a9ad37f44bf22cf938f4f5deb58eb7ed",
+            "byteCount": 3895,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "ono_anna",
+          "name": "Ono Anna",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/ono_anna.json",
+            "sha256": "1acaaf1afc1d64f15d88d125feecf6f894efdc89e4532c15757fcda471e96d73",
+            "byteCount": 3940,
+            "frames": 50,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
+        },
+        {
+          "id": "sohee",
+          "name": "Sohee",
+          "languages": [
+            "zh",
+            "en",
+            "ja"
+          ],
+          "reference": {
+            "path": "references/sohee.json",
+            "sha256": "b4fb79f5df311404edb09cb1405ec00fea69ac2044f2f76d00a302525266f8ff",
+            "byteCount": 4354,
+            "frames": 57,
+            "codesPerFrame": 16,
+            "codebookSize": 1024,
+            "source": "bundled"
+          }
         }
       ],
       "sampleRate": 48000,
@@ -305,7 +470,9 @@
         }
       ],
       "totalBytes": 368682767,
-      "minimumMemoryBytes": 805306368
+      "minimumMemoryBytes": 805306368,
+      "visibility": "visible",
+      "defaultVoiceID": "default"
     }
   ]
 }

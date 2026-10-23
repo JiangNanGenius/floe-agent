@@ -13,12 +13,13 @@ import FloeCore
 
 /// One settings category in the settings center.
 enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
-    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics
+    case general, personalization, internalPrompts, providers, auxiliary, localModels, canvas, webSearch, permissions, appleCapabilities, privacy, execution, backgroundExecution, files, sourceControl, sync, remote, usage, dataManagement, diagnostics, updates
 
     var id: String { rawValue }
 
     // Preserve persisted navigation values, not duplicate configuration pages.
-    static var visibleCases: [Self] { allCases.filter { $0 != .sourceControl } }
+    static var visibleCases: [Self] { allCases.filter { $0 != .sourceControl && $0 != .internalPrompts } }
+    static var mainCases: [Self] { visibleCases.filter { $0 != .updates } }
 
     var title: LocalizedStringKey {
         switch self {
@@ -42,6 +43,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .usage: "settings.section.usage"
         case .dataManagement: "settings.data_management_view.data_management"
         case .diagnostics: "settings.section.diagnostics"
+        case .updates: "settings.section.updates"
         }
     }
 
@@ -67,6 +69,7 @@ enum SettingsSection: String, Hashable, CaseIterable, Identifiable, Sendable {
         case .usage: "chart.bar"
         case .dataManagement: "archivebox"
         case .diagnostics: "stethoscope"
+        case .updates: "arrow.triangle.2.circlepath"
         }
     }
 }
@@ -87,10 +90,19 @@ struct SettingsRootView: View {
             // iPad: master-detail with a preselected first category so the
             // detail column is never blank.
             NavigationSplitView(columnVisibility: $columnVisibility) {
-                List(SettingsSection.visibleCases, selection: $selection) { section in
-                    settingsRowLabel(for: section)
-                        .tag(section)
-                        .accessibilityIdentifier("settings.section.\(section.rawValue)")
+                List(selection: $selection) {
+                    Section {
+                        ForEach(SettingsSection.mainCases) { section in
+                            settingsRowLabel(for: section)
+                                .tag(section)
+                                .accessibilityIdentifier("settings.section.\(section.rawValue)")
+                        }
+                    }
+                    Section {
+                        settingsRowLabel(for: .updates)
+                            .tag(SettingsSection.updates)
+                            .accessibilityIdentifier("settings.section.updates")
+                    }
                 }
                 .accessibilityIdentifier("settings.sections")
                 .navigationTitle(FloeL10n.l("settings.title"))
@@ -116,12 +128,19 @@ struct SettingsRootView: View {
             // and from More without relying on an ancestor implementation
             // detail.
             NavigationStack {
-                List(SettingsSection.visibleCases) { section in
-                    NavigationLink(value: section) {
-                        settingsRowLabel(for: section)
+                List {
+                    Section {
+                        ForEach(SettingsSection.mainCases) { section in
+                            NavigationLink(value: section) { settingsRowLabel(for: section) }
+                                .accessibilityIdentifier("settings.section.\(section.rawValue)")
+                                .frame(minHeight: FloeTheme.minimumTarget)
+                        }
                     }
-                    .accessibilityIdentifier("settings.section.\(section.rawValue)")
-                    .frame(minHeight: FloeTheme.minimumTarget)
+                    Section {
+                        NavigationLink(value: SettingsSection.updates) { settingsRowLabel(for: .updates) }
+                            .accessibilityIdentifier("settings.section.updates")
+                            .frame(minHeight: FloeTheme.minimumTarget)
+                    }
                 }
                 .accessibilityIdentifier("settings.sections")
                 .navigationTitle(FloeL10n.l("settings.title"))
@@ -172,14 +191,11 @@ struct SettingsRootView: View {
     private func detailView(for section: SettingsSection) -> some View {
         switch section {
         case .general:
-            GeneralSettingsView(
-                center: environment.settingsCenter,
-                contentUpdates: environment.contentUpdateCenter
-            )
+            GeneralSettingsView(center: environment.settingsCenter)
         case .personalization:
             MemoryView(center: environment.memoryCenter)
-        case .internalPrompts:
-            InternalPromptsSettingsView(center: environment.contentUpdateCenter)
+        case .internalPrompts, .updates:
+            ContentUpdatesSettingsView(center: environment.contentUpdateCenter)
         case .providers:
             ProvidersSettingsView(
                 center: environment.conversationCenter,

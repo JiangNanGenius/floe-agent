@@ -19,6 +19,7 @@ struct ShareIntakeCard: View {
 
     @State private var showsDiscardConfirmation = false
     @State private var destinationHasText = false
+    @State private var isImportingDestination = false
 
     var body: some View {
         Group {
@@ -103,6 +104,44 @@ struct ShareIntakeCard: View {
         HStack(spacing: 10) {
             Button {
                 Task {
+                    center.clearDestinationOutcome()
+                    isImportingDestination = true
+                    await center.importEnvelopeToNotes(envelope)
+                    isImportingDestination = false
+                }
+            } label: {
+                Text("import.destination.notes")
+            }
+            .buttonStyle(.bordered)
+            .disabled(center.isWorking || isImportingDestination)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("home.share.intake.notes")
+
+            Menu {
+                Button {
+                    runCanvasImport(.newCanvas, envelope: envelope)
+                } label: {
+                    Text("import.destination.canvas_new")
+                }
+                ForEach(center.canvasImportTargets()) { target in
+                    Button {
+                        runCanvasImport(.existing(canvasID: target.id), envelope: envelope)
+                    } label: {
+                        Text(verbatim: target.name)
+                    }
+                }
+            } label: {
+                Text("import.destination.canvas")
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .disabled(center.isWorking || isImportingDestination)
+            .frame(minHeight: FloeTheme.minimumTarget)
+            .accessibilityIdentifier("home.share.intake.canvas")
+
+            Button {
+                Task {
+                    center.clearDestinationOutcome()
                     await center.apply(envelope, to: destination)
                     refreshDestinationState()
                 }
@@ -128,7 +167,7 @@ struct ShareIntakeCard: View {
 
             Spacer(minLength: 0)
 
-            if center.isWorking {
+            if center.isWorking || isImportingDestination {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(Text("share.intake.working"))
@@ -138,7 +177,13 @@ struct ShareIntakeCard: View {
 
     @ViewBuilder
     private func status(for envelope: ShareEnvelope) -> some View {
-        if outcomeApplies(to: envelope), let message = center.lastErrorMessage {
+        if let message = destinationStatusMessage(for: envelope) {
+            Text(message)
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(destinationStatusIsError ? FloeTheme.pending : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("home.share.intake.destination.status")
+        } else if outcomeApplies(to: envelope), let message = center.lastErrorMessage {
             Text(message)
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(FloeTheme.pending)
@@ -154,6 +199,53 @@ struct ShareIntakeCard: View {
                 .font(FloeTheme.Typography.metadata)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Only an explicit durable destination action on THIS envelope may
+    /// replace the hint; a result from a previous share never describes a
+    /// new arrival.
+    private func destinationStatusMessage(for envelope: ShareEnvelope) -> String? {
+        guard let outcome = center.lastDestinationOutcome else { return nil }
+        let result = outcome.result
+        switch result {
+        case .imported(let id, let count):
+            guard id == envelope.id else { return nil }
+            return outcome.destination == .canvas
+                ? FloeL10n.plural("import.destination.canvas_imported", count: count)
+                : FloeL10n.plural("share.intake.notes_imported", count: count)
+        case .settled(let id):
+            guard id == envelope.id else { return nil }
+            return outcome.destination == .canvas
+                ? nil
+                : FloeL10n.l("share.intake.notes_settled")
+        case .deferredBusy(let id):
+            guard id == envelope.id else { return nil }
+            return FloeL10n.l("share.intake.deferred_busy")
+        case .failed(let id, let message):
+            guard id == envelope.id else { return nil }
+            return message ?? FloeL10n.l("share.intake.failed")
+        case .unavailable:
+            return FloeL10n.l("share.intake.unavailable")
+        }
+    }
+
+    private var destinationStatusIsError: Bool {
+        switch center.lastDestinationOutcome?.result {
+        case .deferredBusy?, .failed?, .unavailable?: return true
+        default: return false
+        }
+    }
+
+    private func runCanvasImport(
+        _ target: CanvasDestinationTarget,
+        envelope: ShareEnvelope
+    ) {
+        Task {
+            center.clearDestinationOutcome()
+            isImportingDestination = true
+            await center.importEnvelopeToCanvas(envelope, target: target)
+            isImportingDestination = false
         }
     }
 

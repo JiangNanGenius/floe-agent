@@ -562,6 +562,9 @@ struct ThreadDetailView: View {
                     allowsReadAloud: !viewModel.isRunning && viewModel.selectedRunID.flatMap {
                         FinalAnswerSpeech.answer(runID: $0, events: viewModel.events, messages: viewModel.messages)
                     }?.id.uuidString == idSuffix,
+                    // Per-message playback ownership (primary SpeechService API):
+                    // the timeline id IS the durable message id when persisted.
+                    speechOwnerID: UUID(uuidString: idSuffix),
                     onSaveToNotes: onSaveToNotes
                 )
             }
@@ -1165,6 +1168,14 @@ struct ThreadDetailView: View {
               let (_, model) = environment.conversationCenter.providerAndModel(
                 modelID: viewModel.selectedModelID
               ) else { return }
+        // Internal chat-tool mode selection replacing the old
+        // "switch and start" menu: a durable task conversation switches its
+        // composer to Chat when voice opens (voice rounds themselves always
+        // launch as chat turns through the driver). Temporary sessions keep
+        // their own effective mode and never write a durable selection.
+        if !viewModel.isTemporary, viewModel.effectiveAgentMode != .chat {
+            viewModel.selectAgentMode(.chat)
+        }
         let request = ContinuousVoiceRequest(
             windowID: voiceWindowID, conversationID: viewModel.conversationID,
             modelID: model.id, workspaceID: viewModel.selectedProjectID,
@@ -1184,7 +1195,7 @@ struct ThreadDetailView: View {
 
     private var automaticReadSignal: AutomaticReadSignal {
         AutomaticReadSignal(
-            loaded: viewModel.hasLoaded, runID: viewModel.selectedRunID,
+            loaded: viewModel.hasLoadedSpeechHistory, runID: viewModel.selectedRunID,
             runState: viewModel.runs.first?.state, lastEventID: viewModel.events.last?.id,
             running: viewModel.isRunning, draining: viewModel.isDraining,
             lastMessageID: viewModel.messages.last?.id,
@@ -1200,9 +1211,10 @@ struct ThreadDetailView: View {
     }
 
     private func refreshAutomaticRead() {
-        guard viewModel.hasLoaded else { return }
+        guard viewModel.hasLoadedSpeechHistory else { return }
         automaticRead.establishHistoryBaseline(
-            viewModel.messages.suffix(80).map(\.id) + viewModel.events.suffix(200).map(\.id)
+            viewModel.messages.suffix(80).map(\.id) + viewModel.events.suffix(200).map(\.id),
+            completedRunIDs: viewModel.runs.filter { $0.state == "completed" }.map(\.id)
         )
         let enabled = automaticReadSignal.enabled
             && viewModel.selectedRunID == viewModel.runs.first?.id
@@ -1621,6 +1633,7 @@ private struct MessageBubble: View {
             } else {
                 AssistantMessageView(
                     text: displayedText ?? message.content, isStreaming: false,
+                    speechOwnerID: message.id,
                     onSaveToNotes: onSaveToNotes, attachments: attachmentItems, onOpenAttachment: onOpenAttachment)
             }
         }

@@ -203,7 +203,8 @@ enum DocumentIntakeStager {
             plannedRootDocumentID: request.plannedRootDocumentID,
             createdAt: request.receivedAt,
             sceneID: request.sceneID,
-            requestSequence: request.requestSequence
+            requestSequence: request.requestSequence,
+            destinationChoiceRequired: request.destinationChoiceRequired ? true : nil
         )
         do {
             let encoder = JSONEncoder()

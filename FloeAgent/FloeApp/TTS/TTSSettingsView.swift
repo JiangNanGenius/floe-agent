@@ -34,11 +34,20 @@ struct TTSSettingsView: View {
 }
 
 enum SpeechVoiceNames {
+    /// Ordinary surfaces always use the generic product label; concrete
+    /// engine/repository names appear only inside the explicit pack detail.
     static func model(_ model: LocalSpeechModel) -> String {
-        FloeL10n.l(model.engine == "qwen3TTS" ? "voice.local.enhanced" : "voice.local.compact")
+        FloeL10n.l(model.isHidden ? "voice.local.legacy" : "voice.local.enhanced")
     }
     static func voice(_ id: String) -> String {
         ["uncle_fu": "Uncle Fu", "ono_anna": "Ono Anna", "default": FloeL10n.l("voice.local.voice.default")][id] ?? id.capitalized
+    }
+    /// Published reference voices display their catalog-provided qualified
+    /// name; built-in ids keep the app-authored localizable mapping so the
+    /// default voice is never shown as a hardcoded non-localized string.
+    static func voice(_ voice: LocalSpeechModel.Voice) -> String {
+        if voice.reference != nil, !voice.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return voice.name }
+        return voice(voice.id)
     }
     static func current(_ s: TTSSettingsSnapshot) -> String {
         if s.voiceID.isEmpty { return s.provider.title }
@@ -56,10 +65,8 @@ struct SpeechVoicePickerView: View {
     @Environment(\.continuousVoiceActive) private var voiceActive
     @AppStorage("voice.audition.text") private var sample = ""
     @AppStorage("voice.audition.kind") private var auditionKind = "zh"
-    @State private var models: [LocalSpeechModel] = []
-    @State private var installed = Set<String>()
-    @State private var installation = LocalSpeechModelStore.Installation()
     @State private var previewID: String?
+    @State private var previewOwnerID = UUID()
     @State private var failure: String?
     var body: some View {
         List {
@@ -68,22 +75,15 @@ struct SpeechVoicePickerView: View {
                     LabeledContent("voice.audition.content", value: FloeL10n.l("voice.audition." + auditionKind))
                 }
             }
-            ForEach(models) { model in
+            ForEach(settings.localVisibleModels) { model in
                 Section {
-                    if !installed.contains(model.id) {
-                        if installation.running && installation.modelID == model.id {
-                            ProgressView(value: Double(installation.completed), total: Double(max(1, installation.total)))
-                            Button("voice.local.cancel") { Task { await settings.cancelInstallation() } }
-                        } else {
-                            Button { Task { await settings.install(model) } } label: {
-                                Label(FloeL10n.l("voice.local.download") + " · " + ByteCountFormatter.string(fromByteCount: model.byteCount, countStyle: .file), systemImage: "arrow.down.circle")
-                            }.disabled(installation.running)
-                        }
+                    if !settings.localInstalledModelIDs.contains(model.id) {
+                        SpeechPackInstallState(model: model)
                     }
                     ForEach(model.voices) { voice in
-                        let ready = installed.contains(model.id)
+                        let ready = settings.localInstalledModelIDs.contains(model.id)
                         let value = localChoice(model, voice: voice)
-                        voiceRow(title: SpeechVoiceNames.voice(voice.id), detail: voice.languages.compactMap { Locale.current.localizedString(forLanguageCode: $0) }.joined(separator: " · "), id: model.id + "/" + voice.id, value: value, ready: ready) {
+                        voiceRow(title: SpeechVoiceNames.voice(voice), detail: voice.languages.compactMap { Locale.current.localizedString(forLanguageCode: $0) }.joined(separator: " · "), id: model.id + "/" + voice.id, value: value, ready: ready) {
                             if ready { settings.choose(value) }
                         }
                     }
@@ -108,7 +108,15 @@ struct SpeechVoicePickerView: View {
                     }
                 }
             }
-            if let key = failure ?? installation.failureKey ?? playback.failureKey {
+            if let key = settings.localMigrationNote {
+                Section {
+                    Label { Text(LocalizedStringKey(key)) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .foregroundStyle(.secondary)
+                    Button("voice.action.retry") { Task { await settings.retryLocalValidation() } }
+                }
+            }
+            if let key = failure ?? settings.localCatalogErrorKey ?? settings.localInstallation.failureKey
+                ?? (playback.failureOwnerID == previewOwnerID ? playback.failureKey : nil) {
                 Section { Text(LocalizedStringKey(key)).foregroundStyle(.red) }
             }
             if voiceActive { Section { Text("voice.settings.audition.busy").foregroundStyle(.secondary) } }
@@ -120,18 +128,11 @@ struct SpeechVoicePickerView: View {
                 sample = FloeL10n.l("voice.settings.audition.sample")
             }
         }
-        .task {
-            do { models = try await LocalSpeechModelStore.shared.catalog() }
-            catch { failure = "voice.local.error.catalog"; return }
-            while !Task.isCancelled {
-                installation = await LocalSpeechModelStore.shared.state()
-                var found = Set<String>()
-                for m in models { if await LocalSpeechModelStore.shared.isInstalled(m) { found.insert(m.id) } }
-                installed = found
-                do { try await Task.sleep(for: .seconds(1)) } catch { return }
-            }
+        .onDisappear {
+            if playback.activeOwnerID == previewOwnerID { playback.stop() }
+            playback.clearFailure(ownerID: previewOwnerID)
+            previewID = nil
         }
-        .onDisappear { if previewID != nil { playback.stop() }; previewID = nil }
     }
     private func withVoice(_ profile: TTSSettingsSnapshot, id: String) -> TTSSettingsSnapshot {
         var value = profile
@@ -146,7 +147,7 @@ struct SpeechVoicePickerView: View {
     }
     private func voiceRow(title: String, detail: String?, id: String, value: TTSSettingsSnapshot, ready: Bool, select: @escaping () -> Void) -> some View {
         let selected = settings.snapshot.provider == value.provider && settings.snapshot.modelID == value.modelID && settings.snapshot.voiceID == value.voiceID && settings.snapshot.billingRoute == value.billingRoute
-        let playing = previewID == id && playback.isSpeaking
+        let playing = previewID == id && playback.activeOwnerID == previewOwnerID && playback.isSpeaking
         return HStack(spacing: 12) {
             Button {
                 if ready && value.provider.requiresCloudCredential { settings.rememberVoiceName(title, for: value) }
@@ -163,7 +164,7 @@ struct SpeechVoicePickerView: View {
             }.buttonStyle(.plain).disabled(!ready)
             Button {
                 if playing { playback.stop(); previewID = nil }
-                else { previewID = id; playback.preview(sample, settings: value) }
+                else { previewID = id; playback.preview(sample, settings: value, ownerID: previewOwnerID) }
             } label: {
                 if playing && playback.isPreparing { ProgressView().frame(width: 44, height: 44) }
                 else { Image(systemName: playing ? "stop.circle.fill" : "play.circle").font(.title2).frame(width: 44, height: 44) }
