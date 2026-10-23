@@ -44,9 +44,9 @@ or physical-device speech acceptance for these repairs.
 | Live continuous voice and direct entry | Code ready; full-App and actual microphone checks pending |
 | Enhanced speech pack, voices and migration | Code ready; native repeated-synthesis repair verified on Mac; unified App qualification pending |
 | Memory cancellation and bounded personalization history | Code ready; unified qualification pending |
-| Settings navigation and message-owned speech errors | Code ready; App/UI checks pending |
-| Notes/task/Canvas destination for inbound documents | Code ready; durable draft and Canvas recovery checks pending |
-| Unified Swift 6/App build, behavior and UI/audio qualification | Pending |
+| Settings navigation and message-owned speech errors | Settings/direct-entry/paused-error UI checked; behavioral repairs pending |
+| Notes/task/Canvas destination for inbound documents | Actual Files share and destination pickers checked; durable import test failures under repair |
+| Unified Swift 6/App build, behavior and UI/audio qualification | App and all test targets compiled at `0250fb01`; actual scoped tests failed (374 passed, 31 failed, 1 skipped); no release qualification yet |
 | Versioned delivery, merge and cleanup | Pending |
 
 ## Completed component evidence
@@ -62,6 +62,15 @@ or physical-device speech acceptance for these repairs.
   qualification recordings are not bundled in the App.
 - Physical-phone testing is currently deferred at the user's request. The Mac
   phone-audio relay was stopped; this does not qualify the new microphone path.
+- Full Swift 6 App/test-target object compilation passed with Xcode 27.1
+  (`27A9275`) at `0250fb01`. The subsequent 406-test App-host run failed;
+  original result and crash evidence are retained. Failures are being repaired
+  before repeating the affected checks, without a skip waiver.
+- The canonical iPad Simulator's actual Files share extension saved the synthetic
+  PDF, and Floe offered Notes, Task and Canvas. Task search and existing/new
+  Canvas choices were observed; cancellation preserved the original draft and
+  attachment. The fixture was moved to recoverable private evidence afterward.
+  These checks do not prove destination commit/recovery or physical-device I/O.
 
 ## Verification and closeout
 

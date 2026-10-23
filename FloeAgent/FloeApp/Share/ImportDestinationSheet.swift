@@ -232,7 +232,7 @@ struct ImportDestinationSheet: View {
                 ForEach(Array(filtered.prefix(taskVisible).enumerated()), id: \.element.id) { _, target in
                     destinationRow(
                         symbol: "text.bubble",
-                        title: target.title,
+                        title: taskTitle(target),
                         identifier: "import.destination.task.item"
                     ) {
                         onTask(.existing(conversationID: target.id))
@@ -254,8 +254,13 @@ struct ImportDestinationSheet: View {
         let query = taskQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return taskRows }
         return taskRows.filter {
-            $0.title.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            taskTitle($0).range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }
+    }
+
+    private func taskTitle(_ target: TaskImportTarget) -> String {
+        let title = target.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? FloeL10n.l("chat.untitled") : title
     }
 
     private func loadTasks() {

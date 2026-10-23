@@ -367,31 +367,31 @@ struct TemporaryChatCompositionTests {
 
     @Test("The real settings store reports a seeded provider as available")
     func realSettingsStoreComposition() throws {
-        let defaults = UserDefaults.standard
-        let key = WebSearchSettingsCenter.defaultsKey
-        let original = defaults.data(forKey: key)
-        defer {
-            if let original {
-                defaults.set(original, forKey: key)
-            } else {
-                defaults.removeObject(forKey: key)
-            }
-        }
+        let suite = "Floe.TemporaryChatComposition.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let key = WebSearchSettingsCenter.instancesKey
         // SearXNG needs no credential: an enabled provider with a valid HTTPS
         // endpoint is "configured" through the same function the run uses.
         defaults.set(try JSONEncoder().encode([
-            WebSearchProviderConfiguration(
+            WebSearchProviderInstance(configuration: WebSearchProviderConfiguration(
                 kind: .searxng,
                 displayName: "Test SearXNG",
                 endpoint: URL(string: "https://searx.example.org")!,
                 credentialAccount: "web-search.searxng",
                 enabled: true,
                 priority: 0
-            )
+            ), presetID: nil, appliedCatalogVersion: nil)
         ]), forKey: key)
-        #expect(WebSearchSettingsCenter.toolIsAvailable("web.search"))
+        // Resolve the real v2 store without reading or mutating the user's
+        // standard defaults, synchronized provider list or credentials.
+        let available: (String) -> Bool = {
+            WebSearchSettingsCenter.toolIsAvailable($0, defaults: defaults, cloudData: { _ in nil })
+        }
+        #expect(available("web.search"))
         let ceiling = ConversationCenter.temporaryToolCeiling(
-            offeredDescriptors: offeredDescriptors()
+            offeredDescriptors: offeredDescriptors(),
+            webSearchAvailable: available
         )
         #expect(ceiling == ["web.search", "web.fetch"])
         #expect(!ceiling.contains("apple.calendar.list"))

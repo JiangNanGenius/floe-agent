@@ -574,8 +574,12 @@ final class WebSearchSettingsCenter: ObservableObject {
         readyConfigurations()
     }
 
-    nonisolated static func toolIsAvailable(_ name: String) -> Bool {
-        let ready = readyConfigurations()
+    nonisolated static func toolIsAvailable(
+        _ name: String,
+        defaults: UserDefaults = .standard,
+        cloudData: (String) -> Data? = { NSUbiquitousKeyValueStore.default.data(forKey: $0) }
+    ) -> Bool {
+        let ready = readyConfigurations(defaults: defaults, cloudData: cloudData)
         if name == WebSearchTool.name { return !ready.isEmpty }
         if name == BochaAISearchTool.name { return ready.contains { $0.0.kind == .bochaWeb || $0.0.kind == .bochaAI } }
         return false
@@ -584,12 +588,14 @@ final class WebSearchSettingsCenter: ObservableObject {
     /// v2 user instances first, then the legacy v1 array with its historical
     /// semantics (including the Bocha shared-account fallback) for the window
     /// before the settings page has migrated a device.
-    nonisolated private static func readyConfigurations() -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
-        let defaults = UserDefaults.standard
+    nonisolated private static func readyConfigurations(
+        defaults: UserDefaults = .standard,
+        cloudData: (String) -> Data? = { NSUbiquitousKeyValueStore.default.data(forKey: $0) }
+    ) -> [(WebSearchProviderConfiguration, WebSearchCredential)] {
         let keychain = KeychainStore(service: keychainService, synchronizable: true)
 
         let v2Snapshots = [
-            NSUbiquitousKeyValueStore.default.data(forKey: instancesKey),
+            cloudData(instancesKey),
             defaults.data(forKey: instancesKey)
         ]
         if let data = v2Snapshots.compactMap({ $0 }).first,
@@ -611,7 +617,7 @@ final class WebSearchSettingsCenter: ObservableObject {
             }.filter { WebSearchService.isConfigured($0.0, credential: $0.1) }
         }
 
-        let snapshots = [NSUbiquitousKeyValueStore.default.data(forKey: defaultsKey), defaults.data(forKey: defaultsKey)]
+        let snapshots = [cloudData(defaultsKey), defaults.data(forKey: defaultsKey)]
         guard let providers = snapshots.compactMap({ data -> [WebSearchProviderConfiguration]? in
             guard let data else { return nil }
             return try? JSONDecoder().decode([WebSearchProviderConfiguration].self, from: data)

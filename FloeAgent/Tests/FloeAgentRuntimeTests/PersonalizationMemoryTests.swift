@@ -327,16 +327,19 @@ struct PersonalizationMemoryTests {
         let original = try await service.saveManual(kind: .userProfile, content: "# Profile\n- concise")
         try await service.recordActivity(completedRuns: 10)
         let rewrite = String(repeating: "new profile detail\n", count: 80)
+        // The store normalizes surrounding whitespace for manual and generated
+        // content alike; the silent application contract concerns that content.
+        let expectedContent = rewrite.trimmingCharacters(in: .whitespacesAndNewlines)
         let applied = try #require(await service.generateIfDue(kind: .userProfile,
             generator: FixedGenerator(content: rewrite)))
         // No review step: the rewrite is now the live current document.
-        #expect(applied.content == rewrite)
+        #expect(applied.content == expectedContent)
         #expect(applied.source == .automatic)
         let retention = try await documentStore.retention(kind: .userProfile, workspaceID: nil)
         #expect(retention.current?.id == applied.id)
         #expect(retention.previous?.id == original.id)
         #expect(try await retainedRowCount(database, kind: .userProfile) == 2)
-        #expect(try await documentStore.liveSnapshot(workspaceID: nil).profile == rewrite)
+        #expect(try await documentStore.liveSnapshot(workspaceID: nil).profile == expectedContent)
     }
 
     @Test("intervening manual edit makes the due background update skip without a proposal")
