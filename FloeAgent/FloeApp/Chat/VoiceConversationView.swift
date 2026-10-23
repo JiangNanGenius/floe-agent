@@ -149,8 +149,12 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         // capture already stopped synchronously, every late drain tail is
         // identity-fenced by its own service, and the shared audio session
         // is generation-claimed by the newer owner.
-        await Self.boundedJoin(seconds: 2) { await environment.voiceInput.stopAndWait() }
-        await Self.boundedJoin(seconds: 2) { await environment.speechService.stopAndWait() }
+        await Self.boundedJoin(seconds: 2) { [input = environment.voiceInput] in
+            await input.stopAndWait()
+        }
+        await Self.boundedJoin(seconds: 2) { [speech = environment.speechService] in
+            await speech.stopAndWait()
+        }
         guard isActive, !Task.isCancelled else { return }
         bridge?.connect()
         refreshHistory()
