@@ -11,7 +11,6 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
@@ -33,9 +32,17 @@ class RuntimeKernel(context: Context) {
         ArrayBlockingQueue(8)) { work -> Thread(work, "floe-linux-control") }.apply { allowCoreThreadTimeOut(true) }
     private val stopExecutor = ThreadPoolExecutor(1, 1, 30, TimeUnit.SECONDS,
         ArrayBlockingQueue(1)) { work -> Thread(work, "floe-linux-stop") }.apply { allowCoreThreadTimeOut(true) }
-    private val stopQueued = AtomicBoolean()
     private val count = AtomicInteger()
-    private val stopping = AtomicBoolean()
+    // G03-R3 first-start admission repair: the stopping fence is a
+    // monitor-serialized lifecycle state machine, not two free atomics.
+    // A stale fence leaked by a pump-thread-converged release used to
+    // refuse the NEXT start (the brand-new ordinary New task's first tool
+    // run) deterministically between KERNEL_START_ENTER and
+    // KERNEL_ADMISSION_CHECK — see RuntimeStoppingFence for the actual
+    // device evidence and the preserved ORIGINAL rules. Every raise/settle
+    // transition keeps the requestStop/executor semantics byte-for-byte;
+    // the read-only `status` metadata path merely READS the fence.
+    private val fence = RuntimeStoppingFence { hasOwnedWork() }
     private val pendingInstallID = AtomicReference<String?>()
     private val pendingShellID = AtomicReference<String?>()
     private val pendingPreflightID = AtomicReference<String?>()
@@ -61,7 +68,7 @@ class RuntimeKernel(context: Context) {
         if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_START_ENTER)
         if (request.operation == "status") return JSONObject()
             .put("protocol", RuntimeWire.VERSION).put("foreground", foregroundAllowed())
-            .put("active", hasOwnedWork()).put("stopping", stopping.get())
+            .put("active", hasOwnedWork()).put("stopping", fence.isStopping)
             .put("localNetworkGranted", android.os.Build.VERSION.SDK_INT < 37 || context.checkSelfPermission(
                 RuntimeAccessActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
             // Loading metadata or binding the component does not enable a tool.
@@ -111,7 +118,7 @@ class RuntimeKernel(context: Context) {
         if (request.operation == "shell.start" || request.operation == RuntimeWire.PREFLIGHT)
             check(workspaceGrant != null) { "Owned workspace grant is required" }
         check(metadataOnly || cleanupLane || foregroundAllowed()) { "Foreground work ownership is required" }
-        check(!stopping.get()) { "Runtime is stopping" }
+        check(!fence.isStopping) { "Runtime is stopping" }
         synchronized(receipts) {
             receipts[request.id]?.let { return JSONObject(it.toString()) }
             if (request.operation == "install.start" || request.operation == "shell.start" ||
@@ -140,14 +147,21 @@ class RuntimeKernel(context: Context) {
                 if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTOR_ENTER)
                 update(request.id, JSONObject().put("state", "running"))
                 try {
-                    check(!stopping.get() && (metadataOnly || cleanupLane || foregroundAllowed()))
+                    check(!fence.isStopping && (metadataOnly || cleanupLane || foregroundAllowed()))
                     // All native loading, disk work and real command admission
                     // happen on this owned IO thread, never on Binder/Main.
-                    val runtime = operations ?: LinuxRuntimeOperations(context).also { operations = it }
+                    // G03-R3 first-start admission repair: the REAL owned-work
+                    // release (finish() success) notifies the fence, so a stop
+                    // that arrived while the pump thread was still draining
+                    // converges at the actual completion instead of leaking a
+                    // stale fence into the next admission.
+                    val runtime = operations ?: LinuxRuntimeOperations(
+                        context, onOwnedWorkReleased = { fence.settleAfterOwnedWorkReleased() },
+                    ).also { operations = it }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_OPERATIONS_READY)
-                    check(!stopping.get() && (metadataOnly || cleanupLane || foregroundAllowed()))
+                    check(!fence.isStopping && (metadataOnly || cleanupLane || foregroundAllowed()))
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_EXECUTE_ENTER)
-                    val result = runtime.execute(request, workspaceGrant) { stopping.get() || (!metadataOnly && !foregroundAllowed()) }
+                    val result = runtime.execute(request, workspaceGrant) { fence.isStopping || (!metadataOnly && !foregroundAllowed()) }
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_RESULT_READY)
                     RuntimeWire.bounded(result.toString())
                     update(request.id, JSONObject().put("state", "completed").put("result", result))
@@ -162,8 +176,8 @@ class RuntimeKernel(context: Context) {
                     pendingPreflightID.compareAndSet(request.id, null)
                     count.decrementAndGet()
                     if (traceStart) RuntimeExecutionTrace.mark(Stage.KERNEL_REQUEST_RETURNED)
-                    if (!hasOwnedWork()) stopping.set(false)
-                    onChanged?.invoke(stopping.get())
+                    fence.settleAfterRequestDrained()
+                    onChanged?.invoke(fence.isStopping)
                 }
             }
         } catch (_: RejectedExecutionException) {
@@ -179,20 +193,22 @@ class RuntimeKernel(context: Context) {
     }
 
     fun requestStop(request: RuntimeWire.Request? = null) {
-        stopping.set(true)
-        if (stopQueued.compareAndSet(false, true)) stopExecutor.execute {
+        // Raise + single queue claim under the fence monitor (ORIGINAL rule:
+        // every stop raises the fence; exactly one queued stopOwnedWork
+        // drain at a time; the tail clears only while the engine provably
+        // owns nothing).
+        if (fence.beginStop()) stopExecutor.execute {
             try { operations?.stopOwnedWork(request) }
             catch (_: Exception) {
                 // Keep owned work/leases and the stopping notice. An inability
                 // to stop is not permission to tear down their directories.
             }
             finally {
-                stopQueued.set(false)
-                if (!hasOwnedWork()) stopping.set(false)
-                onChanged?.invoke(stopping.get())
+                fence.stopDrained()
+                onChanged?.invoke(fence.isStopping)
             }
         }
-        if (!hasOwnedWork()) stopping.set(false)
+        fence.settleAfterRaise()
         onChanged?.invoke(true)
     }
 

@@ -119,6 +119,10 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         public var stopReason: String?
         public var workspaceStatus: String? = nil
         public var workspaceRecoveryRef: String? = nil
+        /// OPTIONAL per-execution recovery projection proven by the engine's
+        /// OWN terminal envelope (identity-bound session key + run echo).
+        /// Never fabricated; stays nil for legacy/unobserved results.
+        public var workspaceRecovery: LinuxShellWorkspaceRecovery? = nil
         /// Real engine terminal fields, present ONLY once the engine reaped
         /// the root child (EOF/stop-request alone never fills them).
         public var exitCode: Int32?
@@ -360,6 +364,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             engine.stopReason = page.stopReason ?? engine.stopReason
             engine.workspaceStatus = page.workspaceStatus ?? engine.workspaceStatus
             engine.workspaceRecoveryRef = page.workspaceRecoveryRef ?? engine.workspaceRecoveryRef
+            engine.workspaceRecovery = page.workspaceRecovery ?? engine.workspaceRecovery
             engine.exitCode = page.exitCode ?? engine.exitCode
             engine.termSig = page.termSig ?? engine.termSig
             sessions[holdKey] = SessionRecord(engine: engine, reconcilingSince: nil)
@@ -371,10 +376,33 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 releaseGate(heldBy: holdKey)
                 let durationMs = Int(Date().timeIntervalSince(started) * 1000)
                 let mergedText = String(decoding: merged, as: UTF8.self)
-                let metaErr = stdinFailureNote.map { "[metadata] \($0)" } ?? ""
+                var metaErr = stdinFailureNote.map { "[metadata] \($0)" } ?? ""
+                // The REAL digest-CAS success case: a normal completed turn
+                // may STILL have preserved diverged prior bytes (the import
+                // swapped them into the owner-marked journal, installed the
+                // Core baseline, and the export then settled synced). The
+                // SAME bounded evidence surfaces through the EXISTING
+                // labelled backend-metadata stderr channel — ordinary
+                // success stays success, no failure is fabricated, no reader
+                // authority is added, and unobserved metadata stays absent.
+                if page.workspaceStatus == "synced",
+                   let evidence = page.workspaceRecovery, evidence.preservedUnsynced > 0,
+                   let detail = evidence.evidenceText {
+                    let note = "[recovery-evidence]\n" + detail
+                    metaErr = metaErr.isEmpty ? note : metaErr + "\n" + note
+                }
                 if page.workspaceStatus != "synced" {
+                    // Concise actionable state first; bounded technical
+                    // evidence rides BELOW it as explicit tool-card detail
+                    // (relative paths, digests, counters — no host paths).
+                    // Absent/unobserved metadata changes NOTHING here.
                     let recovery = page.workspaceRecoveryRef.map { " Recovery: \($0)." } ?? ""
-                    return .failed(message: "Workspace changes were not fully saved (\(page.workspaceStatus ?? "unknown"))." + recovery
+                    var message = "Workspace changes were not fully saved (\(page.workspaceStatus ?? "unknown"))." + recovery
+                    if let evidence = page.workspaceRecovery, evidence.hasActionableEvidence {
+                        if let summary = evidence.recoverableSummary { message += " " + summary }
+                        if let detail = evidence.evidenceText { message += "\n" + detail }
+                    }
+                    return .failed(message: message
                         + (mergedText.isEmpty ? "" : "\n" + mergedText))
                 }
                 if page.cancelled {
@@ -499,6 +527,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 engine.stopReason = page.stopReason ?? engine.stopReason
             engine.workspaceStatus = page.workspaceStatus ?? engine.workspaceStatus
             engine.workspaceRecoveryRef = page.workspaceRecoveryRef ?? engine.workspaceRecoveryRef
+                engine.workspaceRecovery = page.workspaceRecovery ?? engine.workspaceRecovery
                 engine.exitCode = page.exitCode ?? engine.exitCode
                 engine.termSig = page.termSig ?? engine.termSig
                 sessions[request.sessionID] = SessionRecord(engine: engine, reconcilingSince: nil)
@@ -577,6 +606,7 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             engine.stopReason = page.stopReason ?? engine.stopReason
             engine.workspaceStatus = page.workspaceStatus ?? engine.workspaceStatus
             engine.workspaceRecoveryRef = page.workspaceRecoveryRef ?? engine.workspaceRecoveryRef
+            engine.workspaceRecovery = page.workspaceRecovery ?? engine.workspaceRecovery
             engine.exitCode = page.exitCode ?? engine.exitCode
             engine.termSig = page.termSig ?? engine.termSig
             if page.gapBytes > 0 { gapSeen = true }
@@ -604,6 +634,14 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
         if let code = writeErrno { failureParts.append("stdin-write-incomplete code=\(code) acceptedBytes=\(written)") }
         if gapSeen || droppedSeen {
             failureParts.append("output-window-overflow (unread bytes were ring-dropped; the cursor kept advancing)")
+        }
+        // Bounded per-execution recovery evidence trails as the explicitly-
+        // opened tool-detail block (nil metadata keeps this byte-identical
+        // to before; the first lines above stay unchanged).
+        if engine.leaseReleased, engine.workspaceStatus != "synced",
+           let evidence = engine.workspaceRecovery, evidence.hasActionableEvidence,
+           let detail = evidence.evidenceText {
+            failureParts.append("recovery-evidence\n" + detail)
         }
         let failure = failureParts.isEmpty ? nil : failureParts.joined(separator: "; ")
         return ShellExchangeResult(

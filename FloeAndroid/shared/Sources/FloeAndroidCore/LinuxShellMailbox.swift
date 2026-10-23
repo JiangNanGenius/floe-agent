@@ -724,6 +724,13 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
            ref.range(of: "^[0-9a-f]{32}$", options: .regularExpression) == nil {
             throw LinuxShellTransportError.replyMalformed
         }
+        // OPTIONAL bounded recovery projection (additive metadata). A
+        // missing object parses as nil (legacy results keep working with
+        // NO fabricated zero); a malformed supplementary object is dropped
+        // to nil rather than poisoning the poll contract itself.
+        if leaseReleased {
+            poll.workspaceRecovery = LinuxShellWorkspaceRecovery.parse(object["workspaceRecovery"])
+        }
         return poll
     }
 

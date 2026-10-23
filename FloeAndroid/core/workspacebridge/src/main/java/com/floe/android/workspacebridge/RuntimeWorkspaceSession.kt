@@ -202,10 +202,31 @@ class RuntimeWorkspaceSession(
             swapOutcome = try {
                 swap.apply(staged) { cancel.shouldCancel() || !grant.alive() }
             } catch (failure: WorkspaceSwapException) {
-                val restoreFailures = swap.restore()
+                val restore = swap.restoreDetailed()
+                // The reverse restore's ACTUAL typed outcome: how many prior
+                // changes were genuinely renamed back, how many new entries
+                // were genuinely reverted, how many failures stay retained in
+                // the preserve journal. Counters increment only on successful
+                // operations. This structured evidence rides the exception
+                // and remains COMPONENT-LOCAL + journal truth: the CURRENT
+                // failed-start path reaches the app only as the generic
+                // kernel "operation_failed" receipt, so nothing here may be
+                // described as a surfaced rollback proof until Main merges
+                // the bounded failed-receipt handoff (PROPOSED-HANDOFF).
+                // The legacy code string below is byte-identical to before.
+                val restoreEvidence = JSONObject()
+                    .put("record", "importRestore")
+                    .put("sessionKey", key)
+                    .put("runID", expectedRunID)
+                    .put("trigger", failure.code)
+                    .put("restoredPriorChanges", restore.restoredPriorChanges.toLong())
+                    .put("revertedNewEntries", restore.revertedNewEntries.toLong())
+                    .put("retainedFailures", restore.retainedFailures.toLong())
                 throw WorkspaceBridgeException(
-                    if (restoreFailures == 0) failure.code else "${failure.code}:restoreFailures$restoreFailures",
+                    if (restore.retainedFailures == 0) failure.code
+                    else "${failure.code}:restoreFailures${restore.retainedFailures}",
                     failure,
+                    restoreEvidence,
                 )
             }
 
@@ -234,9 +255,23 @@ class RuntimeWorkspaceSession(
         }
         val outcome = requireNotNull(swapOutcome) { "swap outcome missing after acknowledged import" }
         val conflicts = outcomeConflicts(swap, journal)
+        // Digest-verified preserved copies: ONLY real custody facts the swap
+        // engine measured on successful move-aside + install. Entries it
+        // cannot show (symlink preserves, kind mismatch, unhashed legacy
+        // journals) stay honestly absent, never zeroed or fabricated.
+        val verifiedPreserved = outcome.preserved.filter { fact ->
+            fact.action == "swappedPreserved" &&
+                fact.preservedSha256.matches(RECOVERY_DIGEST) &&
+                fact.installedSha256.matches(RECOVERY_DIGEST) &&
+                fact.preservedBytes in 0..view.maximumEntryBytes &&
+                fact.installedBytes in 0..view.maximumEntryBytes &&
+                fact.path.toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_PATH_BYTES &&
+                WorkspaceRelativeValidation.validate(fact.path) != null
+        }
         stageRoot.deleteRecursivelySafe()
         return WorkspaceImportReceipt(
             key,
+            runID = expectedRunID,
             createdCount = outcome.created,
             replacedSyncedCount = outcome.replacedSynced,
             preservedUnsyncedCount = outcome.preservedUnsynced,
@@ -246,6 +281,11 @@ class RuntimeWorkspaceSession(
             appliedBytes = stagedBytes,
             skippedCount = skipped,
             budgets = view,
+            preservedCopies = verifiedPreserved.take(RECOVERY_MAX_ENTRIES).map { fact ->
+                WorkspacePreservedCopy(fact.path, fact.preservedSha256, fact.preservedBytes,
+                                       fact.installedSha256, fact.installedBytes)
+            },
+            preservedCopiesTruncated = verifiedPreserved.size > RECOVERY_MAX_ENTRIES,
         )
     }
 
@@ -674,6 +714,142 @@ class RuntimeWorkspaceSession(
         }
 
         private val liveSessions = ConcurrentHashMap<String, Boolean>()
+
+        // Recovery projection bounds (diagnostic metadata ONLY; the real
+        // transaction budgets live in WorkspaceRelativeValidation and the
+        // grant budgets, and nothing here widens them).
+        private const val RECOVERY_MAX_ENTRIES = 16
+        private const val RECOVERY_MAX_PATH_BYTES = 256
+        private const val RECOVERY_MAX_JSON_BYTES = 8_192
+        private val RECOVERY_DIGEST = Regex("^[0-9a-f]{64}$")
+        private val BOUNDED_TOKEN = Regex("^[!-~]{1,48}$")
+
+        /**
+         * Bounded per-execution recovery projection from the ORIGINAL owned
+         * session facts ONLY: the opaque recovery/session key, the exact run
+         * identity echoed by the grant, what the import swap actually
+         * installed/preserved (measured digests + byte sizes of real custody
+         * moves), and what the export settle actually reported. Relative
+         * paths and counters only — no absolute paths, no content, no raw
+         * keys beyond the recovery key the failure card already shows.
+         * Returns null when there is NOTHING truthful to add (a consumer
+         * must then leave the field ABSENT, never a fake zero). The final
+         * envelope is serialized-size bound-guarded: over-budget entries are
+         * dropped with an honest truncated flag rather than widening the
+         * wire or truncating mid-string.
+         */
+        fun executionRecoveryJSON(receipt: WorkspaceImportReceipt,
+                                  outcome: WorkspaceExportOutcome): JSONObject? {
+            if (!receipt.sessionKey.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX))) return null
+            val importSection = JSONObject()
+                .put("outcome", when {
+                    receipt.preservedUnsyncedCount > 0 -> "swappedPreserved"
+                    receipt.conflictPaths.isNotEmpty() || receipt.conflictsTruncated -> "conflict"
+                    receipt.replacedSyncedCount > 0 -> "swappedSynced"
+                    else -> "clean"
+                })
+                .put("created", receipt.createdCount.toLong())
+                .put("replacedSynced", receipt.replacedSyncedCount.toLong())
+                .put("preservedUnsynced", receipt.preservedUnsyncedCount.toLong())
+                .put("unchanged", receipt.unchangedCount.toLong())
+                .put("appliedBytes", receipt.appliedBytes)
+            val copies = importCopies(receipt)
+            if (copies.isNotEmpty()) {
+                importSection.put("preserved", org.json.JSONArray().apply { copies.forEach { put(it) } })
+                if (receipt.preservedCopiesTruncated) importSection.put("preservedTruncated", true)
+            }
+            if (receipt.conflictPaths.isNotEmpty()) {
+                importSection.put("conflicts", org.json.JSONArray().apply {
+                    receipt.conflictPaths.filter { it.toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_PATH_BYTES }
+                        .take(RECOVERY_MAX_ENTRIES).forEach { put(it) }
+                })
+                if (receipt.conflictsTruncated) importSection.put("conflictsTruncated", true)
+            }
+            val export = exportSectionJSON(outcome)
+            val envelope = JSONObject()
+                .put("sessionKey", receipt.sessionKey)
+                .put("import", importSection)
+                .put("export", export)
+            if (receipt.runID.isNotEmpty()) envelope.put("runID", receipt.runID)
+            if (envelope.toString().toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_JSON_BYTES) return envelope
+            // Over budget: drop the largest optional lists (never the status
+            // or identity skeleton), then re-check; still over → NO metadata.
+            importSection.remove("preserved"); importSection.remove("preservedTruncated")
+            importSection.put("preservedDroppedForBudget", true)
+            importSection.remove("conflicts"); importSection.remove("conflictsTruncated")
+            importSection.put("conflictsDroppedForBudget", true)
+            dropOverBudgetSections(export)
+            return if (envelope.toString().toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_JSON_BYTES)
+                envelope else null
+        }
+
+        private fun importCopies(receipt: WorkspaceImportReceipt): MutableList<JSONObject> =
+            receipt.preservedCopies.take(RECOVERY_MAX_ENTRIES).map { copy ->
+                JSONObject()
+                    .put("path", copy.path)
+                    .put("action", "swappedPreserved")
+                    .put("preservedSha256", copy.preservedSha256)
+                    .put("preservedBytes", copy.preservedBytes)
+                    .put("installedBaselineSha256", copy.installedBaselineSha256)
+                    .put("installedBaselineBytes", copy.installedBaselineBytes)
+            }.toMutableList()
+
+        /** The runtime's OWN typed export view from the original outcome
+         *  classes. The Core-side pump may REPLACE this section with the
+         *  captured EXPORT_FINISH reply (same session key); both views keep
+         *  the original vocabularies, and unobserved fields stay absent. */
+        private fun exportSectionJSON(outcome: WorkspaceExportOutcome): JSONObject = when (outcome) {
+            is WorkspaceExportOutcome.Synced -> JSONObject()
+                .put("result", "synced")
+                .put("applied", appliedJSON(outcome.created, outcome.replaced, outcome.directories,
+                                            outcome.deleted, outcome.links))
+                .put("stagedRefusals", outcome.stagedRefusals.toLong())
+                .apply { putOptionalDigest("planDigest", outcome.planDigest) }
+            is WorkspaceExportOutcome.Conflict -> JSONObject()
+                .put("result", if (outcome.status == "aborted") "aborted" else "conflict")
+                .put("applied", appliedJSON(outcome.created, outcome.replaced, outcome.directories,
+                                            outcome.deleted, outcome.links))
+                .put("failed", outcome.failed.toLong())
+                .put("stagedRefusals", outcome.stagedRefusals.toLong())
+                .apply {
+                    val shown = outcome.conflicts
+                        .filter { it.path.toByteArray(Charsets.UTF_8).size <= RECOVERY_MAX_PATH_BYTES &&
+                                 it.kind.matches(BOUNDED_TOKEN) }
+                        .take(RECOVERY_MAX_ENTRIES)
+                    if (shown.isNotEmpty()) {
+                        put("conflicts", org.json.JSONArray().apply {
+                            shown.forEach { conflict ->
+                                put(JSONObject().put("path", conflict.path).put("kind", conflict.kind)
+                                    .put("artifact", conflict.hasArtifact))
+                            }
+                        })
+                        if (outcome.conflictsTruncated) put("conflictsTruncated", true)
+                    }
+                    putOptionalDigest("indexDigest", outcome.indexDigest)
+                }
+            is WorkspaceExportOutcome.RecoverableFailure -> JSONObject().apply {
+                outcome.code.takeIf { it.matches(BOUNDED_TOKEN) }?.let { put("failureCode", it) }
+                put("stagedPreserved", outcome.stagedPreserved)
+                if (outcome.sessionKey != null &&
+                    outcome.sessionKey.matches(Regex(WorkspaceBridgeWire.SESSION_KEY_REGEX))
+                ) put("exportSessionKey", outcome.sessionKey)
+            }
+        }
+
+        private fun appliedJSON(created: Long, replaced: Long, directories: Long,
+                                deleted: Long, links: Long): JSONObject =
+            JSONObject().put("created", created).put("replaced", replaced)
+                .put("directories", directories).put("deleted", deleted).put("links", links)
+
+        private fun JSONObject.putOptionalDigest(key: String, value: String): JSONObject {
+            if (value.matches(RECOVERY_DIGEST)) put(key, value)
+            return this
+        }
+
+        private fun dropOverBudgetSections(export: JSONObject) {
+            export.remove("conflicts"); export.remove("conflictsTruncated")
+            export.remove("applied")
+        }
 
         /** G03-R3 cleanup gate: true while a session key has an OPEN runtime
          * -side transfer session. A scoped wipe must DEFER (never delete)

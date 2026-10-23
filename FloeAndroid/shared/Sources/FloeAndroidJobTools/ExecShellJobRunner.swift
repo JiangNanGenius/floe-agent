@@ -113,7 +113,8 @@ public enum JobShellSettlement: Sendable, Equatable {
     /// vocabulary as the typed poll reply).
     case released(sessionID: String, cancelled: Bool, stopReason: String?,
                   exitCode: Int32?, termSig: Int32?, waitErrno: Int32?,
-                  workspaceStatus: String? = nil, workspaceRecoveryRef: String? = nil)
+                  workspaceStatus: String? = nil, workspaceRecoveryRef: String? = nil,
+                  recovery: LinuxShellWorkspaceRecovery? = nil)
     /// Whole-UID quiescence is proven: no live workload remains. The command
     /// TERMINAL itself may be unobserved — this never claims a success.
     case quiescent(note: String)
@@ -296,7 +297,7 @@ public struct ExecShellJobRunner: Sendable {
                                              exitCode: page.exitCode, termSig: page.termSig,
                                              waitErrno: page.waitErrno,
                                              workspaceStatus: page.workspaceStatus, workspaceRecoveryRef: page.workspaceRecoveryRef,
-                                             intent: intent, context: context)
+                                             recovery: page.workspaceRecovery, intent: intent, context: context)
                     }
                     watchEntry.1 = page.cursor
                     watch = watchEntry
@@ -318,12 +319,13 @@ public struct ExecShellJobRunner: Sendable {
                                                           intent: effectiveIntent))
                         switch settlement {
                         case .released(let sessionID, let cancelled, let stopReason,
-                                        let exitCode, let termSig, let waitErrno, let workspaceStatus, let workspaceRecoveryRef):
+                                        let exitCode, let termSig, let waitErrno, let workspaceStatus,
+                                        let workspaceRecoveryRef, let recovery):
                             return mappedRelease(original: output, sessionID: sessionID,
                                                  cancelled: cancelled, stopReason: stopReason,
                                                  exitCode: exitCode, termSig: termSig,
                                                  waitErrno: waitErrno, workspaceStatus: workspaceStatus, workspaceRecoveryRef: workspaceRecoveryRef,
-                                                 intent: intent, context: context)
+                                                 recovery: recovery, intent: intent, context: context)
                         case .quiescent(let note):
                             return settleQuiescent(original: output, intent: effectiveIntent,
                                                    note: note, context: context)
@@ -344,12 +346,13 @@ public struct ExecShellJobRunner: Sendable {
                                                   intent: effectiveIntent))
                 switch settlement {
                 case .released(let sessionID, let cancelled, let stopReason,
-                                let exitCode, let termSig, let waitErrno, let workspaceStatus, let workspaceRecoveryRef):
+                                let exitCode, let termSig, let waitErrno, let workspaceStatus,
+                                let workspaceRecoveryRef, let recovery):
                     return mappedRelease(original: output, sessionID: sessionID,
                                          cancelled: cancelled, stopReason: stopReason,
                                          exitCode: exitCode, termSig: termSig,
                                          waitErrno: waitErrno, workspaceStatus: workspaceStatus, workspaceRecoveryRef: workspaceRecoveryRef,
-                                                 intent: intent, context: context)
+                                         recovery: recovery, intent: intent, context: context)
                 case .quiescent(let note):
                     return settleQuiescent(original: output, intent: effectiveIntent,
                                            note: note, context: context)
@@ -398,6 +401,7 @@ public struct ExecShellJobRunner: Sendable {
         waitErrno: Int32?,
         workspaceStatus: String?,
         workspaceRecoveryRef: String?,
+        recovery: LinuxShellWorkspaceRecovery?,
         intent: JobShellWaitIntent,
         context: ToolContext
     ) -> ToolExecutionOutput {
@@ -448,6 +452,14 @@ public struct ExecShellJobRunner: Sendable {
         }
         section += "workspace=\(workspaceStatus ?? "unknown")"
             + (workspaceRecoveryRef.map { " recovery=\($0)" } ?? "") + "\n"
+        // OPTIONAL bounded recovery evidence inside the explicitly-opened
+        // reconciled terminal section: shown only when something non-trivial
+        // happened (not synced, or diverged bytes preserved). A nil/legacy
+        // projection keeps this section byte-identical to before.
+        if let evidence = recovery, workspaceStatus != "synced" || evidence.preservedUnsynced > 0,
+           let detail = evidence.evidenceText {
+            section += detail + "\n"
+        }
         if !cancelled && workspaceStatus != "synced" {
             section += "settled: file changes were not confirmed saved; real process exit is recorded above.\n"
             return ToolExecutionOutput(digesting: base + section, exitStatus: 125)
