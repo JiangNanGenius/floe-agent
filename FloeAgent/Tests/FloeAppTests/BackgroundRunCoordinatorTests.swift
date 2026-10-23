@@ -714,9 +714,16 @@ private final class CapturedNotification: @unchecked Sendable {
     }
 }
 
-/// Scriptable guest applier. Records every forward the center publishes and
-/// can be told to reject specific host ports, exactly like the engine does
-/// when another process already owns the port.
+/// Scriptable guest applier. Mirrors the engine's active state: `applied`
+/// holds the forwards currently bound in the guest, because the center
+/// clears and reapplies the whole rule set on every rule change
+/// (`applyRulesOnce` → `clearEngineForwards` → full re-apply). Reapplying an
+/// identical (environment, forward) is idempotent and `remove` retires the
+/// forward from the active view. The raw sequences are still available
+/// separately: `applyHistory` records every successful apply call in order
+/// and `removed` records every remove call, for tests that need the call
+/// trace rather than the live set. A rejected host port throws exactly like
+/// the engine does when another process already owns the port.
 actor FakePortForwardApplier: LinuxPortForwardApplying {
     struct Applied: Sendable, Equatable {
         var environmentID: String
@@ -724,6 +731,7 @@ actor FakePortForwardApplier: LinuxPortForwardApplying {
     }
 
     private(set) var applied: [Applied] = []
+    private(set) var applyHistory: [Applied] = []
     private(set) var removed: [Applied] = []
     var running = true
     var rejectedHostPorts: Set<UInt16> = []
@@ -739,11 +747,17 @@ actor FakePortForwardApplier: LinuxPortForwardApplying {
                 "host port \(forward.hostPort) is already bound"
             )
         }
-        applied.append(Applied(environmentID: environmentID, forward: forward))
+        let entry = Applied(environmentID: environmentID, forward: forward)
+        applyHistory.append(entry)
+        if !applied.contains(entry) {
+            applied.append(entry)
+        }
     }
 
     func remove(environmentID: String, forward: LinuxGuestServiceForward) async {
-        removed.append(Applied(environmentID: environmentID, forward: forward))
+        let entry = Applied(environmentID: environmentID, forward: forward)
+        removed.append(entry)
+        applied.removeAll { $0 == entry }
     }
 }
 

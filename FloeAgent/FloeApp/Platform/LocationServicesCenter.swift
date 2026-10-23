@@ -268,6 +268,13 @@ final class CoreLocationDriver: NSObject, LocationServiceDriving {
         activitySession?.invalidate()
         activitySession = nil
     }
+
+    /// Continuous updates keep trying after locationUnknown. Preserve that
+    /// existing stream; a transient missing fix is not a terminal failure.
+    nonisolated static func shouldStopCoarseUpdates(after error: any Error) -> Bool {
+        let error = error as NSError
+        return error.domain != kCLErrorDomain || error.code != CLError.Code.locationUnknown.rawValue
+    }
 }
 
 extension CoreLocationDriver: @preconcurrency CLLocationManagerDelegate {
@@ -283,7 +290,7 @@ extension CoreLocationDriver: @preconcurrency CLLocationManagerDelegate {
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: any Error) {
-        guard manager === _updatesManager else { return }
+        guard manager === _updatesManager, Self.shouldStopCoarseUpdates(after: error) else { return }
         onEvent?(.coarseUpdatesFailed)
     }
 }

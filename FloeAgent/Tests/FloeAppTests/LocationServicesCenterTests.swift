@@ -165,6 +165,16 @@ struct LocationServicesCenterTests {
         )
     }
 
+    @Test("Continuous location waits through an unknown fix but stops on denied access")
+    func continuousFailureClassification() {
+        #expect(!CoreLocationDriver.shouldStopCoarseUpdates(after:
+            NSError(domain: kCLErrorDomain, code: CLError.Code.locationUnknown.rawValue)))
+        #expect(CoreLocationDriver.shouldStopCoarseUpdates(after:
+            NSError(domain: kCLErrorDomain, code: CLError.Code.denied.rawValue)))
+        #expect(CoreLocationDriver.shouldStopCoarseUpdates(after:
+            NSError(domain: "test.unrelated", code: CLError.Code.locationUnknown.rawValue)))
+    }
+
     // MARK: - Authorization
 
     @Test("The initial prompt is asked at most once and never after a denial")
