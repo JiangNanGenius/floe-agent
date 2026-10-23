@@ -7,10 +7,12 @@ remain unchanged. This is a small location-focused repair, not a full-App audit.
 
 | Outcome | State |
 | --- | --- |
-| Shared authorization, safe current-location requests and background lifecycle | Code ready; Swift 6 and behavior verification pending |
-| Settings, metadata and bilingual copy | Integrated; generated metadata and localization checks passed |
-| Focused tests, Swift 6 build and Simulator UI | Pending source freeze |
-| Internal/external beta, unsigned package and Feather | Pending qualification |
+| Exact-source archive, internal/external beta, unsigned package and Feather | Pending qualified packaging |
+| Final artifact/export cleanup and main integration | Pending distribution |
+
+Implementation, generated metadata, focused tests and UI inspection are complete.
+Completed outcomes have been removed from the active table.
+
 
 ## Behavior
 
@@ -58,3 +60,30 @@ normal immutable-tag attestation workflow with awaited Feather and independent
 read-back. Production App Store state remains unchanged. Remove completed
 milestones, merge/push main, retire only the merged task branch and task-owned
 regenerable outputs after preserving artifacts, symbols and original failures.
+
+## Qualified code milestone
+
+At `b2b26eba`, Xcode 27.1 (`27A9275`, Simulator SDK 27.1) full App/test-target
+Swift 6 object compilation passed. The scoped 80 functions in five suites all
+passed, with zero failures, skips or missing declared functions, on the existing
+canonical iPad Simulator. The first run at `464b02c6` remains recorded as
+78 passed / 1 failed: an unchanged port-forward test fixture counted cumulative
+apply calls as active forwards. The fixture now models removal and idempotent
+application while keeping call history; all original exact assertions remain.
+Production port forwarding was unchanged. Continuous location also preserves
+Core Location's nonterminal locationUnknown stream while terminal errors stop it.
+
+Actual Simulator UI at `464b02c6` showed the first-launch Chinese location prompt,
+While Using the App authorization, the idle Location state in Background execution,
+no extra location switch, and a relaunch without another prompt. The original
+Home input and attachment remained present. UI code is unchanged at `b2b26eba`;
+its delta is the continuous-update error classification and focused test changes.
+These are Simulator/adapted-input checks, not physical GPS/background-duration
+or online-provider weather acceptance.
+
+The task-started canonical Simulator is shut down; no device was created,
+cloned, erased or reset. Device Hub was closed with the canonical Simulator
+selected; no physical-phone display/audio action occurred. After evidence export
+and an open-reference check, the finished Simulator cache was removed:
+6,821,691,392 allocated bytes; observed free-space increase 6,804,406,272 bytes.
+Installed Simulator apps/data and the original failure evidence remain intact.
