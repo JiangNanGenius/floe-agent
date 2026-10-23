@@ -148,3 +148,27 @@ retained rather than replacing its expected value.
 - Only the existing canonical iPad Simulator was used and it was shut down after
   testing. Build 291 is a local candidate; no new tag, upload or publication is
   implied by these compile/test results. Full-App M4 playback remains pending.
+
+## Final source integration — 2026-10-24
+
+Source `ff2150c5e06dc5d4ba7ab88281ff93e96e068e54` passed full App and test-host
+Swift 6 object compilation with Xcode 27.1 (27A9275), arm64 Simulator.
+
+- 38 XCTest cases and two Swift Testing cases passed: search catalog/title
+  ownership, the dedicated provider editor, bounded readiness cancellation and
+  silent/late replies, plus real Word/PowerPoint export paths.
+- Preset supplier names now adopt the catalog title automatically. Name-only
+  changes no longer appear as a manual update; genuine user names survive.
+  Account keys, endpoints, switches and ordering remain unchanged by title sync.
+- The earlier second-preview failure is resolved in this source: the native
+  scaling menu was changed from Fit Width to Fit on One Page, and generation 2
+  was accepted automatically without tapping Update. The real engine produced
+  a one-page PDF and the options sheet remained mounted without stale state.
+- Export readiness now requires the engine's actual document-loaded facts under
+  bounded cancellation-aware probes for spreadsheets/documents. Presentations
+  retain the acknowledged visible-render gate. The original failed run remains
+  recorded above; no timeout increase or expected-hash replacement was used.
+- Both independently exported pristine/final workbook attachments were 18,421
+  bytes with the original digest. Only the existing canonical iPad Simulator
+  was used and it was shut down afterward. These are Simulator results; full
+  App playback on the authorized M4 iPad and build 291 distribution remain pending.

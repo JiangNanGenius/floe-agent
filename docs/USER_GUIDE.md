@@ -82,7 +82,7 @@ Models that support it also carry a reasoning/thinking effort setting. With **Au
 
 ### Web search providers
 
-Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Review available changes before applying them to an existing account.
+Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Preset provider names follow directory updates automatically; names you edit yourself are preserved. Review other available changes before applying them to an existing account.
 
 In the Volcengine editor, choose the account that matches your key:
 
