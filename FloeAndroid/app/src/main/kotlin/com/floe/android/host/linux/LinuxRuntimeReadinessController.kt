@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -467,6 +469,59 @@ class LinuxRuntimeReadinessController(
         if (epoch <= 0) return false
         val status = statusObject() ?: return false
         return ReadinessSnapshot.allSevenLiveAt(ReadinessSnapshot.from(status), epoch)
+    }
+
+    /**
+     * Bounded READ-ONLY runtime metadata observation for the Diagnostics &
+     * About details popup: ONE metadata-only `status` exchange over the
+     * CURRENT bound generation's live authenticated connection — the SAME
+     * read [ingressPrerequisites] and [prerequisiteFactsLive] already
+     * perform. The kernel answers `status` from in-memory facts only
+     * (protocol, foreground permit state, activity, the applied guest
+     * resolver snapshot and the process generation): no command, install,
+     * DNS or network query and no workload runs for this read.
+     *
+     * This method WRITES NOTHING: it never ingests, invalidates,
+     * re-anchors, retries or registers anything; a drifted or closed
+     * generation is only NAMED for the popup. The reply's process identity
+     * must match the anchored generation token, and the SAME bound
+     * target/connection/anchor must still own the reading AFTER the
+     * exchange (read-end fence) or the observation is discarded as
+     * belonging to a retired generation. Must be called OFF the main
+     * thread.
+     */
+    suspend fun resolverObservation(): JsonObject = withContext(Dispatchers.IO) {
+        val target = bound ?: return@withContext LocalRuntimeProofProjection.unavailable("lane_unbound")
+        val client = target.connection ?: return@withContext LocalRuntimeProofProjection.unavailable("connection_closed")
+        val anchored = target.anchoredProof
+            ?: return@withContext LocalRuntimeProofProjection.unavailable("peer_unanchored")
+        val current = runCatching { client.currentPeerProof() }.getOrNull()
+            ?: return@withContext LocalRuntimeProofProjection.unavailable("peer_unmeasurable")
+        if (current.peerUid != anchored.peerUid || current.certificateDigest != anchored.certificateDigest ||
+            current.packageVersion != anchored.packageVersion
+        ) {
+            return@withContext LocalRuntimeProofProjection.unavailable("peer_drift")
+        }
+        val envelope = runCatching { client.exchange("status") }.getOrNull()
+            ?: return@withContext LocalRuntimeProofProjection.unavailable("transport_unavailable")
+        // Read-end fence: only the SAME live generation this read started
+        // on may have its reply projected; a stop/rebind across the IPC
+        // retires the observation (naming only — never a mutation).
+        if (bound !== target || target.connection !== client || target.anchoredProof !== anchored) {
+            return@withContext LocalRuntimeProofProjection.unavailable("generation_changed")
+        }
+        val status = runCatching { result(envelope) }.getOrNull()
+            ?: return@withContext LocalRuntimeProofProjection.unavailable("exchange_refused")
+        if (status.optInt("protocol") != com.floe.android.runtimeipc.RuntimeWire.VERSION) {
+            return@withContext LocalRuntimeProofProjection.unavailable("protocol_mismatch")
+        }
+        if (processIdentity(status) != anchored.processToken) {
+            return@withContext LocalRuntimeProofProjection.unavailable("generation_mismatch")
+        }
+        val decoded = runCatching { Json.parseToJsonElement(status.toString()) as? JsonObject }.getOrNull()
+        LocalRuntimeProofProjection.projectResolver(
+            decoded, decoded?.get("resolver") as? JsonObject,
+        )
     }
 
     fun invalidate(reason: String) {

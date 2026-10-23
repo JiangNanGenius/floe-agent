@@ -95,6 +95,97 @@ class LinuxRuntimeCleanupPump internal constructor(
 
     val boundNativeEpoch: Long get() = epoch.get()
 
+    // MARK: bounded read-only observation (Diagnostics & About ONLY)
+
+    /** One obligation the host ACTUALLY claimed and scope-validated during
+     *  normal service: the ticket/scope facts are exactly what the shipped
+     *  claim/payload path measured (never minted or guessed). The table
+     *  proves NOTHING itself — it only names tickets the lane's ORIGINAL
+     *  `status(requestID)` readback can answer for. FIFO-bounded; a Root
+     *  generation change RETIRES every entry, so an old generation's
+     *  tickets never surface under a newer reading. */
+    private class ObservedObligation(
+        val requestID: String,
+        val conversationID: String,
+        val projectID: String,
+        val targetEpoch: Long,
+        val acceptedEpoch: Long,
+    )
+
+    private val observationLock = Any()
+    private val observedObligations = LinkedHashMap<String, ObservedObligation>()
+
+    private fun observeObligation(fields: ScopeFields, acceptedEpoch: Long) {
+        val bound = epoch.get()
+        if (bound <= 0 || bound != acceptedEpoch) return // stale generation: record nothing
+        synchronized(observationLock) {
+            if (observedObligations.values.any { it.acceptedEpoch != bound }) observedObligations.clear()
+            observedObligations.remove(fields.requestID)
+            observedObligations[fields.requestID] = ObservedObligation(
+                fields.requestID, fields.conversationID, fields.projectID, fields.targetEpoch, bound,
+            )
+            while (observedObligations.size > MAX_OBSERVED_TARGETS) {
+                observedObligations.remove(observedObligations.keys.first())
+            }
+        }
+    }
+
+    /** Read-only cleanup proof evidence for the Diagnostics & About details
+     *  popup: ONE `stats()` aggregate read plus ONE per-ticket
+     *  `status(requestID)` lane readback through the EXISTING JNI surface
+     *  (bounded by MAX_OBSERVED_TARGETS). Claims nothing, completes
+     *  nothing, retries nothing, invalidates nothing; undecodable replies
+     *  stay honest `unreadable` rows and aggregate counts are explicitly
+     *  NOT target proof. Every native read is fenced: if the bound epoch
+     *  changes anywhere across the sequence, the whole reading is refused
+     *  as `generation_changed` (never a partial mix of generations). Must
+     *  be called OFF the main thread. */
+    fun cleanupProofEvidence(): JsonObject {
+        val bound = epoch.get()
+        val stats = runCatching { decodeObject(queue.stats()) }.getOrNull()
+        val host = Triple(settledCleared.get(), retainedTotal.get(), lastRetentionReason)
+        if (epoch.get() != bound) return refusedGenerationReading(bound, host)
+        // Root-generation fence at READ time too: while a generation is
+        // bound, only THAT generation's observed tickets may surface; while
+        // none is bound, no generation's tickets surface.
+        val snapshot = synchronized(observationLock) {
+            observedObligations.values.filter { bound > 0 && it.acceptedEpoch == bound }
+        }
+        val targets = ArrayList<JsonObject>(snapshot.size)
+        for (entry in snapshot) {
+            val lane = runCatching { decodeObject(queue.status(entry.requestID)) }.getOrNull()
+            // Read-end fence per native call: a rebind/drain mid-sequence
+            // retires the ENTIRE reading, not just the rows after it.
+            if (epoch.get() != bound) return refusedGenerationReading(bound, host)
+            targets += LocalRuntimeProofProjection.projectTarget(
+                requestID = entry.requestID,
+                conversationID = entry.conversationID,
+                targetEpoch = entry.targetEpoch,
+                lane = lane,
+                hostReason = host.third,
+            )
+        }
+        return LocalRuntimeProofProjection.projectCleanup(
+            stats = stats,
+            hostBoundEpoch = bound,
+            targets = targets,
+            hostSettledCleared = host.first,
+            hostRetained = host.second,
+            hostLastReason = host.third,
+        )
+    }
+
+    private fun refusedGenerationReading(bound: Long, host: Triple<Long, Long, String?>): JsonObject =
+        LocalRuntimeProofProjection.projectCleanup(
+            stats = null,
+            hostBoundEpoch = bound,
+            targets = emptyList(),
+            hostSettledCleared = host.first,
+            hostRetained = host.second,
+            hostLastReason = host.third,
+            fenceTripped = true,
+        )
+
     /** Bind at the SAME actual accepted native Root epoch as LinuxShellPump.
      *  No guessed generation; the lane itself refuses zero/equal epochs. */
     suspend fun start(acceptedEpoch: Long) = starts.withLock {
@@ -195,6 +286,10 @@ class LinuxRuntimeCleanupPump internal constructor(
             val conversation = payload.stringField("conversationID") ?: return@withContext false
             val project = payload.stringField("projectID") ?: return@withContext false
             val fields = ScopeFields(requestID, conversation, project, targetEpoch)
+            // Bounded read-only observation for the Diagnostics details
+            // popup (ticket + scope exactly as claimed). Recording changes
+            // NOTHING about this settlement path.
+            observeObligation(fields, acceptedEpoch)
             val control = JsonObject(payload.toMap() + ("requestID" to JsonPrimitive(requestID)))
             val channel = channels.create()
             try {
@@ -434,6 +529,9 @@ class LinuxRuntimeCleanupPump internal constructor(
         private val UUID_TOKEN = Regex("^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
         private const val DELETION_SET = "targetProjectScope"
         private const val MAX_EVIDENCE_KEYS = 16
+        /** Diagnostic-only memory bound for the details popup (oldest
+         *  ticket retires first; the lane itself is never truncated). */
+        private const val MAX_OBSERVED_TARGETS = 8
         private val PAYLOAD_KEYS = setOf(
             "operation", "deletionSet", "conversationID", "projectID", "targetEpoch",
             "workspaceRelativePath", "provenTotal", "evidenceSessionKeys", "evidenceTruncated",

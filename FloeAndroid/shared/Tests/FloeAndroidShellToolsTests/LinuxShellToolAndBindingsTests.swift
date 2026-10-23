@@ -307,18 +307,151 @@ final class RuntimeFacadeLinuxBindingsTests: XCTestCase {
         let attachedCount = await coordinator.snapshotCountsForTesting()
         XCTAssertEqual(attachedCount, 1,
                        "ownership stays until the REAL release; EOF != exit")
-        // Engine proves the release now; reconcile drains the ledger.
+        // The conversation-scoped view returns the dispatch's REAL
+        // RuntimeOwnedWorkRegistry receipts — the SAME per-kind counts the
+        // Core foreground projection reads (`tool`). Exactly one receipt
+        // must remain attached while the release is unproven.
+        XCTAssertEqual(bindings.tokensForConversation(conversationID, epoch: epoch).count, 1,
+                       "the settled-but-unreconciled dispatch keeps its EXACT registry token — "
+                       + "this is the same count that gates the Core foreground lease")
+        // G03-R3 no-false-quiescence direction: the facade's OWN recheck is
+        // now armed, and it must NOT release anything while the engine
+        // release is unproven. Hold past several recheck intervals; a timer,
+        // budget or quiet process list must never drain the ledger.
+        let droppedByTimer = await shellWaitUntil(timeoutMillis: 3_500) {
+            await coordinator.snapshotCountsForTesting() == 0
+                && bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
+        }
+        XCTAssertFalse(droppedByTimer,
+                       "no timed drop: an unproven lease keeps ledger + token attached")
+        // Engine proves the release now. THE REPAIR: a cancelled, paused,
+        // IDLE root never calls `reconcileLedger()` (that pump belongs to a
+        // lifecycle drain) and never runs a deletion-fence tick — yet the
+        // foreground lease must still settle. So this leg drives NO external
+        // pump at all: the facade must self-end the worker on the real
+        // release proof. Before this repair the ledger (and with it the
+        // projection `tool` count, the Core AGENT_RUN lease, the FGS and the
+        // `FloeAndroid::core-owned-work` wake) stayed retained forever —
+        // the exact SystemUI-notification-Stop failure measured on device.
         let engineID = (await components.backend.unreconciledSessions().first)?.engineSessionID
         XCTAssertNotNil(engineID)
         transport.releaseAfterCancel = true
         transport.pollScript = nil
-        let ended = await shellWaitUntil(timeoutMillis: 4_000) {
-            let endedCount = await bindings.reconcileLedger()
-            let live = await coordinator.snapshotCountsForTesting()
-            return endedCount > 0 && live == 0
+        let selfEnded = await shellWaitUntil(timeoutMillis: 6_000) {
+            await coordinator.snapshotCountsForTesting() == 0
+                && bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
         }
-        XCTAssertTrue(ended)
+        XCTAssertTrue(selfEnded,
+            "a settled worker must self-end on the REAL release proof without any "
+            + "external reconcile pump (release-driven, exact-token, once)")
+        // Exact-once: the legacy pump re-run must end/detach nothing.
+        let secondEnd = await bindings.reconcileLedger()
+        XCTAssertEqual(secondEnd, 0, "after self-settlement the legacy pump must end nothing")
+        XCTAssertTrue(bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty,
+                      "no double-detach: the exact token is gone once")
         _ = await bindings.drainLinuxShell(timeoutMillis: 500)
+    }
+
+    /// G03-R3 (job-2e5f747e56c14275): the same strand through the ordinary
+    /// local-timeout close (no run.cancel at all). ANY settled dispatch that
+    /// closes while its engine lease/claims are unreconciled must rejoin the
+    /// ledger ONLY on the real release proof, self-driven. This is the
+    /// shape the paused idle root reached after the actual notification
+    /// Stop (children gone, pump finished, lease proof arriving AFTER the
+    /// service had already answered).
+    func testTimeoutClosedDispatchSelfEndsAfterReleaseProofWithoutPump() async throws {
+        let (bindings, coordinator, transport, root) = makeBindings()
+        transport.releaseAfterCancel = false
+        transport.pollScript = { session, cursor, _ in
+            FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "still-running")
+        }
+        let readiness = LinuxShellInjectedReadiness { true }
+        _ = bindings.compose(transport: transport, coordinator: coordinator,
+                             rootProvider: { root }, readiness: readiness,
+                             journal: ShellOperationJournal(rootURL: root))
+        let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
+        XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
+        let runID = UUID()
+        let conversationID = UUID()
+        let context = ToolContext(runID: runID, toolCallID: "shell-call-timeout-1",
+                                  workspaceRootURL: root, cancellation: CancellationToken(),
+                                  conversationID: conversationID, clientSessionID: "run:main")
+        let components = try XCTUnwrap(bindings.components)
+        let result = await components.service.run(command: "sleep 30", cwd: ".", environment: [:],
+                                                  stdin: nil, timeout: 1, maxOutputBytes: nil,
+                                                  isBackground: false, context: context)
+        guard case .outcome(.timedOut) = result else {
+            return XCTFail("expected a timed-out close with the lease unreconciled, got \(result)")
+        }
+        // Settled but unreconciled: ledger + registry token KEEP, with the
+        // facade's own recheck armed; nothing may drain by budget.
+        let timeoutRetainedCount = await coordinator.snapshotCountsForTesting()
+        XCTAssertEqual(timeoutRetainedCount, 1,
+                       "timeout close with an unproven release keeps the worker owned")
+        XCTAssertEqual(bindings.tokensForConversation(conversationID, epoch: epoch).count, 1,
+                       "and the exact foreground-projection token stays attached")
+        let droppedByTimer = await shellWaitUntil(timeoutMillis: 3_500) {
+            await coordinator.snapshotCountsForTesting() == 0
+                && bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
+        }
+        XCTAssertFalse(droppedByTimer, "no timed drop without release proof")
+        // Real proof arrives (engine releases the stopped lease): the entry
+        // must drain self-driven, without any external pump.
+        transport.releaseAfterCancel = true
+        transport.pollScript = nil
+        let settled = await shellWaitUntil(timeoutMillis: 6_000) {
+            await coordinator.snapshotCountsForTesting() == 0
+                && bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
+        }
+        XCTAssertTrue(settled,
+            "the release proof alone must settle the entry; a paused idle App "
+            + "must be able to drop foreground ownership without a lifecycle drain")
+        _ = await bindings.drainLinuxShell(timeoutMillis: 500)
+    }
+
+    func testRecompositionCannotUseNewBackendAsOldReleaseProof() async throws {
+        let (bindings, coordinator, transport, root) = makeBindings()
+        transport.releaseAfterCancel = false
+        transport.pollScript = { session, cursor, _ in
+            FakeLinuxShellTransport.page(session: session, cursor: cursor, text: "owned")
+        }
+        defer { transport.releaseAfterCancel = true; transport.pollScript = nil }
+        let readiness = LinuxShellInjectedReadiness { true }
+        _ = bindings.compose(transport: transport, coordinator: coordinator,
+                             rootProvider: { root }, readiness: readiness,
+                             journal: ShellOperationJournal(rootURL: root))
+        let epoch = LinuxShellMailbox.shared.snapshotForTesting().epoch + 1
+        XCTAssertTrue(bindings.bindMailboxEpoch(epoch))
+        let runID = UUID(), conversationID = UUID()
+        let context = ToolContext(runID: runID, toolCallID: "old-component-call",
+            workspaceRootURL: root, cancellation: CancellationToken(),
+            conversationID: conversationID, clientSessionID: "run:main")
+        let original = try XCTUnwrap(bindings.components)
+        _ = await original.service.run(command: "sleep 30", cwd: ".", environment: [:],
+            stdin: nil, timeout: 1, maxOutputBytes: nil, isBackground: false, context: context)
+        let before = await coordinator.snapshotCountsForTesting()
+        XCTAssertEqual(before, 1)
+        let replacement = FacadeToolWorkCoordinator()
+        _ = bindings.compose(transport: FakeLinuxShellTransport(), coordinator: replacement,
+                             rootProvider: { root }, readiness: readiness,
+                             journal: ShellOperationJournal(rootURL: root))
+        let legacyEnded = await bindings.reconcileLedger()
+        XCTAssertEqual(legacyEnded, 0, "an empty replacement backend proves nothing about the old lease")
+        let deletionDrained = await bindings.drainConversationTick(conversationID: conversationID, epoch: epoch)
+        XCTAssertFalse(deletionDrained)
+        let premature = await shellWaitUntil(timeoutMillis: 1_500) {
+            bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
+        }
+        XCTAssertFalse(premature, "the self recheck must also retain the original unproven lease")
+        transport.releaseAfterCancel = true
+        transport.pollScript = nil
+        let released = await shellWaitUntil(timeoutMillis: 6_000) {
+            await coordinator.snapshotCountsForTesting() == 0
+                && bindings.tokensForConversation(conversationID, epoch: epoch).isEmpty
+        }
+        XCTAssertTrue(released)
+        let replacementCount = await replacement.snapshotCountsForTesting()
+        XCTAssertEqual(replacementCount, 0, "old settlement never acts on the replacement coordinator")
     }
 
     func testForeignRunCallIsRefusedHonestly() async {

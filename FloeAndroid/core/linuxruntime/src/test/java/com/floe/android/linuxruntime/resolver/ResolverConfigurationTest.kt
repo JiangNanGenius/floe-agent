@@ -288,32 +288,91 @@ class ResolverConfigurationTest {
     fun planShapeMatchesState() {
         val bridged = ResolverConfiguration.decide(bridge.copy(systemDnsServers = listOf("1.2.3.4")))
         val plan = ResolverConfiguration.ownedFilePlan(bridged)
-        assertEquals(2, plan.files.size)
+        assertEquals(3, plan.files.size)
         assertTrue(plan.requiresHelperModule)
         assertEquals(ResolverConfiguration.GUEST_NSS_MODULE_PATH, plan.helperGuestPath)
         assertEquals(ResolverConfiguration.GUEST_SOCKET_DIR_PATH, plan.socketGuestPath)
         assertTrue(plan.files.any { it.scratchName == "nsswitch.conf" })
         assertTrue(plan.files.any { it.scratchName == "resolv.conf" })
+        assertTrue(plan.files.any { it.scratchName == "hosts" })
 
         val direct = ResolverConfiguration.decide(inputs(servers = listOf("10.0.0.1"),
             mode = PrivateDnsMode.OFF, effective = false))
         val directPlan = ResolverConfiguration.ownedFilePlan(direct)
-        assertEquals(1, directPlan.files.size)
-        assertEquals("resolv.conf", directPlan.files.single().scratchName)
+        assertEquals(2, directPlan.files.size)
+        assertTrue(directPlan.files.any { it.scratchName == "resolv.conf" })
+        assertTrue(directPlan.files.any { it.scratchName == "hosts" })
         assertFalse(directPlan.requiresHelperModule)
         assertEquals(null, directPlan.socketGuestPath)
     }
 
     @Test
-    fun failClosedMarkersStillProduceSingleOwnedResolvFile() {
+    fun failClosedMarkersStillProduceOwnedResolverFiles() {
         for (case in listOf(
             inputs(active = false),
             inputs(mode = PrivateDnsMode.HOSTNAME, effective = true, servers = listOf("1.2.3.4")),
             inputs(mode = PrivateDnsMode.UNKNOWN, servers = emptyList()),
         )) {
             val plan = ResolverConfiguration.ownedFilePlan(ResolverConfiguration.decide(case))
-            assertEquals(1, plan.files.size)
+            assertEquals(2, plan.files.size)
+            assertTrue(plan.files.any { it.scratchName == "resolv.conf" })
+            assertTrue(plan.files.any { it.scratchName == "hosts" })
             assertFalse(plan.requiresHelperModule)
+        }
+    }
+
+    // MARK: owned /etc/hosts (the pinned base image ships without one, so
+    // the `files` layer must still answer localhost in every resolver state)
+
+    @Test
+    fun etcHostsOverrideIsBoundInEveryState() {
+        val states = listOf(
+            bridge.copy(systemDnsServers = listOf("1.2.3.4")),                  // BRIDGED
+            inputs(mode = PrivateDnsMode.OFF, effective = false,
+                servers = listOf("10.0.0.1")),                                  // SYSTEM_DIRECT
+            inputs(mode = PrivateDnsMode.HOSTNAME, effective = true,
+                servers = listOf("127.0.0.53"), probe = TunnelProbe.REACHABLE), // SYSTEM_TUNNEL
+            inputs(active = false),                                             // UNAVAILABLE_OFFLINE
+            inputs(mode = PrivateDnsMode.HOSTNAME, effective = true,
+                servers = listOf("1.2.3.4")),                                   // UNAVAILABLE_UNSUPPORTED
+        )
+        val seenStates = mutableSetOf<ResolverState>()
+        for (case in states) {
+            val decision = ResolverConfiguration.decide(case)
+            seenStates += decision.state
+            val plan = ResolverConfiguration.ownedFilePlan(decision)
+            val hosts = plan.files.single { it.scratchName == "hosts" }
+            assertEquals(ResolverConfiguration.GUEST_HOSTS_PATH, hosts.guestPath)
+            assertEquals(ResolverConfiguration.hostsOverrideText(), hosts.content)
+            assertTrue(hosts.content.toByteArray(Charsets.US_ASCII).size <=
+                ResolverConfiguration.MAX_RESOLV_BYTES)
+        }
+        assertEquals(setOf(ResolverState.BRIDGED, ResolverState.SYSTEM_DIRECT,
+            ResolverState.SYSTEM_TUNNEL, ResolverState.UNAVAILABLE_OFFLINE,
+            ResolverState.UNAVAILABLE_UNSUPPORTED), seenStates)
+    }
+
+    @Test
+    fun hostsOverrideCarriesLoopbackNamesOnly() {
+        val text = ResolverConfiguration.hostsOverrideText()
+        for (line in text.lines().filter { it.isNotBlank() }) {
+            if (line.startsWith("#")) continue
+            val tokens = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            assertTrue("entry needs an address and a name: $line", tokens.size >= 2)
+            val address = tokens.first()
+            assertTrue("address $address must be loopback",
+                ResolverConfiguration.isLoopbackLiteral(address))
+            for (name in tokens.drop(1)) {
+                assertTrue("name $name must be a localhost alias",
+                    name in setOf("localhost", "ip6-localhost", "ip6-loopback"))
+            }
+        }
+        assertTrue(text.contains("127.0.0.1\tlocalhost\n"))
+        assertTrue(text.contains("::1\tlocalhost ip6-localhost ip6-loopback\n"))
+        // Never a public name/address, never a shadow for real resolution.
+        for (needle in listOf("deb.debian", "8.8.8.8", "8.8.4.4", "1.1.1.1",
+            "9.9.9.9", "dns.", "127.0.0.53")) {
+            assertFalse("$needle must never appear", text.contains(needle))
         }
     }
 }

@@ -27,6 +27,7 @@ import com.floe.android.design.FloePrimaryAction
 import com.floe.android.design.FloeSettingsSectionCard
 import com.floe.android.design.FloeText
 import com.floe.android.design.FloeValueRow
+import com.floe.android.host.linux.LocalRuntimeProofDetailsSheet
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -89,6 +90,10 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
         val app = LocalContext.current.applicationContext as FloeApplication
         var stage by remember { mutableStateOf<String?>(null) }
         var stageAttempt by remember { mutableIntStateOf(0) }
+        // The explicitly-opened technical details popup (read-only proof
+        // projection of the ORIGINAL authorities; opening it runs no
+        // command, install or network query).
+        var proofOpen by remember { mutableStateOf(false) }
         LaunchedEffect(stageAttempt) {
             if (stageAttempt > 0) {
                 withContext(Dispatchers.IO) { app.retryLinuxTaskExecutionIngress() }
@@ -103,6 +108,11 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                     "ready" -> stringResource(R.string.linux_environment_tools_ready)
                     else -> stringResource(R.string.unavailable)
                 },
+            )
+            FloeValueRow(
+                title = stringResource(R.string.diagnostics_local_task_details),
+                value = "",
+                onClick = { proofOpen = true },
             )
             val shown = stage
             if (shown != null && shown != "ready") {
@@ -166,6 +176,9 @@ fun DiagnosticsSettingsPage(onOpenPreview: () -> Unit) {
                     )
                 },
             )
+        }
+        if (proofOpen) {
+            LocalRuntimeProofDetailsSheet(app = app, onDismiss = { proofOpen = false })
         }
     }
 }

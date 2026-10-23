@@ -330,6 +330,49 @@ class FloeApplication : Application() {
         if (!::linuxReadiness.isInitialized) false
         else kotlinx.coroutines.withContext(Dispatchers.IO) { linuxReadiness.liveTaskExecutionReady() }
 
+    /**
+     * Bounded READ-ONLY proof details for the Diagnostics & About "Local
+     * task execution" details popup. Composes only the CURRENT actual
+     * closed projections of the ORIGINAL authorities: ONE metadata-only
+     * runtime `status` observation through the readiness authority, the
+     * cleanup lane's own `stats()` aggregate and per-ticket
+     * `status(requestID)` receipt readback through the EXISTING JNI
+     * surface, and the foreground coordinator's owned-operation kinds /
+     * count with the honest CPU-wake flag. Nothing here mutates cleanup
+     * records, re-ingresses or invalidates facts, starts work, opens
+     * installers or resumes a paused Root, and a UI read NEVER marks tool
+     * qualification ready. All reads are finite, generation-fenced and run
+     * OFF the main thread; cancellation simply abandons the observation.
+     */
+    internal suspend fun localRuntimeProofDetails(): kotlinx.serialization.json.JsonObject =
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val resolver = if (::linuxReadiness.isInitialized) {
+                runCatching { linuxReadiness.resolverObservation() }.getOrDefault(
+                    com.floe.android.host.linux.LocalRuntimeProofProjection.unavailable("observation_failed"),
+                )
+            } else {
+                com.floe.android.host.linux.LocalRuntimeProofProjection.unavailable("lane_unbound")
+            }
+            val cleanup = if (::linuxCleanup.isInitialized) {
+                runCatching { linuxCleanup.cleanupProofEvidence() }.getOrDefault(
+                    com.floe.android.host.linux.LocalRuntimeProofProjection.unavailable("lane_unreadable"),
+                )
+            } else {
+                com.floe.android.host.linux.LocalRuntimeProofProjection.unavailable("lane_unbound")
+            }
+            val foreground = runtimeHost?.runForeground
+            val owned = com.floe.android.host.linux.LocalRuntimeProofProjection.projectOwned(
+                operationCount = foreground?.heldOperations()?.size,
+                kinds = foreground?.heldOperationKinds()
+                    ?.map { it.name.lowercase(java.util.Locale.ROOT) }?.toSet(),
+                foregroundConfirmed = foreground?.isForegroundConfirmed(),
+                cpuWakeHeld = foreground?.isCpuWakeHeld(),
+            )
+            kotlinx.serialization.json.JsonObject(
+                mapOf("resolver" to resolver, "cleanup" to cleanup, "owned" to owned),
+            )
+        }
+
     fun reconcileForegroundOnResume() {
         hostScope.launch(Dispatchers.IO) { runtimeHost?.runForeground?.reconcileAgentRuns() }
     }

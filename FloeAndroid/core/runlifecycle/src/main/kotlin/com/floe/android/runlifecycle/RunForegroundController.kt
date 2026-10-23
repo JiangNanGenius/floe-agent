@@ -184,6 +184,12 @@ class RunForegroundController private constructor(
      *  is still protected by the Core foreground service. */
     fun heldOperations(): Set<String> = RunForegroundState.heldOperationIDs()
 
+    /** Diagnostics for honest reporting only (Diagnostics & About details
+     *  popup): the CLOSED operation KINDS whose REAL work is currently
+     *  owned. Pure read of the same registry [heldOperations] consults —
+     *  it mutates nothing, gates nothing and never claims IO drain. */
+    fun heldOperationKinds(): Set<OperationKind> = RunForegroundState.heldKinds()
+
     /** True only while a live service instance has confirmed an ACTUAL
      *  startForeground success. Never a boolean preference, a stored
      *  status string or a model answer. */

@@ -368,9 +368,19 @@ class RunForegroundBinding(
 
     fun heldOperations(): Set<String> = controller.heldOperations()
 
+    /** Diagnostics-only closed mirror of the CURRENT owned operation KINDS
+     *  (Diagnostics & About details popup). Pure read through the SAME
+     *  controller authority; mutates nothing, owns nothing. */
+    fun heldOperationKinds(): Set<OperationKind> = controller.heldOperationKinds()
+
     /** True only with a confirmed real foreground service; never a
      *  preference-backed or optimistic "ready". */
     fun isForegroundConfirmed(): Boolean = controller.isForegroundConfirmed()
+
+    /** Diagnostics-only honest read of the owned-work CPU wake (mirrors
+     *  the controller; the wake itself stays owned by the service +
+     *  coordinator, never by this binding or any view). */
+    fun isCpuWakeHeld(): Boolean = controller.isCpuWakeHeld()
 
     /**
      * Application owner-stop boundary. Releases SERVICE ownership for all
