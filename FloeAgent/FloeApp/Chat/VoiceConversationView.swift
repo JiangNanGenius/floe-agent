@@ -373,7 +373,10 @@ struct VoiceConversationView: View {
     }
 
     private var currentCaption: String {
-        if session.spokenText.isEmpty { return FloeL10n.l("voice.conversation.empty") }
+        if session.spokenText.isEmpty {
+            return session.state == .listening && !session.muted
+                ? FloeL10n.l("voice.conversation.empty") : ""
+        }
         return String(session.spokenText.prefix(200))
     }
     private var statusKey: String {

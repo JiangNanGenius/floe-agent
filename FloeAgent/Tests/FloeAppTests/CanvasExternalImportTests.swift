@@ -131,7 +131,7 @@ struct CanvasImportListingTests {
         try Data("{}".utf8).write(
             to: directory.appendingPathComponent("library-organization.json"))
 
-        let bestEffort = WorkspaceCanvasRegistry.readSummaries(in: directory, strict: false)
+        let bestEffort = try WorkspaceCanvasRegistry.readSummaries(in: directory, strict: false)
         #expect(bestEffort.map(\.id) == [validID])
         #expect(bestEffort.first?.name == "Valid Canvas")
         #expect(throws: (any Error).self) {

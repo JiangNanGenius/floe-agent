@@ -43327,13 +43327,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "No installed or available content for this kind."
+            "value": "No content"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此类别尚无已安装或可更新的内容。"
+            "value": "暂无内容"
           }
         }
       }
@@ -43531,13 +43531,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Scripted content never gains permissions automatically from this toggle; every permission still needs your explicit approval."
+            "value": "Script permissions still require approval."
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此开关不会让含脚本的内容自动获得权限；每项权限仍需你明确批准。"
+            "value": "脚本权限仍需确认。"
           }
         }
       }
@@ -43582,13 +43582,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automatically apply declarative updates"
+            "value": "Automatically apply content updates"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自动应用声明式内容更新"
+            "value": "自动应用内容更新"
           }
         }
       }
@@ -43616,13 +43616,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Automatically install content with scripts"
+            "value": "Automatically install script updates"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "自动安装含脚本的内容"
+            "value": "自动安装脚本更新"
           }
         }
       }
@@ -96282,6 +96282,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "已导入手记"
+          }
+        }
+      }
+    },
+    "settings.content_updates.status.update": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有可用更新"
+          }
+        }
+      }
+    },
+    "settings.content_updates.status.installed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Installed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已安装"
           }
         }
       }

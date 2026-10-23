@@ -96,8 +96,6 @@ struct ContentUpdatesSettingsView: View {
                 .accessibilityIdentifier("settings.content_updates.toggle.wifi_only")
         } header: {
             Text("settings.content_updates.policy.header")
-        } footer: {
-            Text("settings.content_updates.policy.footer")
         }
     }
 
@@ -111,13 +109,7 @@ struct ContentUpdatesSettingsView: View {
                     NavigationLink {
                         InternalPromptsSettingsView(center: center)
                     } label: {
-                        LabeledContent("settings.content_updates.prompts") {
-                            if let record = center.installed["floe.prompts.core"] {
-                                Text("v\(record.version)")
-                            } else {
-                                Text("settings.content_updates.built_in")
-                            }
-                        }
+                        Text("settings.content_updates.prompts")
                     }
                     .accessibilityIdentifier("settings.updates.prompts")
                 }
@@ -157,19 +149,25 @@ struct ContentUpdatesSettingsView: View {
                         .foregroundStyle(FloeTheme.pending)
                 }
             }
-            LabeledContent("settings.content_updates.installed") {
-                Text(record.map { "v\($0.version)" }
-                     ?? FloeL10n.l("settings.content_updates.not_installed"))
-                    .font(FloeTheme.Typography.evidence)
-                    .textSelection(.enabled)
-            }
-            LabeledContent("settings.content_updates.available") {
-                Text(availableDescription(availableContent))
-                    .font(FloeTheme.Typography.evidence)
-                    .textSelection(.enabled)
-            }
+            Text(FloeL10n.l(availableContent?.decision.isUpdate == true
+                 ? "settings.content_updates.status.update"
+                 : record != nil ? "settings.content_updates.status.installed"
+                 : "settings.content_updates.not_installed"))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             actionRow(id: id, record: record, availableContent: availableContent)
             DisclosureGroup("settings.content_updates.details") {
+                LabeledContent("settings.content_updates.installed") {
+                    Text(record.map { "v\($0.version)" }
+                         ?? FloeL10n.l("settings.content_updates.not_installed"))
+                        .font(FloeTheme.Typography.evidence)
+                        .textSelection(.enabled)
+                }
+                LabeledContent("settings.content_updates.available") {
+                    Text(availableDescription(availableContent))
+                        .font(FloeTheme.Typography.evidence)
+                        .textSelection(.enabled)
+                }
                 Text(id).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 if let entry = availableContent?.entry, !entry.releaseNotes.isEmpty {
                     releaseNotesView(entry)
