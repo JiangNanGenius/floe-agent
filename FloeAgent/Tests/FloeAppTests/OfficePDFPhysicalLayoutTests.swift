@@ -13,6 +13,8 @@
 import XCTest
 import CoreGraphics
 import PDFKit
+import FloeCore
+import FloeTools
 import FloeDocuments
 @testable import FloeApp
 

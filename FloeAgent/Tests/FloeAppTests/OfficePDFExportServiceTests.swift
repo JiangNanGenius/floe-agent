@@ -194,7 +194,8 @@ struct OfficePDFExportServiceTests {
             url: URL(fileURLWithPath: "/tmp/floe-ink-fence.pdf"),
             pageCount: 1, byteCount: 64,
             pdfSHA256: String(repeating: "b", count: 64))
-        #expect(state.accept(token: token, artifact: artifact, choices: accepted))
+        let didAccept = state.accept(token: token, artifact: artifact, choices: accepted)
+        #expect(didAccept)
         #expect(state.isStale(currentChoices: accepted) == false)
         var omitted = accepted
         omitted.includeInk = false

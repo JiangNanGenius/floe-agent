@@ -125,7 +125,8 @@ final class OfficePDFPaginatedLayoutAcceptanceTests: XCTestCase {
                              "explicit actual-size overflow must be counted")
         XCTAssertTrue(laid.notes.contains(.physicalLayoutContentExceedsPaper),
                       "overflow note must be present")
-        XCTAssertEqual(laid.pageSizes.first?.width, 595.2756, accuracy: 0.5)
+        let firstPageSize = try XCTUnwrap(laid.pageSizes.first)
+        XCTAssertEqual(firstPageSize.width, 595.2756, accuracy: 0.5)
     }
 }
 #endif
