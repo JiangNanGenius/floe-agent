@@ -169,6 +169,39 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         try? fileManager.removeItem(at: session.recoveryURL)
     }
 
+    /// Read-only proof that the current original still equals this session's
+    /// committed baseline. The editor's clean preview no-op skips `save`, and
+    /// `save` is the only place that CAS-checks the original under coordination
+    /// and the mutation lock; this reopens exactly that comparison as a read.
+    /// Never writes the original, recovery copy or manifest, and never rebases
+    /// `savedDigests`/`savedWorkingDigests`: a later save must still compare
+    /// against the same baseline. Working-copy cleanliness is the caller's
+    /// separate check and is deliberately not claimed here.
+    public func verifyCommittedOriginal(_ session: DocumentSession) throws {
+        guard sessions[session.id] == session, let expectedDigest = savedDigests[session.id] else {
+            throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
+        }
+        var coordinationError: NSError?
+        var readError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: session.originalURL, options: [], error: &coordinationError) { source in
+            let mutationLock = ManagedFileMutationLock.shared
+            mutationLock.lock(); defer { mutationLock.unlock() }
+            do {
+                // A real regular readable file only: a vanished original or a
+                // directory substitution must fail closed, never read as clean.
+                try requireRegularCopy(source)
+                // Metadata alone misses same-size, timestamp-preserving
+                // external rewrites, so compare the actual bytes like `save`
+                // does before promoting.
+                guard try Self.digest(source) == expectedDigest else {
+                    throw OfficeDocumentError.revisionConflict
+                }
+            } catch { readError = error }
+        }
+        if let coordinationError { throw coordinationError }
+        if let readError { throw readError }
+    }
+
     /// Call only after the native editor acknowledges persistence to workingURL.
     /// Copy and verify before exposing the URL; later autosaves cannot mutate it.
     public func prepareExport(_ session: DocumentSession) throws -> DocumentExportSnapshot {

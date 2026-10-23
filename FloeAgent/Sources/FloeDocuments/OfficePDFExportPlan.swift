@@ -364,13 +364,48 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
     public var pageSetup: OfficePDFPageSetup
     /// `nil` or an empty selection means every page of the actual PDF.
     public var pageRange: OfficePDFPageRange?
+    /// Whether the prepared output carries the app's handwriting ink.
+    /// `true` (the default everywhere, including every plan decoded from a
+    /// legacy payload that predates this key) prints the document exactly as
+    /// before. `false` is one optional per-output setting: the prepared
+    /// export path renders from an isolated copy whose proven-ink strokes
+    /// (`OfficeInkOmission`) are removed, while typed cells and text,
+    /// charts, images, preset shapes, printed gridlines and cell borders
+    /// all stay, and the source package — including every saved stroke —
+    /// is never written. The automatic content extent shrinks with the
+    /// omitted ink, so a fit-to-width/one-page plan re-paginates without
+    /// reserving space for suppressed strokes; an explicit larger cell
+    /// range remains the user's own choice. Honesty boundary: the value is
+    /// only honored on the saved isolated export route (`.xlsx`/`.docx`/
+    /// `.pptx`); a live-session finalize (legacy formats) keeps ink and
+    /// the service refuses `false` there instead of silently ignoring it.
+    public var includeInk: Bool
 
     public init(scope: OfficePDFScope = .documentSettings,
                 pageSetup: OfficePDFPageSetup = .documentSettings,
-                pageRange: OfficePDFPageRange? = nil) {
+                pageRange: OfficePDFPageRange? = nil,
+                includeInk: Bool = true) {
         self.scope = scope
         self.pageSetup = pageSetup
         self.pageRange = pageRange
+        self.includeInk = includeInk
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case scope
+        case pageSetup
+        case pageRange
+        case includeInk
+    }
+
+    /// Plans encoded before this key existed decode as `includeInk == true`
+    /// — the byte-identical behavior of every saved job and preview.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try container.decode(OfficePDFScope.self, forKey: .scope)
+        pageSetup = try container.decode(OfficePDFPageSetup.self, forKey: .pageSetup)
+        pageRange = try container.decodeIfPresent(OfficePDFPageRange.self, forKey: .pageRange)
+        includeInk = try container.decodeIfPresent(Bool.self, forKey: .includeInk) ?? true
     }
 
     /// The plan needs an XLSX print copy instead of exporting the source
@@ -378,7 +413,7 @@ public struct OfficePDFPrintPlan: Codable, Sendable, Equatable {
     public var requiresPrintCopy: Bool {
         switch scope {
         case .documentSettings:
-            return pageSetup.hasOverrides
+            return pageSetup.hasOverrides || !includeInk
         case .sheet, .sheetWithPrintArea, .sheets, .allVisibleSheets:
             return true
         }
