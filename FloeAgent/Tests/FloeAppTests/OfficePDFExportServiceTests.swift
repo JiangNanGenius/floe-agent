@@ -161,7 +161,11 @@ struct OfficePDFExportServiceTests {
         #expect(omittedPlan.scope == plainPlan.scope)
         #expect(omittedPlan.pageSetup == plainPlan.pageSetup)
         for ext in ["xlsx", "docx", "pptx"] {
-            try omittedPlan.validate(forExtension: ext)
+            var formatChoices = omitted
+            formatChoices.applyDocumentSetupDefaults(forFormatExtension: ext)
+            let formatPlan = try formatChoices.plan(activeSheetName: nil)
+            #expect(formatPlan.includeInk == false)
+            try formatPlan.validate(forExtension: ext)
         }
         // A prepared copy is required even for pure document settings now.
         #expect(omittedPlan.requiresPrintCopy)

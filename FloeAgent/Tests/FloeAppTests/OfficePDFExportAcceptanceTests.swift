@@ -604,7 +604,15 @@ final class OfficePDFExportAcceptanceTests: XCTestCase {
             XCTAssertEqual(offPixels.yellow, 0, "omitted output may carry no highlighter ink")
             XCTAssertLessThan(offPixels.inked, onPixels.inked,
                               "pen/marker strokes must leave the pages, not stay underneath")
-            XCTAssertEqual(offPixels.text, onPixels.text,
+            // PDFKit extracts an object-replacement character for each
+            // drawing. Omitted strokes intentionally remove those markers;
+            // compare actual typed text, including its exact numeric content.
+            func typedText(_ value: String) -> String {
+                value.replacingOccurrences(of: "\u{FFFC}", with: "")
+                    .components(separatedBy: .whitespacesAndNewlines).joined()
+            }
+            XCTAssertEqual(typedText(onPixels.text), "11111123456")
+            XCTAssertEqual(typedText(offPixels.text), typedText(onPixels.text),
                            "typed content is never affected by the handwriting choice")
             // Automatic bounds exclusion proof: at actual size the far-away
             // qualified ink inflates the printed extent; with the ink omitted

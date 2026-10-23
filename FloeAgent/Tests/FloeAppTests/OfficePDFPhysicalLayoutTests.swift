@@ -108,9 +108,9 @@ final class OfficePDFPhysicalLayoutTests: XCTestCase {
         let laid = try XCTUnwrap(PDFDocument(url: output))
         XCTAssertEqual(laid.pageCount, 3)
         let combined = (0..<laid.pageCount).map { normalized(laid.page(at: $0)?.string ?? "") }
-        XCTAssertTrue(combined[0].contains("ALPHATOP") && combined[0].contains("ALPHABOTTOM"))
-        XCTAssertTrue(combined[1].contains("BRAVOWIDE"))
-        XCTAssertTrue(combined[2].contains("CHARLIEROT"))
+        XCTAssertTrue(combined[0].contains("ALPHA-TOP") && combined[0].contains("ALPHA-BOTTOM"))
+        XCTAssertTrue(combined[1].contains("BRAVO-WIDE"))
+        XCTAssertTrue(combined[2].contains("CHARLIE-ROT"))
         // Source is only read.
         XCTAssertEqual(PDFDocument(url: source)?.pageCount, 3)
     }
@@ -133,7 +133,7 @@ final class OfficePDFPhysicalLayoutTests: XCTestCase {
         let laid = try XCTUnwrap(PDFDocument(url: output))
         let page = try XCTUnwrap(laid.page(at: 2))
         XCTAssertEqual(page.rotation, 0)  // rotation baked into upright content
-        XCTAssertTrue(normalized(page.string ?? "").contains("CHARLIEROT"))
+        XCTAssertTrue(normalized(page.string ?? "").contains("CHARLIE-ROT"))
     }
 
     func testExplicitActualSizeOverflowsAreCounted() throws {
