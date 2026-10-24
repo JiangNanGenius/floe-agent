@@ -424,7 +424,8 @@ final class SpeechSettingsControlsTests: XCTestCase {
 
         // A replacement only takes effect after an explicit save.
         try settings.saveProfile(profile, credential: "synthetic-replacement")
-        XCTAssertEqual(try await settings.credential(for: profile), "synthetic-replacement")
+        let replacement = try await settings.credential(for: profile)
+        XCTAssertEqual(replacement, "synthetic-replacement")
 
         // Without a stored secret the reveal has nothing to show.
         try settings.removeProfile(profile)
