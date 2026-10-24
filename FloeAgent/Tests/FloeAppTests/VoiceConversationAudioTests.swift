@@ -66,45 +66,48 @@ struct VoiceConversationAudioTests {
 
     // MARK: Sentence splitting
 
-    @Test("CJK and ASCII sentence terminals split; decimal points do not")
+    @Test("Complete sentence boundaries retain trailing punctuation until lookahead or EOF")
     func sentenceSplitting() {
         var splitter = VoiceConversationSentenceSplitter()
         let first = splitter.feed(cumulative: "第一句。第二句！Third? Yes.", finalize: false)
-        #expect(first == ["第一句。", "第二句！", "Third?", "Yes."])
+        #expect(first == ["第一句。", "第二句！", "Third?"])
         let more = splitter.feed(cumulative: "第一句。第二句！Third? Yes. 下一句。", finalize: false)
-        #expect(more == ["下一句。"])
+        #expect(more == ["Yes."])
         let tail = splitter.feed(cumulative: "第一句。第二句！Third? Yes. 下一句。尾巴", finalize: true)
-        #expect(tail == ["尾巴"])
+        #expect(tail == ["下一句。", "尾巴"])
     }
 
-    @Test("Decimals stay inside one unit; newlines split lines")
+    @Test("Decimals stay whole and a newline never flushes an unfinished sentence")
     func decimalAndNewlineSplitting() {
         var splitter = VoiceConversationSentenceSplitter()
         // Complete sentences only: the trailing line is still growing.
         let complete = splitter.feed(cumulative: "价格是 3.5 元。\n下一行", finalize: false)
         #expect(complete == ["价格是 3.5 元。"])
         let rest = splitter.feed(cumulative: "价格是 3.5 元。\n下一行。", finalize: false)
-        #expect(rest == ["下一行。"])
+        // Keep the terminal until a closer/lookahead arrives or EOF confirms it.
+        #expect(rest.isEmpty)
+        #expect(splitter.feed(cumulative: "价格是 3.5 元。\n下一行。", finalize: true) == ["下一行。"])
 
-        // A newline alone terminates the preceding line as a unit.
+        // A newline alone cannot turn an unfinished line into a model request.
         var lines = VoiceConversationSentenceSplitter()
-        #expect(lines.feed(cumulative: "第一行\n第二行", finalize: false) == ["第一行"])
+        #expect(lines.feed(cumulative: "第一行\n第二行", finalize: false).isEmpty)
+        #expect(lines.feed(cumulative: "第一行\n第二行", finalize: true) == ["第一行\n第二行"])
     }
 
-    @Test("A very long run-on answer soft-flushes before 512 characters are exceeded")
+    @Test("A long unfinished sentence never fragments at the former 512-character threshold")
     func softFlush() {
         var splitter = VoiceConversationSentenceSplitter()
         let long = String(repeating: "字", count: 700)
         let units = splitter.feed(cumulative: long, finalize: false)
-        #expect(!units.isEmpty)
-        #expect(units.allSatisfy { $0.count <= 520 })
+        #expect(units.isEmpty)
+        #expect(splitter.consumedCount == 0)
         // Re-feeding the same cumulative emits nothing new (no replay).
         #expect(splitter.feed(cumulative: long, finalize: false).isEmpty)
-        // Finalization emits the remaining unflushed tail (with the new
-        // character) exactly once, and nothing is duplicated overall.
+        // EOF emits the entire unfinished utterance (with the new character)
+        // exactly once; no fragment was sent before the sentence ended.
         let tail = splitter.feed(cumulative: long + "尾", finalize: true)
-        #expect(tail.count == 1)
-        #expect(tail.first?.hasSuffix("尾") == true)
+        #expect(tail == [long + "尾"])
+        #expect(splitter.feed(cumulative: long + "尾", finalize: true).isEmpty)
         #expect(units.reduce(0) { $0 + $1.count } + (tail.first?.count ?? 0) == long.count + 1)
     }
 

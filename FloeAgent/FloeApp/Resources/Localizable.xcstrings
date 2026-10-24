@@ -92996,6 +92996,23 @@
         }
       }
     },
+    "voice.settings.source": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Playback source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "播放来源"
+          }
+        }
+      }
+    },
     "voice.settings.voice": {
       "extractionState": "manual",
       "localizations": {
@@ -93914,6 +93931,23 @@
         }
       }
     },
+    "voice.output.source.unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This source isn't ready yet. Finish its setup first."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "该来源暂不可用，请先完成配置。"
+          }
+        }
+      }
+    },
     "voice.local.title": {
       "extractionState": "manual",
       "localizations": {
@@ -94488,6 +94522,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "在线语音服务"
+          }
+        }
+      }
+    },
+    "voice.online.details": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Configuration"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "配置"
           }
         }
       }
@@ -96707,6 +96758,108 @@
           "stringUnit": {
             "state": "translated",
             "value": "请先结束录音，再播放。"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.error.failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update synchronization for %d saved credentials. Existing copies were kept. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 %d 个已保存凭据未能完成同步设置，原有副本已保留。请重试。"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.error.failed.one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't update synchronization for 1 saved credential. The existing copy was kept. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "有 1 个已保存凭据未能完成同步设置，原有副本已保留。请重试。"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.error.missing": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%d saved credentials aren't available on this device. Retry later or save them again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机有 %d 个凭据暂不可用。请稍后重试，或重新保存。"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.error.missing.one": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 saved credential isn't available on this device. Retry later or save it again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "本机有 1 个凭据暂不可用。请稍后重试，或重新保存。"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.retry": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Retry"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重试"
+          }
+        }
+      }
+    },
+    "settings.sync.saved_credentials.auth_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't verify your identity. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法完成身份验证，请重试。"
           }
         }
       }

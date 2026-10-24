@@ -113,14 +113,31 @@ struct SyncSettingsView: View {
             }
 
             if let credentialAuthenticationError {
-                Section { Text(credentialAuthenticationError).foregroundStyle(FloeTheme.destructive) }
-            }
-
-            if let error = center.syncControlError {
+                Section {
+                    Label(credentialAuthenticationError, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(FloeTheme.destructive)
+                }
+            } else if let error = center.syncControlError {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(FloeTheme.pending)
                         .textSelection(.enabled)
+                    // Exactly one actionable message per failed operation;
+                    // retry re-runs the matching saved-credentials request
+                    // idempotently and a clean run clears this error.
+                    if center.credentialSyncRetryDirection != nil {
+                        Button {
+                            Task { await center.retrySavedCredentialsSync() }
+                        } label: {
+                            HStack {
+                                Text("settings.sync.saved_credentials.retry")
+                                Spacer()
+                                if center.syncControlBusy { ProgressView() }
+                            }
+                        }
+                        .disabled(center.syncControlBusy)
+                        .accessibilityIdentifier("settings.sync.saved_credentials.retry")
+                    }
                 }
             }
         }
@@ -200,18 +217,27 @@ struct SyncSettingsView: View {
     }
 
     private func changeCredentialSync(to enabled: Bool) async {
+        // Each new attempt owns the error area outright: a stale auth or
+        // sync message must never linger beside the result of this one.
+        credentialAuthenticationError = nil
         if enabled {
             do {
                 guard try await DeviceOwnerAuthenticator.authenticate(
                     reason: FloeL10n.l("settings.sync_settings_view.sync_explicitly_saved_keys_and_website")
                 ) else { return }
             } catch {
-                credentialAuthenticationError = error.localizedDescription
+                // The raw LocalAuthentication error stays in the log; the
+                // row shows concise user copy only.
+                FloeLogger(category: .sync).error("Saved credentials device owner authentication failed")
+                credentialAuthenticationError = FloeL10n.l("settings.sync.saved_credentials.auth_failed")
                 return
             }
         }
+        // The sync operation's own error is rendered by the single
+        // `center.syncControlError` section below; mirroring it into the
+        // authentication state here previously showed the same message
+        // twice (red and yellow) for one failure.
         await center.setSavedCredentialsSyncEnabled(enabled)
-        credentialAuthenticationError = center.syncControlError
     }
 
     private var canSynchronizeManually: Bool {

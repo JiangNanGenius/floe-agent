@@ -114,15 +114,14 @@ private actor ReadGate {
 @Suite("Config sync status arrival", .serialized)
 struct ConfigSyncStatusArrivalTests {
     /// Builds an engine over in-memory stores with the sync switches set by
-    /// the caller, a controllable secret-presence seam (optionally gating one
-    /// account behind a ReadGate), and restores the standard-defaults
-    /// preferences afterwards — the same seam shape the pre-existing
-    /// CredentialDescriptorSyncTests suite uses.
+    /// the caller and a controllable secret-presence seam (optionally gating
+    /// one account behind a ReadGate). Each engine uses an isolated defaults
+    /// suite so tests never change the running App's synchronization settings.
     private func makeEngine(
         savedCredentialsEnabled: Bool,
         presence: SecretPresence,
         gate: ReadGate? = nil
-    ) async throws -> (ConfigSyncEngine, ModelConfigurationStore, SyncControlPreferences) {
+    ) async throws -> (ConfigSyncEngine, ModelConfigurationStore, String) {
         let database = try DatabaseManager.inMemory()
         try await database.migrate()
         let credentials = CredentialStore(database: database)
@@ -133,12 +132,14 @@ struct ConfigSyncStatusArrivalTests {
             metadataStore: metadata,
             credentialStore: credentials
         )
-        let previousPreferences = SyncControlPreferences.load()
+        let preferencesSuite = "config-sync-arrival." + UUID().uuidString
+        let preferences = try #require(UserDefaults(suiteName: preferencesSuite))
+        await engine.replacePreferencesDefaultsForTesting(suite: preferencesSuite)
         SyncControlPreferences(
             overallEnabled: true,
             configurationEnabled: true,
             savedCredentialsEnabled: savedCredentialsEnabled
-        ).save()
+        ).save(to: preferences)
         await engine.replaceSecretExistenceReaderForTesting { [presence, gate] service, account, synchronizable in
             if let gate {
                 await gate.gatedRead(account: account)
@@ -149,7 +150,7 @@ struct ConfigSyncStatusArrivalTests {
                 synchronizable: synchronizable
             )
         }
-        return (engine, configuration, previousPreferences)
+        return (engine, configuration, preferencesSuite)
     }
 
     private func syncableProvider() -> ProviderProfile {
@@ -173,11 +174,11 @@ struct ConfigSyncStatusArrivalTests {
     @Test("Stale waiting resolves only after every pending provider account arrives")
     func staleWaitingResolvesOnLateArrival() async throws {
         let presence = SecretPresence()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let first = syncableProvider()
         let second = syncableProvider()
@@ -214,11 +215,11 @@ struct ConfigSyncStatusArrivalTests {
     @Test("Arrival monitor resolves a cached wait without any batch or UI")
     func monitorResolvesLateArrivalWithoutManualRefresh() async throws {
         let presence = SecretPresence()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let provider = syncableProvider()
         try await configuration.saveProvider(provider)
@@ -246,11 +247,11 @@ struct ConfigSyncStatusArrivalTests {
     @Test("Any non-waiting transition cancels the arrival monitor")
     func pausedStateSurvivesLateArrival() async throws {
         let presence = SecretPresence()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let provider = syncableProvider()
         try await configuration.saveProvider(provider)
@@ -279,12 +280,12 @@ struct ConfigSyncStatusArrivalTests {
     func pauseLandingMidComputeSurvivesEpochFence() async throws {
         let presence = SecretPresence()
         let gate = ReadGate()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence,
             gate: gate
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let provider = syncableProvider()
         try await configuration.saveProvider(provider)
@@ -321,12 +322,12 @@ struct ConfigSyncStatusArrivalTests {
     func waitingReentryMidComputeKeepsWatching() async throws {
         let presence = SecretPresence()
         let gate = ReadGate()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence,
             gate: gate
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let provider = syncableProvider()
         try await configuration.saveProvider(provider)
@@ -356,11 +357,11 @@ struct ConfigSyncStatusArrivalTests {
     @Test("A resolved cycle re-waiting on new configuration resolves again on late arrival")
     func resolvedCycleRewaitsAndResolvesAgain() async throws {
         let presence = SecretPresence()
-        let (engine, configuration, previousPreferences) = try await makeEngine(
+        let (engine, configuration, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: false,
             presence: presence
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let first = syncableProvider()
         try await configuration.saveProvider(first)
@@ -401,11 +402,11 @@ struct ConfigSyncStatusArrivalTests {
     @Test("Vault descriptors keep per-account honest waiting through the same re-check")
     func vaultDescriptorArrivalIsHonestPerAccount() async throws {
         let presence = SecretPresence()
-        let (engine, _, previousPreferences) = try await makeEngine(
+        let (engine, _, preferencesSuite) = try await makeEngine(
             savedCredentialsEnabled: true,
             presence: presence
         )
-        defer { previousPreferences.save() }
+        defer { UserDefaults(suiteName: preferencesSuite)?.removePersistentDomain(forName: preferencesSuite) }
 
         let pendingPassphrase = CredentialRecord(
             kind: .sshPassword, owner: .vault, label: "Imported passphrase",

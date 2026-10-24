@@ -1215,3 +1215,253 @@ struct AppleSpeechSourceTests {
     }
 }
 #endif
+
+// MARK: - Complete-sentence input (production read-aloud / local inference)
+
+@Suite("Complete-sentence TTS input")
+struct CompleteSentenceSegmenterTests {
+    /// A sentence whose terminator lands exactly at the buffer edge is held
+    /// for one lookahead character (a closer may still arrive) and must then
+    /// flush whole — the incremental streaming shape the assistant produces.
+    @Test func incrementalSentenceFlushesOnlyWhenResolved() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("今天天气很好。") == [])          // held: closer possible
+        #expect(segmenter.hasPendingText)
+        #expect(segmenter.append("我们") == ["今天天气很好。"])    // resolved by real text
+        #expect(segmenter.finish() == ["我们"])
+    }
+
+    /// Commas, colons, semicolons, whitespace and line breaks are NOT
+    /// sentence ends. Text that also spans a table keeps accumulating until
+    /// a real terminator (or explicit end of input).
+    @Test func punctuationAndLineBreaksNeverFlushUnfinishedSpeech() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("这样，我们；注意：\n好的") == [])
+        #expect(segmenter.append("。") == [])
+        #expect(segmenter.append("下一句") == ["这样，我们；注意：\n好的。"])
+        #expect(segmenter.finish() == ["下一句"])
+    }
+
+    /// A >64-character CJK sentence (the old force-cut ceiling) reaches the
+    /// caller as ONE untouched segment — no fragment, no truncation.
+    @Test func longCJKSentenceIsNeverFragmented() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        let longSentence = String(repeating: "春", count: 100) + "。"
+        let segments = segmenter.append(longSentence + "然后我们继续。")
+        #expect(segments == [longSentence])
+        #expect(segments.first?.count == 101)
+        #expect(segmenter.finish() == ["然后我们继续。"])
+    }
+
+    /// An ordinary multi-sentence answer streams sentence by sentence.
+    @Test func ordinaryMultiSentenceAnswerStreamsPerSentence() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("第一句。第二句！第三句？")
+                == ["第一句。", "第二句！"])
+        #expect(segmenter.finish() == ["第三句？"])
+    }
+
+    /// Short complete sentences flush immediately — the old 8-character
+    /// minimum only ever merged fragments and is not applied here.
+    @Test func shortCompleteSentenceFlushesImmediately() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("好的。然后") == ["好的。"])
+        #expect(segmenter.finish() == ["然后"])
+    }
+
+    /// Decimal amounts, version numbers and domains keep their dots.
+    @Test func decimalsVersionsAndDomainsArePreserved() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("延迟是 12865.50 毫秒，占比 0.7。然后")
+                == ["延迟是 12865.50 毫秒，占比 0.7。"])
+        #expect(segmenter.finish() == ["然后"])
+
+        var domain = TTSTextSegmenter(policy: .completeSentences)
+        #expect(domain.append("访问 example.com 然后继续。下一句")
+                == ["访问 example.com 然后继续。"])
+        #expect(domain.finish() == ["下一句"])
+
+        var version = TTSTextSegmenter(policy: .completeSentences)
+        #expect(version.append("升级到 iOS 27.1.2 版本。然后")
+                == ["升级到 iOS 27.1.2 版本。"])
+        #expect(version.finish() == ["然后"])
+    }
+
+    /// A decimal split across incremental appends resolves on the next
+    /// append instead of cutting a number in half.
+    @Test func splitDecimalResolvesAcrossAppends() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("Total was 128.") == [])
+        #expect(segmenter.append("65 ms. Done") == ["Total was 128.65 ms."])
+        #expect(segmenter.finish() == ["Done"])
+
+        // The held dot becomes a real sentence end once a non-digit follows.
+        var boundary = TTSTextSegmenter(policy: .completeSentences)
+        #expect(boundary.append("We bought 12.") == [])
+        #expect(boundary.append(" Next week 7.") == ["We bought 12."])
+        #expect(boundary.finish() == ["Next week 7."])
+    }
+
+    /// Abbreviation dots are content, not boundaries.
+    @Test func abbreviationDotsNeverSplit() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("Dr. Nguyen said it was fine. Then we left.")
+                == ["Dr. Nguyen said it was fine."])
+        #expect(segmenter.finish() == ["Then we left."])
+
+        var initials = TTSTextSegmenter(policy: .completeSentences)
+        #expect(initials.append("The U.S. team agreed. Next we move.")
+                == ["The U.S. team agreed."])
+        #expect(initials.finish() == ["Next we move."])
+
+        // A sentence genuinely ending with an abbreviation-only word is held
+        // to the explicit end of input (never emitted as a fragment).
+        var end = TTSTextSegmenter(policy: .completeSentences)
+        #expect(end.append("The plan continues, e.g. this branch. And")
+                == ["The plan continues, e.g. this branch."])
+        #expect(end.finish() == ["And"])
+    }
+
+    /// Punctuation split across incremental appends: a closer arriving in the
+    /// next chunk belongs to the sentence that just ended.
+    @Test func splitTerminatorAndCloserResolveAcrossAppends() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("他说完。") == [])
+        #expect(segmenter.append("」好的") == ["他说完。」"])
+        #expect(segmenter.append("。") == [])
+        #expect(segmenter.append("结束") == ["好的。"])
+        #expect(segmenter.finish() == ["结束"])
+    }
+
+    /// English closers and terminator runs stay with their sentence.
+    @Test func englishClosersAndTerminatorRunsStayWhole() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("He said \"stop!\" Then we did.")
+                == ["He said \"stop!\""])
+        #expect(segmenter.finish() == ["Then we did."])
+
+        var runs = TTSTextSegmenter(policy: .completeSentences)
+        #expect(runs.append("真的吗？！好吧") == ["真的吗？！"])
+        #expect(runs.finish() == ["好吧"])
+    }
+
+    /// Mixed Chinese/English/Japanese text: boundaries hold in each script
+    /// and Latin decimals inside the sentence are untouched.
+    @Test func mixedLanguageSentencesKeepTheirBoundaries() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("我们用 on-device TTS 0.7 秒完成测试。次に日本語の文です。And English follows!")
+                == ["我们用 on-device TTS 0.7 秒完成测试。", "次に日本語の文です。"])
+        #expect(segmenter.finish() == ["And English follows!"])
+    }
+
+    /// An answer with no terminal punctuation (title/table row/short
+    /// utterance) is emitted exactly ONCE at explicit end of input.
+    @Test func unpunctuatedTailEmitsExactlyOnceAtFinish() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        #expect(segmenter.append("标题：完整句子测试") == [])
+        #expect(segmenter.pendingCharacterCount == "标题：完整句子测试".count)
+        #expect(segmenter.finish() == ["标题：完整句子测试"])
+        #expect(segmenter.finish() == [])
+        #expect(!segmenter.hasPendingText)
+    }
+
+    /// A pathologically long unterminated stream never emits fragments: each
+    /// append returns nothing, and `finish()` returns the exact accumulated
+    /// text once (the caller's hard bounds then decide, never a partial cut).
+    @Test func unterminatedStreamNeverEmitsPartialFragments() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        for _ in 0..<60 {
+            #expect(segmenter.append("片段") == [])
+        }
+        #expect(segmenter.pendingCharacterCount == 120)
+        #expect(segmenter.finish() == [String(repeating: "片段", count: 60)])
+    }
+
+    /// Markdown-expanded table rows (newline separated) reach synthesis as
+    /// one complete unit with every number intact — no row is dropped,
+    /// reordered or summarized.
+    @Test func tableRowsStayCompleteAndUnsummarized() {
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        let table = "名称 | 数值\nA | 1.5\nB | 2.0"
+        #expect(segmenter.append(table) == [])
+        #expect(segmenter.append("。") == [])
+        #expect(segmenter.append("下面") == [table + "。"])
+        #expect(segmenter.finish() == ["下面"])
+    }
+
+    /// The legacy force-cut policy remains available and unchanged.
+    @Test func boundedPolicyStillForceCutsForLegacyCallers() {
+        var bounded = TTSTextSegmenter(policy: .bounded, maxCharacters: 12)
+        let out = bounded.append("alpha beta gamma delta")
+        #expect(out == ["alpha beta", "gamma delta"])
+        var paragraph = TTSTextSegmenter(policy: .bounded)
+        #expect(paragraph.append("没有标点的一段话\n继续")
+                == ["没有标点的一段话"])   // legacy newline terminator
+    }
+}
+
+// MARK: - Empirical native frame budget (not a model input ceiling)
+
+@Suite("MOSS whole-sentence frame budget")
+struct TTSSpeechBudgetTests {
+    @Test func cjkBudgetCoversSlowestMeasuredRate() {
+        // 20 CJK chars at 4.8 char/s = 4.17 s = 52 frames; budget adds the
+        // 10% allowance and the EOS margin → 68.
+        #expect(TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 20, hasCJK: true) == 68)
+        // 100 CJK chars stay inside the real MOSS context budget.
+        let hundred = TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 100, hasCJK: true)
+        #expect(hundred == 297)
+        #expect(hundred <= 1024 - TTSSpeechBudget.mossTemplateRowsUpperBound
+            - TTSSpeechBudget.mossContextSafetyRows)
+    }
+
+    @Test func latinBudgetUsesMeasuredSlowestLatinRate() {
+        // 300 Latin chars at 11.0 char/s = 27.3 s = 341 frames, times the
+        // 10% allowance (375.000…2 → ceil 376) plus the EOS margin = 386.
+        #expect(TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 300, hasCJK: false) == 386)
+    }
+
+    @Test func budgetNeverExceedsTheRealContextReservation() {
+        let capped = TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 2_000, hasCJK: true)
+        #expect(capped == 1024 - TTSSpeechBudget.mossTemplateRowsUpperBound
+            - TTSSpeechBudget.mossContextSafetyRows)
+        // Tiny contexts still produce a valid (>0) MossTTSNanoOptions value;
+        // the native context guard owns the real rejection.
+        #expect(TTSSpeechBudget.mossMaxFrames(
+            contextLength: 130, characterCount: 10, hasCJK: true) == 10)
+        #expect(TTSSpeechBudget.mossMaxFrames(
+            contextLength: 0, characterCount: 10, hasCJK: true) == 1)
+    }
+
+    @Test func budgetIsMonotonicAndPositive() {
+        var previous = 0
+        for count in [0, 1, 5, 20, 100, 200] {
+            let frames = TTSSpeechBudget.mossMaxFrames(
+                contextLength: 1024, characterCount: count, hasCJK: true)
+            #expect(frames >= 1)
+            #expect(frames >= previous)
+            previous = frames
+        }
+    }
+
+    @Test func scriptClassificationCoversCJKPunctuationAndHangul() {
+        #expect(TTSSpeechBudget.hasCJKCharacter("。"))     // CJK punctuation block
+        #expect(TTSSpeechBudget.hasCJKCharacter("あ"))     // kana
+        #expect(TTSSpeechBudget.hasCJKCharacter("漢"))     // ideograph
+        #expect(TTSSpeechBudget.hasCJKCharacter("한"))     // hangul
+        #expect(!TTSSpeechBudget.hasCJKCharacter("abc 123.45"))
+        #expect(!TTSSpeechBudget.hasCJKCharacter("１２３"))  // fullwidth digits alone
+    }
+
+    @Test func budgetDocumentsItsEmpiricalRates() {
+        // Rate constants are the audition-measured slowest voices plus 10%.
+        #expect(abs(TTSSpeechBudget.mossFramesPerCharacter(hasCJK: true)
+            - (12.5 / 4.8) * 1.1) < 0.000_001)
+        #expect(abs(TTSSpeechBudget.mossFramesPerCharacter(hasCJK: false)
+            - (12.5 / 11.0) * 1.1) < 0.000_001)
+    }
+}

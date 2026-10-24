@@ -68,7 +68,15 @@ final class TTSSettingsService: ObservableObject {
             .flatMap { try? JSONDecoder().decode(TTSSettingsSnapshot.self, from: $0) } ?? .systemDefault
         installationObserver = NotificationCenter.default.publisher(for: .localSpeechInstallationCompleted)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in
-                Task { @MainActor [weak self] in await self?.syncLocalSelection() }
+                Task { @MainActor [weak self] in
+                    // Completion is the readiness event for the pack: publish
+                    // the installed set before selection, so the new source is
+                    // immediately listable/selectable instead of waiting for
+                    // the idle pump's next tick. Selection and its protections
+                    // stay on the existing syncLocalSelection path.
+                    await self?.refreshLocalSpeechState()
+                    await self?.syncLocalSelection()
+                }
             }
         Task { [weak self] in await self?.syncLocalSelection() }
         localStatePump = Task { [weak self] in
@@ -102,7 +110,7 @@ final class TTSSettingsService: ObservableObject {
         value.speechPitchSemitones = controls.speechPitchSemitones
         guard let encoded = try? JSONEncoder().encode(value) else { return }
         defaults.set(encoded, forKey: Self.storageKey)
-        profiles[binding(value.provider, value.billingRoute)] = value
+        profiles[bucket(for: value)] = value
         if let encodedProfiles = try? JSONEncoder().encode(profiles) { defaults.set(encodedProfiles, forKey: Self.profilesKey) }
         if snapshot.provider != value.provider || snapshot.modelID != value.modelID || snapshot.voiceID != value.voiceID || snapshot.language != value.language {
             defaults.set(defaults.integer(forKey: Self.selectionRevisionKey) + 1, forKey: Self.selectionRevisionKey)
@@ -183,6 +191,111 @@ final class TTSSettingsService: ObservableObject {
         var chosen = value
         applyGlobalControls(to: &chosen)
         update { $0 = chosen }
+    }
+
+    // MARK: - Playback source
+
+    /// The source the current selection belongs to. Identity is the exact
+    /// provider/channel/model binding, not a display label.
+    var currentOutputSource: SpeechOutputSource { SpeechOutputSource(snapshot: snapshot) }
+
+    /// Picker list: system, installed visible packs, configured online
+    /// profiles. A current source that left the list only while its pack is
+    /// still installed (an awaiting-release legacy pack) is kept so its
+    /// checkmark never vanishes.
+    var outputSources: [SpeechOutputSource] {
+        var list = SpeechOutputSource.available(
+            installedVisibleModels: localVisibleModels.filter { localInstalledModelIDs.contains($0.id) },
+            configuredProfiles: configuredProfiles)
+        let current = currentOutputSource
+        if !list.contains(current), isKnownSource(current) { list.append(current) }
+        return list
+    }
+
+    func outputSourceTitle(for source: SpeechOutputSource) -> String {
+        switch source {
+        case .system: return FloeL10n.l("voice.settings.service.system")
+        case .local(let modelID):
+            guard let model = localModelDescriptor(modelID) else {
+                return FloeL10n.l("voice.settings.service.local")
+            }
+            // One installed visible pack is unambiguous with the generic
+            // product label; multiple packs carry their published titles so
+            // rows remain distinguishable (still no engine/repository names).
+            if localVisibleModels.filter({ localInstalledModelIDs.contains($0.id) }).count > 1 {
+                return model.title
+            }
+            return SpeechVoiceNames.model(model)
+        case .online(let provider, let route):
+            return provider.title + " · " + route.title
+        }
+    }
+
+    /// Selects a whole source with its last saved voice choice and keeps the
+    /// user's global controls. Never falls back: an uninstalled pack or an
+    /// incomplete/unconfigured profile returns false and changes nothing, and
+    /// the surface routes the user to its configuration instead.
+    @discardableResult
+    func selectSource(_ source: SpeechOutputSource) -> Bool {
+        guard let target = savedSnapshot(for: source) else { return false }
+        var chosen = target
+        applyGlobalControls(to: &chosen)
+        update { $0 = chosen }
+        return true
+    }
+
+    /// Installed pack descriptor usable as a selection target. Hidden legacy
+    /// descriptors only exist in `localManagedModels` while installed, so a
+    /// hidden match is already release-held; visible packs must be installed.
+    func localModelDescriptor(_ modelID: String) -> LocalSpeechModel? {
+        guard let model = localVisibleModels.first(where: { $0.id == modelID })
+                ?? localManagedModels.first(where: { $0.id == modelID }) else { return nil }
+        return model.isHidden || localInstalledModelIDs.contains(modelID) ? model : nil
+    }
+
+    private func isKnownSource(_ source: SpeechOutputSource) -> Bool {
+        switch source {
+        case .system: return true
+        case .local(let modelID): return localModelDescriptor(modelID) != nil
+        case .online(let provider, let route):
+            guard let saved = profiles[binding(provider, route)],
+                  saved.provider == provider, saved.billingRoute == route else { return false }
+            return hasCredential(for: saved) || saved.connectionProviderID != nil
+        }
+    }
+
+    private func savedSnapshot(for source: SpeechOutputSource) -> TTSSettingsSnapshot? {
+        switch source {
+        case .system:
+            if let saved = profiles[binding(.apple, .payAsYouGo)], saved.provider == .apple {
+                return saved
+            }
+            return .systemDefault
+        case .local(let modelID):
+            guard let model = localModelDescriptor(modelID) else { return nil }
+            let saved = profiles["\(TTSSpeakerProvider.onDevice.rawValue).\(modelID)"]
+                ?? legacyLocalBucket(for: modelID)
+            if let saved, saved.provider == .onDevice, saved.modelID == modelID {
+                return saved
+            }
+            guard let voiceID = model.defaultVoiceID ?? model.voices.first?.id else { return nil }
+            return TTSSettingsSnapshot(provider: .onDevice, billingRoute: .payAsYouGo,
+                                       modelID: modelID, voiceID: voiceID)
+        case .online(let provider, let route):
+            guard provider.requiresCloudCredential,
+                  TTSBillingRoute.isValid(route, for: provider),
+                  let saved = profiles[binding(provider, route)],
+                  saved.provider == provider, saved.billingRoute == route,
+                  hasCredential(for: saved) || saved.connectionProviderID != nil else { return nil }
+            return saved
+        }
+    }
+
+    /// Reads a pre-per-model selection once: the old single on-device bucket
+    /// still names the pack it belonged to.
+    private func legacyLocalBucket(for modelID: String) -> TTSSettingsSnapshot? {
+        let legacy = profiles[binding(.onDevice, .payAsYouGo)]
+        return legacy?.provider == .onDevice && legacy?.modelID == modelID ? legacy : nil
     }
 
     /// The four user-facing output controls live above any single provider
@@ -405,6 +518,16 @@ final class TTSSettingsService: ObservableObject {
 
     private func binding(_ provider: TTSSpeakerProvider, _ route: TTSBillingRoute) -> String {
         "\(provider.rawValue).\(route.rawValue)"
+    }
+
+    /// Saved-choice bucket. Cloud and system choices keep their existing
+    /// provider/channel key; on-device packs get one bucket per model so two
+    /// installed packs remember independent voices in the same store.
+    private func bucket(for value: TTSSettingsSnapshot) -> String {
+        if value.provider == .onDevice, !value.modelID.isEmpty {
+            return "\(value.provider.rawValue).\(value.modelID)"
+        }
+        return binding(value.provider, value.billingRoute)
     }
 
     func saveCredential(_ value: String) throws {

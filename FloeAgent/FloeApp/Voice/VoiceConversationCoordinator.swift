@@ -19,9 +19,18 @@
 // - Endpointing (~900 ms silence / ~1.6 s trailing-incomplete extension) uses
 //   the injected scheduling seam, never a hidden wall clock.
 // - Barge-in: persistent echo-processed speech TENTATIVELY PAUSES playback at
-//   its exact position; only a valid ASR turn CONFIRMS and cancels the owned
-//   round (amplitude alone never discards a generation). Capture keeps
-//   streaming during the pause so the pre-roll / first syllable is retained.
+//   its exact position for AT MOST the bounded candidate pause window
+//   (1.2 s, 2026-10-25); only a genuinely NEW valid ASR turn that arrived
+//   after this candidate opened CONFIRMS and cancels the owned round —
+//   late re-accumulations of already-submitted words and mirrors of the
+//   actually-played output never do (amplitude alone never discards a
+//   generation, similarity alone never confirms one). An unconfirmed pause
+//   resumes at the SAME position inside the window without dropping queued
+//   output or regenerating the answer, a bounded number of false-start
+//   pauses per round keeps sustained noise/echo from pause-cycling, and the
+//   candidate's identity stays open past the pause for a slow real partial.
+//   Capture keeps streaming during the pause so the pre-roll / first
+//   syllable is retained.
 // - Mute stops physical mic collection; no hidden capture, no auto-submit of
 //   a muted draft, and answer playback stays available.
 // - Background/lock/interruption/route loss pause the session and cancel the
@@ -48,6 +57,25 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         var endpointIncomplete: Double = 1.6
         var bargeSuspect: Double = 0.18
         var bargeClear: Double = 0.25
+        /// HARD upper bound on ONE tentative barge-in pause (product
+        /// decision 2026-10-25): without a valid confirmation the output
+        /// MUST resume from the original playback position within this
+        /// window. Never a stop/flush — the queue and the answer survive.
+        var bargeCandidateWindow: Double = 1.2
+        /// How long the audio candidate's confirmation IDENTITY stays open
+        /// after its suspect edge (measured from the edge, so it extends
+        /// past the pause bound). Sized generously because the 1.2 s bound
+        /// is a maximum PAUSE, not an ASR deadline: a genuine Whisper-class
+        /// partial slower than the pause must still be able to confirm.
+        /// After the window closes only a NEW suspect edge can re-open
+        /// confirmation — late text can never hijack a stale candidate.
+        var bargeConfirmationWindow: Double = 4.0
+        /// Consecutive unconfirmed barge pauses allowed for one round before
+        /// further candidates stop pausing the output (bounded so sustained
+        /// noise/echo can never enter endless pause cycles). Fresh valid ASR
+        /// can still confirm and cancel while suppressed — natural
+        /// interruption never depends on a tentative pause existing.
+        var maxBargeFalseStartPauses: Int = 2
         var preparationWatchdog: Double = 25
         var drainWatchdog: Double = 20
         var maxQueuedSeconds: Double = 45
@@ -189,6 +217,22 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         var endRoundAudioReceived = false
         var roundTextCompletedEmitted = false
         var outputPausedByBarge = false
+        /// The staged draft when the CURRENT barge audio candidate opened.
+        /// Confirmation requires text genuinely newer than this snapshot —
+        /// pre-candidate (and therefore stale/echo) text alone never
+        /// cancels the answer (settled 2026-10-25).
+        var bargeCandidateSnapshot = ""
+        /// True from a suspect edge until the bounded confirmation-identity
+        /// window closes. The tentative PAUSE is `bargeCandidateWindow`;
+        /// confirmation may still arrive until `bargeConfirmationWindow` so
+        /// a slow genuine utterance is not made unusable by the pause bound.
+        var bargeCandidatePending = false
+        var bargeCandidateTimer: (any VoiceConversationScheduled)?
+        var bargeCandidateFreshTimer: (any VoiceConversationScheduled)?
+        /// Consecutive tentative barge pauses this round has already paid
+        /// for without confirmation. Past `maxBargeFalseStartPauses` new
+        /// candidates stop pausing (never cycle); confirmation still works.
+        var bargeFalseStartStrikes = 0
         var appPaused = false
         var outputStoppedByApp = false
         var roundStartedEmitted = false
@@ -238,7 +282,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     private var rawTranscript = ""
     private var transcriptBaseline = ""
     /// The exact text handed to the driving seam on the last submit; lets a
-    /// pre-launch failure re-stage the user's recognized words.
+    /// pre-launch failure re-stage the user's recognized words, and anchors
+    /// the ONE stale-provenance rule of the barge arbiter: text equal to or
+    /// the tail of the CURRENT round's own submitted utterance is
+    /// indistinguishable from a late final of that utterance, so it can
+    /// never auto-cancel this answer (settled 2026-10-25). Never a history:
+    /// the same words stay fully usable in every later round.
     private var lastSubmittedText = ""
     /// Text kept across a manual pause; prepended to the first partial of the
     /// rebuilt transcription session so the pending utterance completes.
@@ -668,11 +717,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             endpointTimer?.cancel(); endpointTimer = nil
             if suspectingSpeech {
                 suspectingSpeech = false
-                if let r = round, r.outputPausedByBarge {
-                    round?.outputPausedByBarge = false
-                    stack?.resumePlayback()
-                    speechContinuation.yield(.outputResumed(reason: .falseStart))
-                    recheckPlaybackProgress()
+                if round?.outputPausedByBarge == true {
+                    endBargePause(reason: "muted")
                 }
             }
         } else {
@@ -900,37 +946,140 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         let edge = bargeGate.process(level)
         switch edge {
         case .suspectStarted:
-            guard roundActive, allowBargeIn else { return }
+            guard roundActive, allowBargeIn, let r = round else { return }
             suspectingSpeech = true
-            report("bargeSuspect")
-            if let r = round, !r.outputPausedByBarge, !r.appPaused {
-                round?.outputPausedByBarge = true
-                // Frames rendered during a pause are silence, not effect tail
-                // progress: re-anchor the drain baseline on resume.
-                round?.outputDrainBaseline = nil
-                stack?.pausePlayback()
-                speechContinuation.yield(.outputPaused(reason: .bargeIn))
+            // Open (or REFRESH) the audio candidate identity. A re-edge
+            // re-snapshots the current draft, so a partial that landed
+            // between edges becomes the baseline for "new" text instead of
+            // being frozen into a stale candidate forever.
+            openBargeCandidate(current: r)
+            let mayPause = r.bargeFalseStartStrikes < timing.maxBargeFalseStartPauses
+            report("bargeSuspect",
+                   "pause=\(mayPause && !r.appPaused && !r.outputPausedByBarge ? 1 : 0) strikes=\(r.bargeFalseStartStrikes)")
+            guard mayPause, !r.appPaused, !r.outputPausedByBarge else { return }
+            // Frames rendered during a pause are silence, not effect tail
+            // progress: re-anchor the drain baseline on resume.
+            round?.outputPausedByBarge = true
+            round?.outputDrainBaseline = nil
+            stack?.pausePlayback()
+            speechContinuation.yield(.outputPaused(reason: .bargeIn))
+            // HARD pause bound: without a valid confirmation the output
+            // resumes from the SAME position inside the window — never a
+            // stop, never a discard of queued units, never a regeneration.
+            let token = r.token
+            round?.bargeCandidateTimer = clock.schedule(after: timing.bargeCandidateWindow) { [weak self] in
+                self?.bargePauseWindowFired(token: token)
             }
         case .cleared:
             guard suspectingSpeech else { return }
             suspectingSpeech = false
-            guard let r = round else { return }
-            if r.outputPausedByBarge {
-                round?.outputPausedByBarge = false
-                stack?.resumePlayback()
-                speechContinuation.yield(.outputResumed(reason: .falseStart))
-                report("bargeFalseStart")
-                recheckPlaybackProgress()
+            if round?.outputPausedByBarge == true {
+                endBargePause(reason: "silenceCleared")
             }
-            // A candidate with no valid turn is noise: drop it so stale text
-            // never becomes a draft.
-            if !VoiceConversationTurnValidity.isValidTurn(stagedTranscript) {
-                stagedTranscript = ""
-                transcriptBaseline = rawTranscript
-            }
+            // A candidate with no valid turn is noise: drop hesitation
+            // residue so stale text never becomes a draft. Genuinely new
+            // valid text SURVIVES the cleared pause — a slow real partial
+            // that arrives next still confirms inside the identity window;
+            // after the window, genuinely new words remain the user's
+            // staged utterance for the endpoint after the round, while
+            // stale re-accumulations and played-output mirrors are fenced
+            // at staging and can never become that draft.
+            dropUnconfirmedBargeText()
         case .none:
             break
         }
+    }
+
+    // MARK: - Barge-in candidate bookkeeping (2026-10-25 conservative rules)
+
+    /// Opens or refreshes the candidate identity for the CURRENT round:
+    /// snapshot the draft as it stands, and (re-)arm the bounded
+    /// confirmation-identity timer. The PAUSE bound is armed separately and
+    /// only around an actual tentative pause.
+    private func openBargeCandidate(current r: Round) {
+        round?.bargeCandidateSnapshot = stagedTranscript
+        round?.bargeCandidatePending = true
+        round?.bargeCandidateFreshTimer?.cancel()
+        let token = r.token
+        round?.bargeCandidateFreshTimer = clock.schedule(after: timing.bargeConfirmationWindow) { [weak self] in
+            self?.bargeCandidateFreshnessExpired(token: token)
+        }
+    }
+
+    /// The 1.2 s PAUSE bound fired with no valid confirmation: resume from
+    /// the exact position. The candidate IDENTITY stays open until its own
+    /// bounded freshness window, so a Whisper-slow genuine partial arriving
+    /// after the resume can still cancel the answer.
+    private func bargePauseWindowFired(token: VoiceConversationRoundToken) {
+        guard let r = round, r.token == token, r.outputPausedByBarge else { return }
+        endBargePause(reason: "windowExpired")
+    }
+
+    /// The confirmation-identity window closed: from now on only a NEW
+    /// suspect edge can open confirmation. Late text alone can never
+    /// hijack this superseded candidate — including text arriving while a
+    /// continuous speech run keeps the gate internally suspecting with no
+    /// re-edge possible (the published tentative state is exactly the
+    /// candidate's own lifetime).
+    private func bargeCandidateFreshnessExpired(token: VoiceConversationRoundToken) {
+        guard let r = round, r.token == token, r.bargeCandidatePending else { return }
+        round?.bargeCandidatePending = false
+        round?.bargeCandidateSnapshot = ""
+        round?.bargeCandidateFreshTimer = nil
+        suspectingSpeech = false
+        report("bargeCandidateExpired", "chars=\(stagedTranscript.count)")
+        // Backstop: an identity window can outlive a pause only because the
+        // pause already ended; if it somehow did not, end it now — a pause
+        // never survives its own candidate.
+        if r.outputPausedByBarge {
+            endBargePause(reason: "freshnessBackstop")
+        }
+        dropUnconfirmedBargeText()
+    }
+
+    /// Ends the TENTATIVE PAUSE part of the current barge candidate without
+    /// a valid confirmation. Position-preserving by contract: `resumePlayback`
+    /// continues at the SAME offset (never `stopPlayback`, never a queue
+    /// flush, never a cancel), one bounded false-start strike is counted,
+    /// and the output ledger keeps every queued unit.
+    private func endBargePause(reason: String) {
+        round?.bargeCandidateTimer?.cancel()
+        round?.bargeCandidateTimer = nil
+        guard let r = round, r.outputPausedByBarge else { return }
+        round?.outputPausedByBarge = false
+        stack?.resumePlayback()
+        speechContinuation.yield(.outputResumed(reason: .falseStart))
+        round?.bargeFalseStartStrikes += 1
+        report("bargeFalseStart", "reason=\(reason) strikes=\(r.bargeFalseStartStrikes + 1)")
+        recheckPlaybackProgress()
+    }
+
+    /// Hesitation/noise-only residue left by an unconfirmed candidate is
+    /// dropped so it never becomes a draft; a real (valid) partially
+    /// recognized utterance is KEPT — the 1.2 s bound is a maximum pause,
+    /// never a deadline that discards genuine slowly arriving ASR.
+    private func dropUnconfirmedBargeText() {
+        guard !stagedTranscript.isEmpty else { return }
+        guard !VoiceConversationTurnValidity.isValidTurn(stagedTranscript) else { return }
+        discardStagedText()
+    }
+
+    /// Clears the draft AND advances the baseline past the backend's current
+    /// accumulation, so the same words cannot re-stage and confirm later.
+    private func discardStagedText() {
+        stagedTranscript = ""
+        transcriptBaseline = rawTranscript
+    }
+
+    /// The speech that ACTUALLY reached the speaker for this round: every
+    /// sentence completed plus the unit currently playing. This — never the
+    /// answer's unspoken tail — is the only echo reference.
+    private func playedEchoReference(_ r: Round) -> String {
+        let spoken = r.completedSpokenCache
+        let playing = currentSpokenText
+        if playing.isEmpty { return spoken }
+        if !spoken.isEmpty, spoken.contains(playing) { return spoken }
+        return [spoken, playing].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private func consumeTranscript(_ raw: String) {
@@ -958,15 +1107,39 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             endpointTimer?.cancel(); endpointTimer = nil
             return
         }
-        if round != nil {
-            // Barge-in confirmation requires persistence AND a valid ASR turn.
-            if suspectingSpeech, VoiceConversationTurnValidity.isValidTurn(stagedTranscript) {
-                if let r = round {
+        if let r = round {
+            // The arbiter runs ONLY inside an open audio candidate (the
+            // tentative pause or its bounded confirmation-identity window).
+            // With no candidate, staging behaves exactly like the settled
+            // pre-repair kernel: nothing is dropped or suppressed on string
+            // identity alone — provenance cannot be claimed from text.
+            // Confirmation additionally requires text genuinely newer than
+            // the candidate's snapshot, so slow real ASR confirms while its
+            // identity window is open, and superseded candidates can never
+            // be hijacked by late arrivals (2026-10-25 rules).
+            if suspectingSpeech || r.bargeCandidatePending {
+                let decision = VoiceConversationBargeArbiter.decide(
+                    staged: stagedTranscript,
+                    openedWith: r.bargeCandidateSnapshot,
+                    submitted: lastSubmittedText,
+                    playedReference: playedEchoReference(r)
+                )
+                switch decision {
+                case .confirm:
                     report("bargeConfirmed", "chars=\(stagedTranscript.count)")
+                    // Close the candidate synchronously: a superseded
+                    // candidate never leaves live timers behind.
+                    r.bargeCandidateTimer?.cancel()
+                    r.bargeCandidateFreshTimer?.cancel()
+                    round?.bargeCandidateTimer = nil
+                    round?.bargeCandidateFreshTimer = nil
+                    round?.bargeCandidatePending = false
                     let token = r.token
                     Task { [weak self] in
                         guard let self else { return }
-                        self.suspectingSpeech = false
+                        if self.round?.token == token {
+                            self.suspectingSpeech = false
+                        }
                         await self.finishRound(token: token, reason: .bargeIn, drained: false)
                         guard self.state == .waitingModel || self.state == .answering else { return }
                         self.resumeListeningAfterRound(roundToken: token)
@@ -975,7 +1148,48 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
                             self.scheduleEndpoint(for: self.stagedTranscript)
                         }
                     }
+                case .rejectedStaleASR:
+                    // Text equal to (or the tail of) THIS round's own
+                    // submitted words: ambiguous between a late final of
+                    // that utterance and an exact user repeat — the
+                    // ambiguous direction is the reported silent
+                    // self-interruption. Bounded closure (primary-settled
+                    // 2026-10-25): it never auto-cancels AND it is
+                    // discarded, so it can never be auto-resent as a fresh
+                    // question when the round finishes naturally (the
+                    // silent self-reply loop). Genuinely new words are a
+                    // different shape and stage/confirm normally; no
+                    // cross-round history is kept.
+                    report("bargeStaleSuppressed", "chars=\(stagedTranscript.count)")
+                    discardStagedText()
+                case .rejectedOutputEcho:
+                    // A mirror of the speech that actually reached the
+                    // speaker is echo, not intent: it can neither cancel
+                    // the answer nor later re-ask it as a fresh question,
+                    // so the draft is fenced past this accumulation.
+                    report("bargeEchoSuppressed", "chars=\(stagedTranscript.count)")
+                    discardStagedText()
+                case .rejectedInvalid, .rejectedNotFresh:
+                    break
                 }
+            } else if VoiceConversationBargeArbiter.matchesCurrentSubmissionTail(
+                stagedTranscript, submitted: lastSubmittedText
+            ) {
+                // No audio candidate, but the answer is still playing: a late
+                // re-accumulation of THIS round's own question must not
+                // survive as a draft that the natural endpoint would auto-send
+                // (the silent self-reply loop closure). Current round only —
+                // no cross-round history is consulted.
+                report("staleASRFenced", "chars=\(stagedTranscript.count)")
+                discardStagedText()
+            } else if VoiceConversationBargeArbiter.isOutputEcho(
+                stagedTranscript, playedReference: playedEchoReference(r)
+            ) {
+                // A mirror of the speech that actually played is echo, never
+                // a fresh question: it cannot become a draft mid-answer
+                // (short mirrors like a two-character "好的" included).
+                report("bargeEchoSuppressed", "chars=\(stagedTranscript.count)")
+                discardStagedText()
             }
             return
         }
@@ -1490,6 +1704,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         round = nil
         currentRound = nil
         r.drainWatchdog?.cancel()
+        // A finished/cancelled round's barge candidate is superseded with
+        // it: both timers fenced dead, no late expiry can touch the next
+        // round's state or emit stray events, and the published tentative
+        // state cannot outlive the round it belonged to.
+        r.bargeCandidateTimer?.cancel()
+        r.bargeCandidateFreshTimer?.cancel()
+        suspectingSpeech = false
         playingUnitProgress = nil
         currentSpokenText = ""
         outputLevel = 0

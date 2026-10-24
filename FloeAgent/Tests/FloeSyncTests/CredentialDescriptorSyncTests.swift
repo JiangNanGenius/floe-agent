@@ -96,15 +96,19 @@ struct CredentialDescriptorSyncTests {
             credentialStore: credentials
         )
 
-        // Existing seam: credentialSyncStatus() reads the device-local sync
-        // switches from standard defaults. Restore whatever the host had.
-        let previousPreferences = SyncControlPreferences.load()
-        defer { previousPreferences.save() }
+        // Isolated preference suite through the engine's test seam: the
+        // status path reads the device-local sync switches from here, so
+        // this test never mutates real App settings and cannot race other
+        // suites through `UserDefaults.standard`.
+        let preferencesSuite = "org.floeagent.tests.descriptor-sync.\(UUID().uuidString)"
+        let preferences = try #require(UserDefaults(suiteName: preferencesSuite))
+        defer { preferences.removePersistentDomain(forName: preferencesSuite) }
         SyncControlPreferences(
             overallEnabled: true,
             configurationEnabled: true,
             savedCredentialsEnabled: true
-        ).save()
+        ).save(to: preferences)
+        await engine.replacePreferencesDefaultsForTesting(suite: preferencesSuite)
 
         let generatedKey = CredentialRecord(
             kind: .sshPrivateKey, owner: .vault, label: "Floe-generated host key",
