@@ -14,15 +14,16 @@ cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
 G01 and G02 code-stage handoff and cleanup are closed. G03-R1 execution
 qualification and G03-R2 environment, jobs and workspace source integration
 are complete. G03-R3 representative App qualification, Alpha9 delivery and round
-cleanup are now closed. G04-R1 file/IDE/Git/browser source integration is undergoing
-grouped native compilation. Its implementation packages have been handed off; a new
-G04 APK has not been qualified or published. Current
+cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks are
+complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
+has been pushed and independently read back. G04-R2 handles representative App
+integration and the next stage APK, which has not yet been published. Current
 public status and limits are recorded in
-[the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
-shown as being prepared are not implemented product capabilities. Android has no
+[the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
+still marked as being prepared remain unavailable. Android has no
 local LLM backend.
 
-## G04 source integration (in progress)
+## G04-R1 code and component qualification
 
 The current code batch connects the ordinary task workspace to file operations,
 SAF providers, WebDAV/SMB copies, the embedded editor, existing Linux terminal/LSP,
@@ -38,11 +39,23 @@ App Kotlin and resources have now compiled, with the new dependency locks verifi
 The original App host run passed 26 of 32 tests; its six failures were preserved.
 After one repair batch, all 25 source/network checks passed (including a new
 retired-root race regression); the eight unchanged terminal passes were reused.
-Native test targets compiled, but their first behavior run still failed. Core/Git
-repairs and a frozen-input Browser private patch remain in progress. Native
-production changed after Core09, so a final current-source Android link is pending. Rendered App/device behavior and final
-visual parity remain separate acceptance steps. The existing Alpha9 tag and APK
-stay immutable; no paid App-provider calls were used for this batch.
+Original native failures are preserved. The final file/source/network cohort
+passed 35 tests (network 17, workspace 10, source host 8), including a final
+integration fix that reads mailbox readiness and epoch under one lock. Browser
+67, Git 81, core Swift Testing 104, LSP 25 and terminal-domain 8 checks passed in
+their relevant source cohorts. Current-source Core10 completed actual Android
+ARM64 objects and linking in 96.878 seconds with 2,211 unchanged input entries;
+its library and symbols were saved, all load segments are 16 KiB aligned and all
+180 JNI-required Floe imports resolve. Unchanged JNI and the separate Linux
+authority were reused after source and binary identity checks.
+
+Finished host build outputs and obsolete Core09 copies were removed after
+exporting evidence. The current component, symbols, G03 rollback and caches
+needed for the next APK remain. The earlier isolated archive probe retained one
+IDE Chinese-catalog environment failure; actual App Chinese copy is an explicit
+R2 check. Rendered App/device behavior and visual parity require that next stage.
+The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
+
 
 ## Android Alpha
 
