@@ -66,7 +66,6 @@ final class ContentUpdateCenter: ObservableObject {
     // MARK: - Published UI state
 
     @Published private(set) var installed: [String: InstalledRecord] = [:]
-    @Published private(set) var pinnedVersions: [String: String] = [:]
     @Published private(set) var available: [String: AvailableContent] = [:]
     @Published private(set) var isChecking = false
     @Published private(set) var installingIDs: Set<String> = []
@@ -275,6 +274,13 @@ final class ContentUpdateCenter: ObservableObject {
         }
         do {
             var current = await store.currentState()
+            do { current = try await store.removeVersionPins() }
+            catch {
+                // A policy migration write failure must not hide already
+                // installed content. Keep its real state visible and retry
+                // pin retirement before any later update check/commit.
+                errorMessage = Self.describe(error)
+            }
             current = try await applyBuiltInBaselineTakeover(current)
             await apply(current)
             storageAvailable = true
@@ -298,9 +304,15 @@ final class ContentUpdateCenter: ObservableObject {
     }
 
     private func apply(_ next: ContentUpdateState) async {
-        state = next
-        installed = next.entries.mapValues { stored in
-            let previous = next.history[stored.entry.id]?.first
+        guard let store else { return }
+        let actions = await store.actionSnapshot(appVersion: appVersion,
+            builtInBaselines: Self.builtInBaselines, domainValidate: Self.domainValidator)
+        // Another content action may finish while the actor is validating
+        // retained bytes. Never replace a newer mirrored revision with this one.
+        guard actions.state.revision >= (state?.revision ?? 0), actions.state.revision >= next.revision else { return }
+        state = actions.state
+        installed = actions.state.entries.mapValues { stored in
+            let previous = actions.rollbackTargets[stored.entry.id]
             return InstalledRecord(
                 id: stored.entry.id,
                 kind: stored.entry.kind.rawValue,
@@ -313,7 +325,6 @@ final class ContentUpdateCenter: ObservableObject {
                 previousDigest: previous?.entry.contentDigest
             )
         }
-        pinnedVersions = next.pinned
         await reloadCaches()
     }
 
@@ -383,6 +394,8 @@ final class ContentUpdateCenter: ObservableObject {
         errorMessage = nil
         defer { isChecking = false }
         do {
+            // Retry migration if a previous launch could not persist it.
+            _ = try await store.removeVersionPins()
             let (feed, commit) = try await fetchVerifiedFeed(store: store)
             let plan = try await store.plan(feed: feed, appVersion: appVersion)
             feedSnapshot = FeedSnapshot(commit: commit, feed: feed, plannedByID: decisions(plan))
@@ -430,6 +443,8 @@ final class ContentUpdateCenter: ObservableObject {
         for id in dependencyOrder(snapshot) {
             guard let decision = snapshot.plannedByID[id], decision.isUpdate else { continue }
             guard let entry = snapshot.feed.entries.first(where: { $0.id == id }) else { continue }
+            guard ContentUpdateActionPolicy.automaticUpdateAllowed(id: id, version: entry.version,
+                state: await store.currentState()) else { continue }
             if entry.containsScripts {
                 guard autoInstallScriptedSkills else { continue }
             } else {
@@ -441,7 +456,7 @@ final class ContentUpdateCenter: ObservableObject {
                 onWiFi: onWiFi
             ) else { continue }
             do {
-                try await commitEntries([id], snapshot: snapshot, store: store)
+                try await commitEntries([id], snapshot: snapshot, store: store, automatic: true)
                 FloeLogger(category: .app).info("contentAutoUpdated id=\(id) version=\(entry.version)")
             } catch {
                 FloeLogger(category: .app).warning(
@@ -508,14 +523,17 @@ final class ContentUpdateCenter: ObservableObject {
     private func commitEntries(
         _ ids: [String],
         snapshot: FeedSnapshot,
-        store: ContentUpdateStore
+        store: ContentUpdateStore,
+        automatic: Bool = false
     ) async throws {
         for id in ids {
             guard !installInFlight.contains(id) else {
                 throw ContentUpdateStoreError.conflict("already installing \(id)")
             }
         }
+        _ = try await store.removeVersionPins()
         let plan = try await store.plan(feed: snapshot.feed, appVersion: appVersion)
+        let planningState = await store.currentState()
         var needed: [String] = []
         var visited: Set<String> = []
         var batchBytes = 0
@@ -530,6 +548,10 @@ final class ContentUpdateCenter: ObservableObject {
                 throw ContentUpdateStoreError.conflict("blocked \(id)")
             }
             if item.decision.isUpdate {
+                if automatic && !ContentUpdateActionPolicy.automaticUpdateAllowed(id: id,
+                    version: item.entry.version, state: planningState) {
+                    throw ContentUpdateStoreError.conflict("automatic dependency would undo rollback for \(id)")
+                }
                 needed.append(id)
             }
         }
@@ -551,12 +573,14 @@ final class ContentUpdateCenter: ObservableObject {
             }
             batch.append(ContentUpdateStore.BatchItem(entry: item.entry, zip: zip))
         }
-        let next = try await store.commit(
-            batch,
-            appVersion: appVersion,
-            allowedCapabilities: Self.allowedCapabilities,
-            domainValidate: Self.domainValidator
-        )
+        let next: ContentUpdateState
+        if automatic {
+            next = try await store.commitAutomatically(batch, appVersion: appVersion,
+                allowedCapabilities: Self.allowedCapabilities, domainValidate: Self.domainValidator)
+        } else {
+            next = try await store.commit(batch, appVersion: appVersion,
+                allowedCapabilities: Self.allowedCapabilities, domainValidate: Self.domainValidator)
+        }
         await apply(next)
         let refreshed = try await store.plan(feed: snapshot.feed, appVersion: appVersion)
         feedSnapshot = FeedSnapshot(
@@ -572,8 +596,22 @@ final class ContentUpdateCenter: ObservableObject {
             return
         }
         await performInstall(id: id) {
-            let next = try await store.rollback(id: id, appVersion: self.appVersion)
-            await self.apply(next)
+            let actions = await store.actionSnapshot(appVersion: self.appVersion,
+                builtInBaselines: Self.builtInBaselines, domainValidate: Self.domainValidator)
+            guard let target = actions.rollbackTargets[id] else {
+                await self.apply(actions.state)
+                throw ContentUpdateStoreError.conflict("no usable retained version for \(id)")
+            }
+            _ = try await store.rollback(id: id, appVersion: self.appVersion, toVersion: target.entry.version)
+            // The old store pins explicit restores. No hidden pin survives
+            // this UI action now that the pin control has been retired.
+            do {
+                let next = try await store.removeVersionPins()
+                await self.apply(next)
+            } catch {
+                await self.apply(await store.currentState())
+                throw error
+            }
             if let snapshot = self.feedSnapshot,
                let refreshed = try? await store.plan(feed: snapshot.feed, appVersion: self.appVersion) {
                 self.available = refreshed.items.mapValues {
@@ -583,16 +621,8 @@ final class ContentUpdateCenter: ObservableObject {
         }
     }
 
-    func setPinned(_ id: String, version: String?) {
-        guard let store else { return }
-        Task {
-            do {
-                let next = try await store.setPinned(id: id, version: version)
-                await self.apply(next)
-            } catch {
-                self.errorMessage = Self.describe(error)
-            }
-        }
+    func canRollback(_ id: String) -> Bool {
+        installed[id]?.previousVersion != nil && !installingIDs.contains(id)
     }
 
     // MARK: - Provider catalog (signed package only)

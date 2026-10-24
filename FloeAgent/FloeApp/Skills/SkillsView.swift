@@ -11,6 +11,7 @@ import UniformTypeIdentifiers
 struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @ObservedObject var center: SkillsCenter
+    @ObservedObject private var updates: SkillUpdateCoordinator
     @ObservedObject private var mcpCenter: MCPSettingsCenter
     @State private var showingInstalled = false
     @State private var searchText = ""
@@ -26,6 +27,7 @@ struct SkillsView: View {
 
     init(center: SkillsCenter, mcpCenter: MCPSettingsCenter = .shared) {
         self.center = center
+        self.updates = center.updates
         self.mcpCenter = mcpCenter
     }
 
@@ -69,7 +71,8 @@ struct SkillsView: View {
                             Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
                             if let installed = center.installed.first(where: { $0.id == definition.id }) {
                                 if let version = center.availableVersion(for: installed) {
-                                    Button(FloeL10n.l("skills.skills_view.update_to_v", version)) { updatingSkill = installed }
+                                    Button(FloeL10n.l("skills.skills_view.update_to_v", version)) { center.startUpdating(installed) }
+                                        .disabled(!center.canCheckUpdates)
                                 } else if installed.status == "enabled" {
                                     Label("plugins.ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
                                 } else {
@@ -128,37 +131,21 @@ struct SkillsView: View {
                                     }
                                 }
                                 Spacer()
+                                updateAction(for: skill)
                                 Toggle("skills.enabled", isOn: Binding(
                                     get: { skill.status == "enabled" },
                                     set: { value in Task { await center.setEnabled(value, skill: skill) } }
-                                )).labelsHidden()
+                                )).labelsHidden().frame(minWidth: 44, minHeight: 44)
+                                    .disabled(center.isWorking || updates.isRunning)
                             }
                             if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
                                 Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                             }
-                            switch skillUpdateRowAction(
-                                skillID: skill.id,
-                                availableVersion: center.availableVersion(for: skill),
-                                origin: center.origin(of: skill),
-                                sourceURL: skill.sourceURL,
-                                hubSkillIDs: OfficialSkillHub.skillIDs,
-                                hasGitHubUpgradeSource: center.lastGitHubSource(skillID: skill.id) != nil
-                            ) {
-                            case .update(let version):
-                                Button {
-                                    updatingSkill = skill
-                                } label: {
-                                    Label(FloeL10n.l("skills.skills_view.update_to_v", version), systemImage: "arrow.down.circle")
-                                }.buttonStyle(.borderless)
-                            case .check:
-                                Button {
-                                    updatingSkill = skill
-                                } label: {
-                                    Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath")
-                                }.buttonStyle(.borderless).tint(.secondary)
-                            case .noAction:
-                                EmptyView()
-                            }
+                            updateStatus(for: skill)
+                        }
+                        .contextMenu {
+                            Button("skills.update.details", systemImage: "info.circle") { updatingSkill = skill }
+                                .disabled(updates.isRunning || center.isWorking)
                         }
                         .swipeActions {
                             if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
@@ -175,13 +162,23 @@ struct SkillsView: View {
                 Text(error).foregroundStyle(.red).font(.footnote)
             }
         }
-        .overlay { if center.isWorking { ProgressView().controlSize(.large) } }
+        .overlay { if center.isWorking && !updates.isRunning { ProgressView().controlSize(.large) } }
         .navigationTitle("plugins.title")
         .searchable(text: $searchText, prompt: "plugins.search")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button("skills.finder", systemImage: "magnifyingglass") { showingFinder = true }
-                Button("skills.creator", systemImage: "plus") { showingCreator = true }
+                Button { center.startCheckingUpdates() } label: {
+                    if updates.isRunning { ProgressView() }
+                    else { Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath") }
+                }
+                    .accessibilityLabel(Text("skills.update.check"))
+                    .disabled(!center.canCheckUpdates)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("skills.updates.check_all")
+                Button("skills.update.all", systemImage: "arrow.down.circle") { center.startUpdatingAll() }
+                    .disabled(!center.canUpdateAll)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityIdentifier("skills.updates.update_all")
             }
         }
         .fileImporter(
@@ -194,7 +191,10 @@ struct SkillsView: View {
             }
         }
         .task { await center.load(); await center.refreshOfficialCatalog() }
-        .refreshable { await center.load(); await center.refreshOfficialCatalog(force: true) }
+        .refreshable { await center.load(); center.startCheckingUpdates() }
+        .onChange(of: updates.reviewSkillID) { _, id in
+            if let id, let skill = center.installed.first(where: { $0.id == id }) { updatingSkill = skill }
+        }
         .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
         .sheet(isPresented: $showingFinder) { SkillFinderSheet(center: center) }
         .sheet(item: $updatingSkill) { skill in SkillGitHubUpgradeSheet(center: center, skill: skill) }
@@ -211,6 +211,47 @@ struct SkillsView: View {
             }
         }
     }
+    @ViewBuilder
+    private func updateAction(for skill: PersistedSkill) -> some View {
+        let state = center.updateState(for: skill)
+        if state?.phase == .checking || state?.phase == .updating {
+            ProgressView().frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel(FloeL10n.l(state?.phase == .checking ? "skills.update.checking" : "skills.update.updating"))
+        } else if state?.phase == .reviewRequired {
+            Button("skills.update.review") {
+                if center.pendingUpgrade?.snapshot.package.manifest.id == skill.id { updatingSkill = skill }
+                else { center.startUpdating(skill, forReview: true) }
+            }
+            .buttonStyle(.borderless)
+            .frame(minWidth: 44, minHeight: 44)
+            .disabled(!center.canCheckUpdates && center.pendingUpgrade?.snapshot.package.manifest.id != skill.id)
+            .accessibilityIdentifier("skills.updates.review.\(skill.id)")
+        } else if center.availableVersion(for: skill) != nil {
+            Button("skills.update.now") { center.startUpdating(skill) }
+                .buttonStyle(.borderless)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(!center.canCheckUpdates)
+                .accessibilityIdentifier("skills.updates.update.\(skill.id)")
+        } else if state?.phase == .failed {
+            Button("action.retry") { center.retryUpdateCheck(skill) }
+                .buttonStyle(.borderless)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(!center.canCheckUpdates)
+        }
+    }
+
+    @ViewBuilder
+    private func updateStatus(for skill: PersistedSkill) -> some View {
+        if let state = center.updateState(for: skill) {
+            if state.phase == .upToDate {
+                Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if let error = state.error {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
+        }
+    }
+
     /// Imports a traditional skill folder (SKILL.md, optional floe.json,
     /// scripts/references/assets/agents). The source directory is copied to a
     /// temporary location; installation never executes scripts and never
@@ -231,10 +272,9 @@ struct SkillsView: View {
     }
 }
 
-/// The single truthful action row an installed skill may show. Only a
-/// genuinely newer signature-verified version offers an update; a known
-/// remote source without proven newer content offers the localized check;
-/// rows with no remote to check offer nothing.
+/// Existing origin/readiness classifier retained for presentation tests.
+/// `.check` means checkable by the global action; the row does not render a
+/// per-plugin Check button.
 enum SkillUpdateRowAction: Equatable, Sendable {
     /// The signed catalog proves a newer official version for this row.
     case update(toVersion: String)
@@ -290,24 +330,19 @@ private struct SkillGitHubUpgradeSheet: View {
     @ObservedObject var center: SkillsCenter
     let skill: PersistedSkill
     @Environment(\.dismiss) private var dismiss
-    @State private var owner = ""
-    @State private var repository = ""
-    @State private var ref = "main"
-    @State private var path = "SKILL.md"
-    @State private var validationError: String?
     @State private var confirmingRollback = false
-    /// Drives the auto official-hub check and hides the manual source fields.
-    /// Uses the same trusted-origin binding as the hub badge: an official ID
-    /// alone no longer claims an official update for an unprovable row. The
-    /// update transaction itself stays reserved-ID verified in SkillsCenter.
-    private var isOfficial: Bool { center.origin(of: skill) == .official }
+    /// A detail sheet can only review its own row's staged candidate.
+    private var candidate: SkillUpgradeCandidate? {
+        guard center.pendingUpgrade?.snapshot.package.manifest.id == skill.id else { return nil }
+        return center.pendingUpgrade
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
                     LabeledContent("skills.update.installed", value: "v\(skill.version)")
-                    if let candidate = center.pendingUpgrade {
+                    if let candidate {
                         LabeledContent("skills.update.available", value: "v\(candidate.snapshot.package.manifest.version)")
                         if !candidate.addedCapabilities.isEmpty || !candidate.addedTools.isEmpty {
                             Label("skills.skills_view.this_update_requires_new_access_permissions", systemImage: "hand.raised")
@@ -322,29 +357,14 @@ private struct SkillGitHubUpgradeSheet: View {
                                 if center.errorMessage == nil { dismiss() }
                             }
                         }.disabled(candidate.changedFiles.isEmpty)
-                    } else {
-                        Button("skills.update.check") { checkForUpdate() }
-                        if center.upgradeIsUpToDate {
-                            // The checked source is not newer than the
-                            // installed version. State it politely with the
-                            // existing localized result; the unchanged
-                            // transaction guard already refused any downgrade.
-                            Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle")
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                        }
+                    } else if center.updateState(for: skill)?.phase == .upToDate {
+                        Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
                 }
                 DisclosureGroup("skills.update.details") {
-                    if !isOfficial {
-                        TextField("Owner", text: $owner)
-                        TextField("Repository", text: $repository)
-                        TextField("Branch / tag / commit", text: $ref)
-                        TextField("SKILL.md or package inventory JSON", text: $path)
-                        Button("skills.update.check") { checkForUpdate() }
-                    }
                     Text(skill.sourceURL ?? "App / local").font(.caption).textSelection(.enabled)
-                    if let candidate = center.pendingUpgrade {
+                    if let candidate {
                         LabeledContent("Commit", value: candidate.commit)
                         if let notes = candidate.releaseNotes[Locale.current.language.languageCode?.identifier == "zh" ? "zh-Hans" : "en"] {
                             Text(notes).font(.callout)
@@ -362,32 +382,18 @@ private struct SkillGitHubUpgradeSheet: View {
                     }
                     Button("skills.update.rollback", role: .destructive) { confirmingRollback = true }
                 }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                if let error = validationError ?? center.errorMessage { Text(error).foregroundStyle(.red) }
+                if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
             }
             .disabled(center.isWorking)
             .overlay { if center.isWorking { ProgressView() } }
             .navigationTitle(skill.name)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { center.cancelUpgrade(); dismiss() }.disabled(center.isWorking) } }
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { if candidate != nil { center.cancelUpgrade() }; dismiss() }.disabled(center.isWorking) } }
             .confirmationDialog("skills.skills_view.restore_previous_content_and_grants", isPresented: $confirmingRollback) {
                 Button("skills.skills_view.roll_back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
             }
             .interactiveDismissDisabled(center.isWorking)
-            .onAppear {
-                if let source = center.lastGitHubSource(skillID: skill.id) {
-                    owner = source.owner; repository = source.repository; ref = source.ref; path = source.path
-                }
-                if isOfficial || !owner.isEmpty { checkForUpdate() }
-            }
-            .onDisappear { if !center.isWorking { center.cancelUpgrade() } }
+            .onDisappear { if !center.isWorking && candidate != nil { center.cancelUpgrade() } }
         }
-    }
-
-    private func checkForUpdate() {
-        do {
-            let source = try isOfficial ? OfficialSkillHub.source() : GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
-            validationError = nil
-            Task { await center.checkGitHubUpgrade(skill: skill, source: source) }
-        } catch { validationError = error.localizedDescription }
     }
 
     private func preview(_ data: Data?) -> String {

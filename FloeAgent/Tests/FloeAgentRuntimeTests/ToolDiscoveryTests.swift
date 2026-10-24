@@ -7,6 +7,30 @@ import FloeModels
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
+    @Test("scoped discovery schemas provide usable guidance without granting executable permissions")
+    func scopedSchemaGuidanceKeepsAuthoritySeparate() throws {
+        let ordinary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: false)
+        let temporary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: true)
+        let task = ToolDiscovery.runtimeDescriptors(scopedConversation: false, publicWebOnly: false)
+        #expect(task.map(\.authorizationIdentity) == [ToolDiscovery.descriptor.authorizationIdentity, ToolDiscovery.listDescriptor.authorizationIdentity])
+        for descriptors in [ordinary, temporary] {
+            #expect(descriptors.map(\.name) == ["tools.search", "tools.list"])
+            #expect(descriptors.map(\.parametersJSON) == task.map(\.parametersJSON))
+            for descriptor in descriptors {
+                #expect(descriptor.riskLabels.isEmpty)
+                #expect(!descriptor.isSideEffecting)
+                #expect(descriptor.effect == .readOnly)
+                #expect(!descriptor.requiresHostScope)
+                #expect(!ChatToolPolicy.isAllowedName(descriptor.name))
+                #expect(!descriptor.toolDescription.contains("skill.search"))
+                #expect(!descriptor.toolDescription.contains("skill.read"))
+            }
+        }
+        #expect(ordinary[0].toolDescription.contains("bound attached files"))
+        #expect(temporary[0].toolDescription.contains("temporary"))
+        #expect(!temporary[0].toolDescription.contains("attached files"))
+    }
+
     @Test func retiredNamesNeverReappearFromPersistedDescriptors() throws {
         let legacy = RetiredExecutionTools.names.flatMap { [$0, $0.replacingOccurrences(of: ".", with: "_")] }
         let offered = (legacy + ["exec.shell"]).map(descriptor)

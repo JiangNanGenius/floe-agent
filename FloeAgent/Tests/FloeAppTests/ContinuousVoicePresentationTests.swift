@@ -71,6 +71,20 @@ struct ContinuousVoicePresentationTests {
         presenter.dismiss(deferred.id)
     }
 
+    @Test func deferredRequestRetainsComposerChoiceWithoutChangingSessionIdentity() {
+        let presenter = ContinuousVoicePresentation()
+        var deferred = request()
+        deferred.preferredModeForNewConversation = .agent
+        #expect(presenter.present(deferred))
+        #expect(presenter.request?.preferredModeForNewConversation == .agent)
+        #expect(presenter.activeConversationID == nil)
+        let created = UUID()
+        presenter.bindConversation(created, for: deferred.id)
+        #expect(presenter.activeConversationID == created)
+        #expect(presenter.request?.preferredModeForNewConversation == .agent)
+        presenter.dismiss(deferred.id)
+    }
+
     @Test func lateDraftAcknowledgementCannotClearANewerReturnedDraft() {
         let presenter = ContinuousVoicePresentation()
         let first = ContinuousVoiceReturnedDraft(windowID: "one", ownerID: UUID(), text: "first", attachments: [])

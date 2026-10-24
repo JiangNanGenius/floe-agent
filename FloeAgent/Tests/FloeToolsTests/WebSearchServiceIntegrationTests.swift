@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import FloeTools
 @testable import FloeExecution
 
 /// Integration-path coverage for the public web search repair.
@@ -794,6 +795,197 @@ extension WebSearchServiceIntegrationTests {
     }
 }
 
+// MARK: - Omitted max_results bounded default and output budget (Volcengine)
+
+extension WebSearchServiceIntegrationTests {
+
+    private func makeWebSearchToolService(
+        _ interface: VolcengineSearchInterface,
+        options: [String: String] = [:]
+    ) -> WebSearchService {
+        makeService([
+            (volcengineProvider(interface, options: options),
+             WebSearchCredential(values: ["apiKey": "bounded-default-key"]))
+        ])
+    }
+
+    private func decodeArguments(_ json: String) throws -> WebSearchTool.Arguments {
+        try JSONDecoder().decode(
+            WebSearchTool.Arguments.self, from: Data(json.utf8)
+        )
+    }
+
+    private func requestBody(of sent: URLRequest) throws -> [String: Any] {
+        try JSONSerialization.jsonObject(
+            with: try XCTUnwrap(Self.bodyData(of: sent))
+        ) as? [String: Any] ?? [:]
+    }
+
+    /// The real public-tool path with `maxResults` omitted (and with an
+    /// explicit JSON null): the Doubao/Agent Plan request must carry the
+    /// bounded default as Count, and the serialized tool result must stay
+    /// valid bounded JSON with exact retained citations even when the
+    /// gateway overreturns twelve long rows.
+    func testWebSearchToolOmittedMaxResultsSendsBoundedDefaultAndBoundedOutput() async throws {
+        for json in [
+            #"{"query":"量子 计算"}"#,
+            #"{"query":"量子 计算","maxResults":null}"#
+        ] {
+            MockURLProtocol.state.reset()
+            MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { _ in
+                .ok(Stubs.volcengineSearchEnvelope(items: 12, snippetCharacters: 900))
+            }
+            let tool = WebSearchTool(service: makeWebSearchToolService(.agentPlan))
+            let output = try await tool.execute(
+                try decodeArguments(json),
+                context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+            )
+
+            // Request side: the omitted default is actually sent as Count.
+            let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+            XCTAssertEqual(sent.url?.absoluteString, "https://open.feedcoopapi.com/search_api/web_search")
+            let body = try requestBody(of: sent)
+            XCTAssertEqual(body["Query"] as? String, "量子 计算")
+            XCTAssertEqual(body["SearchType"] as? String, "web")
+            XCTAssertEqual(body["Count"] as? Int, WebSearchTool.defaultMaxResults)
+
+            // Decode side: the 12-item overreturn is trimmed to the request.
+            // Output side: bounded valid JSON inside the runtime boundary.
+            XCTAssertLessThanOrEqual(output.summary.count, 4_096)
+            let object = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+            )
+            XCTAssertEqual(object["available"] as? Int, WebSearchTool.defaultMaxResults)
+            let entries = try XCTUnwrap(object["results"] as? [[String: Any]])
+            XCTAssertEqual(object["returned"] as? Int, entries.count)
+            XCTAssertLessThanOrEqual(entries.count, WebSearchTool.defaultMaxResults)
+            XCTAssertGreaterThan(entries.count, 0)
+            XCTAssertEqual(object["truncated"] as? Bool, true)
+            for (index, entry) in entries.enumerated() {
+                XCTAssertEqual(entry["url"] as? String, "https://example.com/volc/\(index)")
+                XCTAssertEqual((entry["citation"] as? String)?.count, 12)
+                let snippet = try XCTUnwrap(entry["snippet"] as? String)
+                XCTAssertGreaterThanOrEqual(
+                    snippet.count, WebSearchTool.minimumUsefulSnippetCharacters
+                )
+                XCTAssertEqual(entry["snippetTruncated"] as? Bool, true)
+                XCTAssertEqual(entry["originalSnippetChars"] as? Int, 900)
+            }
+        }
+    }
+
+    /// An explicit valid limit is respected end to end: it reaches the
+    /// gateway as Count and caps the overreturned rows; it is never
+    /// silently replaced by the default.
+    func testWebSearchToolExplicitMaxResultsRespectedAgainstServerOverReturn() async throws {
+        MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { _ in
+            .ok(Stubs.volcengineSearchEnvelope(items: 20, snippetCharacters: 120))
+        }
+        let tool = WebSearchTool(service: makeWebSearchToolService(.doubaoSearch))
+        let output = try await tool.execute(
+            try decodeArguments(#"{"query":"explicit","maxResults":8}"#),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+        let body = try requestBody(of: sent)
+        XCTAssertEqual(body["Count"] as? Int, 8)
+
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        // 20 server rows, capped to the requested 8; the first kept rows
+        // keep the exact gateway order and identities.
+        XCTAssertEqual(object["available"] as? Int, 8)
+        let entries = try XCTUnwrap(object["results"] as? [[String: Any]])
+        XCTAssertLessThanOrEqual(entries.count, 8)
+        XCTAssertEqual(entries.first?["url"] as? String, "https://example.com/volc/0")
+        XCTAssertEqual(object["omittedOversizeURLRows"] as? Int ?? 0, 0)
+        // Validation still rejects out-of-range explicit values.
+        XCTAssertThrowsError(try tool.validate(
+            try decodeArguments(#"{"query":"explicit","maxResults":51}"#)
+        ))
+        XCTAssertNoThrow(try tool.validate(
+            try decodeArguments(#"{"query":"explicit","maxResults":50}"#)
+        ))
+    }
+
+    /// The Agent Plan record that pairs the web options with the reserved
+    /// professional-dataset (DataPro) configuration keeps its EXACT gateway
+    /// envelope: same root keys, same Filter/QueryControl semantics, and no
+    /// DataPro field ever enters the web_search body (the default count only
+    /// lands in Count).
+    func testVolcengineProfessionalDatasetAgentPlanRequestEnvelopeUnchanged() async throws {
+        MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { _ in
+            .ok(Stubs.volcengineSearchEnvelope(items: 3, snippetCharacters: 80))
+        }
+        let service = makeWebSearchToolService(.agentPlan, options: [
+            VolcengineSearchOptions.Key.queryRewrite: "true",
+            VolcengineSearchOptions.Key.authoritativeOnly: "true",
+            VolcengineSearchOptions.Key.dataProEnabled: "true",
+            VolcengineSearchOptions.Key.dataProServerID: UUID().uuidString
+        ])
+        let tool = WebSearchTool(service: service)
+        _ = try await tool.execute(
+            try decodeArguments(#"{"query":"专业数据集 检索","domains":["example.org"],"recencyDays":7}"#),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+
+        let sent = try XCTUnwrap(MockURLProtocol.state.captured.first)
+        XCTAssertEqual(sent.url?.absoluteString, "https://open.feedcoopapi.com/search_api/web_search")
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "Authorization"), "Bearer bounded-default-key")
+        let body = try requestBody(of: sent)
+        XCTAssertEqual(Set(body.keys), ["Query", "SearchType", "Count", "Filter", "QueryControl", "TimeRange"])
+        XCTAssertEqual(body["Query"] as? String, "专业数据集 检索")
+        XCTAssertEqual(body["Count"] as? Int, WebSearchTool.defaultMaxResults)
+        XCTAssertEqual(body["TimeRange"] as? String, "OneWeek")
+        let filter = try XCTUnwrap(body["Filter"] as? [String: Any])
+        XCTAssertEqual(Set(filter.keys), ["AuthInfoLevel", "NeedContent", "NeedUrl", "Sites"])
+        XCTAssertEqual(filter["AuthInfoLevel"] as? Int, 1)
+        XCTAssertEqual(filter["NeedContent"] as? Bool, false)
+        XCTAssertEqual(filter["NeedUrl"] as? Bool, true)
+        XCTAssertEqual(filter["Sites"] as? String, "example.org")
+        let control = try XCTUnwrap(body["QueryControl"] as? [String: Any])
+        XCTAssertEqual(control["QueryRewrite"] as? Bool, true)
+        // DataPro stays app-level MCP wiring: never serialized into the
+        // web_search envelope.
+        let serialized = String(decoding: try XCTUnwrap(Self.bodyData(of: sent)), as: UTF8.self)
+        XCTAssertFalse(serialized.contains("ataPro"))
+        XCTAssertFalse(serialized.contains("ServerID"))
+    }
+
+    /// One gateway row whose Snippet exceeds the parser ceiling still
+    /// reaches the assistant as a valid bounded JSON page that keeps the
+    /// exact citation and a large useful excerpt.
+    func testVolcengineHugeSingleItemToolOutputStaysBoundedValidJSON() async throws {
+        MockURLProtocol.state.stub(host: "open.feedcoopapi.com") { _ in
+            .ok(Stubs.volcengineSearchEnvelope(items: 1, snippetCharacters: 12_000))
+        }
+        let tool = WebSearchTool(service: makeWebSearchToolService(.agentPlan))
+        let output = try await tool.execute(
+            try decodeArguments(#"{"query":"巨型单条"}"#),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        XCTAssertLessThanOrEqual(output.summary.count, 4_096)
+        let object = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any]
+        )
+        let entries = try XCTUnwrap(object["results"] as? [[String: Any]])
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(object["available"] as? Int, 1)
+        XCTAssertEqual(object["returned"] as? Int, 1)
+        XCTAssertEqual(object["omittedResults"] as? Int, 0)
+        let entry = try XCTUnwrap(entries.first)
+        XCTAssertEqual(entry["url"] as? String, "https://example.com/volc/0")
+        // The parser caps the 12_000-character Snippet at its existing
+        // 4_000 ceiling; the tool then sizes it to the payload room.
+        XCTAssertEqual(entry["originalSnippetChars"] as? Int, 4_000)
+        let snippet = try XCTUnwrap(entry["snippet"] as? String)
+        XCTAssertGreaterThanOrEqual(snippet.count, 1_000)
+        XCTAssertEqual(entry["snippetTruncated"] as? Bool, true)
+        XCTAssertEqual(object["truncated"] as? Bool, true)
+    }
+}
+
 // MARK: - URLProtocol transport stub
 
 enum StubOutcome {
@@ -1013,5 +1205,38 @@ enum Stubs {
             payload["incomplete_details"] = ["reason": reason]
         }
         return try! JSONSerialization.data(withJSONObject: payload)
+    }
+
+    /// The exact documented Doubao/Agent Plan gateway envelope with an
+    /// arbitrary number of PascalCase WebItems, so fixtures can reproduce a
+    /// server that overreturns MORE rows than the request's Count asked for,
+    /// or paragraph-length Snippets per row.
+    static func volcengineSearchEnvelope(
+        items: Int,
+        snippetCharacters: Int,
+        resultCount: Int? = nil,
+        start: Int = 0
+    ) -> Data {
+        let webResults: [[String: Any]] = (start..<start + max(0, items)).map { index in
+            [
+                "Id": "over-\(index)",
+                "SortId": index,
+                "Title": "量子突破 第\(index)篇",
+                "SiteName": "站点\(index)",
+                "Url": "https://example.com/volc/\(index)",
+                "Snippet": String(repeating: "研", count: snippetCharacters),
+                "Summary": "",
+                "PublishTime": "2026-10-2\(index % 9)T10:00:00+08:00",
+                "LogoUrl": "",
+                "RankScore": 0.5
+            ]
+        }
+        return try! JSONSerialization.data(withJSONObject: [
+            "ResponseMetadata": ["RequestId": "BOUNDED-TEST-\(items)"],
+            "Result": [
+                "ResultCount": resultCount ?? items,
+                "WebResults": webResults
+            ]
+        ])
     }
 }

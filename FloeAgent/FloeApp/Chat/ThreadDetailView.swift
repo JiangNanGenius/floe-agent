@@ -189,11 +189,6 @@ struct ThreadDetailView: View {
             .onChange(of: automaticReadSignal, initial: true) { _, _ in
                 refreshAutomaticRead()
             }
-            .onReceive(environment.continuousVoicePresentation.$activeConversationID) { conversationID in
-                if conversationID == viewModel.conversationID {
-                    viewModel.selectAgentMode(.chat)
-                }
-            }
 
             .sheet(item: $structuredExport) { file in
                 TaskExportShareSheet(url: file.url, lease: file.lease)
@@ -1168,14 +1163,8 @@ struct ThreadDetailView: View {
               let (_, model) = environment.conversationCenter.providerAndModel(
                 modelID: viewModel.selectedModelID
               ) else { return }
-        // Internal chat-tool mode selection replacing the old
-        // "switch and start" menu: a durable task conversation switches its
-        // composer to Chat when voice opens (voice rounds themselves always
-        // launch as chat turns through the driver). Temporary sessions keep
-        // their own effective mode and never write a durable selection.
-        if !viewModel.isTemporary, viewModel.effectiveAgentMode != .chat {
-            viewModel.selectAgentMode(.chat)
-        }
+        // Voice turns use their own Chat ceiling; opening and closing voice
+        // never changes the user's durable composer mode.
         let request = ContinuousVoiceRequest(
             windowID: voiceWindowID, conversationID: viewModel.conversationID,
             modelID: model.id, workspaceID: viewModel.selectedProjectID,

@@ -4,6 +4,7 @@ import SwiftUI
 import FloeCore
 import FloeExecution
 import FloeSecurity
+import FloeTools
 
 // MARK: - Catalog provenance
 
@@ -685,7 +686,7 @@ final class WebSearchSettingsCenter: ObservableObject {
             if enabled { throw VolcengineSearchSettingsError.dataProUnavailable }
             return
         }
-        let server = try VolcengineDataProPlan.server(for: configuration)
+        var server = try VolcengineDataProPlan.server(for: configuration)
         let existing = dataProManager.currentServer(serverID: server.id)
         if let existing, !VolcengineDataProPlan.matchesOwnedServer(existing) {
             // Do not overwrite an unrelated MCP that occupies the persisted
@@ -705,6 +706,9 @@ final class WebSearchSettingsCenter: ObservableObject {
             guard options.interface == .agentPlan else {
                 throw VolcengineSearchSettingsError.requiresAgentPlan
             }
+            // Provider edits must not silently re-enable a search method the
+            // user disabled on the professional-search page.
+            server.disabledRemoteToolNames = existing?.disabledRemoteToolNames ?? []
             try await dataProManager.upsert(server, credential: credential)
             dataProManager.setEnabled(true, serverID: server.id)
         } else if existing != nil {
@@ -842,6 +846,17 @@ final class WebSearchSettingsCenter: ObservableObject {
 struct WebSearchSettingsView: View {
     @ObservedObject var center: WebSearchSettingsCenter
     var catalogOwner: ContentUpdateCenter
+    @ObservedObject private var professionalSearchCenter = MCPSettingsCenter.shared
+
+    private var professionalSearchInstances: [WebSearchProviderInstance] {
+        center.instances.filter { instance in
+            guard instance.configuration.kind == .volcengine,
+                  let server = professionalSearchCenter.servers.first(where: {
+                      $0.id == VolcengineDataProPlan.serverID(for: instance.configuration)
+                  }) else { return false }
+            return VolcengineDataProPlan.matchesOwnedServer(server)
+        }
+    }
 
     @State private var showingCatalog = false
     @State private var editing: WebSearchProviderInstance?
@@ -872,6 +887,25 @@ struct WebSearchSettingsView: View {
                 }
             } header: {
                 Text("websearch.providers")
+            }
+            if !professionalSearchInstances.isEmpty {
+                Section {
+                    ForEach(professionalSearchInstances) { instance in
+                        NavigationLink {
+                            ProfessionalSearchSettingsView(
+                                center: professionalSearchCenter,
+                                serverID: VolcengineDataProPlan.serverID(for: instance.configuration),
+                                accountName: instance.configuration.displayName
+                            )
+                        } label: {
+                            Label(instance.configuration.displayName, systemImage: "books.vertical")
+                        }
+                    }
+                } header: {
+                    Text("websearch.professional.title")
+                } footer: {
+                    Text("websearch.professional.summary")
+                }
             }
         }
         .navigationTitle(FloeL10n.l("websearch.title"))
@@ -990,6 +1024,80 @@ struct WebSearchSettingsView: View {
                 pendingDeletion = instance
             }
         }
+    }
+}
+
+/// Search owns the user-facing organization; connection, credentials and
+/// per-tool enablement remain exclusively in the existing MCP settings owner.
+private struct ProfessionalSearchSettingsView: View {
+    @ObservedObject var center: MCPSettingsCenter
+    let serverID: UUID
+    let accountName: String
+
+    private var server: MCPServerConfiguration? {
+        center.servers.first { $0.id == serverID && VolcengineDataProPlan.matchesOwnedServer($0) }
+    }
+
+    private var hasSearchTool: Bool {
+        (center.toolsByServerID[serverID] ?? []).contains {
+            $0.remoteName == VolcengineProfessionalSearch.remoteName
+        }
+    }
+
+    private var statusKey: String {
+        guard let server, server.enabled else { return "skills.skills_view.not_connected" }
+        switch center.stateByServerID[serverID] {
+        case .connecting: return "skills.skills_view.reading_tools"
+        case .ready where hasSearchTool && !server.disabledRemoteToolNames.contains(VolcengineProfessionalSearch.remoteName):
+            return "websearch.professional.ready"
+        default: return "websearch.professional.unavailable"
+        }
+    }
+
+    var body: some View {
+        List {
+            if let server {
+                Section {
+                    Toggle("websearch.professional.enabled", isOn: Binding(
+                        get: { self.server?.enabled ?? false },
+                        set: { center.setEnabled($0, serverID: serverID) }
+                    ))
+                    LabeledContent("websearch.professional.account", value: accountName)
+                    Text(FloeL10n.l(statusKey)).foregroundStyle(.secondary)
+                    Button("websearch.volcengine.dataPro.retry") {
+                        Task { await center.refresh(serverID: serverID) }
+                    }
+                    .disabled(!server.enabled || center.stateByServerID[serverID] == .connecting)
+                }
+                Section {
+                    if hasSearchTool {
+                        Toggle("websearch.professional.query", isOn: Binding(
+                            get: { !(self.server?.disabledRemoteToolNames.contains(VolcengineProfessionalSearch.remoteName) ?? true) },
+                            set: { center.setToolEnabled($0, remoteName: VolcengineProfessionalSearch.remoteName, serverID: serverID) }
+                        ))
+                    }
+                    Text("websearch.professional.summary").foregroundStyle(.secondary)
+                } header: {
+                    Text("websearch.professional.datasets")
+                } footer: {
+                    Text("websearch.professional.result_note")
+                }
+                Section {
+                    DisclosureGroup("websearch.professional.details") {
+                        Text(server.endpoint.absoluteString).textSelection(.enabled)
+                        Text(VolcengineProfessionalSearch.toolName(for: server)).textSelection(.enabled)
+                        Text(VolcengineProfessionalSearch.remoteName).textSelection(.enabled)
+                        if case .failed(let message) = center.stateByServerID[serverID] {
+                            Text(message).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            } else {
+                Text("websearch.professional.unavailable").foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle(FloeL10n.l("websearch.professional.title"))
+        .accessibilityIdentifier("websearch.professional.settings")
     }
 }
 

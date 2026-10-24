@@ -49,6 +49,16 @@ final class LocalSpeechRuntime: TTSSpeechProviding, Sendable {
     func releaseForPackManagement() async { await engine.releaseForPackManagement() }
     func handleMemoryWarning() async { await engine.releaseForMemoryPressure() }
 
+    // Internal pure seams for the same divider and budget used by the private
+    // inference owner. Tests need no model mount or access to that actor.
+    static func mossDividedBlocks(_ text: String, fits: (String) -> Bool) -> [String] {
+        LocalSpeechInferenceOwner.mossDividedBlocks(text, fits: fits)
+    }
+
+    static func mossEstimatedFramesFit(_ text: String, hasCJK: Bool, contextLength: Int) -> Bool {
+        LocalSpeechInferenceOwner.mossEstimatedFramesFit(text, hasCJK: hasCJK, contextLength: contextLength)
+    }
+
     /// Load-validation hook: acquire a store lease (byte verification runs
     /// inside), load the engine, and resolve the selection voice's reference
     /// asset when it declares one. Uses a private engine instance so a probe
@@ -317,29 +327,50 @@ private actor LocalSpeechInferenceOwner {
                     // codes; the catalog default timbre passes nil. Any envelope,
                     // size or hash mismatch fails closed before synthesis.
                     let reference = try referenceVoice(for: voice)
-                    // Frame budget for the WHOLE sentence, sized against the
-                    // pack's REAL contextLength with measured-rate margins
+                    // Frame budget per BLOCK, sized against the pack's REAL
+                    // contextLength with measured-rate margins
                     // (TTSSpeechBudget). The native actual-row context check
                     // remains authoritative and fails before any audio;
                     // reaching maxFrames without end-of-speech is a loud
                     // generationLimit, never a silent truncation.
-                    let maxFrames = TTSSpeechBudget.mossMaxFrames(
-                        contextLength: await moss.configuration.contextLength,
-                        characterCount: text.count, hasCJK: hasCJK)
-                    let session = moss.synthesizeStreamSession(text: text, reference: reference,
-                        options: .init(maxFrames: maxFrames, seed: 0))
-                    do {
-                      for try await chunk in session.stream {
+                    let contextLength = await moss.configuration.contextLength
+                    // A fused Markdown answer (independent list items and
+                    // paragraphs with no terminal punctuation) can exceed the
+                    // pack's real context as ONE request even though every
+                    // line is a complete standalone unit. Divide only at
+                    // SEMANTIC boundaries (blank-line paragraphs, then
+                    // complete list-item lines) so each MOSS call stays a
+                    // whole, natural unit: no mid-sentence cuts, no mid-URL
+                    // or mid-number cuts, no softwrap splits, ordered,
+                    // lossless, duplicate-free.
+                    let blocks = Self.mossDividedBlocks(text) { block in
+                        Self.mossEstimatedFramesFit(block, hasCJK: hasCJK, contextLength: contextLength)
+                    }
+                    for block in blocks {
                         try Task.checkCancellation()
-                        let data = try normalizer.convert(chunk.mono, sampleRate: 48_000)
-                        if !data.isEmpty, !firstChunkLogged {
-                            firstChunkLogged = true
-                            Self.logFirstChunk(since: renderStarted)
-                        }
-                        try await send(data, request: request, sequence: &sequence, total: &totalBytes, sender: sender)
-                      }
-                      await session.waitForCompletion()
-                    } catch { await session.cancelAndWait(); throw error }
+                        let maxFrames = TTSSpeechBudget.mossMaxFrames(
+                            contextLength: contextLength,
+                            characterCount: block.count, hasCJK: hasCJK)
+                        let session = moss.synthesizeStreamSession(text: block, reference: reference,
+                            options: .init(maxFrames: maxFrames, seed: 0))
+                        do {
+                          for try await chunk in session.stream {
+                            try Task.checkCancellation()
+                            let data = try normalizer.convert(chunk.mono, sampleRate: 48_000)
+                            if !data.isEmpty, !firstChunkLogged {
+                                firstChunkLogged = true
+                                Self.logFirstChunk(since: renderStarted)
+                            }
+                            try await send(data, request: request, sequence: &sequence, total: &totalBytes, sender: sender)
+                          }
+                          await session.waitForCompletion()
+                        } catch { await session.cancelAndWait(); throw error }
+                        // Between blocks the same stream continues: the
+                        // player keeps consuming (bounded supply/backpressure
+                        // upstream), so generation of block N+1 overlaps the
+                        // tail of block N exactly like the standalone
+                        // sentence pipeline.
+                    }
                 }
             }
             let tail = try normalizer.finish()
@@ -457,6 +488,103 @@ private actor LocalSpeechInferenceOwner {
     }
     private static func qwenLanguage(_ tag: String) -> String {
         ["zh":"chinese", "en":"english", "de":"german", "it":"italian", "pt":"portuguese", "es":"spanish", "ja":"japanese", "ko":"korean", "fr":"french", "ru":"russian"][tag] ?? tag
+    }
+
+    /// Estimated speech frames for one block at the measured slowest script
+    /// rate (plus the EOS margin). Uses ONLY the published TTSSpeechBudget
+    /// curves — no invented character caps.
+    static func mossEstimatedFrames(_ text: String, hasCJK: Bool) -> Int {
+        Int((Double(text.count) * TTSSpeechBudget.mossFramesPerCharacter(hasCJK: hasCJK)).rounded(.up))
+            + TTSSpeechBudget.mossEndOfSpeechMarginFrames
+    }
+
+    /// True when one block's estimated frames fit the pack's real context
+    /// alongside the fixed template reservation and the safety margin the
+    /// frame budget never claims. The native actual-row check stays
+    /// authoritative; this only decides where a fused answer MAY be divided.
+    static func mossEstimatedFramesFit(_ text: String, hasCJK: Bool, contextLength: Int) -> Bool {
+        mossEstimatedFrames(text, hasCJK: hasCJK)
+            + TTSSpeechBudget.mossTemplateRowsUpperBound
+            + TTSSpeechBudget.mossContextSafetyRows
+            <= contextLength
+    }
+
+    /// Divides one fused synthesis block ONLY at semantic boundaries, and
+    /// only when the whole block does not fit the pack budget:
+    /// 1. blank-line paragraph boundaries (always safe);
+    /// 2. complete standalone list-item lines (a leading Markdown bullet,
+    ///    enumerator or backtick-introduced item) — an independent complete
+    ///    unit by construction.
+    /// A line that is none of those (a softwrapped prose sentence, a URL, a
+    /// decimal) is NEVER cut: an over-budget single line passes through
+    /// whole and the native guard fails it loudly — no silent mid-sentence
+    /// chop ever happens here. Division preserves complete ordered coverage:
+    /// every content line is kept exactly once, in order.
+    static func mossDividedBlocks(
+        _ text: String,
+        fits: (String) -> Bool
+    ) -> [String] {
+        guard !fits(text) else { return [text] }
+        var divided: [String] = []
+        for paragraph in splitAtParagraphBoundaries(text) {
+            if fits(paragraph) {
+                divided.append(paragraph)
+                continue
+            }
+            // An over-budget paragraph of standalone list items divides at
+            // item boundaries; anything else passes through whole — the
+            // native context check fails it loudly. Semantic completeness
+            // always beats forced fitting: never a mid-sentence cut.
+            divided.append(contentsOf: splitAtListItemLines(paragraph))
+        }
+        return divided.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    /// Blank-line paragraph split with complete ordered coverage: every
+    /// content line is kept exactly once, in order (separator blank lines
+    /// ride with the preceding block and are formatting-only).
+    private static func splitAtParagraphBoundaries(_ text: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.isEmpty {
+                // A blank line ends the current paragraph; the separator
+                // newlines belong to the boundary and ride with the block.
+                current += "\n"
+                if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    result.append(current)
+                    current = ""
+                }
+            } else {
+                current += current.isEmpty ? String(line) : "\n" + line
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(current) }
+        return result.isEmpty ? [text] : result
+    }
+
+    /// Line split at standalone list-item boundaries. Only lines that BEGIN
+    /// a new semantic item divide a block; a continuation line (softwrap,
+    /// URL, decimal, plain prose) never does. Complete ordered coverage:
+    /// every line is kept exactly once, in order.
+    private static func splitAtListItemLines(_ text: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let startsItem = trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ")
+                || trimmed.hasPrefix("• ") || trimmed.hasPrefix("· ")
+                || (trimmed.first?.isNumber == true && trimmed.dropFirst().first == ".")
+                || trimmed.hasPrefix("`")
+            if startsItem, !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                result.append(current)
+                current = String(line)
+            } else {
+                current += current.isEmpty ? String(line) : "\n" + line
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(current) }
+        return result.count > 1 ? result : [text]
     }
 }
 

@@ -566,6 +566,16 @@ final class VolcengineSearchSettingsTests: XCTestCase {
         XCTAssertEqual(dataPro.servers[reservedID], foreign)
     }
 
+    func testProviderSavePreservesDisabledProfessionalSearchMethods() async throws {
+        let center = makeCenter()
+        let agent = volcengineConfiguration(interface: .agentPlan)
+        var server = try VolcengineDataProPlan.server(for: agent)
+        server.disabledRemoteToolNames = [VolcengineProfessionalSearch.remoteName]
+        dataPro.servers[server.id] = server
+        try await center.setDataProEnabled(true, for: agent, credential: "synthetic-test-credential")
+        XCTAssertEqual(dataPro.servers[server.id]?.disabledRemoteToolNames, [VolcengineProfessionalSearch.remoteName])
+    }
+
     func testDataProOwnedIdentitySurvivesInterfaceTransitionAndDisables() async throws {
         let center = makeCenter()
         let providerID = UUID()

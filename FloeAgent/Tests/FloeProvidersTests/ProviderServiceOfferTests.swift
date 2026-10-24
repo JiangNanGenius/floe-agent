@@ -27,6 +27,83 @@ struct ProviderServiceOfferTests {
         }
     }
 
+    @Test("Endpoint-aware probes reach Kimi images but never generic custom or Moonshot")
+    func endpointSpecificCustomMediaRoles() {
+        #expect(ProviderServiceOfferResolver.adapterSupportedMediaRoles(
+            for: .custom,
+            baseURL: ProviderPreset.kimiCode.defaultBaseURL
+        ) == [.image])
+        for endpoint in [
+            "https://api.moonshot.ai/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.kimi.com",
+            "https://api.kimi.com/v1",
+            "http://api.kimi.com/coding/v1",
+            "https://api.kimi.com/coding/v1?channel=other",
+            "https://images.example.com/v1"
+        ] {
+            #expect(ProviderServiceOfferResolver.adapterSupportedMediaRoles(
+                for: .custom,
+                presetID: "kimi-code",
+                baseURL: URL(string: endpoint)
+            ).isEmpty)
+        }
+        #expect(ProviderServiceOfferResolver.adapterSupportedMediaRoles(
+            for: .custom, presetID: "kimi-code"
+        ).isEmpty)
+    }
+
+    @Test("Kimi image offers require account discovery and seed no built-in model IDs")
+    func kimiImageOfferRequiresDiscovery() throws {
+        let baseURL = ProviderPreset.kimiCode.defaultBaseURL
+        let offers = ProviderServiceOfferResolver.resolvedOffers(
+            for: .custom,
+            presetID: "kimi-code",
+            baseURL: baseURL,
+            authStyle: "bearer",
+            availability: .available,
+            declared: nil
+        )
+        let image = try #require(offers.first { $0.role == .image })
+        #expect(image.isUsable)
+        #expect(image.connection == .shared)
+        #expect(image.endpoint == baseURL)
+        #expect(image.requiresDiscovery)
+        #expect(image.models.isEmpty)
+        #expect(!offers.contains { $0.role == .video })
+    }
+
+    @Test("Custom media offers probe their actual endpoint and preserve separate connections")
+    func declaredEndpointIsProbed() throws {
+        let kimiURL = ProviderPreset.kimiCode.defaultBaseURL
+        let otherURL = URL(string: "https://images.example.com/v1")!
+        let offers = ProviderServiceOfferResolver.resolvedOffers(
+            for: .custom,
+            baseURL: otherURL,
+            authStyle: "bearer",
+            availability: .available,
+            declared: [.init(role: .image, baseURL: kimiURL)]
+        )
+        let image = try #require(offers.first { $0.role == .image })
+        #expect(image.isUsable)
+        #expect(image.connection == .distinct)
+        #expect(image.endpoint == kimiURL)
+        #expect(image.requiresDiscovery)
+        #expect(image.models.isEmpty)
+
+        let unsupported = ProviderServiceOfferResolver.resolvedOffers(
+            for: .custom,
+            presetID: "kimi-code",
+            baseURL: kimiURL,
+            authStyle: "bearer",
+            availability: .available,
+            declared: [.init(role: .image, baseURL: otherURL, models: ["account-image-model"])]
+        )
+        let unavailable = try #require(unsupported.first { $0.role == .image })
+        #expect(!unavailable.isUsable)
+        #expect(unavailable.reason?.contains("no shipped adapter") == true)
+    }
+
     @Test("OpenAI kind offers image from the official manifest and conversation via discovery")
     func openAIKindOffersImageAndConversationDiscovery() throws {
         let offers = ProviderServiceOfferResolver.resolvedOffers(

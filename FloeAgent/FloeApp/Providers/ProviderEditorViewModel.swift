@@ -125,8 +125,8 @@ final class ProviderEditorViewModel: ObservableObject {
     @Published var candidateModels: [ModelProfile] = []
     @Published var selectedModelIDs: Set<UUID> = []
     @Published var defaultModelID: UUID?
-    /// Stable provider-catalog identity for profiles created from the
-    /// catalog. Nil for manual/legacy providers, which persist no presetID.
+    /// Stable provider-catalog identity. Native/manual/legacy providers may
+    /// carry no presetID; their actual endpoint still selects a template.
     @Published private(set) var catalogPresetID: String?
 
     // MARK: - Status
@@ -226,9 +226,10 @@ final class ProviderEditorViewModel: ObservableObject {
         self.serviceRole = initialRole ?? ProviderServiceRole.infer(from: existingModels)
         if let existing {
             self.providerID = existing.id
-            self.selectedPreset = ProviderPreset.preset(for: existing.kind)
+            let preset = ProviderPreset.preset(for: existing.kind, baseURL: existing.baseURL)
+            self.selectedPreset = preset
             self.selectedProtocol = existing.wireProtocol
-            self.displayName = existing.displayName ?? ProviderPreset.preset(for: existing.kind).displayName
+            self.displayName = existing.displayName ?? preset.displayName
             self.baseURLString = existing.baseURL.absoluteString
             self.allowsPlainHTTP = existing.allowsPlainHTTP
             self.toolNameCompatibility = existing.toolNameCompatibility
@@ -269,6 +270,9 @@ final class ProviderEditorViewModel: ObservableObject {
             )
         let previousIdentity = currentConnectionIdentity()
         selectedPreset = preset
+        // Native suppliers do not inherit a catalog row's metadata or older
+        // availability policy. Saved Kimi Code profiles resolve by endpoint.
+        catalogPresetID = nil
         // Only auto-fill the name when the user hasn't customized it, so a
         // typed "DeepSeek" survives switching protocols/presets.
         if shouldReplaceDisplayName {
@@ -297,12 +301,8 @@ final class ProviderEditorViewModel: ObservableObject {
                 previousDefault: previousPresetName
             )
         let previousIdentity = currentConnectionIdentity()
-        switch entry.kind {
-        case .local, .custom:
-            selectedPreset = ProviderPreset.all.first { $0.id == .custom } ?? .custom
-        default:
-            selectedPreset = ProviderPreset.all.first { $0.kind == entry.kind } ?? .custom
-        }
+        selectedPreset = entry.kind == .local ? .custom
+            : ProviderPreset.preset(for: entry.kind, baseURL: entry.baseURL)
         selectedProtocol = entry.defaultProtocol
         // Selection happens mid-form: only an untouched/uncustomized name is
         // replaced by the catalog name.
@@ -362,6 +362,7 @@ final class ProviderEditorViewModel: ObservableObject {
         let kind = selectedPreset.kind
         let resolutions = ProviderServiceOfferResolver.resolvedOffers(
             for: kind,
+            presetID: catalogPresetID,
             baseURL: URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
             authStyle: Self.catalogAuthStyle(for: selectedPreset),
             availability: entry?.availability ?? .available,
@@ -725,6 +726,13 @@ final class ProviderEditorViewModel: ObservableObject {
 
     var supportsDiscovery: Bool {
         selectedPreset.supportsModelDiscovery
+    }
+
+    var needsKimiImageModelSelection: Bool {
+        guard serviceRole == .image,
+              let baseURL = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return false }
+        return ProviderPreset.preset(for: selectedPreset.kind, baseURL: baseURL).id == .kimiCode
     }
 
     var officialMediaPresets: [MediaModelDescriptor] {
@@ -1131,7 +1139,7 @@ final class ProviderEditorViewModel: ObservableObject {
         case .conversation:
             ProviderPreset.chatPresets
         case .image:
-            [.openAIResponses, .volcengineArk, .alibabaStudio, .googleGemini, .custom]
+            ProviderPreset.imagePresets
         case .video:
             [.volcengineArk, .alibabaStudio, .googleGemini, .custom]
         }

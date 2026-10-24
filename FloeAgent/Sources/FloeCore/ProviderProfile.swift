@@ -123,6 +123,56 @@ public struct ProviderProfile: Sendable, Codable, Identifiable, Hashable {
     }
 }
 
+/// Identifies a provider whose base URL is one of the evidenced Kimi Code /
+/// Coding Plan API route variants and resolves its verified OpenAI-compatible
+/// API root. Grounded in the read-only OpenMinis evidence
+/// (OpenMinis/OpenMinis@b4c0661d5631ebab4d1a2e6f3fd4c805d4030a6c,
+/// src/ios/Providers/LLMProviderFactory.swift:376-381): the kimiCode default
+/// base is `https://api.kimi.com/coding` WITHOUT `/v1`, and the real
+/// endpoints live under `/coding/v1/…` — bare `/coding/chat/completions`
+/// 404s — so the integration appends `/v1` for that base and honours the
+/// caller's own root when `/v1` is already present. Exactly those two
+/// variants (case- and trailing-slash-insensitive, HTTPS, no query or
+/// fragment) identify a Kimi Code image endpoint. Host alone is NOT enough:
+/// other paths on api.kimi.com, the Moonshot platform API
+/// (api.moonshot.ai / api.moonshot.cn) and proxies have no upstream
+/// image-route evidence and receive no image adapter.
+public enum KimiCodeEndpointIdentity {
+    public static let apiHosts: Set<String> = ["api.kimi.com"]
+    /// The only accepted base path variants (normalized, lowercase, no
+    /// trailing slash). The bare host or any other path is unsupported.
+    public static let basePathVariants: Set<String> = ["/coding", "/coding/v1"]
+
+    public static func matches(_ provider: ProviderProfile) -> Bool {
+        apiRoot(for: provider.baseURL) != nil
+    }
+
+    /// The verified API root — always `https://api.kimi.com[:port]/coding/v1`
+    /// for a supported base — or nil when host/scheme/path/query/fragment is
+    /// not one of the evidenced route variants.
+    public static func apiRoot(for provider: ProviderProfile) -> URL? {
+        apiRoot(for: provider.baseURL)
+    }
+
+    public static func apiRoot(for url: URL) -> URL? {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              apiHosts.contains(host),
+              url.query == nil,
+              url.fragment == nil else { return nil }
+        var path = url.path.lowercased()
+        while path.hasSuffix("/") && path != "/" { path = String(path.dropLast()) }
+        if path == "/" { path = "" }
+        guard basePathVariants.contains(path) else { return nil }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.port = url.port
+        components.path = path.hasSuffix("/v1") ? path : path + "/v1"
+        return components.url
+    }
+}
+
 extension URL {
     /// True for localhost, loopback, and RFC 1918 / link-local addresses.
     public var isLocalOrPrivateNetwork: Bool {

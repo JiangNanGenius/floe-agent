@@ -24,7 +24,7 @@ import FloeTools
 
 /// The trusted identity of the tool-result row that carries the receipts.
 /// Values come from the persisted event envelope, never from model text.
-struct RunOutputReceiptContext: Sendable, Equatable {
+struct RunOutputReceiptContext: Sendable, Hashable {
     /// The event's persisted run identity.
     var runID: UUID
     /// The owning conversation, when the surface can prove it. ThreadEventView
@@ -77,19 +77,18 @@ struct RunOutputFilesCard: View {
         if !accepted.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(accepted) { receipt in
-                    RunOutputFileView(receipt: receipt)
+                    RunOutputFileView(receipt: receipt, context: context)
                 }
             }
         }
     }
 }
 
-/// One receipt row: icon, concise filename, measured size, and native
-/// preview/share once the snapshot bytes prove identical to the receipt.
-/// Verification runs lazily on each preview/share request, not on every
-/// body render; the row itself stays visible at all times.
+/// One receipt row with a bounded inline bitmap when available. Thumbnail
+/// verification is independent of the fresh check on every preview/share.
 struct RunOutputFileView: View {
     let receipt: RunOutputFile
+    let context: RunOutputReceiptContext
     /// Test seam only: production resolves the real artifact root.
     var artifactRoot: URL? = nil
 
@@ -97,6 +96,21 @@ struct RunOutputFileView: View {
     @State private var pendingAction: PendingAction?
     @State private var presentation: Presentation?
     @State private var verificationGeneration = 0
+    @State private var imagePreview: InlinePreview?
+
+    private struct InlinePreview {
+        let request: RunOutputImagePreviewRequest
+        let image: UIImage
+    }
+
+    private var imageRequest: RunOutputImagePreviewRequest {
+        RunOutputImagePreviewRequest(receipt: receipt, context: context, artifactRoot: artifactRoot)
+    }
+
+    private struct ActionVerificationID: Hashable {
+        let request: RunOutputImagePreviewRequest
+        let generation: Int
+    }
 
     private enum VerificationState: Equatable {
         case unverified
@@ -118,27 +132,37 @@ struct RunOutputFileView: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: symbolName)
-                .font(.body.weight(.medium))
-                .foregroundStyle(FloeTheme.primary)
-                .frame(width: 26, height: 26)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(receipt.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2)
-                Text(ByteCountFormatter.string(fromByteCount: Int64(receipt.byteCount), countStyle: .file))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+        VStack(alignment: .leading, spacing: 8) {
+            if let imagePreview, imagePreview.request == imageRequest {
+                Button { activate(.preview) } label: {
+                    Image(uiImage: imagePreview.image)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: 250, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(ChatBilingualCatalog.localized(
+                    key: "chat.run_output_file_view.preview",
+                    en: "Preview \(receipt.displayName)",
+                    zh: "预览 \(receipt.displayName)")))
             }
-            Spacer(minLength: 8)
-            actions
+            fileRow
         }
-        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
-        .task(id: verificationGeneration) {
+        .task(id: imageRequest) {
+            let request = imageRequest
+            imagePreview = nil
+            let preview = await RunOutputImagePreviewLoader.load(request)
+            guard !Task.isCancelled, request == imageRequest else { return }
+            if let preview, let image = UIImage(data: preview.pngData) {
+                imagePreview = InlinePreview(request: preview.request, image: image)
+            }
+        }
+        .onChange(of: imageRequest) { _, _ in
+            state = .unverified
+            pendingAction = nil
+            presentation = nil
+        }
+        .task(id: ActionVerificationID(request: imageRequest, generation: verificationGeneration)) {
             guard pendingAction != nil else { return }
             await verify()
         }
@@ -162,6 +186,29 @@ struct RunOutputFileView: View {
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    private var fileRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbolName)
+                .font(.body.weight(.medium))
+                .foregroundStyle(FloeTheme.primary)
+                .frame(width: 26, height: 26)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(receipt.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                Text(ByteCountFormatter.string(fromByteCount: Int64(receipt.byteCount), countStyle: .file))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Spacer(minLength: 8)
+            actions
+        }
+        .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
     }
 
     @ViewBuilder
@@ -227,12 +274,18 @@ struct RunOutputFileView: View {
 
     @MainActor
     private func verify() async {
-        let receipt = self.receipt
-        let artifactRoot = self.artifactRoot
+        let request = imageRequest
+        let generation = verificationGeneration
+        guard RunOutputReceiptGate.accepts(request.receipt, in: request.context) else {
+            state = .failed
+            pendingAction = nil
+            return
+        }
         let verification = await Task.detached(priority: .utility) {
-            RunOutputSnapshotStore.verify(receipt, artifactRoot: artifactRoot)
+            RunOutputSnapshotStore.verify(request.receipt, artifactRoot: request.artifactRoot)
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, request == imageRequest,
+              generation == verificationGeneration else { return }
         switch verification {
         case .verified(let url):
             state = .verified(url)

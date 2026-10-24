@@ -133,9 +133,32 @@ struct ImageAdapterTests {
         #expect(factory.adapter(for: provider(kind: .volcengineArk)) is VolcengineImageAdapter)
         #expect(factory.adapter(for: provider(kind: .alibabaStudio)) is AlibabaImageAdapter)
         #expect(factory.adapter(for: provider(kind: .googleGemini)) is GoogleGeminiImageAdapter)
-        // Anthropic and custom endpoints expose no remote image adapter.
+        // Anthropic and local expose no remote image adapter; ordinary custom
+        // endpoints expose none either.
         #expect(factory.adapter(for: provider(kind: .anthropic)) == nil)
         #expect(factory.adapter(for: provider(kind: .custom)) == nil)
+        // Kimi Code is the one evidenced custom route: host-based identity
+        // only, never a generic custom-endpoint assumption.
+        let kimi = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.kimi.com/coding/v1")!
+        )
+        #expect(factory.adapter(for: kimi) is KimiImageAdapter)
+        // Host alone is not enough: the bare root has no evidenced image route.
+        let kimiBareHost = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.kimi.com")!
+        )
+        #expect(factory.adapter(for: kimiBareHost) == nil)
+        let kimiPlatform = ProviderProfile(
+            kind: .custom,
+            wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.moonshot.ai/v1")!,
+            presetID: "moonshot"
+        )
+        #expect(factory.adapter(for: kimiPlatform) == nil)
     }
 
     @Test("Each adapter declares an honest capability set")

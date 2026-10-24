@@ -213,7 +213,7 @@ struct ProviderCatalogPicker: View {
                 HStack(spacing: 4) {
                     Text(protocolName(entry.defaultProtocol))
                     Text("·")
-                    Text(ProviderPreset.preset(for: entry.kind).displayName)
+                    Text(ProviderPreset.preset(for: entry.kind, baseURL: entry.baseURL).displayName)
                     Text("·")
                     Text(entry.baseURL?.host ?? "—")
                     Text("·")
@@ -296,6 +296,7 @@ struct ProviderCatalogPicker: View {
     private func serviceRoleLabels(_ entry: ProviderCatalogEntry) -> [String] {
         ProviderServiceOfferResolver.resolvedOffers(
             for: entry.kind,
+            presetID: entry.presetID,
             baseURL: entry.baseURL,
             authStyle: entry.authStyle,
             availability: entry.availability,

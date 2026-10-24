@@ -421,9 +421,9 @@ struct VolcengineSettingsDraft: Equatable {
 /// `WebSearchSettingsCenter.setDataProEnabled` performs the existing
 /// MCPSettingsCenter upsert/setEnabled lifecycle.
 struct VolcengineDataProPlan {
-    static let endpoint = URL(string: "https://datapro.hqd.cn-beijing.volces.com/mcp")!
-    static let credentialHeaderName = "X-Agent-Plan-Key"
-    static let displayName = "Volcengine DataPro"
+    static let endpoint = VolcengineProfessionalSearch.endpoint
+    static let credentialHeaderName = VolcengineProfessionalSearch.credentialHeaderName
+    static let displayName = VolcengineProfessionalSearch.displayName
 
     static func serverID(for configuration: WebSearchProviderConfiguration) -> UUID {
         if let raw = configuration.options[VolcengineSearchOptions.Key.dataProServerID],
@@ -454,12 +454,7 @@ struct VolcengineDataProPlan {
     /// endpoint/auth/header/display identity. A different user MCP that
     /// happens to occupy a persisted UUID is a collision, never an update.
     static func matchesOwnedServer(_ server: MCPServerConfiguration) -> Bool {
-        server.endpoint == endpoint
-            && server.authentication == .customHeader
-            && server.credentialHeaderName == credentialHeaderName
-            && server.displayName == displayName
-            && !server.allowInCanvas
-            && !server.allowInsecureHTTP
+        VolcengineProfessionalSearch.matchesOwnedServer(server)
     }
 }
 

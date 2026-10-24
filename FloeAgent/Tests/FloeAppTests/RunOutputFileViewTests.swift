@@ -13,6 +13,8 @@
 // a native acceptance run.
 
 import XCTest
+import ImageIO
+import UniformTypeIdentifiers
 import FloeCore
 import FloeModels
 import FloeTools
@@ -183,6 +185,148 @@ final class RunOutputFileViewTests: XCTestCase {
         guard case .rejected = RunOutputSnapshotStore.verify(renamed, artifactRoot: artifactRoot) else {
             return XCTFail("a renamed receipt must not resolve the original snapshot")
         }
+    }
+
+    // MARK: - Real inline bitmap loader
+
+    func testVerifiedPNGProducesBoundedThumbnailWithOriginalAspect() async throws {
+        let bytes = try makePNG()
+        let request = try imageRequest(bytes: bytes)
+        var limits = RunOutputImagePreviewLoader.Limits()
+        limits.thumbnailDimension = 128
+        let loaded = await RunOutputImagePreviewLoader.load(request, limits: limits)
+        let preview = try XCTUnwrap(loaded)
+        XCTAssertEqual(preview.request, request)
+        XCTAssertEqual(preview.sourceByteCount, bytes.count)
+        XCTAssertGreaterThan(preview.metadataByteCount, 0)
+        XCTAssertLessThanOrEqual(preview.metadataByteCount, limits.metadataBytes)
+        XCTAssertLessThanOrEqual(preview.pngData.count, limits.thumbnailBytes)
+        XCTAssertEqual(preview.pixelWidth, 128)
+        XCTAssertEqual(preview.pixelHeight, 64)
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(preview.pngData as CFData, nil))
+        let bitmap = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(bitmap.width, preview.pixelWidth)
+        XCTAssertEqual(bitmap.height, preview.pixelHeight)
+
+        // A loaded result is bound to the entire receipt/envelope, not only
+        // the stable outputID that SwiftUI may reuse for a changed row.
+        var changed = request.receipt
+        changed.sha256 = String(repeating: "b", count: 64)
+        let replacement = RunOutputImagePreviewRequest(
+            receipt: changed, context: request.context, artifactRoot: artifactRoot)
+        XCTAssertEqual(replacement.receipt.id, preview.request.receipt.id)
+        XCTAssertNotEqual(preview.request, replacement)
+    }
+
+    func testInlineLoaderRefusesTamperedMissingAndSymlinkSnapshots() async throws {
+        let bytes = try makePNG()
+        let request = try imageRequest(bytes: bytes)
+        let url = artifactRoot.appendingPathComponent(request.receipt.relativePath)
+        var tampered = bytes
+        tampered[tampered.count - 1] ^= 0xFF
+        try tampered.write(to: url)
+        let changed = await RunOutputImagePreviewLoader.load(request)
+        XCTAssertNil(changed)
+
+        try FileManager.default.removeItem(at: url)
+        let missing = await RunOutputImagePreviewLoader.load(request)
+        XCTAssertNil(missing)
+
+        let target = artifactRoot.appendingPathComponent("unowned.png")
+        try bytes.write(to: target)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+        let linked = await RunOutputImagePreviewLoader.load(request)
+        XCTAssertNil(linked)
+        // Refusal never repairs, replaces or removes the receipt's snapshot.
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: url.path), target.path)
+    }
+
+    func testInlineLoaderRefusesUnownedNonImageAndInvalidBitmap() async throws {
+        let request = try imageRequest(bytes: makePNG())
+        let foreignContext = RunOutputReceiptContext(
+            runID: request.context.runID, conversationID: UUID(),
+            callID: request.context.callID, toolName: request.context.toolName)
+        let foreign = await RunOutputImagePreviewLoader.load(.init(
+            receipt: request.receipt, context: foreignContext, artifactRoot: artifactRoot))
+        XCTAssertNil(foreign)
+
+        var receipt = request.receipt
+        receipt.taskID = nil
+        let unbound = await RunOutputImagePreviewLoader.load(.init(
+            receipt: receipt, context: request.context, artifactRoot: artifactRoot))
+        XCTAssertNil(unbound)
+
+        receipt = request.receipt
+        receipt.mimeType = "application/octet-stream"
+        let nonImage = await RunOutputImagePreviewLoader.load(.init(
+            receipt: receipt, context: request.context, artifactRoot: artifactRoot))
+        XCTAssertNil(nonImage)
+
+        let invalid = try imageRequest(bytes: Data("not an image".utf8))
+        let invalidPreview = await RunOutputImagePreviewLoader.load(invalid)
+        XCTAssertNil(invalidPreview)
+    }
+
+    func testInlineLoaderEnforcesByteMetadataPixelAndThumbnailBounds() async throws {
+        let request = try imageRequest(bytes: makePNG())
+        var byteLimit = RunOutputImagePreviewLoader.Limits()
+        byteLimit.inputBytes = request.receipt.byteCount - 1
+        var metadataLimit = RunOutputImagePreviewLoader.Limits()
+        metadataLimit.metadataBytes = 1
+        var pixelLimit = RunOutputImagePreviewLoader.Limits()
+        pixelLimit.sourcePixels = 400 * 200 - 1
+        var dimensionLimit = RunOutputImagePreviewLoader.Limits()
+        dimensionLimit.sourceDimension = 399
+        var outputLimit = RunOutputImagePreviewLoader.Limits()
+        outputLimit.thumbnailBytes = 1
+        for limits in [byteLimit, metadataLimit, pixelLimit, dimensionLimit, outputLimit] {
+            let preview = await RunOutputImagePreviewLoader.load(request, limits: limits)
+            XCTAssertNil(preview)
+        }
+        // The real fixture remains usable with the production bounds.
+        let preview = await RunOutputImagePreviewLoader.load(request)
+        XCTAssertNotNil(preview)
+    }
+
+    func testCancelledInlineLoadPublishesNoPreview() async throws {
+        let request = try imageRequest(bytes: makePNG())
+        let worker = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await RunOutputImagePreviewLoader.load(request)
+        }
+        let preview = await worker.value
+        XCTAssertNil(preview)
+    }
+
+    private func imageRequest(bytes: Data) throws -> RunOutputImagePreviewRequest {
+        let runID = UUID()
+        let taskID = UUID()
+        let receipt = try makeReceipt(
+            runID: runID, conversationID: taskID, callID: "call-qr",
+            tool: "image.qrcode", slot: "image", displayName: "QR.png",
+            mimeType: "image/png", uti: UTType.png.identifier,
+            bytes: bytes, writeSnapshot: true)
+        return RunOutputImagePreviewRequest(receipt: receipt,
+            context: RunOutputReceiptContext(runID: runID, conversationID: taskID,
+                callID: "call-qr", toolName: "image.qrcode"), artifactRoot: artifactRoot)
+    }
+
+    private func makePNG() throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 400, height: 200, bitsPerComponent: 8,
+            bytesPerRow: 400 * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 400, height: 200))
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 40, y: 40, width: 120, height: 120))
+        let image = try XCTUnwrap(context.makeImage())
+        let encoded = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
+            encoded, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return encoded as Data
     }
 
     // MARK: - Fixture

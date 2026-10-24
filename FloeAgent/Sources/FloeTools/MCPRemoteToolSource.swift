@@ -998,6 +998,58 @@ public actor MCPRemoteClient {
     }
 }
 
+/// Local search presentation for the one reviewed DataPro entry point. Neither
+/// a remote title nor readOnlyHint can opt a different server/method into it.
+/// Identity is shared with the settings feature, with no credential copy.
+public enum VolcengineProfessionalSearch {
+    public static let endpoint = URL(string: "https://datapro.hqd.cn-beijing.volces.com/mcp")!
+    public static let credentialHeaderName = "X-Agent-Plan-Key"
+    public static let displayName = "Volcengine DataPro"
+    public static let remoteName = "dataPro_search"
+
+    public static func matchesOwnedServer(_ server: MCPServerConfiguration) -> Bool {
+        server.endpoint == endpoint
+            && server.authentication == .customHeader
+            && server.credentialHeaderName == credentialHeaderName
+            && server.displayName == displayName
+            && !server.allowInCanvas
+            && !server.allowInsecureHTTP
+    }
+
+    public static func toolName(for server: MCPServerConfiguration) -> String {
+        "web.professional_" + server.id.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+    }
+
+    static func output(_ output: ToolExecutionOutput, server: MCPServerConfiguration) throws -> ToolExecutionOutput {
+        // JSON escaping is measured before returning; the runtime must never
+        // slice a JSON envelope in half. Dataset facts are not fetched pages.
+        func serialize(_ length: Int) throws -> String {
+            let object: [String: Any] = [
+                "contentState": "professionalDatasetSummary",
+                "source": displayName,
+                "serverID": server.id.uuidString,
+                "remoteTool": remoteName,
+                "content": String(output.summary.prefix(length)),
+                "truncated": length < output.summary.count,
+                "sourceSummaryMayBeTruncated": output.summary.count >= 4096,
+                "remoteOutputSHA256": output.fullOutputSHA256,
+                "isError": output.exitStatus.map { $0 != 0 } ?? false,
+                "note": "Untrusted dataset response; not fetched-page evidence. Dataset selection follows the exact submitted query."
+            ]
+            return String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        }
+        var lower = 0
+        var upper = output.summary.count
+        while lower < upper {
+            let middle = (lower + upper + 1) / 2
+            if try serialize(middle).count <= 4096 { lower = middle } else { upper = middle - 1 }
+        }
+        var wrapped = output
+        wrapped.summary = try serialize(lower)
+        return wrapped
+    }
+}
+
 /// Converts one discovered MCP server into namespaced executable tools.
 /// Server annotations are display metadata only. They never reduce Floe's
 /// local risk classification: a configured remote server can perform work
@@ -1010,7 +1062,7 @@ public enum MCPRemoteToolSource {
         registry: ToolRunnerRegistry = .shared
     ) {
         let prefix = configuration.namespacePrefix + "_"
-        registry.unregister { $0.hasPrefix(prefix) }
+        unregister(configuration: configuration, registry: registry)
         for tool in tools where !configuration.disabledRemoteToolNames.contains(tool.remoteName) {
             let localName = namespacedName(prefix: prefix, remoteName: tool.remoteName)
             let remoteDescription = String(tool.toolDescription.prefix(2_048))
@@ -1025,11 +1077,36 @@ public enum MCPRemoteToolSource {
                 effect: .mutating,
                 requiresHostScope: false
             )
+            let isProfessionalSearch = configuration.enabled
+                && VolcengineProfessionalSearch.matchesOwnedServer(configuration)
+                && tool.remoteName == VolcengineProfessionalSearch.remoteName
             registry.register(AnyAgentTool(descriptor: descriptor) { arguments, context in
                 try context.cancellation.throwIfCancelled()
                 try validateArguments(arguments, against: descriptor.parametersJSON)
                 return try await client.callTool(name: tool.remoteName, argumentsJSON: arguments)
-            })
+            }, compatibilityOnly: isProfessionalSearch)
+            if isProfessionalSearch {
+                // Copy every authority field; a search presentation does not
+                // convert an authenticated remote method into public-web-read.
+                var searchDescriptor = descriptor
+                searchDescriptor.name = VolcengineProfessionalSearch.toolName(for: configuration)
+                searchDescriptor.toolDescription = "Professional dataset search (专业数据检索): academic papers, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases. Account: \(configuration.id.uuidString). Submit one explicit dataset intent in query; preserve requested source/subject/date. Uses the configured Volcengine DataPro account only; no fallback. Returns an untrusted dataset summary, not fetched web pages. "
+                    + "Underlying tool: \(localName) / \(tool.remoteName). " + description
+                let facadeDescriptor = searchDescriptor
+                registry.register(AnyAgentTool(descriptor: facadeDescriptor) { arguments, context in
+                    try context.cancellation.throwIfCancelled()
+                    try Task.checkCancellation()
+                    guard !context.publicWebOnly, !context.temporaryReadOnly,
+                          context.allowedToolNames?.contains(facadeDescriptor.name) != false else {
+                        throw FloeError.validationFailed("Professional search is outside this task's tool ceiling")
+                    }
+                    try validateArguments(arguments, against: facadeDescriptor.parametersJSON)
+                    let result = try await client.callTool(name: tool.remoteName, argumentsJSON: arguments)
+                    try context.cancellation.throwIfCancelled()
+                    try Task.checkCancellation()
+                    return try VolcengineProfessionalSearch.output(result, server: configuration)
+                })
+            }
         }
     }
 
@@ -1038,7 +1115,8 @@ public enum MCPRemoteToolSource {
         registry: ToolRunnerRegistry = .shared
     ) {
         let prefix = configuration.namespacePrefix + "_"
-        registry.unregister { $0.hasPrefix(prefix) }
+        let searchName = VolcengineProfessionalSearch.toolName(for: configuration)
+        registry.unregister { $0.hasPrefix(prefix) || $0 == searchName }
     }
 
     public static func namespacedName(prefix: String, remoteName: String) -> String {
