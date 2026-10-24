@@ -521,8 +521,9 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         result: Task<Result<Void, Error>, Never>
     ) async {
         // The service may already exist (sync launch), appear later, or never
-        // appear at all (fast completion). Independent wake sources cover
-        // every ordering; the first terminal path wins, the others cancel.
+        // appear at all (fast completion). Only a settled terminal or an
+        // explicit cancellation wins; an observer ending without terminal
+        // must leave the other sources working.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [weak self] in
                 await self?.sessionLoop(launch: launch, runID: runID, conversationID: conversationID)
@@ -534,8 +535,12 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
                 await self?.watchResult(launch: launch, runID: runID,
                     conversationID: conversationID, result: result)
             }
-            _ = await group.next()
-            group.cancelAll()
+            while await group.next() != nil {
+                if launch.terminalHandled || launch.cancelled || Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+            }
         }
         if launch.terminalHandled || launch.cancelled { settle(launch) }
     }
