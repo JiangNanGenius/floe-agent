@@ -75,7 +75,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。旧版状态与原索引详见 [历史版本导览](releases/HISTORY.md)；证据仍保存在 `evidence/`、`qualification/` 和 `validation/`。新发布说明写入 `releases/notes/`，测试文案写入 `releases/testflight/`。最近已核验交付为 [1.7.47（288）](releases/testflight/BUILD_288_DELIVERY.md)：内部 Floe QA 可安装，稳定无签名 Release 与同次 Feather 已交付；公开 TestFlight 尚未送审，API 写入审核说明返回 403，网页等待 Apple 双重认证。[资格记录](qualification/FLOE_CHAT_VOICE_SEARCH_20261023.md)保留测试和验收边界，[287 交付记录](releases/testflight/BUILD_287_DELIVERY.md)保留历史状态。此前版本与正式审核保留各自历史记录。
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.55（296）](releases/repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)：内部 Floe QA可用，publictest1等待审核，稳定无签名 Release与同次 Feather已完成独立回读。115项相关测试通过；真机效果不以模拟器或 Mac推理代替。[295记录](releases/repairs/FLOE_VOICE_SEARCH_BUILD295_20261025.md)和[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery:296; internal and unsigned/Feather available, external review pending. Historical records remain dated evidence.
 
 ## 历史研究（结论以现行代码为准）
 

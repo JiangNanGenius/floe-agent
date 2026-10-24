@@ -4,14 +4,14 @@
 
 | 目录 | 内容 | 数量 |
 | --- | --- | ---: |
-| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 116 |
-| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 138 |
-| [verification/](verification/) | 历史发布核验与代码审计 | 10 |
+| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 146 |
+| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 184 |
+| [verification/](verification/) | 历史发布核验与代码审计 | 11 |
 | [beta/](beta/) | 早期 1.7 beta 候选记录 | 13 |
 | [builds/](builds/) | 专项构建记录 | 2 |
-| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 25 |
+| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 51 |
 
-最近交付：[1.7.46（287）交付记录](testflight/BUILD_287_DELIVERY.md)、[本地资格](testflight/BUILD_287_LOCAL_VERIFICATION.md)、[发布说明](notes/RELEASE_NOTES_1.7.46_BUILD_287.md)。内部 Floe QA 可安装，publictest1 等待审核，稳定无签名 Release／同次 Feather 已完成核验；历史构建保留各自的原始记录。
+最近交付：[1.7.55（296）修复与交付记录](repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)、[双语发布说明](notes/RELEASE_NOTES_1.7.55_BUILD_296.md)。内部 Floe QA可用，publictest1等待审核，稳定无签名 Release／同次 Feather已独立核验；[295记录](repairs/FLOE_VOICE_SEARCH_BUILD295_20261025.md)及更早文档保留各自的原始状态。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 

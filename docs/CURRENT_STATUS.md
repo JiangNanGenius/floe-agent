@@ -1,7 +1,15 @@
-<!-- docs-updated: 2026-10-23 -->
+<!-- docs-updated: 2026-10-25 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-23. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-10-25. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+
+## 1.7.55（296）内部与无签名已交付，公测待审 / Delivered; external review pending
+
+本轮修复连续语音收尾导致回答未播报，以及增强语音朗读生成预算不足的问题。Swift 6 完整 App 编译、115 项相关测试（0 失败、0 跳过）和单次设备版归档通过；真实 Mac CoreML 数字朗读反例已完成前后对照，本轮未使用真机。[296 修复与交付记录](releases/repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)保留失败、验证和清理边界。
+
+Floe QA 已核验 `VALID`、未过期和 `IN_BETA_TESTING`；publictest1 只提交一次，重新打开后为“正在等待审核”。[稳定无签名 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.55)及同次 Feather 已完成独立文件、摘要、源码和链接核验。正式 App Store 275 保留原状。
+
+Build 296 repairs continuous-voice finalization and enhanced read-aloud frame budgeting. All 115 focused App-host tests and full Swift 6 compilation passed; native Mac inference and the device archive are recorded separately from physical-device acceptance. Internal testing and verified unsigned/Feather delivery are available; publictest1 is waiting for Apple review. [295 记录](releases/repairs/FLOE_VOICE_SEARCH_BUILD295_20261025.md)保留上一批八项范围及本次重新打开的问题。
 
 ## 1.7.49（290）内部与无签名已交付，公测待审 / Delivered; external review pending
 
