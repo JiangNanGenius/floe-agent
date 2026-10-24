@@ -695,10 +695,14 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
             finalAnswer = FinalAnswerSpeech.answer(runID: runID, events: events, messages: messages)?.text
         } catch {
             finalAnswer = nil
-            let failure = error as NSError
-            FloeLogger(category: .app).warning(
-                "voiceFinalReadFailed taskCancelled=\(Task.isCancelled) errorCancelled=\(error is CancellationError) domain=\(failure.domain) code=\(failure.code)")
-            report("finalAnswerUnconfirmed", "events")
+            // Losing observers and explicit stops can cancel their reads
+            // after another path has already settled the launch.
+            if !launch.terminalHandled, !launch.cancelled {
+                let failure = error as NSError
+                FloeLogger(category: .app).warning(
+                    "voiceFinalReadFailed taskCancelled=\(Task.isCancelled) errorCancelled=\(error is CancellationError) domain=\(failure.domain) code=\(failure.code)")
+                report("finalAnswerUnconfirmed", "events")
+            }
         }
         guard !launch.cancelled else { settle(launch); return }
         // The MainActor serializes this check and publication: only the first
