@@ -40,8 +40,9 @@
 //   waiter never consumes the lease, and a grant is never issued during
 //   retirement.
 // - A discarded cold mount keeps the cold-load slot occupied until its
-//   unmount and lease return finish, so a newer mount cannot overlap it; a
-//   stale completion never mutates a newer generation.
+//   unmount and lease return finish, so a newer mount cannot overlap it, and
+//   a stale completion never mutates a newer generation. The acquisition that
+//   was waiting on it fails; only a fresh acquire after the retirement mounts.
 //
 // No byte-size admission floor is encoded: the bundled model is a single
 // fixed choice; downloaded file size does not establish resident memory usage.
@@ -231,9 +232,14 @@ actor SpeechRecognitionRuntime {
         case loaded
         case failed
         case cancelled
-        /// The mount was built but retired/changed before it could be
-        /// installed; its unmount and lease return already completed.
+        /// A retirement window (pack management, background or memory
+        /// pressure) discarded the mount before it could be installed; its
+        /// unmount and lease return already completed. Terminal for this
+        /// acquisition: only a fresh explicit acquire may remount.
         case retired
+        /// The mount completed for a stale installed identity without a
+        /// retirement; the acquisition may retry the current revision.
+        case staleIdentity
     }
 
     private struct Warm {
@@ -281,7 +287,9 @@ actor SpeechRecognitionRuntime {
     /// installed, the app is backgrounded or a cold mount failed, and
     /// `CancellationError` when the caller was cancelled (a cancelled waiter
     /// never disturbs the mount another waiter needs and never takes a
-    /// lease).
+    /// lease). A waiter whose in-flight cold mount was retired by pack
+    /// management, background or memory pressure fails instead of mounting
+    /// again: only a fresh `acquire()` after that retirement may remount.
     func acquire() async throws -> SpeechRecognitionLease {
         try Task.checkCancellation()
         guard isForeground else { throw Failure.unavailable }
@@ -289,8 +297,10 @@ actor SpeechRecognitionRuntime {
             hookInstalled = true
             await dependencies.installResidencyHook(self)
         }
-        // Two rounds cover one revision-change retirement and one cold-mount
-        // discard; anything more is a genuine contention and stays busy.
+        // Two rounds cover one stale-identity retry (a warm model or a cold
+        // mount built for a revision that moved on). A cold mount discarded
+        // by a retirement is terminal, not retryable; anything more is a
+        // genuine contention and stays busy.
         for _ in 0..<2 {
             try await settlePreviousSession()
             try await revalidateForGrant()
@@ -320,7 +330,14 @@ actor SpeechRecognitionRuntime {
                 return grant(warm.model)
             case .failed: throw Failure.unavailable
             case .cancelled: throw CancellationError()
-            case .retired: continue
+            case .retired:
+                // A retirement window discarded this acquisition's cold
+                // mount. Never mount again from this waiter: pack
+                // management/background/pressure asked for the model to be
+                // gone, and an implicit remount after the window closed would
+                // resurrect it behind that decision.
+                throw Failure.unavailable
+            case .staleIdentity: continue
             }
         }
         throw Failure.busy
@@ -531,19 +548,47 @@ actor SpeechRecognitionRuntime {
         coldLoad = nil
     }
 
-    /// Publishes the mount only when the generation is unchanged, the app is
-    /// still in the foreground and the identity still matches. Otherwise the
-    /// freshly built model is unmounted and its file lease returned while the
-    /// cold-load slot is STILL occupied, so no newer mount can overlap it and
-    /// a stale completion never touches a newer generation.
+    /// Publishes the mount only when no retirement intervened, the app is
+    /// still in the foreground, the session slot is free and the identity
+    /// still matches. Otherwise the freshly built model is unmounted and its
+    /// file lease returned while the cold-load slot is STILL occupied, so no
+    /// newer mount can overlap it and a stale completion never touches a
+    /// newer generation. A retirement-discarded mount is terminal for the
+    /// waiting acquisition, including a retirement that starts while a stale
+    /// mount is being unmounted; only a stale installed identity without any
+    /// intervening retirement is retried.
     private func finishColdLoad(id: UUID, generation expected: UInt64,
                                 identity: String, loaded: Loaded) async -> ColdOutcome {
-        guard expected == generation, isForeground, session == nil,
-              loaded.model.identity == identity else {
+        guard expected == generation else {
+            // Only a retirement window bumps the generation while this mount
+            // is being built (discardColdLoad/retireWarm), so this waiter
+            // must fail rather than mount after the window.
             await loaded.model.unmount()
             await dependencies.releaseLease(loaded.leaseID)
             clearColdLoad(id: id)
             return .retired
+        }
+        guard isForeground, session == nil else {
+            await loaded.model.unmount()
+            await dependencies.releaseLease(loaded.leaseID)
+            clearColdLoad(id: id)
+            return .retired
+        }
+        guard loaded.model.identity == identity else {
+            // The installed revision moved on between the identity read and
+            // this mount; this is not a retirement, so the acquisition may
+            // retry with the current revision instead of installing stale
+            // weights.
+            await loaded.model.unmount()
+            await dependencies.releaseLease(loaded.leaseID)
+            clearColdLoad(id: id)
+            // Those awaits are reentrant: an explicit retirement window can
+            // start while this stale mount is being discarded, bump the
+            // generation and wait on this very task (discardColdLoad). A
+            // retirement is terminal — returning `.staleIdentity` here would
+            // let the acquisition retry and mount after the window closed.
+            guard expected == generation, isForeground else { return .retired }
+            return .staleIdentity
         }
         clearColdLoad(id: id)
         warm = Warm(model: loaded.model, leaseID: loaded.leaseID)

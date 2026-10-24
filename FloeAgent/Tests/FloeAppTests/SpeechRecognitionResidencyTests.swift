@@ -12,7 +12,9 @@
 //   - a finishing session is joined before the next lease (the
 //     VoiceConversationLiveStack.deactivate seam);
 //   - cancelled waiters never consume a lease, coalesced cold loads never
-//     orphan another waiter, and a retired mount is never installed;
+//     orphan another waiter, a retired mount is never installed, and the
+//     pending acquisition fails rather than remounting while a fresh
+//     acquisition after the retirement still mounts;
 //   - background, memory pressure and pack management release an idle warm
 //     model but never unmount a live successor, and an idle warm lease never
 //     keeps removal "busy";
@@ -58,6 +60,7 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
         var releaseCount: Int { lock.withLock { releaseCountStorage } }
         var maxConcurrentTranscribes: Int { lock.withLock { maxConcurrentTranscribesStorage } }
         var mountOverlapsUnmount: Int { lock.withLock { mountOverlapsUnmountStorage } }
+        var unmountInFlight: Bool { lock.withLock { unmountInFlightStorage } }
         var unmountDelayMilliseconds: Int { lock.withLock { unmountDelayMillisecondsStorage } }
         var selfRetirementAttempts: Int { lock.withLock { selfRetirementAttemptsStorage } }
 
@@ -326,6 +329,52 @@ final class SpeechRecognitionResidencyTests: XCTestCase {
         XCTAssertEqual(loader.unmountCount, 1, "the retired cold mount was unmounted")
         XCTAssertEqual(loader.releaseCount, 1, "the retired cold mount returned its file lease")
         XCTAssertEqual(loader.mountOverlapsUnmount, 0, "no mount overlapped the discarded unmount")
+        XCTAssertEqual(loader.loadCount, 1, "the retired acquisition did not mount again")
+
+        // The pending acquisition must not retry by itself. A fresh explicit
+        // acquisition after the retirement is the only retry that may mount.
+        let fresh = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 2, "a fresh acquisition mounted the model again")
+        XCTAssertEqual(fresh.model.identity, "rev-a", "the fresh acquisition mounted the installed revision")
+        await (await startSession(fresh)).value
+        XCTAssertEqual(loader.unmountCount, 1, "the healthy fresh session kept the replacement warm")
+    }
+
+    /// Reentrancy boundary: a retirement that starts while a stale-identity
+    /// mount is being discarded must be terminal for the pending acquisition.
+    /// The generation is checked again after the unmount/lease awaits, so the
+    /// waiter cannot retry and mount after the retirement window closes.
+    func testRetirementDuringStaleIdentityDiscardFailsThePendingAcquire() async throws {
+        let loader = ResidencyLoader()
+        loader.configure(unmountDelayMilliseconds: 300)
+        loader.setNextMountIdentity("rev-stale")
+        let runtime = runtime(loader)
+
+        let loading = Task { try await runtime.acquire() }
+        var attempts = 0
+        while !loader.unmountInFlight && attempts < 400 {
+            try await Task.sleep(for: .milliseconds(5))
+            attempts += 1
+        }
+        XCTAssertTrue(loader.unmountInFlight, "the stale-identity mount reached its discard unmount")
+
+        let released = await runtime.releaseForModelManagement()
+        XCTAssertTrue(released, "retiring the stale-identity discard succeeds")
+
+        switch await loading.result {
+        case .success: XCTFail("a stale mount retired during its discard must never be handed out")
+        case .failure: break
+        }
+        XCTAssertEqual(loader.loadCount, 1, "the pending acquisition did not mount again")
+        XCTAssertEqual(loader.unmountCount, 1, "the stale mount was unmounted exactly once")
+        XCTAssertEqual(loader.releaseCount, 1, "the stale mount returned its file lease exactly once")
+        XCTAssertEqual(loader.mountOverlapsUnmount, 0, "no mount overlapped the stale discard")
+
+        let fresh = try await runtime.acquire()
+        XCTAssertEqual(loader.loadCount, 2, "a fresh explicit acquisition mounted the installed revision")
+        XCTAssertEqual(fresh.model.identity, "rev-a")
+        await (await startSession(fresh)).value
+        XCTAssertEqual(loader.unmountCount, 1, "the healthy fresh session kept the replacement warm")
     }
 
     func testFailedLoadRetries() async throws {
