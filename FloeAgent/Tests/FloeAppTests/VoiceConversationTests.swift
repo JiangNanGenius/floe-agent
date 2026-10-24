@@ -105,6 +105,10 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
 
     let outputSampleRate: Double = 8_000
 
+    var outputFrameSnapshot: (scheduled: Int, played: Int) {
+        lock.withLock { (scheduled, completed) }
+    }
+
     var levels: AsyncStream<VoiceConversationLevel> { lock.withLock { storedLevels } }
     var playedLevels: AsyncStream<VoiceConversationLevel> { lock.withLock { storedPlayedLevels } }
     var transcripts: AsyncStream<String> { lock.withLock { storedTranscripts } }

@@ -135,6 +135,7 @@
 		231450C31B4BABA097EDE191 /* PDFium.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 276A4BD225189F342404A19B /* PDFium.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		236CB517B681EFDC1BA4235D /* PiPAudioPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B0A26F4078FD87102346033 /* PiPAudioPreferencesTests.swift */; };
 		240295D920ACB16AC985D2EF /* BackgroundVideoService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBD2CBE0215EF9478D86E581 /* BackgroundVideoService.swift */; };
+		2428176C76B207AD370E55FC /* ContinuousVoiceRunDriverTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E70339082D673C12BAC25E38 /* ContinuousVoiceRunDriverTests.swift */; };
 		243F61A4BA353C207E514EE0 /* RunOutputFileViewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0070B3BA44775D2F0AE6435C /* RunOutputFileViewTests.swift */; };
 		24C313FE9EECA1243FAAAB15 /* SharedDocumentsExportAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A47BCB0437209C40EB081C3 /* SharedDocumentsExportAdapter.swift */; };
 		24D360EC17E29EC2F3B4E2AA /* ThreadTimelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF07847A2353D846B363915C /* ThreadTimelineTests.swift */; };
@@ -1714,6 +1715,7 @@
 		E5C9FCB4BCFCE1897EF0991E /* StorageDiagnosticService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageDiagnosticService.swift; sourceTree = "<group>"; };
 		E5F13F3C19D3620D77460B9A /* FloeFileProviderExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeFileProviderExtension.swift; sourceTree = "<group>"; };
 		E6C9A70E7268FDFF23034963 /* IDERunSourceStagingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDERunSourceStagingTests.swift; sourceTree = "<group>"; };
+		E70339082D673C12BAC25E38 /* ContinuousVoiceRunDriverTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinuousVoiceRunDriverTests.swift; sourceTree = "<group>"; };
 		E782E6A24779378BB40F5953 /* GitHubActionsJobCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubActionsJobCenter.swift; sourceTree = "<group>"; };
 		E7E878F704F2A5D35DAD0C0B /* dashC.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = dashC.xcframework; path = Frameworks/dashC.xcframework; sourceTree = "<group>"; };
 		E8C1BC84F8391281941457B5 /* CanvasExternalImportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CanvasExternalImportTests.swift; sourceTree = "<group>"; };
@@ -2235,6 +2237,7 @@
 				09764BE52F1D5879D0DD63EB /* ContentUpdateRealSignedFeedTests.swift */,
 				458C7EA8B511404FC54BF0B9 /* ContinuousVoiceMicrophoneActivationTests.swift */,
 				AE00AF52C2BED7ED23F79257 /* ContinuousVoicePresentationTests.swift */,
+				E70339082D673C12BAC25E38 /* ContinuousVoiceRunDriverTests.swift */,
 				445859C8B4161698EE6F5106 /* ContinuousVoiceSpeechBridgeTests.swift */,
 				176486D5EC9F3771924E9E20 /* CreativeDestinationRouteTests.swift */,
 				8AFA175A385DE61D4830BF9D /* DefaultAskDocumentPolicyAppTests.swift */,
@@ -4397,6 +4400,7 @@
 				72F15BB25D642639C88FA6FA /* ContentUpdateStoreTests.swift in Sources */,
 				EDBAC09D9DFB3805A5C11CEF /* ContinuousVoiceMicrophoneActivationTests.swift in Sources */,
 				1C8178D7E152DA84A1519F0F /* ContinuousVoicePresentationTests.swift in Sources */,
+				2428176C76B207AD370E55FC /* ContinuousVoiceRunDriverTests.swift in Sources */,
 				5BAA5A4ACE016FA6DF6D39E9 /* ContinuousVoiceSpeechBridgeTests.swift in Sources */,
 				A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */,
 				F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */,

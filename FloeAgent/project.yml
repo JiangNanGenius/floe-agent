@@ -698,6 +698,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/PersonalizationMemoryTests.swift
       - path: Tests/FloePersistenceTests/V13PersonalizationMemoryTests.swift
       - path: Tests/FloeAppTests/ContinuousVoiceSpeechBridgeTests.swift
+      - path: Tests/FloeAppTests/ContinuousVoiceRunDriverTests.swift
       - path: Tests/FloeAppTests/FinalAnswerSpeechTests.swift
       - path: Tests/FloeAppTests/LocalSpeechModelStoreTests.swift
       - path: Tests/FloeAppTests/TTSSettingsServiceTests.swift
