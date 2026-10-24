@@ -207,7 +207,7 @@ final class MicActivationRig {
 
 // MARK: - B: Shared-session last-holder registry (the late-stop defect)
 
-@Test(.serialized)
+@Suite(.serialized)
 struct AudioSessionOwnershipRegistryTests {
 
     @Test("Deactivation is granted ONLY to the LAST holder's release; a still-held release is inert")
