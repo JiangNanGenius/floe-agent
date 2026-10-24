@@ -162,6 +162,7 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     /// gate owns its own lock and its own single-flight/budget state; the
     /// live stack routes EVERY recovery decision through it.
     private let recoveryGate = VoiceCaptureRecoveryGate()
+    private var recoveryInFlight: Bool { recoveryGate.isInFlight }
     /// Silence ALSO delivers buffers. If NO tap buffer arrives for this long
     /// while capture is active, the microphone path is dead: one bounded
     /// in-place recovery is attempted first; if that fails, report
