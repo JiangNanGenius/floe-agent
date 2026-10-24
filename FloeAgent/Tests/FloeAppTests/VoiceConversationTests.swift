@@ -263,6 +263,7 @@ final class VoiceTestDriving: VoiceConversationTurnDriving {
 final class VoiceEventLog {
     private(set) var events: [VoiceConversationSpeechEvent] = []
     private var task: Task<Void, Never>?
+    func record(_ event: VoiceConversationSpeechEvent) { events.append(event) }
     func start(_ stream: AsyncStream<VoiceConversationSpeechEvent>) {
         task = Task { [weak self] in
             for await event in stream { self?.events.append(event) }

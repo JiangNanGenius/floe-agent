@@ -60,6 +60,52 @@ struct ContinuousVoiceRunDriverTests {
         }
     }
 
+    // Observe through ONE pull owner, matching the bridge's production
+    // single-consumer contract. A second iterator would steal its events.
+    @MainActor
+    private final class ObservedOutput: VoiceConversationSpeechOutput {
+        let coordinator: VoiceConversationCoordinator
+        let speechEvents: AsyncStream<VoiceConversationSpeechEvent>
+        private let continuation: AsyncStream<VoiceConversationSpeechEvent>.Continuation
+        private var pump: Task<Void, Never>?
+
+        init(coordinator: VoiceConversationCoordinator, log: VoiceEventLog) {
+            self.coordinator = coordinator
+            let pair = AsyncStream<VoiceConversationSpeechEvent>.makeStream(
+                bufferingPolicy: .bufferingNewest(256))
+            speechEvents = pair.stream
+            continuation = pair.continuation
+            let upstream = coordinator.speechEvents
+            pump = Task {
+                for await event in upstream {
+                    guard !Task.isCancelled else { break }
+                    log.record(event)
+                    pair.continuation.yield(event)
+                }
+                pair.continuation.finish()
+            }
+        }
+
+        func stop() {
+            pump?.cancel()
+            pump = nil
+            continuation.finish()
+        }
+        func appendAudio(_ chunk: VoiceConversationAudioChunk, to unit: VoiceConversationSpeechUnit)
+            -> VoiceConversationSpeechAppendResult {
+            coordinator.appendAudio(chunk, to: unit)
+        }
+        func endUnit(_ unit: VoiceConversationSpeechUnit) { coordinator.endUnit(unit) }
+        func endRoundAudio(_ token: VoiceConversationRoundToken) { coordinator.endRoundAudio(token) }
+        func freezeSpeechControls(_ controls: VoicePlaybackControls, for unit: VoiceConversationSpeechUnit) {
+            coordinator.freezeSpeechControls(controls, for: unit)
+        }
+        func pauseOutput() { coordinator.pauseOutput() }
+        func resumeOutput() { coordinator.resumeOutput() }
+        func stopNow() { coordinator.stopNow() }
+        var completedSpokenText: String { coordinator.completedSpokenText }
+    }
+
     @MainActor
     private final class Fixture {
         let environment: AppEnvironment
@@ -68,6 +114,7 @@ struct ContinuousVoiceRunDriverTests {
         let driver: VoiceConversationRunDriver
         let coordinator: VoiceConversationCoordinator
         let bridge: ContinuousVoiceSpeechBridge
+        let output: ObservedOutput
         let log: VoiceEventLog
         let recorder: Recorder
         let diagnostics: DiagnosticLog
@@ -79,6 +126,7 @@ struct ContinuousVoiceRunDriverTests {
             driver: VoiceConversationRunDriver,
             coordinator: VoiceConversationCoordinator,
             bridge: ContinuousVoiceSpeechBridge,
+            output: ObservedOutput,
             log: VoiceEventLog,
             recorder: Recorder,
             diagnostics: DiagnosticLog
@@ -89,6 +137,7 @@ struct ContinuousVoiceRunDriverTests {
             self.driver = driver
             self.coordinator = coordinator
             self.bridge = bridge
+            self.output = output
             self.log = log
             self.recorder = recorder
             self.diagnostics = diagnostics
@@ -96,6 +145,7 @@ struct ContinuousVoiceRunDriverTests {
 
         func stop() {
             bridge.stop()
+            output.stop()
             coordinator.end()
             center.providerAdapterTestOverride = nil
         }
@@ -169,9 +219,9 @@ struct ContinuousVoiceRunDriverTests {
             speechNormalizer: { AnswerSpeechText.plainText($0) }
         )
         let log = VoiceEventLog()
-        log.start(coordinator.speechEvents)
+        let output = ObservedOutput(coordinator: coordinator, log: log)
         let bridge = ContinuousVoiceSpeechBridge(
-            output: coordinator,
+            output: output,
             synthesize: { unit in
                 recorder.synthesized.append(unit.text)
                 return Self.makeStream(mode: synthesisMode, unit: unit)
@@ -190,6 +240,7 @@ struct ContinuousVoiceRunDriverTests {
             driver: driver,
             coordinator: coordinator,
             bridge: bridge,
+            output: output,
             log: log,
             recorder: recorder,
             diagnostics: diagnostics
