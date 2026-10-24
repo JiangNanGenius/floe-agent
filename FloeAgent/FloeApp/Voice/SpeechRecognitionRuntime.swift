@@ -44,13 +44,11 @@
 //   stale completion never mutates a newer generation.
 //
 // No byte-size admission floor is encoded: the bundled model is a single
-// fixed choice and the user's ~1 GB acceptance statement is an estimate, not
-// a measured budget or a rejection rule.
+// fixed choice; downloaded file size does not establish resident memory usage.
 //
 // This file is Foundation-only on purpose: the exact production bytes compile
-// into the host harness under
-// `Local/Private/voice-device-fix-20261024/asr-residency` and are exercised
-// there with a scripted loader/model seam. The WhisperKit/AVFoundation pieces
+// into a host harness with a scripted loader/model seam. The
+// WhisperKit/AVFoundation pieces
 // live in `WhisperStreamingTranscriber.swift`.
 
 import Foundation

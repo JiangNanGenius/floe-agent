@@ -18,10 +18,8 @@
 //     keeps removal "busy";
 //   - a real decoder fault retires the model, a cancelled session does not.
 //
-// The host harness under
-// Local/Private/voice-device-fix-20261024/asr-residency compiles the same
-// production runtime file and runs the equivalent gate checks plus mutation
-// checks on a machine without an iOS test host.
+// A Foundation-only host harness also exercises the production runtime
+// with controlled model and cancellation seams.
 
 #if canImport(UIKit)
 import XCTest

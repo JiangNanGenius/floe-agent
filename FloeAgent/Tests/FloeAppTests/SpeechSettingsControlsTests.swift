@@ -1,9 +1,7 @@
 // FloeAppTests — speech settings controls, catalogue compatibility and the
 // saved-key reveal policy.
 //
-// Covers the frozen cross-stage contract
-// Local/Private/voice-device-fix-20261024/PLAYBACK-CONTROL-CONTRACT.json and
-// the settings UI copy/ownership rules without touching playback files:
+// Covers the shared playback control contract and settings ownership:
 // selecting a voice never resets the user's rate/pitch/autoread/barge
 // controls, saving a service never selects it, Volcengine 2.0 voices are
 // offered only for the 2.0 model, the configured source generates a neutral

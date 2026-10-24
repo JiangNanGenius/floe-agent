@@ -1,7 +1,6 @@
 // FloeCoreTests — persisted speech playback controls.
 //
-// Pins the frozen cross-stage contract
-// Local/Private/voice-device-fix-20261024/PLAYBACK-CONTROL-CONTRACT.json:
+// Pins the persisted playback control contract:
 // neutral 0 pitch, finite clamp -6…6 semitones, finite clamp 0.5…2.0 rate,
 // backward-compatible decoding of settings written before either control
 // existed, and a snapshot whose computed playbackControls can never expose an
