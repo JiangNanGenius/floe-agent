@@ -220,9 +220,13 @@ final class SpeechOutputSourceTests: XCTestCase {
         let revisionB = String(repeating: "8", count: 40)
         let modelA = makeLocalModel(id: "moss-a", revision: revisionA, voices: ["a-default", "a-other"])
         let modelB = makeLocalModel(id: "moss-b", revision: revisionB, voices: ["b-default"])
+        // `makeLocalModel` pins the digest and size of Data(id.utf8); the
+        // downloader must serve exactly those bytes. Anything else is (rightly)
+        // rejected as corrupt, so the pack never installs and no first-install
+        // selection can happen.
         let payloads: [String: Data] = [
-            modelA.files[0].url.absoluteString: Data("pack-a".utf8),
-            modelB.files[0].url.absoluteString: Data("pack-b".utf8),
+            modelA.files[0].url.absoluteString: Data(modelA.id.utf8),
+            modelB.files[0].url.absoluteString: Data(modelB.id.utf8),
         ]
         let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
         let store = LocalSpeechModelStore(
@@ -238,15 +242,30 @@ final class SpeechOutputSourceTests: XCTestCase {
                            modelA: modelA, modelB: modelB, store: store, settings: settings)
     }
 
-    private func settled(_ store: LocalSpeechModelStore) async throws {
+    /// Waits for the install-completion event to reach the service: the store
+    /// must be idle AND the service must expose the exact pack as installed.
+    /// The completion notification publishes that state, so this never depends
+    /// on the idle pump's cadence or an arbitrary sleep.
+    private func settled(_ model: LocalSpeechModel, store: LocalSpeechModelStore,
+                         settings: TTSSettingsService) async throws {
         for _ in 0..<300 {
-            if !(await store.state().running) {
-                try await Task.sleep(for: .milliseconds(30))
+            if !(await store.state().running), settings.localInstalledModelIDs.contains(model.id) {
                 return
             }
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTFail("Synthetic install did not finish")
+        XCTFail("Synthetic install of \(model.id) did not become visible")
+    }
+
+    /// Waits for the selection to land on the exact source. The completion
+    /// event owns first-install selection, so an immediate assertion can race
+    /// an in-flight sync that another call already started.
+    private func settleSource(_ source: SpeechOutputSource, settings: TTSSettingsService) async throws {
+        for _ in 0..<300 {
+            if settings.currentOutputSource == source { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTFail("The service did not select \(source.id)")
     }
 
     func testLocalPacksRememberIndependentVoicesAndListAsSources() async throws {
@@ -255,10 +274,11 @@ final class SpeechOutputSourceTests: XCTestCase {
         let settings = fixture.settings
         settings.update { $0.speechRateRatio = 1.4; $0.autoReadEnabled = true }
         await settings.install(fixture.modelA)
-        try await settled(fixture.store)
+        try await settled(fixture.modelA, store: fixture.store, settings: settings)
         await settings.syncLocalSelection()
+        try await settleSource(.local(modelID: fixture.modelA.id), settings: settings)
         await settings.install(fixture.modelB)
-        try await settled(fixture.store)
+        try await settled(fixture.modelB, store: fixture.store, settings: settings)
         await settings.syncLocalSelection()
 
         XCTAssertEqual(settings.currentOutputSource, .local(modelID: "moss-a"),

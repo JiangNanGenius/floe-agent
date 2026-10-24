@@ -68,7 +68,15 @@ final class TTSSettingsService: ObservableObject {
             .flatMap { try? JSONDecoder().decode(TTSSettingsSnapshot.self, from: $0) } ?? .systemDefault
         installationObserver = NotificationCenter.default.publisher(for: .localSpeechInstallationCompleted)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in
-                Task { @MainActor [weak self] in await self?.syncLocalSelection() }
+                Task { @MainActor [weak self] in
+                    // Completion is the readiness event for the pack: publish
+                    // the installed set before selection, so the new source is
+                    // immediately listable/selectable instead of waiting for
+                    // the idle pump's next tick. Selection and its protections
+                    // stay on the existing syncLocalSelection path.
+                    await self?.refreshLocalSpeechState()
+                    await self?.syncLocalSelection()
+                }
             }
         Task { [weak self] in await self?.syncLocalSelection() }
         localStatePump = Task { [weak self] in
