@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import Foundation
+import os
 import Testing
 import FloeCore
 import FloeProviders
@@ -124,14 +125,14 @@ struct ContinuousVoiceSpeechBridgeTests {
 
     @Test func sourceThatNeverEmitsFailsOnDeadlineAndClosesSource() async throws {
         let output = Output()
-        var closed = false
+        let closed = OSAllocatedUnfairLock(initialState: false)
         var failures = 0
         let bridge = ContinuousVoiceSpeechBridge(
             output: output,
             synthesize: { _ in
                 let (stream, sender) = TTSAudioChunkStream.make()
                 return TTSConfiguredStream(stream: stream, close: {
-                    closed = true
+                    closed.withLock { $0 = true }
                     sender.finish()
                 })
             },
@@ -145,7 +146,7 @@ struct ContinuousVoiceSpeechBridgeTests {
         output.events.yield(.unitQueued(unit(token)))
         output.events.yield(.roundTextCompleted(token: token, unitCount: 1))
         try await waitUntil { failures > 0 }
-        #expect(closed, "A dead source must be closed on the supply deadline")
+        #expect(closed.withLock { $0 }, "A dead source must be closed on the supply deadline")
         #expect(failures == 1)
         #expect(output.accepted.isEmpty)
         #expect(output.endedRounds == 0)
@@ -160,8 +161,8 @@ struct ContinuousVoiceSpeechBridgeTests {
             synthesize: { requested in
                 let (stream, sender) = TTSAudioChunkStream.make()
                 sender.attach(Task {
-                    try await Task.sleep(for: .milliseconds(40))
                     do {
+                        try await Task.sleep(for: .milliseconds(40))
                         try await sender.send(chunk(requested, [0, 0], sequence: 0, final: true))
                         sender.finish()
                     } catch { sender.finish(throwing: error) }

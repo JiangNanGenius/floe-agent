@@ -86,7 +86,7 @@ struct WebSearchResultBudgetTests {
 
     @Test("Five long rows stay inside the boundary with exact citations and useful snippets")
     func fiveLongRowsStayUsefulAndBounded() throws {
-        let rows = (1...5).map { row($0, snippetLength: 1_200) }
+        let rows = (1...5).map { Self.row($0, snippetLength: 1_200) }
         let output = try WebSearchTool.output(Self.response(rows))
         #expect(output.summary.count <= 4_096)
         let object = try Self.object(output)
@@ -112,7 +112,7 @@ struct WebSearchResultBudgetTests {
 
     @Test("Overreturned rows are bounded with exact retained identities")
     func overreturnedRowsBounded() throws {
-        let rows = (1...12).map { row($0, snippetLength: 1_500) }
+        let rows = (1...12).map { Self.row($0, snippetLength: 1_500) }
         let output = try WebSearchTool.output(Self.response(rows))
         #expect(output.summary.count <= 4_096)
         let object = try Self.object(output)
@@ -138,7 +138,7 @@ struct WebSearchResultBudgetTests {
 
     @Test("Huge single row stays bounded, exact and honestly marked")
     func hugeSingleItemBounded() throws {
-        let rows = [row(1, snippetLength: 50_000)]
+        let rows = [Self.row(1, snippetLength: 50_000)]
         let output = try WebSearchTool.output(Self.response(rows))
         #expect(output.summary.count <= 4_096)
         let object = try Self.object(output)
@@ -188,7 +188,7 @@ struct WebSearchResultBudgetTests {
 
     @Test("Serialization is deterministic for the same response")
     func deterministicForSameResponse() throws {
-        let rows = (1...5).map { row($0, snippetLength: 1_200) }
+        let rows = (1...5).map { Self.row($0, snippetLength: 1_200) }
         let response = Self.response(rows)
         let first = try WebSearchTool.output(response)
         let second = try WebSearchTool.output(response)
@@ -200,7 +200,7 @@ struct WebSearchResultBudgetTests {
     func oversizeURLRowsOmittedNotShortened() throws {
         let longURL = "https://example.com/" + String(repeating: "segment/", count: 250) + "end"
         #expect(longURL.count > WebSearchTool.maximumCitationURLLength)
-        var rows = [row(1, snippetLength: 1_200)]
+        var rows = [Self.row(1, snippetLength: 1_200)]
         rows.append(WebSearchResult(
             title: "Oversize",
             url: URL(string: longURL)!,
@@ -208,7 +208,7 @@ struct WebSearchResultBudgetTests {
             provider: .volcengine,
             citationID: "cit-oversize"
         ))
-        rows.append(row(2, snippetLength: 1_200))
+        rows.append(Self.row(2, snippetLength: 1_200))
         let output = try WebSearchTool.output(Self.response(rows))
         #expect(output.summary.count <= 4_096)
         let object = try Self.object(output)
