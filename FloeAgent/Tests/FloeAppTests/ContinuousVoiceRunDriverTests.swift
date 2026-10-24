@@ -60,6 +60,7 @@ struct ContinuousVoiceRunDriverTests {
         }
     }
 
+    @MainActor
     private final class Fixture {
         let environment: AppEnvironment
         let center: ConversationCenter
