@@ -695,6 +695,9 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
             finalAnswer = FinalAnswerSpeech.answer(runID: runID, events: events, messages: messages)?.text
         } catch {
             finalAnswer = nil
+            let failure = error as NSError
+            FloeLogger(category: .app).warning(
+                "voiceFinalReadFailed taskCancelled=\(Task.isCancelled) errorCancelled=\(error is CancellationError) domain=\(failure.domain) code=\(failure.code)")
             report("finalAnswerUnconfirmed", "events")
         }
         guard !launch.cancelled else { settle(launch); return }
