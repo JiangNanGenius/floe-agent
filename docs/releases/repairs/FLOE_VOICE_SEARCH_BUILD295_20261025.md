@@ -27,9 +27,11 @@ The initial unified batch passed 370 of 372 logical tests, with no skips. Two ex
 
 Audio/HTTP fixtures and real SQLite/PNG tests do not prove microphone or audible output. QR transport and decoding passed, but a complete rendered-chat QR round was not exercised. No physical device, paid Kimi/cloud inference, live installed-plugin upgrade or live rollback was used for this qualification.
 
-## Known issue reopened after delivery
+## Known issues reopened after delivery
 
 The user tested **295 with Volcengine speech output** and reports that a completed conversational answer remains silent and immediately returns to listening. They neither spoke nor recorded microphone activity during that interval. Continuous spoken replies therefore remain **open**, despite passing isolated coordinator and bridge tests. Investigation now targets the actual final-answer/store/driver/synthesis/output lifecycle; this record does not claim a device-verified repair or assume genuine user interruption. Any correction will use a new build, preserving 295 and its tag.
+
+The user also confirms that the previously reported long Markdown still returns “文本过长，请分段朗读”. Ordinary Volcengine playback works. The long-text input/budget path is reopened separately; passing estimated-budget and segmentation fixtures are not treated as proof that the actual reader path accepts it.
 
 ## Distribution readback
 
