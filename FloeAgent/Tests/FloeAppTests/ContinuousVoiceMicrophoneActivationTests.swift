@@ -180,8 +180,8 @@ final class MicActivationFactory: @unchecked Sendable {
 
 @MainActor
 final class MicActivationRig {
-    let factory = MicActivationFactory()
-    let driving = MicActivationDriving()
+    let factory: MicActivationFactory
+    let driving: MicActivationDriving
     let coordinator: VoiceConversationCoordinator
 
     init() {
