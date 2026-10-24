@@ -521,8 +521,9 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         result: Task<Result<Void, Error>, Never>
     ) async {
         // The service may already exist (sync launch), appear later, or never
-        // appear at all (fast completion). Independent wake sources cover
-        // every ordering; the first terminal path wins, the others cancel.
+        // appear at all (fast completion). Only a settled terminal or an
+        // explicit cancellation wins; an observer ending without terminal
+        // must leave the other sources working.
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [weak self] in
                 await self?.sessionLoop(launch: launch, runID: runID, conversationID: conversationID)
@@ -534,8 +535,12 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
                 await self?.watchResult(launch: launch, runID: runID,
                     conversationID: conversationID, result: result)
             }
-            _ = await group.next()
-            group.cancelAll()
+            while await group.next() != nil {
+                if launch.terminalHandled || launch.cancelled || Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+            }
         }
         if launch.terminalHandled || launch.cancelled { settle(launch) }
     }
@@ -661,8 +666,13 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         stateHint: String?
     ) async {
         guard !launch.terminalHandled else { return }
-        launch.terminalHandled = true
-        launch.terminal = true
+        // `terminalHandled` is the PUBLICATION fence, not an in-flight
+        // marker. The old watch loop cancelled siblings on its first return.
+        // Setting it before the awaits below let a duplicate terminal source
+        // return immediately and cancel the real finalizer; GRDB then throws
+        // CancellationError and the round silently completes with no speech.
+        // Concurrent watchers may repeat read-only resolution, but exactly one
+        // may publish through the second guard below.
         var messages = launch.latestMessages
         var roundText = Self.assistantText(for: runID, in: messages)
         if roundText.isEmpty {
@@ -683,18 +693,39 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         // SUCCESSFUL store read may feed the canonical helper: a storage
         // error is never turned into an empty-events legacy fallback, and
         // no live segment or joined round text is ever substituted as the
-        // spoken body. An unconfirmed final means EMPTY completed speech.
+        // spoken body. An unconfirmed final fails visibly instead.
         var finalAnswer: String?
         do {
             let events = try await center.runStore(for: conversationID).events(runID: runID)
             finalAnswer = FinalAnswerSpeech.answer(runID: runID, events: events, messages: messages)?.text
         } catch {
             finalAnswer = nil
-            report("finalAnswerUnconfirmed", "events")
+            // Losing observers and explicit stops can cancel their reads
+            // after another path has already settled the launch.
+            if !launch.terminalHandled, !launch.cancelled {
+                let failure = error as NSError
+                FloeLogger(category: .app).warning(
+                    "voiceFinalReadFailed taskCancelled=\(Task.isCancelled) errorCancelled=\(error is CancellationError) domain=\(failure.domain) code=\(failure.code)")
+                report("finalAnswerUnconfirmed", "events")
+            }
         }
         guard !launch.cancelled else { settle(launch); return }
+        // The MainActor serializes this check and publication: only the first
+        // fully resolved finalizer may emit a terminal turn event and settle.
+        guard !launch.terminalHandled else { return }
+        launch.terminalHandled = true
+        launch.terminal = true
         if activeRunID == runID { activeRunID = nil }
         let state = stateHint ?? "completed"
+        if state == "completed", finalAnswer == nil {
+            // A completed run without a CONFIRMED final is not a successful
+            // zero-audio answer. Surface the existing actionable failure;
+            // never substitute display-only joined/intermediate text.
+            report("finalAnswerUnconfirmed", "missing")
+            deliver(launch, .failed(message: "voice.error.turn"))
+            settle(launch)
+            return
+        }
         switch state {
         case "failed", "recoveryFailed":
             report("roundTerminal", state)
@@ -704,8 +735,10 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
                 launch.published = roundText
                 deliver(launch, .answerUpdated(cumulativeText: roundText))
             }
-            // Speech body: the CONFIRMED final only. nil ⇒ EMPTY; the
-            // joined round text stays display-only (never spoken).
+            // Speech body: the CONFIRMED final only. The joined round text
+            // stays display-only (never spoken). A real confirmed body whose
+            // speech projection is legitimately empty (for example code or
+            // media-only content) still completes normally.
             let speechText = AnswerSpeechText.plainText(finalAnswer ?? "")
             // completed carries ONLY the final-answer body (normalized):
             // the whole round is never replayed into speech.

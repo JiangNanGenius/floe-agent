@@ -384,8 +384,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.54"
-        CURRENT_PROJECT_VERSION: "295"
+        MARKETING_VERSION: "1.7.55"
+        CURRENT_PROJECT_VERSION: "296"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -466,8 +466,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.54"
-        CURRENT_PROJECT_VERSION: "295"
+        MARKETING_VERSION: "1.7.55"
+        CURRENT_PROJECT_VERSION: "296"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -517,8 +517,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.54"
-        CURRENT_PROJECT_VERSION: "295"
+        MARKETING_VERSION: "1.7.55"
+        CURRENT_PROJECT_VERSION: "296"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -561,8 +561,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.54"
-        CURRENT_PROJECT_VERSION: "295"
+        MARKETING_VERSION: "1.7.55"
+        CURRENT_PROJECT_VERSION: "296"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -614,8 +614,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.54"
-        CURRENT_PROJECT_VERSION: "295"
+        MARKETING_VERSION: "1.7.55"
+        CURRENT_PROJECT_VERSION: "296"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
