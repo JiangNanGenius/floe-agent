@@ -417,6 +417,7 @@ struct MicGraphOrderContractTests {
 
 // MARK: - Coordinator contracts around the repaired activation
 
+@MainActor
 struct MicActivationCoordinatorTests {
 
     @Test("A capture path that fails after its in-stack restart fails visibly after EXACTLY one full rebuild, fencing every built stack")
