@@ -327,11 +327,15 @@ private actor LocalSpeechInferenceOwner {
                     // codes; the catalog default timbre passes nil. Any envelope,
                     // size or hash mismatch fails closed before synthesis.
                     let reference = try referenceVoice(for: voice)
-                    // Frame budget per BLOCK, sized against the pack's REAL
-                    // contextLength with measured-rate margins
-                    // (TTSSpeechBudget). The native actual-row context check
-                    // remains authoritative and fails before any audio;
-                    // reaching maxFrames without end-of-speech is a loud
+                    // Frame allowance per BLOCK sized against the pack's REAL
+                    // remaining context using the EXACT prompt rows the native
+                    // guard measures (TTSSpeechBudget.mossGenerationFrameBudget
+                    // + the vendored promptRowCount API). The measured-rate
+                    // curve survives only as the floor; a slower shipped voice
+                    // can no longer be truncated mid-block by an app-invented
+                    // frame guess. The native actual-row context check remains
+                    // fully authoritative and fails before any audio; reaching
+                    // maxFrames without end-of-speech stays a loud
                     // generationLimit, never a silent truncation.
                     let contextLength = await moss.configuration.contextLength
                     // A fused Markdown answer (independent list items and
@@ -348,9 +352,17 @@ private actor LocalSpeechInferenceOwner {
                     }
                     for block in blocks {
                         try Task.checkCancellation()
-                        let maxFrames = TTSSpeechBudget.mossMaxFrames(
+                        let promptRows = try await moss.promptRowCount(text: block, reference: reference)
+                        try Task.checkCancellation()
+                        let maxFrames = TTSSpeechBudget.mossGenerationFrameBudget(
                             contextLength: contextLength,
+                            promptRows: promptRows,
                             characterCount: block.count, hasCJK: hasCJK)
+                        // Content-free admission trace (counts only) so a real
+                        // "文本过长" report can distinguish a native context
+                        // rejection from a frame-budget exhaustion.
+                        FloeLogger(category: .providers).debug(
+                            "localSpeechMossCall chars=\(block.count) rows=\(promptRows) maxFrames=\(maxFrames) ctx=\(contextLength)")
                         let session = moss.synthesizeStreamSession(text: block, reference: reference,
                             options: .init(maxFrames: maxFrames, seed: 0))
                         do {
@@ -399,7 +411,11 @@ private actor LocalSpeechInferenceOwner {
                 // generationLimit is a loud pre-END failure, never a silent
                 // truncation. Both are recoverable "sentence too long".
                 switch native {
-                case .contextExceeded, .generationLimit:
+                case .contextExceeded:
+                    FloeLogger(category: .providers).warning("localSpeechMossRejected stage=context")
+                    sender.finish(throwing: LocalSpeechRuntime.Failure.sentenceTooLong)
+                case .generationLimit:
+                    FloeLogger(category: .providers).warning("localSpeechMossRejected stage=generation")
                     sender.finish(throwing: LocalSpeechRuntime.Failure.sentenceTooLong)
                 default:
                     sender.finish(throwing: LocalSpeechRuntime.Failure.invalidAudio)

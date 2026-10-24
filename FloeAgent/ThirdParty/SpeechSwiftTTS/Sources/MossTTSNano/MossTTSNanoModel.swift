@@ -95,6 +95,12 @@ public actor MossTTSNanoModel: SpeechGenerationModel {
         try synthesizeImpl(text: text, reference: reference, options: options)
     }
 
+    // Floe patch: expose the same prompt size used by native admission so
+    // callers can reserve real generation capacity without guessing tokens.
+    public func promptRowCount(text: String, reference: MossTTSNanoReference?) throws -> Int {
+        try tokenizer.prompt(text: text, reference: reference).count
+    }
+
     public func generate(text: String, language: String?) async throws -> [Float] {
         try validateLanguage(language)
         return try synthesize(text: text).mono

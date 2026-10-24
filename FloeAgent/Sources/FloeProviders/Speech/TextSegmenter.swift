@@ -340,10 +340,11 @@ public struct TTSTextSegmenter: Sendable {
 ///   with the REAL sentencepiece tokenization BEFORE generating anything,
 ///   and throws `generationLimit` (loudly, never silently) if audio reaches
 ///   `maxFrames` before end-of-speech. Both map to a recoverable
-///   sentence-too-long failure in the runtime. Exact prompt-row counts are
-///   not public outside the vendored package (see HANDOFF for the minimal
-///   vendor API request), so the app can only size `maxFrames`, never
-///   predict rows precisely.
+///   sentence-too-long failure in the runtime. The vendored package now
+///   exposes the exact prompt-row count (`promptRowCount(text:reference:)`),
+///   so the app sizes each call's frame allowance against the REAL remaining
+///   context (`mossGenerationFrameBudget`) instead of the estimate alone —
+///   the measured-rate curve stays only as the lower floor.
 /// * Qwen3-TTS caps generation itself at six codec frames per REAL text
 ///   token (`maxTokenCap`); the App's existing 8 MiB PCM-per-utterance
 ///   guard and the 4096-character request guard remain untouched.
@@ -400,5 +401,18 @@ public enum TTSSpeechBudget {
         let contextAvailable = max(1,
             contextLength - mossTemplateRowsUpperBound - mossContextSafetyRows)
         return min(estimated, contextAvailable)
+    }
+
+    /// Use actual context headroom rather than clipping valid speech to an
+    /// estimated duration. Retain the expected-duration floor so the native
+    /// guard rejects insufficient context before starting that block.
+    public static func mossGenerationFrameBudget(
+        contextLength: Int, promptRows: Int, characterCount: Int, hasCJK: Bool
+    ) -> Int {
+        let estimated = Int((Double(characterCount)
+            * mossFramesPerCharacter(hasCJK: hasCJK)).rounded(.up))
+            + mossEndOfSpeechMarginFrames
+        let headroom = contextLength - promptRows - mossContextSafetyRows
+        return max(1, max(estimated, headroom))
     }
 }

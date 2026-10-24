@@ -24,3 +24,7 @@ SOURCE_SHA256.json. The latter records upstream bytes, not patched replacements.
 
 No weights, sampling, tokenization, codec or signal processing algorithms change;
 the MOSS prefill execution batches change as described above.
+
+- MossTTSNano/MossTTSNanoModel.swift: expose the exact tokenizer prompt-row
+  count for generation-capacity reservation. Callers retain the native
+  context and natural-end guards; weights and sampling remain unchanged.

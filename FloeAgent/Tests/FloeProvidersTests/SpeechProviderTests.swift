@@ -1457,6 +1457,43 @@ struct TTSSpeechBudgetTests {
         #expect(!TTSSpeechBudget.hasCJKCharacter("１２３"))  // fullwidth digits alone
     }
 
+    @Test func generationFrameBudgetClaimsExactRemainingContext() {
+        // Exact prompt reservation leaves room for a slower complete reading.
+        let budget = TTSSpeechBudget.mossGenerationFrameBudget(
+            contextLength: 1024, promptRows: 109, characterCount: 46, hasCJK: true)
+        #expect(budget == 907)  // 1024 - 109 rows - never-claimed safety rows
+        #expect(109 + budget <= 1024)   // native admission cannot be exceeded
+        #expect(budget >= TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 46, hasCJK: true))
+    }
+
+    @Test func generationFrameBudgetFloorsAtTheMeasuredEstimate() {
+        // If even the expected duration cannot fit, native admission still
+        // rejects the block before emitting partial audio.
+        #expect(TTSSpeechBudget.mossGenerationFrameBudget(
+            contextLength: 1024, promptRows: 950, characterCount: 300, hasCJK: true)
+            == TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: 300, hasCJK: true))
+        // Tiny/negative headroom still yields a valid MossTTSNanoOptions value.
+        #expect(TTSSpeechBudget.mossGenerationFrameBudget(
+            contextLength: 200, promptRows: 199, characterCount: 40, hasCJK: true) >= 1)
+    }
+
+    @Test func numericSpeechMayOutlastTheCharacterEstimate() {
+        let sentence = "123456789012345678901234567890."
+        // Pinned decoder: natural end takes 81 frames; the old 49-frame
+        // estimate actually stopped mid-utterance with generationLimit.
+        let nativeEndFrame = 81
+        let oldBudget = TTSSpeechBudget.mossMaxFrames(
+            contextLength: 1024, characterCount: sentence.count, hasCJK: false)
+        let budget = TTSSpeechBudget.mossGenerationFrameBudget(
+            contextLength: 1024, promptRows: 103,
+            characterCount: sentence.count, hasCJK: false)
+        #expect(oldBudget < nativeEndFrame)
+        #expect(budget >= nativeEndFrame)
+        #expect(103 + budget <= 1024 - TTSSpeechBudget.mossContextSafetyRows)
+    }
+
     @Test func budgetDocumentsItsEmpiricalRates() {
         // Rate constants are the audition-measured slowest voices plus 10%.
         #expect(abs(TTSSpeechBudget.mossFramesPerCharacter(hasCJK: true)
