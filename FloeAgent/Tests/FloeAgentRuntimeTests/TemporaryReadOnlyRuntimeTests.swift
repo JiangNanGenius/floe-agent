@@ -26,6 +26,55 @@ import FloeTestSupport
 
 @Suite("FloeAgentRuntime.TemporaryReadOnly")
 struct TemporaryReadOnlyRuntimeTests {
+    /// Child dispatch is meaningful only while the parent owns a live run.
+    /// Park a real parent tool instead of testing an idle/completed runtime.
+    actor ParentExecutionGate {
+        private var entered = false
+        private var isOpen = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func park() async {
+            entered = true
+            if isOpen { return }
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func isParked() -> Bool { entered }
+
+        func open() {
+            isOpen = true
+            for waiter in waiters { waiter.resume() }
+            waiters.removeAll()
+        }
+    }
+
+    /// Always release the fixture on a throwing #require/failure path so the
+    /// test cannot leave an orphaned parent task blocked inside the executor.
+    private func withActiveParent(
+        runtime: FloeAgentRuntime,
+        gate: ParentExecutionGate,
+        goal: String,
+        body: () async throws -> Void
+    ) async throws {
+        let parent = Task { try await runtime.start(goal: goal) }
+        do {
+            for _ in 0..<500 {
+                if await gate.isParked() { break }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            let parked = await gate.isParked()
+            try #require(parked, "The parent must be executing its real hold tool before child dispatch")
+            try await body()
+        } catch {
+            await gate.open()
+            await runtime.cancel()
+            _ = try? await parent.value
+            throw error
+        }
+        await gate.open()
+        try await parent.value
+    }
+
     final class RecordingExecutor: ToolExecutor, @unchecked Sendable {
         struct Entry {
             var call: ToolCall
@@ -35,9 +84,17 @@ struct TemporaryReadOnlyRuntimeTests {
 
         private let storage = AsyncLock<[Entry]>([])
         private let descriptors: [String: ToolCatalog.Descriptor]
+        private let gate: ParentExecutionGate?
+        private let gatedCallID: String?
 
-        init(descriptors: [String: ToolCatalog.Descriptor]) {
+        init(
+            descriptors: [String: ToolCatalog.Descriptor],
+            gate: ParentExecutionGate? = nil,
+            gatedCallID: String? = nil
+        ) {
             self.descriptors = descriptors
+            self.gate = gate
+            self.gatedCallID = gatedCallID
         }
 
         var entries: [Entry] { storage.withLock { $0 } }
@@ -64,6 +121,7 @@ struct TemporaryReadOnlyRuntimeTests {
                     expectedAuthorizationIdentity: expectedAuthorizationIdentity
                 ))
             }
+            if call.id == gatedCallID { await gate?.park() }
             return ToolResult(callID: call.id, status: .ok, outputSummary: "read ok", outputDigest: "d")
         }
     }
@@ -220,11 +278,16 @@ struct TemporaryReadOnlyRuntimeTests {
 
     @Test("a delegated temporary child is denied private reads and mixed-tool writes, and allowed the public web")
     func childDeniedForPrivateReadsAllowedForWeb() async throws {
-        let executor = RecordingExecutor(descriptors: descriptors())
+        let gate = ParentExecutionGate()
+        let executor = RecordingExecutor(descriptors: descriptors(), gate: gate, gatedCallID: "temporary-parent-hold")
         let ceiling = temporaryCeiling(executor)
-        let runtime = makeRuntime(
-            adapter: MockAdapter(), executor: executor, allowedToolNames: ceiling
-        )
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "temporary-parent-hold", toolName: "web.fetch",
+                arguments: #"{"url":"https://example.com"}"#))],
+            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+        ]
+        let runtime = makeRuntime(adapter: adapter, executor: executor, allowedToolNames: ceiling)
         func childContext() async -> ToolContext {
             ToolContext(
                 runID: await runtime.runID,
@@ -241,40 +304,56 @@ struct TemporaryReadOnlyRuntimeTests {
         let identity = ChildExecutionIdentity(
             parentRunID: await runtime.runID, rootTaskID: UUID(), delegateCallID: "d"
         )
-        for name in ["notes.read", "mail.read", "test.write", "exec.shell", "media.models"] {
-            let arguments: Data = name == "media.models"
-                ? Data(#"{"action":"install"}"#.utf8)
-                : Data("{}".utf8)
-            let call = try TestFixtures.toolCall(
-                id: "child-\(name)", toolName: name, arguments: String(decoding: arguments, as: UTF8.self))
-            let result = await runtime.dispatchChildTool(
-                call, identity: identity, childContext: await childContext()
-            )
-            #expect(result.status == .denied, "\(name) must be denied")
-        }
+        let inactiveRead = try TestFixtures.toolCall(id: "unstarted-child", toolName: "web.fetch",
+            arguments: #"{"url":"https://example.com"}"#)
+        let inactiveResult = await runtime.dispatchChildTool(inactiveRead, identity: identity, childContext: await childContext())
+        #expect(inactiveResult.status == .denied)
+        #expect(inactiveResult.outputSummary.contains("owning task is no longer active"))
         #expect(executor.entries.isEmpty)
 
-        let read = try TestFixtures.toolCall(
-            id: "cr-1", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#
-        )
-        let readResult = await runtime.dispatchChildTool(
-            read, identity: identity, childContext: await childContext()
-        )
-        #expect(readResult.status == .ok)
-        let entry = try #require(executor.entries.first { $0.call.id == "cr-1" })
-        #expect(entry.context.temporaryReadOnly)
-        #expect(entry.context.publicWebOnly)
-        #expect(entry.context.childExecution != nil)
-        #expect(entry.context.clientSessionID?.hasPrefix("child:") == true)
+        try await withActiveParent(runtime: runtime, gate: gate, goal: "keep the temporary parent active for its child") {
+            for name in ["notes.read", "mail.read", "test.write", "exec.shell", "media.models"] {
+                let arguments: Data = name == "media.models"
+                    ? Data(#"{"action":"install"}"#.utf8)
+                    : Data("{}".utf8)
+                let call = try TestFixtures.toolCall(
+                    id: "child-\(name)", toolName: name, arguments: String(decoding: arguments, as: UTF8.self))
+                let result = await runtime.dispatchChildTool(
+                    call, identity: identity, childContext: await childContext()
+                )
+                #expect(result.status == .denied, "\(name) must be denied")
+                #expect(result.outputSummary.contains("temporary chat"), "\(name): \(result.outputSummary)")
+            }
+            #expect(executor.entries.map(\.call.id) == ["temporary-parent-hold"])
 
-        // The configured Bocha AI-summary search is also a public web tool.
-        let aiSearch = try TestFixtures.toolCall(
-            id: "ca-1", toolName: "web.searchAI",
-            arguments: #"{"query":"weather summary"}"#)
-        let aiResult = await runtime.dispatchChildTool(
-            aiSearch, identity: identity, childContext: await childContext())
-        #expect(aiResult.status == .ok)
-        #expect(executor.entries.first { $0.call.id == "ca-1" }?.context.publicWebOnly == true)
+            let read = try TestFixtures.toolCall(
+                id: "cr-1", toolName: "web.fetch", arguments: #"{"url":"https://example.com"}"#
+            )
+            let readResult = await runtime.dispatchChildTool(
+                read, identity: identity, childContext: await childContext()
+            )
+            #expect(readResult.status == .ok)
+            let entry = try #require(executor.entries.first { $0.call.id == "cr-1" })
+            #expect(entry.context.temporaryReadOnly)
+            #expect(entry.context.publicWebOnly)
+            #expect(entry.context.childExecution != nil)
+            #expect(entry.context.clientSessionID?.hasPrefix("child:") == true)
+
+            // The configured Bocha AI-summary search is also a public web tool.
+            let aiSearch = try TestFixtures.toolCall(
+                id: "ca-1", toolName: "web.searchAI",
+                arguments: #"{"query":"weather summary"}"#)
+            let aiResult = await runtime.dispatchChildTool(
+                aiSearch, identity: identity, childContext: await childContext())
+            #expect(aiResult.status == .ok)
+            #expect(executor.entries.first { $0.call.id == "ca-1" }?.context.publicWebOnly == true)
+        }
+        let finishedRead = try TestFixtures.toolCall(id: "finished-child", toolName: "web.fetch",
+            arguments: #"{"url":"https://example.com"}"#)
+        let finishedResult = await runtime.dispatchChildTool(finishedRead, identity: identity, childContext: await childContext())
+        #expect(finishedResult.status == .denied)
+        #expect(finishedResult.outputSummary.contains("owning task is no longer active"))
+        #expect(!executor.entries.contains { $0.call.id == "finished-child" })
     }
 
     @Test("a public web read keeps the base authorization identity; the LAN opt-in is denied before effect")
@@ -311,7 +390,8 @@ struct TemporaryReadOnlyRuntimeTests {
 
     @Test("an ordinary run and ordinary child keep private read/write authority when the flag is false")
     func nonTemporaryPathsAreUnaffected() async throws {
-        let executor = RecordingExecutor(descriptors: descriptors())
+        let gate = ParentExecutionGate()
+        let executor = RecordingExecutor(descriptors: descriptors(), gate: gate, gatedCallID: "ordinary-parent-hold")
         let allNames = Set(executor.allDescriptors.map(\.name))
         let adapter = MockAdapter()
         let privateRead = try TestFixtures.toolCall(
@@ -322,6 +402,8 @@ struct TemporaryReadOnlyRuntimeTests {
         )
         adapter.script = [
             [.toolRequest(privateRead), .toolRequest(write)],
+            [.toolRequest(try TestFixtures.toolCall(id: "ordinary-parent-hold", toolName: "web.fetch",
+                arguments: #"{"url":"https://example.com"}"#))],
             [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
         ]
         let runtime = makeRuntime(
@@ -330,38 +412,38 @@ struct TemporaryReadOnlyRuntimeTests {
             allowedToolNames: allNames,
             temporaryReadOnly: false
         )
-        try await runtime.start(goal: "use notes.read and test.write now")
+        try await withActiveParent(runtime: runtime, gate: gate, goal: "use notes.read and test.write now") {
+            // The ordinary main run executes both; no temporary projection is
+            // applied and the schemas stay unchanged.
+            #expect(executor.entries.contains { $0.call.id == "n-2" })
+            #expect(executor.entries.contains { $0.call.id == "w-2" })
+            #expect(executor.entries.first { $0.call.id == "n-2" }?.context.temporaryReadOnly == false)
+            let notesSchema = try #require(
+                adapter.requests.first?.toolSchemas.first { $0.name == "notes.read" }
+            )
+            #expect(notesSchema.parametersJSON == executor.descriptor(named: "notes.read")?.parametersJSON)
 
-        // The ordinary main run executes both; no temporary projection is
-        // applied and the schemas stay unchanged.
-        #expect(executor.entries.contains { $0.call.id == "n-2" })
-        #expect(executor.entries.contains { $0.call.id == "w-2" })
-        #expect(executor.entries.first { $0.call.id == "n-2" }?.context.temporaryReadOnly == false)
-        let notesSchema = try #require(
-            adapter.requests.first?.toolSchemas.first { $0.name == "notes.read" }
-        )
-        #expect(notesSchema.parametersJSON == executor.descriptor(named: "notes.read")?.parametersJSON)
-
-        // An ordinary delegated child keeps the existing private read path:
-        // the temporary policy is keyed strictly off `temporaryReadOnly`.
-        let identity = ChildExecutionIdentity(
-            parentRunID: await runtime.runID, rootTaskID: UUID(), delegateCallID: "d-ordinary"
-        )
-        let childContext = ToolContext(
-            runID: await runtime.runID,
-            allowedToolNames: ["notes.read", "test.write"],
-            cancellation: CancellationToken(),
-            childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
-            temporaryReadOnly: false
-        )
-        let childRead = try TestFixtures.toolCall(
-            id: "cn-1", toolName: "notes.read", arguments: "{}"
-        )
-        let childResult = await runtime.dispatchChildTool(
-            childRead, identity: identity, childContext: childContext
-        )
-        #expect(childResult.status == .ok)
-        let childEntry = try #require(executor.entries.first { $0.call.id == "cn-1" })
-        #expect(childEntry.context.temporaryReadOnly == false)
+            // An ordinary delegated child keeps the existing private read path:
+            // the temporary policy is keyed strictly off `temporaryReadOnly`.
+            let identity = ChildExecutionIdentity(
+                parentRunID: await runtime.runID, rootTaskID: UUID(), delegateCallID: "d-ordinary"
+            )
+            let childContext = ToolContext(
+                runID: await runtime.runID,
+                allowedToolNames: ["notes.read", "test.write"],
+                cancellation: CancellationToken(),
+                childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
+                temporaryReadOnly: false
+            )
+            let childRead = try TestFixtures.toolCall(
+                id: "cn-1", toolName: "notes.read", arguments: "{}"
+            )
+            let childResult = await runtime.dispatchChildTool(
+                childRead, identity: identity, childContext: childContext
+            )
+            #expect(childResult.status == .ok)
+            let childEntry = try #require(executor.entries.first { $0.call.id == "cn-1" })
+            #expect(childEntry.context.temporaryReadOnly == false)
+        }
     }
 }
