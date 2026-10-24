@@ -1,0 +1,4 @@
+{
+  "en-US": "Please try voice replies while remaining silent, brief background noise, and deliberate spoken interruptions. In Settings → General → Voice Output, choose a Playback Source and then a Voice. Try selecting an online service, editing its details, switching sources and restarting the app; voice choices, speed and pitch should be preserved. For real microphone testing, stop Device Hub screen sharing first; USB debugging can remain connected. Also try complete long sentences and mixed Chinese, English and Japanese text; reading should not break sentences into short fragments.",
+  "zh-Hans": "请重点体验保持安静时的语音回复、短暂环境声音与主动说话打断。在设置 → 通用 → 语音输出中先选播放来源，再选音色。可测试在线服务选用、详情编辑、来源切换和重启后的选择恢复；各来源音色、语速及音调应保持。真机麦克风测试请先停止 Device Hub 屏幕共享，USB 调试连接可以保留。 也请测试较长完整句子和中英日混语，朗读应避免被切成零碎片段。"
+}
