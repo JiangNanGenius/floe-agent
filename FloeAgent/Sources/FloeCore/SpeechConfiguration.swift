@@ -311,6 +311,10 @@ public struct TTSSynthesisRequest: Sendable, Hashable, Identifiable {
     public var text: String
     /// Relative speech rate 0.5…2.0 mapped onto the provider's supported knob.
     /// Providers without a matching knob ignore it; nothing is approximated.
+    /// This is the DIRECT-provider semantics. The app's configured settings
+    /// source (`ConfiguredTTSSpeechSource`) deliberately sends 1.0 and carries
+    /// the user rate/pitch on `TTSPlaybackControls` instead, so the shared
+    /// output effect applies the user rate exactly once and never twice.
     public var speechRateRatio: Double
     public var format: TTSAudioFormat
     /// Optional BCP-47 language hint (nil = auto-detect / provider default).
@@ -483,6 +487,54 @@ public enum TTSSynthesisError: Error, Sendable, Hashable {
     }
 }
 
+/// Normalized user playback controls applied once by the shared output DSP.
+///
+/// This is the single cross-stage voice for "how fast" and "how high" a
+/// spoken answer sounds. Both the ordinary answer player and the continuous
+/// voice output read the same immutable value from `TTSConfiguredStream` and
+/// insert it into their final audio graph; provider requests carry no pitch
+/// parameter and the configured source sends a neutral rate, so the effect is
+/// never applied twice. Values are sanitized on construction: non-finite input
+/// falls back to neutral and finite input is clamped to the supported range.
+public struct TTSPlaybackControls: Sendable, Equatable, Hashable {
+    /// Relative speech rate: 0.5 = half speed, 1.0 = normal, 2.0 = double.
+    public static let rateRange: ClosedRange<Double> = 0.5...2.0
+    /// Intonation offset in semitones: -6 = lowest, 0 = unchanged, 6 = highest.
+    public static let pitchSemitoneRange: ClosedRange<Double> = -6.0...6.0
+    /// Speed used when no user preference applies.
+    public static let neutralRate = 1.0
+    /// Pitch used when no user preference applies.
+    public static let neutralPitch = 0.0
+
+    public var speechRateRatio: Double
+    public var speechPitchSemitones: Double
+
+    public init(
+        speechRateRatio: Double = TTSPlaybackControls.neutralRate,
+        speechPitchSemitones: Double = TTSPlaybackControls.neutralPitch
+    ) {
+        self.speechRateRatio = TTSPlaybackControls.normalizedRate(speechRateRatio)
+        self.speechPitchSemitones = TTSPlaybackControls.normalizedPitch(speechPitchSemitones)
+    }
+
+    /// Unchanged output: normal speed and no pitch offset.
+    public static let neutral = TTSPlaybackControls()
+
+    /// True when this value carries no user adjustment (both axes neutral).
+    /// A neutral value still lets a consumer pass audio through untouched.
+    public var isNeutral: Bool { self == TTSPlaybackControls.neutral }
+
+    static func normalizedRate(_ value: Double) -> Double {
+        guard value.isFinite else { return neutralRate }
+        return min(rateRange.upperBound, max(rateRange.lowerBound, value))
+    }
+
+    static func normalizedPitch(_ value: Double) -> Double {
+        guard value.isFinite else { return neutralPitch }
+        return min(pitchSemitoneRange.upperBound, max(pitchSemitoneRange.lowerBound, value))
+    }
+}
+
 /// Persisted non-secret speech settings (UserDefaults JSON via
 /// `TTSSettingsService`). Defaults mirror the pre-existing behavior: system
 /// voice, no automatic reading, barge-in allowed.
@@ -503,6 +555,11 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
     /// onto AVSpeechUtteranceDefaultSpeechRate so the existing `rate` slider
     /// stays compatible.
     public var speechRateRatio: Double
+    /// Intonation offset in semitones for every route (-6…6, 0 = unchanged).
+    /// No provider documents a pitch parameter, so this value never reaches a
+    /// provider request; the shared output DSP applies it. Settings written
+    /// before the control existed decode to the neutral 0.
+    public var speechPitchSemitones: Double
     /// Automatic reading of assistant answers (default OFF per settled spec).
     public var autoReadEnabled: Bool
     /// Continuous-voice barge-in: user speech may interrupt answer audio
@@ -528,6 +585,7 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         modelID: String = "",
         voiceID: String = "",
         speechRateRatio: Double = 1.0,
+        speechPitchSemitones: Double = 0.0,
         autoReadEnabled: Bool = false,
         allowBargeIn: Bool = true,
         connectionProviderID: UUID? = nil,
@@ -540,12 +598,70 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         self.openAIBaseURL = (trimmedBaseURL?.isEmpty == false) ? trimmedBaseURL : nil
         self.modelID = modelID
         self.voiceID = voiceID
-        self.speechRateRatio = speechRateRatio
+        // One normalization for the persisted fields and the computed
+        // `playbackControls`: a corrupted value can never reach a player.
+        let controls = TTSPlaybackControls(
+            speechRateRatio: speechRateRatio,
+            speechPitchSemitones: speechPitchSemitones)
+        self.speechRateRatio = controls.speechRateRatio
+        self.speechPitchSemitones = controls.speechPitchSemitones
         self.autoReadEnabled = autoReadEnabled
         self.allowBargeIn = allowBargeIn
         self.connectionProviderID = connectionProviderID
         let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.language = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
+    }
+
+    /// Normalized value both output paths consume. Never stores a second copy:
+    /// the persisted fields above remain the single source of truth.
+    public var playbackControls: TTSPlaybackControls {
+        TTSPlaybackControls(
+            speechRateRatio: speechRateRatio,
+            speechPitchSemitones: speechPitchSemitones)
+    }
+
+    /// Backward-compatible decoding for ONE new field: `speechPitchSemitones`
+    /// did not exist before this control, so a stored snapshot without it is
+    /// still a valid record and decodes to the neutral 0. Everything the
+    /// previous synthesized decoder required stays required — a corrupt or
+    /// incomplete stored identity (missing provider/route/model/voice/rate/
+    /// flags) is rejected exactly as before instead of silently turning into
+    /// the system route, and the settings service then keeps its documented
+    /// fallback. Historically optional fields keep their `decodeIfPresent`
+    /// treatment, and both control axes are re-sanitized on decode.
+    /// Encoding stays synthesized (schema version 1 plus the new key).
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            provider: try container.decode(
+                TTSSpeakerProvider.self, forKey: .provider),
+            billingRoute: try container.decode(
+                TTSBillingRoute.self, forKey: .billingRoute),
+            alibabaRegion: try container.decodeIfPresent(
+                String.self, forKey: .alibabaRegion),
+            openAIBaseURL: try container.decodeIfPresent(
+                String.self, forKey: .openAIBaseURL),
+            modelID: try container.decode(
+                String.self, forKey: .modelID),
+            voiceID: try container.decode(
+                String.self, forKey: .voiceID),
+            speechRateRatio: try container.decode(
+                Double.self, forKey: .speechRateRatio),
+            speechPitchSemitones: try container.decodeIfPresent(
+                Double.self, forKey: .speechPitchSemitones) ?? TTSPlaybackControls.neutralPitch,
+            autoReadEnabled: try container.decode(
+                Bool.self, forKey: .autoReadEnabled),
+            allowBargeIn: try container.decode(
+                Bool.self, forKey: .allowBargeIn),
+            connectionProviderID: try container.decodeIfPresent(
+                UUID.self, forKey: .connectionProviderID),
+            language: try container.decodeIfPresent(String.self, forKey: .language))
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider, billingRoute, alibabaRegion, openAIBaseURL, modelID, voiceID
+        case speechRateRatio, speechPitchSemitones, autoReadEnabled, allowBargeIn
+        case connectionProviderID, language
     }
 
     public static let systemDefault = TTSSettingsSnapshot()

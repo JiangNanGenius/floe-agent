@@ -132,6 +132,15 @@ final class ContinuousVoiceSpeechBridge {
                 var sampleRate: Int?
                 let source = self.synthesize(unit)
                 self.activeSource = source
+                // Freeze this unit's playback controls from the configured
+                // stream BEFORE any of its audio is scheduled. The contract
+                // carrier is immutable; the coordinator keeps the FIRST value
+                // as the round's single configuration and forwards it to the
+                // live sink, which applies it once before the round's first
+                // buffer (never on player receipts).
+                self.output?.freezeSpeechControls(
+                    VoicePlaybackControls(source.playbackControls),
+                    for: unit)
                 defer { source.closeStream() }
                 for try await chunk in source.stream {
                     try Task.checkCancellation()

@@ -12,6 +12,20 @@ struct SyncSettingsView: View {
     @ObservedObject var center: SettingsCenter
     @State private var isSynchronizing = false
     @State private var credentialAuthenticationError: String?
+    /// Live engine truth while this screen is open. The cached
+    /// `SettingsCenter` value is refreshed on load; iCloud Keychain secrets
+    /// can still land afterwards, so the status row follows the engine's
+    /// arrival re-checks instead of freezing on a stale "waiting" state.
+    @State private var liveConfigSyncStatus: SyncStatus?
+    /// Bumped on every SettingsCenter publication so a suspended poll can
+    /// detect that a newer pause/error/toggle value landed while it was
+    /// awaiting the engine and must not be applied afterwards.
+    @State private var configStatusPublicationGeneration = 0
+    /// One-shot flag: the center just published a fresh `.waitingForSecret`
+    /// (manual sync, toggle, load) while this screen is open. The mirror loop
+    /// spends it on exactly one immediate honest re-check; the engine-owned
+    /// arrival monitor remains the only durable re-computation owner.
+    @State private var newlyPublishedWaiting = false
 
     var body: some View {
         Form {
@@ -111,14 +125,72 @@ struct SyncSettingsView: View {
             }
         }
         .navigationTitle(FloeL10n.l("settings.section.sync"))
-        .task { await center.load() }
+        .task {
+            await center.load()
+            await trackConfigurationStatus()
+        }
+        .onChange(of: center.configSyncStatus) { _, newValue in
+            // A freshly published engine value (sync cycle, toggle, pause)
+            // takes precedence; the mirror loop re-reads on its next pass.
+            // A newly published wait also arms exactly one immediate
+            // re-check, so a resolved-then-re-waiting cycle can never freeze
+            // the row even though the .task chain already started once.
+            configStatusPublicationGeneration += 1
+            liveConfigSyncStatus = nil
+            newlyPublishedWaiting = newValue == .waitingForSecret
+        }
+    }
+
+    /// Single screen-bounded mirror of the engine's live status. Secrets and
+    /// CloudKit records arrive independently: the engine-owned arrival
+    /// monitor re-derives the credential wait in the background, while this
+    /// loop cheaply mirrors it so the row follows late arrivals for as long
+    /// as the screen is visible — including a `synced → new waiting → late
+    /// arrival` cycle that starts after the first observation exited.
+    /// Cancelling this `.task` (navigation away) stops UI polling entirely;
+    /// no duplicate durable poll owner is created.
+    ///
+    /// Every application revalidates the SettingsCenter publication
+    /// generation, so a value read BEFORE a pause/error/toggle was published
+    /// can never be applied AFTER it.
+    @MainActor
+    private func trackConfigurationStatus() async {
+        let engine = center.environment.configurationSync
+        // Entry: one immediate honest per-account re-check. It only ever
+        // promotes a cached `.waitingForSecret`; other lifecycle states are
+        // returned unchanged.
+        let entryGeneration = configStatusPublicationGeneration
+        let entryStatus = await engine.refreshStatusIfWaiting()
+        if entryGeneration == configStatusPublicationGeneration {
+            liveConfigSyncStatus = entryStatus
+        }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            if Task.isCancelled { break }
+            let recheck = newlyPublishedWaiting
+            newlyPublishedWaiting = false
+            let cycleGeneration = configStatusPublicationGeneration
+            let latest: SyncStatus
+            if recheck {
+                latest = await engine.refreshStatusIfWaiting()
+            } else {
+                latest = await engine.status
+            }
+            if cycleGeneration == configStatusPublicationGeneration {
+                liveConfigSyncStatus = latest
+            }
+        }
+    }
+
+    private var effectiveConfigSyncStatus: SyncStatus {
+        liveConfigSyncStatus ?? center.configSyncStatus
     }
 
     private var syncStatusText: String {
         guard center.overallSyncEnabled, center.configurationSyncEnabled else {
             return String(localized: "settings.sync.status.paused")
         }
-        switch center.configSyncStatus {
+        switch effectiveConfigSyncStatus {
         case .syncing: return String(localized: "settings.sync.status.syncing")
         case .synced: return String(localized: "settings.sync.status.synced")
         case .paused: return String(localized: "settings.sync.status.paused")
@@ -150,7 +222,7 @@ struct SyncSettingsView: View {
     }
 
     private var syncStatusColor: Color {
-        switch center.configSyncStatus {
+        switch effectiveConfigSyncStatus {
         case .synced: FloeTheme.success
         case .error: FloeTheme.destructive
         case .syncing: FloeTheme.primary

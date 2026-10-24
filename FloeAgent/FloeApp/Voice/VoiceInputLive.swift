@@ -417,6 +417,7 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private var tapInstalled = false
     private var sessionActivated = false
+    private let sessionOwnerID = UUID()
     private let lock = NSLock()
     private let meterLock = NSLock()
     private var activityMeter = VoiceActivityMeter()
@@ -439,11 +440,19 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
         guard !alreadyInstalled else { return }
 
         let session = AVAudioSession.sharedInstance()
+        // Shared last-holder discipline (FloeAudioSessionOwnership): this
+        // component participates so a superseded continuous-voice stack can
+        // never deactivate the session this dictation capture just
+        // activated — and vice versa. Activate freely; deactivate only as
+        // the LAST holder. (Category adoption/stealing across TTS playback
+        // remains the SpeechService owner's contract — see the lane handoff.)
+        FloeAudioSessionOwnership.claim(sessionOwnerID)
         do {
             try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             lock.withLock { sessionActivated = true }
         } catch {
+            _ = FloeAudioSessionOwnership.release(sessionOwnerID)
             throw VoiceSessionError.failure(.noAudioInput)
         }
 
@@ -550,11 +559,19 @@ final class AudioEngineCapturer: VoiceAudioCapturing, @unchecked Sendable {
         if hadTap {
             engine.inputNode.removeTap(onBus: 0)
         }
+        // LAST-holder only, ATOMIC against new claims: a stop abandoned by
+        // the bounded continuous-voice handoff must never silence a newer
+        // owner. The removal and the session deactivation happen under one
+        // serialization, so no claim/activation can slip between "I was
+        // last" and "setActive(false)" — that two-step gap was itself a
+        // race this lane found during review.
         if hadSession {
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
+            FloeAudioSessionOwnership.releaseAndDeactivateLast(sessionOwnerID) {
+                try? AVAudioSession.sharedInstance().setActive(
+                    false,
+                    options: .notifyOthersOnDeactivation
+                )
+            }
         }
     }
 
@@ -589,11 +606,26 @@ extension VoiceInputController {
         let method = VoiceRecognitionPreferences.method
         #if canImport(WhisperKit)
         if method != .system {
-            do { return try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics,
-                allowSystemFallback: method == .automatic) }
+            do {
+                let whisper = try await WhisperStreamingTranscriber.make(language: language, diagnostics: diagnostics,
+                    allowSystemFallback: method == .automatic)
+                // 2026-10-24 activation attribution (non-behavioral): the
+                // same-device A/B showed dictation succeeding while
+                // continuous failed voice.error.recognition through THIS
+                // shared factory. ONE log site records which backend each
+                // entry actually selected; constants only, no user data.
+                FloeLogger(category: .app).info("voiceBackendStarted domain=voice kind=whisper")
+                return whisper
+            }
             catch is CancellationError { throw CancellationError() }
             catch {
                 if method == .enhanced { throw VoiceSessionError.failure(.modelNotReady) }
+                // Silent Whisper->Apple fallback could hide a model-store
+                // failure that then dies on an unavailable Apple recognizer;
+                // name the fallback with type + OS code ONLY.
+                FloeLogger(category: .app).warning(
+                    "voiceBackendFallback domain=voice from=whisper error=\(String(reflecting: type(of: error))) code=\((error as NSError).code)"
+                )
             }
         }
         #else
@@ -602,7 +634,9 @@ extension VoiceInputController {
         guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else {
             throw VoiceSessionError.failure(.speechPermissionDenied)
         }
-        return try StreamingSpeechRecognizerTranscriber(locale: language.locale, diagnostics: diagnostics)
+        let apple = try StreamingSpeechRecognizerTranscriber(locale: language.locale, diagnostics: diagnostics)
+        FloeLogger(category: .app).info("voiceBackendStarted domain=voice kind=apple")
+        return apple
     }
 
 }

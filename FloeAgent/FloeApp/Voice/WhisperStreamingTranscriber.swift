@@ -6,6 +6,13 @@ import AVFoundation
 
 /// One serial inference worker. The tap owns conversion under a lock; model calls never
 /// run on the tap. At most 60 seconds of mono samples are retained, independently of duration.
+///
+/// The mounted WhisperKit model is owned by `SpeechRecognitionRuntime` and
+/// stays warm across sessions; this class only owns per-session state (audio
+/// window, converter, VAD gate, transcript stream, decoding options and the
+/// single inference worker). Every session still gets a fresh stream and
+/// worker, and the runtime joins the worker before the next session may use
+/// the shared decoder.
 final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable {
     let transcripts: AsyncStream<String>
     private let continuation: AsyncStream<String>.Continuation
@@ -29,37 +36,63 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
     private let outputFormat: AVAudioFormat
     private let diagnostics: (any VoiceInputDiagnostics)?
     private let allowSystemFallback: Bool
+    /// This session's claim on the shared warm model.
+    private let lease: SpeechRecognitionLease
+    private let model: any SpeechRecognitionModelInstance
+    /// Admission gate: the worker may not run before the runtime confirms
+    /// this session still owns the mounted model. A rejected claim finishes
+    /// the gate together with `cancel()`, so the worker exits without a decode.
+    private let startGate: AsyncStream<Void>
+    private let startGateContinuation: AsyncStream<Void>.Continuation
     var failure: VoiceInputFailure? {
         let state = lock.withLock { (terminalFailure, fallback) }
         return state.0 ?? state.1?.failure
     }
 
     static func make(language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?, allowSystemFallback: Bool = false) async throws -> WhisperStreamingTranscriber {
-        let (lease, folder) = try await WhisperModelStore.shared.acquire()
+        let lease = try await SpeechRecognitionRuntime.live.acquire()
         do {
-            try Task.checkCancellation()
-            let kit = try await WhisperKit(WhisperKitConfig(modelFolder: folder.appendingPathComponent("model").path,
-                tokenizerFolder: folder.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
-            try Task.checkCancellation()
-            return try WhisperStreamingTranscriber(kit: kit, lease: lease, language: language, diagnostics: diagnostics, allowSystemFallback: allowSystemFallback)
+            return try await WhisperStreamingTranscriber(lease: lease, language: language, diagnostics: diagnostics, allowSystemFallback: allowSystemFallback)
         } catch {
-            await WhisperModelStore.shared.release(lease)
+            // The session never started using the decoder, so the mount is
+            // not at fault; release the claim without dropping the warm model.
+            await lease.sessionEnded(healthy: true)
             throw error
         }
     }
 
-    private init(kit: WhisperKit, lease: UUID, language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?, allowSystemFallback: Bool) throws {
+    private init(lease: SpeechRecognitionLease, language: VoiceRecognitionLanguage, diagnostics: (any VoiceInputDiagnostics)?, allowSystemFallback: Bool) async throws {
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false) else {
             throw VoiceSessionError.failure(.noAudioInput)
         }
+        self.lease = lease
+        self.model = lease.model
         outputFormat = format; self.diagnostics = diagnostics
         self.allowSystemFallback = allowSystemFallback
         (transcripts, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
         (signals, signal) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
-        worker = Task { [self] in
-            await run(kit: kit, language: language)
-            await kit.unloadModels()
-            await WhisperModelStore.shared.release(lease)
+        (startGate, startGateContinuation) = AsyncStream.makeStream(of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let worker = Task { [self] in
+            // Ownership must be confirmed before any decode can start. The
+            // fresh transcriber has no externally feedable audio yet, and the
+            // gate makes that explicit even for a retired claim.
+            var gate = startGate.makeAsyncIterator()
+            _ = await gate.next()
+            guard !Task.isCancelled else { return }
+            let healthy = await run(model: model, language: language)
+            // Warm residency: the mounted model stays for the next session;
+            // only a real decoder fault (or a background end) retires it.
+            await lease.sessionEnded(healthy: healthy)
+        }
+        self.worker = worker
+        // Admission opens the start gate inside the runtime actor, atomically
+        // with registering the worker. Rejection has already cancelled the
+        // worker and released the gate, so joining is immediate and no decode
+        // ever runs against a released model.
+        let gate = startGateContinuation
+        guard await lease.attachWorker(worker, start: { gate.finish() }) else {
+            await worker.value
+            throw SpeechRecognitionRuntime.Failure.unavailable
         }
     }
 
@@ -100,6 +133,10 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
     }
 
     func finishAudio() async {
+        // Announce the ending BEFORE joining: a new acquisition may then wait
+        // for this worker instead of failing, and the runtime never grants the
+        // shared decoder while this session might still be decoding.
+        await lease.beginFinishing()
         lock.withLock {
             if !ending {
                 ending = true
@@ -135,23 +172,67 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
     /// nothing" defect. (0.002 RMS² ≈ 4e-6, aligned with the VAD gate.)
     private static let voicedEnergyFloor: Float = 0.000_004_1
 
-    private func run(kit: WhisperKit, language: VoiceRecognitionLanguage) async {
+    /// Runs the per-session decode loop and reports whether the shared model
+    /// stayed healthy. Cancellation (consumer teardown or runtime retirement)
+    /// is not a decoder fault; the warm model survives it.
+    private func run(model: any SpeechRecognitionModelInstance, language: VoiceRecognitionLanguage) async -> Bool {
+        let code = language.recognitionCode
+        let decoding = SpeechRecognitionDecoding(languageCode: code, detectLanguage: code == nil)
+        let locale = language.locale
+        let cancellation = signal
+        return await withTaskCancellationHandler {
+            await decode(model: model, decoding: decoding, locale: locale)
+        } onCancel: {
+            // `for await` does not observe task cancellation while it is
+            // parked, and the runtime must be able to join this worker
+            // promptly (memory pressure, pack management). Finishing the
+            // signal stream wakes the loop; the decode itself is checked at
+            // every step below.
+            cancellation.finish()
+        }
+    }
+
+    /// Publishes the worker's exit reason BEFORE the transcript stream
+    /// finishes. An owning consumer's `finishAudio()` is normal. A stream that
+    /// ended without that request was cancelled while still active (memory
+    /// pressure / forced retirement): that is the existing `.interrupted`
+    /// reason, never a healthy renewal and never decoder corruption.
+    private func publishWorkerExit(decoderFailed: Bool) {
+        let endedByConsumer = lock.withLock { ending }
+        guard SpeechRecognitionWorkerExit.classify(endedByConsumer: endedByConsumer,
+                                                   decoderFailed: decoderFailed) == .forcedInterruption else { return }
+        let published = lock.withLock { () -> Bool in
+            guard terminalFailure == nil else { return false }
+            terminalFailure = .interrupted
+            return true
+        }
+        if published { diagnostics?.voiceFailed(reason: .interrupted) }
+    }
+
+    /// Publishes the exit reason, then ends the transcript stream.
+    private func finishTranscripts(decoderFailed: Bool = false) {
+        publishWorkerExit(decoderFailed: decoderFailed)
+        continuation.finish()
+    }
+
+    private func decode(model: any SpeechRecognitionModelInstance, decoding: SpeechRecognitionDecoding, locale: Locale) async -> Bool {
         var committed = ""
         var decodedCount = 0
         var emptyAttempts = 0
-        let code: String? = language.recognitionCode
-        let options = DecodingOptions(language: code, detectLanguage: code == nil, skipSpecialTokens: true, withoutTimestamps: true)
+        var healthy = true
         func meanSquare(_ values: ArraySlice<Float>) -> Float {
             guard !values.isEmpty else { return 0 }
             return values.reduce(Float(0)) { $0 + $1 * $1 } / Float(values.count)
         }
         do {
             for await _ in signals {
+                try Task.checkCancellation()
                 while true {
+                    try Task.checkCancellation()
                     let state = lock.withLock { (samples, ending, terminalFailure, overflow, utteranceGate.shouldFlush) }
                     if state.2 != nil || state.3 { throw VoiceSessionError.failure(.recognizerFailed) }
                     guard !state.0.isEmpty else {
-                        if state.1 { continuation.finish(); return }
+                        if state.1 { finishTranscripts(); return healthy }
                         break
                     }
                     let count = min(400_000, state.0.count)
@@ -179,8 +260,8 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
                     let text: String
                     if decisionEnergy < Self.voicedEnergyFloor { text = "" }
                     else {
-                        let results = try await kit.transcribe(audioArray: audio, decodeOptions: options)
-                        text = results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let results = try await model.transcribe(audio: audio, decoding: decoding)
+                        text = results.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
                         emptyAttempts = text.isEmpty ? emptyAttempts + 1 : 0
                         if text.isEmpty && (state.1 || emptyAttempts >= 3) { throw VoiceSessionError.failure(.recognizerFailed) }
                     }
@@ -200,21 +281,25 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
                     break
                 }
             }
-            continuation.finish()
+            finishTranscripts()
         } catch {
+            // A cancelled session is not a decoder fault: the warm model
+            // stays available for the next session. If the owning consumer
+            // did not ask to finish, this is a forced interruption and must
+            // be visible before the stream ends.
+            if Task.isCancelled { finishTranscripts(); return healthy }
+            healthy = false
             // Replay only the uncommitted window. Previously emitted partial text is replaced
             // with the Apple result, so the same speech isn't appended twice.
-            guard !Task.isCancelled, allowSystemFallback,
+            guard allowSystemFallback,
                   !lock.withLock({ overflow || terminalFailure != nil }) else {
-                if !Task.isCancelled {
-                    lock.withLock { terminalFailure = terminalFailure ?? .recognizerFailed }
-                    diagnostics?.voiceFailed(reason: .recognizerFailed)
-                }
-                continuation.finish(); return
+                lock.withLock { terminalFailure = terminalFailure ?? .recognizerFailed }
+                diagnostics?.voiceFailed(reason: .recognizerFailed)
+                finishTranscripts(decoderFailed: true); return healthy
             }
             do {
                 guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else { throw VoiceSessionError.failure(.speechPermissionDenied) }
-                let apple = try StreamingSpeechRecognizerTranscriber(locale: language.locale, diagnostics: diagnostics)
+                let apple = try StreamingSpeechRecognizerTranscriber(locale: locale, diagnostics: diagnostics)
                 lock.withLock {
                     if let buffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: AVAudioFrameCount(samples.count)),
                        let channel = buffer.floatChannelData?[0], !samples.isEmpty {
@@ -233,9 +318,74 @@ final class WhisperStreamingTranscriber: SpeechTranscribing, @unchecked Sendable
                 }
             } catch {
                 lock.withLock { terminalFailure = .recognizerFailed }
-                diagnostics?.voiceFailed(reason: .recognizerFailed); continuation.finish()
+                diagnostics?.voiceFailed(reason: .recognizerFailed); finishTranscripts(decoderFailed: true)
             }
         }
+        return healthy
+    }
+
+    deinit {
+        // A dropped session must never keep the shared decoder claimed if its
+        // consumer forgot finishAudio (pack management would then report a
+        // phantom busy). The token fences this call from newer sessions.
+        let lease = self.lease
+        Task { await lease.sessionEnded(healthy: true) }
+    }
+}
+
+// MARK: - Production wiring
+
+/// One mounted WhisperKit instance. `@unchecked Sendable` on purpose: the
+/// residency runtime is its single owner and serializes every `transcribe` /
+/// `unmount` call (the decoder is not thread-safe).
+struct WhisperKitRecognitionModel: SpeechRecognitionModelInstance, @unchecked Sendable {
+    let kit: WhisperKit
+    let identity: String
+
+    func transcribe(audio: [Float], decoding: SpeechRecognitionDecoding) async throws -> [String] {
+        let options = DecodingOptions(language: decoding.languageCode, detectLanguage: decoding.detectLanguage,
+                                      skipSpecialTokens: true, withoutTimestamps: true)
+        return try await kit.transcribe(audioArray: audio, decodeOptions: options).map(\.text)
+    }
+
+    func unmount() async {
+        await kit.unloadModels()
+    }
+}
+
+extension SpeechRecognitionRuntime {
+    /// The single production runtime. The store singleton is process-wide, so
+    /// dictation and continuous voice share this exact warm lease.
+    static let live = SpeechRecognitionRuntime(dependencies: .whisperLive())
+}
+
+extension SpeechRecognitionRuntime.Dependencies {
+    /// Production seams: bundled manifest identity, verified file lease +
+    /// WhisperKit mount, store release, and the pack-management handshake.
+    static func whisperLive() -> SpeechRecognitionRuntime.Dependencies {
+        SpeechRecognitionRuntime.Dependencies(
+            installedIdentity: { await WhisperModelStore.shared.installedIdentity() },
+            load: {
+                let (leaseID, folder) = try await WhisperModelStore.shared.acquire(resident: true)
+                do {
+                    try Task.checkCancellation()
+                    let kit = try await WhisperKit(WhisperKitConfig(modelFolder: folder.appendingPathComponent("model").path,
+                        tokenizerFolder: folder.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
+                    try Task.checkCancellation()
+                    // The store's folder name is "<manifest id>-<revision>", the
+                    // exact identity the runtime compares against installed.
+                    return SpeechRecognitionRuntime.Loaded(
+                        model: WhisperKitRecognitionModel(kit: kit, identity: folder.lastPathComponent),
+                        leaseID: leaseID)
+                } catch {
+                    await WhisperModelStore.shared.release(leaseID)
+                    throw error
+                }
+            },
+            releaseLease: { leaseID in await WhisperModelStore.shared.release(leaseID) },
+            installResidencyHook: { runtime in
+                await WhisperModelStore.shared.setResidentReleaser { await runtime.releaseForModelManagement() }
+            })
     }
 }
 #endif

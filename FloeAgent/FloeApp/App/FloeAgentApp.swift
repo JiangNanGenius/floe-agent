@@ -555,6 +555,13 @@ struct RootView: View {
                 // still owns the foreground. Active playback retires on completion.
                 let foreground = UIApplication.shared.applicationState != .background
                 Task { await environment.speechService.setLocalSpeechForeground(foreground) }
+                #if canImport(UIKit) && canImport(WhisperKit)
+                // The warm enhanced recognition model follows the same
+                // residency policy: idle foreground keeps it, background
+                // releases it, and a session that still owns it retires when
+                // it ends — never underneath live decoding.
+                Task { await SpeechRecognitionRuntime.live.setForeground(foreground) }
+                #endif
             }
             if newPhase != .active {
                 environment.voiceInput.handleInterruption(reason: .interrupted)

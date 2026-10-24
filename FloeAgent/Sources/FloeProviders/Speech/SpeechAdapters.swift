@@ -457,11 +457,24 @@ public final class TTSSpeechService: Sendable {
     /// Voice catalog for the settings UI (manual IDs always allowed; listed
     /// voices require an explicit fetch with the user's key).
     public func builtinVoices(for provider: TTSSpeakerProvider) -> [TTSSpeechVoice] {
+        builtinVoices(for: provider, modelID: nil)
+    }
+
+    /// Model-aware catalog. The Volcengine 2.0 speakers are bound to the
+    /// seed-tts-2.0 resource, so they are offered only when the profile's
+    /// model resolves to that family; the 1.0 model keeps manual IDs and is
+    /// never shown a 2.0 speaker that would be rejected by the service.
+    public func builtinVoices(
+        for provider: TTSSpeakerProvider,
+        modelID: String?
+    ) -> [TTSSpeechVoice] {
         switch provider {
         case .apple: return Self.appleVoices()
         case .onDevice: return []
         case .openAI: return OpenAISpeechAdapter.builtInVoices
-        case .elevenLabs, .volcengine, .alibaba: return []
+        case .volcengine:
+            return VolcengineSpeechAdapter.catalogueVoices(forModel: modelID ?? "")
+        case .elevenLabs, .alibaba: return []
         }
     }
 

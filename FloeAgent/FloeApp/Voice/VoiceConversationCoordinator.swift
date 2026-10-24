@@ -36,6 +36,12 @@ import Combine
 @MainActor
 final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpeechOutput {
 
+    /// Bounded drain-tail confirmation cadence. These are poll bounds for a
+    /// DEAD pipeline, never a success delay: success is defined only by real
+    /// rendered-frame growth in the stack's output tap.
+    private static let outputSettleInterval: Double = 0.05
+    private static let maxOutputSettleAttempts = 12
+
     /// Settled timing constants (product-fixed; injectable for tests).
     struct Timing: Sendable {
         var endpointSilence: Double = 0.9
@@ -191,6 +197,16 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         var completedSpokenCache = ""
         var drainWatchdog: (any VoiceConversationScheduled)?
         var watchdogPlayedSnapshot = 0
+        /// The round's ONE frozen playback configuration. The bridge freezes
+        /// a value per unit before its first chunk; the FIRST value wins so
+        /// every unit of an answer uses the same tempo/intonation even if
+        /// settings change mid-answer. Nil until the bridge delivers it (old
+        /// sinks/tests never do, which is neutral).
+        var frozenPlaybackControls: VoicePlaybackControls?
+        /// Rendered-frame baseline captured at the LAST player receipt; the
+        /// post-input effect tail is measured as growth from here.
+        var outputDrainBaseline: Int?
+        var outputSettleAttempts = 0
 
         var playbackBegan: Bool { playedFrames > 0 }
         var pendingUnits: Bool { units.contains { !$0.completed } }
@@ -350,15 +366,24 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         }
     }
 
-    /// activate → beginTranscription → startCapture with the REAL first-buffer
-    /// readiness proof inside `startCapture`. Returns nil when the attempt was
-    /// superseded mid-build (the caller must simply stop).
+    /// beginTranscription → activate → startCapture with the REAL
+    /// first-buffer readiness proof inside `startCapture`. Returns nil when
+    /// the attempt was superseded mid-build (the caller must simply stop).
+    ///
+    /// The recognizer/backend is created BEFORE the microphone graph is
+    /// brought up, matching the working dictation controller's proven
+    /// sequence (2026-10-24 same-device iPhone A/B: dictation created its
+    /// transcriber with no engine running and reached 正在听, while
+    /// continuous had failed `voice.error.recognition` creating the backend
+    /// AFTER session activation + engine start). Backend creation needs no
+    /// engine — only the tap does — so the ordering difference had no
+    /// reason to exist.
     private func buildCaptureStack(attempt: UInt64) async throws(VoiceConversationFailure) -> (any VoiceConversationStack)? {
         let stack = makeStack()
         do {
-            try await stack.activate()
-            guard isCurrent(attempt) else { stack.deactivate(); return nil }
             try await stack.beginTranscription()
+            guard isCurrent(attempt) else { stack.deactivate(); return nil }
+            try await stack.activate()
             guard isCurrent(attempt) else { stack.deactivate(); return nil }
             try await stack.startCapture()
             guard isCurrent(attempt) else { stack.deactivate(); return nil }
@@ -419,6 +444,18 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             return
         }
         guard let stack = built else { return }
+        // FINAL currency fence AFTER the build's last internal guard: an
+        // `end()`/`pauseForScene` landing between "stack built + proven"
+        // and this resumption must NOT publish `.listening` over a retired
+        // attempt nor assign a stack the teardown has already passed by.
+        // The fresh stack is fenced off the session here; a second
+        // deactivate from an already-run teardown is inert by the
+        // ownership/flag discipline inside the stack.
+        guard isCurrent(attempt) else {
+            report("buildSuperseded")
+            stack.deactivate()
+            return
+        }
 
         preparationTimer?.cancel()
         preparationTimer = nil
@@ -635,6 +672,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
                     round?.outputPausedByBarge = false
                     stack?.resumePlayback()
                     speechContinuation.yield(.outputResumed(reason: .falseStart))
+                    recheckPlaybackProgress()
                 }
             }
         } else {
@@ -820,7 +858,14 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         observationTasks.append(Task { [weak self] in
             for await event in stack.engineEvents {
                 guard let self, !Task.isCancelled, self.isCurrent(attempt), self.state.hasSession else { return }
-                if case .playedFrames(let frames) = event { self.consumePlayedFrames(frames) }
+                switch event {
+                case .playedFrames(let frames):
+                    // Legacy/untagged doubles carry no epoch: credit the
+                    // round that is active now (historical behavior).
+                    self.consumePlayedFrames(frames, taggedEpoch: nil, stack: stack)
+                case .playedFramesTagged(let frames, let epoch):
+                    self.consumePlayedFrames(frames, taggedEpoch: epoch, stack: stack)
+                }
             }
         })
     }
@@ -860,6 +905,9 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             report("bargeSuspect")
             if let r = round, !r.outputPausedByBarge, !r.appPaused {
                 round?.outputPausedByBarge = true
+                // Frames rendered during a pause are silence, not effect tail
+                // progress: re-anchor the drain baseline on resume.
+                round?.outputDrainBaseline = nil
                 stack?.pausePlayback()
                 speechContinuation.yield(.outputPaused(reason: .bargeIn))
             }
@@ -872,6 +920,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
                 stack?.resumePlayback()
                 speechContinuation.yield(.outputResumed(reason: .falseStart))
                 report("bargeFalseStart")
+                recheckPlaybackProgress()
             }
             // A candidate with no valid turn is noise: drop it so stale text
             // never becomes a draft.
@@ -1100,6 +1149,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         r.playedFrames = 0
         r.completedSpokenCache = r.spokenPrefix
         r.roundTextCompletedEmitted = false
+        // The sink's frame clock was reset by stopPlayback; a stale baseline
+        // from the discarded projection must not leak into the fresh body.
+        r.outputDrainBaseline = nil
+        r.outputSettleAttempts = 0
         round = r
         playingUnitProgress = nil
         currentSpokenText = ""
@@ -1305,8 +1358,19 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         round = r
     }
 
-    private func consumePlayedFrames(_ frames: Int) {
-        guard var r = round, frames >= r.playedFrames else { return }
+    private func consumePlayedFrames(_ frames: Int, taggedEpoch: UInt64?, stack: any VoiceConversationStack) {
+        guard var r = round else { return }
+        // The sink fences its epoch synchronously BEFORE flushing the player,
+        // so a progress event carrying an older epoch was produced by a
+        // cancelled round (or was queued across the fence) and must never
+        // credit the answer that is playing now. Untagged legacy events are
+        // accepted for the current round.
+        if let taggedEpoch, stack.playbackEpoch != taggedEpoch {
+            report("stalePlayedFramesDropped",
+                   "tag=\(taggedEpoch) current=\(stack.playbackEpoch) frames=\(frames)")
+            return
+        }
+        guard frames >= r.playedFrames else { return }
         r.playedFrames = frames
         round = r
         // STATE FOLLOWS ACTUAL PLAYBACK: this round's own audio left the
@@ -1372,6 +1436,44 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             currentSpokenText = progress.index < r.units.count ? r.units[progress.index].unit.text : ""
         } else {
             currentSpokenText = ""
+        }
+        if drainedNow, let stack, let controls = round?.frozenPlaybackControls, !controls.isNeutral,
+           stack.outputDrainFrames > 0 {
+            // The played-frame receipts prove INPUT consumption only; the
+            // shared time-pitch still holds its look-ahead. Require REAL
+            // rendered output-frame GROWTH after the last receipt before the
+            // round may drain (teardown must not clip the final syllable).
+            // Frames — not non-silent samples — because quiet speech and
+            // zero crossings are legitimate. While the output is paused the
+            // mixer renders silence and the unit cannot advance; resume paths
+            // re-enter this check instead of burning the bound.
+            if let current = round {
+                if current.appPaused || current.outputPausedByBarge {
+                    return
+                }
+                let rendered = stack.outputRenderedFrames
+                var waiting = current
+                if waiting.outputDrainBaseline == nil { waiting.outputDrainBaseline = rendered }
+                let baseline = waiting.outputDrainBaseline ?? rendered
+                let required = max(1, stack.outputDrainFrames)
+                let grown = rendered - baseline >= required
+                if !grown, waiting.outputSettleAttempts < Self.maxOutputSettleAttempts {
+                    waiting.outputSettleAttempts += 1
+                    round = waiting
+                    _ = clock.schedule(after: Self.outputSettleInterval) { [weak self] in
+                        self?.recheckPlaybackProgress()
+                    }
+                    return
+                }
+                if !grown {
+                    // Actionable classification: the render clock never advanced
+                    // after all input was consumed (dead output), never a quiet-
+                    // speech false positive.
+                    report("outputTailUnsettled",
+                           "rendered=\(max(0, rendered - baseline)) required=\(required)")
+                }
+                round = waiting
+            }
         }
         if drainedNow, !(round?.drained ?? true), !(round?.finishScheduled ?? true) {
             round?.drained = true
@@ -1460,6 +1562,22 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
 
     var completedSpokenText: String { round?.completedSpokenCache ?? "" }
 
+    /// Freezes one unit's playback controls. Token/unit-fenced exactly like
+    /// `appendAudio`: a stale, ended, completed or app-stopped unit can never
+    /// pick up controls from a newer round. The FIRST accepted value is the
+    /// round's single configuration — later units of the same answer cannot
+    /// retune audio that is already queued, and a settings edit picked up by
+    /// a later unit cannot split one answer across two tempos. The next
+    /// answer (new round) freezes the changed setting instead.
+    func freezeSpeechControls(_ controls: VoicePlaybackControls, for unit: VoiceConversationSpeechUnit) {
+        guard var r = round, r.token == unit.token, !r.outputStoppedByApp,
+              let index = r.units.firstIndex(where: { $0.unit.id == unit.id }),
+              !r.units[index].ended, !r.units[index].completed else { return }
+        guard r.frozenPlaybackControls == nil else { return }
+        r.frozenPlaybackControls = controls
+        round = r
+    }
+
     func appendAudio(_ chunk: VoiceConversationAudioChunk, to unit: VoiceConversationSpeechUnit)
         -> VoiceConversationSpeechAppendResult
     {
@@ -1492,6 +1610,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             report("appendRejected", "capacity")
             return .rejectedOverCapacity
         }
+        // The round's frozen controls are delivered to the sink immediately
+        // before its first chunk. The sink applies the node write only while
+        // its output queue is idle (a fresh round after the previous flush),
+        // so queued old-answer audio keeps its own tuning; later units of
+        // this round carry the same value and are a no-op.
+        stack?.applySpeechControls(r.frozenPlaybackControls ?? .neutral, for: unit.id)
         guard stack?.scheduleChunk(chunk) ?? false else {
             report("appendRejected", "engine")
             return .rejectedOverCapacity
@@ -1524,6 +1648,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     func pauseOutput() {
         guard let r = round, !r.appPaused, !r.outputPausedByBarge else { return }
         round?.appPaused = true
+        // Paused render frames are silence; require fresh growth after resume.
+        round?.outputDrainBaseline = nil
         stack?.pausePlayback()
         speechContinuation.yield(.outputPaused(reason: .appInitiated))
     }
@@ -1532,6 +1658,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         guard let r = round, r.appPaused else { return }
         round?.appPaused = false
         stack?.resumePlayback()
+        // A drain-tail check parked while paused re-enters with real frames.
+        recheckPlaybackProgress()
         speechContinuation.yield(.outputResumed(reason: .manual))
     }
 

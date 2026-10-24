@@ -238,6 +238,13 @@ protocol VoiceConversationSpeechOutput: AnyObject {
         -> VoiceConversationSpeechAppendResult
     func endUnit(_ unit: VoiceConversationSpeechUnit)
     func endRoundAudio(_ token: VoiceConversationRoundToken)
+    /// Frozen playback controls of the ROUND, delivered before the first
+    /// unit's audio (the configured stream carrier). The production
+    /// coordinator stores the FIRST value for the round and ignores later
+    /// units' values, so every unit of one answer uses the same tempo/
+    /// intonation; the next answer picks up changed settings. The default
+    /// no-op keeps existing sinks and test doubles compiling.
+    func freezeSpeechControls(_ controls: VoicePlaybackControls, for unit: VoiceConversationSpeechUnit)
     /// Sink-level playback controls (distinct from the SESSION's async
     /// `VoiceConversationCoordinator.resume()`). Position-preserving:
     /// pause/resume keep the exact audio position; `stopNow` clears the
@@ -249,6 +256,11 @@ protocol VoiceConversationSpeechOutput: AnyObject {
     var speechEvents: AsyncStream<VoiceConversationSpeechEvent> { get }
     /// Text whose audio played to the sentence end, for the current round.
     var completedSpokenText: String { get }
+}
+
+extension VoiceConversationSpeechOutput {
+    /// Old sinks/tests stay source-compatible; they simply carry no controls.
+    func freezeSpeechControls(_ controls: VoicePlaybackControls, for unit: VoiceConversationSpeechUnit) {}
 }
 
 // MARK: - Session state machine vocabulary
@@ -298,6 +310,12 @@ enum VoiceConversationSystemEvent: Sendable, Equatable {
     case interruptionBegan
     case routeLost
     case mediaServicesReset
+    /// Engine I/O reconfigured (route/format settle — iPhone voice processing
+    /// fires this shortly after the engine starts and STOPS the engine).
+    /// The live stack owns the bounded in-place recovery (re-query formats,
+    /// reinstall the mic tap BEFORE restarting, re-prove the first buffer);
+    /// only a failed recovery surfaces, as `.captureStalled`. The event
+    /// alone is information, never a failure.
     case engineConfigurationChanged
     /// The started microphone tap STOPPED delivering buffers: silence also
     /// delivers (silent) buffers, so a long gap means the capture path is
@@ -324,7 +342,18 @@ enum VoiceConversationEngineEvent: Sendable, Equatable {
     /// Cumulative frames rendered by the player sink since this stack began
     /// playback (reset by stop/clear, frozen by pause). The ONLY basis for
     /// spoken progress and receipts.
+    ///
+    /// LEGACY/UNTAGGED: old doubles and sinks may still emit this form; it is
+    /// credited to the round that is active when it is consumed. The live
+    /// stack always emits `playedFramesTagged` so a buffered event can be
+    /// fenced against the epoch that produced it.
     case playedFrames(Int)
+    /// Cumulative played frames TOGETHER WITH the playback epoch in which the
+    /// buffer was scheduled. `stopPlayback()` fences that epoch BEFORE it
+    /// flushes the player, so a progress event already queued when the fence
+    /// lands carries the OLD epoch and must never credit the next answer.
+    /// The coordinator validates this tag against the stack's current epoch.
+    case playedFramesTagged(frames: Int, epoch: UInt64)
 }
 
 // MARK: - Session stack seam (one object owns mic + ASR + player)
@@ -353,6 +382,13 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     var transcripts: AsyncStream<String> { get }
     var engineEvents: AsyncStream<VoiceConversationEngineEvent> { get }
     var systemEvents: AsyncStream<VoiceConversationSystemEvent> { get }
+    /// Current playback epoch. `stopPlayback()` MUST increment this
+    /// synchronously BEFORE flushing the player queue: the flush may run
+    /// scheduled-buffer completion handlers inline, and a handler that still
+    /// matched the old epoch would otherwise credit a cancelled round.
+    /// Played-frame events tagged with an older epoch are dropped, and every
+    /// round starts from zero in a fresh epoch.
+    var playbackEpoch: UInt64 { get }
 
     /// Audio session + engine activation. Typed failures only; a simulator
     /// with no host microphone must throw `.noAudioInput` BEFORE touching
@@ -365,6 +401,15 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     /// Installing a tap is not readiness — a tap that never fires is a dead
     /// microphone path and must throw `.noAudioInput` so the coordinator can
     /// rebuild once and then fail visibly.
+    ///
+    /// Before throwing, an implementation MAY (the live stack DOES) perform
+    /// exactly ONE bounded in-place graph recovery: stop the engine, reinstall
+    /// the tap BEFORE restarting it (the proven dictation bring-up order;
+    /// the running-engine-tap hypothesis for the user-reported iPhone
+    /// `.noAudioInput` awaits fixed-App device proof), then demand the same
+    /// real first-buffer proof again. Readiness semantics are unchanged:
+    /// success still means a REAL buffer arrived; failure still means the
+    /// capture path is dead.
     func startCapture() async throws(VoiceConversationFailure)
     /// Stop physical collection. Idempotent; cancels any pending readiness
     /// wait with `.noAudioInput`.
@@ -382,18 +427,42 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool
     /// No more chunks will be scheduled until the next round (drain truth).
     func endQueuedAudio()
+    /// Frozen controls of the ROUND whose chunks are being appended. The live
+    /// stack writes the shared time-pitch unit only while its output queue is
+    /// idle (the fresh epoch / first buffer of the round), so a queued older
+    /// answer can never be retuned and later units of the same round are a
+    /// no-op. The default no-op keeps existing test doubles compiling.
+    func applySpeechControls(_ controls: VoicePlaybackControls, for unitID: UUID)
+    /// REAL mixer-rendered output frames in the current epoch (the output
+    /// tap's frame clock, including legitimate silence). Never synthesized.
+    var outputRenderedFrames: Int { get }
+    /// Rendered-frame growth required to flush the time-pitch look-ahead after
+    /// the last player receipt. Computed from the actual tap sample rate plus
+    /// the measured bound when the SDK reports zero latency.
+    var outputDrainFrames: Int { get }
     /// Position-preserving: the played-frame counter keeps its value.
     func pausePlayback()
     /// Continue at the SAME position.
     func resumePlayback()
     /// Clear the queue AND reset the played-frame counter/epoch: every round
     /// starts its progress accounting from zero, and completions of dropped
-    /// buffers can never credit the new round.
+    /// buffers can never credit the new round. The epoch MUST be fenced
+    /// BEFORE the player queue is flushed (see `playbackEpoch`).
     func stopPlayback()
 
     /// Full teardown. A superseded stack instance must NEVER deactivate an
     /// audio session a newer owner already claimed (generation-guarded).
     func deactivate()
+}
+
+extension VoiceConversationStack {
+    /// Old stacks/test doubles simply carry no controls and no output clock.
+    func applySpeechControls(_ controls: VoicePlaybackControls, for unitID: UUID) {}
+    var outputRenderedFrames: Int { 0 }
+    var outputDrainFrames: Int { 0 }
+    /// Legacy doubles emit only untagged `.playedFrames`; their implicit
+    /// epoch is a constant 0 and those events keep being credited.
+    var playbackEpoch: UInt64 { 0 }
 }
 
 /// Microphone + speech authorization seam (same prompts dictation uses).
@@ -420,6 +489,243 @@ protocol VoiceConversationScheduling: AnyObject {
 
 protocol VoiceConversationDiagnostics: Sendable {
     func voiceConversation(_ code: String, _ detail: String)
+}
+
+// MARK: - Capture graph bring-up order (activation root-cause contract)
+
+/// The ordered steps the live microphone graph must run through.
+/// Foundation-only and data-driven so the ORDER ITSELF is testable:
+/// `VoiceConversationLiveStack.bringUpGraph()` executes exactly these
+/// steps in exactly this sequence, mirroring the working dictation
+/// capturer's contract — **`installInputTap` BEFORE `prepareEngine`/
+/// `startEngine`**. USER-OBSERVED FACT: iPhone continuous voice failed
+/// with `.noAudioInput` while dictation worked. SOURCE-DERIVED HYPOTHESIS
+/// (pending fixed-App device proof): a mic tap attached to an
+/// already-started voice-processed engine can silently never deliver a
+/// buffer. Tap-before-start removes that divergence either way; the list
+/// below is the pinned contract of the repaired stack.
+enum VoiceCaptureGraphStep: String, Sendable, CaseIterable {
+    case sessionCategory
+    case sessionActivate
+    case enableVoiceProcessing
+    case queryInputFormat
+    case connectPlayer
+    case installOutputTap
+    case installInputTap
+    case prepareEngine
+    case startEngine
+}
+
+enum VoiceCaptureGraphOrder {
+    /// The single canonical bring-up sequence. `sessionCategory` and
+    /// `sessionActivate` run first (they belong to session ownership);
+    /// the remaining steps run per engine bring-up AND per in-place
+    /// recovery — both paths share this exact list.
+    static let bringUp: [VoiceCaptureGraphStep] = [
+        .sessionCategory,
+        .sessionActivate,
+        .enableVoiceProcessing,
+        .queryInputFormat,
+        .connectPlayer,
+        .installOutputTap,
+        .installInputTap,
+        .prepareEngine,
+        .startEngine,
+    ]
+
+    /// The graph steps AFTER session ownership: exactly what a bring-up and
+    /// what an in-place recovery execute — ONE list, so a recovery restart
+    /// can never drift back to the old tap-after-start ordering.
+    static var recoverySteps: [VoiceCaptureGraphStep] { Array(bringUp.dropFirst(2)) }
+}
+
+/// Bounded budget for in-place capture-graph recovery attempts
+/// (readiness restart, engine-reconfiguration restart, mid-session stall
+/// restart). Recovery must never become an invisible restart loop: at
+/// most `limit` consecutive attempts may run WITHOUT a single real tap
+/// buffer arriving in between; any delivered buffer refreshes the budget.
+/// When exhausted, the stack surfaces the failure visibly (readiness
+/// throws / `.captureStalled`) so the coordinator's full rebuild and then
+/// the actionable failure copy are reached. Pure and Foundation-only so
+/// the policy is host-testable exactly as the live stack uses it.
+struct VoiceCaptureRecoveryBudget: Sendable {
+    var limit: Int
+    private(set) var attemptsUsed: Int = 0
+
+    init(limit: Int = 2) {
+        self.limit = max(0, limit)
+    }
+
+    var isExhausted: Bool { attemptsUsed >= limit }
+
+    /// Reserves one attempt. Returns false (and consumes nothing) when the
+    /// budget is already exhausted — the caller must then fail visibly.
+    mutating func beginAttempt() -> Bool {
+        guard !isExhausted else { return false }
+        attemptsUsed += 1
+        return true
+    }
+
+    /// A REAL tap buffer arrived: the capture path is alive again, so a
+    /// fresh problem may use the full recovery budget once more.
+    mutating func noteProgress() {
+        attemptsUsed = 0
+    }
+}
+
+/// The runtime-owned policy gate for ONE live stack's capture-graph recovery
+/// slot. The live stack funnels EVERY recovery decision through this object,
+/// so tests exercise the real policy under failure, cancellation, config
+/// change and late-stop conditions instead of a mirrored copy.
+final class VoiceCaptureRecoveryGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var budget: VoiceCaptureRecoveryBudget
+    private var inFlight = false
+
+    init(limit: Int = 2) {
+        budget = VoiceCaptureRecoveryBudget(limit: limit)
+    }
+
+    /// Gates one recovery attempt against the REAL preconditions:
+    /// - `armed`: a capture stretch still wants buffers (mute and the
+    ///   bring-up window are not armed);
+    /// - `stopped`: a stop/teardown for this stretch landed — cancellation
+    ///   and late-stop fencing;
+    /// - `holder`: shared session ownership still names this instance —
+    ///   superseded/abandoned instances never restart a graph;
+    /// - single-flight: a config change arriving while a restart runs is
+    ///   refused, never a second concurrent restart;
+    /// - budget: bounded consecutive restarts without a real buffer.
+    /// A refused attempt must fail visibly or defer to the in-flight restart
+    /// — recovery is never an invisible retry.
+    func beginAttempt(armed: Bool, stopped: Bool, holder: Bool) -> Bool {
+        lock.withLock {
+            guard armed, !stopped, holder, !inFlight else { return false }
+            guard budget.beginAttempt() else { return false }
+            inFlight = true
+            return true
+        }
+    }
+
+    var isInFlight: Bool { lock.withLock { inFlight } }
+
+    /// The physical restart finished (success or failure). The readiness
+    /// proof window belongs to the CALLER, not this gate — an attempt that
+    /// "succeeded" but whose buffers never arrive must consume budget on the
+    /// NEXT attempt via the caller's stall path, not silently forever.
+    func endAttempt() { lock.withLock { inFlight = false } }
+
+    /// A real tap buffer arrived: the capture path proved alive; a later
+    /// problem gets a fresh budget.
+    func noteProgress() { lock.withLock { budget.noteProgress() } }
+
+    var attemptsUsed: Int { lock.withLock { budget.attemptsUsed } }
+    var isExhausted: Bool { lock.withLock { budget.isExhausted } }
+}
+
+// MARK: - Shared AVAudioSession holder discipline (cross-component)
+
+/// Cooperative ownership of the process-wide `AVAudioSession`. Dictation
+/// capture, each continuous-voice stack and TTS playback share the ONE
+/// physical session, but `setActive(false)` is session-global: a late or
+/// abandoned stop from ANY component can silence a newer owner's live
+/// capture or playback mid-stretch. USER-REPORTED FACTS consistent with
+/// this class of race: continuous voice failing with "no microphone" on
+/// iPhone while dictation worked, dictation later failing after TTS
+/// previews / a voice session stop on the M4, and enhanced preview
+/// producing no audible sound. Whether this race is the PHYSICAL cause
+/// awaits fixed-App device evidence — it is a source-derived defect
+/// candidate, not a proven diagnosis. The discipline it implements:
+/// activate freely, but deactivate ONLY as the LAST holder — atomically.
+///
+/// Contract for every in-app audio component:
+/// 1. `claim(id)` BEFORE setting the category / activating. Its
+///    `@discardableResult` is the PRIOR holder count captured inside the
+///    same lock as the insert — the atomic admission snapshot for
+///    adopt-vs-own decisions (never `holderCount` then `claim`: a teardown
+///    can land between two separate calls).
+/// 2. On every teardown path (including a late, cancellation-abandoned
+///    stop), `releaseAndDeactivateLast(id, deactivate:)`. Removal of the
+///    id and the caller's `AVAudioSession.setActive(false)` run under ONE
+///    serialization, so no component can claim/activate in the gap
+///    between "last release returned true" and the deactivation — that
+///    TOCTOU is what still let a late stop silence a just-activated owner
+///    when release and deactivate were two separate steps.
+/// 3. `release(id)` (WITHOUT deactivation) only for activation-FAILURE
+///    paths that never brought the session up.
+/// 4. Re-asserting `setActive(true)` (e.g. an in-place engine recovery)
+///    is legal only while `isHolder(id)` is true — a superseded instance
+///    can never touch the session.
+/// NEVER call back into this registry from inside a `deactivate` closure
+/// (non-reentrant lock; production closures only toggle the session).
+/// Counting guards DEACTIVATION only — it does NOT make category
+/// SWITCHING safe; playback adoption/stealing of an active `.record`
+/// session is the SpeechService owner's separate contract (explicit lane
+/// handoff in the repair report).
+enum FloeAudioSessionOwnership {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var holders: Set<UUID> = []
+
+    /// Register `id` as a holder BEFORE setting the category / activating.
+    /// `@discardableResult` returns the PRIOR holder count from the SAME
+    /// lock critical section that inserts the id — an atomic "was somebody
+    /// already on the session when I claimed?" snapshot. Callers that need
+    /// it (playback admission deciding whether to adopt an existing session
+    /// instead of re-categorizing it) must use this return value; a
+    /// separate `holderCount` read followed by a claim leaves a teardown
+    /// free to land between the two. Existing claim sites ignore it.
+    @discardableResult
+    static func claim(_ id: UUID) -> Int {
+        lock.withLock {
+            let priorHolders = holders.count
+            _ = holders.insert(id)
+            return priorHolders
+        }
+    }
+
+    /// Atomically remove `id` and, if this was the LAST holder, run
+    /// `deactivate` WHILE STILL SERIALIZED against `claim`. A concurrent
+    /// claim queues behind the deactivation and then activates, so the
+    /// final word on the session is always the newest owner's activation,
+    /// never a stale component's teardown.
+    static func releaseAndDeactivateLast(_ id: UUID, deactivate: () -> Void) {
+        lock.lock()
+        let removed = holders.remove(id) != nil
+        if removed, holders.isEmpty {
+            deactivate()
+        }
+        lock.unlock()
+    }
+
+    /// Release WITHOUT deactivation (activation-failure rollback, where
+    /// the component never brought the session up). True only when this
+    /// removal emptied the registry. Callers must NOT follow it with an
+    /// unserialized `setActive(false)` — whenever a deactivation may
+    /// happen, use `releaseAndDeactivateLast`.
+    @discardableResult
+    static func release(_ id: UUID) -> Bool {
+        lock.withLock {
+            let removed = holders.remove(id) != nil
+            return removed && holders.isEmpty
+        }
+    }
+
+    /// Whether `id` still holds a claim — required before any re-activation
+    /// or ownership-dependent reconfiguration.
+    static func isHolder(_ id: UUID) -> Bool {
+        lock.withLock { holders.contains(id) }
+    }
+
+    /// Diagnostics only (counts, never identifiers in user-facing output).
+    static var holderCount: Int {
+        lock.withLock { holders.count }
+    }
+
+    // Test seam: the harness/tests start from a clean registry without
+    // touching production claim/release semantics.
+    static func resetForTesting() {
+        lock.withLock { holders = [] }
+    }
 }
 
 // MARK: - Cumulative segment aggregation

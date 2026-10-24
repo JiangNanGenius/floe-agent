@@ -92,7 +92,14 @@ final class TTSSettingsService: ObservableObject {
     func update(_ change: (inout TTSSettingsSnapshot) -> Void) {
         var value = snapshot
         change(&value)
-        value.speechRateRatio = min(2, max(0.5, value.speechRateRatio.isFinite ? value.speechRateRatio : 1))
+        // Persisted rate/pitch are normalized here (finite + in range) so an
+        // arbitrary caller can never store a value a player would have to
+        // repair again. The snapshot's own initializer applies the same rule.
+        let controls = TTSPlaybackControls(
+            speechRateRatio: value.speechRateRatio,
+            speechPitchSemitones: value.speechPitchSemitones)
+        value.speechRateRatio = controls.speechRateRatio
+        value.speechPitchSemitones = controls.speechPitchSemitones
         guard let encoded = try? JSONEncoder().encode(value) else { return }
         defaults.set(encoded, forKey: Self.storageKey)
         profiles[binding(value.provider, value.billingRoute)] = value
@@ -156,7 +163,10 @@ final class TTSSettingsService: ObservableObject {
         profiles[profileID(saved)] = saved
         defaults.set(try JSONEncoder().encode(profiles), forKey: Self.profilesKey)
         if snapshot.provider == saved.provider && snapshot.billingRoute == saved.billingRoute {
-            saved.autoReadEnabled = snapshot.autoReadEnabled; saved.allowBargeIn = snapshot.allowBargeIn
+            // Saving the ACTIVE service updates its voice/model but keeps the
+            // user's live global controls: the editor's profile copy may carry
+            // older rate/pitch values than the ones the user just set.
+            applyGlobalControls(to: &saved)
             update { $0 = saved }
         }
     }
@@ -171,8 +181,19 @@ final class TTSSettingsService: ObservableObject {
     }
     func choose(_ value: TTSSettingsSnapshot) {
         var chosen = value
-        chosen.autoReadEnabled = snapshot.autoReadEnabled; chosen.allowBargeIn = snapshot.allowBargeIn
+        applyGlobalControls(to: &chosen)
         update { $0 = chosen }
+    }
+
+    /// The four user-facing output controls live above any single provider
+    /// profile. Selecting a voice, switching provider/route, or saving the
+    /// active service must never silently reset them (which building a value
+    /// from `.systemDefault` or an older saved profile would do).
+    private func applyGlobalControls(to value: inout TTSSettingsSnapshot) {
+        value.autoReadEnabled = snapshot.autoReadEnabled
+        value.allowBargeIn = snapshot.allowBargeIn
+        value.speechRateRatio = snapshot.speechRateRatio
+        value.speechPitchSemitones = snapshot.speechPitchSemitones
     }
 
     // MARK: - Local packs
@@ -378,8 +399,7 @@ final class TTSSettingsService: ObservableObject {
 
     private func restore(_ provider: TTSSpeakerProvider, route: TTSBillingRoute) {
         var next = profiles[binding(provider, route)] ?? TTSSettingsSnapshot(provider: provider, billingRoute: route)
-        next.autoReadEnabled = snapshot.autoReadEnabled
-        next.allowBargeIn = snapshot.allowBargeIn
+        applyGlobalControls(to: &next)
         update { $0 = next }
     }
 
@@ -432,10 +452,19 @@ enum TTSSettingsFailure: Error { case missingCredential; case credentialChangedR
 @MainActor
 struct TTSConfiguredStream {
     let stream: TTSAudioChunkStream
+    /// Frozen user playback controls for this segment. Immutable on purpose: a
+    /// later settings edit can never change audio already in flight, and both
+    /// output paths (ordinary answer player, continuous voice) read the SAME
+    /// value. Callers that build a stream directly keep the default neutral so
+    /// their output is unchanged (see the frozen cross-stage contract).
+    let playbackControls: TTSPlaybackControls
     private let close: @Sendable () -> Void
 
-    init(stream: TTSAudioChunkStream, close: @escaping @Sendable () -> Void) {
+    init(stream: TTSAudioChunkStream,
+         playbackControls: TTSPlaybackControls = .neutral,
+         close: @escaping @Sendable () -> Void) {
         self.stream = stream
+        self.playbackControls = playbackControls
         self.close = close
     }
 
@@ -443,6 +472,7 @@ struct TTSConfiguredStream {
 
     /// Wraps a routed provider stream into an explicitly closable segment.
     static func make(request: TTSSynthesisRequest,
+                     playbackControls: TTSPlaybackControls = .neutral,
                      credential: @escaping @MainActor @Sendable () async throws -> String,
                      service: TTSSpeechService) -> TTSConfiguredStream {
         let (stream, sender) = TTSAudioChunkStream.make()
@@ -467,13 +497,16 @@ struct TTSConfiguredStream {
             } catch { sender.finish(throwing: error) }
         }
         sender.attach(producer)
-        return TTSConfiguredStream(stream: stream,
+        return TTSConfiguredStream(
+            stream: stream,
+            playbackControls: playbackControls,
             close: { sender.finish(throwing: TTSSynthesisError.cancelled) })
     }
 }
 
 /// Freeze configuration for a spoken answer. Settings changes apply to the next
-/// answer; an in-flight segment cannot silently move provider or billing route.
+/// answer; an in-flight segment cannot silently move provider or billing route,
+/// and an in-flight segment's rate/pitch is carried frozen on the stream.
 @MainActor
 struct ConfiguredTTSSpeechSource {
     let snapshot: TTSSettingsSnapshot
@@ -482,13 +515,9 @@ struct ConfiguredTTSSpeechSource {
     var overrideCredential: String? = nil
 
     func synthesize(text: String, sessionID: UUID, segmentIndex: Int) -> TTSConfiguredStream {
-        let request = TTSSynthesisRequest(
-            sessionID: sessionID, segmentIndex: segmentIndex,
-            provider: snapshot.provider, billingRoute: snapshot.billingRoute,
-            region: snapshot.alibabaRegion, openAIBaseURL: snapshot.openAIBaseURL,
-            modelID: snapshot.modelID,
-            voiceID: snapshot.voiceID, text: text, speechRateRatio: snapshot.speechRateRatio, language: snapshot.language
-        )
+        let request = Self.makeRequest(
+            snapshot: snapshot, text: text, sessionID: sessionID,
+            segmentIndex: segmentIndex)
         let settings = self.settings
         let snapshot = self.snapshot
         let overrideCredential = self.overrideCredential
@@ -496,7 +525,35 @@ struct ConfiguredTTSSpeechSource {
             if let overrideCredential { return overrideCredential }
             return try await settings.credential(for: snapshot)
         }
-        return TTSConfiguredStream.make(request: request, credential: credential, service: service)
+        return TTSConfiguredStream.make(
+            request: request,
+            playbackControls: snapshot.playbackControls,
+            credential: credential,
+            service: service)
+    }
+
+    /// Neutral-generation seam (frozen cross-stage contract): the provider
+    /// request always carries rate 1.0 and requests never gain a pitch
+    /// parameter. The user's rate/pitch travel on the returned stream and are
+    /// applied exactly once by the shared output DSP, so a provider knob and
+    /// the DSP can never scale the same utterance twice. Direct provider
+    /// callers that build `TTSSynthesisRequest` themselves keep the explicit
+    /// rate semantics documented on that type.
+    static func makeRequest(
+        snapshot: TTSSettingsSnapshot,
+        text: String,
+        sessionID: UUID,
+        segmentIndex: Int
+    ) -> TTSSynthesisRequest {
+        TTSSynthesisRequest(
+            sessionID: sessionID, segmentIndex: segmentIndex,
+            provider: snapshot.provider, billingRoute: snapshot.billingRoute,
+            region: snapshot.alibabaRegion, openAIBaseURL: snapshot.openAIBaseURL,
+            modelID: snapshot.modelID,
+            voiceID: snapshot.voiceID, text: text,
+            speechRateRatio: TTSPlaybackControls.neutralRate,
+            language: snapshot.language
+        )
     }
 }
 #endif

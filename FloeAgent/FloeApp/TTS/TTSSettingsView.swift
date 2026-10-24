@@ -13,12 +13,18 @@ struct TTSSettingsView: View {
                 NavigationLink { SpeechVoicePickerView() } label: {
                     LabeledContent("voice.settings.voice", value: settings.voiceDisplayName(for: settings.snapshot) ?? SpeechVoiceNames.current(settings.snapshot))
                 }
-                if settings.snapshot.provider != .onDevice && settings.snapshot.provider != .alibaba {
-                    HStack {
-                        Text("voice.settings.rate")
-                        Slider(value: Binding(get: { settings.snapshot.speechRateRatio }, set: { n in settings.update { $0.speechRateRatio = n } }), in: 0.5...2, step: 0.05)
-                        Text(settings.snapshot.speechRateRatio, format: .number.precision(.fractionLength(1))).monospacedDigit()
-                    }
+                // Rate and intonation are written once by the shared output
+                // effect for every route (system, local and cloud), so the two
+                // compact controls stay available for every provider.
+                HStack {
+                    Text("voice.settings.rate")
+                    Slider(value: Binding(get: { settings.snapshot.speechRateRatio }, set: { n in settings.update { $0.speechRateRatio = n } }), in: TTSPlaybackControls.rateRange, step: 0.05)
+                    Text(settings.snapshot.speechRateRatio, format: .number.precision(.fractionLength(2))).monospacedDigit()
+                }
+                HStack {
+                    Text("voice.settings.pitch")
+                    Slider(value: Binding(get: { settings.snapshot.speechPitchSemitones }, set: { n in settings.update { $0.speechPitchSemitones = n } }), in: TTSPlaybackControls.pitchSemitoneRange, step: 1)
+                    Text(settings.snapshot.speechPitchSemitones, format: .number.precision(.fractionLength(0)).sign(strategy: .always(includingZero: false))).monospacedDigit()
                 }
             }
             Section {
@@ -74,6 +80,25 @@ struct SpeechVoicePickerView: View {
                 NavigationLink { SpeechAuditionTextView(text: $sample) } label: {
                     LabeledContent("voice.audition.content", value: FloeL10n.l("voice.audition." + auditionKind))
                 }
+                // Audition feedback belongs next to the control that triggers
+                // it. On a phone the system-voice list below is long, so an
+                // explanation parked at the end of the list is effectively
+                // invisible after a tap that does nothing.
+                if voiceActive {
+                    Label { Text("voice.settings.audition.busy") } icon: { Image(systemName: "waveform") }
+                        .foregroundStyle(.secondary)
+                }
+                if playback.activeOwnerID == previewOwnerID, playback.isSpeaking, playback.isPaused {
+                    HStack {
+                        Text("voice.settings.audition.paused").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("voice.settings.audition.resume") { playback.resume() }
+                            .frame(minHeight: 44)
+                    }
+                }
+                if let key = auditionFailure {
+                    Text(LocalizedStringKey(key)).foregroundStyle(.red)
+                }
             }
             ForEach(settings.localVisibleModels) { model in
                 Section {
@@ -98,7 +123,8 @@ struct SpeechVoicePickerView: View {
             }
             ForEach(settings.configuredProfiles, id: \.profileIdentity) { profile in
                 Section(profile.provider.title) {
-                    let voices = environment.ttsSpeechService.builtinVoices(for: profile.provider)
+                    let voices = environment.ttsSpeechService.builtinVoices(
+                        for: profile.provider, modelID: profile.modelID)
                     if !profile.voiceID.isEmpty && !voices.contains(where: { $0.voiceID == profile.voiceID }) {
                         voiceRow(title: settings.voiceDisplayName(for: profile) ?? profile.voiceID, detail: profile.billingRoute.title, id: settings.profileID(profile) + "/" + profile.voiceID, value: profile, ready: true) { settings.choose(profile) }
                     }
@@ -115,11 +141,9 @@ struct SpeechVoicePickerView: View {
                     Button("voice.action.retry") { Task { await settings.retryLocalValidation() } }
                 }
             }
-            if let key = failure ?? settings.localCatalogErrorKey ?? settings.localInstallation.failureKey
-                ?? (playback.failureOwnerID == previewOwnerID ? playback.failureKey : nil) {
+            if let key = settings.localCatalogErrorKey ?? settings.localInstallation.failureKey {
                 Section { Text(LocalizedStringKey(key)).foregroundStyle(.red) }
             }
-            if voiceActive { Section { Text("voice.settings.audition.busy").foregroundStyle(.secondary) } }
         }
         .navigationTitle("voice.settings.voice")
         .onAppear {
@@ -133,6 +157,9 @@ struct SpeechVoicePickerView: View {
             playback.clearFailure(ownerID: previewOwnerID)
             previewID = nil
         }
+    }
+    private var auditionFailure: String? {
+        failure ?? (playback.failureOwnerID == previewOwnerID ? playback.failureKey : nil)
     }
     private func withVoice(_ profile: TTSSettingsSnapshot, id: String) -> TTSSettingsSnapshot {
         var value = profile
@@ -162,6 +189,17 @@ struct SpeechVoicePickerView: View {
                     if selected { Image(systemName: "checkmark").accessibilityLabel("voice.local.selected") }
                 }.frame(minHeight: 44).contentShape(Rectangle())
             }.buttonStyle(.plain).disabled(!ready)
+            if playing {
+                // A paused preview is shown and resumed right here: the only
+                // other resume lives on the message row, which is elsewhere.
+                Button {
+                    if playback.isPaused { playback.resume() } else { playback.pause() }
+                } label: {
+                    Image(systemName: playback.isPaused ? "play.circle" : "pause.circle")
+                        .font(.title2).frame(width: 44, height: 44)
+                }.buttonStyle(.borderless)
+                    .accessibilityLabel(playback.isPaused ? "voice.settings.audition.resume" : "voice.settings.audition.pause")
+            }
             Button {
                 if playing { playback.stop(); previewID = nil }
                 else { previewID = id; playback.preview(sample, settings: value, ownerID: previewOwnerID) }

@@ -65,6 +65,19 @@ actor WhisperModelStore {
     }
     private var leases = Set<UUID>()
     private var installing = false
+    /// Warm-residency handshake. The recognition runtime registers a releaser
+    /// that unmounts an IDLE warm model and returns its file lease before the
+    /// files are replaced or removed. Without it a warm lease would keep the
+    /// model permanently `busy`; a live recognition session still reports
+    /// busy exactly as before.
+    private var releaseResident: (@Sendable () async -> Bool)?
+    func setResidentReleaser(_ releaser: @escaping @Sendable () async -> Bool) {
+        releaseResident = releaser
+    }
+    private func retireResident() async -> Bool {
+        guard let releaseResident else { return true }
+        return await releaseResident()
+    }
     private func root() throws -> URL {
         try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("FloeAgent/SpeechModels", isDirectory: true)
@@ -84,11 +97,39 @@ actor WhisperModelStore {
     private func location(_ manifest: Manifest) throws -> URL {
         try root().appendingPathComponent(manifest.id + "-" + manifest.sourceRevision, isDirectory: true)
     }
-    func isInstalled() -> Bool {
-        guard let value = try? manifest(), let folder = try? location(value) else { return false }
-        return FileManager.default.fileExists(atPath: folder.appendingPathComponent("installed.json").path)
+    /// Identity of the installed model ("<manifest id>-<revision>"), `nil`
+    /// when nothing is installed. Cheap: bundled manifest + install marker,
+    /// no byte verification (the acquire path owns that).
+    func installedIdentity() -> String? {
+        guard let value = try? manifest(), let folder = try? location(value),
+              FileManager.default.fileExists(atPath: folder.appendingPathComponent("installed.json").path) else { return nil }
+        return folder.lastPathComponent
     }
-    func acquire() throws -> (UUID, URL) {
+    func isInstalled() -> Bool { installedIdentity() != nil }
+    /// Acquires an exclusive directory lease. `resident` must be `true` ONLY
+    /// from the recognition runtime's own cold mount: the resident never
+    /// retires itself (that would wait on the load calling this method —
+    /// a Store↔Runtime self-wait). External callers keep the pack-management
+    /// behavior and retire an idle warm model first.
+    func acquire(resident: Bool = false) async throws -> (UUID, URL) {
+        guard !installing else { throw Failure.unavailable }
+        switch SpeechModelLeaseArbitration.decision(for: resident ? .resident : .external,
+                                                   heldLeases: leases.count) {
+        case .proceed:
+            break
+        case .unavailable:
+            // A lease is already held (file/caption transcription or another
+            // exclusive user): fail fast, never call the retirement hook.
+            throw Failure.unavailable
+        case .retireResident:
+            // Another owner needs the model directory exclusively. Retire the
+            // IDLE warm recognition model first — it reloads on the next
+            // dictation. A live recognition session answers `false` and keeps
+            // today's single-user busy behavior for this caller.
+            guard await retireResident() else { throw Failure.unavailable }
+        }
+        // Revalidate after the retirement await: an install/remove may have
+        // started in the meantime.
         guard !installing, leases.isEmpty, isInstalled() else { throw Failure.unavailable }
         let value = try manifest(), folder = try location(value)
         for asset in value.files { try verify(folder.appendingPathComponent(asset.path), asset: asset) }
@@ -96,14 +137,27 @@ actor WhisperModelStore {
         return (lease, folder)
     }
     func release(_ lease: UUID) { leases.remove(lease) }
-    func remove() throws {
-        guard leases.isEmpty, !installing else { throw Failure.busy }
+    func remove() async throws {
+        guard !installing else { throw Failure.busy }
+        // Maintenance gate: while the resident is retired and the files are
+        // deleted/verified, a new acquisition must fail fast instead of
+        // racing the deletion (the residency window closes before these file
+        // operations finish).
+        installing = true; defer { installing = false }
+        // Retire an idle warm model first: residency must never keep deletion
+        // permanently busy. A live session still answers `false` → busy.
+        guard await retireResident() else { throw Failure.busy }
+        guard leases.isEmpty else { throw Failure.busy }
         let folder = try location(manifest())
         if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
     }
     func install(progress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
-        guard !installing, leases.isEmpty else { throw Failure.busy }
+        guard !installing else { throw Failure.busy }
         installing = true; defer { installing = false }
+        // Replacement happens in place: the mounted model and its file lease
+        // must be gone before staging swaps the directory.
+        guard await retireResident() else { throw Failure.busy }
+        guard leases.isEmpty else { throw Failure.busy }
         let manifest = try manifest(), base = try root(), destination = try location(manifest)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         let staging = base.appendingPathComponent(".download-\(manifest.id)-\(manifest.sourceRevision)", isDirectory: true)

@@ -773,9 +773,20 @@ public actor WebSearchService {
         if provider == .volcengine, isArkResponse(object) {
             return try parseArkResponse(object, limit: limit)
         }
-        if provider == .volcengine,
-           let error = object["error"], !(error is NSNull) {
-            throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+        // The direct Doubao/Agent Plan gateway answers HTTP 2xx with a
+        // PascalCase Error object — at the root or nested inside
+        // ResponseMetadata — and a null Result when the request is rejected
+        // (documented gateway contract). Surfacing it is required: falling
+        // through to generic extraction would relabel a rejected request as
+        // a successful empty search ("empty result"), the exact error
+        // masking seen on-device for valid saved Agent Plan keys.
+        if provider == .volcengine {
+            let metadata = object["ResponseMetadata"] as? [String: Any]
+            for error in [object["error"], object["Error"], metadata?["Error"]] {
+                if let error, !(error is NSNull) {
+                    throw WebRetrievalError.invalidResponse(providerErrorMessage(error))
+                }
+            }
         }
         return WebSearchProviderOutput(
             results: parseGenericResults(object, provider: provider, limit: limit),
@@ -929,8 +940,25 @@ public actor WebSearchService {
     }
 
     private static func providerErrorMessage(_ error: Any) -> String {
-        if let message = (error as? [String: Any])?["message"] as? String, !message.isEmpty {
-            return "Provider error: \(String(message.prefix(512)))"
+        if let dictionary = error as? [String: Any] {
+            // Volcengine's gateway errors are PascalCase (Code/Message/CodeN);
+            // existing providers keep their lowercase message first.
+            let message = (dictionary["message"] as? String)
+                ?? (dictionary["Message"] as? String)
+            let code = (dictionary["code"] as? String)
+                ?? (dictionary["Code"] as? String)
+                ?? (dictionary["CodeN"] as? Int).map(String.init)
+                ?? (dictionary["code"] as? Int).map(String.init)
+                ?? (dictionary["CodeN"] as? Int64).map(String.init)
+            if let message, !message.isEmpty {
+                if let code, !code.isEmpty {
+                    return "Provider error: \(code): \(String(message.prefix(512)))"
+                }
+                return "Provider error: \(String(message.prefix(512)))"
+            }
+            if let code, !code.isEmpty {
+                return "Provider error: \(String(code.prefix(512)))"
+            }
         }
         if let message = error as? String, !message.isEmpty {
             return "Provider error: \(String(message.prefix(512)))"
@@ -973,7 +1001,16 @@ public actor WebSearchService {
                 return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
             }
         }
-        let paths: [[String]] = [
+        // Volcengine's direct search gateway (Agent Plan / Doubao Search and
+        // any legacy custom endpoint mirroring it) returns the documented
+        // PascalCase envelope `{ "ResponseMetadata": …, "Result": {
+        // "ResultCount": …, "WebResults": [ WebItem ] } }`. None of the
+        // generic paths below matches it, so real 200 responses decoded to
+        // zero results and surfaced as "volcengine: empty result". Item
+        // fields (Title/Url/Snippet/Summary/SiteName/PublishTime/LogoUrl)
+        // already normalize through the shared PascalCase keys.
+        let volcenginePaths: [[String]] = provider == .volcengine ? [["Result", "WebResults"]] : []
+        let paths: [[String]] = volcenginePaths + [
             ["data", "webPages", "value"], ["webPages", "value"], ["web", "results"],
             ["data", "results"], ["results"], ["items"]
         ]
@@ -1054,9 +1091,29 @@ public actor WebSearchService {
         do {
             let response = try await search(query)
             return WebSearchTestOutcome(results: Array(response.results.prefix(maxResults)), error: nil)
+        } catch let WebRetrievalError.allProvidersFailed(failures) {
+            if Self.isEmptyResultOnly(failures) {
+                // The single attempted provider answered HTTP 2xx with zero
+                // matches. That is "no results", not a provider failure: the
+                // UI's no_results copy is accurate, and "All web search
+                // providers failed" would hide a working credential behind
+                // failure wording.
+                return WebSearchTestOutcome(results: [], error: nil)
+            }
+            return WebSearchTestOutcome(results: [], error: WebRetrievalError
+                .allProvidersFailed(failures).localizedDescription)
         } catch {
             return WebSearchTestOutcome(results: [], error: error.localizedDescription)
         }
+    }
+
+    /// True when the only recorded failure is the service's own
+    /// "<kind>: empty result" tag: an HTTP-success envelope with zero
+    /// results and no generated answer. Hard transport/HTTP errors are
+    /// formatted differently ("<kind>: HTTP <status>" / localized error)
+    /// and never match.
+    static func isEmptyResultOnly(_ failures: [String]) -> Bool {
+        failures.count == 1 && failures[0].hasSuffix(": empty result")
     }
 
     private static func deduplicate(_ results: [WebSearchResult], limit: Int) -> [WebSearchResult] {

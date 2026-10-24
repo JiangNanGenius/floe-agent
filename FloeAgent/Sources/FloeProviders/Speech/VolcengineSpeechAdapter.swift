@@ -48,6 +48,46 @@ public struct VolcengineSpeechAdapter: TTSSpeechProviding {
         min(100, max(-50, Int(((ratio - 1.0) * 100.0).rounded())))
     }
 
+    /// Verified Doubao Voice 2.0 speakers (official voice list, checked
+    /// 2026-10-24). Human names are shown in the picker; the raw ids stay in
+    /// the opened custom-ID editor. These speakers are bound to the
+    /// seed-tts-2.0 model: they are offered only for that model and never
+    /// guessed into a 1.0 or another provider's session.
+    public static let voiceCatalog2: [TTSSpeechVoice] = [
+        TTSSpeechVoice(voiceID: "zh_female_vv_uranus_bigtts",
+                       displayName: "Vivi 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_female_xiaohe_uranus_bigtts",
+                       displayName: "小何 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_male_m191_uranus_bigtts",
+                       displayName: "云舟 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_male_taocheng_uranus_bigtts",
+                       displayName: "小天 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_male_liufei_uranus_bigtts",
+                       displayName: "刘飞 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_female_sophie_uranus_bigtts",
+                       displayName: "魅力苏菲 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_female_qingxinnvsheng_uranus_bigtts",
+                       displayName: "清新女声 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_female_cancan_uranus_bigtts",
+                       displayName: "知性灿灿 2.0", kind: .builtin),
+        TTSSpeechVoice(voiceID: "zh_female_tianmeixiaoyuan_uranus_bigtts",
+                       displayName: "甜美小源 2.0", kind: .builtin),
+    ]
+
+    /// True for the model spellings that resolve to the seed-tts-2.0 resource.
+    public static func isTwoPointZeroModel(_ modelID: String) -> Bool {
+        switch modelID {
+        case "doubao-seed-tts-2.0", "seed-tts-2.0": return true
+        default: return false
+        }
+    }
+
+    /// Catalogue voices offered for one model. Empty for the 1.0 model and for
+    /// custom model ids: the editor keeps the manual ID field in that case.
+    public static func catalogueVoices(forModel modelID: String) -> [TTSSpeechVoice] {
+        isTwoPointZeroModel(modelID) ? voiceCatalog2 : []
+    }
+
     let session: URLSession
 
     public init(session: URLSession? = nil) {

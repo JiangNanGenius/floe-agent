@@ -20,10 +20,41 @@
 // Session discipline:
 // - `.playAndRecord` + `.voiceChat` with `.defaultToSpeaker` /
 //   `.allowBluetoothA2DP`.
+// - OBSERVED USER FACTS (2026-10-24, iPhone + M4 reports): continuous voice
+//   failed with the `.noAudioInput` "未找到麦克风" copy while ordinary
+//   Whisper dictation worked; later, dictation ALSO failed after TTS
+//   previews and a voice-session stop on the M4. PHYSICAL root cause is NOT
+//   yet device-proven — the two source-derived defect candidates repaired
+//   here (pending fixed-App device evidence) are:
+//   1. BRING-UP ORDER: dictation (working) installs its mic tap BEFORE
+//      `engine.prepare()`/`engine.start()`; this stack previously installed
+//      the mic tap only later, on an ALREADY-STARTED voice-processed engine
+//      — an ordering that can silently never deliver buffers. The ordered
+//      steps now live in `VoiceCaptureGraphOrder.bringUp` and BOTH bring-up
+//      AND in-place recovery execute that same list.
+//   2. SHARED-SESSION LAST-HOLDER DISCIPLINE: every component toggles the
+//      ONE `AVAudioSession`; a late/abandoned stop (the handoff explicitly
+//      abandons drains past 2 s) previously deactivated the session under a
+//      newer owner. Deactivation now happens only for the LAST holder in
+//      `FloeAudioSessionOwnership` (continuous stacks AND the dictation
+//      capturer participate; SpeechService playback adoption is handed off
+//      to its owner). Counting never made category SWITCHING safe — see the
+//      lane handoff for the remaining playback-adoption gap.
+// - RECOVERY, bounded: a readiness timeout or an engine reconfiguration
+//   (voice processing can fire `AVAudioEngineConfigurationChange` after
+//   start and stop the engine — iPhone behavior to confirm on device)
+//   `VoiceCaptureRecoveryBudget.limit` consecutive in-place restarts per
+//   capture stretch — engine stop, tap+format re-probe, tap BEFORE
+//   restart, re-prove the first buffer. Any real buffer refreshes the
+//   budget. Recovery is never an invisible restart loop: exhaustion
+//   surfaces `.noAudioInput` / `.captureStalled` so the coordinator
+//   rebuilds once and then fails visibly with actionable copy.
 // - A superseded stack instance NEVER deactivates the shared
-//   `AVAudioSession`: ownership is a class-level generation token. No
-//   callback into AppEnvironment; the app layer already ORs the
-//   presentation's activity into its PiP gates.
+//   `AVAudioSession`: deactivation requires releasing the LAST holder in
+//   the app-wide `FloeAudioSessionOwnership` registry (dictation and TTS
+//   playback participate — a late abandoned stop can no longer silence a
+//   newer owner mid-stretch). No callback into AppEnvironment; the app
+//   layer already ORs the presentation's activity into its PiP gates.
 // - Simulator: mirrors the PROVEN dictation guard — `noAudioInput` is thrown
 //   BEFORE touching `engine.inputNode`, because the simulator RemoteIO
 //   service can abort the process below Swift error handling when no host
@@ -33,10 +64,12 @@
 //
 // Played-progress truth: per-scheduled-buffer completion callbacks with an
 // epoch guard. `pause()` freezes the position, `play()` continues it,
-// `stop()` bumps the epoch, clears the queue and resets the counter so a
-// finished/cancelled round can never leak progress into the next. Receipts
-// and drain decisions derive ONLY from these real played frames — never from
-// a TTS producer's final flag.
+// `stop()` fences the epoch BEFORE flushing the player, then clears the queue
+// and resets the counter so a finished/cancelled round can never leak
+// progress into the next. Every played-frame event carries the scheduling
+// epoch through the stream; the coordinator drops an event whose epoch is not
+// the stack's current one. Receipts and drain decisions derive ONLY from
+// these real played frames — never from a TTS producer's final flag.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
@@ -46,29 +79,6 @@ import FloeCore
 // MARK: - Authorization bridge (reuses the exact dictation prompts)
 
 extension SystemSpeechAuthorizationProvider: VoiceConversationAuthorizationProviding {}
-
-// MARK: - Shared session ownership (never deactivated by a superseded owner)
-
-/// One holder at a time. `claim` supersedes; `release` reports whether the
-/// releasing id still owned the session — only then is deactivation allowed,
-/// so an old session finishing late can never knock a newer owner off the
-/// shared `AVAudioSession`.
-enum VoiceConversationSessionOwnership {
-    private static let lock = NSLock()
-    nonisolated(unsafe) private static var currentOwner: UUID?
-
-    static func claim(_ id: UUID) {
-        lock.withLock { currentOwner = id }
-    }
-
-    static func release(_ id: UUID) -> Bool {
-        lock.withLock {
-            guard currentOwner == id else { return false }
-            currentOwner = nil
-            return true
-        }
-    }
-}
 
 // MARK: - Live stack
 
@@ -81,6 +91,19 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     // Engine graph
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    /// Shared playback rate/intonation unit, inserted ONLY on the duplex
+    /// OUTPUT edge (player → timePitch → mixer). The microphone/VPIO input
+    /// path never touches it, so echo cancellation still references the real
+    /// speaker output. One unit is reused across rounds; its configuration is
+    /// frozen per round and written only while the output queue is idle.
+    private let speechEffect = SpeechPlaybackEffectGraph()
+    /// Round-consistent controls delivered by the coordinator before the
+    /// round's first chunk (applied once at an idle queue).
+    private var appliedPlaybackControls = VoicePlaybackControls.neutral
+    /// REAL mixer-rendered output frames in the current epoch (output tap).
+    /// This is a frame clock, not progress and not a content census.
+    private var renderedOutputFrames = 0
+    private var renderedOutputSampleRate: Double = 0
     private var inputFormat: AVAudioFormat?
     private var playerFormat: AVAudioFormat?
     private var tapInstalled = false
@@ -135,8 +158,13 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     private var captureActive = false
     private var lastBufferUptimeNanos: UInt64 = 0
     private var stallTask: Task<Void, Never>?
+    /// Bounded in-place graph recovery policy (see the file header). The
+    /// gate owns its own lock and its own single-flight/budget state; the
+    /// live stack routes EVERY recovery decision through it.
+    private let recoveryGate = VoiceCaptureRecoveryGate()
     /// Silence ALSO delivers buffers. If NO tap buffer arrives for this long
-    /// while capture is active, the microphone path is dead: report
+    /// while capture is active, the microphone path is dead: one bounded
+    /// in-place recovery is attempted first; if that fails, report
     /// `.captureStalled` so the coordinator fails visibly.
     fileprivate let captureStallSeconds: Double = 10
     fileprivate let captureReadinessSeconds: Double = 3
@@ -177,7 +205,7 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         #if targetEnvironment(simulator)
         throw .noAudioInput
         #else
-        VoiceConversationSessionOwnership.claim(stackID)
+        FloeAudioSessionOwnership.claim(stackID)
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
@@ -185,15 +213,22 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
                 mode: .voiceChat,
                 options: [.defaultToSpeaker, .allowBluetoothA2DP]
             )
-            try session.setActive(true, options: .notifyOthersOnDeactivation)
-            graphLock.withLock { sessionActivated = true }
         } catch {
-            _ = VoiceConversationSessionOwnership.release(stackID)
+            Self.logGraphFailure(.sessionCategory, error)
+            _ = FloeAudioSessionOwnership.release(stackID)
             throw .noAudioInput
         }
+        do {
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            Self.logGraphFailure(.sessionActivate, error)
+            _ = FloeAudioSessionOwnership.release(stackID)
+            throw .noAudioInput
+        }
+        graphLock.withLock { sessionActivated = true }
 
         do {
-            try configureGraph()
+            try bringUpGraph()
         } catch let failure {
             rollbackActivation()
             throw failure
@@ -203,18 +238,105 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     }
 
     #if !targetEnvironment(simulator)
-    private func configureGraph() throws(VoiceConversationFailure) {
-        let input = engine.inputNode
-        do {
+    /// Executes the canonical bring-up sequence for the audio graph.
+    /// `sessionCategory`/`sessionActivate` belong to `activate()` (they are
+    /// tied to session OWNERSHIP); everything after them — INCLUDING the
+    /// input tap installation before `prepareEngine`/`startEngine` — runs
+    /// from `VoiceCaptureGraphOrder.bringUp`, the same list an in-place
+    /// recovery re-executes. The order is asserted by
+    /// ContinuousVoiceMicrophoneActivationTests: this is the fix for the
+    /// iPhone-only `.noAudioInput` (a tap installed on an already-started
+    /// voice-processed engine could silently never fire) and it must not
+    /// drift back.
+    private func bringUpGraph() throws(VoiceConversationFailure) {
+        for step in VoiceCaptureGraphOrder.recoverySteps {
+            try runGraphStep(step)
+        }
+    }
+
+    private func runGraphStep(_ step: VoiceCaptureGraphStep) throws(VoiceConversationFailure) {
+        switch step {
+        case .sessionCategory, .sessionActivate:
+            break // activate()/recoverCaptureGraph() own the session steps.
+        case .enableVoiceProcessing:
             // Apple voice-processing IO: echo cancellation against the
             // engine's OWN output (the player below rides the same engine),
             // plus noise suppression. Output is NEVER fed back to input.
-            try input.setVoiceProcessingEnabled(true)
-        } catch {
-            throw .noAudioInput
+            // Idempotent — safe to re-run inside a recovery restart.
+            do {
+                try engine.inputNode.setVoiceProcessingEnabled(true)
+            } catch {
+                Self.logGraphFailure(.enableVoiceProcessing, error)
+                throw .noAudioInput
+            }
+        case .queryInputFormat:
+            try resolveGraphFormats()
+        case .connectPlayer:
+            guard let playerFmt = graphLock.withLock({ playerFormat }) else {
+                Self.logGraphStepFailed(.connectPlayer, "format=0")
+                throw .noAudioInput
+            }
+            if graphLock.withLock({ playerConnected }) {
+                engine.disconnectNodeInput(playerNode)
+            }
+            // Same production wiring as ordinary read-aloud: the shared unit
+            // sits between the player and the mixer, so AEC still cancels
+            // against the ACTUAL output and the level tap stays post-effect.
+            speechEffect.install(in: engine, from: playerNode,
+                                 to: engine.mainMixerNode, format: playerFmt)
+            graphLock.withLock { playerConnected = true }
+        case .installOutputTap:
+            guard let playerFmt = graphLock.withLock({ playerFormat }) else {
+                Self.logGraphStepFailed(.installOutputTap, "format=0")
+                throw .noAudioInput
+            }
+            // Output-side metering: the mixer bus that feeds the speaker — the
+            // REAL played PCM amplitude. During player pause the graph renders
+            // silence, so the meter decays honestly to zero.
+            if graphLock.withLock({ outputTapInstalled }) {
+                engine.mainMixerNode.removeTap(onBus: 0)
+            }
+            engine.mainMixerNode.installTap(
+                onBus: 0,
+                bufferSize: 4_096,
+                format: playerFmt
+            ) { [weak self] buffer, _ in
+                self?.publishPlayedLevel(of: buffer)
+                self?.countRenderedOutput(of: buffer)
+            }
+            graphLock.withLock { outputTapInstalled = true }
+        case .installInputTap:
+            // THE ROOT-CAUSE STEP. Tap BEFORE start (proven dictation order),
+            // never on a running engine during bring-up.
+            guard let micFormat = graphLock.withLock({ inputFormat }) else {
+                Self.logGraphStepFailed(.installInputTap, "format=0")
+                throw .noAudioInput
+            }
+            installInputTap(format: micFormat)
+        case .prepareEngine:
+            engine.prepare()
+        case .startEngine:
+            do {
+                try engine.start()
+                graphLock.withLock { engineStarted = true }
+            } catch {
+                Self.logGraphFailure(.startEngine, error)
+                throw .noAudioInput
+            }
         }
-        let micFormat = input.outputFormat(forBus: 0)
+        Self.logGraphStep(step)
+    }
+
+    /// Validates and stores BOTH graph formats (microphone after voice
+    /// processing, engine output for the player). Counts-only diagnostics:
+    /// an invalid format is named by step, never by route/device labels.
+    private func resolveGraphFormats() throws(VoiceConversationFailure) {
+        let micFormat = engine.inputNode.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0, micFormat.channelCount > 0 else {
+            Self.logGraphStepFailed(
+                .queryInputFormat,
+                "input=\(Int(micFormat.sampleRate))x\(Int(micFormat.channelCount))"
+            )
             throw .noAudioInput
         }
         let outFormat = engine.outputNode.inputFormat(forBus: 0)
@@ -222,100 +344,120 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             ? outFormat
             : AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)
         else {
+            Self.logGraphStepFailed(.queryInputFormat, "player=0")
             throw .noAudioInput
         }
-        engine.connect(playerNode, to: engine.mainMixerNode, format: playerFmt)
         graphLock.withLock {
             inputFormat = micFormat
             playerFormat = playerFmt
-            playerConnected = true
-        }
-
-        // Output-side metering: the mixer bus that feeds the speaker — the
-        // REAL played PCM amplitude. During player pause the graph renders
-        // silence, so the meter decays honestly to zero.
-        engine.mainMixerNode.installTap(
-            onBus: 0,
-            bufferSize: 4_096,
-            format: playerFmt
-        ) { [weak self] buffer, _ in
-            self?.publishPlayedLevel(of: buffer)
-        }
-        graphLock.withLock { outputTapInstalled = true }
-
-        engine.prepare()
-        do {
-            try engine.start()
-            graphLock.withLock { engineStarted = true }
-        } catch {
-            throw .noAudioInput
         }
     }
 
-    private func rollbackActivation() {
-        graphLock.lock()
-        let hadTap = outputTapInstalled
-        let connected = playerConnected
-        let started = engineStarted
-        outputTapInstalled = false
-        playerConnected = false
-        engineStarted = false
-        let activate = sessionActivated
-        sessionActivated = false
-        graphLock.unlock()
-        if hadTap { engine.mainMixerNode.removeTap(onBus: 0) }
-        if connected { engine.disconnectNodeInput(playerNode) }
-        if started { engine.stop() }
-        if activate, VoiceConversationSessionOwnership.release(stackID) {
-            try? AVAudioSession.sharedInstance().setActive(
-                false, options: .notifyOthersOnDeactivation
-            )
+    /// Installs (or replaces) the microphone tap on the input node.
+    private func installInputTap(format: AVAudioFormat) {
+        let input = engine.inputNode
+        if graphLock.withLock({ tapInstalled }) {
+            input.removeTap(onBus: 0)
         }
-    }
-    #endif
-
-    // MARK: - Capture
-
-    /// Installs the microphone tap and returns ONLY after the first REAL
-    /// buffer arrives (≤3 s, the proven dictation readiness pattern). A tap
-    /// that never fires is a dead capture path: throw `.noAudioInput` so the
-    /// coordinator can rebuild once and then fail visibly. The stall
-    /// watchdog keeps watching for the rest of the capture stretch — a tap
-    /// that goes quiet mid-session reports `.captureStalled`.
-    func startCapture() async throws(VoiceConversationFailure) {
-        #if targetEnvironment(simulator)
-        throw .noAudioInput
-        #else
-        let capture = graphLock.withLock {
-            let value = (started: engineStarted, installed: tapInstalled, format: inputFormat)
-            if value.started, !value.installed, value.format != nil { tapInstalled = true }
-            return value
-        }
-        guard capture.started, !capture.installed, let inputFormat = capture.format else {
-            if !capture.started || capture.format == nil { throw .noAudioInput }
-            // Idempotent re-entry: an already-installed tap must still be
-            // PROVEN alive before the coordinator presents "Listening".
-            do { try await waitCaptureReady() } catch { throw .noAudioInput }
-            return
-        }
-        resetCaptureReadiness()
-        engine.inputNode.installTap(
+        input.installTap(
             onBus: 0,
             bufferSize: 4_096,
-            format: inputFormat
+            format: format
         ) { [weak self] buffer, time in
             guard buffer.frameLength > 0 else { return }
             self?.markCaptureBuffer()
             self?.publishMicLevel(of: buffer)
             self?.feedBackend(buffer, at: time)
         }
+        graphLock.withLock { tapInstalled = true }
+    }
+
+    private func rollbackActivation() {
+        graphLock.lock()
+        let hadTap = tapInstalled
+        let hadOutputTap = outputTapInstalled
+        let connected = playerConnected
+        let started = engineStarted
+        tapInstalled = false
+        outputTapInstalled = false
+        playerConnected = false
+        engineStarted = false
+        let activate = sessionActivated
+        sessionActivated = false
+        graphLock.unlock()
+        if hadTap { engine.inputNode.removeTap(onBus: 0) }
+        if hadOutputTap { engine.mainMixerNode.removeTap(onBus: 0) }
+        if connected { engine.disconnectNodeInput(playerNode) }
+        if started { engine.stop() }
+        // A failed bring-up may already have inserted the shared unit; detach
+        // it so a later activation starts from a clean graph (the engine,
+        // microphone and voice-processing configuration are unaffected).
+        speechEffect.uninstall()
+        // ATOMIC last-holder release + deactivation: a newer component
+        // cannot claim/activate in the gap and then be silenced by this
+        // rollback (the release->Bool + setActive(false) two-step had
+        // exactly that TOCTOU).
+        if activate {
+            FloeAudioSessionOwnership.releaseAndDeactivateLast(stackID) {
+                try? AVAudioSession.sharedInstance().setActive(
+                    false, options: .notifyOthersOnDeactivation
+                )
+            }
+        }
+    }
+    #endif
+
+    // MARK: - Capture
+
+    /// Returns ONLY after the first REAL buffer arrives (≤3 s, the proven
+    /// dictation readiness pattern). A tap that never fires is a dead capture
+    /// path — BUT before declaring it dead, exactly ONE bounded in-place
+    /// restart runs (`recoverCaptureGraph`: engine stop, tap reinstalled
+    /// BEFORE the engine restarts, fresh proof window), because on iPhone an
+    /// engine that stopped/reconfigured after start leaves a running-engine
+    /// installed tap silently dead. A path still unproven after the
+    /// tap-before-start restart throws `.noAudioInput` so the coordinator can
+    /// rebuild once and then fail visibly. The stall watchdog keeps watching
+    /// for the rest of the capture stretch — a tap that goes quiet mid-
+    /// session gets the same bounded recovery before `.captureStalled`.
+    func startCapture() async throws(VoiceConversationFailure) {
+        #if targetEnvironment(simulator)
+        throw .noAudioInput
+        #else
+        let readiness = graphLock.withLock {
+            (started: engineStarted, installed: tapInstalled, format: inputFormat)
+        }
+        guard readiness.started, let micFormat = readiness.format else {
+            Self.logGraphStepFailed(
+                .installInputTap,
+                "startCapture=0 started=\(readiness.started ? 1 : 0) formatMissing=\(readiness.format == nil ? 1 : 0)"
+            )
+            throw .noAudioInput
+        }
+        if !readiness.installed {
+            // Re-arm after mute: the engine stays running for answer playback
+            // while muted, so this installation necessarily happens on a
+            // running engine. The proof below and the single restart recovery
+            // backstop it — only proven buffers may present "Listening".
+            installInputTap(format: micFormat)
+        }
+        resetCaptureReadiness()
         do {
             try await waitCaptureReady()
         } catch {
-            // Readiness timeout, cancellation or a stop racing the wait:
-            // the capture path is not proven alive either way.
-            stopCapture()
-            throw .noAudioInput
+            let recovered = await requestCaptureRecovery(reason: "readiness")
+            guard recovered else {
+                Self.logGraphEvent("event=readinessFailed reason=startup recovery=0")
+                stopCapture()
+                throw .noAudioInput
+            }
+            do {
+                try await waitCaptureReady()
+            } catch {
+                Self.logGraphEvent("event=readinessFailed reason=startup recovery=1")
+                stopCapture()
+                throw .noAudioInput
+            }
         }
         startCaptureStallWatchdog()
         #endif
@@ -357,6 +499,10 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             receivedFirstBuffer = true
             lastBufferUptimeNanos = DispatchTime.now().uptimeNanoseconds
         }
+        // A REAL buffer is proof of life: a later problem gets the full
+        // bounded recovery budget again (gate owns its own lock; never
+        // nested under captureLock).
+        recoveryGate.noteProgress()
         finishReadiness(.success(()))
     }
 
@@ -413,6 +559,131 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         waiter?.resume(with: result)
     }
 
+    /// Bounded, single-flight in-place recovery of the capture graph, shared
+    /// by EVERY dead-tap surface: a readiness timeout during start/unmute, an
+    /// engine reconfiguration, and the stall watchdog. It stops the engine,
+    /// drops both taps and re-executes the canonical `bringUpGraph()`
+    /// sequence — the input tap goes back on BEFORE `prepareEngine` /
+    /// `startEngine`, the proven dictation ordering — then hands the caller a
+    /// fresh readiness window. Refused (budget, teardown race, another
+    /// recovery in flight) returns false: recovery is bounded and can NEVER
+    /// become an invisible restart loop; the caller fails visibly.
+    private func recoverCaptureGraph(reason: String) async -> Bool {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        let preconditions = captureLock.withLock { (armed: captureActive, stopped: readinessStopped) }
+        let holder = graphLock.withLock { sessionActivated }
+            && FloeAudioSessionOwnership.isHolder(stackID)
+        let mayAttempt = recoveryGate.beginAttempt(
+            armed: preconditions.armed,
+            stopped: preconditions.stopped,
+            holder: holder
+        )
+        guard mayAttempt else {
+            Self.logGraphEvent("event=recoverySkipped reason=\(reason)")
+            return false
+        }
+        defer { recoveryGate.endAttempt() }
+        // A route/format settle can leave the session momentarily inactive on
+        // iPhone; re-assert FIRST (holder gate above proved this instance is
+        // still a live owner — a superseded instance never gets here).
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                true, options: .notifyOthersOnDeactivation
+            )
+        } catch {
+            Self.logGraphFailure(.sessionActivate, error)
+            return false
+        }
+        engine.stop()
+        graphLock.withLock { engineStarted = false }
+        if graphLock.withLock({ tapInstalled }) {
+            engine.inputNode.removeTap(onBus: 0)
+            graphLock.withLock { tapInstalled = false }
+        }
+        if graphLock.withLock({ outputTapInstalled }) {
+            engine.mainMixerNode.removeTap(onBus: 0)
+            graphLock.withLock { outputTapInstalled = false }
+        }
+        do {
+            try bringUpGraph()
+        } catch let failure {
+            rollbackActivation()
+            Self.logGraphEvent("event=recoveryFailed reason=\(reason) failure=\(failure.rawValue)")
+            return false
+        }
+        // Final ownership gate: `stopCapture`/`deactivate` may have landed
+        // WHILE the restart ran. A retired stack must never leave a live
+        // engine with taps attached — roll the fresh graph straight back and
+        // let the coordinator's own teardown own the outcome.
+        let stillOwned = graphLock.withLock { sessionActivated }
+        let stopped = captureLock.withLock { readinessStopped }
+        guard stillOwned, !stopped else {
+            rollbackActivation()
+            Self.logGraphEvent(
+                "event=recoveryAbandoned reason=\(reason) owned=\(stillOwned ? 1 : 0) stopped=\(stopped ? 1 : 0)"
+            )
+            return false
+        }
+        // The restart interrupted answer playback; resume rendering. Played
+        // -frame truth is unaffected — completion callbacks of dropped
+        // buffers are epoch-fenced and never credit a newer round.
+        playerNode.play()
+        resetCaptureReadiness()
+        Self.logGraphEvent("event=recoveryRestarted reason=\(reason)")
+        return true
+        #endif
+    }
+
+    /// Serialize on the single-flight flag: `recoveryInFlight` spans ONLY the
+    /// physical restart (sub-second), never the proof wait, so yielding here
+    /// is short. Without this, a config-change recovery and a stall-triggered
+    /// recovery could cross into each other's proof window and surface a
+    /// false `.captureStalled` / `readinessWaiter` collision.
+    private func requestCaptureRecovery(reason: String) async -> Bool {
+        #if targetEnvironment(simulator)
+        return false
+        #else
+        var waited = 0
+        while captureLock.withLock({ recoveryInFlight }) && waited < 24 {
+            try? await Task.sleep(for: .milliseconds(125))
+            waited += 1
+        }
+        return await recoverCaptureGraph(reason: reason)
+        #endif
+    }
+
+    /// Engine reconfiguration (route/format settle — iPhone voice processing
+    /// fires this and STOPS the engine) must not leave a silently dead tap.
+    /// Runs the shared bounded recovery and re-proves real buffers; only a
+    /// failed re-proof while the session still owns an armed stretch surfaces
+    /// `.captureStalled`. A config change with no armed capture (bring-up
+    /// race, mute) is left to `startCapture`'s own recovery. A stretch whose
+    /// proof window is already owned by `startCapture`/watchdog is left to
+    /// that owner — never a second waiter over the same tap.
+    private func recoverAfterConfigurationChange() async {
+        #if !targetEnvironment(simulator)
+        let armed = captureLock.withLock {
+            captureActive && !recoveryInFlight && !readinessStopped && readinessWaiter == nil
+        }
+        guard armed else { return }
+        guard await requestCaptureRecovery(reason: "configChange") else { return }
+        do {
+            try await waitCaptureReady()
+            Self.logGraphEvent("event=configRecovery ok=1")
+        } catch {
+            let owned = captureLock.withLock {
+                captureActive && !readinessStopped && !recoveryInFlight && readinessWaiter == nil
+            }
+            guard owned else { return } // pause/teardown or another owner decides
+            Self.logGraphEvent("event=configRecovery ok=0")
+            systemEventContinuation.yield(.captureStalled)
+            captureLock.withLock { captureActive = false }
+        }
+        #endif
+    }
+
     private func startCaptureStallWatchdog() {
         stallTask?.cancel()
         let limitNanos = UInt64(captureStallSeconds * 1_000_000_000)
@@ -421,17 +692,66 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
                 try? await Task.sleep(for: .seconds(1))
                 guard let self, !Task.isCancelled else { return }
                 let snapshot = self.captureLock.withLock {
-                    (active: self.captureActive, last: self.lastBufferUptimeNanos)
+                    (
+                        active: self.captureActive,
+                        last: self.lastBufferUptimeNanos,
+                        inRecovery: self.recoveryInFlight
+                    )
                 }
                 guard snapshot.active else { return }
                 let elapsed = DispatchTime.now().uptimeNanoseconds &- snapshot.last
-                if elapsed >= limitNanos {
-                    self.systemEventContinuation.yield(.captureStalled)
-                    self.captureLock.withLock { self.captureActive = false }
-                    return
+                if elapsed < limitNanos { continue }
+                if snapshot.inRecovery { continue } // the restart owns the window
+                // Silence ALSO delivers buffers, so a full gap means the tap
+                // DIED mid-session. One bounded in-place restart runs BEFORE
+                // declaring it: an iPhone reconfiguration must not become a
+                // false "no microphone". If the restart cannot prove fresh
+                // buffers, fail visibly — never an indefinite Listening.
+                let recovered = await self.requestCaptureRecovery(reason: "stalled")
+                if recovered {
+                    do {
+                        try await self.waitCaptureReady()
+                        continue // alive again; the reset clock keeps watching
+                    } catch {
+                        // Fall through to the ownership check below.
+                    }
                 }
+                let decision = self.captureLock.withLock {
+                    (
+                        active: self.captureActive,
+                        stopped: self.readinessStopped,
+                        inRecovery: self.recoveryInFlight,
+                        proofOwned: self.readinessWaiter != nil
+                    )
+                }
+                guard decision.active, !decision.stopped else { return } // pause/teardown owns the outcome
+                if decision.inRecovery || decision.proofOwned { continue } // another owner is proving now
+                self.systemEventContinuation.yield(.captureStalled)
+                self.captureLock.withLock { self.captureActive = false }
+                return
             }
         }
+    }
+
+    // MARK: - Graph diagnostics (sanitized: step names + OS codes only)
+
+    private static func logGraphStep(_ step: VoiceCaptureGraphStep) {
+        FloeLogger(category: .app).info("voiceLiveGraph step=\(step.rawValue) ok=1")
+    }
+
+    private static func logGraphFailure(_ step: VoiceCaptureGraphStep, _ error: Error) {
+        let nsError = error as NSError
+        FloeLogger(category: .app).warning(
+            "voiceLiveGraph step=\(step.rawValue) ok=0 domain=\(nsError.domain) code=\(nsError.code)"
+        )
+    }
+
+    private static func logGraphStepFailed(_ step: VoiceCaptureGraphStep, _ detail: String) {
+        FloeLogger(category: .app).warning("voiceLiveGraph step=\(step.rawValue) ok=0 \(detail)")
+    }
+
+    private static func logGraphEvent(_ message: String) {
+        FloeLogger(category: .app).info("voiceLiveGraph \(message)")
     }
 
     // MARK: - Transcription (existing backends through existing seams)
@@ -592,7 +912,13 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
                     return self.completedFrames
                 }
                 if let advance {
-                    self.engineEventContinuation.yield(.playedFrames(advance))
+                    // Keep the SCHEDULING epoch on the event: the coordinator
+                    // drops it if a stop fenced a newer epoch after this
+                    // buffer was queued. Without the tag, a receipt already
+                    // buffered in the stream could credit the next round.
+                    self.engineEventContinuation.yield(
+                        .playedFramesTagged(frames: advance, epoch: capturedEpoch)
+                    )
                 }
             }
         )
@@ -616,18 +942,72 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     }
 
     func stopPlayback() {
+        // Fence FIRST, flush second. `playerNode.stop()` drains the scheduled
+        // queue and may run `.dataPlayedBack` completion handlers inline;
+        // bumping the epoch before that guarantees those handlers (and any
+        // handler that already passed its check but has not yielded yet)
+        // can never credit the cancelled round. Only then discard the
+        // time-pitch look-ahead and zero the counters for the new epoch. The
+        // shared duplex engine, microphone and VPIO graph are never reset.
         playbackLock.lock()
         epoch &+= 1
-        scheduledFrames = 0
-        completedFrames = 0
+        let fencedEpoch = epoch
         playbackLock.unlock()
         playerNode.stop()
-        // Fresh zero keeps progress honest; stale completions are
-        // epoch-fenced and can never credit a newer round.
-        engineEventContinuation.yield(.playedFrames(0))
+        playerNode.reset()
+        speechEffect.reset()
+        playbackLock.lock()
+        scheduledFrames = 0
+        completedFrames = 0
+        renderedOutputFrames = 0
+        renderedOutputSampleRate = 0
+        appliedPlaybackControls = .neutral
+        playbackLock.unlock()
+        // Fresh epoch, fresh zero. Stale completions are epoch-fenced both
+        // here (the handler check) and in the coordinator (the event tag).
+        // The reset frame counter is a clock for the NEXT round only; its
+        // baseline is taken after the next last-receipt, so any in-flight old
+        // tap buffer can never stand in for new-round tail progress.
+        engineEventContinuation.yield(.playedFramesTagged(frames: 0, epoch: fencedEpoch))
         #if !targetEnvironment(simulator)
         if graphLock.withLock({ engineStarted }) { playerNode.play() }
         #endif
+    }
+
+    /// The epoch current receivers must match. Fenced before every player
+    /// flush by `stopPlayback()`; read by the coordinator to reject progress
+    /// events that were queued in an older epoch.
+    var playbackEpoch: UInt64 { playbackLock.withLock { epoch } }
+
+    /// Freezes one round's controls. The node is written only when the output
+    /// queue is idle (fresh epoch / everything already consumed), which is
+    /// exactly "before the first buffer of a new round after the previous
+    /// output flush". Later units of the same round or a queued old answer
+    /// never retune the shared unit at a player receipt.
+    func applySpeechControls(_ controls: VoicePlaybackControls, for unitID: UUID) {
+        playbackLock.lock()
+        guard scheduledFrames == completedFrames,
+              controls != appliedPlaybackControls else {
+            playbackLock.unlock()
+            return
+        }
+        appliedPlaybackControls = controls
+        playbackLock.unlock()
+        speechEffect.apply(controls)
+    }
+
+    /// REAL mixer-rendered output frames since the current epoch (tap clock).
+    var outputRenderedFrames: Int { playbackLock.withLock { renderedOutputFrames } }
+
+    /// Frame growth needed to flush the time-pitch look-ahead after the last
+    /// player receipt. Uses the tap's ACTUAL output rate when known; the SDK
+    /// reports latency 0 as "unknown", so the measured bound supplies it.
+    var outputDrainFrames: Int {
+        let tapRate = playbackLock.withLock { renderedOutputSampleRate }
+        let fallback = graphLock.withLock { playerFormat?.sampleRate ?? 48_000 }
+        return SpeechPlaybackEffectRender.drainFrameCount(
+            nodeLatencySeconds: speechEffect.reportedLatencySeconds,
+            sampleRate: tapRate > 0 ? tapRate : fallback)
     }
 
     // MARK: - Chunk ↔ buffer
@@ -730,6 +1110,19 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         )
     }
 
+    /// Epoch-local count of REAL mixer frames for the post-input tail drain.
+    /// Counts frames (never sample content): silent stretches are legitimate
+    /// and must not be mistaken for a finished/absent tail.
+    private nonisolated func countRenderedOutput(of buffer: AVAudioPCMBuffer) {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return }
+        let rate = buffer.format.sampleRate
+        playbackLock.withLock {
+            renderedOutputFrames += frames
+            if rate.isFinite, rate > 0 { renderedOutputSampleRate = rate }
+        }
+    }
+
     // MARK: - System observation
 
     private func installSystemObservers() {
@@ -772,6 +1165,12 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         ) { [weak self] note in
             guard let self, (note.object as? AVAudioEngine) === self.engine else { return }
             self.systemEventContinuation.yield(.engineConfigurationChanged)
+            // The notification is information for the coordinator; the
+            // reconfiguration itself STOPS the engine on iPhone. Recover
+            // in-place with the bounded tap-before-start restart and demand
+            // fresh real buffers — only a failed re-proof surfaces as
+            // `.captureStalled`.
+            Task { [weak self] in await self?.recoverAfterConfigurationChange() }
         }
         observers.append(contentsOf: [interruptionToken, routeToken, mediaToken, configToken])
     }
@@ -815,13 +1214,18 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             return value
         }
         if wasStarted { engine.stop() }
+        // Engine teardown discards every scheduled buffer and the unit's held
+        // look-ahead; detaching the unit guarantees no old tail survives a
+        // later re-activation of this instance.
+        speechEffect.uninstall()
         removeSystemObservers()
-        let wasActivated = graphLock.withLock {
-            let value = sessionActivated
-            sessionActivated = false
-            return value
-        }
-        if wasActivated, VoiceConversationSessionOwnership.release(stackID) {
+        graphLock.withLock { sessionActivated = false }
+        // Unconditional atomic release: `releaseAndDeactivateLast` only
+        // deactivates when removing THIS instance's claim empties the
+        // registry (never-claimed or already-released ids are inert), and
+        // the deactivation is serialized against new claims — no gap where
+        // a just-activated owner could still be silenced by this teardown.
+        FloeAudioSessionOwnership.releaseAndDeactivateLast(stackID) {
             try? AVAudioSession.sharedInstance().setActive(
                 false,
                 options: .notifyOthersOnDeactivation

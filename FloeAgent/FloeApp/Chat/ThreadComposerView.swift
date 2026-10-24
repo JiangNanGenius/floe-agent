@@ -1066,13 +1066,13 @@ struct ThreadComposerView: View {
                 Text(voiceCaptureTitle)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.primary)
-                Text(voiceInput.transcript.isEmpty
-                     ? (voiceInput.isListening ? "chat.thread_composer_view.listening" : "chat.thread_composer_view.please_wait")
-                     : voiceInput.transcript)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .contentTransition(.interpolate)
+                if !voiceInput.transcript.isEmpty {
+                    Text(voiceInput.transcript)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .contentTransition(.interpolate)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 

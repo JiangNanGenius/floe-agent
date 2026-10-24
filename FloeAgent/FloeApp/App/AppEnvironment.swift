@@ -965,6 +965,11 @@ final class AppEnvironment: ObservableObject {
                 Task { @MainActor [weak self] in
                     await self?.localSpeechRuntime.handleMemoryWarning()
                 }
+                #if canImport(UIKit) && canImport(WhisperKit)
+                // Warm enhanced recognition model: same pressure contract as
+                // the output engine (cancel/join the owning worker, release).
+                Task { await SpeechRecognitionRuntime.live.handleMemoryWarning() }
+                #endif
             }
         voiceInput.prepareForCapture = { [weak self] in
             guard let self else { return }

@@ -23,7 +23,25 @@ public enum ConfigSyncRecordType: String, Sendable, CaseIterable {
 public actor ConfigSyncEngine {
     public static let zoneName = "FloeConfigZone"
 
-    public private(set) var status: SyncStatus = .paused
+    /// Engine lifecycle status. `.waitingForSecret` is DYNAMIC: CloudKit
+    /// records and iCloud Keychain secrets arrive independently, so a cached
+    /// wait must not freeze after the last batch epilogue. Every transition
+    /// into the wait starts the engine-owned arrival monitor (which re-runs
+    /// the same honest per-account computation when secrets land), and every
+    /// other transition cancels it so paused/syncing/error states can never
+    /// be silently promoted.
+    public private(set) var status: SyncStatus = .paused {
+        didSet {
+            #if canImport(CloudKit)
+            statusEpoch &+= 1
+            if case .waitingForSecret = status {
+                startSecretArrivalMonitor()
+            } else {
+                stopSecretArrivalMonitor()
+            }
+            #endif
+        }
+    }
     public private(set) var lastSyncAt: Date?
     public private(set) var synchronizationEnabled = true
     /// Record ids of remote records rejected by canonical validation during
@@ -165,6 +183,136 @@ public actor ConfigSyncEngine {
     private var zoneID: CKRecordZone.ID?
     private var scheduledSync: Task<Void, Never>?
     private var isSynchronizing = false
+    /// Engine-owned observation of independent iCloud Keychain arrivals while
+    /// the honest `.waitingForSecret` state is shown. Actor-owned (not view
+    /// owned), cancelled by any other status transition. Bounded exponential
+    /// backoff so a secret that takes hours to deliver still resolves without
+    /// a busy loop, and every re-check goes through the SAME per-account
+    /// computation the batch epilogues use — no "first credential wins"
+    /// shortcut and no fallback that could claim arrival of a key that never
+    /// entered the synced namespace.
+    private var secretArrivalMonitor: Task<Void, Never>?
+    /// Lifecycle epoch. Every `status` assignment — including a new batch
+    /// epilogue re-asserting the wait — advances it. A credential computation
+    /// captures the epoch BEFORE its awaits and may only write its conclusion
+    /// while the epoch is unchanged, so a pause, disable, new error or new
+    /// batch landing mid-compute can never be overwritten by a stale `.synced`
+    /// derived from the previous cycle's inputs.
+    private var statusEpoch = 0
+    private var secretArrivalMonitorGeneration = 0
+
+    private func startSecretArrivalMonitor() {
+        guard secretArrivalMonitor == nil else { return }
+        secretArrivalMonitorGeneration &+= 1
+        let generation = secretArrivalMonitorGeneration
+        secretArrivalMonitor = Task { [weak self] in
+            var delaySeconds = 1
+            var keepWatching = true
+            while keepWatching && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(delaySeconds))
+                if Task.isCancelled { break }
+                guard let engine = self else { break }
+                keepWatching = await engine.recheckWaitingStatusForArrival()
+                delaySeconds = min(delaySeconds * 2, 120)
+            }
+            await self?.retireSecretArrivalMonitor(observing: generation)
+        }
+    }
+
+    private func stopSecretArrivalMonitor() {
+        secretArrivalMonitor?.cancel()
+        secretArrivalMonitor = nil
+    }
+
+    /// Clears the stored handle only when it still belongs to the ending
+    /// observation cycle; a monitor started for a newer wait is never
+    /// orphaned or clobbered by the previous task's exit.
+    private func retireSecretArrivalMonitor(observing generation: Int) {
+        guard generation == secretArrivalMonitorGeneration else { return }
+        secretArrivalMonitor?.cancel()
+        secretArrivalMonitor = nil
+    }
+
+    /// One arrival-monitor tick (also used by `refreshStatusIfWaiting`).
+    /// Returns TRUE only while the engine is STILL waiting with nothing
+    /// changed — the monitor keeps watching with a longer backoff. Returns
+    /// FALSE when this observation cycle is done: the wait was promoted to a
+    /// freshly derived state, or another transition (pause, disable, sync
+    /// start, error, cancellation) now owns the display. Every write is
+    /// fenced on the epoch captured BEFORE the awaits, so a stale conclusion
+    /// is never applied to a lifecycle state that moved mid-compute.
+    private func recheckWaitingStatusForArrival() async -> Bool {
+        var attempts = 0
+        while !Task.isCancelled, attempts < 2 {
+            attempts += 1
+            guard case .waitingForSecret = status else { return false }
+            let epoch = statusEpoch
+            let fresh = await batchCompletionStatus()
+            if Task.isCancelled { return false }
+            if statusEpoch == epoch {
+                guard case .waitingForSecret = status else { return false }
+                if fresh == .waitingForSecret { return true }
+                status = fresh
+                return false
+            }
+            // The lifecycle moved while credentials were being computed. If
+            // the engine re-entered the wait (a new batch epilogue), recompute
+            // against current inputs instead of exiting — this task IS the
+            // monitor for the new cycle (a start was suppressed because the
+            // handle was already set), and dropping it would freeze the
+            // status again with no watching task. Any other transition
+            // (pause, disable, sync start, error) owns the display now.
+            guard case .waitingForSecret = status else { return false }
+        }
+        // Bounded attempts exhausted behind a reassignment storm: hand the
+        // cadence back to the monitor's regular next tick while the engine
+        // is still waiting, and finish otherwise.
+        return !Task.isCancelled && status == .waitingForSecret
+    }
+
+    /// UI seam for an opened settings screen: re-evaluates the credential
+    /// wait immediately instead of waiting for the next monitor tick or a
+    /// CloudKit batch that may never come. Only ever acts on `.waitingForSecret`;
+    /// paused/syncing/synced/error states are returned unchanged so a real
+    /// error or pause can never be promoted by a screen visit, and the epoch
+    /// fence prevents a mid-compute transition from being overwritten.
+    @discardableResult
+    public func refreshStatusIfWaiting() async -> SyncStatus {
+        if case .waitingForSecret = status {
+            _ = await recheckWaitingStatusForArrival()
+        }
+        return status
+    }
+
+    /// Deterministic seam for per-account secret existence. Production leaves
+    /// this nil and the real synchronizable Keychain namespace is read (byte
+    /// values are discarded immediately by callers; only existence is
+    /// observed). Tests inject presence sets and deliberately delayed reads
+    /// to exercise late arrival and mid-compute lifecycle changes without
+    /// device Keychain access. Existence only — never a secret body.
+    var secretExistenceReader: (@Sendable (String, String, Bool) async -> Bool)?
+
+    func replaceSecretExistenceReaderForTesting(
+        _ reader: (@Sendable (String, String, Bool) async -> Bool)?
+    ) {
+        secretExistenceReader = reader
+    }
+
+    /// Existence-only check in the declared Keychain namespace. Any read
+    /// failure (item missing or unavailable) counts as not present, matching
+    /// the previous `try keychain.read` / `catch → waiting` behavior exactly.
+    private func secretPresent(service: String, account: String, synchronizable: Bool) async -> Bool {
+        if let secretExistenceReader {
+            return await secretExistenceReader(service, account, synchronizable)
+        }
+        do {
+            _ = try KeychainStore(service: service, synchronizable: synchronizable)
+                .read(account: account)
+            return true
+        } catch {
+            return false
+        }
+    }
 
     public func configure(container: CKContainer) async throws {
         guard let metadataStore else {
@@ -1144,18 +1292,23 @@ public actor ConfigSyncEngine {
     /// never leaves this device's local Keychain namespace, so the synced
     /// namespace will never receive it and awaiting it would freeze the
     /// status with no possible recovery.
+    /// Shared by the batch epilogues AND the arrival monitor/`refreshStatusIfWaiting`
+    /// seam: exactly one per-account truth, so a late arrival can resolve the
+    /// wait without any new batch while one missing account still keeps every
+    /// device waiting.
     private func credentialSyncStatus() async -> SyncStatus {
         let preferences = SyncControlPreferences.load()
         if preferences.overallEnabled, let configurationStore,
            let providers = try? await configurationStore.providers() {
-            let keychain = KeychainStore(
-                service: KeychainSecretStore.defaultService,
-                synchronizable: true
-            )
             for provider in providers {
                 guard let reference = provider.secretRef, reference.synchronizable else { continue }
-                do { _ = try keychain.read(account: reference.keychainAccount) }
-                catch { return .waitingForSecret }
+                if !(await secretPresent(
+                    service: KeychainSecretStore.defaultService,
+                    account: reference.keychainAccount,
+                    synchronizable: true
+                )) {
+                    return .waitingForSecret
+                }
             }
         }
 
@@ -1163,10 +1316,6 @@ public actor ConfigSyncEngine {
               let credentialStore,
               let records = try? await credentialStore.records(owner: .vault)
         else { return .synced }
-        let keychain = KeychainStore(
-            service: CredentialVaultService.serviceName,
-            synchronizable: true
-        )
         // A device-bound record's secret (e.g. a Floe-generated SSH key
         // registered by RemoteSessionCenter) lives only in the local,
         // non-synchronizable namespace, and setSavedCredentialSyncEnabled
@@ -1176,8 +1325,13 @@ public actor ConfigSyncEngine {
         // expected to arrive; their local presence is enforced at use time
         // by CredentialVaultService.resolveForApprovedUse instead.
         for record in records where record.synchronizable && !record.deviceBound {
-            do { _ = try keychain.read(account: record.keychainAccount) }
-            catch { return .waitingForSecret }
+            if !(await secretPresent(
+                service: CredentialVaultService.serviceName,
+                account: record.keychainAccount,
+                synchronizable: true
+            )) {
+                return .waitingForSecret
+            }
         }
         return .synced
     }

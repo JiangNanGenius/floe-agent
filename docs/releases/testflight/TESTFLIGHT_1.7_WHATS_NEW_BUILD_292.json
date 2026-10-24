@@ -1,0 +1,4 @@
+{
+  "en-US": "Please try voice conversation startup and repeated turns, short and quiet phrases, stopping and restarting dictation, voice previews, speed and pitch controls, and table read-aloud. Also try Volcengine search and configuration sync. Enhanced recognition models stay loaded after first foreground use and release under background or memory pressure.",
+  "zh-Hans": "请重点体验连续语音启动和多轮对话、短句与轻声、停止后重新听写、音色试听、语速和语调调节，以及表格朗读。同时可测试火山引擎搜索与配置同步。增强语音识别模型在前台首次使用后保持加载，后台或内存压力下释放。"
+}
