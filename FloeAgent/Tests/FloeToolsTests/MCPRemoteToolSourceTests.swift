@@ -476,7 +476,8 @@ struct MCPRemoteToolSourceTests {
         context.allowedToolNames = [name]
         let output = try await facade.execute(argumentsJSON: arguments, context: context)
         let request = try #require(MCPStubURLProtocol.capturedRequests().first)
-        let envelope = try #require(JSONSerialization.jsonObject(with: #require(request.httpBody)) as? [String: Any])
+        let requestBody = try #require(request.httpBody)
+        let envelope = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
         let params = try #require(envelope["params"] as? [String: Any])
         #expect(params["name"] as? String == "dataPro_search")
         #expect((params["arguments"] as? [String: String]) == ["query": query])
