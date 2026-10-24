@@ -4418,6 +4418,7 @@ final class ConversationCenter: ObservableObject {
         /// typed Home send already passes `newConversationID == owner`, so it
         /// leaves this nil.
         chatReasoningDraftOwnerID: UUID? = nil,
+        preferredModeForNewConversation: AgentExecutionMode? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationTask {
         let ingress = SecretIngressScanner.scan(goal)
@@ -4516,21 +4517,13 @@ final class ConversationCenter: ObservableObject {
             await environment.designEntryState.refresh(
                 conversationID: prepared.conversation.id, environment: environment)
         }
-        // Seed the FIRST accepted round's Chat choice now that the
-        // conversation FK exists and before navigation/provider I/O. Both
-        // `AgentExecutionMode.chat` and `.agent` persist as the record's
-        // `ConversationMode.chat`, so without this durable snapshot a Home
-        // typed chat or a newly created voice chat would reopen in the thread
-        // view's historical Agent default and silently gain task behavior on
-        // the next typed round. Only `.chat` is seeded: legacy agent/plan/goal
-        // reopen semantics stay exactly as before, and every later explicit
-        // mode choice persists through `setPreferredExecutionMode`. A failed
-        // seed keeps the choice in RAM (retried by the next
-        // `preferredExecutionMode(for:)` read) and never fails the accepted
-        // launch.
-        if executionMode == .chat {
+        // Freeze the post-voice composer choice before navigation. A voice
+        // round still executes as Chat, without persisting that temporary
+        // ceiling over the Home selection. Other Chat launches keep their
+        // existing first-round seed; ordinary Agent launches remain unchanged.
+        if let preferredMode = preferredModeForNewConversation ?? (executionMode == .chat ? .chat : nil) {
             do {
-                try await setPreferredExecutionMode(.chat, for: prepared.conversation.id)
+                try await setPreferredExecutionMode(preferredMode, for: prepared.conversation.id)
             } catch {
                 FloeLogger(category: .persistence).warning(
                     "chatPreferredModeSeedFailed conversation=\(prepared.conversation.id.uuidString)"

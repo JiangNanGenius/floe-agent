@@ -86,6 +86,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
     private let resolveModel: ModelResolver
     private let workspaceID: UUID?
     private let chatReasoningDraftOwnerID: UUID?
+    private let preferredModeForNewConversation: AgentExecutionMode?
     private let onConversationCreated: (@MainActor (UUID) -> Void)?
     private let titleProvider: @MainActor (String) -> String
     private let diagnostics: (any VoiceConversationDiagnostics)?
@@ -112,6 +113,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         chatReasoningDraftOwnerID: UUID? = nil,
+        preferredModeForNewConversation: AgentExecutionMode? = nil,
         onConversationCreated: (@MainActor (UUID) -> Void)? = nil,
         titleProvider: (@MainActor (String) -> String)? = nil,
         diagnostics: (any VoiceConversationDiagnostics)? = nil
@@ -121,6 +123,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         self.resolveModel = resolveModel
         self.workspaceID = workspaceID
         self.chatReasoningDraftOwnerID = chatReasoningDraftOwnerID
+        self.preferredModeForNewConversation = preferredModeForNewConversation
         self.pendingAttachments = attachments
         self.onConversationCreated = onConversationCreated
         self.titleProvider = titleProvider ?? Self.defaultTitle
@@ -162,6 +165,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
         workspaceID: UUID? = nil,
         attachments: [AttachmentRef] = [],
         chatReasoningDraftOwnerID: UUID? = nil,
+        preferredModeForNewConversation: AgentExecutionMode? = nil,
         onConversationCreated: (@MainActor (UUID) -> Void)? = nil,
         titleProvider: (@MainActor (String) -> String)? = nil,
         diagnostics: (any VoiceConversationDiagnostics)? = nil
@@ -174,6 +178,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
             workspaceID: workspaceID,
             attachments: attachments,
             chatReasoningDraftOwnerID: chatReasoningDraftOwnerID,
+            preferredModeForNewConversation: preferredModeForNewConversation,
             onConversationCreated: onConversationCreated,
             titleProvider: titleProvider,
             diagnostics: diagnostics
@@ -436,6 +441,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
                     attachments: launch.attachments,
                     executionMode: .chat,
                     chatReasoningDraftOwnerID: chatReasoningDraftOwnerID,
+                    preferredModeForNewConversation: preferredModeForNewConversation,
                     startOrigin: .explicitUserAction
                 )
                 conversation = task.conversationID

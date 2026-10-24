@@ -39,6 +39,7 @@ struct ContinuousVoiceRequest: Identifiable {
     var draftOwnerID: UUID? = nil
     var onAttachmentsConsumed: @MainActor ([AttachmentRef]) -> Void = { _ in }
     var reasoningDraftOwnerID: UUID? = nil
+    var preferredModeForNewConversation: AgentExecutionMode? = nil
 }
 
 struct ContinuousVoiceReturnedDraft: Identifiable {

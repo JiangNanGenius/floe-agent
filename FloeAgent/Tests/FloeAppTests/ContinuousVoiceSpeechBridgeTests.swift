@@ -118,5 +118,70 @@ struct ContinuousVoiceSpeechBridgeTests {
         #expect(output.accepted.map(\.0) == [newUnit.id])
         bridge.stop()
     }
+
+    // MARK: - Supply deadlines (primary-owned bridge init:
+    // firstChunkDeadline/nextChunkDeadline, tiny values injected here)
+
+    @Test func sourceThatNeverEmitsFailsOnDeadlineAndClosesSource() async throws {
+        let output = Output()
+        var closed = false
+        var failures = 0
+        let bridge = ContinuousVoiceSpeechBridge(
+            output: output,
+            synthesize: { _ in
+                let (stream, sender) = TTSAudioChunkStream.make()
+                return TTSConfiguredStream(stream: stream, close: {
+                    closed = true
+                    sender.finish()
+                })
+            },
+            onFailure: { _ in failures += 1 },
+            onRoundEnded: { _ in },
+            firstChunkDeadline: .milliseconds(30),
+            nextChunkDeadline: .milliseconds(30))
+        bridge.connect()
+        let token = VoiceConversationRoundToken(id: UUID(), sessionGeneration: 1)
+        output.events.yield(.roundStarted(token))
+        output.events.yield(.unitQueued(unit(token)))
+        output.events.yield(.roundTextCompleted(token: token, unitCount: 1))
+        try await waitUntil { failures > 0 }
+        #expect(closed, "A dead source must be closed on the supply deadline")
+        #expect(failures == 1)
+        #expect(output.accepted.isEmpty)
+        #expect(output.endedRounds == 0)
+        bridge.stop()
+    }
+
+    @Test func firstChunkInsideDeadlineStillCompletesTheRound() async throws {
+        let output = Output()
+        var failures = 0
+        let bridge = ContinuousVoiceSpeechBridge(
+            output: output,
+            synthesize: { requested in
+                let (stream, sender) = TTSAudioChunkStream.make()
+                sender.attach(Task {
+                    try await Task.sleep(for: .milliseconds(40))
+                    do {
+                        try await sender.send(chunk(requested, [0, 0], sequence: 0, final: true))
+                        sender.finish()
+                    } catch { sender.finish(throwing: error) }
+                })
+                return TTSConfiguredStream(stream: stream, close: { sender.finish() })
+            },
+            onFailure: { _ in failures += 1 },
+            onRoundEnded: { _ in },
+            firstChunkDeadline: .milliseconds(500),
+            nextChunkDeadline: .milliseconds(500))
+        bridge.connect()
+        let token = VoiceConversationRoundToken(id: UUID(), sessionGeneration: 1)
+        output.events.yield(.roundStarted(token))
+        output.events.yield(.unitQueued(unit(token)))
+        output.events.yield(.roundTextCompleted(token: token, unitCount: 1))
+        try await waitUntil { output.endedRounds == 1 || failures > 0 }
+        #expect(failures == 0)
+        #expect(output.endedRounds == 1)
+        #expect(output.endedUnits == 1)
+        bridge.stop()
+    }
 }
 #endif

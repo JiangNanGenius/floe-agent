@@ -292,6 +292,31 @@ struct ChatModeRestorationTests {
         #expect(agentSaved?.preferredExecutionMode == nil)
     }
 
+    @Test("a new voice conversation retains the selected composer mode after its Chat turn",
+          arguments: [AgentExecutionMode.agent, .chat, .plan, .goal])
+    func voiceFirstRoundPreservesComposerMode(_ preferredMode: AgentExecutionMode) async throws {
+        let fixture = try await makeFixture()
+        let provider = ProviderProfile(
+            kind: .openAI, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://mode-seed.example/v1")!,
+            displayName: "Voice Mode Seed")
+        let model = ModelProfile(
+            providerID: provider.id, remoteModelID: "mode-seed-model", displayName: "Mode Seed",
+            limits: ModelLimits(contextTokens: 8_192, maxOutputTokens: 1_024), capabilities: [.tools])
+        try await fixture.environment.configurationStore.saveProvider(provider)
+        try await fixture.environment.configurationStore.saveModel(model)
+        let started = try await fixture.center.startTask(
+            goal: "voice turn", title: "voice turn", provider: provider, model: model,
+            executionMode: .chat,
+            preferredModeForNewConversation: preferredMode,
+            startOrigin: .explicitUserAction)
+        let saved = try await snapshot(fixture, started.conversationID)
+        #expect(saved?.preferredExecutionMode == preferredMode.rawValue)
+        let view = ThreadDetailViewModel(conversationID: started.conversationID, center: fixture.center)
+        await view.load()
+        #expect(view.agentMode == preferredMode)
+    }
+
     // MARK: - Temporary sessions
 
     @Test("a temporary session never reaches the durable preference table")

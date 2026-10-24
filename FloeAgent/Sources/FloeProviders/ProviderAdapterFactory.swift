@@ -43,6 +43,7 @@ public enum ProviderTemplateID: String, Sendable, Codable, CaseIterable, Hashabl
     case volcengineArk
     case alibabaStudio
     case googleGemini
+    case kimiCode = "kimi-code"
     case local
     case custom
 }
@@ -158,6 +159,20 @@ public extension ProviderPreset {
         authStyle: .apiKeyHeader
     )
 
+    /// Coding Plan endpoint, distinct from the Moonshot platform API. Model
+    /// identifiers come from the account's discovery response or manual entry;
+    /// this preset never seeds chat-only built-ins as image models.
+    static let kimiCode = ProviderPreset(
+        id: .kimiCode,
+        kind: .custom,
+        displayName: "Kimi Code",
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
+        defaultBaseURL: URL(string: "https://api.kimi.com/coding/v1")!,
+        supportsModelDiscovery: true,
+        authStyle: .bearer
+    )
+
     static let custom = ProviderPreset(
         id: .custom,
         kind: .custom,
@@ -191,6 +206,7 @@ public extension ProviderPreset {
         .volcengineArk,
         .alibabaStudio,
         .googleGemini,
+        .kimiCode,
         .local,
         .custom
     ]
@@ -202,8 +218,21 @@ public extension ProviderPreset {
         $0.kind != .googleGemini && $0.kind != .local
     }
 
-    /// Looks up the preset matching a provider kind, defaulting to custom.
-    static func preset(for kind: ProviderKind) -> ProviderPreset {
-        all.first { $0.kind == kind } ?? .custom
+    /// Native image suppliers remain available with an older downloaded
+    /// catalog. Individual models still require discovery or explicit entry.
+    static let imagePresets: [ProviderPreset] = [
+        .openAIResponses, .volcengineArk, .alibabaStudio, .googleGemini, .kimiCode, .custom
+    ]
+
+    /// Endpoint-specific templates share the persisted custom kind. A kind
+    /// alone must continue to resolve to the generic compatible endpoint.
+    static func preset(for kind: ProviderKind, baseURL: URL? = nil) -> ProviderPreset {
+        if kind == .custom {
+            if let baseURL, KimiCodeEndpointIdentity.apiRoot(for: baseURL) != nil {
+                return .kimiCode
+            }
+            return .custom
+        }
+        return all.first { $0.kind == kind } ?? .custom
     }
 }

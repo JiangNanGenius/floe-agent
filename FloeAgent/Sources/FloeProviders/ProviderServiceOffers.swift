@@ -4,9 +4,10 @@
 // video) through the optional `serviceOffers` catalog field. Whether a role
 // may actually be offered to the user is decided HERE, from two real sources:
 //
-//   1. a shipped first-party adapter for the provider kind (no model-name
+//   1. a shipped adapter for the actual provider connection (no model-name
 //      substring guessing), and
-//   2. the product-owned official media manifest for known model identifiers.
+//   2. known model identifiers, or required live discovery when the native
+//      supplier has no product-owned model list.
 //
 // Declared offers that claim a role without a shipped adapter stay visible as
 // explicitly unsupported instead of silently producing a dead control.
@@ -71,7 +72,7 @@ public struct ProviderServiceOfferResolution: Sendable, Equatable {
 
     public var role: ProviderCatalogServiceRole
     /// True only when a shipped adapter can execute this role and verified
-    /// model identifiers exist. Unusable offers are never auto-configured.
+    /// identifiers exist or real discovery is required. Never auto-configured.
     public var isUsable: Bool
     public var connection: ConnectionMode
     public var endpoint: URL?
@@ -109,13 +110,15 @@ public struct ProviderServiceOfferResolution: Sendable, Equatable {
 /// Filters optional service metadata by the adapters Floe actually ships.
 public enum ProviderServiceOfferResolver {
 
-    /// Media roles a shipped first-party adapter can execute for this kind.
+    /// Media roles a shipped adapter can execute for this actual connection.
     /// This is a real adapter probe, never a model-name substring guess.
     public static func adapterSupportedMediaRoles(
-        for kind: ProviderKind
+        for kind: ProviderKind,
+        presetID: String? = nil,
+        baseURL: URL? = nil
     ) -> Set<ProviderCatalogServiceRole> {
         var roles: Set<ProviderCatalogServiceRole> = []
-        let probe = probeProfile(for: kind)
+        let probe = probeProfile(for: kind, presetID: presetID, baseURL: baseURL)
         if ImageProviderAdapterFactory().adapter(for: probe) != nil { roles.insert(.image) }
         if VideoProviderAdapterFactory().adapter(for: probe) != nil { roles.insert(.video) }
         return roles
@@ -169,21 +172,25 @@ public enum ProviderServiceOfferResolver {
     /// initiating role is not privileged here; it is excluded by the editor.
     public static func resolvedOffers(
         for kind: ProviderKind,
+        presetID: String? = nil,
         baseURL: URL?,
         authStyle: String?,
         availability: ProviderCatalogAvailability,
         declared: [ProviderCatalogServiceOffer]?
     ) -> [ProviderServiceOfferResolution] {
         guard availability == .available, kind != .local else { return [] }
-        let supported = adapterSupportedMediaRoles(for: kind)
         let declaredRoles = declared ?? []
         var result: [ProviderServiceOfferResolution] = []
         for role in [ProviderCatalogServiceRole.image, .video, .conversation] {
             let declaredOffer = declaredRoles.first { $0.role == role }
+            let endpoint = declaredOffer?.baseURL ?? baseURL
+            let preset = ProviderPreset.preset(for: kind, baseURL: endpoint)
             let adapterSupportsRole: Bool
             switch role {
             case .image, .video:
-                adapterSupportsRole = supported.contains(role)
+                adapterSupportsRole = adapterSupportedMediaRoles(
+                    for: kind, presetID: presetID, baseURL: endpoint
+                ).contains(role)
             case .conversation:
                 // A declared conversation offer that explicitly includes the
                 // kind's own wire protocol (e.g. Gemini's documented
@@ -191,7 +198,7 @@ public enum ProviderServiceOfferResolver {
                 // kinds; the shipped adapter for that protocol is real.
                 adapterSupportsRole = supportsConversation(for: kind)
                     || (declaredOffer?.protocols?.contains(
-                        ProviderPreset.preset(for: kind).defaultProtocol
+                        preset.defaultProtocol
                     ) ?? false)
             }
             guard adapterSupportsRole else {
@@ -202,7 +209,7 @@ public enum ProviderServiceOfferResolver {
                         role: role,
                         isUsable: false,
                         connection: .distinct,
-                        endpoint: declaredOffer.baseURL,
+                        endpoint: endpoint,
                         models: declaredOffer.models,
                         reason: "no shipped adapter for \(role.rawValue)"
                     ))
@@ -220,9 +227,13 @@ public enum ProviderServiceOfferResolver {
                 case .conversation:
                     // Real discovery is the only honest source of chat model
                     // identifiers when the catalog declares none.
-                    requiresDiscovery = ProviderPreset.preset(for: kind).supportsModelDiscovery
+                    requiresDiscovery = preset.supportsModelDiscovery
                 case .image, .video:
-                    requiresDiscovery = false
+                    // No speculative Kimi image model table: the user must
+                    // discover their account's models before enabling this
+                    // additional role. Generic custom endpoints stay closed.
+                    requiresDiscovery = role == .image && preset.id == .kimiCode
+                        && preset.supportsModelDiscovery
                 }
             }
             guard !models.isEmpty || requiresDiscovery else {
@@ -230,7 +241,7 @@ public enum ProviderServiceOfferResolver {
                     role: role,
                     isUsable: false,
                     connection: .distinct,
-                    endpoint: declaredOffer?.baseURL,
+                    endpoint: endpoint,
                     models: [],
                     reason: "no verified model identifiers"
                 ))
@@ -255,7 +266,7 @@ public enum ProviderServiceOfferResolver {
                 role: role,
                 isUsable: true,
                 connection: connection,
-                endpoint: declaredOffer?.baseURL,
+                endpoint: endpoint,
                 models: models,
                 requiresDiscovery: requiresDiscovery,
                 note: declaredOffer?.note,
@@ -288,13 +299,18 @@ public enum ProviderServiceOfferResolver {
         }
     }
 
-    /// Kind-only probe profile. The adapter factories switch on `kind`; the
-    /// URL is a non-routable placeholder and is never sent anywhere.
-    private static func probeProfile(for kind: ProviderKind) -> ProviderProfile {
+    /// Probes are never sent anywhere. Kind-only callers retain the closed
+    /// generic-custom behavior; endpoint-specific adapters need the real URL.
+    private static func probeProfile(
+        for kind: ProviderKind,
+        presetID: String?,
+        baseURL: URL?
+    ) -> ProviderProfile {
         ProviderProfile(
             kind: kind,
             wireProtocol: .openAIChatCompletions,
-            baseURL: URL(string: "https://adapter-probe.invalid")!
+            baseURL: baseURL ?? URL(string: "https://adapter-probe.invalid")!,
+            presetID: presetID
         )
     }
 }

@@ -118,4 +118,92 @@ struct VolcengineDirectGatewayEnvelopeTests {
         )
         #expect(bochaOutput.results.first?.title == "Bocha")
     }
+
+    // MARK: - Defensive over-return / oversized-item bounding
+
+    /// Exact documented gateway envelope with an arbitrary number of items,
+    /// so fixtures can reproduce a server that returns MORE results than
+    /// the request asked for.
+    private static func envelope(
+        items: [[String: Any]],
+        resultCount: Int? = nil
+    ) -> Data {
+        let json: [String: Any] = [
+            "ResponseMetadata": ["RequestId": "OVERRETURN-TEST"],
+            "Result": [
+                "ResultCount": resultCount ?? items.count,
+                "WebResults": items
+            ]
+        ]
+        return try! JSONSerialization.data(withJSONObject: json)
+    }
+
+    @Test("Server over-return is capped at the requested limit with order and identity preserved")
+    func serverOverReturnCappedAtLimit() throws {
+        let items: [[String: Any]] = (0..<12).map { index in
+            [
+                "Id": "over-\(index)",
+                "SortId": index,
+                "Title": "Overreturn \(index)",
+                "SiteName": "Site \(index)",
+                "Url": "https://example.com/overreturn/\(index)",
+                "Snippet": "snippet \(index)",
+                "Summary": ""
+            ]
+        }
+        let output = try WebSearchService.parseOutput(
+            Self.envelope(items: items, resultCount: 12), provider: .volcengine, limit: 5
+        )
+        // Exactly the requested count, in gateway order — never the 12 the
+        // server overreturned, and identities survive the trim.
+        #expect(output.results.count == 5)
+        #expect(output.results.map(\.url.absoluteString)
+                == (0..<5).map { "https://example.com/overreturn/\($0)" })
+        #expect(output.results.map(\.title) == (0..<5).map { "Overreturn \($0)" })
+        #expect(output.results.allSatisfy { $0.citationID.count == 12 })
+    }
+
+    @Test("Huge single item text is capped at parse without losing identity")
+    func hugeSingleItemCappedAtParse() throws {
+        let item: [[String: Any]] = [[
+            "Id": "huge-1",
+            "SortId": 1,
+            "Title": "Huge result",
+            "SiteName": "Site",
+            "Url": "https://example.com/huge",
+            "Snippet": String(repeating: "长", count: 30_000),
+            "Summary": ""
+        ]]
+        let output = try WebSearchService.parseOutput(
+            Self.envelope(items: item), provider: .volcengine, limit: 5
+        )
+        #expect(output.results.count == 1)
+        // Existing parser ceiling: 4_000 characters, title/URL untouched.
+        #expect(output.results[0].snippet.count == 4_000)
+        #expect(output.results[0].title == "Huge result")
+        #expect(output.results[0].url.absoluteString == "https://example.com/huge")
+    }
+
+    @Test("Gateway Content field never leaks into the snippet")
+    func contentFieldNotUsedAsSnippet() throws {
+        let item: [[String: Any]] = [[
+            "Id": "content-1",
+            "SortId": 1,
+            "Title": "Content only",
+            "SiteName": "Site",
+            "Url": "https://example.com/content-only",
+            "Snippet": "",
+            "Summary": "",
+            "Content": String(repeating: "正文", count: 400)
+        ]]
+        let output = try WebSearchService.parseOutput(
+            Self.envelope(items: item), provider: .volcengine, limit: 5
+        )
+        // NeedContent=false contract: the PascalCase full-body field is not
+        // one of the snippet keys, so an empty Snippet/Summary stays empty.
+        #expect(output.results.count == 1)
+        #expect(output.results[0].snippet.isEmpty)
+        #expect(output.results[0].title == "Content only")
+        #expect(output.results[0].url.absoluteString == "https://example.com/content-only")
+    }
 }

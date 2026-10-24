@@ -442,6 +442,143 @@ struct VoiceConversationTests {
         #expect(rig.driving.receipts.last?.spokenText == "今天晴。")
     }
 
+    @Test("A slow first chunk past the 20 s drain window must NOT fail the round")
+    func slowFirstChunkSurvivesDrainWatchdog() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        await rig.say("今天天气怎么样")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        await rig.confirmFinal("今天晴。", display: "正在想你问的天气。")
+        #expect(rig.log.units.map(\.text) == ["今天晴。"])
+        // 25 s passes with NO audio queued: the selected source is still
+        // synthesizing its first chunk (cloud cold-start / pack load). This
+        // is GENERATION WAIT, never a playback stall, and the bridge's
+        // 90 s / 45 s first/next-chunk source deadline owns the failure
+        // bound. The old code silently cancelled and rearmed here.
+        rig.clock.advance(by: 25)
+        await rig.settle()
+        #expect(rig.coordinator.state == .answering)
+        #expect(rig.coordinator.turnErrorMessage == nil)
+        #expect(rig.driving.cancelled.isEmpty)
+
+        await rig.playQueued()
+        rig.stack.stepPlayed(frames: 100)
+        await rig.settle()
+        #expect(rig.coordinator.state == .listening)
+        await rig.settle(30)
+        #expect(rig.driving.receipts.last?.status == .completed)
+    }
+
+    @Test("Waiting for a later sentence after the queue drains uses the supply deadline")
+    func slowLaterChunkAfterPlayedAudioIsNotAPlaybackStall() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        await rig.say("请说两句话")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        await rig.confirmFinal("今天晴。明天多云。")
+        #expect(rig.log.units.count == 2)
+        guard rig.log.units.count == 2 else { return }
+        let chunk = VoiceConversationAudioChunk(
+            samples: [Float](repeating: 0.2, count: 100), channelCount: 1, sampleRate: 8_000)
+        _ = rig.coordinator.appendAudio(chunk, to: rig.log.units[0])
+        rig.coordinator.endUnit(rig.log.units[0])
+        rig.stack.stepPlayed(frames: 100)
+        await rig.settle()
+        // The first watchdog observes the first sentence's played progress.
+        // The second sees an empty queue while the next sentence is still
+        // being generated, inside the bridge's 45-second supply deadline.
+        rig.clock.advance(by: 41)
+        await rig.settle()
+        #expect(rig.coordinator.state == .answering)
+        #expect(rig.coordinator.turnErrorMessage == nil)
+        #expect(rig.driving.cancelled.isEmpty)
+        _ = rig.coordinator.appendAudio(chunk, to: rig.log.units[1])
+        rig.coordinator.endUnit(rig.log.units[1])
+        if let token = rig.coordinator.currentRound { rig.coordinator.endRoundAudio(token) }
+        rig.stack.stepPlayed(frames: 100)
+        await rig.settle(30)
+        #expect(rig.coordinator.state == .listening)
+        #expect(rig.driving.receipts.last?.status == .completed)
+    }
+
+    @Test("Queued audio with no played receipts fails visibly with a bound, never a hang")
+    func queuedAudioWithoutPlayedReceiptsFailsVisibly() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        await rig.say("今天天气怎么样")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        await rig.confirmFinal("今天晴。", display: "")
+        await rig.playQueued()
+        // Audio is queued and the round input is ended, but the engine never
+        // advances played frames. This is a TRUE OUTPUT STALL: it must fail
+        // visibly (actionable pause + error copy), never silently rearm to
+        // Listening, and never hang forever.
+        rig.clock.advance(by: 20.5)
+        let failedVisibly = await rig.waitUntil {
+            rig.coordinator.state == .paused && rig.coordinator.turnErrorMessage != nil
+        }
+        #expect(failedVisibly)
+        #expect(rig.log.drained == false)
+    }
+
+    @Test("A deliberate user pause never fails the round")
+    func userPauseNeverFailsTheRound() async {
+        let rig = VoiceRig()
+        await rig.coordinator.start()
+        await rig.say("今天天气怎么样")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        await rig.confirmFinal("今天晴。", display: "")
+        await rig.playQueued()
+        rig.coordinator.pauseOutput()
+        rig.clock.advance(by: 60)
+        await rig.settle()
+        #expect(rig.coordinator.state == .answering)
+        #expect(rig.coordinator.turnErrorMessage == nil)
+
+        rig.coordinator.resumeOutput()
+        rig.stack.stepPlayed(frames: 100)
+        let resumed = await rig.waitUntil { rig.coordinator.state == .listening }
+        #expect(resumed)
+        await rig.settle(30)
+        #expect(rig.driving.receipts.last?.status == .completed)
+    }
+
+    @Test("A long answer whose last units arrive late still arms the drain watchdog")
+    func longAnswerArmsDrainWatchdog() async {
+        // A 40-sentence answer exceeds the 16-unit lookahead window: the
+        // round's last units arrive via the unitCompleted refill AFTER model
+        // completion. The drain watchdog must be armed there too, so a dead
+        // output fails with a bound instead of hanging silently.
+        let rig = VoiceRig(timing: {
+            var t = VoiceConversationCoordinator.Timing()
+            t.lookaheadUnits = 2
+            return t
+        }())
+        await rig.coordinator.start()
+        await rig.say("念长文")
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        let long = (1...40).map { "第\($0)句完整的话。" }.joined()
+        await rig.confirmFinal(long)
+        #expect(rig.log.units.count == 2)
+        #expect(rig.log.roundTextCompleted == nil)
+        // Play the two queued units; refills emit the next pair each time.
+        for _ in 0..<40 {
+            await rig.playQueued()
+            rig.stack.stepPlayed(frames: 1_000)
+            await rig.settle()
+        }
+        // Every unit was emitted, the round input ended, and playback drained.
+        #expect(rig.log.roundTextCompleted == 40)
+        let drained = await rig.waitUntil { rig.coordinator.state == .listening }
+        #expect(drained)
+        #expect(rig.driving.receipts.last?.status == .completed)
+    }
+
     @Test("Incomplete phrasing extends the endpoint window to 1.6 s")
     func incompleteExtension() async {
         let rig = VoiceRig()

@@ -142,6 +142,10 @@ public enum ChatToolPolicy {
         boundFileReadToolNames.contains(name)
     }
 
+    /// Executable-tool admission only. tools.search/tools.list are handled
+    /// separately by the main runtime over this run's already-filtered
+    /// catalog; admitting those metadata helpers here would also authorize
+    /// executor/child dispatch, which is deliberately not part of chat.
     public static func isAllowedName(_ name: String) -> Bool {
         isPublicWebTool(name) || isBoundFileReadTool(name)
     }

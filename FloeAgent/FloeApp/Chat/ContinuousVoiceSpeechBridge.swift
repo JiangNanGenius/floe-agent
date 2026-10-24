@@ -5,6 +5,14 @@ import Foundation
 import FloeCore
 import FloeProviders
 
+// A stream has one serial pull owner. Each task group joins its cancelled
+// pull before this iterator can be used again, as in the ordinary player.
+private final class ContinuousTTSChunkIteratorBox: @unchecked Sendable {
+    private var iterator: TTSAudioChunkStream.Iterator
+    init(_ iterator: TTSAudioChunkStream.Iterator) { self.iterator = iterator }
+    func next() async throws -> TTSAudioChunk? { try await iterator.next() }
+}
+
 /// Synthesis completion only closes a unit's input. The voice coordinator
 /// owns real playback completion and records what actually reached the speaker.
 @MainActor
@@ -15,6 +23,8 @@ final class ContinuousVoiceSpeechBridge {
     private let synthesize: Synthesize
     private let onFailure: @MainActor (Error) -> Void
     private let onRoundEnded: @MainActor (UUID) -> Void
+    private let firstChunkDeadline: Duration
+    private let nextChunkDeadline: Duration
     private var eventsTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
     private var activeSource: TTSConfiguredStream?
@@ -40,12 +50,16 @@ final class ContinuousVoiceSpeechBridge {
         output: any VoiceConversationSpeechOutput,
         synthesize: @escaping Synthesize,
         onFailure: @escaping @MainActor (Error) -> Void,
-        onRoundEnded: @escaping @MainActor (UUID) -> Void = { _ in }
+        onRoundEnded: @escaping @MainActor (UUID) -> Void = { _ in },
+        firstChunkDeadline: Duration = SpeechSupplyDeadline.firstChunk,
+        nextChunkDeadline: Duration = SpeechSupplyDeadline.nextChunk
     ) {
         self.output = output
         self.synthesize = synthesize
         self.onFailure = onFailure
         self.onRoundEnded = onRoundEnded
+        self.firstChunkDeadline = firstChunkDeadline
+        self.nextChunkDeadline = nextChunkDeadline
     }
 
     func connect() {
@@ -142,7 +156,18 @@ final class ContinuousVoiceSpeechBridge {
                     VoicePlaybackControls(source.playbackControls),
                     for: unit)
                 defer { source.closeStream() }
-                for try await chunk in source.stream {
+                let iterator = ContinuousTTSChunkIteratorBox(source.stream.makeAsyncIterator())
+                let clock = ContinuousClock()
+                var lastAudioSupply = clock.now
+                var hasPCM = false
+                while true {
+                    try Task.checkCancellation()
+                    let deadline = hasPCM ? self.nextChunkDeadline : self.firstChunkDeadline
+                    let remaining = deadline - lastAudioSupply.duration(to: clock.now)
+                    guard remaining > .zero else {
+                        throw hasPCM ? SpeechPlaybackFailure.supplyStalled : SpeechPlaybackFailure.firstChunkTimeout
+                    }
+                    guard let chunk = try await Self.nextChunk(iterator, deadline: remaining, first: !hasPCM) else { break }
                     try Task.checkCancellation()
                     guard self.isCurrent(unit, attempt: attempt) else { return }
                     guard chunk.sessionID == unit.token.id,
@@ -183,6 +208,11 @@ final class ContinuousVoiceSpeechBridge {
                             }
                             break
                         }
+                        // Player backpressure is not time spent waiting for
+                        // synthesis. Empty protocol headers, however, cannot
+                        // keep extending a source that never produces PCM.
+                        hasPCM = true
+                        lastAudioSupply = clock.now
                     }
                     finalSeen = chunk.isFinal
                 }
@@ -222,6 +252,20 @@ final class ContinuousVoiceSpeechBridge {
         invalidateRound()
         output?.stopNow()
         onFailure(error)
+    }
+
+    private static func nextChunk(_ box: ContinuousTTSChunkIteratorBox,
+                                  deadline: Duration, first: Bool) async throws -> TTSAudioChunk? {
+        try await withThrowingTaskGroup(of: TTSAudioChunk?.self) { group in
+            group.addTask { try await box.next() }
+            group.addTask {
+                try await Task.sleep(for: deadline)
+                throw first ? SpeechPlaybackFailure.firstChunkTimeout : SpeechPlaybackFailure.supplyStalled
+            }
+            defer { group.cancelAll() }
+            guard let value = try await group.next() else { throw SpeechPlaybackFailure.supplyStalled }
+            return value
+        }
     }
 
     private static func decodePCM16(_ bytes: Data.SubSequence) -> [Float] {

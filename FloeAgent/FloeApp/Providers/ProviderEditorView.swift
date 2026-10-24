@@ -578,7 +578,9 @@ struct ProviderEditorView: View {
             // The "not supported" footer is shown only when the endpoint
             // genuinely lacks discovery; discovered endpoints get the neutral
             // manual-add hint instead (model picker keeps both paths).
-            if !viewModel.supportsDiscovery {
+            if viewModel.needsKimiImageModelSelection {
+                Text("providers.kimi_code.image_models_hint")
+            } else if !viewModel.supportsDiscovery {
                 Text("providers.manual_fallback.hint")
             } else {
                 Text("providers.manual_entry.hint")

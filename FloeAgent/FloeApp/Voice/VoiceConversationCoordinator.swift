@@ -1493,9 +1493,15 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             scheduleRoundFinish(token: r.token, reason: nil, drained: true)
             return
         }
-        // Drain is now purely an engine-progress question.
+        // Drain is now purely an engine-progress question. The watchdog owns
+        // the ONLY bounded-visible failure for a dead output; long answers
+        // (whose last units arrive here via the lookahead refill) must arm it
+        // too, or a stalled output would hang silently forever.
         if !r.pendingUnits {
             recheckPlaybackProgress()
+        }
+        if !(round?.drainWatchdog != nil), !(round?.finishScheduled ?? true) {
+            armDrainWatchdog(r.token)
         }
     }
 
@@ -1559,17 +1565,34 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             armDrainWatchdog(token)
             return
         }
-        if r.pendingUnits, !r.endRoundAudioReceived {
-            report("drainTimeout")
+        if r.appPaused || r.outputPausedByBarge {
+            // A deliberate pause is not a stall: paused render frames are
+            // silence by design. Keep watching without failing the round.
             round = r
-            Task { [weak self] in
-                guard let self else { return }
-                await self.finishRound(token: token, reason: .roundFailed, drained: false)
-                self.resumeListeningAfterRound(roundToken: token)
-            }
+            armDrainWatchdog(token)
             return
         }
+        if r.totalQueuedFrames <= r.playedFrames, !r.endRoundAudioReceived {
+            // GENERATION WAIT, not a playback stall: the round's model is
+            // done and the player has consumed all supplied audio. The
+            // selected source may be preparing either its first chunk or a
+            // later sentence. The standalone read-aloud path bounds
+            // this with 90 s / 45 s first/next-chunk source deadlines; the
+            // continuous bridge carries the same deadlines. Never convert a
+            // synthesis wait into a silent failed round here.
+            report("awaitingAudioSupply", "units=\(r.units.count)")
+            round = r
+            armDrainWatchdog(token)
+            return
+        }
+        // TRUE OUTPUT STALL: audio was queued (or the round's audio input
+        // completed) and REAL played receipts never advanced. Never finish
+        // this silently and never hang: surface an actionable pause so the
+        // user can resume (a fresh capture stack is rebuilt on resume).
+        report("drainTimeout", "queued=\(r.totalQueuedFrames) played=\(r.playedFrames)")
+        turnErrorMessage = "voice.error.playback"
         round = r
+        pauseSession(reason: .interrupted)
     }
 
     private func consumePlayedFrames(_ frames: Int, taggedEpoch: UInt64?, stack: any VoiceConversationStack) {

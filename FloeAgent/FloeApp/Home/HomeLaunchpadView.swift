@@ -260,10 +260,8 @@ struct HomeLaunchpadView: View {
     private func openContinuousVoice() {
         guard let voiceWindowID,
               let (_, model) = center.providerAndModel(modelID: viewModel.selectedModelID) else { return }
-        // Direct entry for every mode: the voice round itself always runs as
-        // a chat turn through the driver; the Home composer selection follows
-        // (this replaces the old "switch to Chat and start" menu step).
-        if viewModel.agentMode != .chat { viewModel.agentMode = .chat }
+        // Keep the Home selection for the conversation after voice exits.
+        // The voice driver applies Chat only to its own turns.
         // CARRY THE ACTUAL TEMPORARY IDENTITY: while a RAM-only 临时聊天
         // session exists, voice continues THAT conversation — a first
         // utterance must never defer-create a persisted thread. Temporary
@@ -280,7 +278,8 @@ struct HomeLaunchpadView: View {
                 let ids = Set(files.map(\.id))
                 viewModel.attachments.removeAll { ids.contains($0.id) }
             },
-            reasoningDraftOwnerID: viewModel.draftConversationID
+            reasoningDraftOwnerID: viewModel.draftConversationID,
+            preferredModeForNewConversation: viewModel.agentMode
         )
         if environment.continuousVoicePresentation.present(request) {
             environment.voiceInput.stop()

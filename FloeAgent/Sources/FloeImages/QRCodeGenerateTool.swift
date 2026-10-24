@@ -37,7 +37,7 @@ public struct QRCodeGenerateTool: AgentTool {
 
     public static let name = "image.qr.generate"
     public static let toolDescription =
-        "Generate a QR code PNG locally (Core Image, no network). content is the exact payload to encode (max 2000 bytes); size is the output edge in pixels (default 512, max 2048); correctionLevel L/M/Q/H (default M). Writes a new workspace file and returns its path."
+        "Generate a QR code PNG locally (Core Image, no network). content is the exact payload to encode (max 2000 bytes); size is the output edge in pixels (default 512, max 2048); correctionLevel L/M/Q/H (default M). Writes a new workspace file, publishes it as this run's stable chat output so the answer shows the image directly, and returns its path."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -56,10 +56,25 @@ public struct QRCodeGenerateTool: AgentTool {
     public static let toolEffect: ToolEffect = .mutating
 
     private let rootProvider: @Sendable () -> URL?
+    /// Run-output artifact root used by the S3-D snapshot publisher.
+    /// Production resolves the app-owned artifact store; tests inject a
+    /// deterministic scratch root (same seam convention as the other
+    /// publishers' optional artifact root).
+    private let artifactRootProvider: @Sendable () -> URL?
 
-    public init(rootProvider: @escaping @Sendable () -> URL?) {
+    public init(
+        rootProvider: @escaping @Sendable () -> URL?,
+        artifactRootProvider: @escaping @Sendable () -> URL? = { try? FloeArtifactStore.root() }
+    ) {
         self.rootProvider = rootProvider
+        self.artifactRootProvider = artifactRootProvider
     }
+
+    /// Stable logical output slot: this tool publishes exactly one image
+    /// per call. Retries of the SAME call with the SAME bytes replay the
+    /// same identity idempotently; a different output under one call/slot
+    /// conflicts honestly (never a silent duplicate or overwrite).
+    static let outputSlot = "image"
 
     public func validate(_ args: Arguments) throws {
         guard !args.content.isEmpty, args.content.utf8.count <= 2_000 else {
@@ -129,11 +144,66 @@ public struct QRCodeGenerateTool: AgentTool {
             guard CGImageDestinationFinalize(destination) else {
                 throw FloeError.internalError("Could not write QR image")
             }
-            let bytes = (try? Data(contentsOf: url).count) ?? 0
-            return Self.output(
-                "status=ok output=\(relativePath) size=\(size) correctionLevel=\(level) bytes=\(bytes)",
-                exitStatus: 0
+            // S3-D: measure the committed bytes at this boundary (streamed
+            // digest, never a whole-file load) and publish the PNG into the
+            // run's stable snapshot namespace so the existing receipt
+            // transport — runtime seal → durable toolResult event → the
+            // chat run-output file card — returns the image to the answer.
+            let sha256 = try FloeDigest.sha256Hex(
+                ofFileAt: url,
+                isCancelled: { context.cancellation.isCancelled }
             )
+            let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+            guard values.isRegularFile == true, let bytes = values.fileSize, bytes >= 0 else {
+                return Self.output(
+                    "status=error error=QR output is not a regular file; the original is preserved at output=\(relativePath)",
+                    exitStatus: 2
+                )
+            }
+            let baseSummary = "status=ok output=\(relativePath) size=\(size) correctionLevel=\(level) bytes=\(bytes)"
+            switch Self.runOutputBinding(context) {
+            case .legacyDirect, .temporaryExempt:
+                // Genuine legacy direct use and temporary (ephemeral) runs
+                // keep the old workspace-only result: no durable run output
+                // exists for them by policy, and none is faked.
+                return Self.output(baseSummary, exitStatus: 0)
+            case .partiallyBound:
+                return Self.output(
+                    "status=error error=run output publication requires both the tool-call and task binding; the QR image is preserved at output=\(relativePath)",
+                    exitStatus: 2
+                )
+            case .required:
+                do {
+                    let published = try RunOutputSnapshotStore.publish(
+                        RunOutputSnapshotRequest(
+                            producerTool: Self.name,
+                            slot: Self.outputSlot,
+                            commit: RunOutputCommit(
+                                sourceURL: url,
+                                sha256: sha256,
+                                byteCount: bytes,
+                                displayName: url.lastPathComponent,
+                                mimeType: "image/png",
+                                uti: UTType.png.identifier
+                            )
+                        ),
+                        using: context,
+                        artifactRoot: artifactRootProvider()
+                    )
+                    return ToolExecutionOutput(
+                        digesting: baseSummary + " published=\(published.displayName)",
+                        exitStatus: 0,
+                        outputFiles: [published]
+                    )
+                } catch let error as RunOutputSnapshotError {
+                    // The workspace original is never deleted here; only the
+                    // receipt outcome changes, and the failure is observable.
+                    return Self.output(
+                        "status=error error=\(Self.publicationMessage(error)); the QR image is preserved at output=\(relativePath)",
+                        exitStatus: 2
+                    )
+                }
+            }
         } catch {
             return Self.output("status=error error=\(error.localizedDescription)", exitStatus: 2)
         }
@@ -141,6 +211,42 @@ public struct QRCodeGenerateTool: AgentTool {
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
         return ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+    }
+
+    /// S3-D binding state at the producer commit boundary — the same fixed
+    /// policy the other native publishers apply (see `URLDownloadTool`):
+    /// a fully bound run MUST publish or fail observably; a genuine
+    /// unbound/legacy or temporary context keeps the legacy result; a
+    /// partially bound context fails honestly instead of silently skipping.
+    enum RunOutputBinding: Equatable {
+        case required
+        case legacyDirect
+        case temporaryExempt
+        case partiallyBound
+    }
+
+    static func runOutputBinding(_ context: ToolContext) -> RunOutputBinding {
+        let hasCall = context.toolCallID?.isEmpty == false
+        let hasTask = context.conversationID != nil
+        if !hasCall && !hasTask { return .legacyDirect }
+        if hasCall != hasTask { return .partiallyBound }
+        if context.temporaryReadOnly { return .temporaryExempt }
+        return .required
+    }
+
+    /// Path-free labels for typed publication failures.
+    static func publicationMessage(_ error: RunOutputSnapshotError) -> String {
+        switch error {
+        case .bindingMissing: return "run output publication failed (unbound)"
+        case .policyRefused: return "run output publication refused by policy"
+        case .identityInvalid: return "run output publication failed (invalid identity)"
+        case .sourceUnavailable: return "run output publication failed (source unavailable)"
+        case .commitIdentityStale: return "run output publication failed (stale commit identity)"
+        case .conflict(let name): return "run output publication failed (conflict: \(name))"
+        case .overCap: return "run output publication failed (over cap)"
+        case .snapshotAliased: return "run output publication failed (aliased snapshot)"
+        case .ioFailure: return "run output publication failed (storage)"
+        }
     }
 }
 #endif

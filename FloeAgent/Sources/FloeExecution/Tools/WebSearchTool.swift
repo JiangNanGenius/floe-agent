@@ -15,6 +15,25 @@ public struct WebSearchTool: AgentTool {
     }
 
     public static let name = "web.search"
+
+    /// Sane bounded request default when the model omits `maxResults`. It
+    /// matches the existing in-app search-test default (`WebSearchService
+    /// .searchTest` / `testSearch` use 5), and it is the practical ceiling
+    /// for the tool's single 4_096-character JSON payload: each normalized
+    /// row already carries an exact citation URL plus ~20 provenance/marker
+    /// keys, so ten long provider rows (Volcengine `Snippet`/`Summary` are
+    /// paragraphs) could never survive the budget intact and collapsed to
+    /// empty snippets with heavy truncation noise. Explicit valid limits
+    /// (1...50) keep their exact meaning; the serialization below still
+    /// bounds total payload text.
+    public static let defaultMaxResults = 5
+
+    /// Minimum characters a kept row's snippet should retain to stay useful
+    /// to the model. When even this floor cannot fit, trailing rows are
+    /// dropped first (explicit `returned`/`omittedResults`/`truncated`
+    /// markers) instead of shortening every snippet to noise.
+    static let minimumUsefulSnippetCharacters = 64
+
     public static let toolDescription =
         "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently."
     public static let parametersJSON = #"""
@@ -26,7 +45,7 @@ public struct WebSearchTool: AgentTool {
         "domains":{"type":"array","items":{"type":"string"},"description":"Optional preferred or required domains"},
         "excludeDomains":{"type":"array","items":{"type":"string"},"description":"Optional domains to exclude"},
         "recencyDays":{"type":"integer","minimum":1,"maximum":1825},
-        "maxResults":{"type":"integer","minimum":1,"maximum":50},
+        "maxResults":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum number of returned results; defaults to 5 when omitted"},
         "provider":{"type":"string","description":"Optional configured provider name, kind, or UUID"}
       },
       "required":["query"],
@@ -61,7 +80,7 @@ public struct WebSearchTool: AgentTool {
             domains: args.domains ?? [],
             excludedDomains: args.excludeDomains ?? [],
             recencyDays: args.recencyDays,
-            maxResults: args.maxResults ?? 10,
+            maxResults: args.maxResults ?? WebSearchTool.defaultMaxResults,
             requestedProvider: args.provider,
             summaryEnabled: false
         ))
@@ -103,6 +122,47 @@ public struct WebSearchTool: AgentTool {
         var answerLimit = 1_500
         var queryCap = 2_000
         var failureCap = 1_500
+
+        // Deterministic initial text sizing. The payload room is measured
+        // from the REAL serialized skeleton (exact URLs, titles, provenance
+        // fields, generated answers and the metadata note at their current
+        // budgets) with zeroed snippet/excerpt text; the equal cap then
+        // water-fills, so rows with shorter snippets keep them whole and
+        // hand their slack to longer rows. Trailing rows are dropped first
+        // only when even a kept row cannot carry the useful snippet floor —
+        // explicit `returned`/`omittedResults`/`truncated` markers stay
+        // honest. Previously every row started at the parser's 4_000-
+        // character ceiling; 5-10 long Volcengine rows could never fit the
+        // 4_096 boundary, and the halving ladder below collapsed them into
+        // empty snippets plus truncation noise. The ladder remains the
+        // safety net for JSON escape inflation and pathological budgets.
+        if included > 0 {
+            var sizing = Self.measureSnippetCap(
+                response,
+                eligibleResults: eligible,
+                included: included,
+                answerLimit: answerLimit,
+                queryCap: queryCap,
+                failureCap: failureCap,
+                omittedOversizeURLRows: omittedOversizeURLRows,
+                maximumCharacters: maximumCharacters
+            )
+            while included > 1, sizing.cap < Self.minimumUsefulSnippetCharacters {
+                included -= 1
+                sizing = Self.measureSnippetCap(
+                    response,
+                    eligibleResults: eligible,
+                    included: included,
+                    answerLimit: answerLimit,
+                    queryCap: queryCap,
+                    failureCap: failureCap,
+                    omittedOversizeURLRows: omittedOversizeURLRows,
+                    maximumCharacters: maximumCharacters
+                )
+            }
+            snippetLimit = sizing.cap
+            extraLimit = min(2_000, max(0, sizing.roomAfterSnippets / max(1, included)))
+        }
 
         while true {
             let (summary, _) = serialize(
@@ -169,6 +229,59 @@ public struct WebSearchTool: AgentTool {
     /// exactly inside the bounded payload, so its row is omitted explicitly
     /// rather than returned with a changed target.
     static let maximumCitationURLLength = 1_024
+
+    /// Measures one serialization with zeroed snippet/excerpt text and
+    /// returns the largest equal snippet character cap whose ACTUAL emitted
+    /// snippet total (sum of min(length, cap) over kept rows) still fits the
+    /// remaining payload room, plus the room left for `extraSnippets`.
+    /// Water-filling over real lengths means short excerpts are never
+    /// shortened and their unused budget goes to longer excerpts. Pure
+    /// function of the response and budgets: the result is deterministic.
+    private static func measureSnippetCap(
+        _ response: WebSearchResponse,
+        eligibleResults: [WebSearchResult],
+        included: Int,
+        answerLimit: Int,
+        queryCap: Int,
+        failureCap: Int,
+        omittedOversizeURLRows: Int,
+        maximumCharacters: Int
+    ) -> (cap: Int, roomAfterSnippets: Int) {
+        let rows = Array(eligibleResults.prefix(max(0, included)))
+        let (skeleton, _) = serialize(
+            response,
+            eligibleResults: rows,
+            included: rows.count,
+            snippetLimit: 0,
+            extraLimit: 0,
+            answerLimit: answerLimit,
+            titleCap: 300,
+            queryCap: queryCap,
+            failureCap: failureCap,
+            omittedOversizeURLRows: omittedOversizeURLRows
+        )
+        let room = max(0, maximumCharacters - skeleton.count)
+        let lengths = rows.map { $0.snippet.count }
+        let wholeTotal = lengths.reduce(0, +)
+        if wholeTotal <= room {
+            // Every snippet already fits whole: keep the parser's ceiling
+            // and give the unused room to additional excerpts.
+            return (4_000, room - wholeTotal)
+        }
+        var low = 0
+        var high = 4_000
+        while low < high {
+            let mid = (low + high + 1) / 2
+            let needed = lengths.reduce(0) { $0 + min($1, mid) }
+            if needed <= room {
+                low = mid
+            } else {
+                high = mid - 1
+            }
+        }
+        let needed = lengths.reduce(0) { $0 + min($1, low) }
+        return (low, max(0, room - needed))
+    }
 
     private static let metadataNote = "Snippets, dates and profiles come from the search index, not from a fetched page. pageAge is the page's published OR last modified date; relativeAge is relative; never treat index metadata as verified page content. Snippets marked snippetTruncated were shortened to fit the response budget."
 
@@ -439,7 +552,7 @@ public struct BochaAISearchTool: AgentTool {
       "properties":{
         "query":{"type":"string","description":"Natural-language research question"},
         "recencyDays":{"type":"integer","minimum":1,"maximum":1825},
-        "maxResults":{"type":"integer","minimum":1,"maximum":50}
+        "maxResults":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum number of returned results; defaults to 5 when omitted"}
       },
       "required":["query"],
       "additionalProperties":false
@@ -468,7 +581,7 @@ public struct BochaAISearchTool: AgentTool {
             text: args.query.trimmingCharacters(in: .whitespacesAndNewlines),
             mode: .balanced,
             recencyDays: args.recencyDays,
-            maxResults: args.maxResults ?? 10,
+            maxResults: args.maxResults ?? WebSearchTool.defaultMaxResults,
             requestedProvider: WebSearchProviderKind.bochaWeb.rawValue,
             summaryEnabled: true
         ))

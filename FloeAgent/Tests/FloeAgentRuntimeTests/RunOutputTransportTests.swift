@@ -13,7 +13,9 @@
 // path — those require the real production tool graph and stay with the
 // primary shared283 hosted acceptance. The publish step uses the genuine
 // production publisher and real files, so ownership sealing and durable
-// transport are proven on production code, not on a stub harness.
+// transport are proven on production code, not on a stub harness. The
+// generator-then-scanner case additionally proves receipt association is
+// bound to its own call and never depends on which tool ran last.
 
 import Foundation
 import Testing
@@ -129,6 +131,67 @@ private struct FailedRunOutputExecutor: ToolExecutor {
             callID: call.id, status: .failed,
             outputSummary: "verification failed after commit",
             outputDigest: "d", outputFiles: [receipt]
+        )
+    }
+}
+
+/// Executor pair for the real QR flow: an image generator publishes a
+/// QR-shaped receipt at its own call, then a later verification call runs
+/// with NO receipts. The generator's receipt must survive the intervening
+/// call and stay bound to the generator call id.
+private struct GeneratorThenScannerExecutor: ToolExecutor {
+    struct Plan: Sendable {
+        var generatorTool: String
+        var scannerTool: String
+        var artifactRoot: URL
+        var imageBytes: Data
+    }
+    let plan: Plan
+
+    func descriptor(named name: String) -> ToolCatalog.Descriptor? {
+        guard name == plan.generatorTool || name == plan.scannerTool else { return nil }
+        return ToolCatalog.Descriptor(name: name, riskLabels: [], isSideEffecting: false)
+    }
+    var allDescriptors: [ToolCatalog.Descriptor] { [] }
+
+    func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+        guard call.toolName == plan.generatorTool else {
+            // Scanner-shaped result: success with no output files at all.
+            return ToolResult(
+                callID: call.id, status: .ok,
+                outputSummary: "status=ok decoded=https://floe.example/qr",
+                outputDigest: "digest"
+            )
+        }
+        let sourceURL = plan.artifactRoot
+            .appendingPathComponent("workspace")
+            .appendingPathComponent(call.id + "-qr.png")
+        try FileManager.default.createDirectory(
+            at: sourceURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try plan.imageBytes.write(to: sourceURL)
+        // Exact QR producer shape: slot "image", image/png + public.png.
+        let receipt = try RunOutputSnapshotStore.publish(
+            RunOutputSnapshotRequest(
+                producerTool: call.toolName,
+                slot: "image",
+                commit: RunOutputCommit(
+                    sourceURL: sourceURL,
+                    sha256: FloeDigest.sha256Hex(plan.imageBytes),
+                    byteCount: plan.imageBytes.count,
+                    displayName: "qr-verify.png",
+                    mimeType: "image/png",
+                    uti: "public.png"
+                )
+            ),
+            using: context,
+            artifactRoot: plan.artifactRoot
+        )
+        return ToolResult(
+            callID: call.id, status: .ok,
+            outputSummary: "status=ok output=QRCode/qr-verify.png size=256 correctionLevel=M bytes=\(plan.imageBytes.count) published=qr-verify.png",
+            outputDigest: "digest",
+            outputFiles: [receipt]
         )
     }
 }
@@ -305,6 +368,83 @@ struct RunOutputTransportTests {
         #expect(decoded.count == 1)
         #expect(decoded[0].displayName == "partial.bin")
         #expect(RunOutputSnapshotStore.verify(decoded[0], artifactRoot: root).isVerifiedOutcome)
+    }
+
+    @Test("a generator image receipt survives a later tool call and stays bound to its own call")
+    func generatorReceiptSurvivesInterveningScanCall() async throws {
+        let (conversationStore, runStore) = try await makeStores()
+        let conversationID = UUID()
+        try await conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: "QR then scan", createdAt: Date(), updatedAt: Date()
+        ))
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("FloeRunOutputQRScan-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let qrCall = try TestFixtures.toolCall(
+            id: "qr-call", toolName: "image.qr.generate", arguments: #"{"content":"https://floe.example/qr"}"#
+        )
+        let scanCall = try TestFixtures.toolCall(
+            id: "scan-call", toolName: "image.barcode.scan", arguments: #"{"path":"QRCode/qr-verify.png"}"#
+        )
+        let adapter = MockAdapter()
+        // Turn 1: generate. Turn 2 (after the tool result round-trip): verify
+        // scan. Turn 3: the final assistant text. The last tool of the run is
+        // the scanner — the generator receipt must still be durable.
+        adapter.script = [
+            [.toolRequest(qrCall)],
+            [.toolRequest(scanCall)],
+            [.textDelta(.init(text: "QR generated and verified")),
+             .completed(.init(stopReason: .endTurn))]
+        ]
+        let executor = GeneratorThenScannerExecutor(plan: .init(
+            generatorTool: "image.qr.generate", scannerTool: "image.barcode.scan",
+            artifactRoot: root, imageBytes: Data("fake-png-bytes".utf8)
+        ))
+        let service = ConversationRunService(
+            configuration: .init(
+                conversationID: conversationID,
+                provider: TestFixtures.localhostProvider(),
+                model: TestFixtures.testModel(providerID: UUID()),
+                environmentID: "env-authoritative"
+            ),
+            adapter: adapter,
+            policy: HumanApprovalPolicy(),
+            executor: executor,
+            checkpointStore: MockCheckpointStore(),
+            conversationStore: conversationStore,
+            runStore: runStore
+        )
+        try await service.start(goal: "generate a QR code and verify it")
+
+        let events = try await runStore.events(runID: service.runID)
+        let results = try events.filter { $0.kind == .toolResult }.map(payload)
+        #expect(results.count == 2)
+
+        // The scanner (last tool) carries no receipts — but that must not
+        // erase the generator's association.
+        let scanResult = results.first { $0["tool"] == "image.barcode.scan" }
+        #expect(scanResult?["outputFilesJSON"] == nil)
+
+        let qrResult = try #require(results.first { $0["tool"] == "image.qr.generate" })
+        #expect(qrResult["status"] == "ok")
+        let json = try #require(qrResult["outputFilesJSON"])
+        let decoded = try JSONDecoder().decode([RunOutputFile].self, from: Data(json.utf8))
+        #expect(decoded.count == 1)
+        let receipt = decoded[0]
+        // Sealed to the GENERATOR call — never re-associated with the later
+        // scanner call, never dropped because it was not the last tool.
+        #expect(receipt.producerCallID == "qr-call")
+        #expect(receipt.producerTool == "image.qr.generate")
+        #expect(receipt.runID == service.runID)
+        #expect(receipt.taskID == conversationID)
+        #expect(receipt.slot == "image")
+        #expect(receipt.mimeType == "image/png")
+        #expect(receipt.isCanonicalForCurrentRun)
+        #expect(receipt.hasRuntimeConsistentIdentity)
+        // The durable receipt references real snapshot bytes the chat card's
+        // verification path resolves.
+        #expect(RunOutputSnapshotStore.verify(receipt, artifactRoot: root)
+            == .verified(url: root.appendingPathComponent(receipt.relativePath)))
     }
 }
 

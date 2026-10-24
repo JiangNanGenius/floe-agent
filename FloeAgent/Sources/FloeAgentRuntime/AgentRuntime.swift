@@ -2118,8 +2118,10 @@ public actor FloeAgentRuntime {
             ? schemasLoadedBeforeBudget.subtracting(retainedAfterBudget).sorted()
             : []
         discoveredToolNames = retainedAfterBudget
-        catalogDescriptors.append(ToolDiscovery.descriptor)
-        catalogDescriptors.append(ToolDiscovery.listDescriptor)
+        catalogDescriptors.append(contentsOf: ToolDiscovery.runtimeDescriptors(
+            scopedConversation: configuration.chatFastMode,
+            publicWebOnly: configuration.temporaryReadOnly
+        ))
         persistDiscoveryIfChanged()
         // Prerequisite wording belongs to the current user turn. Do not let a
         // historical SSH-before-VNC request constrain a later, unrelated turn.
@@ -4147,11 +4149,20 @@ public actor FloeAgentRuntime {
         // Phase 1 — resolve serially (approval escalation blocks).
         for call in calls {
             if resultsByID[call.id] != nil { continue }
+            if call.toolName == ToolDiscovery.listName || call.toolName == ToolDiscovery.name {
+                // A provider/server may become unavailable while the model
+                // streams. Re-read readiness through the SAME filtered
+                // catalog, never the global executor directory. Discovery is
+                // runtime metadata only; executor/child policy stays intact.
+                discoverableDescriptors = runtimeVisibleCatalogDescriptors()
+            }
             if call.toolName == ToolDiscovery.listName {
                 let result: ToolResult
                 do {
                     let output = try ToolDiscovery.list(arguments: call.argumentsJSON,
-                        descriptors: discoverableDescriptors + [ToolDiscovery.descriptor, ToolDiscovery.listDescriptor],
+                        descriptors: discoverableDescriptors + ToolDiscovery.runtimeDescriptors(
+                            scopedConversation: configuration.chatFastMode,
+                            publicWebOnly: configuration.temporaryReadOnly),
                         loaded: discoveredToolNames.union([ToolDiscovery.name, ToolDiscovery.listName]),
                         relatedSkills: configuration.relatedSkillIDsByTool,
                         wireSafeNames: CompatToolNames.usesWireSafeNames(configuration.provider))

@@ -70,6 +70,12 @@ public actor WebSearchService {
     public func search(_ query: WebSearchQuery) async throws -> WebSearchResponse {
         let traceID = UUID().uuidString
         let startedAt = Date()
+        // Single bounded effective limit for the whole call. Request
+        // construction already clamps to 1...50; decode, aggregation and
+        // dedup honor the SAME bound so a server-overreturning gateway or a
+        // pathological caller can never widen the returned set beyond what
+        // the request asked for.
+        let resultLimit = max(1, min(query.maxResults, 50))
         let available = await configurations()
             .filter { Self.isConfigured($0.0, credential: $0.1) }
             .sorted { $0.0.priority < $1.0.priority }
@@ -91,7 +97,7 @@ public actor WebSearchService {
             selected = Array(available.prefix(count))
         }
         FloeLogger(category: .tools).info(
-            "webSearchStarted trace=\(traceID) mode=\(query.mode.rawValue) configured=\(available.count) selected=\(selected.map { $0.0.kind.rawValue }.joined(separator: ",")) maxResults=\(query.maxResults) recencyDays=\(query.recencyDays ?? 0) domainFilters=\(query.domains.count) excludedDomains=\(query.excludedDomains.count)"
+            "webSearchStarted trace=\(traceID) mode=\(query.mode.rawValue) configured=\(available.count) selected=\(selected.map { $0.0.kind.rawValue }.joined(separator: ",")) maxResults=\(resultLimit) recencyDays=\(query.recencyDays ?? 0) domainFilters=\(query.domains.count) excludedDomains=\(query.excludedDomains.count)"
         )
 
         var combined: [WebSearchResult] = []
@@ -101,11 +107,11 @@ public actor WebSearchService {
 
         if query.mode == .deep, selected.count > 1 {
             await withTaskGroup(of: ProviderOutcome.self) { group in
-                for item in selected {
-                    group.addTask { [self] in
-                        await run(item.0, credential: item.1, query: query, traceID: traceID)
-                    }
+            for item in selected {
+                group.addTask { [self] in
+                    await run(item.0, credential: item.1, query: query, traceID: traceID, limit: resultLimit)
                 }
+            }
                 for await outcome in group {
                     switch outcome {
                     case .success(let kind, let results, let answer):
@@ -124,7 +130,7 @@ public actor WebSearchService {
             // the tool unchanged.
             let failoverCandidates = query.requestedProvider == nil ? available : selected
             for item in failoverCandidates {
-                let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID)
+                let outcome = await run(item.0, credential: item.1, query: query, traceID: traceID, limit: resultLimit)
                 var succeeded = false
                 switch outcome {
                 case .success(let kind, let results, let answer)
@@ -143,7 +149,7 @@ public actor WebSearchService {
             }
         }
 
-        let normalized = Self.deduplicate(combined, limit: query.maxResults)
+        let normalized = Self.deduplicate(combined, limit: resultLimit)
         guard !normalized.isEmpty || !generatedAnswers.isEmpty else {
             FloeLogger(category: .tools).warning(
                 "webSearchFailed trace=\(traceID) attempts=\(selected.count) failures=\(failures.count) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"
@@ -268,7 +274,8 @@ public actor WebSearchService {
         _ configuration: WebSearchProviderConfiguration,
         credential: WebSearchCredential,
         query: WebSearchQuery,
-        traceID: String
+        traceID: String,
+        limit: Int
     ) async -> ProviderOutcome {
         let startedAt = Date()
         do {
@@ -296,7 +303,7 @@ public actor WebSearchService {
             let output = try Self.parseOutput(
                 data,
                 provider: configuration.kind,
-                limit: query.maxResults
+                limit: limit
             )
             FloeLogger(category: .tools).info(
                 "webSearchProviderFinished trace=\(traceID) provider=\(configuration.kind.rawValue) status=\(http.statusCode) responseBytes=\(data.count) results=\(output.results.count) answerChars=\(output.generatedAnswer?.text.count ?? 0) durationMs=\(Int(Date().timeIntervalSince(startedAt) * 1_000))"

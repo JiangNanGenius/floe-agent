@@ -376,6 +376,123 @@ struct ChatModePolicyTests {
         #expect(widenDenial.output.contains("fast chat"), Comment(rawValue: widenDenial.output))
     }
 
+    @Test("tools.search in ordinary chat loads only the current name ceiling and cannot authorize a guessed call")
+    func scopedSearchKeepsExecutionCeiling() async throws {
+        let executor = RecordingExecutor(descriptors: catalog())
+        let adapter = MockAdapter()
+        let search = try TestFixtures.toolCall(id: "scoped-search", toolName: "tools.search",
+            arguments: #"{"queries":["web","workspace","exec.shell"]}"#)
+        let forbidden = try TestFixtures.toolCall(id: "scoped-shell", toolName: "exec.shell",
+            arguments: #"{"command":"id"}"#)
+        let unbound = try TestFixtures.toolCall(id: "scoped-unbound", toolName: "workspace.readFile",
+            arguments: #"{"path":"private/diary.txt"}"#)
+        let bound = try TestFixtures.toolCall(id: "scoped-bound", toolName: "workspace.readFile",
+            arguments: #"{"path":"\#(Self.boundPath)"}"#)
+        adapter.script = [[.toolRequest(search)], [.toolRequest(forbidden), .toolRequest(unbound), .toolRequest(bound)], completionEvents()]
+        let allowed: Set<String> = ["web.search", "workspace.readFile"]
+        let runtime = makeRuntime(adapter: adapter, executor: executor, allowedToolNames: allowed,
+            chatResourceCeiling: resourceContext())
+        try await runtime.start(goal: "find a permitted tool definition and read my file")
+        let request = try #require(adapter.requests.dropFirst().first)
+        #expect(Set(request.toolSchemas.map(\.name)) == allowed.union(["tools.search", "tools.list"]))
+        #expect(Set(request.allToolNames) == allowed.union(["tools.search", "tools.list"]))
+        let result = try #require(request.toolResults.first { $0.callID == "scoped-search" })
+        #expect(result.output.contains("web.search:"))
+        #expect(result.output.contains("workspace.readFile:"))
+        for forbiddenName in ["web.searchAI", "web.fetch", "exec.shell", "workspace.writeFile", "notes.read"] {
+            // A queried forbidden name may be echoed as a query, but must
+            // never appear as a selected definition or a loaded schema.
+            #expect(!result.output.contains(forbiddenName + ":"))
+        }
+        #expect(executor.entries.map(\.call.id) == ["scoped-bound"])
+        let deniedRequest = try #require(adapter.requests.dropFirst(2).first)
+        #expect(deniedRequest.toolResults.first { $0.callID == "scoped-shell" }?.output.contains("outside the active skill") == true)
+        #expect(deniedRequest.toolResults.first { $0.callID == "scoped-unbound" }?.output.contains("not attached to this conversation") == true)
+        let metaSchema = try #require(request.toolSchemas.first { $0.name == "tools.search" })
+        #expect(metaSchema.description.contains("currently available"))
+        #expect(!metaSchema.description.contains("skill.search"))
+        #expect(!ChatToolPolicy.isAllowedName("tools.search"))
+    }
+
+    @Test("temporary scoped search cannot discover attachments even with the ordinary-chat flag and wider names")
+    func scopedSearchPreservesTemporaryBoundary() async throws {
+        let executor = RecordingExecutor(descriptors: catalog())
+        let adapter = MockAdapter()
+        adapter.script = [
+            [.toolRequest(try TestFixtures.toolCall(id: "temporary-search", toolName: "tools.search",
+                arguments: #"{"queries":["web","workspace"]}"#))],
+            [.toolRequest(try TestFixtures.toolCall(id: "temporary-file", toolName: "workspace.readFile",
+                arguments: #"{"path":"\#(Self.boundPath)"}"#))], completionEvents()
+        ]
+        let runtime = makeRuntime(adapter: adapter, executor: executor,
+            allowedToolNames: ["web.fetch", "workspace.readFile"],
+            chatResourceCeiling: resourceContext(), temporaryReadOnly: true)
+        try await runtime.start(goal: "find definitions in this temporary conversation")
+        let request = try #require(adapter.requests.dropFirst().first)
+        #expect(Set(request.toolSchemas.map(\.name)) == ["web.fetch", "tools.search", "tools.list"])
+        #expect(Set(request.allToolNames) == ["web.fetch", "tools.search", "tools.list"])
+        let result = try #require(request.toolResults.first { $0.callID == "temporary-search" })
+        #expect(result.output.contains("web.fetch:"))
+        #expect(!result.output.contains("workspace.readFile"))
+        #expect(!result.output.contains("web.search:"))
+        #expect(!result.output.contains("exec.shell"))
+        #expect(executor.entries.isEmpty)
+        #expect(adapter.requests.dropFirst(2).first?.toolResults.first { $0.callID == "temporary-file" }?.output.contains("temporary") == true)
+        let metaSchema = try #require(request.toolSchemas.first { $0.name == "tools.search" })
+        #expect(metaSchema.description.contains("temporary"))
+        #expect(!metaSchema.description.contains("attached files"))
+    }
+
+    /// Changes readiness after the provider request was composed, before its
+    /// search call reaches dispatch. No dependency on real network timing.
+    private final class ReadinessChangingAdapter: ProviderAdapter, @unchecked Sendable {
+        let protocolKind: ModelProtocol = .openAIResponses
+        let base: MockAdapter
+        let change: @Sendable () -> Void
+        private let changed = AsyncLock(false)
+        init(base: MockAdapter, change: @escaping @Sendable () -> Void) {
+            self.base = base
+            self.change = change
+        }
+        func stream(request: ProviderStreamRequest, credentials: ProviderCredentials) -> AsyncThrowingStream<AgentEvent, Error> {
+            let stream = base.stream(request: request, credentials: credentials)
+            let shouldChange = changed.withLock { value in
+                guard !value else { return false }
+                value = true
+                return true
+            }
+            if shouldChange { change() }
+            return stream
+        }
+        func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+    }
+
+    @Test("scoped search rechecks actual tool readiness after a model stream started")
+    func scopedSearchRechecksLiveReadiness() async throws {
+        let executor = MockExecutor()
+        executor.descriptors = catalog()
+        let base = MockAdapter()
+        base.script = [[.toolRequest(try TestFixtures.toolCall(id: "stale-search", toolName: "tools.search",
+            arguments: #"{"query":"web.search"}"#))], completionEvents()]
+        let adapter = ReadinessChangingAdapter(base: base) {
+            executor.descriptors.removeValue(forKey: "web.search")
+        }
+        let provider = TestFixtures.localhostProvider()
+        let runtime = FloeAgentRuntime(configuration: .init(provider: provider,
+            model: TestFixtures.testModel(providerID: provider.id),
+            allowedToolNames: ["web.search", "web.fetch"], chatFastMode: true),
+            adapter: adapter, policy: HumanApprovalPolicy(), executor: executor)
+        try await runtime.start(goal: "discover currently ready search tools")
+        #expect(base.requests.first?.toolSchemas.contains { $0.name == "web.search" } == true)
+        let request = try #require(base.requests.dropFirst().first)
+        let result = try #require(request.toolResults.first { $0.callID == "stale-search" })
+        #expect(!result.output.contains("web.search:"))
+        #expect(!result.output.contains("=> web.search"))
+        #expect(!request.toolSchemas.contains { $0.name == "web.search" })
+        #expect(request.toolSchemas.contains { $0.name == "web.fetch" })
+        #expect(executor.executedCalls.isEmpty)
+    }
+
     // MARK: - Child dispatch
 
     @Test("a delegated call inside a fast chat keeps the same frozen ceiling")

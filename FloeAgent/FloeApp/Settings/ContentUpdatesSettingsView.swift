@@ -143,11 +143,6 @@ struct ContentUpdatesSettingsView: View {
                 Text(entryTitle(id: id, kind: kind))
                     .font(.body)
                 Spacer()
-                if center.pinnedVersions[id] != nil {
-                    Text("settings.content_updates.pinned_badge")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(FloeTheme.pending)
-                }
             }
             Text(FloeL10n.l(availableContent?.decision.isUpdate == true
                  ? "settings.content_updates.status.update"
@@ -155,7 +150,7 @@ struct ContentUpdatesSettingsView: View {
                  : "settings.content_updates.not_installed"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            actionRow(id: id, record: record, availableContent: availableContent)
+            actionRow(id: id, availableContent: availableContent)
             DisclosureGroup("settings.content_updates.details") {
                 LabeledContent("settings.content_updates.installed") {
                     Text(record.map { "v\($0.version)" }
@@ -201,7 +196,6 @@ struct ContentUpdatesSettingsView: View {
     @ViewBuilder
     private func actionRow(
         id: String,
-        record: ContentUpdateCenter.InstalledRecord?,
         availableContent: ContentUpdateCenter.AvailableContent?
     ) -> some View {
         if center.installingIDs.contains(id) {
@@ -212,7 +206,7 @@ struct ContentUpdatesSettingsView: View {
                     .foregroundStyle(.secondary)
             }
             .frame(minHeight: FloeTheme.minimumTarget)
-        } else {
+        } else if availableContent?.decision.isUpdate == true || center.canRollback(id) {
             HStack(spacing: 12) {
                 if availableContent?.decision.isUpdate == true {
                     Button("settings.content_updates.action.install") {
@@ -221,19 +215,12 @@ struct ContentUpdatesSettingsView: View {
                     .buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("settings.content_updates.action.install.\(id)")
                 }
-                if let record, record.previousVersion != nil {
+                if center.canRollback(id) {
                     Button("settings.content_updates.action.rollback", role: .destructive) {
                         Task { await center.rollback(id) }
                     }
                     .buttonStyle(.bordered)
                     .accessibilityIdentifier("settings.content_updates.action.rollback.\(id)")
-                }
-                if let record {
-                    Button(pinTitle(id)) {
-                        center.setPinned(id, version: center.pinnedVersions[id] == nil ? record.version : nil)
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("settings.content_updates.action.pin.\(id)")
                 }
             }
             .frame(minHeight: FloeTheme.minimumTarget)
@@ -361,12 +348,6 @@ struct ContentUpdatesSettingsView: View {
         case .help: "settings.content_updates.kind.help"
         case .templates: "settings.content_updates.kind.templates"
         }
-    }
-
-    private func pinTitle(_ id: String) -> LocalizedStringKey {
-        center.pinnedVersions[id] == nil
-            ? "settings.content_updates.action.pin"
-            : "settings.content_updates.action.unpin"
     }
 
     private func availableDescription(

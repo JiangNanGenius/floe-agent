@@ -1,0 +1,4 @@
+{
+  "en-US": "Try voice replies, long Markdown read-aloud and leaving voice for the original task mode. Check bounded default search results and professional data search. Generate a QR code, then scan it: its image should remain visible and shareable in chat. Try the Kimi Code image-provider entry with a model available to your account. In Plugins, check updates, update individual items and use Update All. Restore should appear only for a usable retained older package.",
+  "zh-Hans": "请体验连续语音回复、较长 Markdown 朗读，以及退出语音后原聊天／任务模式是否保留。检查默认搜索结果与专业数据搜索。生成二维码后再扫描，图片应继续显示并可分享。可用账户实际支持的模型体验 Kimi Code 图片入口。插件页可统一检查、逐项或全部更新；仅有可用旧版时才显示恢复操作。"
+}

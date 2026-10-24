@@ -69,6 +69,7 @@ final class ContinuousVoiceScreenSession: ObservableObject {
                 deferredConversationCreation: true, resolveModel: resolver,
                 workspaceID: request.workspaceID, attachments: request.attachments,
                 chatReasoningDraftOwnerID: request.reasoningDraftOwnerID,
+                preferredModeForNewConversation: request.preferredModeForNewConversation,
                 onConversationCreated: created)
         }
         let language = VoiceRecognitionLanguage(rawValue: UserDefaults.standard.string(forKey: VoiceRecognitionLanguage.defaultsKey) ?? "") ?? .automatic

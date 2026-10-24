@@ -77,6 +77,22 @@ enum ToolDiscovery {
               riskLabels: [], isSideEffecting: false)
     }
 
+    /// Runtime-owned metadata helpers are separate from executable tools.
+    /// Conversation schemas must not direct the model to skill/task tools
+    /// outside its ceiling. The dispatcher still searches only its filtered,
+    /// live catalog; this wording never changes admission or execution policy.
+    static func runtimeDescriptors(scopedConversation: Bool, publicWebOnly: Bool) -> [ToolCatalog.Descriptor] {
+        guard scopedConversation || publicWebOnly else { return [descriptor, listDescriptor] }
+        let scope = publicWebOnly
+            ? "this temporary conversation's allowed public web tools"
+            : "this conversation's allowed public web tools and reads of its bound attached files"
+        var search = descriptor
+        search.toolDescription = "Find definitions for currently available tools within \(scope). Search by exact tool name or capability. This runtime metadata helper only loads permitted schemas; it never executes tools, grants permission or enables an unavailable provider. A forbidden name or capability cannot be unlocked by searching."
+        var list = listDescriptor
+        list.toolDescription = "List metadata for currently available tools within \(scope). This runtime metadata helper does not execute tools or grant permission. Use tools.search to load a permitted definition; schemaLoaded=false means deferred, not denied. Follow nextAfterName until absent."
+        return [search, list]
+    }
+
     static func group(_ name: String) -> String { ToolCapabilityGroups.group(name) }
 
     static func matches(queries: [String], descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {

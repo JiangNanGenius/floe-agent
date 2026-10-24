@@ -179,10 +179,19 @@ public struct ImageProviderAdapterFactory: Sendable {
             return AlibabaImageAdapter()
         case .googleGemini:
             return GoogleGeminiImageAdapter()
-        case .anthropic, .local, .custom:
-            // Anthropic has no image-generation endpoint; custom endpoints are
-            // not assumed to support image operations.
+        case .anthropic, .local:
+            // Anthropic has no image-generation endpoint; local has no remote
+            // image service.
             return nil
+        case .custom:
+            // Custom endpoints are not assumed to support image operations —
+            // except a verified Kimi Code Coding Plan route (api.kimi.com with
+            // the evidenced /coding or /coding/v1 base): its synchronous
+            // OpenAI-compatible /coding/v1/images/generations and
+            // /coding/v1/images/edits route is grounded in upstream
+            // implementation evidence (see KimiImageAdapter's header for
+            // commit/path citations).
+            return KimiCodeEndpointIdentity.matches(provider) ? KimiImageAdapter() : nil
         }
     }
 }
