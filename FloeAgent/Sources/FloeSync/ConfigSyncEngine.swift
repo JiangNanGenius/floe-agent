@@ -284,6 +284,17 @@ public actor ConfigSyncEngine {
         return status
     }
 
+    /// Device-local sync switches consulted by the credential status/staging
+    /// path. Production is `.standard` (exactly the previous behavior); tests
+    /// inject an isolated suite instead of mutating real App sync settings.
+    private var preferencesDefaults: UserDefaults = .standard
+
+    /// Suite name is Sendable (unlike `UserDefaults`), so tests inject an
+    /// isolated store without touching real App sync settings.
+    func replacePreferencesDefaultsForTesting(suite: String?) {
+        preferencesDefaults = suite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+    }
+
     /// Deterministic seam for per-account secret existence. Production leaves
     /// this nil and the real synchronizable Keychain namespace is read (byte
     /// values are discarded immediately by callers; only existence is
@@ -654,7 +665,7 @@ public actor ConfigSyncEngine {
                 )
             }
         }
-        if SyncControlPreferences.load().savedCredentialsEnabled, let credentialStore {
+        if SyncControlPreferences.load(from: preferencesDefaults).savedCredentialsEnabled, let credentialStore {
             for credential in try await credentialStore.records(owner: .vault)
                 where credential.synchronizable {
                 try await stageIfUntracked(
@@ -1297,7 +1308,7 @@ public actor ConfigSyncEngine {
     /// wait without any new batch while one missing account still keeps every
     /// device waiting.
     private func credentialSyncStatus() async -> SyncStatus {
-        let preferences = SyncControlPreferences.load()
+        let preferences = SyncControlPreferences.load(from: preferencesDefaults)
         if preferences.overallEnabled, let configurationStore,
            let providers = try? await configurationStore.providers() {
             for provider in providers {
@@ -1325,6 +1336,32 @@ public actor ConfigSyncEngine {
         // expected to arrive; their local presence is enforced at use time
         // by CredentialVaultService.resolveForApprovedUse instead.
         for record in records where record.synchronizable && !record.deviceBound {
+            if !(await secretPresent(
+                service: CredentialVaultService.serviceName,
+                account: record.keychainAccount,
+                synchronizable: true
+            )) {
+                return .waitingForSecret
+            }
+        }
+        // A record the toggle had to leave behind is NOT synced: its
+        // secret exists in no namespace on this device, so neither cloud
+        // delivery nor a re-enable could complete it until the secret
+        // returns HERE. Excluding such records would let the row claim
+        // "synced" while an unsynchronizable credential sits unreported;
+        // keeping the wait honest is the OBSERVABLE automatic route — the
+        // engine-owned arrival monitor re-checks both namespaces through
+        // this same computation and resolves the row the moment the user
+        // re-adds the key (or deletes the record), after which the
+        // settings retry publishes it (the manual route). Ordinary
+        // local-only vault records (secret present in the local
+        // namespace, e.g. a fresh capture) do not match and never wait.
+        for record in records where !record.synchronizable && !record.deviceBound {
+            if await secretPresent(
+                service: CredentialVaultService.serviceName,
+                account: record.keychainAccount,
+                synchronizable: false
+            ) { continue }
             if !(await secretPresent(
                 service: CredentialVaultService.serviceName,
                 account: record.keychainAccount,

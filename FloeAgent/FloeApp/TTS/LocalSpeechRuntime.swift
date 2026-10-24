@@ -9,7 +9,14 @@ import FloeCore
 import FloeProviders
 
 final class LocalSpeechRuntime: TTSSpeechProviding, Sendable {
-    enum Failure: Error { case unsupportedDevice, voice, language, invalidAudio }
+    /// Recoverable local failures. `sentenceTooLong` reports that one whole
+    /// sentence exceeds the model's real native input/context limit (or the
+    /// pre-existing 4096-character request bound) — the text is preserved
+    /// untouched and nothing is truncated, fragmented or partially
+    /// synthesized.
+    enum Failure: Error {
+        case unsupportedDevice, voice, language, invalidAudio, sentenceTooLong
+    }
     private let engine = LocalSpeechInferenceOwner()
 
     /// Local PCM travels in far larger pieces than the shared 4 KiB cloud
@@ -236,10 +243,14 @@ private actor LocalSpeechInferenceOwner {
             #if targetEnvironment(simulator)
             throw LocalSpeechRuntime.Failure.unsupportedDevice
             #else
-            guard request.provider == .onDevice, request.text.count <= 4_096,
+            guard request.provider == .onDevice,
                   !request.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw TTSSynthesisError.invalidConfiguration("Invalid local speech request")
             }
+            // Pre-mount recoverable length bound for one utterance request:
+            // the complete sentence is preserved untouched (never truncated,
+            // summarized or synthesized in pieces) and no model work starts.
+            guard request.text.count <= 4_096 else { throw LocalSpeechRuntime.Failure.sentenceTooLong }
             let model = try await load(request)
             guard let specification = lease?.model,
                   let voice = specification.voices.first(where: { $0.id == request.voiceID }) else {
@@ -249,23 +260,31 @@ private actor LocalSpeechInferenceOwner {
             let normalizer = try LocalSpeechPCMNormalizer(outputRate: request.format.sampleRate)
             var sequence = 0
             var totalBytes = 0
-            // Bound each native generation well below the CoreML context/audio
-            // limit. Long answers remain complete through ordered subsegments.
-            let hasCJK = request.text.unicodeScalars.contains {
-                (0x3040...0x30ff).contains($0.value) || (0x3400...0x9fff).contains($0.value) || (0xac00...0xd7af).contains($0.value)
-            }
-            let maximum = specification.engine == "mossTTSNano" ? (hasCJK ? 64 : 160) : (hasCJK ? 180 : 320)
-            var splitter = TTSTextSegmenter(minCharacters: 8, maxCharacters: maximum)
-            let segments = splitter.append(request.text) + splitter.finish()
+            // The upper layers now submit ONE complete sentence per request,
+            // so the sentence reaches the model whole — never re-fragmented
+            // here. Hard capacity stays with the native guards: MOSS checks
+            // real prompt rows + maxFrames against the pack's actual
+            // contextLength BEFORE generating (contextExceeded) and refuses
+            // silently truncating audio (generationLimit); both surface as
+            // the recoverable sentenceTooLong. The Qwen runtime caps
+            // generation at six codec frames per real text token itself.
+            let hasCJK = TTSSpeechBudget.hasCJKCharacter(request.text)
             let languageTag: String
             if let explicit = request.language { languageTag = explicit }
             else {
+                // Requests now arrive one complete sentence at a time, so
+                // detection must stay anchored to the SELECTED voice: an
+                // embedded English sentence inside a Chinese answer keeps
+                // the voice's primary tag (the pinned contract's mixed
+                // zh/en guidance) instead of flipping conditioning
+                // mid-answer. A detected language the voice does not
+                // declare is never used.
                 let recognizer = NLLanguageRecognizer()
                 recognizer.processString(request.text)
                 let detected = recognizer.dominantLanguage?.rawValue.split(separator: "-").first.map(String.init)
-                languageTag = detected.flatMap { specification.languages.contains($0) ? $0 : nil } ?? voice.languages.first ?? "zh"
+                languageTag = detected.flatMap { voice.languages.contains($0) ? $0 : nil } ?? voice.languages.first ?? "zh"
             }
-            for text in segments {
+            for text in [request.text] {
                 try Task.checkCancellation()
                 switch model {
                 case .qwen(let qwen):
@@ -298,7 +317,17 @@ private actor LocalSpeechInferenceOwner {
                     // codes; the catalog default timbre passes nil. Any envelope,
                     // size or hash mismatch fails closed before synthesis.
                     let reference = try referenceVoice(for: voice)
-                    let session = moss.synthesizeStreamSession(text: text, reference: reference, options: .init(maxFrames: 300, seed: 0))
+                    // Frame budget for the WHOLE sentence, sized against the
+                    // pack's REAL contextLength with measured-rate margins
+                    // (TTSSpeechBudget). The native actual-row context check
+                    // remains authoritative and fails before any audio;
+                    // reaching maxFrames without end-of-speech is a loud
+                    // generationLimit, never a silent truncation.
+                    let maxFrames = TTSSpeechBudget.mossMaxFrames(
+                        contextLength: await moss.configuration.contextLength,
+                        characterCount: text.count, hasCJK: hasCJK)
+                    let session = moss.synthesizeStreamSession(text: text, reference: reference,
+                        options: .init(maxFrames: maxFrames, seed: 0))
                     do {
                       for try await chunk in session.stream {
                         try Task.checkCancellation()
@@ -333,6 +362,18 @@ private actor LocalSpeechInferenceOwner {
             if error is CancellationError || Task.isCancelled { sender.finish(throwing: TTSSynthesisError.cancelled) }
             else if let failure = error as? LocalSpeechModelStore.Failure { sender.finish(throwing: failure) }
             else if let failure = error as? LocalSpeechRuntime.Failure { sender.finish(throwing: failure) }
+            else if let native = error as? MossTTSNanoError {
+                // The native context/frame guards are the model's own hard
+                // limits: contextExceeded fires BEFORE any generation and
+                // generationLimit is a loud pre-END failure, never a silent
+                // truncation. Both are recoverable "sentence too long".
+                switch native {
+                case .contextExceeded, .generationLimit:
+                    sender.finish(throwing: LocalSpeechRuntime.Failure.sentenceTooLong)
+                default:
+                    sender.finish(throwing: LocalSpeechRuntime.Failure.invalidAudio)
+                }
+            }
             else { sender.finish(throwing: LocalSpeechRuntime.Failure.invalidAudio) }
         }
     }

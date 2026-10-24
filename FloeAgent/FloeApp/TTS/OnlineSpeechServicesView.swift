@@ -10,12 +10,48 @@ import FloeProviders
 struct OnlineSpeechServicesView: View {
     @EnvironmentObject private var settings: TTSSettingsService
     @State private var editor: SpeechProfileDraft?
+    @State private var guidanceKey: String?
     var body: some View {
         List {
+            // The name selects the configured profile (exact provider +
+            // channel); the trailing button opens its configuration. Adding,
+            // saving or testing here never changes the current source unless
+            // this service already is it.
             ForEach(settings.configuredProfiles, id: \.profileIdentity) { profile in
-                Button { editor = SpeechProfileDraft(value: profile) } label: {
-                    LabeledContent(profile.provider.title, value: profile.billingRoute.title).foregroundStyle(.primary)
+                let source = SpeechOutputSource.online(provider: profile.provider, route: profile.billingRoute)
+                let selected = settings.currentOutputSource == source
+                HStack(spacing: 12) {
+                    Button {
+                        guidanceKey = settings.selectSource(source) ? nil : "voice.output.source.unavailable"
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(profile.provider.title).foregroundStyle(.primary)
+                                Text(profile.billingRoute.title).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if selected {
+                                Image(systemName: "checkmark")
+                                    .accessibilityLabel("voice.local.selected")
+                            }
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("floe.tts.online.select." + source.id)
+                    Button { editor = SpeechProfileDraft(value: profile) } label: {
+                        Image(systemName: "info.circle")
+                            .font(.title3)
+                            .frame(width: 44, height: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("voice.online.details")
+                    .accessibilityIdentifier("floe.tts.online.details." + source.id)
                 }
+            }
+            if let guidanceKey {
+                Section { Text(LocalizedStringKey(guidanceKey)).foregroundStyle(.red) }
             }
             Section {
                 Menu("voice.online.add", systemImage: "plus") {

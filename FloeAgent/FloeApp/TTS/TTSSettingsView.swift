@@ -9,13 +9,22 @@ struct TTSSettingsView: View {
     @EnvironmentObject private var settings: TTSSettingsService
     var body: some View {
         Form {
+            // The flow is source first, then the voices of that source, so a
+            // long mixed list can never show a cloud voice beside a local one.
             Section {
+                NavigationLink { SpeechOutputSourcePickerView() } label: {
+                    LabeledContent("voice.settings.source", value: settings.outputSourceTitle(for: settings.currentOutputSource))
+                }
+                .accessibilityIdentifier("floe.tts.source-row")
                 NavigationLink { SpeechVoicePickerView() } label: {
                     LabeledContent("voice.settings.voice", value: settings.voiceDisplayName(for: settings.snapshot) ?? SpeechVoiceNames.current(settings.snapshot))
                 }
-                // Rate and intonation are written once by the shared output
-                // effect for every route (system, local and cloud), so the two
-                // compact controls stay available for every provider.
+                .accessibilityIdentifier("floe.tts.voice-row")
+            }
+            // Rate and intonation are written once by the shared output
+            // effect for every route (system, local and cloud), so the two
+            // compact controls stay available for every provider.
+            Section {
                 HStack {
                     Text("voice.settings.rate")
                     Slider(value: Binding(get: { settings.snapshot.speechRateRatio }, set: { n in settings.update { $0.speechRateRatio = n } }), in: TTSPlaybackControls.rateRange, step: 0.05)
@@ -36,6 +45,42 @@ struct TTSSettingsView: View {
                 NavigationLink("voice.online.title") { OnlineSpeechServicesView() }
             }
         }.navigationTitle("settings.voice.title")
+    }
+}
+
+/// Playback-source picker: one tap selects the whole source with its last
+/// saved voice. Unconfigured or uninstalled targets lead to their
+/// configuration page and never silently switch to another (paid) channel.
+struct SpeechOutputSourcePickerView: View {
+    @EnvironmentObject private var settings: TTSSettingsService
+    @State private var guidanceKey: String?
+    var body: some View {
+        List {
+            Section {
+                ForEach(settings.outputSources) { source in
+                    Button {
+                        guidanceKey = settings.selectSource(source) ? nil : "voice.output.source.unavailable"
+                    } label: {
+                        HStack {
+                            Text(settings.outputSourceTitle(for: source))
+                            Spacer()
+                            if settings.currentOutputSource == source {
+                                Image(systemName: "checkmark")
+                                    .accessibilityLabel("voice.local.selected")
+                            }
+                        }
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("floe.tts.source." + source.id)
+                }
+                if let guidanceKey {
+                    Text(LocalizedStringKey(guidanceKey)).foregroundStyle(.red)
+                }
+            } header: { Text("voice.settings.source") }
+        }
+        .navigationTitle("voice.settings.source")
     }
 }
 
@@ -75,6 +120,7 @@ struct SpeechVoicePickerView: View {
     @State private var previewOwnerID = UUID()
     @State private var failure: String?
     var body: some View {
+        let options = voiceOptions
         List {
             Section {
                 NavigationLink { SpeechAuditionTextView(text: $sample) } label: {
@@ -100,50 +146,20 @@ struct SpeechVoicePickerView: View {
                     Text(LocalizedStringKey(key)).foregroundStyle(.red)
                 }
             }
-            ForEach(settings.localVisibleModels) { model in
-                Section {
-                    if !settings.localInstalledModelIDs.contains(model.id) {
-                        SpeechPackInstallState(model: model)
+            // Only the selected source's voices are listed; pack install and
+            // account configuration live on their own pages.
+            Section {
+                ForEach(options) { option in
+                    voiceRow(title: option.title, detail: option.detail, id: option.id,
+                             value: option.snapshot, ready: option.ready) {
+                        settings.choose(option.snapshot)
                     }
-                    ForEach(model.voices) { voice in
-                        let ready = settings.localInstalledModelIDs.contains(model.id)
-                        let value = localChoice(model, voice: voice)
-                        voiceRow(title: SpeechVoiceNames.voice(voice), detail: voice.languages.compactMap { Locale.current.localizedString(forLanguageCode: $0) }.joined(separator: " · "), id: model.id + "/" + voice.id, value: value, ready: ready) {
-                            if ready { settings.choose(value) }
-                        }
-                    }
-                } header: { Text(SpeechVoiceNames.model(model)) }
-            }
-            Section("voice.settings.service.system") {
-                voiceRow(title: FloeL10n.l("voice.settings.voice.automatic"), detail: nil, id: "apple/auto", value: .systemDefault, ready: true) { settings.choose(.systemDefault) }
-                ForEach(environment.ttsSpeechService.builtinVoices(for: .apple)) { voice in
-                    let value = withVoice(.systemDefault, id: voice.voiceID)
-                    voiceRow(title: voice.displayName, detail: nil, id: "apple/" + voice.voiceID, value: value, ready: true) { settings.choose(value) }
+                    .accessibilityIdentifier("floe.tts.voice." + option.id)
                 }
-            }
-            ForEach(settings.configuredProfiles, id: \.profileIdentity) { profile in
-                Section(profile.provider.title) {
-                    let voices = environment.ttsSpeechService.builtinVoices(
-                        for: profile.provider, modelID: profile.modelID)
-                    if !profile.voiceID.isEmpty && !voices.contains(where: { $0.voiceID == profile.voiceID }) {
-                        voiceRow(title: settings.voiceDisplayName(for: profile) ?? profile.voiceID, detail: profile.billingRoute.title, id: settings.profileID(profile) + "/" + profile.voiceID, value: profile, ready: true) { settings.choose(profile) }
-                    }
-                    ForEach(voices) { voice in
-                        let choice = withVoice(profile, id: voice.voiceID)
-                        voiceRow(title: voice.displayName, detail: profile.billingRoute.title, id: settings.profileID(profile) + "/" + voice.voiceID, value: choice, ready: true) { settings.choose(choice) }
-                    }
+                if options.isEmpty {
+                    Text("voice.output.source.unavailable").foregroundStyle(.secondary)
                 }
-            }
-            if let key = settings.localMigrationNote {
-                Section {
-                    Label { Text(LocalizedStringKey(key)) } icon: { Image(systemName: "exclamationmark.triangle") }
-                        .foregroundStyle(.secondary)
-                    Button("voice.action.retry") { Task { await settings.retryLocalValidation() } }
-                }
-            }
-            if let key = settings.localCatalogErrorKey ?? settings.localInstallation.failureKey {
-                Section { Text(LocalizedStringKey(key)).foregroundStyle(.red) }
-            }
+            } header: { Text(settings.outputSourceTitle(for: source)) }
         }
         .navigationTitle("voice.settings.voice")
         .onAppear {
@@ -158,19 +174,32 @@ struct SpeechVoicePickerView: View {
             previewID = nil
         }
     }
+    private var source: SpeechOutputSource { settings.currentOutputSource }
+    private var voiceOptions: [SpeechOutputVoiceOption] {
+        let current = settings.snapshot
+        switch source {
+        case .system:
+            return SpeechOutputVoices.options(
+                for: .system, current: current, localModel: nil, onlineProfile: nil,
+                catalogVoices: environment.ttsSpeechService.builtinVoices(for: .apple),
+                savedVoiceDisplayName: nil)
+        case .local(let modelID):
+            return SpeechOutputVoices.options(
+                for: source, current: current,
+                localModel: settings.localModelDescriptor(modelID), onlineProfile: nil,
+                catalogVoices: [], savedVoiceDisplayName: nil)
+        case .online(let provider, let route):
+            let profile = settings.profile(provider: provider, route: route)
+            return SpeechOutputVoices.options(
+                for: source, current: current, localModel: nil,
+                onlineProfile: profile,
+                catalogVoices: environment.ttsSpeechService.builtinVoices(
+                    for: provider, modelID: profile.modelID),
+                savedVoiceDisplayName: settings.voiceDisplayName(for: profile))
+        }
+    }
     private var auditionFailure: String? {
         failure ?? (playback.failureOwnerID == previewOwnerID ? playback.failureKey : nil)
-    }
-    private func withVoice(_ profile: TTSSettingsSnapshot, id: String) -> TTSSettingsSnapshot {
-        var value = profile
-        value.voiceID = id
-        return value
-    }
-    private func localChoice(_ model: LocalSpeechModel, voice: LocalSpeechModel.Voice) -> TTSSettingsSnapshot {
-        var s = settings.snapshot
-        s.provider = .onDevice; s.modelID = model.id; s.voiceID = voice.id
-        s.language = nil; s.connectionProviderID = nil; s.billingRoute = .payAsYouGo
-        return s
     }
     private func voiceRow(title: String, detail: String?, id: String, value: TTSSettingsSnapshot, ready: Bool, select: @escaping () -> Void) -> some View {
         let selected = settings.snapshot.provider == value.provider && settings.snapshot.modelID == value.modelID && settings.snapshot.voiceID == value.voiceID && settings.snapshot.billingRoute == value.billingRoute

@@ -10,12 +10,24 @@
 //   "不对") are accepted;
 // - persistent echo-processed speech (≥ ~180 ms) tentatively pauses output,
 //   ~250 ms of continuous non-speech without a valid ASR turn resumes at the
-//   SAME position; amplitude alone never cancels a generation.
+//   SAME position; amplitude alone never cancels a generation. The tentative
+//   PAUSE is additionally bounded by a hard 1.2 s window (product decision
+//   2026-10-25 after reports of the answer stopping while the user was
+//   silent): without a valid confirmation the pause ends inside the window
+//   at the SAME position, and a bounded number of false-start pauses per
+//   round keeps sustained noise/echo from ever entering pause cycles. The
+//   audio candidate's IDENTITY stays open longer so a genuinely slow real
+//   ASR partial can still confirm after the pause resumed; see
+//   `VoiceConversationBargeArbiter` for the confirmation rules.
 //
-// Everything here is pure Foundation and deterministic: tests drive exact
-// sample durations and string inputs without any clock or audio framework.
+// Turn rules are deterministic Foundation logic. Sentence grouping reuses
+// the shared provider policy; host harnesses can compile TextSegmenter.swift
+// alongside this file without loading any model or audio framework.
 
 import Foundation
+#if canImport(FloeProviders)
+import FloeProviders
+#endif
 
 // MARK: - Endpoint windows
 
@@ -171,93 +183,189 @@ struct VoiceConversationBargeGate {
     }
 }
 
+// MARK: - Barge-in confirmation arbiter
+
+/// The verdict for one staged draft observed while a barge-in audio candidate
+/// is open. Only `.confirm` may cancel the answer; every rejection keeps the
+/// generation alive (the candidate itself has already done nothing more than
+/// pause the output).
+enum VoiceBargeConfirmDecision: Equatable, Sendable {
+    case confirm
+    /// Not a sendable utterance (hesitation/noise-only text).
+    case rejectedInvalid
+    /// Nothing new: identical to the draft snapshot taken when the current
+    /// candidate opened — pre-candidate text alone never confirms.
+    case rejectedNotFresh
+    /// The text equals or is the tail of the CURRENT round's own submitted
+    /// utterance: ambiguous with a late final, so it neither auto-cancels
+    /// nor survives as a draft that could be auto-resent.
+    case rejectedStaleASR
+    /// The text mirrors speech that actually played (or is playing): output
+    /// echo, not user intent. Discarded — a mirror of our own answer must
+    /// neither cancel it nor come back as a fresh question.
+    case rejectedOutputEcho
+}
+
+/// Settled conservative confirmation rules for an automatic barge-in
+/// interruption (product decision 2026-10-25, after field reports of the
+/// answer stopping while the user was completely silent).
+///
+/// A confirmed automatic interruption requires ALL of:
+/// 1. persistent microphone speech — a `VoiceConversationBargeGate` edge
+///    opened (or refreshed) the audio candidate; AND
+/// 2. a genuinely NEW valid ASR result that arrived after this candidate
+///    started: text different from the draft snapshot taken when the
+///    candidate opened; AND
+/// 3. the text is not just the tail of the CURRENT round's submitted
+///    utterance (a late final/re-accumulation of what this answer was asked
+///    with can never cancel this answer); AND
+/// 4. the text is not a mirror of the speech that actually played (output
+///    echo through the imperfect AEC path).
+///
+/// BOUNDED-CONSERVATIVE by design (explicit, honest limits):
+/// - Amplitude alone never confirms, and similarity alone only ever REJECTS.
+/// - NO cross-round history of any kind: every rule is anchored to the
+///   CURRENT round's own submitted text and the CURRENT round's actually
+///   played reference. Repeating the previous round's words is new text for
+///   this round and confirms normally — there is no multi-round blacklist.
+/// - Provenance cannot be established from strings when the user speaks
+///   EXACTLY (or the tail of) the current round's own question: that shape
+///   is indistinguishable from a late final of that utterance. Bounded
+///   resolution (primary-settled 2026-10-25): for THIS round it neither
+///   auto-cancels NOR auto-resends — the draft is discarded so a silent
+///   late partial can never re-ask the old question after the answer
+///   finishes. Any genuinely new words are a different shape, stage
+///   normally, and confirm/interrupt as usual; the same words are fully
+///   usable again the moment the round is over.
+/// - The same rule applies to text arriving OUTSIDE a candidate: a late
+///   re-accumulation of the current question or a mirror of the played
+///   answer must not survive as a draft that the natural endpoint would
+///   auto-send (the silent self-reply loop). This is a staging fence, so it
+///   cannot rely on an audio edge; the constraint is explicit, not a claim
+///   that string identity proves provenance.
+/// - Output echo rejects at ANY text length: a two-character ASR mirror of
+///   self-playback ("好的", "你好") is exactly the reported silent shape.
+///   Deliberate interruption commands (`bargeCommands`) are exempt from the
+///   echo rule so real short instructions keep working even when the answer
+///   says the same characters. Residual, explicitly accepted ambiguity:
+///   echo of a command word spoken BY the answer can still confirm (intent
+///   priority), and a genuine short utterance that is contained in the
+///   played answer is treated as echo and dropped.
+/// - Slow real recognition stays usable: the coordinator keeps the candidate
+///   identity open past its 1.2 s pause bound for a bounded freshness
+///   window; snapshot comparison is punctuation-free, so incremental
+///   replacement of the same utterance still counts as new text.
+enum VoiceConversationBargeArbiter {
+    /// Deliberate, bounded spoken-interruption command set (product-settled
+    /// 2026-10-25). These are IMPERATIVE instructions whose user intent is
+    /// the interruption itself, so the echo rule NEVER swallows them — a
+    /// real user can still stop an answer that happens to contain the same
+    /// characters. Everything not on this list is judged against the
+    /// actually-played reference, at ANY length: a two-character ASR mirror
+    /// of self-playback ("好的", "你好") is exactly the shape the reported
+    /// silent self-interruption took (very common answer openings), so
+    /// short conversational text is NOT automatically treated as intent.
+    /// Stored normalized; deterministic and easy to extend.
+    static let bargeCommands: Set<String> = [
+        // Chinese stop/correction instructions.
+        "停", "停停", "停止", "暂停", "先停", "停一下", "别说了", "别讲了",
+        "别说话", "先别讲", "先别说", "等等", "等一下", "慢点", "慢一点",
+        "不对", "错", "重来",
+        // English equivalents (normalized: lowercase, letters/digits only).
+        "stop", "wait", "pause", "holdon", "enough",
+    ]
+
+    /// True for the deliberate command set (compared in normalized form).
+    static func isBargeCommand(_ text: String) -> Bool {
+        bargeCommands.contains(normalized(text))
+    }
+
+    /// Comparison form: casefolded, with only letters/digits kept. ASR
+    /// partials and the played text differ in punctuation and spacing; they
+    /// do NOT differ in the spoken characters themselves.
+    static func normalized(_ text: String) -> String {
+        var out = ""
+        for character in text.lowercased() where character.isLetter || character.isNumber {
+            out.append(character)
+        }
+        return out
+    }
+
+    /// True when `text` equals or is the tail of the CURRENT round's own
+    /// submitted utterance: the one shape that is genuinely ambiguous
+    /// between "late accumulation of what this answer was asked with" and
+    /// "user repeated their exact words" — and the ambiguous direction is
+    /// the reported silent self-interruption, so it never confirms.
+    /// Anchored to the single current utterance on purpose: no history, so
+    /// the same words are fully usable again in any later round.
+    static func matchesCurrentSubmissionTail(_ text: String, submitted: String) -> Bool {
+        let current = normalized(text)
+        let old = normalized(submitted)
+        guard !current.isEmpty, !old.isEmpty else { return false }
+        return old.hasSuffix(current)
+    }
+
+    /// True when `text` mirrors the speech that actually played / is playing:
+    /// output echo through the (imperfect) AEC path, not user intent. ANY
+    /// contained text rejects confirmation at ANY length — deliberate
+    /// commands are the only exemption (`isBargeCommand`). Echo can ONLY
+    /// reject; containment never itself proves user intent.
+    static func isOutputEcho(_ text: String, playedReference: String) -> Bool {
+        let current = normalized(text)
+        let reference = normalized(playedReference)
+        guard !current.isEmpty, !reference.isEmpty else { return false }
+        if isBargeCommand(text) { return false }
+        return reference.contains(current)
+    }
+
+    /// The single confirmation rule set, pure and deterministic.
+    static func decide(
+        staged candidateText: String,
+        openedWith snapshot: String,
+        submitted: String,
+        playedReference: String
+    ) -> VoiceBargeConfirmDecision {
+        let trimmed = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard VoiceConversationTurnValidity.isValidTurn(trimmed) else { return .rejectedInvalid }
+        let current = normalized(trimmed)
+        guard !current.isEmpty, current != normalized(snapshot) else { return .rejectedNotFresh }
+        if matchesCurrentSubmissionTail(trimmed, submitted: submitted) {
+            return .rejectedStaleASR
+        }
+        if isOutputEcho(trimmed, playedReference: playedReference) { return .rejectedOutputEcho }
+        return .confirm
+    }
+}
+
 // MARK: - Sentence splitting
 
-/// Splits cumulative visible answer text into TTS sentence units exactly
-/// once. The bridge consumes unit requests; it must never re-split text.
-/// Rules: terminate on 。！？!?；; and newlines; a period between digits is
-/// decimal-safe ("3.5"); an over-long run without a boundary soft-flushes at
-/// the previous comma/whitespace so TTS starts early on long answers.
+/// Adapts cumulative answer text to the same whole-sentence policy used by
+/// ordinary read-aloud. No punctuation or length rule is duplicated here.
 struct VoiceConversationSentenceSplitter {
-    static let softFlushCharacters = 512
-    private let terminalASCIISet: Set<Character> = [".", "!", "?", ";"]
-    private let terminalUnicodeSet: Set<Character> = ["。", "！", "？", "；", "\n"]
-    private let softBreakSet: Set<Character> = ["，", ",", "、", " ", "\u{3000}"]
-
     private var lastCumulative = ""
     private var consumedCharacters = 0
 
     var consumedCount: Int { consumedCharacters }
-    var consumedText: String { String(Array(lastCumulative).prefix(consumedCharacters)) }
+    var consumedText: String { String(lastCumulative.prefix(consumedCharacters)) }
 
-    /// Returns the new complete units, if any, for the cumulative text.
-    /// A non-prefix replacement resets the scan window (the coordinator
-    /// keeps already-emitted units; this only affects future boundaries).
     mutating func feed(cumulative: String, finalize: Bool) -> [String] {
         if cumulative.hasPrefix(lastCumulative) {
             lastCumulative = cumulative
         } else if finalize, !cumulative.isEmpty {
-            // Final authoritative text shorter/different than the stream:
-            // trust the final when it still extends or equals consumption.
             lastCumulative = cumulative
             consumedCharacters = min(consumedCharacters, cumulative.count)
         } else {
             lastCumulative = cumulative
             consumedCharacters = 0
         }
-        var units: [String] = []
-        let characters = Array(lastCumulative)
-        var index = consumedCharacters
-        var runStart = consumedCharacters
-        while index < characters.count {
-            let character = characters[index]
-            let isBoundary: Bool
-            if terminalUnicodeSet.contains(character) {
-                isBoundary = true
-            } else if terminalASCIISet.contains(character) {
-                // "3.5" must stay ONE unit: a decimal point is not a
-                // sentence boundary (speaking "3." then "5" is wrong).
-                isBoundary = !isDecimalGuard(characters, index)
-            } else {
-                isBoundary = false
-            }
-            if isBoundary {
-                let segment = String(characters[runStart...index]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !segment.isEmpty {
-                    units.append(segment)
-                    runStart = index + 1
-                    consumedCharacters = runStart
-                } else {
-                    consumedCharacters = index + 1
-                    runStart = consumedCharacters
-                }
-            } else if index - runStart >= Self.softFlushCharacters {
-                // Soft flush at the last soft break, otherwise a hard cut.
-                var cut = index
-                while cut > runStart, !softBreakSet.contains(characters[cut]) { cut -= 1 }
-                if cut == runStart { cut = index }
-                let segment = String(characters[runStart...cut]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !segment.isEmpty {
-                    units.append(segment)
-                }
-                consumedCharacters = cut + 1
-                runStart = consumedCharacters
-                index = cut
-            }
-            index += 1
-        }
-        if finalize {
-            let tail = String(characters[min(runStart, characters.count)...])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !tail.isEmpty { units.append(tail) }
-            consumedCharacters = characters.count
-        }
+        // Re-scan only the unconsumed suffix, preserving the existing
+        // cumulative-replacement behavior without re-emitting spoken units.
+        let remaining = String(lastCumulative.dropFirst(consumedCharacters))
+        var segmenter = TTSTextSegmenter(policy: .completeSentences)
+        var units = segmenter.append(remaining)
+        if finalize { units += segmenter.finish() }
+        consumedCharacters = lastCumulative.count - segmenter.pendingCharacterCount
         return units
-    }
-
-    private func isDecimalGuard(_ characters: [Character], _ index: Int) -> Bool {
-        guard characters[index] == ".", index > 0, index + 1 < characters.count else { return false }
-        return characters[index - 1].isNumber && characters[index + 1].isNumber
     }
 }
 

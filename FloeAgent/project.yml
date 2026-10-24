@@ -384,8 +384,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.51"
-        CURRENT_PROJECT_VERSION: "292"
+        MARKETING_VERSION: "1.7.52"
+        CURRENT_PROJECT_VERSION: "293"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -466,8 +466,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.51"
-        CURRENT_PROJECT_VERSION: "292"
+        MARKETING_VERSION: "1.7.52"
+        CURRENT_PROJECT_VERSION: "293"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -517,8 +517,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.51"
-        CURRENT_PROJECT_VERSION: "292"
+        MARKETING_VERSION: "1.7.52"
+        CURRENT_PROJECT_VERSION: "293"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -561,8 +561,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.51"
-        CURRENT_PROJECT_VERSION: "292"
+        MARKETING_VERSION: "1.7.52"
+        CURRENT_PROJECT_VERSION: "293"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -614,8 +614,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.51"
-        CURRENT_PROJECT_VERSION: "292"
+        MARKETING_VERSION: "1.7.52"
+        CURRENT_PROJECT_VERSION: "293"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -701,8 +701,16 @@ targets:
       - path: Tests/FloeAppTests/FinalAnswerSpeechTests.swift
       - path: Tests/FloeAppTests/LocalSpeechModelStoreTests.swift
       - path: Tests/FloeAppTests/TTSSettingsServiceTests.swift
+      - path: Tests/FloeAppTests/SpeechOutputSourceTests.swift
+      - path: Tests/FloeAppTests/SpeechSentenceInputTests.swift
+      - path: Tests/FloeAppTests/VoiceSentenceIntegrationTests.swift
+      - path: Tests/FloeProvidersTests/SpeechProviderTests.swift
+      - path: Tests/FloeSyncTests/CredentialDescriptorSyncTests.swift
+      - path: Tests/FloeSyncTests/SyncControlPreferencesTests.swift
+      - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/VoiceConversationTests.swift
+      - path: Tests/FloeAppTests/VoiceBargeInSafetyTests.swift
       - path: Tests/FloeAppTests/VoiceConversationAudioTests.swift
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
       - path: Tests/FloeProvidersTests/ChatReasoningTests.swift

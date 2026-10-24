@@ -291,8 +291,11 @@ final class VoiceEventLog {
     }
 }
 
+// Internal (not private) so `VoiceBargeInSafetyTests` drives the SAME
+// deterministic rig: one fake clock/fake stack contract for every
+// continuous-voice coordinator suite.
 @MainActor
-private final class VoiceRig {
+final class VoiceRig {
     let auth = VoiceTestAuth()
     let driving = VoiceTestDriving()
     let clock = VoiceTestClock()

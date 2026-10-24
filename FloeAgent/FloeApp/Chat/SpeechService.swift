@@ -462,7 +462,13 @@ final class SpeechService: NSObject, ObservableObject {
         task = Task { [weak self] in
             guard let self else { return }
             do {
-                var segmenter = TTSTextSegmenter()
+                // Every synthesis request downstream carries at least one
+                // COMPLETE sentence: the segmenter never flushes on commas,
+                // colons, semicolons, spaces or line breaks and never
+                // force-cuts, so fragments/partial words cannot reach a TTS
+                // model. The trailing unpunctuated answer/title/table tail is
+                // emitted exactly once by `finish()`.
+                var segmenter = TTSTextSegmenter(policy: .completeSentences)
                 var index = 0
                 let playback = UtterancePlayback()
                 for await addition in texts {
@@ -1099,6 +1105,9 @@ enum SpeechFailureCopy {
             case .unsupportedDevice: return "voice.local.error.device"
             case .voice, .language: return "voice.error.configuration"
             case .invalidAudio: return "voice.error.playback"
+            // Complete sentence beyond the model's real input/context limit:
+            // recoverable, text preserved, no partial synthesis.
+            case .sentenceTooLong: return "voice.error.too_long"
             }
         }
         if let failure = error as? LocalSpeechModelStore.Failure {

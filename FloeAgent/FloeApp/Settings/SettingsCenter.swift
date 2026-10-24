@@ -126,6 +126,13 @@ final class SettingsCenter: ObservableObject {
     @Published private(set) var savedCredentialsSyncEnabled = false
     @Published private(set) var syncControlBusy = false
     @Published private(set) var syncControlError: String?
+    /// The direction of the last saved-credentials sync request that ended
+    /// with a retryable remainder (records that failed to move, or whose
+    /// secret is not on this device). Non-nil pairs with a credentials
+    /// error message and enables the in-place retry; any other sync
+    /// operation or a clean result clears it, so the retry action can
+    /// never be offered against an unrelated error.
+    @Published private(set) var credentialSyncRetryDirection: Bool?
     @Published private(set) var settingsSaveError: String?
 
     // MARK: - 隐私与安全
@@ -486,6 +493,7 @@ final class SettingsCenter: ObservableObject {
         overallSyncEnabled = enabled
         syncControlBusy = true
         syncControlError = nil
+        credentialSyncRetryDirection = nil
         if !enabled { configSyncStatus = .paused }
 
         Task { [weak self] in
@@ -496,9 +504,19 @@ final class SettingsCenter: ObservableObject {
                     enabled,
                     providerIDs: providers.map(\.id)
                 )
+                // The explicit stop is honored unconditionally; the
+                // aggregated migration result is NOT discarded (the old API
+                // threw per record, the new one reports counts). Records
+                // that could not move back keep their copies and stay
+                // surfaced below with the same actionable retry as the
+                // dedicated saved-credentials switch.
+                var credentialOutcome: SavedCredentialSyncOutcome?
                 if !enabled, savedCredentialsSyncEnabled {
-                    try await environment.credentialVault.setSavedCredentialSyncEnabled(false)
-                    savedCredentialsSyncEnabled = false
+                    let outcome = try await environment.credentialVault
+                        .setSavedCredentialSyncEnabled(false)
+                    savedCredentialsSyncEnabled = outcome.preferenceCommitted
+                        ? false : savedCredentialsSyncEnabled
+                    credentialOutcome = outcome
                 }
                 // Keychain migration commits the production device-wide
                 // preference only after every secret was verified at its
@@ -506,12 +524,19 @@ final class SettingsCenter: ObservableObject {
                 // defaults suite used by tests/previews.
                 var preferences = SyncControlPreferences.load(from: defaults)
                 preferences.overallEnabled = enabled
+                preferences.savedCredentialsEnabled = savedCredentialsSyncEnabled
                 preferences.save(to: defaults)
                 await environment.configurationSync.setSynchronizationEnabled(
                     enabled && configurationSyncEnabled
                 )
                 if enabled && configurationSyncEnabled {
                     await synchronizeConfiguration()
+                }
+                if let credentialOutcome {
+                    applyCredentialSyncOutcome(credentialOutcome, direction: false)
+                    FloeLogger(category: .sync).info(
+                        "Overall sync disabled; saved credential migration migrated=\(credentialOutcome.migrated) missing=\(credentialOutcome.missingOnDevice) failed=\(credentialOutcome.failed)"
+                    )
                 }
             } catch {
                 overallSyncEnabled = previous
@@ -537,6 +562,7 @@ final class SettingsCenter: ObservableObject {
         configurationSyncEnabled = enabled
         syncControlBusy = true
         syncControlError = nil
+        credentialSyncRetryDirection = nil
         var preferences = SyncControlPreferences.load(from: defaults)
         preferences.configurationEnabled = enabled
         preferences.save(to: defaults)
@@ -557,31 +583,91 @@ final class SettingsCenter: ObservableObject {
 
     func setSavedCredentialsSyncEnabled(_ enabled: Bool) async {
         guard savedCredentialsSyncEnabled != enabled, !syncControlBusy else { return }
+        await runSavedCredentialsSync(enabled)
+    }
+
+    /// Re-runs the last saved-credentials request idempotently: records
+    /// already migrated are skipped, records whose secret has since become
+    /// available on this device now move, and records that hit a temporary
+    /// store error are attempted again without overwriting anything that
+    /// succeeded. A clean run clears the matching error; a still-incomplete
+    /// run keeps exactly one actionable message for this operation.
+    func retrySavedCredentialsSync() async {
+        guard !syncControlBusy, let direction = credentialSyncRetryDirection else { return }
+        await runSavedCredentialsSync(direction)
+    }
+
+    /// Maps one migration outcome onto the single actionable error channel:
+    /// concise bilingual copy with the record count (never a raw Swift or
+    /// Keychain string), the retry direction for exactly this request, and a
+    /// clean clear of a stale matching error. Shared by the dedicated switch
+    /// and the overall-sync-off cascade so neither path can silently drop
+    /// per-record failures.
+    private func applyCredentialSyncOutcome(
+        _ outcome: SavedCredentialSyncOutcome,
+        direction: Bool
+    ) {
+        if outcome.failed > 0 {
+            syncControlError = FloeL10n.plural(
+                "settings.sync.saved_credentials.error.failed",
+                count: outcome.failed
+            )
+            credentialSyncRetryDirection = direction
+        } else if outcome.missingOnDevice > 0 {
+            syncControlError = FloeL10n.plural(
+                "settings.sync.saved_credentials.error.missing",
+                count: outcome.missingOnDevice
+            )
+            credentialSyncRetryDirection = direction
+        } else {
+            syncControlError = nil
+            credentialSyncRetryDirection = nil
+        }
+    }
+
+    private func runSavedCredentialsSync(_ enabled: Bool) async {
         syncControlBusy = true
+        // The error channel follows the operation the user just performed.
         syncControlError = nil
+        credentialSyncRetryDirection = enabled
         defer { syncControlBusy = false }
         do {
-            let existingVault = try await environment.credentialStore.records(owner: .vault)
             if !enabled {
+                let existingVault = try await environment.credentialStore.records(owner: .vault)
                 for credential in existingVault where credential.synchronizable {
                     try await environment.configurationSync.unpublishCredentialDescriptor(
                         id: credential.id
                     )
                 }
             }
-            try await environment.credentialVault.setSavedCredentialSyncEnabled(enabled)
+            let outcome = try await environment.credentialVault.setSavedCredentialSyncEnabled(enabled)
+            // Publish the committed truth, not the request: a fully failed
+            // enable leaves the switch honestly off.
+            savedCredentialsSyncEnabled = outcome.preferenceCommitted ? enabled : savedCredentialsSyncEnabled
+            // Mirror the committed device-local switch into the injected
+            // defaults suite (production shares `.standard` with the vault),
+            // matching the overall-toggle mirror.
+            var mirrored = SyncControlPreferences.load(from: defaults)
+            mirrored.savedCredentialsEnabled = savedCredentialsSyncEnabled
+            mirrored.save(to: defaults)
             if enabled {
                 for credential in try await environment.credentialStore.records(owner: .vault)
                     where credential.synchronizable {
                     try await environment.configurationSync.saveCredentialDescriptor(credential)
                 }
             }
-            savedCredentialsSyncEnabled = enabled
+            applyCredentialSyncOutcome(outcome, direction: enabled)
             if overallSyncEnabled && configurationSyncEnabled {
                 await synchronizeConfiguration()
             }
+            FloeLogger(category: .sync).info(
+                "Saved credential sync finished: migrated=\(outcome.migrated) missing=\(outcome.missingOnDevice) failed=\(outcome.failed) committed=\(outcome.preferenceCommitted)"
+            )
         } catch {
+            // A store-level failure of the enumeration itself stays
+            // actionable with the retry affordance armed for this request.
             syncControlError = SecretRedactor.redact(error.localizedDescription)
+            FloeLogger(category: .sync).error("Saved credential sync operation failed")
         }
     }
 
