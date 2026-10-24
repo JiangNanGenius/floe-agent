@@ -38,10 +38,10 @@ final class RuntimeFacadeConfigStoreTests: XCTestCase {
             .appendingPathComponent("floe-rb2-store-\(UUID().uuidString).db")
         database = try DatabaseManager(path: databaseURL)
         try await database.migrate()
-        // Real durable path must reach the pinned schema 46.
+        // Real durable path must reach the pinned Android schema 47.
         let version = try await database.userVersion()
         XCTAssertEqual(version, DatabaseManager.currentSchemaVersion)
-        XCTAssertEqual(DatabaseManager.currentSchemaVersion, 46)
+        XCTAssertEqual(DatabaseManager.currentSchemaVersion, 47)
     }
 
     override func tearDown() async throws {

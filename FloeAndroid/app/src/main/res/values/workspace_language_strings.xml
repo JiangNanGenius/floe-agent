@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_language_settings_title">Language services</string>
+    <string name="workspace_language_settings_hint">Turn languages on or off and check their real readiness for code intelligence.</string>
+    <string name="workspace_language_shell">Shell</string>
+    <string name="workspace_language_python">Python</string>
+    <string name="workspace_language_javascript">JavaScript</string>
+    <string name="workspace_language_typescript">TypeScript</string>
+    <string name="workspace_language_json">JSON</string>
+    <string name="workspace_language_html">HTML</string>
+    <string name="workspace_language_css">CSS</string>
+    <string name="workspace_language_yaml">YAML</string>
+    <string name="workspace_language_state_disabled">Turned off</string>
+    <string name="workspace_language_state_unknown">Not checked yet</string>
+    <string name="workspace_language_state_starting">Starting</string>
+    <string name="workspace_language_state_ready">Ready</string>
+    <string name="workspace_language_state_missing">Not installed</string>
+    <string name="workspace_language_state_failed">Stopped with an error</string>
+    <string name="workspace_language_state_released">Not running</string>
+    <string name="workspace_language_retry">Retry</string>
+    <string name="workspace_language_missing_hint">Install this language server in the Linux environment first, then retry.</string>
+    <string name="workspace_language_open_environment">Open environment setup</string>
+    <string name="workspace_language_settings_unavailable">Saved choices are unavailable right now; changes will not persist.</string>
+</resources>

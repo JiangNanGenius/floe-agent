@@ -468,6 +468,11 @@ dependencies {
     implementation(project(":feature:integrations"))
     implementation(project(":feature:providers"))
     implementation(project(":feature:settings"))
+    // G04 service/presentation modules; owner-bound host adapters gate use.
+    implementation(project(":core:safgateway"))
+    implementation(project(":feature:ide"))
+    implementation(project(":feature:terminal"))
+    implementation(project(":feature:browser"))
     implementation(libs.androidx.core)
     implementation(libs.androidx.activity.compose)
     // Explicit pin: the dispatcher relies on CoroutineStart.UNDISPATCHED

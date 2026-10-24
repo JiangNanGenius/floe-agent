@@ -1,0 +1,8 @@
+# FLOE_OVERLAY_HASHES.sha256 — Floe-authored bytes under Vendor/Git (none of these are part of the
+# upstream 950-file VENDOR_FILE_HASHES.sha256 manifest; upstream trees stay byte-identical).
+# Lane job-f74b2a485e9a4434 added floe-shim/*; the floe-config hunk predates it (job-6cb7731a07774f01).
+5f4e3bd126802875c02c604f7a9fb3009ba807fe0eaf889fc09c5ab8a8f265de  mbedtls/floe-config/floe_android_mbedtls_config.h
+a1f92d00c988b2a70e00df25113cce9d90c1266b67848538867358f48880d31e  floe-shim/include/floe_git_trust.h
+8706d00f3bd0ae9e67f6efca6631a50896cf816fc524cfcc0664187fc5b013b9  floe-shim/floe_git_trust.c
+0586fe9314f452d5485b0c5c40995959cde74bcaf3f6d39e6586b17a7ccc13c8  libgit2/src/util/hash/floe_collisiondetect.c
+30e866c974809a299f31798893eedcb89f5c503398b677b0236f3ff18def55e6  libgit2/src/util/hash/floe_builtin.c

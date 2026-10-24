@@ -256,11 +256,11 @@ class SettingsDomainCheckerTests(unittest.TestCase):
     def test_full_checker_passes_on_candidate_overlay(self):
         failures, summary = CHECKS.validate_all(ROOT)
         self.assertEqual(failures, [])
-        self.assertEqual(summary["entries"], 87)
+        self.assertEqual(summary["entries"], 90)
         self.assertEqual(summary["legacyEntries"], 57)
         self.assertEqual(summary["settingsAdditiveEntries"], 27)
         self.assertEqual(summary["goalCoreAdditiveEntries"], 3)
-        self.assertEqual(summary["additiveEntries"], 30)
+        self.assertEqual(summary["additiveEntries"], 33)
         self.assertEqual(summary["operations"], 183)
         self.assertEqual(summary["g02Operations"], 41)
         self.assertEqual(summary["fixtures"], 33)
@@ -389,7 +389,7 @@ class GoalCoreDeltaTests(unittest.TestCase):
     # -- preservation: frozen history survives the append ----------------
 
     def test_frozen_legacy_and_settings_tables_survive_the_append(self):
-        rows = live_golden_rows()
+        rows = live_golden_rows()[:G.EXPECTED_MATRIX_ENTRIES]
         self.assertEqual(len(rows), 87)
         # The OLD independent digests still hold verbatim on their own
         # sections — never recomputed to pass.
@@ -429,10 +429,10 @@ class GoalCoreDeltaTests(unittest.TestCase):
     # -- the approved three tuples are exactly present -------------------
 
     def test_goalcore_append_is_the_exact_approved_three_tuples(self):
-        self.assertEqual(G.validate_goalcore_append(live_golden_rows()), [])
+        self.assertEqual(G.validate_goalcore_append(live_golden_rows()[:G.EXPECTED_MATRIX_ENTRIES]), [])
 
     def test_goalcore_tail_tampering_refused(self):
-        rows = live_golden_rows()
+        rows = live_golden_rows()[:G.EXPECTED_MATRIX_ENTRIES]
         tamperings = [
             (84, "revisionRequired", False),
             (85, "command", "child.create"),
@@ -647,16 +647,16 @@ class GoalCoreDeltaTests(unittest.TestCase):
         self.assertTrue(CHECKS.FAILURES,
                         "Settings history version advance was accepted")
 
-    def test_host_and_android_matrix_test_pins_track_87(self):
+    def test_host_and_android_matrix_test_pins_track_90(self):
         host = (ROOT / "FloeAndroid/shared/Tests/FloeAndroidCoreTests/"
                 "BridgeEnvelopeV3Tests.swift").read_text(encoding="utf-8")
-        self.assertIn("XCTAssertEqual(goldenPairs.count, 87)", host)
-        self.assertIn("XCTAssertEqual(Set(goldenKeys).count, 87)", host)
+        self.assertIn("XCTAssertEqual(goldenPairs.count, 90)", host)
+        self.assertIn("XCTAssertEqual(Set(goldenKeys).count, 90)", host)
         instrumented = (ROOT / "FloeAndroid/core/swiftbridge/src/androidTest/"
                         "kotlin/com/floe/android/bridge/"
                         "BridgeEnvelopeV3InstrumentedTest.kt"
                         ).read_text(encoding="utf-8")
-        self.assertIn("assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)",
+        self.assertIn("assertEquals(90, BridgeV3CommandMatrix.ENTRIES.size)",
                       instrumented)
         self.assertNotIn("assertEquals(84, BridgeV3CommandMatrix.ENTRIES.size)",
                          instrumented)
@@ -676,6 +676,29 @@ class GoalCoreDeltaTests(unittest.TestCase):
                 if op["id"] == oid:
                     return op
         raise AssertionError("operation not found: %s" % oid)
+
+
+class WorkspaceAppendTests(unittest.TestCase):
+    def test_exact_tail_and_frozen_prefix_pass(self):
+        self.assertEqual(CHECKS.W.validate_workspace_append(live_golden_rows()), [])
+        self.assertEqual(G.validate_goalcore_append(live_golden_rows()[:87]), [])
+
+    def test_old_prefix_change_is_rejected(self):
+        rows = copy.deepcopy(live_golden_rows())
+        rows[86]["revisionRequired"] = True
+        self.assertTrue(CHECKS.W.validate_workspace_append(rows))
+
+    def test_workspace_authority_widening_is_rejected(self):
+        for field, value in [("scope", "applicationConfiguration"), ("allowsCreateIntent", True),
+                             ("revisionRequired", True), ("configurationScope", "memory")]:
+            rows = copy.deepcopy(live_golden_rows())
+            rows[87][field] = value
+            self.assertTrue(CHECKS.W.validate_workspace_append(rows), field)
+
+    def test_missing_duplicate_and_extra_workspace_tuples_are_rejected(self):
+        rows = live_golden_rows()
+        for bad in [rows[:-1], rows + [rows[-1]], rows[:89] + [rows[87]]]:
+            self.assertTrue(CHECKS.W.validate_workspace_append(bad))
 
 
 if __name__ == "__main__":

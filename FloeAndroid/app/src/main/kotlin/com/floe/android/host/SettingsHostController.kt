@@ -3639,6 +3639,9 @@ class SettingsHostController internal constructor(
                             if (host.nativeRootEpoch() == preview.sourceNativeEpoch) {
                                 if (preview.action == PrivacyClearAction.HISTORY) {
                                     host.conversations.refreshAfterPrivacyHistoryClear()
+                                    host.scope.launch(host.ioDispatcher) {
+                                        host.workspaceEditors.reconcileAfterHistoryClear(preview.sourceNativeEpoch)
+                                    }
                                 } else {
                                     host.conversations.refreshModels()
                                     host.providers.refreshProviders()

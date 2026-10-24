@@ -1,0 +1,11 @@
+{
+ "name": "bzip2/libbzip2",
+ "version": "1.0.8",
+ "officialURL": "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz",
+ "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269",
+ "license": "bzip2-1.0.8 BSD-style (Julian Seward; LICENSE retained)",
+ "vendoredScope": "7 library objects + bzlib.h/bzlib_private.h + LICENSE/README/CHANGES; CLI/test files not vendored",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

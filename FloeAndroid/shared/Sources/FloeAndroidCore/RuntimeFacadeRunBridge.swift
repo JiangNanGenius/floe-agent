@@ -252,6 +252,7 @@ extension FacadeRunDomain {
     /// nothing detaches early.
     func beginGenerationRetirement() async {
         retirementFenced = true
+        cancelG04WorkspaceOperations()
         retiredRunSet.removeAll()
         retiredRuns.removeAll()
         for ownership in owners.values where ownership.phase == .handedOff

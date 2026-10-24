@@ -343,7 +343,27 @@ public enum AndroidRuntimeBootstrap {
     /// another instance's owner.
     public static func shutdown(expectedEpoch: UInt64,
                                 ownerToken: String) -> ShutdownOutcome {
-        return withStateLock { () -> ShutdownOutcome in
+        // Reject foreign controls before they can create/roll back a gate.
+        let admissionFailure: RuntimeFacadeCode? = withStateLock {
+            guard let live = generation else { return .notInstalled }
+            guard live.epoch == expectedEpoch, live.identity.token == ownerToken else { return .ownerMismatch }
+            return nil
+        }
+        if let admissionFailure { return .rejected(admissionFailure) }
+        // G04 retirement-preservation gate (Main 2026-10-24): attach the ONE
+        // real owned-work lease BEFORE this lock flips the generation to
+        // `.draining` (registry attach re-enters this lock, so it MUST run
+        // outside; admission is still legal right up to the flip inside). The
+        // lease makes the ORIGINAL drain predicate honestly unable to report
+        // a clean drain while workspace drafts are unproven; the
+        // pre-drain driver in `runShutdownJob` exact-releases it only after
+        // verified durable preservation settles (or the existing
+        // failedDrainPending/watch-retry keeps the root owned). A rejected
+        // adoption rolls back ONLY a lease THIS call just created.
+        let gate = G02RuntimeComposition.shared.preparesRetirementPreservation(
+            epoch: expectedEpoch)
+        guard gate != .refused else { return .rejected(.receiptSaturated) }
+        let outcome = withStateLock { () -> ShutdownOutcome in
             guard var live = generation else {
                 return .rejected(.notInstalled)
             }
@@ -403,6 +423,7 @@ public enum AndroidRuntimeBootstrap {
                     generation = current
                 }
                 phase = .draining
+                G04WorkspaceRetirementGate.shared.markAdopted(epoch: expectedEpoch)
                 return .accepted(receipt: receipt)
             case .duplicate(let existing):
                 return .idempotent(receipt: existing)
@@ -411,6 +432,10 @@ public enum AndroidRuntimeBootstrap {
                 return .rejected(code)
             }
         }
+        if case .rejected = outcome, gate == .attached {
+            _ = G04WorkspaceRetirementGate.shared.rollbackUnadopted(epoch: expectedEpoch)
+        }
+        return outcome
     }
 
     /// Retry control for a draining/failed generation. Called while holding
@@ -438,6 +463,9 @@ public enum AndroidRuntimeBootstrap {
             receipt: receipt, envelope: Data())
         switch live.mailbox.submitControl(job) {
         case .queued:
+            // The still-attached G04 gate lease re-arms for exactly one new
+            // driver pass on this retry control (claim/release stay real).
+            G04WorkspaceRetirementGate.shared.rearmForRetry(epoch: live.epoch)
             live.retirementRetryCount = retryIndex
             live.shutdownReceipt = receipt
             live.shutdownCorrelation = correlation
@@ -552,6 +580,16 @@ public enum AndroidRuntimeBootstrap {
         // failed attach leaves only the three frozen privacy keys
         // unregistered (fail-closed), never a fake ready state.
         G02PrivacyDomainRegistration.registerIfNeeded()
+        // G04 workspace file/editor domain package (workspace-facade
+        // successor, Main decisions D12/D14): the REAL optional-domain
+        // extension is registered in the same idle window and attaches
+        // inside the owned install over MAIN's actual document/file
+        // authority. It never gates the ordinary base; a failed attach
+        // leaves only the three closed workspace keys unregistered (the
+        // frozen fail-closed `runtimeUnavailable` refusal), and
+        // `workspaceDomain` readiness stays honestly blocked.
+        G04WorkspaceDomainRegistration.registerIfNeeded()
+        G04BrowserDomainRegistration.registerIfNeeded()
         // G02: construct the real domain service graph over THIS
         // generation's owned cluster and bind every G02 command handler
         // before the bootstrap terminal settles. Failure leaves the
@@ -870,6 +908,13 @@ public enum AndroidRuntimeBootstrap {
         // Redundant safety only: the fence was applied at the accepted
         // boundary (M3/R4).
         gen.mailbox.beginDraining()
+        // G04 pre-drain retirement preservation (command admission is fenced
+        // above; the gate lease attached at adoption still owns the drain):
+        // settle dirty workspace drafts into VERIFIED durable copies BEFORE
+        // the first drain predicate. Unproven bytes keep the token attached,
+        // so this drain legitimately times out into failedDrainPending and
+        // the watch retries the SAME pass — never a fake completion.
+        await G02RuntimeComposition.shared.runRetirementPreservationIO(epoch: gen.epoch)
         let drained = await waitForLifecycleDrain(
             mailbox: gen.mailbox, epoch: gen.epoch, correlation: correlation,
             timeoutMillis: shutdownDrainTimeoutMillis)
@@ -936,6 +981,14 @@ public enum AndroidRuntimeBootstrap {
     static func runPublicShutdown(job: RuntimeCommandEnvelopeJob,
                                   expectedEpoch: UInt64) async
         -> RuntimeCommandResult {
+        // G04 gate: same adoption-time attach rule as `shutdown(...)` —
+        // outside the state lock, before the flip; rolled back on refusal.
+        guard withStateLock({ generation?.epoch == expectedEpoch && generation?.retiring == false && phase == .starting }) else {
+            return .rejected(.alreadyDraining)
+        }
+        let gate = G02RuntimeComposition.shared.preparesRetirementPreservation(
+            epoch: expectedEpoch)
+        guard gate != .refused else { return .rejected(.receiptSaturated) }
         var adoptionFailure: RuntimeFacadeCode? = nil
         let adopted: Generation? = withStateLock {
             guard var live = generation, live.epoch == expectedEpoch,
@@ -956,11 +1009,17 @@ public enum AndroidRuntimeBootstrap {
             live.mailbox.beginDraining()
             generation = live
             phase = .draining
+            G04WorkspaceRetirementGate.shared.markAdopted(epoch: expectedEpoch)
             return live
         }
         guard let gen = adopted else {
+            if gate == .attached {
+                _ = G04WorkspaceRetirementGate.shared.rollbackUnadopted(epoch: expectedEpoch)
+            }
             return .rejected(adoptionFailure ?? .notInstalled)
         }
+        // G04 pre-drain retirement preservation pass (see runShutdownJob).
+        await G02RuntimeComposition.shared.runRetirementPreservationIO(epoch: gen.epoch)
         let drained = await waitForLifecycleDrain(
             mailbox: gen.mailbox, epoch: gen.epoch,
             correlation: job.correlationID,

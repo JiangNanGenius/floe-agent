@@ -4234,6 +4234,12 @@ class ConversationHostController internal constructor(
                                     ),
                                 ),
                             )
+                             val deletedOwner = (outcome.value as? JsonObject)?.string("conversationID")
+                             if (dispatchEpoch != null && deletedOwner.equals(conversationId, ignoreCase = true)) {
+                                 host.scope.launch(host.ioDispatcher) {
+                                     host.workspaceEditors.discardDeletedTask(conversationId, dispatchEpoch)
+                                 }
+                             }
                              releaseHolder(conversationId)
                          }
                          // A fresh single-row success replaces the last real

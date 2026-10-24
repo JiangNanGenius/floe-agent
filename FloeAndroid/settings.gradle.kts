@@ -26,3 +26,13 @@ include(":feature:conversation")
 include(":feature:integrations")
 // G02 model-role presentation policy; effects remain in the App host.
 include(":feature:settings")
+
+// G04 platform file transport and native-editor presentation. Real runtime
+// availability is reported only after the matching native domain binds.
+include(":core:safgateway", ":feature:ide")
+
+// G04 embedded terminal over the existing Linux session authority.
+include(":feature:terminal")
+
+// G04 controlled browser and static preview platform surfaces.
+include(":feature:browser")

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_recovery_title">恢复编辑</string>
+    <string name="workspace_recovery_caption">查看尚未确认的编辑，并将完整副本保存到此工作区。</string>
+    <string name="workspace_recovery_empty">没有需要恢复的未确认编辑。</string>
+    <string name="workspace_recovery_preview">预览</string>
+    <string name="workspace_recovery_copy">保存副本到此处</string>
+    <string name="workspace_recovery_discard">丢弃</string>
+    <string name="workspace_recovery_open">打开恢复副本</string>
+    <string name="workspace_recovery_saved">完整恢复副本已保存并通过校验。</string>
+    <string name="workspace_recovery_failed">未能确认恢复副本保存成功，尚未确认的编辑仍然保留。</string>
+    <string name="workspace_recovery_changed">这份编辑已改变或仍在处理中，请刷新后重试。</string>
+    <string name="workspace_recovery_composing">请先结束当前文字输入，再保存恢复副本。</string>
+    <string name="workspace_recovery_preview_partial">仅预览前 4,096 个字符；保存副本会保留完整文本。</string>
+    <string name="workspace_recovery_discard_confirmation">丢弃这份尚未确认的编辑？</string>
+</resources>

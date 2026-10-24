@@ -1,0 +1,8 @@
+/* SwiftPM module map (lane overlay addition, documented in RECIPE.md):
+ * single-header module over lzma.h so clang never processes the lzma/*.h
+ * sub-headers standalone (they require lzma.h context).
+ */
+module CLzma [system] {
+    header "lzma.h"
+    export *
+}

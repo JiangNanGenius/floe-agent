@@ -68,6 +68,7 @@ fun FloeInspectorPane(
 ) {
     BackHandler(onBack = onDismiss)
     val colors = Floe.colors
+    var environmentVisible by remember(route.conversationId) { mutableStateOf(false) }
     Column(modifier.fillMaxSize().background(colors.readingSurface)) {
         Box(
             Modifier
@@ -90,12 +91,29 @@ fun FloeInspectorPane(
                 modifier = Modifier.align(Alignment.CenterEnd),
             )
         }
+        com.floe.android.design.FloePageSheet(
+            visible = environmentVisible, onDismiss = { environmentVisible = false },
+        ) {
+            Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
+                com.floe.android.host.linux.LocalRuntimeSettingsCard()
+            }
+        }
         FloeDivider()
         val conversations = runtimeHost?.conversations
         when (route.content) {
             InspectorContent.PROGRESS -> TaskProgressPane(conversations, route.conversationId)
             InspectorContent.CHILD_AGENTS -> ChildAgentsPane(conversations, route.conversationId)
             InspectorContent.PERMISSIONS -> TaskPermissionsPane(conversations, route.conversationId)
+            InspectorContent.WORKSPACE_FILES -> WorkspaceFilesPane(runtimeHost, route.conversationId, onDismiss)
+            InspectorContent.CHANGES -> WorkspaceGitPane(runtimeHost, route.conversationId)
+            InspectorContent.BROWSER -> {
+                val taskID = route.conversationId
+                if (runtimeHost != null && taskID != null)
+                    WorkspaceBrowserPanelEmbedded(taskID, runtimeHost, onDismiss)
+                else FloeUnavailableView(FloeIcons.Terminal, inspectorTitle(route.content), stringResource(R.string.root_detail_absent))
+            }
+            InspectorContent.TERMINAL -> route.conversationId?.let { WorkspaceTerminalPane(runtimeHost?.workspaceTerminal, it, onOpenEnvironment = { environmentVisible = true }) }
+                ?: FloeUnavailableView(FloeIcons.Terminal, inspectorTitle(route.content), stringResource(R.string.root_detail_absent))
             else -> FloeUnavailableView(
                 icon = FloeIcons.Terminal,
                 title = inspectorTitle(route.content),

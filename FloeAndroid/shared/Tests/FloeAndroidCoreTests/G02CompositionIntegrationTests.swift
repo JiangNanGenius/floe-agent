@@ -278,9 +278,21 @@ final class G02CompositionIntegrationTests: XCTestCase {
                             "privacy key \(key) must be advertised")
             XCTAssertTrue(bound.contains(key))
         }
+        for key in G02Readiness.expectedHandlerKeys(for: .workspaceDomain) {
+            XCTAssertTrue(installed.registry.processor(for: key) != nil,
+                          "workspace key \(key) must be bound by the real extension")
+            XCTAssertNotNil(RuntimeCommandBinder.shared.handler(for: key),
+                            "workspace key \(key) must be advertised")
+            XCTAssertTrue(bound.contains(key))
+        }
+        // G04 workspace (D12/D14): a REAL integrated optional extension.
+        // Its three closed keys join the extension-bound set; the ordinary
+        // loop below still refuses to double-count them as ordinary-domain
+        // handlers, exactly like the temporary/privacy precedent.
         let optionalKeys =
             Set(G02Readiness.expectedHandlerKeys(for: .temporaryDomain))
                 .union(G02Readiness.expectedHandlerKeys(for: .settingsPrivacy))
+                .union(G02Readiness.expectedHandlerKeys(for: .workspaceDomain))
         for rule in BridgeV3.commandRules where !rule.isRunEventPoll {
             let key = BridgeV3.handlerKey(scope: rule.scope, command: rule.command)
             if optionalKeys.contains(key) { continue }
@@ -482,10 +494,11 @@ final class G02CompositionIntegrationTests: XCTestCase {
                 XCTAssertEqual(entry.state, .blocked)
                 XCTAssertEqual(entry.missingDependencies,
                                ["transportQualified", "tlsQualified"])
-            case .temporaryDomain, .settingsPrivacy:
-                // Both optional extensions are integrated this round:
+            case .temporaryDomain, .settingsPrivacy, .workspaceDomain:
+                // All three optional extensions are integrated this round:
                 // ready ONLY via the actual bound frozen family (verified
-                // below by the bound-key intersection invariant).
+                // below by the bound-key intersection invariant). The G04
+                // workspace family is the accepted D12/D14 additive ledger.
                 XCTAssertEqual(entry.state, .ready)
             case .providerConfigurationDomain, .conversationDomain, .runDomain,
                  .skillsMcpDiscovery, .hostAttachmentStaging,

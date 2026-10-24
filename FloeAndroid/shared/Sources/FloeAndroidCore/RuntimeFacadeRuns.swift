@@ -566,6 +566,12 @@ public actor FacadeRunDomain {
     /// the REAL handler returns (Main P8 correction). Kind is the registry's
     /// `.conversation`; the per-conversation delete drain includes these.
     internal var feedLeases: [UUID: [String: RuntimeOwnedWorkToken]] = [:]
+    // G04 non-run file/editor operations share the ORIGINAL conversation
+    // fence and owned-work registry, while retaining their own cancellation.
+    internal var workspaceOperationLeases: [UUID: [String: G04WorkspaceOwnedOperation]] = [:]
+    // Snapshot only at a deletion fence, never one history entry per read
+    // chunk/keystroke. Cleared at exact fence settlement.
+    internal var workspaceDrainEvidence: [UUID: [RuntimeOwnedWorkToken]] = [:]
     internal var feedTerminalsDone: Set<UUID> = []
     /// Run ids THIS domain retired in the current generation (bounded
     /// bookkeeping so a late cancel for a just-retired run answers
@@ -642,6 +648,9 @@ public actor FacadeRunDomain {
         guardCounter &+= 1
         deleteGuards[conversationID] = DeleteGuardState(
             fence: fence, generation: guardCounter, authorityToken: authorityToken)
+        workspaceDrainEvidence[conversationID] = workspaceOperationLeases[conversationID]?
+            .values.map(\.token) ?? []
+        cancelG04WorkspaceOperations(conversationID: conversationID)
         launchFence.invalidate(scope: conversationID)
         return fence
     }
@@ -667,6 +676,7 @@ public actor FacadeRunDomain {
             return .refusedForeignToken
         }
         deleteGuards[fence.conversationID] = nil
+        workspaceDrainEvidence[fence.conversationID] = nil
         RuntimeOwnedWorkRegistry.shared.detach(state.authorityToken)
         if committed {
             // Post-DB-commit cleanup for the removed conversation: any
@@ -729,6 +739,7 @@ public actor FacadeRunDomain {
         let token = GlobalAdmissionFenceToken(epoch: epoch,
                                               generation: globalFenceCounter)
         globalFence = token
+        cancelG04WorkspaceOperations()
         return token
     }
 
@@ -3532,9 +3543,12 @@ public actor FacadeRunDomain {
     /// of exact `.conversation` tokens (separate map, same drain gate) — a
     /// conversation delete therefore waits an in-flight review/continuation
     /// to its REAL completion too, never a detach-on-cancel false quiescence.
+    /// G04 also holds independent conversation IO leases under this existing
+    /// drain gate; they do not increment P8 delivery statistics.
     func feedLeaseCount(conversationID: UUID) -> Int {
         (feedLeases[conversationID]?.count ?? 0)
             + (goalReviewLeases[conversationID]?.count ?? 0)
+            + (workspaceOperationLeases[conversationID]?.count ?? 0)
     }
 
     /// Feed leases that THIS drain watched through to real handler return.
@@ -4107,6 +4121,7 @@ public actor RunDomainDeletionLifecycle: ConversationDeletionLifecycle {
         }
         let childReconciled = owned.reduce(0) { $0 + $1.pendingChildRunIDs.count }
         var drained = owned.reduce(0) { $0 + $1.ownedTokens.count }
+        drained += await domain.g04WorkspaceDrainEvidenceCount(conversationID: fence.conversationID)
         let launchesAwaited = owned.count
         // Await REAL settlement only: exact tokens for THIS conversation
         // must report isAttached false, and pending launches must reach
@@ -4204,6 +4219,7 @@ extension FacadeRunDomain {
         var seen = Set<String>()
         var out: [RuntimeOwnedWorkToken] = []
         for token in (drainEvidence[conversationID] ?? []) + (feedEvidence[conversationID] ?? [])
+                + (workspaceDrainEvidence[conversationID] ?? [])
                 + owners(conversationID: conversationID).flatMap(\.ownedTokens.values) {
             if seen.insert(token.receipt).inserted { out.append(token) }
         }

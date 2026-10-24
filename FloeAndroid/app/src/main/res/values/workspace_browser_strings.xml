@@ -1,0 +1,9 @@
+<resources>
+    <string name="browser_preview_starting">Starting preview…</string>
+    <string name="browser_preview_failed">Preview could not start. Your saved file is unchanged; you can try again.</string>
+    <string name="browser_task_starting">The task is not ready yet. Try again shortly.</string>
+    <string name="browser_task_workspace_missing">Open the task workspace, then try again.</string>
+    <string name="browser_task_missing">This task is no longer available.</string>
+    <string name="browser_task_unavailable">The browser is unavailable right now.</string>
+    <string name="browser_preview_waiting">Preview is taking longer. Check the browser before trying again.</string>
+</resources>

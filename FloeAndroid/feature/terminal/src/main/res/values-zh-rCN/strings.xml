@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="terminal_running">终端运行中</string>
+    <string name="terminal_starting">正在启动终端…</string>
+    <string name="terminal_waiting">等待输出…</string>
+    <string name="terminal_exited">进程已退出，代码 %1$d</string>
+    <string name="terminal_stopped">进程已停止（%1$s）</string>
+    <string name="terminal_closed">终端已关闭</string>
+    <string name="terminal_fault">终端不可用：%1$s</string>
+    <string name="terminal_engine_unqualified">Linux 运行环境尚未就绪。请打开运行环境设置，完成安装后再试。</string>
+    <string name="terminal_not_persistent_hint">已停止的终端不会静默恢复；请使用“重置”开启新会话。</string>
+    <string name="terminal_copy">复制</string>
+    <string name="terminal_paste">粘贴</string>
+    <string name="terminal_interrupt">Ctrl-C</string>
+    <string name="terminal_eof">Ctrl-D</string>
+    <string name="terminal_keyboard">键盘</string>
+    <string name="terminal_reset">重置会话</string>
+    <string name="terminal_close">关闭会话</string>
+    <string name="terminal_font_size">字号</string>
+    <string name="terminal_output_lost">视图落后时部分输出被丢弃（%1$d 字节）。</string>
+    <string name="terminal_clear">清屏</string>
+    <string name="terminal_settings">终端设置</string>
+    <string name="terminal_back">返回</string>
+</resources>

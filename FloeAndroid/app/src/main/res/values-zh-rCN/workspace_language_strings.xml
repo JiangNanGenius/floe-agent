@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_language_settings_title">语言服务</string>
+    <string name="workspace_language_settings_hint">开关各语言，并查看代码智能的实际就绪状态。</string>
+    <string name="workspace_language_shell">Shell</string>
+    <string name="workspace_language_python">Python</string>
+    <string name="workspace_language_javascript">JavaScript</string>
+    <string name="workspace_language_typescript">TypeScript</string>
+    <string name="workspace_language_json">JSON</string>
+    <string name="workspace_language_html">HTML</string>
+    <string name="workspace_language_css">CSS</string>
+    <string name="workspace_language_yaml">YAML</string>
+    <string name="workspace_language_state_disabled">已关闭</string>
+    <string name="workspace_language_state_unknown">尚未验证</string>
+    <string name="workspace_language_state_starting">正在启动</string>
+    <string name="workspace_language_state_ready">已就绪</string>
+    <string name="workspace_language_state_missing">未安装</string>
+    <string name="workspace_language_state_failed">启动出错</string>
+    <string name="workspace_language_state_released">未在运行</string>
+    <string name="workspace_language_retry">重试</string>
+    <string name="workspace_language_missing_hint">请先在 Linux 环境中安装对应语言服务，然后重试。</string>
+    <string name="workspace_language_open_environment">打开环境设置</string>
+    <string name="workspace_language_settings_unavailable">暂时无法读取已保存的选择；更改不会持久保存。</string>
+</resources>

@@ -1,0 +1,12 @@
+{
+ "name": "SWCompression",
+ "version": "4.9.1",
+ "tagURL": "https://github.com/tsolomko/SWCompression/archive/refs/tags/4.9.1.tar.gz",
+ "sha256": "4ac7268a8198e58cf4e2f70c9690292475ea1c9234d1a9ad26309bac955a608a",
+ "license": "MIT",
+ "publicCommit": "resolve tag 4.9.1 \u2192 commit via `git ls-remote https://github.com/tsolomko/SWCompression.git refs/tags/4.9.1^{} at integration",
+ "vendoredScope": "Sources/{Common,7-Zip,BZip2,Deflate,GZip,LZ4,LZMA,LZMA2,TAR,XZ,ZIP,Zlib} unmodified; swcomp CLI + Tests + xcodeproj excluded; PrivacyInfo.xcprivacy excluded (Apple distribution manifest, unused by the mirror)",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

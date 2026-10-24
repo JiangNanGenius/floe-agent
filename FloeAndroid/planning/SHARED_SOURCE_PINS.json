@@ -40,5 +40,117 @@
       "sourcePath": "FloeAgent/Sources/FloeSkills/ContentPackageCodec.swift",
       "sha256": "eee8e17bbbd3ff28f431df558c2329f9edcd37228ff366222be0278e15fc676e"
     }
+  ],
+  "g04VendoredDependencies": [
+    {
+      "name": "BitByteData",
+      "version": "2.1.0",
+      "sourcePin": "shared/Vendor/Archive/BitByteData-2.1.0/SOURCE-PIN.json",
+      "sourcePinSHA256": "4f54f6187ce71020604b5ff90d28736c0405ce1e52929f1412db4051d64e30f5",
+      "license": "MIT",
+      "licenseSource": "shared/Vendor/Archive/BitByteData-2.1.0/LICENSE",
+      "licenseText": "licenses/native-g04/BitByteData-2.1.0-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/BitByteData-2.1.0-LICENSE.txt",
+      "licenseTextSHA256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+    },
+    {
+      "name": "SWCompression",
+      "version": "4.9.1",
+      "sourcePin": "shared/Vendor/Archive/SWCompression-4.9.1/SOURCE-PIN.json",
+      "sourcePinSHA256": "b9d4a3e6829db300b39902046b2204e3be3000340368ca4503f17cd2ca97493b",
+      "license": "MIT",
+      "licenseSource": "shared/Vendor/Archive/SWCompression-4.9.1/LICENSE",
+      "licenseText": "licenses/native-g04/SWCompression-4.9.1-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/SWCompression-4.9.1-LICENSE.txt",
+      "licenseTextSHA256": "0d61bd2297aff98d06ba1d4ca0b373e8594b75f602412cb6bb7df1f401754084"
+    },
+    {
+      "name": "bzip2/libbzip2",
+      "version": "1.0.8",
+      "sourcePin": "shared/Vendor/Archive/bzip2-1.0.8/SOURCE-PIN.json",
+      "sourcePinSHA256": "e59bcba809bf9520235e82ed4048280cd94b8f52ca070634d84445a9d26db862",
+      "license": "bzip2-1.0.8 BSD-style (Julian Seward; LICENSE retained)",
+      "licenseSource": "shared/Vendor/Archive/bzip2-1.0.8/LICENSE",
+      "licenseText": "licenses/native-g04/bzip2/libbzip2-1.0.8-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/libbzip2-1.0.8-LICENSE.txt",
+      "licenseTextSHA256": "c6dbbf828498be844a89eaa3b84adbab3199e342eb5cb2ed2f0d4ba7ec0f38a3"
+    },
+    {
+      "name": "libarchive",
+      "version": "3.8.9",
+      "sourcePin": "shared/Vendor/Archive/libarchive-3.8.9/floe/SOURCE-PIN.json",
+      "sourcePinSHA256": "47de409d388f8854517d8e612e9666bccbb2c42b4e27538144b6ecad0be6b849",
+      "license": "BSD-2-clause (COPYING retained)",
+      "licenseSource": "shared/Vendor/Archive/libarchive-3.8.9/COPYING",
+      "licenseText": "licenses/native-g04/libarchive-3.8.9-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/libarchive-3.8.9-LICENSE.txt",
+      "licenseTextSHA256": "30e556b3959e3985d66efefec5eaac51d4995053caa1d3cffe6eb916f146f229"
+    },
+    {
+      "name": "liblzma",
+      "version": "5.8.1",
+      "sourcePin": "shared/Vendor/Archive/xz-5.8.1/floe/SOURCE-PIN.json",
+      "sourcePinSHA256": "0cbbb8d27cc5b91cce554626d834c254a9d1df7b865bcb724608cbc848a2dc5a",
+      "license": "0BSD (COPYING.0BSD retained; liblzma + src/common tuklib headers)",
+      "licenseSource": "shared/Vendor/Archive/xz-5.8.1/COPYING.0BSD",
+      "licenseText": "licenses/native-g04/liblzma-5.8.1-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/liblzma-5.8.1-LICENSE.txt",
+      "licenseTextSHA256": "0b01625d853911cd0e2e088dcfb743261034a091bb379246cb25a14cc4c74bf1"
+    },
+    {
+      "name": "SMBClient",
+      "version": "0.2.1",
+      "sourcePin": "shared/Vendor/Network/SMBClient-0.2.1/SOURCE-PIN.json",
+      "sourcePinSHA256": "ee408a711e2c799829c4dddf204915c7b46d85961f9973b85965653cd7f5000a",
+      "license": "MIT",
+      "licenseSource": "shared/Vendor/Network/SMBClient-0.2.1/LICENSE",
+      "licenseText": "licenses/native-g04/SMBClient-0.2.1-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/SMBClient-0.2.1-LICENSE.txt",
+      "licenseTextSHA256": "92b9785672f66ae9c75550d328a00ff06ee6728f7d1b8874355b5dbeaf23c753"
+    },
+    {
+      "name": "libgit2",
+      "version": "1.9.2",
+      "sourcePin": "shared/Vendor/Git/PINS.json",
+      "sourcePinSHA256": "2927b8d19a70352253e486e1efd5268704754c56d695d96f1ebfdd59bea70a06",
+      "license": "GPL-2.0-only WITH libgit2 linking exception",
+      "licenseSource": "shared/Vendor/Git/libgit2/COPYING",
+      "licenseText": "licenses/native-g04/libgit2-1.9.2-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/libgit2-1.9.2-LICENSE.txt",
+      "licenseTextSHA256": "330f7f86a0f7fa88f7763b6ef0aba06dec33bf5b1ea8c304b76e883d73471f95"
+    },
+    {
+      "name": "swiftgitx",
+      "version": "0.4.0",
+      "sourcePin": "shared/Vendor/Git/PINS.json",
+      "sourcePinSHA256": "2927b8d19a70352253e486e1efd5268704754c56d695d96f1ebfdd59bea70a06",
+      "license": "MIT",
+      "licenseSource": "shared/Vendor/Git/swiftgitx/LICENSE",
+      "licenseText": "licenses/native-g04/swiftgitx-0.4.0-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/swiftgitx-0.4.0-LICENSE.txt",
+      "licenseTextSHA256": "9de5d708c401c993b7a82fbbc4ad5df67958e3c53ac98ed3872026d6a4277f79"
+    },
+    {
+      "name": "mbedtls",
+      "version": "3.6.7",
+      "sourcePin": "shared/Vendor/Git/PINS.json",
+      "sourcePinSHA256": "2927b8d19a70352253e486e1efd5268704754c56d695d96f1ebfdd59bea70a06",
+      "license": "Apache-2.0 (chosen from upstream dual license)",
+      "licenseSource": "shared/Vendor/Git/mbedtls/LICENSE",
+      "licenseText": "licenses/native-g04/mbedtls-3.6.7-LICENSE.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/native-g04/mbedtls-3.6.7-LICENSE.txt",
+      "licenseTextSHA256": "9b405ef4c89342f5eae1dd828882f931747f71001cfba7d114801039b52ad09b"
+    },
+    {
+      "name": "Termux terminal-emulator and selected renderer",
+      "version": "v0.118.3",
+      "commit": "5b657c6adf4304e5198951ce815fe0205dcac29c",
+      "scope": "11 exact emulator source files, patched TerminalSessionClient and header-only patched TerminalRenderer; no process/session/service/JNI runtime",
+      "license": "Apache-2.0 for selected terminal libraries; repository exception and upstream lineage full texts retained",
+      "sourcePin": "feature/terminal/PROVENANCE-TERMUX.md",
+      "sourcePinSHA256": "17d9c89ab60b1ae656aff79b0982ffcd5a1a7fc580e1c0a8fa905ecd3aea268a",
+      "licenseText": "licenses/terminal/APACHE-2.0.txt",
+      "bundledLicenseText": "app/src/main/assets/legal/terminal/APACHE-2.0.txt"
+    }
   ]
 }

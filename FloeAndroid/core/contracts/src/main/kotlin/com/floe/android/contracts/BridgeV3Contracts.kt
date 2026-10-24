@@ -285,6 +285,21 @@ object BridgeV3CommandMatrix {
         rule("plan.accept", BridgeV3Scope.Kind.LAUNCH, revision = true),
         rule("goal.confirm", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE, revision = true),
         rule("conversation.compact", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+
+        // G04 workspace domain additive ledger (Main decisions D12/D14,
+        // 2026-10-24): three conversationLifecycle tuples, APPEND-ONLY and
+        // byte-aligned with Swift `BridgeV3.commandRules` and the golden
+        // matrix. Outer revisions are NOT required: the opaque native
+        // per-document revision token inside the closed workspace payload
+        // grammar governs edits, and workspace.activate establishes the
+        // exact durable ownership binding with a nativeEpoch-only payload.
+        // The real envelope taskID is the only owner role; no run/env/job
+        // identity and no absolute root can be presented. These keys stay
+        // fail-closed until the real root-owned workspace extension binds
+        // them; the projection cannot register a handler or widen authority.
+        rule("workspace.read", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("workspace.write", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
+        rule("workspace.activate", BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE),
     )
 
     fun entry(command: String, scope: BridgeV3Scope.Kind): BridgeV3CommandRule? =

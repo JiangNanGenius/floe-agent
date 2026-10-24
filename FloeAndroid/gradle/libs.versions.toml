@@ -6,6 +6,8 @@ compose-bom = "2026.09.00"
 activity = "1.11.0"
 core = "1.17.0"
 cupertino = "3.3.1"
+# Official fixed Sora pin; no dynamic version or Apple-restricted assets.
+sora = "0.24.4"
 # UI rendering infrastructure (Main-accepted Option A, verified 2026-10-19):
 # org.commonmark 0.30.1 is the current latest release on Maven Central
 # (maven-metadata.xml lastUpdated 2026-10-10), BSD 2-Clause "Simplified",
@@ -34,6 +36,7 @@ compose-material = { module = "androidx.compose.material3:material3" }
 cupertino = { module = "io.github.robinpcrd:cupertino", version.ref = "cupertino" }
 junit = { module = "junit:junit", version.ref = "junit" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+sora-editor = { module = "io.github.rosemoe:editor", version.ref = "sora" }
 commonmark = { module = "org.commonmark:commonmark", version.ref = "commonmark" }
 commonmark-ext-gfm-tables = { module = "org.commonmark:commonmark-ext-gfm-tables", version.ref = "commonmark" }
 commonmark-ext-gfm-strikethrough = { module = "org.commonmark:commonmark-ext-gfm-strikethrough", version.ref = "commonmark" }

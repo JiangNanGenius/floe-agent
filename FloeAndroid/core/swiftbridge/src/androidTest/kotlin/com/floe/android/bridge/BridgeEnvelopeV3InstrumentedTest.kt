@@ -362,7 +362,7 @@ class BridgeEnvelopeV3InstrumentedTest {
             }
             assertTrue("empty additive label $label", rules.isNotEmpty())
         }
-        assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)
+        assertEquals(90, BridgeV3CommandMatrix.ENTRIES.size)
         assertEquals(19, BridgeProtocolV3.CONFIGURATION_SCOPES.size)
         // Uniqueness includes configurationScope; the third content.read
         // entry intentionally shares scope+command with the conversations one.

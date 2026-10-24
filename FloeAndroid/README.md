@@ -14,11 +14,35 @@ cover 16 KiB runtime behavior; the later Alpha3 device coverage is listed below.
 G01 and G02 code-stage handoff and cleanup are closed. G03-R1 execution
 qualification and G03-R2 environment, jobs and workspace source integration
 are complete. G03-R3 representative App qualification, Alpha9 delivery and round
-cleanup are now closed. G04 file/IDE/Git/browser work is next. Current
+cleanup are now closed. G04-R1 file/IDE/Git/browser source integration is undergoing
+grouped native compilation. Its implementation packages have been handed off; a new
+G04 APK has not been qualified or published. Current
 public status and limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Workspaces
 shown as being prepared are not implemented product capabilities. Android has no
 local LLM backend.
+
+## G04 source integration (in progress)
+
+The current code batch connects the ordinary task workspace to file operations,
+SAF providers, WebDAV/SMB copies, the embedded editor, existing Linux terminal/LSP,
+Git/Actions, and the task-owned browser/static preview. Recovery preserves complete
+unconfirmed editor text through the original file service. These are source-stage
+changes and are not part of the Alpha9 download below.
+
+Focused pure JVM checks passed for the editor (54), browser (28) and SAF gateway
+(70). The full shared Core has compiled and linked with Swift 6.4.1 for Android
+arm64; its library, symbols and unchanged source inputs were verified. The browser,
+IDE and terminal Kotlin modules and changed JNI code also compiled. Full/Play
+App Kotlin and resources have now compiled, with the new dependency locks verified.
+The original App host run passed 26 of 32 tests; its six failures were preserved.
+After one repair batch, all 25 source/network checks passed (including a new
+retired-root race regression); the eight unchanged terminal passes were reused.
+Native test targets compiled, but their first behavior run still failed. Core/Git
+repairs and a frozen-input Browser private patch remain in progress. Native
+production changed after Core09, so a final current-source Android link is pending. Rendered App/device behavior and final
+visual parity remain separate acceptance steps. The existing Alpha9 tag and APK
+stay immutable; no paid App-provider calls were used for this batch.
 
 ## Android Alpha
 

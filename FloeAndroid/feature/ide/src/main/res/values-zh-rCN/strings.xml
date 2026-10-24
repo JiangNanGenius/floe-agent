@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- shell / chrome -->
+    <string name="ide_back_cd">返回任务</string>
+    <string name="ide_title_no_document">未打开文件</string>
+    <string name="ide_empty_hint">从工作区文件列表打开一个文本或代码文件。</string>
+    <string name="ide_doc_loading">正在加载…</string>
+    <string name="ide_temp_session_unavailable">临时任务中不可用文件和 IDE。</string>
+    <string name="ide_tree_unavailable">文件服务接入后，这里会显示工作区文件列表。</string>
+
+    <!-- file tree -->
+    <string name="ide_open_tree_cd">工作区文件</string>
+    <string name="ide_search_placeholder">搜索文件名和内容</string>
+    <string name="ide_search_clear_cd">清除搜索</string>
+    <string name="ide_search_empty">没有匹配项</string>
+    <string name="ide_search_failed">搜索无法完成。</string>
+    <string name="ide_tree_empty">此文件夹为空。</string>
+    <string name="ide_tree_loading_cd">正在加载文件</string>
+    <string name="ide_tree_refresh_cd">刷新文件列表</string>
+    <string name="ide_row_dir_cd">文件夹 %1$s</string>
+    <string name="ide_row_file_cd">文件 %1$s</string>
+
+    <!-- tabs -->
+    <string name="ide_tab_close_cd">关闭 %1$s</string>
+    <string name="ide_tab_dirty_cd">有未保存的修改</string>
+    <string name="ide_tab_loading_cd">文件加载中</string>
+    <string name="ide_tab_failed_cd">打开失败：%1$s</string>
+    <string name="ide_close_title">未保存的修改</string>
+    <string name="ide_close_message">%1$s 有未保存的修改。先保存再关闭吗？</string>
+    <string name="ide_close_save">保存并关闭</string>
+    <string name="ide_close_discard">舍弃</string>
+    <string name="ide_close_cancel">取消</string>
+
+    <!-- toolbar -->
+    <string name="ide_save">保存</string>
+    <string name="ide_save_cd">保存到工作区</string>
+    <string name="ide_undo_cd">撤销（原生）</string>
+    <string name="ide_redo_cd">重做（原生）</string>
+    <string name="ide_find_cd">查找与替换</string>
+    <string name="ide_diff_cd">显示更改</string>
+    <string name="ide_run_cd">在任务环境中运行</string>
+    <string name="ide_preview_cd">打开预览</string>
+    <string name="ide_terminal_cd">切换附加面板</string>
+    <string name="ide_more_cd">更多编辑器操作</string>
+    <string name="ide_action_unavailable_host">不可用——宿主服务尚未接入</string>
+
+    <!-- find & replace -->
+    <string name="ide_find_label">查找</string>
+    <string name="ide_replace_label">替换为</string>
+    <string name="ide_find_previous">上一个</string>
+    <string name="ide_find_next">下一个</string>
+    <string name="ide_replace_one">替换</string>
+    <string name="ide_replace_all">全部替换</string>
+    <string name="ide_match_case">区分大小写</string>
+    <string name="ide_whole_word">全词匹配</string>
+    <string name="ide_hits_count">%1$d 个匹配</string>
+    <string name="ide_hits_none">没有匹配</string>
+    <string name="ide_hits_stale">结果已过期——正在重新查找</string>
+    <string name="ide_find_close_cd">关闭查找与替换</string>
+
+    <!-- status -->
+    <string name="ide_status_plain">纯文本</string>
+    <string name="ide_status_line_col">行 %1$d，列 %2$d</string>
+    <string name="ide_status_saved">已保存</string>
+    <string name="ide_status_unsaved">未保存</string>
+    <string name="ide_status_pending_n">还有 %1$d 处修改未确认</string>
+    <string name="ide_status_read_only">只读</string>
+    <string name="ide_status_problems_cd">%1$d 个问题</string>
+    <string name="ide_status_selection_len">已选 %1$d</string>
+
+    <!-- sync banner -->
+    <string name="ide_sync_error_cd">关闭提示</string>
+    <string name="ide_sync_restore_cd">恢复我上次的修改</string>
+    <string name="ide_sync_restore_action">恢复修改</string>
+
+    <!-- diff -->
+    <string name="ide_diff_title">更改</string>
+    <string name="ide_diff_stats">+%1$d −%2$d</string>
+    <string name="ide_diff_close_cd">关闭更改视图</string>
+    <string name="ide_diff_added">新增</string>
+    <string name="ide_diff_removed">删除</string>
+    <string name="ide_diff_error">更改视图需要原生差异结果；当前版本尚不可用。</string>
+
+    <!-- conflict / recovery -->
+    <string name="ide_conflict_title">保存冲突</string>
+    <string name="ide_conflict_body">你编辑期间工作区版本发生了变化。下面保留了两个版本。</string>
+    <string name="ide_conflict_local">你的版本</string>
+    <string name="ide_conflict_remote">工作区版本</string>
+    <string name="ide_conflict_base">共同基线</string>
+    <string name="ide_conflict_keep_local">保留我的</string>
+    <string name="ide_conflict_use_remote">使用工作区版本</string>
+    <string name="ide_conflict_keep_both">两个都保留</string>
+    <string name="ide_conflict_cancel">稍后决定</string>
+</resources>

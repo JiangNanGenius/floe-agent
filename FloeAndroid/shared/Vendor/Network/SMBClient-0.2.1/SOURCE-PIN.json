@@ -1,0 +1,11 @@
+{
+ "name": "SMBClient",
+ "version": "0.2.1",
+ "tagURL": "https://github.com/kishikawakatsumi/SMBClient/archive/refs/tags/0.2.1.tar.gz",
+ "sha256": "4283227d187be6daba0edc2b24bee4df074315bd3c2217a4c31bd35d22623df7",
+ "license": "MIT",
+ "vendoredScope": "Sources/SMBClient/** (78 files); 3 documented patch files only: Connection.swift, Auth/Crypto.swift, Auth/NTLM.swift; Examples/Tests(44MB fixtures)/workflows excluded",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

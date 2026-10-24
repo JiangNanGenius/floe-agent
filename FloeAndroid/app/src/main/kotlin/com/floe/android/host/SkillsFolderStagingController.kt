@@ -242,36 +242,20 @@ class SkillsFolderStagingController internal constructor(
             null
         }
 
-        private var ownsReadGrant = false
+        private var readGrantLease: com.floe.android.safgateway.SafSharedGrantBroker.Lease? = null
 
-        override fun takeReadGrant(): Boolean = try {
-            // OpenDocumentTree returns a Uri, not the Intent flags. Ask
-            // the platform to persist only the read grant actually given.
-            if (context.contentResolver.persistedUriPermissions.any {
-                    it.uri == treeUri && it.isReadPermission
-                }) {
-                true
-            } else {
-                context.contentResolver.takePersistableUriPermission(
-                    treeUri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                ownsReadGrant = true
-                true
+        @Synchronized
+        override fun takeReadGrant(): Boolean {
+            if (readGrantLease == null) {
+                readGrantLease = SharedUriGrantAuthority.acquireRead(context.contentResolver, treeUri)
             }
-        } catch (t: SecurityException) {
-            false
-        } catch (t: RuntimeException) {
-            false
+            return readGrantLease?.persistedAtAcquisition == true
         }
 
+        @Synchronized
         override fun releaseReadGrant() {
-            if (!ownsReadGrant) return
-            ownsReadGrant = false
-            try {
-                context.contentResolver.releasePersistableUriPermission(
-                    treeUri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (t: RuntimeException) {
-                // Revoked/absent already: nothing to do; never a retry loop.
-            }
+            readGrantLease?.close()
+            readGrantLease = null
         }
     }
 
@@ -398,7 +382,8 @@ class SkillsFolderStagingController internal constructor(
         cancelledInFlight = true
         activeJob?.cancel()
         activeJob = null
-        runCatching { activeReader?.releaseReadGrant() }
+        // The copy owns its reference until actual provider IO settles;
+        // stageTree's finally releases it on every terminal path.
     }
 
     private var activeReader: FolderTreeReader? = null
@@ -416,7 +401,7 @@ class SkillsFolderStagingController internal constructor(
         val rootName = source.displayName ?: "folder"
         var route: String? = null
         var tree: String? = null
-        var grantTaken = false
+        var grantReleased = false
         var currentFile: String? = null
         try {
             route = channel.routeOpen(
@@ -426,7 +411,7 @@ class SkillsFolderStagingController internal constructor(
             // The retry window starts here: take the least-scope READ
             // grant only while this user-initiated import could still be
             // retried after a failure.
-            grantTaken = runCatching { source.takeReadGrant() }.getOrDefault(false)
+            source.takeReadGrant() // false = session-only, never fake persistence
 
             val rootDoc = source.rootDocumentId
                 ?: return failStage("folder_root_unreadable")
@@ -516,10 +501,8 @@ class SkillsFolderStagingController internal constructor(
             // Success: the bytes are now the domain's OWN staged tree under
             // the trusted staging root; the URI grant is no longer useful
             // least-scope state, so it is released.
-            if (grantTaken) {
-                runCatching { source.releaseReadGrant() }
-                grantTaken = false
-            }
+            runCatching { source.releaseReadGrant() }
+            grantReleased = true
             val reference = StagedPackageRefUi(
                 handle = tokens[0],
                 displayName = rootName,
@@ -543,6 +526,7 @@ class SkillsFolderStagingController internal constructor(
             runCatching { tree?.let { channel.treeAbort(it) } }
             fail("folder_stage_failed")
         } finally {
+            if (!grantReleased) runCatching { source.releaseReadGrant() }
             runCatching { route?.let { channel.routeClose(it) } }
             currentFileHandle = null
             treeHandleForAbort = null

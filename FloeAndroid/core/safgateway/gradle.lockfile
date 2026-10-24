@@ -1,0 +1,20 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# This file is expected to be part of source control.
+# To regenerate this file, run: ./gradlew :core:safgateway:dependencies --write-locks
+org.jetbrains.kotlin:kotlin-build-tools-api:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-build-tools-impl:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-compiler-embeddable:2.2.10=kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains.kotlin:kotlin-compiler-runner:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-daemon-client:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-daemon-embeddable:2.2.10=kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains.kotlin:kotlin-reflect:1.6.10=kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains.kotlin:kotlin-script-runtime:2.2.10=kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains.kotlin:kotlin-scripting-common:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-scripting-compiler-embeddable:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-scripting-compiler-impl-embeddable:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-scripting-jvm:2.2.10=kotlinBuildToolsApiClasspath
+org.jetbrains.kotlin:kotlin-stdlib:2.2.10=debugCompileClasspath,kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm:1.8.0=kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+org.jetbrains:annotations:13.0=debugCompileClasspath,kotlinBuildToolsApiClasspath,kotlinCompilerClasspath
+empty=androidApis,debugAnnotationProcessorClasspath,kotlinCompilerPluginClasspath

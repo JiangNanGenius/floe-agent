@@ -2,12 +2,12 @@
   "schema": "floe.bridge-v3-command-matrix.golden/1",
   "wireVersion": 3,
   "authority": "Settings-domain contract rev3 (contract.json), accepted 2026-10-19; SHA256 f3ddecdca061ae17fbe4280b7bfb549d8a1673fd8d9ae6e1ba363332ef5db46c",
-  "note": "Accepted rev3 Settings-domain P0 additive matrix (57 legacy entries first, then the 27 accepted tuples) PLUS the goal-core code batch 2026-10-21 append: the three additive run-control tuples plan.accept (launch), goal.confirm and conversation.compact (conversationLifecycle) decided in MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json. Append-only: no existing entry renamed, deleted or relabeled; no child.create. Entries are data, not a handler or capability claim.",
+  "note": "Accepted rev3 Settings-domain P0 additive matrix (57 legacy entries first, then the 27 accepted tuples) PLUS the goal-core code batch 2026-10-21 append (plan.accept launch, goal.confirm + conversation.compact conversationLifecycle, MAIN_RUN_CONTROL_CLOSURE_DECISION_20261020.json) PLUS the G04 workspace additive ledger 2026-10-24 (Main decisions D12/D14): workspace.read + workspace.write (closed native payload grammar; opaque per-document revision token governs edits; outer revisionRequired stays false) and workspace.activate (nativeEpoch-only payload; establishes the exact durable ownership binding; never claims a workspace/root/run). Append-only: no existing entry renamed, deleted or relabeled; no child.create; configurationLabels stay 19 and no new label. Entries are data, not a handler or capability claim: only a successful real root-owned workspace extension attach binds these keys.",
   "expected": {
-    "entries": 87,
+    "entries": 90,
     "legacyEntries": 57,
-    "additiveEntries": 30,
-    "distinctCommands": 85,
+    "additiveEntries": 33,
+    "distinctCommands": 88,
     "configurationEntries": 55,
     "configurationLabels": 19,
     "newLabels": 5,
@@ -730,6 +730,30 @@
     },
     {
       "command": "conversation.compact",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "workspace.read",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "workspace.write",
+      "scope": "conversationLifecycle",
+      "configurationScope": null,
+      "revisionRequired": false,
+      "allowsCreateIntent": false,
+      "isRunEventPoll": false
+    },
+    {
+      "command": "workspace.activate",
       "scope": "conversationLifecycle",
       "configurationScope": null,
       "revisionRequired": false,

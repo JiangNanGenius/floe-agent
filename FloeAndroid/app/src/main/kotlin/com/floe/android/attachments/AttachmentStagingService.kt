@@ -232,28 +232,25 @@ class AttachmentStagingService(
         var delivered = 0L
         var pumpError: String? = null
         try {
+            (source as? AndroidContentResolverSource)?.retainReadGrant(requirePersistableGrant)
             stream = try {
                 source.openRead()
             } catch (_: FileNotFoundException) {
                 // Unavailable URI: the begun ingress is aborted (temp
                 // removed), the grant released, and the caller gets the
                 // typed outcome — never a staged record.
-                source.releaseTransientRead()
                 abortQuietly(ingressReceipt)
                 return StagingOutcome.Refused("sourceUnavailable")
             } catch (_: SecurityException) {
-                source.releaseTransientRead()
                 abortQuietly(ingressReceipt)
                 return StagingOutcome.Refused("grantRevoked")
             } catch (_: StagingGrantRevoked) {
-                source.releaseTransientRead()
                 abortQuietly(ingressReceipt)
                 return StagingOutcome.Refused("grantRevoked")
             } catch (_: StagingSourceUnavailable) {
                 abortQuietly(ingressReceipt)
                 return StagingOutcome.Refused("sourceUnavailable")
             }
-            if (requirePersistableGrant) takePersistableGrant(source)
             val buffer = ByteArray(CHUNK_BYTES)
             var zeroReads = 0
             while (true) {
@@ -310,12 +307,6 @@ class AttachmentStagingService(
                 return StagingOutcome.Refused("sourceUnavailable")
             }
             try {
-                source.releaseTransientRead()
-            } catch (_: RuntimeException) {
-                // Release failures after a complete copy do NOT affect the
-                // app-private result; recorded, never fatal.
-            }
-            try {
                 native.end(ingressReceipt, source.displayNameHint, source.mimeTypeHint)
             } catch (failure: com.floe.android.bridge.AttachmentStagingNativeException) {
                 abortQuietly(ingressReceipt)
@@ -324,8 +315,14 @@ class AttachmentStagingService(
         } catch (cancellation: CancellationException) {
             abortQuietly(ingressReceipt)
             throw cancellation
+        } catch (_: Exception) {
+            abortQuietly(ingressReceipt)
+            return StagingOutcome.Refused("sourceUnavailable")
         } finally {
             try { stream?.close() } catch (_: IOException) {}
+            // Keep the shared reference through the actual stream close,
+            // including cancellation/failure. No other feature loses it early.
+            runCatching { source.releaseTransientRead() }
         }
         // Submit the EXISTING attachment.stage command; the native host
         // performs the atomic rename/verify/publish. Arrival never sends
@@ -353,10 +350,6 @@ class AttachmentStagingService(
 
     private fun abortQuietly(ingressReceipt: String) {
         try { native.abort(ingressReceipt) } catch (_: Exception) {}
-    }
-
-    private fun takePersistableGrant(source: StagingContentSource) {
-        (source as? AndroidContentResolverSource)?.takePersistableReadGrant()
     }
 
     /* ------------------------------ commands ------------------------------ */
@@ -728,7 +721,7 @@ class AndroidContentResolverSource(
     private val pickedWithReadGrant: Boolean = true,
 ) : StagingContentSource {
 
-    private var tookPersistable = false
+    private var readGrantLease: com.floe.android.safgateway.SafSharedGrantBroker.Lease? = null
 
     private val displayName: String? by lazy {
         runCatching {
@@ -780,28 +773,19 @@ class AndroidContentResolverSource(
     /** Persistable ONLY when the pick carried a read grant and the caller
      *  needs durability; failures degrade to the session-scoped read
      *  truthfully (never pretend any URI is permanent). */
-    fun takePersistableReadGrant() {
-        if (!pickedWithReadGrant || tookPersistable) return
-        tookPersistable = try {
-            resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            true
-        } catch (_: SecurityException) {
-            false
-        } catch (_: IllegalArgumentException) {
-            false
-        }
+    fun takePersistableReadGrant() = retainReadGrant(true)
+
+    @Synchronized
+    internal fun retainReadGrant(persist: Boolean) {
+        if (readGrantLease != null) return
+        readGrantLease = com.floe.android.host.SharedUriGrantAuthority.acquireRead(
+            resolver, uri, allowPersistence = persist && pickedWithReadGrant)
     }
 
+    @Synchronized
     override fun releaseTransientRead() {
-        if (tookPersistable) {
-            try {
-                resolver.releasePersistableUriPermission(
-                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (_: SecurityException) {
-            } catch (_: IllegalArgumentException) {
-            }
-            tookPersistable = false
-        }
+        readGrantLease?.close()
+        readGrantLease = null
     }
 
     override val displayNameHint: String? get() = displayName

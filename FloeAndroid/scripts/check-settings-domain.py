@@ -3,10 +3,11 @@
 """Read-only validator for the Settings-domain P0 source candidate.
 
 Verifies, without writing anything:
-  1. The Swift and Kotlin v3 matrices are the accepted 87-entry / 19-label
+  1. The Swift and Kotlin v3 matrices are the accepted 90-entry / 19-label
      append-only ledger: the frozen 57 legacy entries, the frozen 27
      Settings-domain additive tuples (each still proven by its OWN digest)
-     and exactly the three approved goal-core run-control tuples appended by
+     the three approved goal-core run-control tuples followed by the three
+     G04 workspace lifecycle tuples. The goal-core prefix was appended by
      the 2026-10-21 batch (proven independently against goal_core_contract.py,
      never by recomputing the frozen sections). Mirrored field-for-field and
      anchored to the manual golden matrix file; `content.read` keeps its
@@ -63,15 +64,25 @@ def _load_goal_core_contract():
 
 G = _load_goal_core_contract()
 
-EXPECTED_ENTRIES = G.EXPECTED_MATRIX_ENTRIES            # 87
+def _load_workspace_contract():
+    path = Path(__file__).resolve().parent / "workspace_core_contract.py"
+    spec = importlib.util.spec_from_file_location("workspace_core_contract", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+W = _load_workspace_contract()
+
+EXPECTED_ENTRIES = W.EXPECTED_ENTRIES                  # 90, original87 independently frozen
 EXPECTED_LEGACY_ENTRIES = G.LEGACY_ENTRY_COUNT          # 57
 EXPECTED_SETTINGS_ADDITIVE_ENTRIES = G.SETTINGS_ADDITIVE_ENTRY_COUNT  # 27
 EXPECTED_GOALCORE_ADDITIVE_ENTRIES = G.GOALCORE_ADDITIVE_ENTRY_COUNT  # 3
-EXPECTED_ADDITIVE_ENTRIES = G.EXPECTED_MATRIX_ADDITIVE_ENTRIES  # 30
+EXPECTED_ADDITIVE_ENTRIES = W.EXPECTED_ADDITIVE_ENTRIES  # 33
 EXPECTED_LABELS = 19
 EXPECTED_NEW_LABELS = 5
-EXPECTED_DISTINCT_COMMANDS = G.EXPECTED_DISTINCT_COMMANDS      # 85
-EXPECTED_SCOPE_COMMAND_PAIRS = G.EXPECTED_SCOPE_COMMAND_PAIRS  # 86
+EXPECTED_DISTINCT_COMMANDS = W.EXPECTED_DISTINCT_COMMANDS      # 88
+EXPECTED_SCOPE_COMMAND_PAIRS = W.EXPECTED_SCOPE_COMMAND_PAIRS  # 89
 EXPECTED_CONFIGURATION_ENTRIES = 55
 EXPECTED_OPERATIONS = G.EXPECTED_OPERATIONS              # 183
 EXPECTED_G02_OPERATIONS = G.EXPECTED_G02_OPERATIONS      # 41
@@ -300,8 +311,10 @@ def validate_matrix(golden: dict, swift: list[dict], kotlin: list[dict],
         fail("frozen 57-tuple set digest changed")
     if tuple_digest(G.settings_slice(rows)) != EXPECTED_ADDITIVE_TUPLE_SHA256:
         fail("accepted 27 additive tuple set digest changed")
-    for message in G.validate_goalcore_append(rows):
+    for message in G.validate_goalcore_append(rows[:G.EXPECTED_MATRIX_ENTRIES]):
         fail("goal-core append violated the approved delta: %s" % message)
+    for message in W.validate_workspace_append(rows):
+        fail("workspace append violated the approved delta: %s" % message)
     keys = {(row["scope"], row["configurationScope"], row["command"]) for row in rows}
     if len(keys) != EXPECTED_ENTRIES:
         fail("matrix tuples are not unique on scope+configurationScope+command")
@@ -683,8 +696,8 @@ def validate_sources(root: Path) -> None:
     tests = (root / "FloeAndroid/shared/Tests/FloeAndroidCoreTests/BridgeEnvelopeV3Tests.swift")
     if tests.is_file():
         text = tests.read_text(encoding="utf-8")
-        if "XCTAssertEqual(goldenPairs.count, 87)" not in text:
-            fail("manual golden test is not 87 entries")
+        if "XCTAssertEqual(goldenPairs.count, 90)" not in text:
+            fail("manual golden test is not 90 entries")
         for token in ("testSettingsDomainMatrixAppendsAcceptedTuplesUnderFiveLabels",
                       "testSettingsDomainPayloadValidationRunsBeforeHandler",
                       "testSettingsDomainContentReadLabelIsolation",
@@ -692,15 +705,15 @@ def validate_sources(root: Path) -> None:
             if token not in text:
                 fail("host test lacks %s" % token)
         for token in ("let goldenPairs: [(scope: String, configurationScope: String?, command: String)]",
-                      "XCTAssertEqual(Set(goldenKeys).count, 87)"):
+                      "XCTAssertEqual(Set(goldenKeys).count, 90)"):
             if token not in text:
                 fail("host matrix test lacks %r" % token)
 
     instrumented = (root / "FloeAndroid/core/swiftbridge/src/androidTest/kotlin/com/floe/android/bridge/BridgeEnvelopeV3InstrumentedTest.kt")
     if instrumented.is_file():
         text = instrumented.read_text(encoding="utf-8")
-        if "assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)" not in text:
-            fail("Android matrix test is not 87 entries")
+        if "assertEquals(90, BridgeV3CommandMatrix.ENTRIES.size)" not in text:
+            fail("Android matrix test is not 90 entries")
         for token in ("settingsDomainCreateOnlyRequiresExplicitIntent",
                       "settingsDomainContentReadLabelIsolation"):
             if token not in text:

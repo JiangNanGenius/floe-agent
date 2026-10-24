@@ -1,0 +1,9 @@
+<resources>
+    <string name="browser_preview_starting">正在启动预览…</string>
+    <string name="browser_preview_failed">预览启动失败。已保存的文件不受影响，可以重试。</string>
+    <string name="browser_task_starting">任务还未就绪，请稍后重试。</string>
+    <string name="browser_task_workspace_missing">请先打开任务工作区，然后重试。</string>
+    <string name="browser_task_missing">此任务已不可用。</string>
+    <string name="browser_task_unavailable">浏览器暂时不可用。</string>
+    <string name="browser_preview_waiting">预览耗时较长，请先查看浏览器再重试。</string>
+</resources>

@@ -880,3 +880,56 @@ this Linux-runtime delivery; importing that independent feature is deferred
 to a complete API/persistence integration batch. No iOS file is modified.
 The Android implementation bytes are unchanged; only the source link is
 replaced so builds from the published commit remain reproducible.
+
+
+### G04-R1 workspace, native Git, archive and browser source integration
+
+The G04 overlay uses the immutable public `3fd597b537590b4e6c11c0a25f413361a66b42b6`
+interfaces for workspace files/editor, archive and Git services. New Android-owned
+facades keep native task/workspace/revision authority, bounded content channels
+and provider transport separate from rendering. Platform patches and exact
+upstream file hashes are retained beside their vendored sources.
+
+`Vendor/Archive/*/SOURCE-PIN.json`, `Vendor/Archive/*/floe/SOURCE-PIN.json`,
+`Vendor/Network/SMBClient-0.2.1/SOURCE-PIN.json` and `Vendor/Git/PINS.json`
+freeze archive codecs, network mounts and the native Git graph. The liblzma and
+libarchive target source lists/configs are the exact exported portable recipes;
+Android compiles their C sources into the same shared product. ZIPFoundation's
+existing MIT notice is unchanged. Dependency/license metadata is indexed in
+`planning/SHARED_SOURCE_PINS.json` and bundled legal assets.
+
+Git remote operations install the verified current Android TrustManager bundle
+through the bounded host/native seam and serialize the global libgit2 TLS
+configuration for the entire operation. HTTP API clients retain the existing
+FoundationNetworking system-CA transport; user-added CA behavior differs and is
+not represented as identical. No credential URL or trust-all fallback is added.
+
+This records source integration. Actual Swift 6 Android object compilation,
+linking, App entry binding and device behavior are independent qualification
+steps; component-host success is not full App acceptance.
+
+
+## G04 vendor-input provenance coverage (2026-10-24)
+
+`native-manifest.py` records relevant Swift and native inputs from both
+`shared/Sources` and the reviewed `shared/Vendor` tree. This includes the
+Archive, SMBClient, SwiftGitX, MbedTLS, libgit2 and Floe shim sources, headers,
+module maps, assembly (`.s`/`.S`) and include parts (`.inc`). Existing
+`sharedSources`, `cInputs` and `sourceLinks` fields and schema version 1 are
+retained. Source links bind their actual target bytes; unreadable, broken or
+out-of-repository file links remain errors. `--check` remains read-only.
+
+Coverage does not prove every upstream platform file compiled into the
+library. Generating a manifest also does not retroactively qualify a prior
+binary: preserve the exact successful build/source snapshot and library
+hash, then generate the packaging manifest from the final source and that
+artifact. Local iteration may reuse an unchanged separate LinuxAuthority
+library after checking its source dependency closure and saved artifact;
+regenerating source provenance is distinct from rebuilding the library.
+
+Fifteen focused synthetic regressions verify vendor mutation/deletion,
+source-link identity and refusal, existing minimal fixtures and read-only
+checks. The pre-change failures are retained in the local qualification
+record. The G04-R1 Core cohort has actual Swift 6.4.1 Android ARM64 object
+compilation and linking evidence, including 16 KiB load alignment; App/JNI,
+behavior and device acceptance remain separate delivery gates.

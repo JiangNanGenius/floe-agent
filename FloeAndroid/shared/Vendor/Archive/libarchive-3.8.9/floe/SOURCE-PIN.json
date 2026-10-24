@@ -1,0 +1,12 @@
+{
+ "name": "libarchive",
+ "version": "3.8.9",
+ "officialURL": "https://github.com/libarchive/libarchive/releases/download/v3.8.9/libarchive-3.8.9.tar.gz",
+ "sha256": "f5a6539059cf5e597dbeda37bfa4874b1e8dea063c8d93bf85a2b44af90a5bd4",
+ "sha256Authority": "FloeAgent/scripts/bootstrap_libarchive.py pin at public 3fd597b5 (iOS signed XCFramework uses the same version+hash)",
+ "license": "BSD-2-clause (COPYING retained)",
+ "vendoredScope": "libarchive/ 123-unit archive_static object set (identical file list on both platforms; windows/acl-freebsd/sunos/linux-disk variants excluded by upstream CMake) + contrib android_lf.h + floe/ pinned CMake config.h pair",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

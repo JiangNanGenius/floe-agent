@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Controlled browser + token-bound local preview (Floe Android G04).
+     English and Simplified-Chinese strings stay aligned; nothing here claims
+     a capability the native authority has not bound — unbound surfaces use
+     honest unavailable wording. No permission declarations belong in this
+     feature module (ACCESS_LOCAL_NETWORK lives in the app Manifest and the
+     existing broker only). -->
+<resources>
+    <string name="browser_panel_title">Browser</string>
+    <string name="browser_unbound_title">Browser</string>
+    <string name="browser_unbound_hint">Open a task to use its own browser.</string>
+    <string name="browser_take_control_cd">Take over</string>
+    <string name="browser_close_panel_cd">Close panel</string>
+    <string name="browser_user_in_control">Browser control is yours; the task can continue other work.</string>
+    <string name="browser_handoff_returned">Browser control was returned to the task.</string>
+    <string name="browser_returning_control">Returning control…</string>
+    <string name="browser_continue_task">Continue task</string>
+    <string name="browser_return_control_cd">Return control</string>
+    <string name="browser_new_tab">New tab</string>
+    <string name="browser_new_tab_cd">New tab</string>
+    <string name="browser_back_cd">Back</string>
+    <string name="browser_forward_cd">Forward</string>
+    <string name="browser_address_placeholder">Search or enter address</string>
+    <string name="browser_local_preview_badge">Local preview</string>
+    <string name="browser_reload_cd">Reload</string>
+    <string name="browser_retry_cd">Retry</string>
+    <string name="browser_load_failed">The page could not be loaded.</string>
+    <string name="browser_temporary_unbound">Temporary tasks cannot open a durable browser.</string>
+    <string name="browser_ephemeral_limitation">Private/incognito profiles are not supported by this Android WebView; sign-in state uses the shared browser storage.</string>
+    <string name="browser_ocr_limitation">On-device text recognition is unavailable; visual clicks fall back to the native screenshot-requirement message.</string>
+</resources>

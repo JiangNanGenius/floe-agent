@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_new_file">新建文件</string>
+    <string name="workspace_new_folder">新建文件夹</string>
+    <string name="workspace_move">移动或重命名</string>
+    <string name="workspace_copy">复制</string>
+    <string name="workspace_delete">删除</string>
+    <string name="workspace_file_actions">文件操作</string>
+    <string name="workspace_relative_path">工作区内的路径</string>
+    <string name="workspace_destination_path">目标路径</string>
+    <string name="workspace_delete_confirmation">删除此文件或文件夹及其内容？请先在编辑器中处理并关闭未保存的文档。</string>
+    <string name="workspace_apply">确定</string>
+    <string name="workspace_retry">重试</string>
+    <string name="workspace_temporary_unavailable">请在已保存的任务中使用文件。</string>
+    <string name="workspace_conflict_error">文件已更改或存在未保存的编辑，请先在编辑器中处理后重试。</string>
+    <string name="workspace_access_error">无法访问此位置，请选择已获授权的路径。</string>
+    <string name="workspace_size_error">内容过大，暂时无法在此打开。</string>
+    <string name="workspace_owner_error">工作区已变化，请关闭并重新打开文件。</string>
+    <string name="workspace_operation_error">操作未完成，请检查路径后重试。</string>
+    <string name="workspace_language_unavailable">语言支持暂不可用。请在本地环境中安装语言服务器后重试。</string>
+    <string name="workspace_run_pending">运行尚未返回结果。请先在终端中查看状态，再开始新的运行。</string>
+</resources>

@@ -11,6 +11,11 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         (application as FloeApplication).linuxSetup.onResume()
         (application as FloeApplication).reconcileForegroundOnResume()
+        (application as FloeApplication).setActivityForeground(true)
+    }
+    override fun onPause() {
+        (application as FloeApplication).setActivityForeground(false)
+        super.onPause()
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

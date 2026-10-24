@@ -1,0 +1,562 @@
+{
+  "schema": "floe.android.goal-code-ledger/1",
+  "goal": "G04",
+  "subgoal": "G04-R1",
+  "updatedAt": "2026-10-24T10:40:23.801541+00:00",
+  "phase": "G04_R1_code_and_component_checks_verified_R2_App_pending",
+  "baselinePolicy": "Original feature-baseline/work-packages status digests remain frozen historical fixture inputs. This ledger records current G04 contributions using existing IDs; no new feature/work-package IDs or shifted goal ownership.",
+  "sourceBaseline": "3fd597b537590b4e6c11c0a25f413361a66b42b6",
+  "originalWorkPackageCount": 85,
+  "workPackages": [
+    {
+      "id": "P1.8",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P1.17",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P2.4",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P3.1",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P3.2",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P3.5",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P3.6",
+      "implementationGoal": "G11",
+      "state": "planned",
+      "g04ContributionOnly": true,
+      "owner": "platform-integration",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "g04ContributionState": "code_verified_App_pending",
+      "note": "Current native GitHub Actions contribution only; overall G11 work package remains planned.",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "id": "P3.12",
+      "implementationGoal": "G04",
+      "state": "code_verified_App_pending",
+      "g04ContributionOnly": false,
+      "owner": "files-ide-browser",
+      "verificationGoals": [
+        "G12",
+        "G13"
+      ],
+      "appAcceptanceState": "pending_G04_R2"
+    }
+  ],
+  "operations": [
+    {
+      "id": "WSF-WRITE-LAYER",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "WSF-FILE-OPS-SAF",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "WSF-REVISION-CONFLICT",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "WSF-SAFE-EXTRACT",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "WSF-EXPORT",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "WSF-NETWORK-MOUNT",
+      "family": "WSF",
+      "workPackages": [
+        "P1.17",
+        "P3.2",
+        "P3.12"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-TREE-EDIT",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-SEARCH-REPLACE",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-UNDO-DRAFT",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-ENCODING-LINES",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-DIFF",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-RUN-LOG-PREVIEW",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-TERMINAL-EMBED",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "IDE-LANG-SUPPORT",
+      "family": "IDE",
+      "workPackages": [
+        "P1.8",
+        "P2.4",
+        "P3.1"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "GIT-DIFF-STAGE-COMMIT",
+      "family": "GIT",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "GIT-PUSH-CONFLICT",
+      "family": "GIT",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "GH-ACTIONS-STATUS",
+      "family": "GIT",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "GH-ARTIFACT-DOWNLOAD",
+      "family": "GIT",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "GIT-CRED-STORE",
+      "family": "GIT",
+      "workPackages": [
+        "P3.1",
+        "P3.6"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G02",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "BRW-NAV-OBSERVE",
+      "family": "BRW",
+      "workPackages": [
+        "P3.5"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "BRW-ACT-DOWNLOAD",
+      "family": "BRW",
+      "workPackages": [
+        "P3.5"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "BRW-HANDOFF",
+      "family": "BRW",
+      "workPackages": [
+        "P3.5"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "BRW-LOGIN-POLICY",
+      "family": "BRW",
+      "workPackages": [
+        "P3.5"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    },
+    {
+      "id": "BRW-LOCAL-PREVIEW",
+      "family": "BRW",
+      "workPackages": [
+        "P3.5"
+      ],
+      "state": "code_verified_App_pending",
+      "compiledThisBatch": true,
+      "appVerifiedThisBatch": false,
+      "implementationGoal": "G04",
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+    }
+  ],
+  "sourceHandoffs": [
+    {
+      "component": "workspace-file-text",
+      "state": "integrated_component_verified_App_pending",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "source_ready_uncompiled",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "component": "saf-platform-gateway",
+      "state": "integrated_component_verified_App_pending",
+      "files": 19,
+      "hashReadback": "all_matched",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "source_ready_uncompiled",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "component": "ide-renderer",
+      "state": "integrated_component_verified_App_pending",
+      "files": 21,
+      "hashReadback": "21 actual files matched, one manifest path explicitly normalized",
+      "initialHandoffState": "source_ready_uncompiled",
+      "appAcceptanceState": "pending_G04_R2",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2."
+    },
+    {
+      "component": "native-git-actions",
+      "state": "integrated_component_verified_App_pending",
+      "files": 15,
+      "vendorFiles": 950,
+      "hashReadback": "all_matched",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "native_git_module_objects_verified_core_pending",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "component": "native-workspace-facade",
+      "state": "integrated_component_verified_App_pending",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "source_ready_uncompiled_for_android",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "component": "archive-network-services",
+      "state": "integrated_component_verified_App_pending",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "source_ready_uncompiled_for_android",
+      "appAcceptanceState": "pending_G04_R2"
+    },
+    {
+      "component": "native-git-platform-trust",
+      "state": "integrated_component_verified_App_pending",
+      "note": "Original handoff retained as history; current coherent App/Kotlin/native objects and relevant host behavior checked. Actual App/visual/device and stage APK remain R2.",
+      "initialHandoffState": "source_ready_uncompiled_for_android",
+      "appAcceptanceState": "pending_G04_R2"
+    }
+  ],
+  "notYetStarted": [],
+  "verification": "Current Mainsource35/0 (Network17 Facade10 SourceHost8); parentBrowser67/0 Git81/0 CoreSwiftTesting104/0 LSP25/0 TerminalDomain8/0; AppSource16+Network9 andunchangedTerminal8; IDE54/SAF70/Browser28 accepted. Actual Swift6.4.1 AndroidARM64 Core10 object/link passed96.878s/2211stableinputentries; binary+symbols+16KiB+180JNIimports verified. No wholeApp/device/visual/newAPKclaim.",
+  "progressReference": "../../docs/FLOE_ANDROID_PROGRESS.zh-CN.md#2026-10-24g04-r1源码批次进行中",
+  "appIntegration": {
+    "workspaceFiles": "source-implemented: exact ordinary-task native binding, Sora IdeHost, create/mkdir/move/copy/delete modal actions; not Android-compiled",
+    "ideTransactions": "single native edit inflight, ACK revision chaining, dependent commands fenced, rejected tail retained, callback detach and native projection refresh guarded",
+    "focusedJvmTests": {
+      "passed": 54,
+      "productionSources": 6,
+      "testClasses": 3,
+      "androidUIIncluded": false,
+      "nativeIncluded": false
+    },
+    "fullGoalComplete": false,
+    "sharedUriGrants": "source-implemented across actual3existingAppconsumers; pureSAFgateway17sourcescompiled70tests; Androidcallers/framework/deviceunverified",
+    "sourceTransport": "Final Provider12 and Network15 source hashes accepted. Application same-epoch controllers, JNI/source mailbox, Files source/network sheets and native journal/recovery registration source mounted; Core/App/device checks pending.",
+    "gitRemoteTrust": "source trust seam+Cshim graph integrated; Main global remote TLS epoch gate added; actualSwift6compile/link/RootJNI/GitUIpending",
+    "terminal": "Source-only actual TERMINAL inspector and Application-owned controller bound after originalLinuxShellPump; native facade registry; close reader before originalLinux drain/rebind.",
+    "languageSupport": "Source14 final hashes accepted. Saved native settings CAS and actual availability/last-document process ownership delivered; original environment settings card available through terminal sheet. Native/JVM authored checks and App pending.",
+    "gitChanges": "Final GitActions44 source handoff accepted and Main common host/JNI/scene mounts added; actual Changes/Actions UI source remains App-uncompiled, no real account calls.",
+    "browser": "Source-only actual task inspector/offscreen layout, same-epoch pump, original preview after native save, panel/handoff routing and real IO drain. Pure browser JVM28 pass; Android/native compile pending.",
+    "projectionRecovery": "Native original FileService durable no-overwrite full-text/hash copy plus Files sheet, rejected/pending identity and repeated-failure preservation. IDE54 pure JVM pass; native4 test sources unrun.",
+    "activeSourcePackages": {
+      "gitActionsComposition": "job7bb terminal/code-ready; final hashes matched, original durable engine/App and14guardedtools accepted. Main common mounts applied. No native/App compile yet.",
+      "networkWorkspaceComposition": "job200 running; WebDAV/SMB service/source/credential/LAN/App integration, explicit installed-composition guidance accepted; Main mounts pending final API",
+      "lspSettingsLifecycle": "jobbde running; persistent settings/availability/terminal ownership and package setup guidance; Main scopes disjoint"
+    }
+  },
+  "activeSourcePackages": {},
+  "currentIntegrationBatch": {
+    "archiveNetwork": "Original archive/network source accepted22 hashes plus final network composition15 hashes; original adapters/vault/LAN/source journal and actual Files/App/native same-epoch mounts source implemented. Core actual compiler repair and native/App behavior pending. Original one localization host failure retained.",
+    "browserPreview": "Actual latest193548 Browser67/0. Original failures retained; AppWebView/devicevisual/takeover remainsR2. Final currentAndroid link pending.",
+    "terminalLsp": "Actual LSP25/0 TerminalDomain8/0; unchangedAppTerminal8 reused. Final currentAndroid objects andAppdevice remain.",
+    "editor": "Actual54 pure-JVM tests passed including two failed recovery branches; native document adapter suite passed in actual173617, explicitly BOM/CRLF/emoji edit-undo-save test passed log828. Final source binding/current Android compile and App/device acceptance remain separate.",
+    "git": "Actual latest193548 Git81/0 + CoreSwiftTesting104/0 inclrealActionsengine/policy/domain after accepted52bc canonicalintegration. No account/dispatch/remote proof. FinalAndroidlink pending.",
+    "cleanup": "Finishedhostcompiledout/arm64outputs andobsoleteCore09binary+debug removed afterexportandnoopenhandlechecks: observedinternalfree+3462737920 andexternal+305258496 bytes. Earlierduplicaterollback+129576960 external. CurrentCore10/JNI05/G03rollback/SDK/AVD/nextAPKcaches retained.",
+    "network": "Final ownedIO cancellationtoken at4sites; mailboxboundepochreadatomic; all-statejournalhistory separatefrompendingreconcile; source/facade/network35/0 on currentMainbytes. ActualAndroidCore10object/link passed.",
+    "nativeObjects": "CurrentCore10 actualAndroidarm64 objects/link passed96.878s/2211stableinputs; artifact+symbols saved,BuildID/16KiB/180JNIimports andunchanged127-sourceAuthorityreusereadbackverified.",
+    "appCompile": "Changed Full/Play App source verified via successful25-case Source/Network cohort and Play compile; originalTerminal8 passes reused. Root-retire insertion race guarded, raw32-test failures preserved. No App/device proof.",
+    "provenance": "Finalcore+Authoritymanifests regenerated andread-onlychecks passed; exactcurrentartifacts exported. No rebuildofunchangedAuthority/JNI; no digest-onlytrust exemption."
+  },
+  "goalComplete": false,
+  "subgoalCodeVerified": true,
+  "goalCompleteMeaning": "Whole G04 App/device/phase APK remains open; R1 code-stage delivery is separate.",
+  "currentComponentQualification": {
+    "androidCore": {
+      "swift": "6.4.1",
+      "abi": "arm64-v8a",
+      "api": 28,
+      "seconds": 96.87807488441467,
+      "inputEntries": 2211,
+      "stableInputs": true,
+      "sha256": "614ed02d10f855c54659103e7571046cf01b39cf3c665c504d153bd830a449cb",
+      "symbolsSHA256": "ba380940047d212ff95104378ca578d5dc0f301cfcbec8f0e24bbacafd10b8e3",
+      "loadAlignment": 16384,
+      "jniRequiredImports": 180,
+      "missingImports": 0
+    },
+    "nativeHost": {
+      "sourceNetworkFacade": 35,
+      "browser": 67,
+      "git": 81,
+      "coreSwiftTesting": 104,
+      "lsp": 25,
+      "terminalDomain": 8,
+      "failures": 0
+    },
+    "app": "Full/Play Kotlin/resources and current25Source/Network JVM qualified; unchangedTerminal8 reused",
+    "AppAndVisualAcceptance": "pending_G04_R2",
+    "legacyProbeLimit": "Early isolatedarchivehost123 had1IDEzhcatalogenvcase/3asserts failed; allarchive/mount/codec/RAR casespassed. R2checksactualAppbilingualcopy, nofulllegacyhostpassclaim."
+  }
+}

@@ -262,8 +262,7 @@ class AttachmentImportController internal constructor(
     private val entries = ConcurrentHashMap<String, StagingEntry>()
     private val copies = ConcurrentHashMap<StageOwner, Unit>()
     private val cleanupJobs = ConcurrentHashMap<Job, Unit>()
-    private val ownedReadGrants = ConcurrentHashMap<Uri, Unit>()
-    private val grantLock = Any()
+    private val readGrantLeases = ConcurrentHashMap<Uri, com.floe.android.safgateway.SafSharedGrantBroker.Lease>()
     private val stopped = AtomicBoolean(false)
 
     companion object {
@@ -287,7 +286,7 @@ class AttachmentImportController internal constructor(
         attempts.forEach(::cancelCopy)
         attempts.mapNotNull { it.job.get() }.forEach { it.join() }
         entries.keys.toList().forEach(::discardEntry)
-        ownedReadGrants.keys.toList().forEach(::releaseScopedReadIfUnused)
+        readGrantLeases.keys.toList().forEach(::releaseScopedReadIfUnused)
         cleanupJobs.keys.toList().forEach { it.join() }
     }
 
@@ -327,10 +326,19 @@ class AttachmentImportController internal constructor(
     }
 
     private fun startCopy(owner: StageOwner, uri: Uri, replacingId: String? = null) {
-        synchronized(grantLock) { owner.sourceUri = uri; copies[owner] = Unit }
+        SharedUriGrantAuthority.withExclusiveAuthority { owner.sourceUri = uri; copies[owner] = Unit }
         // Resolution itself stays on the IO copy dispatcher (deferred through
         // the provider), never on the picker's calling thread.
-        startCopyCore(owner, replacingId) { sourceResolver(uri) }
+        startCopyCore(owner, replacingId) {
+            // Retain/check/take before metadata or stream IO; a second feature
+            // cannot drop the shared OS grant between those steps.
+            SharedUriGrantAuthority.withExclusiveAuthority {
+                if (!readGrantLeases.containsKey(uri)) {
+                    readGrantLeases[uri] = SharedUriGrantAuthority.acquireRead(host.appContext.contentResolver, uri)
+                }
+            }
+            sourceResolver(uri)
+        }
     }
 
     /** Test seam for one owned staging attempt (mirrors the exact session /
@@ -347,7 +355,7 @@ class AttachmentImportController internal constructor(
         source: AttachmentSource,
     ) {
         val owner = StageOwner(session, draftNonce, draftHomeGeneration)
-        synchronized(grantLock) { owner.sourceUri = source.uri; copies[owner] = Unit }
+        SharedUriGrantAuthority.withExclusiveAuthority { owner.sourceUri = source.uri; copies[owner] = Unit }
         startCopyCore(owner, null) { source }
     }
 
@@ -365,8 +373,10 @@ class AttachmentImportController internal constructor(
                 }
             } catch (_: CancellationException) {
                 cancelCopy(owner)
+            } catch (_: Exception) {
+                publishCopyFailure(owner, "source_unreadable")
             } finally {
-                synchronized(grantLock) { copies.remove(owner) }
+                SharedUriGrantAuthority.withExclusiveAuthority { copies.remove(owner) }
                 if (owner.cancelled.get()) {
                     owner.stagingId?.let { id ->
                         entries[id]?.takeIf { it.attempt === owner }?.let {
@@ -380,7 +390,7 @@ class AttachmentImportController internal constructor(
         }
         owner.job.set(job)
         job.invokeOnCompletion {
-            synchronized(grantLock) { copies.remove(owner) }
+            SharedUriGrantAuthority.withExclusiveAuthority { copies.remove(owner) }
             replacedAttempt?.retrying?.set(false)
         }
         job.start()
@@ -594,22 +604,6 @@ class AttachmentImportController internal constructor(
             ensureOwner(owner)
             channel.end(ingressReceipt, displayName, mimeType)
             ensureOwner(owner)
-            // Only release grants actually acquired by this importer, and
-            // only after every row/copy using the URI is gone. Scoped READ
-            // is taken solely for a REAL platform URI (justified user
-            // import); substituted test sources carry no URI and take none.
-            source.uri?.let { uri ->
-                val context: Context = host.appContext
-                synchronized(grantLock) {
-                    runCatching {
-                        val alreadyHeld = context.contentResolver.persistedUriPermissions.any {
-                            it.uri == uri && it.isReadPermission
-                        }
-                        context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        if (!alreadyHeld) ownedReadGrants[uri] = Unit
-                    }
-                }
-            }
             val staged = pending.copy(
                 byteCount = total,
                 sha256 = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) },
@@ -1050,13 +1044,9 @@ class AttachmentImportController internal constructor(
     }
 
     private fun releaseScopedReadIfUnused(uri: Uri) = launchCleanup {
-        synchronized(grantLock) {
-            if (entries.values.any { it.sourceUri == uri } || copies.keys.any { it.sourceUri == uri }) return@synchronized
-            if (!ownedReadGrants.containsKey(uri)) return@synchronized
-            val released = runCatching {
-                host.appContext.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }.isSuccess
-            if (released) ownedReadGrants.remove(uri)
+        SharedUriGrantAuthority.withExclusiveAuthority {
+            if (entries.values.any { it.sourceUri == uri } || copies.keys.any { it.sourceUri == uri }) return@withExclusiveAuthority
+            readGrantLeases.remove(uri)?.close()
         }
     }
 }

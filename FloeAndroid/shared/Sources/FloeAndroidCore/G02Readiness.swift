@@ -47,6 +47,13 @@ public enum G02DomainKey: String, Sendable, CaseIterable {
     case settingsPersonalization
     case settingsUsage
     case settingsPrivacy
+    /// G04 accepted additive (Main decisions D12/D14, 2026-10-24): the real
+    /// file/editor domain. Like the settings/privacy additions before it,
+    /// this KEY is additive to the readback vocabulary; every pre-existing
+    /// key, state, handler family and the RB1 missing-binding barrier stay
+    /// byte-identical. It becomes ready ONLY through the real workspace
+    /// extension attachment — never from source presence.
+    case workspaceDomain
 }
 
 public enum G02DomainState: String, Sendable {
@@ -179,6 +186,17 @@ public enum G02Readiness {
                 key(.applicationConfiguration, "privacy.history.clear"),
                 key(.applicationConfiguration, "privacy.modelConfiguration.clear"),
             ]
+        case .workspaceDomain:
+            // G04 accepted additive family (Main decisions D12/D14): the
+            // closed workspace read/write/activate keys. Same frozen-family
+            // rule as temporary/privacy — readiness comes ONLY from the real
+            // root-owned facade binding all three actual keys; the old
+            // 87-rule barrier and every other domain are unchanged.
+            return [
+                key(.conversationLifecycle, "workspace.read"),
+                key(.conversationLifecycle, "workspace.write"),
+                key(.conversationLifecycle, "workspace.activate"),
+            ]
         }
     }
 
@@ -195,10 +213,12 @@ public enum G02Readiness {
             // for not-yet-integrated optional domains); the readback reports
             // the ACTUAL bound intersection — never a substitute subset.
             let expected = expectedHandlerKeys(for: domain)
-            let id: G02DomainExtensionID? =
-                domain == .temporaryDomain ? G02DomainExtensionKey.temporary
-                    : domain == .settingsPrivacy ? G02DomainExtensionKey.privacy
-                    : nil
+            let id: G02DomainExtensionID? = switch domain {
+            case .temporaryDomain: G02DomainExtensionKey.temporary
+            case .settingsPrivacy: G02DomainExtensionKey.privacy
+            case .workspaceDomain: G02DomainExtensionKey.workspace
+            default: nil
+            }
             let boundIntersection = expected.filter { boundKeys.contains($0) }
             let keysPresent = !expected.isEmpty && boundIntersection.count == expected.count
             var state = G02DomainState.blocked
@@ -237,6 +257,21 @@ public enum G02Readiness {
                     missing = [domain == .temporaryDomain
                         ? "temporaryExtensionNotIntegrated"
                         : "privacyExtensionNotIntegrated"]
+                }
+            case .workspaceDomain:
+                // G04 optional extension (Main decisions D12/D14): ready ONLY
+                // when the REAL root-owned workspace facade attached AND its
+                // three actual keys are bound. Never ready from source
+                // presence, never a stub, and it never gates the ordinary
+                // base or the old G02 missing-binding/run readiness.
+                if let installed, let id,
+                   installed.attachedExtensions[id] != nil, keysPresent {
+                    state = .ready
+                } else if let installed, let id,
+                          installed.attachedExtensions[id] != nil {
+                    missing = ["workspaceDomainHandlers"]
+                } else {
+                    missing = ["workspaceExtensionNotIntegrated"]
                 }
             case .transportDeviceQualification:
                 if transportQualified { state = .ready }

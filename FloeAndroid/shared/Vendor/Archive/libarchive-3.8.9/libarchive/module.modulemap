@@ -1,0 +1,8 @@
+/* SwiftPM module map (lane overlay addition, documented in RECIPE.md),
+ * mirroring the iOS bootstrap CArchive.h umbrella: exactly the two public
+ * libarchive headers, never the internal archive_*_private.h set.
+ */
+module CArchive [system] {
+    header "CArchive.h"
+    export *
+}

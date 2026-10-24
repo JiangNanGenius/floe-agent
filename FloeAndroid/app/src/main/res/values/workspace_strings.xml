@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_new_file">New file</string>
+    <string name="workspace_new_folder">New folder</string>
+    <string name="workspace_move">Move or rename</string>
+    <string name="workspace_copy">Copy</string>
+    <string name="workspace_delete">Delete</string>
+    <string name="workspace_file_actions">File actions</string>
+    <string name="workspace_relative_path">Path in workspace</string>
+    <string name="workspace_destination_path">Destination path</string>
+    <string name="workspace_delete_confirmation">Delete this file or folder and its contents? Unsaved documents must be closed first.</string>
+    <string name="workspace_apply">Apply</string>
+    <string name="workspace_retry">Try again</string>
+    <string name="workspace_temporary_unavailable">Files are available in saved tasks.</string>
+    <string name="workspace_conflict_error">The file changed or has unsaved edits. Review it in the editor before trying again.</string>
+    <string name="workspace_access_error">This location is not accessible. Choose a permitted path.</string>
+    <string name="workspace_size_error">This content is too large to open here.</string>
+    <string name="workspace_language_unavailable">Language support is unavailable. Install the language server in the local environment, then try again.</string>
+    <string name="workspace_run_pending">The run has not returned a result yet. Check its status in Terminal before starting another.</string>
+    <string name="workspace_owner_error">The workspace changed. Close and reopen Files.</string>
+    <string name="workspace_operation_error">The operation could not be completed. Check the path and try again.</string>
+</resources>

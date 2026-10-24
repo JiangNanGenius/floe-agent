@@ -61,12 +61,24 @@ class RuntimeHost internal constructor(
     val webSearch = WebSearchHostController(this)
     val attachments = AttachmentImportController(this)
     val home = HomeLaunchpadHost(this)
+    /** Ordinary-task editor projections outlive Activity/inspector views. */
+    internal val workspaceEditors = G04WorkspaceEditorController(this)
+    internal val browser = BrowserHostController(this)
+    internal val workspaceGit = G04GitHostController(this)
+    internal val workspaceActions = G04ActionsHostController(this)
+    internal var workspaceGitTrust: G04GitTrustController? = null
+    internal var workspaceTerminal: G04TerminalHostController? = null
 
     private var observationJob: Job? = null
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     private val configProjectionRefreshed = java.util.concurrent.atomic.AtomicBoolean(false)
     /** Application-owned foreground adapter; absent in pure controller fixtures. */
     internal var runForeground: RunForegroundBinding? = null
+    /** Application-owned provider transport; null in fixtures/unbound hosts. */
+    internal var workspaceSources: WorkspaceSourcePump? = null
+    /** Same Application owner and native epoch as the provider transport. */
+    internal var networkWorkspaceHost: NetworkWorkspaceHostController? = null
+    internal var workspaceSourceHost: WorkspaceSourceHostController? = null
 
     internal enum class BackgroundAvailability { NOTIFICATIONS_BLOCKED, SYSTEM_UNAVAILABLE }
     internal val backgroundAvailabilityNotice = MutableStateFlow<BackgroundAvailability?>(null)

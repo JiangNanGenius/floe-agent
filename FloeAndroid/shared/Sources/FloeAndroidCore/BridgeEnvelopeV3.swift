@@ -321,6 +321,30 @@ public enum BridgeV3 {
                     revisionRequired: true),
         CommandRule(command: "conversation.compact", scope: .conversationLifecycle,
                     revisionRequired: false),
+
+        // G04 workspace domain additive ledger (Main decisions D12/D14,
+        // 2026-10-24). APPEND-ONLY: the 57 legacy tuples, the 27 accepted
+        // settings tuples and the 3 goal-core tuples above stay
+        // byte-identical; no existing identity is renamed, deleted or
+        // relabeled; the mailbox bounds are unchanged. The three tuples ride
+        // conversationLifecycle (REAL envelope taskID only, NO run/env/job
+        // role) and are the ONLY ingress for the root-owned workspace facade.
+        // Both document-command outer revisions stay NOT required because the
+        // explicit native per-document token (opaque `revision` inside the
+        // closed payload grammar) governs edits; `workspace.activate` carries
+        // no revision because it establishes the exact durable ownership
+        // binding. Payload unknown-field/absolute-root/permission rejection
+        // and the per-operation whitelist are enforced by G04WorkspaceWire,
+        // re-validated AGAIN by the real facade before any side effect. No
+        // handler is registered in the ordinary base: only a successful
+        // G04WorkspaceDomainExtension.attach binds these keys; the frozen
+        // fail-closed `runtimeUnavailable` refusal otherwise is unchanged.
+        CommandRule(command: "workspace.read", scope: .conversationLifecycle,
+                    revisionRequired: false),
+        CommandRule(command: "workspace.write", scope: .conversationLifecycle,
+                    revisionRequired: false),
+        CommandRule(command: "workspace.activate", scope: .conversationLifecycle,
+                    revisionRequired: false),
     ]
 
     public enum BinderChannel: String, Sendable {

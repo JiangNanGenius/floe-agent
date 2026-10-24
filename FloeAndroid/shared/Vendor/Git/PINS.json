@@ -1,0 +1,88 @@
+{
+  "generatedAtUTC": "2026-10-24T04:30:00Z",
+  "lane": "job-6cb7731a07774f01 (G04-R1 native Git + GitHub Actions dependency closure)",
+  "decision": "Main D2 (entry/MAIN_ARCHITECTURE_DECISION_02.json): native libgit2/SwiftGitX preserves Git without an installed Linux guest; no guest-git substitution.",
+  "pins": [
+    {
+      "name": "libgit2",
+      "upstream": "https://github.com/ibrahimcetin/libgit2.git",
+      "ref": "tag 1.9.2",
+      "revision": "52287b0914f300f916b58fec80e13d8dd8f6824f",
+      "revisionDate": "2025-11-30T23:46:29+03:00",
+      "tree": "ee3a2b9cdd037128bad0cb03517885b44b59d0bf",
+      "license": "GPL-2.0-only WITH libgit2 linking exception (COPYING at repo root)",
+      "pinSource": "FloeAgent Package.resolved at public 3fd597b5 (identical revision+version) and SwiftGitX 0.4.0 own Package.resolved",
+      "vendored": "Vendor/Git/libgit2 (git archive of the exact revision; per-file git-blob parity recorded in VENDOR_FILE_HASHES.sha256)",
+      "exportExclusions": [
+        "tests/",
+        "examples/",
+        "fuzzers/",
+        "ci/",
+        "docs/",
+        ".github/",
+        "api.docurium/",
+        "package.json",
+        "script/",
+        "cmake/",
+        "SECURITY.md",
+        ".gitattributes",
+        ".editorconfig",
+        "appveyor.yml",
+        "FUNDING.json",
+        "git.git-authors",
+        "Package.swift (host-evaluated upstream manifest — replaced by the proposed SwiftPM targets, see README.md)",
+        "all CMakeLists.txt, *.cmake.in, src/libgit2/experimental.h.in, src/libgit2/git2.rc, src/util/git2_features.h.in (build-system inputs only; zero compiled C/H edited)"
+      ],
+      "compiledSourceEdits": "NONE — every retained .c/.h is byte-identical to the pinned revision",
+      "gatedOverlayTU": "src/util/hash/floe_common_crypto.c (lane job-7320d971f5df43c0, Main-approved 2026-10-24) — added gated wrapper translation unit, zero upstream bytes edited: it #includes the ORIGINAL common_crypto.c verbatim only when GIT_SHA1_COMMON_CRYPTO/GIT_SHA256_COMMON_CRYPTO is defined (Apple host cohort identical behavior) and compiles empty on Android (BUILTIN hashes). Required because the static SwiftPM source list compiles src/util wholesale and upstream common_crypto.h includes <CommonCrypto/CommonDigest.h> before the backend guards; host-side #if os(macOS) manifest logic is forbidden for the android28 cross build. Main-owned Package.swift excludes \"src/util/hash/common_crypto.c\" so the wrapper replaces it 1:1 and no supported backend is narrowed. VENDOR_FILE_HASHES.sha256 grew 950→951 files: new manifest sha256 4725b4b2b1a494942a11f011c71fc06cf4b7c9869f8bf17f48ae95adc3a71a39 (previous c5abefcaac976c2ad8e4f8dfd6b60375dd84a9ce40b3ea1287edda261057f8d5). | FLOE-OVERLAY 20261024-2 (lane job-6975418b406c4035, host cohort): two more gated wrapper TUs src/util/hash/floe_collisiondetect.c and src/util/hash/floe_builtin.c, same pattern — each #includes the ORIGINAL collisiondetect.c/builtin.c verbatim only under GIT_SHA1_BUILTIN/GIT_SHA256_BUILTIN (Android: identical code path as the accepted Core09 build) and compiles empty on Apple hosts where CommonCrypto owns git_hash_sha1_*/git_hash_sha256_* (upstream CMake excludes these TUs there; a static SwiftPM source list cannot). Package.swift excludes the two original .c files 1:1. Zero upstream bytes edited; no backend narrowed on any platform."
+    },
+    {
+      "name": "SwiftGitX",
+      "upstream": "https://github.com/ibrahimcetin/SwiftGitX.git",
+      "ref": "tag 0.4.0",
+      "revision": "fcfb71e3dcbbaa70d120b98b7477ce173074aec3",
+      "revisionDate": "2025-12-01T12:54:42+03:00",
+      "tree": "5803b7aafeed283b5ac1e6d5690d0c25582e7e3d",
+      "license": "MIT (LICENSE at repo root)",
+      "pinSource": "FloeAgent Package.resolved at public 3fd597b5",
+      "vendored": "Vendor/Git/swiftgitx (git archive of the exact revision)",
+      "exportExclusions": [
+        "Tests/",
+        ".github/",
+        "Package.swift + Package.resolved (remote-pin manifest — the vendored tree is consumed through the proposed SwiftPM target path), README.md"
+      ],
+      "compiledSourceEdits": "NONE — 54 Swift files byte-identical; imports only Foundation + the `libgit2` module"
+    },
+    {
+      "name": "mbedtls",
+      "role": "Android TLS backend for libgit2 1.9.2 (GIT_HTTPS_MBEDTLS)",
+      "upstream": "https://github.com/Mbed-TLS/mbedtls",
+      "ref": "release mbedtls-3.6.7 (3.6 LTS)",
+      "releaseURL": "https://github.com/Mbed-TLS/mbedtls/releases/tag/mbedtls-3.6.7",
+      "tarball": "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.7/mbedtls-3.6.7.tar.bz2",
+      "tarballSHA256": "a7e8bcbec0e6f761b4af24f25677626b35f762f68eef79c08677a363212d11f6",
+      "tarballSHA256Verified": "matched the digest published in the official release body AND the downloaded bytes (both equal)",
+      "license": "Apache-2.0 OR GPL-2.0-or-later dual (LICENSE carries both full texts; Floe takes Apache-2.0)",
+      "supportWindow": "3.6 LTS is supported until March 2027 per upstream BRANCHES.md; 2.28 LTS is already end-of-life upstream, which is why the older backend pin was rejected",
+      "vendored": "Vendor/Git/mbedtls (include/ + library/ + LICENSE from the verified tarball only)",
+      "exportExclusions": [
+        "programs/",
+        "tests/",
+        "configs/",
+        "docs/",
+        "scripts/",
+        "3rdparty/ (Everest/HACL only used when MBEDTLS_ECDH_VARIANT_EVEREST_ENABLED, which is off in the shipped config)",
+        "library/CMakeLists.txt + library/Makefile (build-system inputs only)"
+      ],
+      "compiledSourceEdits": "NONE — every retained .c/.h is byte-identical to the release",
+      "configOverlay": "floe-config/floe_android_mbedtls_config.h — full copy of include/mbedtls/mbedtls_config.h with exactly ONE documented hunk (FLOE-ANDROID-PATCH 20261024-1 disables MBEDTLS_SSL_PROTO_TLS1_3; libgit2 1.9.2 never calls psa_crypto_init(), so the TLS ceiling is TLS 1.2 with libgit2's ECDHE/AEAD suite list; GitHub requires TLS 1.2+, so no promised connectivity is lost). Injected via -DMBEDTLS_CONFIG_FILE; it is a data header, not a C source edit."
+    }
+  ],
+  "whyNotOtherBackends": [
+    "Upstream libgit2 Package.swift selects Apple vs non-Apple settings with host-evaluated #if os(macOS); an android28 cross build from a macOS host compiles the SecureTransport/CommonCrypto branch against the Android target and fails. The vendored overlay manifests replace host-evaluation with per-platform .when(platforms:) conditions only.",
+    "The upstream non-Apple branch targets OpenSSL dlopen at runtime (GIT_HTTPS_OPENSSL_DYNAMIC); Android exposes no public system libssl/libcrypto, so dynamic OpenSSL cannot deliver HTTPS on Android.",
+    "OpenSSL 3.x static requires its perl-driven Configure, breaking the one-command SwiftPM native build and adding an unverifiable external artifact boundary; mbedTLS compiles as plain C inside the same graph.",
+    "libgit2 1.9.2's mbedTLS stream backend predates the 3.x psa-only TLS 1.3 stack; the documented config hunk keeps TLS 1.2 fully functional instead of patching upstream C.",
+    "vendored binary blobs, floating refs, system-provided Android TLS and guest git are all explicitly forbidden or substituted-away routes for this lane (task + Main D2)."
+  ]
+}

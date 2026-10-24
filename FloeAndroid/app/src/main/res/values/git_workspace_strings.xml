@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="git_workspace_initialize">Create repository</string>
+    <string name="git_workspace_commit">Commit</string>
+    <string name="git_workspace_create_branch">Create branch</string>
+    <string name="git_workspace_switch_branch">Switch branch</string>
+    <string name="git_workspace_merge">Merge branch</string>
+    <string name="git_workspace_abort_merge">Abort merge</string>
+    <string name="git_workspace_discard">Discard changes</string>
+    <string name="git_workspace_clone">Clone repository</string>
+    <string name="git_workspace_fetch">Fetch</string>
+    <string name="git_workspace_pull">Pull</string>
+    <string name="git_workspace_pull_merge">Pull and merge</string>
+    <string name="git_workspace_push">Push</string>
+    <string name="git_workspace_refresh">Refresh</string>
+    <string name="git_workspace_menu">Git actions</string>
+    <string name="git_workspace_account_required">Add a GitHub token in Settings to continue.</string>
+    <string name="git_workspace_trust_unavailable">Secure Git connections are unavailable. Restart the app after checking the device’s trusted certificates.</string>
+    <string name="git_workspace_failed">Git could not complete this action. Review the repository and try again.</string>
+    <string name="git_workspace_no_repository">This workspace has no Git repository yet.</string>
+    <string name="git_workspace_detached">Detached HEAD</string>
+    <string name="git_workspace_stage_all">Stage all</string>
+    <string name="git_workspace_stage">Stage</string>
+    <string name="git_workspace_unstage">Unstage</string>
+    <string name="git_workspace_staged">Staged</string>
+    <string name="git_workspace_unstaged">Not staged</string>
+    <string name="git_workspace_diff">View changes</string>
+    <string name="git_workspace_clean">No uncommitted changes.</string>
+    <string name="git_workspace_history">Recent commits</string>
+    <string name="git_workspace_removed_tabs">Some open files are no longer available after this action:</string>
+    <string name="git_workspace_message">Commit message</string>
+    <string name="git_workspace_branch">Branch or reference</string>
+    <string name="git_workspace_remote_url">Repository HTTPS URL</string>
+    <string name="git_workspace_discard_confirmation">Discard the working and staged changes for this path? A recovery copy is kept when available. Save unsaved editor changes first.</string>
+    <string name="git_workspace_push_confirmation">Push committed changes to the configured remote repository?</string>
+    <string name="git_workspace_abort_confirmation">Abort the current merge and restore its previous working state? Save unsaved editor changes first.</string>
+    <string name="git_workspace_action_caption">This action applies to the selected task’s workspace.</string>
+    <string name="git_workspace_actions">Cloud runs</string>
+    <string name="git_workspace_actions_close">Back to changes</string>
+</resources>

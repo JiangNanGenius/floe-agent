@@ -110,14 +110,15 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
 
     func testClosedCommandMatrixIsUniqueAndComplete() throws {
         let rules = BridgeV3.commandRules
-        // goal-core batch (2026-10-21): 84 -> 87 tuples appended (plan.accept
-        // under launch; goal.confirm + conversation.compact under
-        // conversationLifecycle). The 57 legacy + 27 settings tuples, the 55
+        // G04 workspace ledger (Main decisions D12/D14, 2026-10-24):
+        // 87 -> 90 tuples appended (workspace.read, workspace.write and
+        // workspace.activate under conversationLifecycle, after the goal-core
+        // batch). The 57 legacy + 27 settings + 3 goal-core tuples, the 55
         // configuration entries, the 19 labels and the mailbox bounds are
         // unchanged; there is NO child.create and no renamed/deleted identity.
-        XCTAssertEqual(rules.count, 87)
+        XCTAssertEqual(rules.count, 90)
         XCTAssertEqual(rules.filter { $0.scope == .applicationConfiguration }.count, 55)
-        XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 13)
+        XCTAssertEqual(rules.filter { $0.scope == .conversationLifecycle }.count, 16)
         XCTAssertEqual(rules.filter { $0.scope == .launch }.count, 5)
         XCTAssertEqual(rules.filter { $0.scope == .taskExecution }.count, 14)
         // The third content.read entry shares (scope, command) with the
@@ -173,7 +174,7 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
         XCTAssertEqual(declaredLabels.subtracting(activeLabels),
                        ["settings.approval", "credentials", "operations"])
 
-        // Manual golden matrix: all 87 approved (scope, command) pairs are
+        // Manual golden matrix: all 90 approved (scope, command) pairs are
         // written here independently of BridgeV3.commandRules, so a source
         // matrix edit that silently adds, drops or relabels a command is
         // caught rather than being derived from the same table. The 57
@@ -279,27 +280,33 @@ final class BridgeEnvelopeV3Tests: XCTestCase {
             ("launch", nil, "plan.accept"),
             ("conversationLifecycle", nil, "goal.confirm"),
             ("conversationLifecycle", nil, "conversation.compact"),
+            // G04 workspace ledger (2026-10-24): the three appended
+            // conversationLifecycle tuples (append-only; no reorder/rename).
+            ("conversationLifecycle", nil, "workspace.read"),
+            ("conversationLifecycle", nil, "workspace.write"),
+            ("conversationLifecycle", nil, "workspace.activate"),
         ]
-        XCTAssertEqual(goldenPairs.count, 87)
+        XCTAssertEqual(goldenPairs.count, 90)
         // The uniqueness key includes configurationScope: the third
         // content.read entry intentionally shares scope+command with the
         // conversations entry. The 57 legacy tuples remain unchanged.
         let goldenKeys = goldenPairs.map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }
-        XCTAssertEqual(Set(goldenKeys).count, 87)
+        XCTAssertEqual(Set(goldenKeys).count, 90)
         XCTAssertEqual(Set(goldenPairs.prefix(57).map {
             "\($0.scope)|\($0.configurationScope ?? "")|\($0.command)"
         }).count, 57)
-        // distinct (scope, command) pairs: 83 legacy/settings + plan.accept
-        // + goal.confirm + conversation.compact (all three are new distinct
-        // commands) => 86 (83+3); distinct COMMAND names are 85 (82+3).
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 86)
-        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 85)
+        // distinct (scope, command) pairs: 86 through goal-core +
+        // workspace.read + workspace.write + workspace.activate (all three
+        // are new distinct commands) => 89 (86+3); distinct COMMAND names are
+        // 88 (85+3).
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.scope)|\($0.command)" }).count, 89)
+        XCTAssertEqual(Set(goldenPairs.map { "\($0.command)" }).count, 88)
         XCTAssertEqual(Set(rules.map {
             "\($0.scope.rawValue)|\($0.configurationScope ?? "")|\($0.command)"
         }), Set(goldenKeys),
-                       "Swift matrix must equal the approved 87-entry golden matrix")
+                       "Swift matrix must equal the approved 90-entry golden matrix")
     }
 
     func testCredentialStatusStaysFailClosedInV3() throws {

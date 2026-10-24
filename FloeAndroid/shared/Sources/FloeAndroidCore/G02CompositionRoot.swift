@@ -208,6 +208,39 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         }
     }
 
+    // MARK: - G04 pre-drain retirement preservation hook (Main 2026-10-24)
+
+    /// SYNCHRONOUS adoption-time gate: called by `AndroidRuntimeBootstrap`
+    /// BEFORE the shutdown state-lock flips (never inside it — the registry
+    /// re-enters the bootstrap lock through `ownedWorkAttachAllowed`). When a
+    /// registered extension owes durable preservation for this epoch it
+    /// attaches ONE REAL `.conversation` owned-work token, which makes the
+    /// ORIGINAL `waitForLifecycleDrain` predicate honestly unable to report a
+    /// clean drain until `runRetirementPreservationIO` settles verified
+    /// bytes and exact-releases the token. If the adoption later refuses,
+    /// the caller MUST `release` what it attached. Attach refusal leaves no
+    /// state and must refuse shutdown when preservation is required.
+    func preparesRetirementPreservation(epoch: UInt64) -> G04WorkspaceRetirementGate.Outcome {
+        let owed = withState { _, _, _, registry in
+            registry.values.contains { $0.requiresRetirementPreservation(epoch: epoch) }
+        }
+        guard owed else { return .notRequired }
+        return G04WorkspaceRetirementGate.shared.prepare(epoch: epoch)
+    }
+
+    /// ASYNC pre-drain driver: runs BEFORE the first drain wait. Defaults do
+    /// nothing; only the workspace extension performs real preservation IO
+    /// under the gate lease (verified -> release; unproven -> the token stays
+    /// and the ORIGINAL drain timeout / failedDrainPending / watch-retry
+    /// machinery keeps the root owned — no fake lease, no silent drop).
+    func runRetirementPreservationIO(epoch: UInt64) async {
+        let extensions: [any G02DomainExtension] =
+            withState { _, _, _, registry in Array(registry.values) }
+        for ext in extensions where ext.requiresRetirementPreservation(epoch: epoch) {
+            await ext.runRetirementPreservationIO(epoch: epoch)
+        }
+    }
+
     /// Attempts ONE extension attach inside the owned install. A failure is
     /// honest and non-fatal: the ordinary base stays installed and the
     /// extension's domains stay blocked (the extension self-rolled back any
@@ -581,6 +614,9 @@ public final class G02RuntimeComposition: @unchecked Sendable {
         // never reaches this path.
         LinuxWorkspaceAuthority.resetInstallationForTesting()
         LinuxReadinessIngress.shared.resetForTesting()
+        // G04 retirement gate: same test-only ownership cleanup (production
+        // releases flow only through verified preservation settle).
+        G04WorkspaceRetirementGate.shared.resetForTesting()
         lock.lock()
         mode = .ordinaryProduct
         lock.unlock()

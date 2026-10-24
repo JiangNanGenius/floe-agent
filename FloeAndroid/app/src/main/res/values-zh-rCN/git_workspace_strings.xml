@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="git_workspace_initialize">创建仓库</string>
+    <string name="git_workspace_commit">提交</string>
+    <string name="git_workspace_create_branch">创建分支</string>
+    <string name="git_workspace_switch_branch">切换分支</string>
+    <string name="git_workspace_merge">合并分支</string>
+    <string name="git_workspace_abort_merge">中止合并</string>
+    <string name="git_workspace_discard">丢弃更改</string>
+    <string name="git_workspace_clone">克隆仓库</string>
+    <string name="git_workspace_fetch">获取远端更新</string>
+    <string name="git_workspace_pull">拉取</string>
+    <string name="git_workspace_pull_merge">拉取并合并</string>
+    <string name="git_workspace_push">推送</string>
+    <string name="git_workspace_refresh">刷新</string>
+    <string name="git_workspace_menu">Git 操作</string>
+    <string name="git_workspace_account_required">请先在设置中添加 GitHub 令牌。</string>
+    <string name="git_workspace_trust_unavailable">暂时无法安全连接 Git。请检查设备的受信任证书后重新启动应用。</string>
+    <string name="git_workspace_failed">Git 未能完成此操作，请检查仓库后重试。</string>
+    <string name="git_workspace_no_repository">此工作区还没有 Git 仓库。</string>
+    <string name="git_workspace_detached">已分离的 HEAD</string>
+    <string name="git_workspace_stage_all">全部暂存</string>
+    <string name="git_workspace_stage">暂存</string>
+    <string name="git_workspace_unstage">取消暂存</string>
+    <string name="git_workspace_staged">已暂存</string>
+    <string name="git_workspace_unstaged">未暂存</string>
+    <string name="git_workspace_diff">查看更改</string>
+    <string name="git_workspace_clean">没有未提交的更改。</string>
+    <string name="git_workspace_history">最近提交</string>
+    <string name="git_workspace_removed_tabs">本次操作后，以下已打开文件不再可用：</string>
+    <string name="git_workspace_message">提交说明</string>
+    <string name="git_workspace_branch">分支或引用</string>
+    <string name="git_workspace_remote_url">仓库 HTTPS 地址</string>
+    <string name="git_workspace_discard_confirmation">丢弃此路径的工作区及暂存更改？可恢复时会保留副本。请先保存编辑器中未保存的内容。</string>
+    <string name="git_workspace_push_confirmation">将已提交的更改推送到配置的远端仓库？</string>
+    <string name="git_workspace_abort_confirmation">中止当前合并并恢复之前的工作状态？请先保存编辑器中未保存的内容。</string>
+    <string name="git_workspace_action_caption">此操作应用于所选任务的工作区。</string>
+    <string name="git_workspace_actions">云端构建</string>
+    <string name="git_workspace_actions_close">返回更改</string>
+</resources>

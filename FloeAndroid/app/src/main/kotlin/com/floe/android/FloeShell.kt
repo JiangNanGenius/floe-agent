@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.key
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
@@ -42,8 +44,10 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.res.stringResource
@@ -308,6 +312,20 @@ private fun FloeShellContent(
                 }
             }
         }
+        val browserAttention by runtimeHost.browser.panelAttention.collectAsState()
+        val userPreviewRequests by runtimeHost.browser.previewPresentationRequests.collectAsState()
+        val selectedBrowserTask = (selection as? SidebarSelection.Conversation)?.conversationId
+        val attentionID = browserAttention.entries.firstOrNull { it.key.equals(selectedBrowserTask, true) }?.value
+        val previewRequest = userPreviewRequests.entries.firstOrNull { it.key.equals(selectedBrowserTask, true) }
+        LaunchedEffect(selectedBrowserTask, attentionID, previewRequest?.value) {
+            val taskID = selectedBrowserTask ?: return@LaunchedEffect
+            if (runtimeHost.conversations.entryFor(taskID)?.isTemporary == true) return@LaunchedEffect
+            val pending = runtimeHost.browser.hasPendingPanelRequest(taskID)
+            if (pending || previewRequest != null) {
+                inspectorRoute = encodeInspectorRoute(InspectorRoute(InspectorContent.BROWSER, taskID))
+                previewRequest?.let { runtimeHost.browser.consumePreviewPresentation(taskID, it.value) }
+            }
+        }
         val requestedInspector by runtimeHost.conversations.inspectorRequest.collectAsState()
         LaunchedEffect(requestedInspector) {
             requestedInspector?.let { (content, conversationId) ->
@@ -341,6 +359,16 @@ private fun FloeShellContent(
             .fillMaxSize()
             .background(Floe.colors.readingSurface),
     ) {
+        if (runtimeHost != null) {
+            val browserTasks by runtimeHost.browser.hostedTasks.collectAsState()
+            // Real layout/viewport, no touch target or accessibility node.
+            // Only already-owned platform bindings are hosted; merely
+            // selecting a task does not conjure a workspace or session.
+            browserTasks.forEach { taskID -> key(runtimeHost, taskID) {
+                BrowserOffscreenHost(taskID, runtimeHost,
+                    Modifier.requiredSize(1024.dp, 768.dp).alpha(0f).clearAndSetSemantics {})
+            } }
+        }
         val totalWidthDp = maxWidth.value
         val overlayMaxWidthDp = maxWidth * 0.92f
         val twoColumn = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth

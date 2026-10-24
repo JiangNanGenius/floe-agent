@@ -1,0 +1,12 @@
+{
+ "name": "liblzma",
+ "version": "5.8.1",
+ "officialURL": "https://tukaani.org/xz/xz-5.8.1.tar.gz",
+ "sha256": "507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543",
+ "crossCheck": "https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz byte-identical (independently hashed 2026-10-24)",
+ "license": "0BSD (COPYING.0BSD retained; liblzma + src/common tuklib headers)",
+ "vendoredScope": "src/liblzma/** (74-unit static set, XZ_THREADS=no) + src/common headers + floe/ pinned config & recipe; CLI/tests/po/docs NOT vendored",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

@@ -45,6 +45,11 @@ class FloeApplication : Application() {
     lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
         private set
     private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
+    private lateinit var workspaceSources: com.floe.android.host.WorkspaceSourcePump
+    private lateinit var workspaceSourceHost: com.floe.android.host.WorkspaceSourceHostController
+    private lateinit var networkWorkspaceHost: com.floe.android.host.NetworkWorkspaceHostController
+    private lateinit var workspaceGitTrust: com.floe.android.host.G04GitTrustController
+    private lateinit var workspaceTerminal: com.floe.android.host.G04TerminalHostController
     // G03-R3: app-owned Core->runtime-UID workspace-copy cleanup pump. It is
     // bound at the SAME actual accepted native Root epoch as the shell pump
     // and stays serviceable while shell/model admission is fenced.
@@ -101,6 +106,24 @@ class FloeApplication : Application() {
         super.onCreate()
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
+        workspaceSources = com.floe.android.host.WorkspaceSourcePump(this, hostScope) {
+            runtimeHost?.nativeRootEpoch()
+        }
+        workspaceSourceHost = com.floe.android.host.WorkspaceSourceHostController(
+            recoveryRoot = java.io.File(cacheDir, "WorkspaceSourceRecovery"),
+            scope = hostScope,
+            ioDispatcher = Dispatchers.IO,
+            currentNativeEpoch = { runtimeHost?.nativeRootEpoch() },
+            gatewayProvider = { runtimeHost?.workspaceSources?.gatewayForEpoch(it) },
+            backendProvider = { runtimeHost?.workspaceSources?.backendForEpoch(it) },
+        )
+        networkWorkspaceHost = com.floe.android.host.NetworkWorkspaceHostController(
+            scope = hostScope, ioDispatcher = Dispatchers.IO,
+            currentNativeEpoch = { runtimeHost?.nativeRootEpoch() },
+            localNetwork = { runtimeHost?.integrations?.localNetwork },
+        )
+        workspaceGitTrust = com.floe.android.host.G04GitTrustController(this) { runtimeHost?.nativeRootEpoch() }
+        workspaceTerminal = com.floe.android.host.G04TerminalHostController(hostScope) { runtimeHost?.nativeRootEpoch() }
         linuxCleanup = com.floe.android.host.linux.LinuxRuntimeCleanupPump(this, hostScope)
         // The controller receives the APPLICATION-owned scope only to run
         // BOUNDED, cancellable re-ingress attempts triggered by REAL
@@ -135,7 +158,11 @@ class FloeApplication : Application() {
             // obligation keeps the drain retryable and never strands the
             // shutdown silently — the durable V36 retry + settlement trigger
             // remain the lifecycle authority.
-            linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
+            // Drain the actual queued UI edits before native Root admission
+            // is fenced; a timeout/refused recovery retains the owner.
+            (runtimeHost?.workspaceEditors?.prepareForRootStop() != false) &&
+                (workspaceTerminal.boundNativeEpoch == 0L || workspaceTerminal.stopAndJoin(workspaceTerminal.boundNativeEpoch, 5_000)) &&
+                linuxShell.stopAndDrain(linuxShell.boundNativeEpoch) &&
                 (linuxCleanup.boundNativeEpoch == 0L ||
                     linuxCleanup.drainAndStop(linuxCleanup.boundNativeEpoch))
         }
@@ -149,6 +176,11 @@ class FloeApplication : Application() {
             gatewayCapability = capability,
             bootstrapCapability = runtimeState,
         ).also { host ->
+            host.workspaceSources = workspaceSources
+            host.workspaceSourceHost = workspaceSourceHost
+            host.networkWorkspaceHost = networkWorkspaceHost
+            host.workspaceGitTrust = workspaceGitTrust
+            host.workspaceTerminal = workspaceTerminal
             host.runForeground = com.floe.android.host.RunForegroundBinding(
                 controller = com.floe.android.runlifecycle.RunForegroundController.forApplication(this),
                 nativeSnapshot = com.floe.android.host.RunForegroundNativeSnapshotSource {
@@ -200,7 +232,14 @@ class FloeApplication : Application() {
                 if (firstStart) runtimeHost?.start()
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     val epoch = runtimeHost?.nativeRootEpoch()
-                    if (epoch != null && epoch > 0) startLinuxLanes(epoch)
+                    if (epoch != null && epoch > 0) {
+                        // Provider IO is independent of installed Linux. Rebind
+                        // only after the previous actual provider pump drained.
+                        startWorkspaceSourceLane(epoch)
+                        startBrowserLane(epoch)
+                        runtimeHost?.workspaceActions?.scene(activityForeground)
+                        startLinuxLanes(epoch)
+                    }
                 }
                 if (!firstStart) {
                     // Root generation replacement: re-arm the two owned
@@ -256,9 +295,57 @@ class FloeApplication : Application() {
                 foregroundObservation?.cancel()
                 localRuntimeObservation?.cancel()
                 linuxReadiness.stop(linuxShell.boundNativeEpoch)
-                kotlinx.coroutines.withContext(Dispatchers.IO) { runtimeHost?.runForeground?.releaseAllForShutdown() }
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    val terminalEpoch = workspaceTerminal.boundNativeEpoch
+                    if (terminalEpoch > 0) workspaceTerminal.stopAndJoin(terminalEpoch, 5_000)
+                    val sourceEpoch = workspaceSources.boundNativeEpoch
+                    if (sourceEpoch > 0) {
+                        networkWorkspaceHost.retireEpoch(sourceEpoch)
+                        workspaceSourceHost.retireEpoch(sourceEpoch)
+                        workspaceSources.stopAndJoin(sourceEpoch, 5_000)
+                    }
+                    runtimeHost?.browser?.let { browser ->
+                        val browserEpoch = browser.boundNativeEpoch
+                        if (browserEpoch > 0) browser.stopAndJoin(browserEpoch, 8_000)
+                    }
+                    workspaceGitTrust.boundEpoch()?.let { workspaceGitTrust.retireStopped(it) }
+                    runtimeHost?.runForeground?.releaseAllForShutdown()
+                }
             }
         }
+    }
+
+    @Volatile private var activityForeground = false
+
+    internal fun setActivityForeground(active: Boolean) {
+        activityForeground = active
+        runtimeHost?.workspaceActions?.scene(active)
+        if (!active) runtimeHost?.browser?.flushPersistentState()
+    }
+
+    private suspend fun startBrowserLane(epoch: Long) {
+        val browser = runtimeHost?.browser ?: return
+        val previous = browser.boundNativeEpoch
+        if (previous > 0 && previous != epoch && !browser.stopAndJoin(previous, 8_000)) return
+        for (attempt in 0 until 4) {
+            if (runtimeHost?.nativeRootEpoch() != epoch) return
+            if (browser.start(epoch)) return
+            kotlinx.coroutines.delay(100L * (attempt + 1))
+        }
+    }
+
+    private suspend fun startWorkspaceSourceLane(epoch: Long) {
+        val previous = workspaceSources.boundNativeEpoch
+        if (previous > 0 && previous != epoch) {
+            networkWorkspaceHost.retireEpoch(previous)
+            workspaceSourceHost.retireEpoch(previous)
+            if (!workspaceSources.stopAndJoin(previous, 5_000)) return
+        }
+        if (workspaceSources.start(epoch)) {
+            workspaceSourceHost.beginEpoch(epoch)
+            networkWorkspaceHost.beginEpoch(epoch)
+        }
+        workspaceGitTrust.ensureBound(epoch)
     }
 
     /**
@@ -275,9 +362,14 @@ class FloeApplication : Application() {
      */
     private suspend fun startLinuxLanes(epoch: Long) {
         val previous = linuxShell.boundNativeEpoch
-        if (previous == epoch) return
+        if (previous == epoch) {
+            workspaceTerminal.start(epoch)
+            return
+        }
         if (previous != 0L) {
             linuxReadiness.stop(previous)
+            val terminalEpoch = workspaceTerminal.boundNativeEpoch
+            if (terminalEpoch > 0 && !workspaceTerminal.stopAndJoin(terminalEpoch, 5_000)) return
             val cleanupDrained = runCatching { linuxCleanup.drainAndStop(previous) }.getOrDefault(false)
             val shellDrained = runCatching { linuxShell.stopAndDrain(previous) }.getOrDefault(false)
             if (!cleanupDrained || !shellDrained) return
@@ -285,6 +377,7 @@ class FloeApplication : Application() {
         // Cleanup remains available independently of model admission.
         runCatching { linuxCleanup.start(epoch) }
         val shellBound = runCatching { linuxShell.start(epoch) }.isSuccess
+        if (shellBound) workspaceTerminal.start(epoch)
         // Existing cloud tasks remain available whatever happens here.
         runCatching { linuxReadiness.start(epoch) }
         if (!shellBound) {
@@ -294,6 +387,7 @@ class FloeApplication : Application() {
                     if (linuxShell.boundNativeEpoch == epoch) return@launch
                     if (runtimeHost?.nativeRootEpoch() != epoch) return@launch
                     if (runCatching { linuxShell.start(epoch) }.isSuccess) {
+                        workspaceTerminal.start(epoch)
                         runCatching { linuxReadiness.onInstallVerified(epoch) }
                         return@launch
                     }

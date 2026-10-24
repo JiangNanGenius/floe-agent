@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sora native IDE renderer (Floe Android G04). Mirrors the iPad code
+     workbench vocabulary; nothing here claims a capability the host has not
+     bound — unbound surfaces stay in unavailable wording. -->
+<resources>
+    <!-- shell / chrome -->
+    <string name="ide_back_cd">Back to task</string>
+    <string name="ide_title_no_document">No file open</string>
+    <string name="ide_empty_hint">Open a text or code file from the workspace file list.</string>
+    <string name="ide_doc_loading">Loading…</string>
+    <string name="ide_temp_session_unavailable">Files and the IDE are not available in temporary tasks.</string>
+    <string name="ide_tree_unavailable">The workspace file list will appear here once the file service is bound.</string>
+
+    <!-- file tree -->
+    <string name="ide_open_tree_cd">Workspace files</string>
+    <string name="ide_search_placeholder">Search files and content</string>
+    <string name="ide_search_clear_cd">Clear search</string>
+    <string name="ide_search_empty">No matches</string>
+    <string name="ide_search_failed">The search could not be completed.</string>
+    <string name="ide_tree_empty">This folder is empty.</string>
+    <string name="ide_tree_loading_cd">Loading files</string>
+    <string name="ide_tree_refresh_cd">Refresh the file list</string>
+    <string name="ide_row_dir_cd">Folder %1$s</string>
+    <string name="ide_row_file_cd">File %1$s</string>
+
+    <!-- tabs -->
+    <string name="ide_tab_close_cd">Close %1$s</string>
+    <string name="ide_tab_dirty_cd">Unsaved changes</string>
+    <string name="ide_tab_loading_cd">Loading file</string>
+    <string name="ide_tab_failed_cd">Failed to open: %1$s</string>
+    <string name="ide_close_title">Unsaved changes</string>
+    <string name="ide_close_message">%1$s has unsaved changes. Save before closing?</string>
+    <string name="ide_close_save">Save &amp; Close</string>
+    <string name="ide_close_discard">Discard</string>
+    <string name="ide_close_cancel">Cancel</string>
+
+    <!-- toolbar -->
+    <string name="ide_save">Save</string>
+    <string name="ide_save_cd">Save to the workspace</string>
+    <string name="ide_undo_cd">Undo (native)</string>
+    <string name="ide_redo_cd">Redo (native)</string>
+    <string name="ide_find_cd">Find and replace</string>
+    <string name="ide_diff_cd">Show changes</string>
+    <string name="ide_run_cd">Run in the task environment</string>
+    <string name="ide_preview_cd">Open preview</string>
+    <string name="ide_terminal_cd">Toggle the attached pane</string>
+    <string name="ide_more_cd">More editor actions</string>
+    <string name="ide_action_unavailable_host">Not available — the host service is not bound</string>
+
+    <!-- find & replace -->
+    <string name="ide_find_label">Find</string>
+    <string name="ide_replace_label">Replace</string>
+    <string name="ide_find_previous">Previous</string>
+    <string name="ide_find_next">Next</string>
+    <string name="ide_replace_one">Replace</string>
+    <string name="ide_replace_all">Replace all</string>
+    <string name="ide_match_case">Match case</string>
+    <string name="ide_whole_word">Whole word</string>
+    <string name="ide_hits_count">%1$d matches</string>
+    <string name="ide_hits_none">No matches</string>
+    <string name="ide_hits_stale">Results are outdated — searching again</string>
+    <string name="ide_find_close_cd">Close find and replace</string>
+
+    <!-- status -->
+    <string name="ide_status_plain">Plain text</string>
+    <string name="ide_status_line_col">Line %1$d, Col %2$d</string>
+    <string name="ide_status_saved">Saved</string>
+    <string name="ide_status_unsaved">Unsaved</string>
+    <string name="ide_status_pending_n">%1$d edits not confirmed yet</string>
+    <string name="ide_status_read_only">Read-only</string>
+    <string name="ide_status_problems_cd">%1$d problems</string>
+    <string name="ide_status_selection_len">%1$d selected</string>
+
+    <!-- sync banner -->
+    <string name="ide_sync_error_cd">Dismiss</string>
+    <string name="ide_sync_restore_cd">Restore my last edits</string>
+    <string name="ide_sync_restore_action">Restore edits</string>
+
+    <!-- diff -->
+    <string name="ide_diff_title">Changes</string>
+    <string name="ide_diff_stats">+%1$d −%2$d</string>
+    <string name="ide_diff_close_cd">Close changes view</string>
+    <string name="ide_diff_added">Added</string>
+    <string name="ide_diff_removed">Removed</string>
+    <string name="ide_diff_error">The changes view needs the native diff result; it is not available for this revision.</string>
+
+    <!-- conflict / recovery -->
+    <string name="ide_conflict_title">Save conflict</string>
+    <string name="ide_conflict_body">The workspace version changed while you were editing. Both versions are kept below.</string>
+    <string name="ide_conflict_local">Your version</string>
+    <string name="ide_conflict_remote">Workspace version</string>
+    <string name="ide_conflict_base">Shared base</string>
+    <string name="ide_conflict_keep_local">Keep mine</string>
+    <string name="ide_conflict_use_remote">Use workspace version</string>
+    <string name="ide_conflict_keep_both">Keep both</string>
+    <string name="ide_conflict_cancel">Decide later</string>
+</resources>

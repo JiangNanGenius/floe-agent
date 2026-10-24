@@ -1,0 +1,12 @@
+{
+ "name": "BitByteData",
+ "version": "2.1.0",
+ "tagURL": "https://github.com/tsolomko/BitByteData/archive/refs/tags/2.1.0.tar.gz",
+ "sha256": "0d2f5556bd3e3db952e87abc10d05a65c29664116c8b197f48cf94f045336c42",
+ "license": "MIT",
+ "note": "required dependency of SWCompression 4.9.1 (upstream Package.swift: from 2.1.0); pinned exactly at 2.1.0",
+ "vendoredScope": "Sources/** unmodified except PrivacyInfo.xcprivacy excluded",
+ "lane": "job-bf610b6f22fe42ab",
+ "verifiedAt": "2026-10-24",
+ "buildTarget": "NDK r30.0.16248370 arm64-v8a android-28 + Apple host arm64 (Xcode/CLT clang) for test builds"
+}

@@ -27,12 +27,19 @@ class SettingsDomainV1Test {
         SettingsDomainV1.validate(command, label, createIntent, revisionPresent, payload)
 
     @Test
-    fun matrixHas87TuplesAnd19Labels() {
-        // goal-core batch (2026-10-21): 84 -> 87 with the three additive
-        // run-control tuples (plan.accept / goal.confirm /
-        // conversation.compact). The 57 legacy + 27 settings tuples and all
-        // 19 labels are unchanged; there is NO child.create.
-        assertEquals(87, BridgeV3CommandMatrix.ENTRIES.size)
+    fun matrixHas90TuplesAnd19Labels() {
+        // G04 appends three workspace tuples after the existing 87. The
+        // original run-control/settings vocabulary and labels remain intact.
+        assertEquals(90, BridgeV3CommandMatrix.ENTRIES.size)
+        val workspaceCommands = listOf("workspace.read", "workspace.write", "workspace.activate")
+        assertEquals(workspaceCommands, BridgeV3CommandMatrix.ENTRIES.takeLast(3).map { it.command })
+        for (command in workspaceCommands) {
+            val entry = BridgeV3CommandMatrix.ENTRIES.single { it.command == command }
+            assertEquals(BridgeV3Scope.Kind.CONVERSATION_LIFECYCLE, entry.scope)
+            assertFalse(entry.revisionRequired)
+            assertFalse(entry.allowsCreateIntent)
+            assertNull(entry.configurationScope)
+        }
         assertEquals(1, BridgeV3CommandMatrix.ENTRIES.count {
             it.command == "plan.accept" && it.scope == BridgeV3Scope.Kind.LAUNCH &&
                 it.revisionRequired && !it.allowsCreateIntent

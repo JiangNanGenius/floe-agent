@@ -77,11 +77,30 @@ protocol G02DomainExtension: Sendable {
     /// (and the unbound ordinary product) keeps the default `false` — the
     /// truth, never a fabricated temporary flag.
     func isTemporaryConversation(_ conversationID: UUID, epoch: UInt64) async -> Bool
+
+    /// Pre-drain retirement-preservation gate (workspace domain, Main
+    /// 2026-10-24): true ONLY while this extension is attached for EXACTLY
+    /// this epoch and may hold dirty bytes that need durable preservation
+    /// before the root closes. The default is false — most domains have no
+    /// such promise, and the ordinary shutdown path stays untouched.
+    func requiresRetirementPreservation(epoch: UInt64) -> Bool
+
+    /// The actual preservation pass, invoked BEFORE the first drain wait.
+    /// Implementations perform REAL IO and return; the attached gate lease
+    /// keeps the original drain honest until `release` proves every byte
+    /// settled verified. No defaults fabricate work: the default is a no-op.
+    func runRetirementPreservationIO(epoch: UInt64) async
 }
 
 extension G02DomainExtension {
     func isTemporaryConversation(_ conversationID: UUID, epoch: UInt64) async -> Bool {
         false
+    }
+    func requiresRetirementPreservation(epoch: UInt64) -> Bool {
+        false
+    }
+    func runRetirementPreservationIO(epoch: UInt64) async {
+        // No optional-domain package owes preservation unless it opts in.
     }
 }
 
@@ -94,4 +113,8 @@ public enum G02DomainExtensionKey {
     public static let temporary = G02DomainExtensionID("temporary")
     /// Privacy-clear domain package (privacy successor). Not yet integrated.
     public static let privacy = G02DomainExtensionID("privacy")
+    /// G04 workspace file/editor domain package (workspace-facade successor,
+    /// accepted additive D12/D14 ledger). Registered through the SAME
+    /// prebootstrap seam; a failed attach never gates the ordinary base.
+    public static let workspace = G02DomainExtensionID("workspace")
 }

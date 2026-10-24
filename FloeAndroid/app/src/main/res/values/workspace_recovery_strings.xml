@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="workspace_recovery_title">Recover edits</string>
+    <string name="workspace_recovery_caption">Review unconfirmed edits and save a complete copy in this workspace.</string>
+    <string name="workspace_recovery_empty">No unconfirmed edits need recovery.</string>
+    <string name="workspace_recovery_preview">Preview</string>
+    <string name="workspace_recovery_copy">Save copy here</string>
+    <string name="workspace_recovery_discard">Discard</string>
+    <string name="workspace_recovery_open">Open recovered copy</string>
+    <string name="workspace_recovery_saved">The complete recovery copy was saved and verified.</string>
+    <string name="workspace_recovery_failed">The recovery copy could not be verified. Your unconfirmed edits are still retained.</string>
+    <string name="workspace_recovery_changed">These edits changed or are still being processed. Refresh and try again.</string>
+    <string name="workspace_recovery_composing">Finish the current text input before saving its recovery copy.</string>
+    <string name="workspace_recovery_preview_partial">Preview of the first 4,096 characters. Saving a copy preserves the complete text.</string>
+    <string name="workspace_recovery_discard_confirmation">Discard this unconfirmed edit?</string>
+</resources>

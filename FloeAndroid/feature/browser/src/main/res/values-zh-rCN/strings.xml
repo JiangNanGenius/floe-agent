@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="browser_panel_title">浏览器</string>
+    <string name="browser_unbound_title">浏览器</string>
+    <string name="browser_unbound_hint">打开一个任务即可使用它自己的浏览器。</string>
+    <string name="browser_take_control_cd">我来接管</string>
+    <string name="browser_close_panel_cd">关闭面板</string>
+    <string name="browser_user_in_control">浏览器已交给你控制；任务可以继续其他工作。</string>
+    <string name="browser_handoff_returned">浏览器控制权已交还任务。</string>
+    <string name="browser_returning_control">正在交还控制权…</string>
+    <string name="browser_continue_task">继续任务</string>
+    <string name="browser_return_control_cd">交还控制权</string>
+    <string name="browser_new_tab">新标签页</string>
+    <string name="browser_new_tab_cd">新建标签页</string>
+    <string name="browser_back_cd">后退</string>
+    <string name="browser_forward_cd">前进</string>
+    <string name="browser_address_placeholder">搜索或输入网址</string>
+    <string name="browser_local_preview_badge">本地预览</string>
+    <string name="browser_reload_cd">重新载入</string>
+    <string name="browser_retry_cd">重试</string>
+    <string name="browser_load_failed">页面无法加载。</string>
+    <string name="browser_temporary_unbound">临时任务不能打开持久浏览器。</string>
+    <string name="browser_ephemeral_limitation">当前 Android WebView 不支持无痕/独立档案；登录状态使用共享浏览器存储。</string>
+    <string name="browser_ocr_limitation">本机文字识别不可用；视觉点击将按原生截图要求提示返回。</string>
+</resources>

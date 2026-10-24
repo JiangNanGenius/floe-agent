@@ -229,13 +229,15 @@ private func databaseSmokeJSON(cacheDirectory: String) -> String {
             try await manager.migrate()
             let version = try await manager.userVersion()
             report["schemaVersion"] = version
-            if version != 46 { failures.append("user_version \(version) != 46") }
+            if version != DatabaseManager.currentSchemaVersion { failures.append("user_version mismatch") }
             report["coreSchemaVersion"] = FloeAndroidCore.schemaVersion
             let applied = try await manager.appliedMigrations()
             report["appliedMigrationCount"] = applied.count
             report["appliedContainsV1"] = applied.contains("v1")
             report["appliedContainsV46"] = applied.contains("v46_task_lifecycle")
-            if applied.count != 46 { failures.append("applied \(applied.count) != 46") }
+            if applied.count != 47 { failures.append("applied \(applied.count) != 47") }
+            report["appliedContainsV47"] = applied.contains("v47_android_workspace_sources")
+            if !applied.contains("v47_android_workspace_sources") { failures.append("missing Android workspace source migration") }
 
             if cancelledIfRequested() { return errorJSON("qualification-smoke-cancelled") }
             let tables = try await manager.reader { db in
@@ -356,7 +358,7 @@ private func databaseSmokeJSON(cacheDirectory: String) -> String {
             try await fileManager.migrate()
             let fileVersion = try await fileManager.userVersion()
             report["fileSchemaVersion"] = fileVersion
-            if fileVersion != 46 { failures.append("file user_version \(fileVersion) != 46") }
+            if fileVersion != DatabaseManager.currentSchemaVersion { failures.append("file user_version mismatch") }
             let durableID = UUID()
             try await SQLiteConversationStore(database: fileManager).saveConversation(
                 ConversationRecord(id: durableID, title: "durable",
