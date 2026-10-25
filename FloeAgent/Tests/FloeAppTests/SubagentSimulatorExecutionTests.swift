@@ -73,7 +73,7 @@ private struct QualificationHoldingProviderAdapter: ProviderAdapter {
         -> AsyncThrowingStream<AgentEvent, Error> {
         let hold = hold
         return AsyncThrowingStream { continuation in
-            continuation.yield(.textDelta("Guest qualification parent is active."))
+            continuation.yield(.textDelta(.init(text: "Guest qualification parent is active.")))
             let producer = Task {
                 while !hold.isCancelled && !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(50))
@@ -475,7 +475,7 @@ struct SubagentSimulatorExecutionTests {
             let failure = await runtime.dispatchChildTool(
                 failureCall, identity: identity, childContext: context)
             #expect(failure.status != .ok)
-            #expect(failure.outputSummary.contains("exit=7"), failure.outputSummary)
+            #expect(failure.outputSummary.contains("exit=7"), "\(failure.outputSummary)")
             print("FLOE_REALVM_LARGE_SCRIPT_BYTES=\(script.utf8.count)")
             print("FLOE_REALVM_LARGE_SCRIPT_SHA256=\(FloeDigest.sha256Hex(expected))")
             await cleanup()
