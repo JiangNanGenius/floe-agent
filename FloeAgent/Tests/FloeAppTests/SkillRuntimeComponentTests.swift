@@ -756,12 +756,12 @@ private func makePreparedChain(
         let (harness, component, staged, _, runID) = try await makePreparedChain()
         let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try Data("foreign-bytes").write(to: target, options: .atomic)
+        try Data("foreign-bytes".utf8).write(to: target, options: .atomic)
         let bindings = await harness.center.prepareBindings(
             environmentID: staged.environmentID, runID: runID, cancellation: nil
         )
         #expect(bindings == nil)
-        #expect((try? Data(contentsOf: target)) == Data("foreign-bytes"))
+        #expect((try? Data(contentsOf: target)) == Data("foreign-bytes".utf8))
         let state = await harness.center.state(environmentID: staged.environmentID, componentID: componentID)
         #expect(state.deferredReason == SkillRuntimeComponentReason.stagedPathBlocked)
     }
@@ -784,10 +784,10 @@ private func makePreparedChain(
     @Test func prepareBindingsFailsClosedOnReservedRootConflict() async throws {
         let (harness, _, staged, _, runID) = try await makePreparedChain()
         let rootFile = staged.layer.appendingPathComponent("runtime-components", isDirectory: false)
-        try Data("not-a-directory").write(to: rootFile, options: .atomic)
+        try Data("not-a-directory".utf8).write(to: rootFile, options: .atomic)
         let bindings = await harness.center.prepareBindings(environmentID: staged.environmentID, runID: runID, cancellation: nil)
         #expect(bindings == nil)
-        #expect((try? Data(contentsOf: rootFile)) == Data("not-a-directory"))
+        #expect((try? Data(contentsOf: rootFile)) == Data("not-a-directory".utf8))
         let state = await harness.center.state(environmentID: staged.environmentID, componentID: componentID)
         #expect(state.deferredReason == SkillRuntimeComponentReason.existingRootConflict)
     }
@@ -1243,17 +1243,17 @@ private func makePreparedChain(
             SkillRuntimeComponentCenter.downloadPrefix + UUID().uuidString
         ] {
             let url = directory.appendingPathComponent(name, isDirectory: false)
-            try Data("x").write(to: url, options: .atomic)
+            try Data("x".utf8).write(to: url, options: .atomic)
             try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: url.path)
         }
         // Foreign / current / symlink / content entries must survive.
         let foreign = directory.appendingPathComponent(".staging-component-not-a-uuid", isDirectory: false)
-        try Data("foreign").write(to: foreign, options: .atomic)
+        try Data("foreign".utf8).write(to: foreign, options: .atomic)
         try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: foreign.path)
         let current = directory.appendingPathComponent(SkillRuntimeComponentCenter.downloadPrefix + UUID().uuidString, isDirectory: false)
-        try Data("current").write(to: current, options: .atomic)
+        try Data("current".utf8).write(to: current, options: .atomic)
         let content = directory.appendingPathComponent("floe-impeccable", isDirectory: false)
-        try Data("content").write(to: content, options: .atomic)
+        try Data("content".utf8).write(to: content, options: .atomic)
         try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: content.path)
         let symlink = directory.appendingPathComponent(SkillRuntimeComponentCenter.stagingPrefix + UUID().uuidString, isDirectory: false)
         try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: content)
