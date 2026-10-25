@@ -25,6 +25,12 @@ final class ContinuousVoiceSpeechBridge {
     private let onRoundEnded: @MainActor (UUID) -> Void
     private let firstChunkDeadline: Duration
     private let nextChunkDeadline: Duration
+    /// Consecutive `rejectedEngine` refusals tolerated for one chunk before
+    /// the round fails visibly. The sink refuses engine-side before consuming
+    /// anything, so a bounded retry covers a graph restart; a permanent
+    /// refusal must never masquerade as player backpressure (the 296 report:
+    /// an 8 s storm of one chunk retried at audio rate).
+    private let engineRetryLimit: Int
     private var eventsTask: Task<Void, Never>?
     private var synthesisTask: Task<Void, Never>?
     private var activeSource: TTSConfiguredStream?
@@ -44,6 +50,9 @@ final class ContinuousVoiceSpeechBridge {
         case truncatedAudio
         case queueFull
         case inconsistentRound
+        /// The output sink refused the chunk before consuming it, repeatedly.
+        /// Fails the round visibly; never retried as capacity.
+        case sinkStalled
     }
 
     init(
@@ -52,7 +61,8 @@ final class ContinuousVoiceSpeechBridge {
         onFailure: @escaping @MainActor (Error) -> Void,
         onRoundEnded: @escaping @MainActor (UUID) -> Void = { _ in },
         firstChunkDeadline: Duration = SpeechSupplyDeadline.firstChunk,
-        nextChunkDeadline: Duration = SpeechSupplyDeadline.nextChunk
+        nextChunkDeadline: Duration = SpeechSupplyDeadline.nextChunk,
+        engineRetryLimit: Int = 25
     ) {
         self.output = output
         self.synthesize = synthesize
@@ -60,6 +70,7 @@ final class ContinuousVoiceSpeechBridge {
         self.onRoundEnded = onRoundEnded
         self.firstChunkDeadline = firstChunkDeadline
         self.nextChunkDeadline = nextChunkDeadline
+        self.engineRetryLimit = max(1, engineRetryLimit)
     }
 
     func connect() {
@@ -190,6 +201,7 @@ final class ContinuousVoiceSpeechBridge {
                         let audio = VoiceConversationAudioChunk(
                             samples: samples, channelCount: 1, sampleRate: Double(chunk.sampleRate)
                         )
+                        var engineRefusals = 0
                         while self.isCurrent(unit, attempt: attempt) {
                             try Task.checkCancellation()
                             guard let output = self.output else { return }
@@ -198,12 +210,28 @@ final class ContinuousVoiceSpeechBridge {
                                 break
                             case .rejectedStale:
                                 return
-                            case .rejectedInvalidFormat:
+                            case .rejectedInvalidFormat, .rejectedUnusableAudio:
                                 throw Failure.invalidAudio
                             case .rejectedOverCapacity:
-                                // Preserve the same chunk while the real
-                                // player drains. Never drop or replay it.
+                                // REAL player backpressure: the chunk was not
+                                // consumed. Hold it and retry while the player
+                                // drains. Never drop it, never replay it after
+                                // acceptance.
                                 try await Task.sleep(for: .milliseconds(20))
+                                continue
+                            case .rejectedEngine:
+                                // The sink could not accept the chunk at all
+                                // (graph restarting or just flushed). Bounded,
+                                // backed-off retry; a permanent refusal fails
+                                // the round visibly instead of retrying one
+                                // chunk at audio rate for the whole round.
+                                engineRefusals += 1
+                                guard engineRefusals <= self.engineRetryLimit else {
+                                    throw Failure.sinkStalled
+                                }
+                                try await Task.sleep(
+                                    for: .milliseconds(20 + Swift.min(180, engineRefusals * 20))
+                                )
                                 continue
                             }
                             break

@@ -193,6 +193,37 @@ enum VoiceConversationSpeechAppendResult: Sendable, Equatable {
     /// Queue bound reached (≈45 s at the engine output rate): throttle until
     /// `unitProgress` / `unitCompleted` events arrive.
     case rejectedOverCapacity
+    /// The output engine could not accept the chunk BEFORE consuming it
+    /// (stopped graph, missing format, playback flush in progress). Unlike
+    /// `rejectedOverCapacity` this is not real player backpressure: a short
+    /// bounded retry is safe, but a permanent refusal must fail visibly
+    /// instead of retrying the same chunk forever at audio rate.
+    case rejectedEngine
+    /// The engine consumed the input but could not produce usable output
+    /// (invalid chunk or a failed format conversion). Non-retryable: replaying
+    /// consumed input would double-process audio.
+    case rejectedUnusableAudio
+}
+
+/// Result of one `scheduleChunk` call. The native callback reports the ACTUAL
+/// converted output frames, which differ from a predicted sample-rate ratio
+/// (resampler priming/filter history, fractional rates, per-chunk rounding).
+/// Played-frame accounting must be built on this actual count so 1:1 receipt
+/// offsets stay reachable; a ratio prediction may never pretend a chunk was
+/// queued.
+enum VoiceConversationScheduleResult: Sendable, Equatable {
+    /// Consumed; `frames` REAL output-rate frames reached the player. `0` is a
+    /// legitimate, consumed case: the converter is holding the input for a
+    /// later output block. It is never retried.
+    case scheduled(frames: Int)
+    /// Not consumed: the player's real queue bound refused it. Retrying the
+    /// same untouched chunk after playback drains is the correct backpressure.
+    case transientCapacity
+    /// Not consumed: the engine/graph cannot accept audio yet (not started,
+    /// format unavailable). Bounded retry only.
+    case unavailable
+    /// Consumed (or rejected) with no usable audio: non-retryable.
+    case failed
 }
 
 enum VoiceConversationStopReason: String, Sendable, Equatable {
@@ -421,10 +452,11 @@ protocol VoiceConversationStack: AnyObject, Sendable {
     func finishTranscription() async
     func transcriptionFailureSnapshot() -> VoiceConversationFailure?
 
-    /// Enqueue one PCM chunk on the shared player output. False = the
-    /// engine's own bound refused it (the coordinator restores accounting).
+    /// Enqueue one PCM chunk on the shared player output. The result carries
+    /// the ACTUAL native queued frame count (or a typed refusal): predicted
+    /// ratio arithmetic is never authoritative for played-frame accounting.
     @discardableResult
-    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool
+    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> VoiceConversationScheduleResult
     /// No more chunks will be scheduled until the next round (drain truth).
     func endQueuedAudio()
     /// Frozen controls of the ROUND whose chunks are being appended. The live

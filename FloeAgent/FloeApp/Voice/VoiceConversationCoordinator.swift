@@ -1841,16 +1841,22 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             return .rejectedInvalidFormat
         }
         let rate = stack?.outputSampleRate ?? 48_000
-        let frames = VoiceConversationFrameMath.outputFrames(
+        // Predicted frames estimate the queue-bound
+        // precheck only. They are never credited: the player reports the REAL
+        // converted frame count (resampler priming/history and fractional
+        // rates make the ratio wrong by frames per chunk, and crediting the
+        // prediction leaves unit offsets unreachable — no unit ever completed
+        // and a "drained" round could never fire).
+        let predictedFrames = VoiceConversationFrameMath.outputFrames(
             chunkFrames: chunk.frameCount, chunkSampleRate: chunk.sampleRate, outputSampleRate: rate
         )
-        guard frames > 0 else {
+        guard predictedFrames >= 0 else {
             report("appendRejected", "format")
             return .rejectedInvalidFormat
         }
         let capacity = Int(timing.maxQueuedSeconds * rate)
         let unplayed = max(0, r.totalQueuedFrames - r.playedFrames)
-        guard unplayed + frames <= capacity else {
+        guard unplayed + predictedFrames <= capacity else {
             report("appendRejected", "capacity")
             return .rejectedOverCapacity
         }
@@ -1860,15 +1866,30 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         // so queued old-answer audio keeps its own tuning; later units of
         // this round carry the same value and are a no-op.
         stack?.applySpeechControls(r.frozenPlaybackControls ?? .neutral, for: unit.id)
-        guard stack?.scheduleChunk(chunk) ?? false else {
+        guard let stack else {
             report("appendRejected", "engine")
-            return .rejectedOverCapacity
+            return .rejectedEngine
         }
-        r.units[index].expectedFrames += frames
-        r.totalQueuedFrames += frames
-        round = r
-        recheckPlaybackProgress()
-        return .accepted
+        switch stack.scheduleChunk(chunk) {
+        case .scheduled(let frames):
+            // ACTUAL native queued frames, including a legitimate 0 for a
+            // converter that consumed the input into its buffer. A 0 append
+            // stays consumed: it is never retried.
+            r.units[index].expectedFrames += frames
+            r.totalQueuedFrames += frames
+            round = r
+            recheckPlaybackProgress()
+            return .accepted
+        case .transientCapacity:
+            report("appendRejected", "capacity")
+            return .rejectedOverCapacity
+        case .unavailable:
+            report("appendRejected", "engine")
+            return .rejectedEngine
+        case .failed:
+            report("appendRejected", "unusable")
+            return .rejectedUnusableAudio
+        }
     }
 
     func endUnit(_ unit: VoiceConversationSpeechUnit) {

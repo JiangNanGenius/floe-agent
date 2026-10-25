@@ -349,6 +349,7 @@
 		60E0C3F854C4FA5869FA041D /* SyncSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38EF13B22EE01FC77116294D /* SyncSettingsView.swift */; };
 		61014D39A70A5BBCAF528628 /* TaskBulkManagement.swift in Sources */ = {isa = PBXBuildFile; fileRef = A133ED32AAC354CE6CABCB5D /* TaskBulkManagement.swift */; };
 		6120F47170CBD36FD1EB9CFF /* ShellCoreUtilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC65B816FEB4D02B972AE2DC /* ShellCoreUtilityTests.swift */; };
+		6197868EB73C194A7AC09905 /* VoiceOutputPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A494A407D4EE02826F6BEAE3 /* VoiceOutputPipelineTests.swift */; };
 		6199EC80E8347A58A50C39B8 /* FloeTLSConfiguration.m in Sources */ = {isa = PBXBuildFile; fileRef = A53D1BCB11C304CA5EA031AF /* FloeTLSConfiguration.m */; };
 		61AD095E7C541FFF41F7DBD8 /* WorkspaceIDEUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F8CF8AEDC1F7EF6F6413D1D /* WorkspaceIDEUITests.swift */; };
 		61AF7380DB27FCEC73CEF0A2 /* SkillsUpdatePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 134E036D7A1D7A1B8332BB36 /* SkillsUpdatePresentationTests.swift */; };
@@ -1495,6 +1496,7 @@
 		A421102C6F73CB0DCC678535 /* FilePreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewView.swift; sourceTree = "<group>"; };
 		A4323D6DC0A4C9527639A088 /* DesignPageResourceLimitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignPageResourceLimitTests.swift; sourceTree = "<group>"; };
 		A4896739DCF1CC3D7F68DFA4 /* NotesDocumentEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesDocumentEditor.swift; sourceTree = "<group>"; };
+		A494A407D4EE02826F6BEAE3 /* VoiceOutputPipelineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOutputPipelineTests.swift; sourceTree = "<group>"; };
 		A49DFFCC64085B95DA548BC0 /* DesignConversationPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignConversationPageView.swift; sourceTree = "<group>"; };
 		A4A0E75544F5FA28387CB77B /* ProviderListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderListView.swift; sourceTree = "<group>"; };
 		A4AC240815E1BB723B43E5BD /* NotesAIActualOutputFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesAIActualOutputFixture.swift; sourceTree = "<group>"; };
@@ -2363,6 +2365,7 @@
 				2A0A104F65FD069C6DACB658 /* VoiceBargeInSafetyTests.swift */,
 				A09338CF856D9916BDDF0663 /* VoiceConversationAudioTests.swift */,
 				C7509CFCDC86E59C7EDD8344 /* VoiceConversationTests.swift */,
+				A494A407D4EE02826F6BEAE3 /* VoiceOutputPipelineTests.swift */,
 				FBC94ACFAFEEF7D2A116D33C /* VoiceSentenceIntegrationTests.swift */,
 				F6A81EE1D1464B9E2F8B4563 /* VolcengineDraftSearchTests.swift */,
 				B0531FC7598C302F9EF10CFC /* VolcengineSearchSettingsTests.swift */,
@@ -4627,6 +4630,7 @@
 				54514F8A810CE33115697EE2 /* VoiceConversationAudioTests.swift in Sources */,
 				34D457F1A89EB29D4CFD1396 /* VoiceConversationTests.swift in Sources */,
 				B8558423FFAEBC3CBA0916FA /* VoiceInputControllerTests.swift in Sources */,
+				6197868EB73C194A7AC09905 /* VoiceOutputPipelineTests.swift in Sources */,
 				A44E46E8A6C91368A8979D7F /* VoicePlaybackReceiptTests.swift in Sources */,
 				62ED5CB4E935D0D956BFC7C5 /* VoiceSentenceIntegrationTests.swift in Sources */,
 				40AF3FC60B6649B834CF3A94 /* VolcengineDirectGatewayEnvelopeTests.swift in Sources */,
@@ -4757,7 +4761,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -4783,7 +4787,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -4814,7 +4818,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -4825,7 +4829,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -4841,7 +4845,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -4852,7 +4856,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -4926,7 +4930,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -4937,7 +4941,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -4972,7 +4976,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -4983,7 +4987,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -5083,7 +5087,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5094,7 +5098,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -5113,7 +5117,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -5139,7 +5143,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -5169,7 +5173,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5180,7 +5184,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -5196,7 +5200,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5207,7 +5211,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -5251,7 +5255,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 296;
+				CURRENT_PROJECT_VERSION = 297;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5262,7 +5266,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.55;
+				MARKETING_VERSION = 1.7.56;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

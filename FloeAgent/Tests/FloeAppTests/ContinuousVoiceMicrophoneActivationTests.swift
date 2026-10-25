@@ -149,7 +149,9 @@ final class MicActivationStack: VoiceConversationStack, @unchecked Sendable {
     func transcriptionFailureSnapshot() -> VoiceConversationFailure? { nil }
 
     @discardableResult
-    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool { true }
+    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> VoiceConversationScheduleResult {
+        chunk.isValid ? .scheduled(frames: chunk.frameCount) : .failed
+    }
     func endQueuedAudio() {}
     func pausePlayback() {}
     func resumePlayback() {}

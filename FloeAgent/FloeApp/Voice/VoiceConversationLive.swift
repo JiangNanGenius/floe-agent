@@ -175,10 +175,16 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     private var epoch: UInt64 = 0
     private var scheduledFrames = 0
     private var completedFrames = 0
+    /// Last closed-vocabulary scheduling refusal cause, for transition-only
+    /// diagnostics (never one line per retry). Guarded by `playbackLock`.
+    private var lastScheduleRejectCause: String?
     private static let engineMaxPendingSeconds = 60.0
 
     // Resampling cache (protocol calls are serialized by the coordinator)
     private var converterCache: [String: AVAudioConverter] = [:]
+
+    /// Diagnostics/tests only: number of retained resampler AUs.
+    var converterCacheCount: Int { converterCache.count }
 
     private var observers: [NSObjectProtocol] = []
 
@@ -873,30 +879,38 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     // MARK: - Playback
 
     @discardableResult
-    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool {
+    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> VoiceConversationScheduleResult {
         #if targetEnvironment(simulator)
-        return false
+        return .unavailable
         #else
-        guard chunk.isValid,
-              graphLock.withLock({ engineStarted }),
-              let playerFmt = graphLock.withLock({ playerFormat }) else { return false }
+        guard chunk.isValid else { return reject(.invalid) }
+        guard graphLock.withLock({ engineStarted }) else { return reject(.notStarted) }
+        guard let playerFmt = graphLock.withLock({ playerFormat }) else { return reject(.noFormat) }
         let outFrames = Self.convertedFrames(
             chunkFrames: chunk.frameCount,
             chunkRate: chunk.sampleRate,
             outRate: playerFmt.sampleRate
         )
-        guard outFrames > 0 else { return false }
+        guard outFrames >= 0 else { return reject(.format) }
         let capacity = Int(Self.engineMaxPendingSeconds * playerFmt.sampleRate)
         let pending = playbackLock.withLock { scheduledFrames - completedFrames }
-        guard pending + outFrames <= capacity else { return false }
-        guard let source = Self.buffer(from: chunk),
-              let converted = convert(source, to: playerFmt) else { return false }
+        guard pending + outFrames <= capacity else { return reject(.pending) }
+        guard let source = Self.buffer(from: chunk) else { return reject(.buffer) }
+        guard let converted = convert(source, to: playerFmt) else { return reject(.convert) }
         let frames = Int(converted.frameLength)
-        guard frames > 0 else { return true }
+        // A zero-frame conversion is a CONSUMED chunk: the resampler is
+        // holding the input for a later output block. Report it as scheduled
+        // with 0 frames — never as capacity (that would retry consumed input)
+        // and never as a receipt (no output existed yet).
+        guard frames > 0 else {
+            clearRejectCause()
+            return .scheduled(frames: 0)
+        }
         let capturedEpoch = playbackLock.withLock { () -> UInt64 in
             scheduledFrames += frames
             return epoch
         }
+        clearRejectCause()
         // Completion is requested for `.dataPlayedBack` — the buffer has
         // ACTUALLY finished playing through the output device — never
         // `.dataConsumed`: played-frame progress must stay honest.
@@ -924,8 +938,40 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             }
         )
         if !playerNode.isPlaying { playerNode.play() }
-        return true
+        return .scheduled(frames: frames)
         #endif
+    }
+
+    /// Closed-vocabulary scheduling refusal causes. Logged only on a cause
+    /// TRANSITION, never per retry: a stuck producer retrying the same chunk
+    /// at audio rate must not flood the diagnostics with identical lines.
+    private enum ScheduleRejectCause: String {
+        case invalid, notStarted, noFormat, format, pending, buffer, convert
+    }
+
+    private func reject(_ cause: ScheduleRejectCause) -> VoiceConversationScheduleResult {
+        let shouldLog = playbackLock.withLock { () -> Bool in
+            guard lastScheduleRejectCause != cause.rawValue else { return false }
+            lastScheduleRejectCause = cause.rawValue
+            return true
+        }
+        if shouldLog {
+            Self.logGraphEvent("event=scheduleReject cause=\(cause.rawValue)")
+        }
+        switch cause {
+        case .pending:
+            return .transientCapacity
+        case .notStarted, .noFormat:
+            return .unavailable
+        case .invalid, .format, .buffer, .convert:
+            return .failed
+        }
+    }
+
+    private func clearRejectCause() {
+        playbackLock.withLock {
+            if lastScheduleRejectCause != nil { lastScheduleRejectCause = nil }
+        }
     }
 
     /// No engine action: drain truth is played frames reaching the
@@ -957,6 +1003,10 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         playerNode.stop()
         playerNode.reset()
         speechEffect.reset()
+        // A new epoch is a NEW answer: drop every cached resampler's retained
+        // filter history so stale priming frames from the cancelled round can
+        // never surface as the next round's leading audio.
+        for converter in converterCache.values { converter.reset() }
         playbackLock.lock()
         scheduledFrames = 0
         completedFrames = 0
@@ -1050,20 +1100,64 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         return buffer
     }
 
-    private func convert(_ buffer: AVAudioPCMBuffer, to output: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let key = buffer.format.description
+    /// One converter per SOURCE→DESTINATION FORMAT PAIR. The cache key is
+    /// built from semantic format properties: `AVAudioFormat.description`
+    /// embeds the object address, so keying on it (the previous behavior)
+    /// never matched and silently created a fresh converter per chunk — every
+    /// resampler cold start discarded its held frames (audible gaps) and
+    /// allocated a new AU on the main thread. Reuse keeps filter history
+    /// continuous across chunks (native probe: stable reuse + `.none` priming
+    /// reproduces exact 24k→48k frame counts).
+    static func converterCacheKey(from source: AVAudioFormat, to destination: AVAudioFormat) -> String {
+        func token(_ format: AVAudioFormat) -> String {
+            "\(format.sampleRate.bitPattern):\(format.channelCount):\(format.commonFormat.rawValue):\(format.isInterleaved ? 1 : 0)"
+        }
+        return "\(token(source))->\(token(destination))"
+    }
+
+    /// Output capacity for one conversion. `+1 render quantum` (4096) leaves
+    /// room for the converter's own quantum rounding on fractional rates and
+    /// channel up-mix; the old +32 margin could undershoot a 4096-frame
+    /// processing quantum and fail the whole chunk.
+    static func conversionCapacity(sourceFrames: Int,
+                                   from source: AVAudioFormat,
+                                   to destination: AVAudioFormat) -> Int {
+        guard sourceFrames > 0, source.sampleRate > 0, destination.sampleRate > 0 else { return 0 }
+        let ratio = destination.sampleRate / source.sampleRate
+        let estimate = Int(ceil(Double(sourceFrames) * ratio))
+        let bounded = max(0, min(estimate, Int(UInt32.max) - 4_096))
+        return bounded + 4_096
+    }
+
+    /// Internal seam for focused tests: the live conversion path used by
+    /// `scheduleChunk`. The cache and converter state are owned by this
+    /// (MainActor-serialized) stack; tests call this directly without an
+    /// engine, microphone or audio output.
+    func convert(_ buffer: AVAudioPCMBuffer, to output: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let key = Self.converterCacheKey(from: buffer.format, to: output)
         let converter: AVAudioConverter
         if let cached = converterCache[key] {
             converter = cached
         } else if let created = AVAudioConverter(from: buffer.format, to: output) {
+            // `.none` priming was verified by the native probe: the resampler
+            // no longer holds an initial block (fresh 16-frame chunks used to
+            // produce 0 forever) and totals match rate arithmetic exactly.
+            created.primeMethod = .none
+            // Bound the pool: distinct provider formats are few; anything
+            // beyond this means a pathological format churn, and recreating
+            // one converter is cheaper than unbounded retention.
+            if converterCache.count >= 8 { converterCache.removeAll(keepingCapacity: true) }
             converterCache[key] = created
             converter = created
         } else {
             return nil
         }
-        let ratio = output.sampleRate / buffer.format.sampleRate
-        let estimated = max(1, Int(ceil(Double(buffer.frameLength) * ratio)) + 32)
-        guard estimated <= Int(UInt32.max),
+        let estimated = Self.conversionCapacity(
+            sourceFrames: Int(buffer.frameLength),
+            from: buffer.format,
+            to: output
+        )
+        guard estimated > 0,
               let out = AVAudioPCMBuffer(pcmFormat: output, frameCapacity: AVAudioFrameCount(estimated))
         else { return nil }
         var supplied = false
@@ -1077,7 +1171,7 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             status.pointee = .haveData
             return buffer
         }
-        guard error == nil, out.frameLength > 0 else { return nil }
+        guard error == nil else { return nil }
         return out
     }
 

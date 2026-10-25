@@ -166,18 +166,24 @@ final class VoiceTestStack: VoiceConversationStack, @unchecked Sendable {
         lock.withLock { scriptedStreamFailure }
     }
 
+    /// Test hook: when set, every accepted chunk reports this many ACTUAL
+    /// output frames instead of the predicted sample-rate ratio — the resampler
+    /// priming/fractional-rate case the native probe measured.
+    var scheduledFrameOverride: Int?
+
     @discardableResult
-    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> Bool {
-        let frames = VoiceConversationFrameMath.outputFrames(
+    func scheduleChunk(_ chunk: VoiceConversationAudioChunk) -> VoiceConversationScheduleResult {
+        let predicted = VoiceConversationFrameMath.outputFrames(
             chunkFrames: chunk.frameCount,
             chunkSampleRate: chunk.sampleRate,
             outputSampleRate: outputSampleRate
         )
         lock.lock()
         defer { lock.unlock() }
-        guard scheduled - completed + frames <= 400_000 else { return false }
-        scheduled += frames
-        return true
+        guard scheduled - completed + predicted <= 400_000 else { return .transientCapacity }
+        let actual = scheduledFrameOverride ?? predicted
+        scheduled += actual
+        return .scheduled(frames: actual)
     }
 
     func endQueuedAudio() {}
