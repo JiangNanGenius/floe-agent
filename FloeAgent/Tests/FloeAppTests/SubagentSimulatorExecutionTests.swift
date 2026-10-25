@@ -270,8 +270,7 @@ struct SubagentSimulatorExecutionTests {
 
     /// Boots this test's own guest and returns its explicit environment id.
     private func bootGuest(root: URL) async throws -> String {
-        let environment = AppEnvironment.live()
-        await environment.bootstrap()
+        let environment = try await appQualificationEnvironment()
         let services = FloePlatformServices.shared
         try await services.prepareWorkspaceEnvironment(root: root)
         guard let environmentID = await environmentID(
@@ -1835,9 +1834,8 @@ extension SubagentSimulatorExecutionTests {
         do {
             let environmentID = try await bootGuest(root: root)
             ownedEnvironmentID = environmentID
-            let liveApp = AppEnvironment.live()
+            let liveApp = try await appQualificationEnvironment()
             app = liveApp
-            try #require(liveApp.persistenceReady, "Production persistence bootstrap failed")
             let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
             let runID = UUID()
             let conversationUUID = UUID()
@@ -2108,7 +2106,7 @@ private struct SkillHubBrowserResult: Decodable {
     let page: Page?
 }
 
-/// Authoritative fixture-server `/state` document (guest loopback 10.0.2.15).
+/// Authoritative fixture-server `/state` document (guest loopback 127.0.0.1).
 private struct SkillHubServerState: Decodable {
     struct Submission: Decodable { let receipt: String }
     let submissions: [Submission]
@@ -2255,7 +2253,7 @@ extension SubagentSimulatorExecutionTests {
     ) async throws -> String {
         let command = "python3 -c \"import sys,urllib.request;"
             + "sys.stdout.write(urllib.request.urlopen(sys.argv[1],timeout=\(readTimeout)).read().decode())\" "
-            + "'http://10.0.2.15:\(port)/\(path)'"
+            + "'http://127.0.0.1:\(port)/\(path)'"
         let result = try await skillHubShell(runtime: runtime, identity: identity, context: context,
                                              tag: tag, command: command, timeout: shellTimeout)
         try #require(result.status == .ok, "guest /\(path) fetch failed: \(result.outputSummary)")
@@ -2736,7 +2734,7 @@ extension SubagentSimulatorExecutionTests {
             try #require(!stillReachable, "the cancelled fixture endpoint must not stay reachable from the host")
             let deadState = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "state-dead",
-                command: "python3 -c \"import sys,urllib.request;urllib.request.urlopen(sys.argv[1],timeout=4).read()\" 'http://10.0.2.15:\(port)/state' && echo GUEST_STATE_STILL_REACHABLE",
+                command: "python3 -c \"import sys,urllib.request;urllib.request.urlopen(sys.argv[1],timeout=4).read()\" 'http://127.0.0.1:\(port)/state' && echo GUEST_STATE_STILL_REACHABLE",
                 timeout: 30)
             try #require(deadState.status != .ok || !deadState.outputSummary.contains("GUEST_STATE_STILL_REACHABLE"),
                          "the cancelled service endpoint must not stay reachable inside the guest")
@@ -2846,9 +2844,8 @@ extension SubagentSimulatorExecutionTests {
 
             let environmentID = try await bootGuest(root: root)
             ownedEnvironmentID = environmentID
-            let liveApp = AppEnvironment.live()
+            let liveApp = try await appQualificationEnvironment()
             app = liveApp
-            try #require(liveApp.persistenceReady, "Production persistence bootstrap failed")
             let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
             let runID = UUID()
             let conversationUUID = UUID()
@@ -3017,7 +3014,7 @@ extension SubagentSimulatorExecutionTests {
 // execution anywhere in this harness):
 //   * FLOE_IMPECCABLE_TRANSPORT_ZIP -> Local/Artifacts/skill-hub-20261026/
 //     impeccable-riscv64-qualification-0.1.17-floe1.0.0.zip
-//     (3,376,092 bytes, sha256 7b09d78470e4df3cffe3d015a995489f07ae5bd565d1e42d7e851ff0c7310aa0,
+//     (3,376,092 bytes, sha256 38b0959119395d26dd2b8a8381e8c1d69e2724d7c0dcfdea5856b074a1237210,
 //     128 safe relative entries). The engine dependency is a raw fixture
 //     transport only, never a Skill ZIP: the normal Skill ZIP size/type caps
 //     are untouched.
@@ -3054,8 +3051,8 @@ extension SubagentSimulatorExecutionTests {
 
 private enum ImpeccableInputs {
     static let transportZipSHA256 =
-        "7b09d78470e4df3cffe3d015a995489f07ae5bd565d1e42d7e851ff0c7310aa0"
-    static let transportZipBytes = 3_376_092
+        "38b0959119395d26dd2b8a8381e8c1d69e2724d7c0dcfdea5856b074a1237210"
+    static let transportZipBytes = 3_382_274
     static let engineSHA256 =
         "af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b"
     static let engineBytes = 5_579_704
@@ -3076,6 +3073,12 @@ private enum ImpeccableInputs {
         "a1aca5caaf8166bedd6391365382095ffa926d10949361b8890e3e749908e6df"
     static let fixtureNoAnswerFactsSHA256 =
         "64c5cce236dfd9ba1396b65bbd560c42a8dc70cdc6c20330a73978faa2612560"
+    static let fixtureNoFindingsSnapshotSHA256 =
+        "62300523e24248e3356b8250fb5c02df15079ea839d7680e1b450a02d4fd2689"
+    static let fixtureNoFindingsIdentitySHA256 =
+        "89f225516fd4cbca673cac0f983837ca36b4fed1f818c90e4dad1f6900be5f72"
+    static let fixtureNoFindingsFactsSHA256 =
+        "372ed6f8fe49fe0b5c74dda8225dc2d7e8035ea8958118a6e5f38253e4e3f572"
     static let goldenOverlayRound1SHA256 =
         "3b60240583f4ed26b76ac169a76e7994461cc99359d64d3f8bb7b827fa17fdcb"
     static let goldenOverlayRound2SHA256 =
@@ -3441,6 +3444,9 @@ extension SubagentSimulatorExecutionTests {
                 sha256sum transport/unpacked/contract/fixtures/identity-needs.v1.json
                 sha256sum transport/unpacked/adapter-test-data/facts-overlay-round2.v1.json
                 sha256sum transport/unpacked/contract/fixtures/facts-hit-tests.v1.json
+                sha256sum transport/unpacked/adapter-test-data/snapshot-no-findings.v1.json
+                sha256sum transport/unpacked/adapter-test-data/identity-no-findings.v1.json
+                sha256sum transport/unpacked/adapter-test-data/facts-no-findings-round2.v1.json
                 sha256sum transport/unpacked/contract/expected/riscv64-docker/overlay-round1.result.v1.json
                 sha256sum transport/unpacked/contract/expected/riscv64-docker/overlay-round2.result.v1.json
                 sha256sum transport/unpacked/contract/expected/riscv64-docker/no-findings-round2.result.v1.json
@@ -3451,7 +3457,11 @@ extension SubagentSimulatorExecutionTests {
             for pin in [ImpeccableInputs.transportZipSHA256, ImpeccableInputs.engineSHA256,
                         ImpeccableInputs.launcherSHA256, ImpeccableInputs.fixtureSnapshotSHA256,
                         ImpeccableInputs.fixtureIdentitySHA256, ImpeccableInputs.fixtureOverlayFactsSHA256,
-                        ImpeccableInputs.fixtureNoAnswerFactsSHA256, ImpeccableInputs.goldenOverlayRound1SHA256,
+                        ImpeccableInputs.fixtureNoAnswerFactsSHA256,
+                        ImpeccableInputs.fixtureNoFindingsSnapshotSHA256,
+                        ImpeccableInputs.fixtureNoFindingsIdentitySHA256,
+                        ImpeccableInputs.fixtureNoFindingsFactsSHA256,
+                        ImpeccableInputs.goldenOverlayRound1SHA256,
                         ImpeccableInputs.goldenOverlayRound2SHA256, ImpeccableInputs.goldenNoFindingsSHA256] {
                 try #require(setup.outputSummary.contains(pin),
                              "Guest re-hash missing pinned digest \(pin): \(setup.outputSummary)")
@@ -3535,14 +3545,14 @@ extension SubagentSimulatorExecutionTests {
                             && golden2.findings?.counts?.byRule?["text-occlusion"] == 1,
                          "Frozen overlay-round2 golden mismatch: \(String(describing: golden2.findings?.counts))")
 
-            // 6. v1 never certifies clean: answering nothing is still inconclusive.
+            // 6. v1 never certifies clean: a fully answered no-findings fixture stays inconclusive.
             let noClean = try await impeccableEngineRun(
                 runtime: runtime, identity: fixedIdentity, context: context, tag: "golden-noclean",
                 label: "golden-noclean",
                 arguments: ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
-                            "--snapshot", "transport/unpacked/contract/fixtures/snapshot-needs-hit-tests.v1.json",
-                            "--identity", "transport/unpacked/contract/fixtures/identity-needs.v1.json",
-                            "--facts", "transport/unpacked/contract/fixtures/facts-hit-tests.v1.json",
+                            "--snapshot", "transport/unpacked/adapter-test-data/snapshot-no-findings.v1.json",
+                            "--identity", "transport/unpacked/adapter-test-data/identity-no-findings.v1.json",
+                            "--facts", "transport/unpacked/adapter-test-data/facts-no-findings-round2.v1.json",
                             "--out", "synthetic/result.golden-noclean.v1.json", "--round", "2"])
             try #require(noClean.rc == 4, "Never-clean run must exit 4 inconclusive, got rc=\(noClean.rc): \(noClean.stderrSummary)")
             let noCleanDoc = try impeccableReadResult(root, "synthetic/result.golden-noclean.v1.json")
@@ -3692,9 +3702,9 @@ extension SubagentSimulatorExecutionTests {
                 set -e
                 PYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/impeccable.zip transport/unpacked
                 sha256sum transport/unpacked/engine/floe-impeccable
+                chmod +x transport/unpacked/engine/floe-impeccable
                 transport/unpacked/engine/floe-impeccable engine-probe
                 transport/unpacked/engine/floe-impeccable contract | sha256sum
-                chmod +x transport/unpacked/engine/floe-impeccable
                 mkdir -p synthetic
                 """, timeout: 300)
             try #require(engineSetup.status == .ok
