@@ -16,12 +16,34 @@ qualification and G03-R2 environment, jobs and workspace source integration
 are complete. G03-R3 representative App qualification, Alpha9 delivery and round
 cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks are
 complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
-has been pushed and independently read back. G04-R2 handles representative App
-integration and the next stage APK, which has not yet been published. Current
-public status and limits are recorded in
+has been pushed and independently read back. G04-R2 adds representative App
+integration for the Alpha10 stage (build 12). Release availability, actual device
+coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
+
+## G04-R2 workspace integration
+
+This batch integrates ordinary workspace file operations, persistent system file
+access, the built-in editor with recoverable revision conflicts, task-owned Linux
+terminal/run output and Python language services, local Git and controlled web
+preview. It improves queued-input dispatch, attached terminal presentation,
+completion popup scrolling, rapid-edit resynchronization and selection ownership.
+The shared icon family now uses 45 generated Cupertino outlines, with nine
+accurate existing fallbacks and corrected settings-category mappings. No Flutter
+engine or new runtime dependency is added. The six workspace commands are grouped
+under compact New and More controls in the existing title bar.
+
+The C07 editor/pending-input/terminal Kotlin boundary passed 147 JVM tests and
+Full/Play production compilation; actual Tab acceptance, rapid edit/save/reopen
+and GUI-run output with exit code 0 also passed. The subsequent compact-header
+and system-bar source cohort has separate compilation and device evidence. The unchanged queue/run
+native component passed 31 tests and actual Android ARM64 object compilation and
+linking. Qualification of each new source/artifact cohort and App/device behavior
+are recorded separately in the implementation record above.
+This stage does not close whole-product visual parity, the full device/IME matrix,
+or later Root/ADB/accessibility capabilities.
 
 ## G04-R1 code and component qualification
 
@@ -59,7 +81,19 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 ## Android Alpha
 
-### Current: Alpha9 / G03
+### Alpha10 / G04
+
+[Alpha10 release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.10)
+uses build 12 and the same signing identity. Its clean asset set is one signed
+ARM64 Full APK, SHA256SUMS and a combined Linux-runtime/Sora corresponding-source
+archive. See the implementation record for publication and device qualification.
+
+Known limitation: the active queue panel can retain an already-executed input
+until the conversation is reopened. The observed input was consumed and replied
+to, while the live display did not refresh. The cross-layer observer repair is
+still in progress; this stage does not close G04-R2.
+
+### Alpha9 / G03 history
 
 [Download 0.1.0-alpha.9](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.9)
 contains one signed ARM64 APK, SHA256SUMS and the required runtime corresponding-source

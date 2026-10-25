@@ -1,0 +1,326 @@
+{
+  "note": "key=FloeGlyphPaths map key (CupertinoIcons 2.0.0 constant, pinned flutter 3.35.0 icons.dart); floeVal=public name in FloeIcons; ios=SF Symbol at the current iOS caller; fallback values keep source-authored geometry (see licenses/cupertino-icons/PROVENANCE.json).",
+  "converted": [
+    {
+      "key": "square_pencil",
+      "floeVal": "NewTask",
+      "ios": "square.and.pencil",
+      "caller": "FloeAgentApp.swift:1325 sidebar New Task; ConversationListView:186"
+    },
+    {
+      "key": "book",
+      "floeVal": "BookPages",
+      "ios": "book.pages",
+      "caller": "FloeAgentApp.swift:1331 sidebar Notes; ThreadComposerView:890 notes sources; approx: closed-book variant, no book.pages composite in 2.0.0"
+    },
+    {
+      "key": "pencil_ellipsis_rectangle",
+      "floeVal": "Creative",
+      "ios": "rectangle.and.pencil.and.ellipsis",
+      "caller": "FloeAgentApp.swift:1334 sidebar Creative"
+    },
+    {
+      "key": "gear_alt",
+      "floeVal": "Gearshape",
+      "ios": "gearshape",
+      "caller": "FloeAgentApp.swift:1404 settings button; SettingsRootView .general; Main previewed gear_alt"
+    },
+    {
+      "key": "sidebar_left",
+      "floeVal": "SidebarToggle",
+      "ios": "sidebar.left",
+      "caller": "FloeAgentApp.swift:1168 collapse toggle"
+    },
+    {
+      "key": "bubble_left",
+      "floeVal": "Bubble",
+      "ios": "bubble.left",
+      "caller": "FloeAgentApp.swift:1500 conversation rows; HomeLaunchpadView:146 temporary chat"
+    },
+    {
+      "key": "folder",
+      "floeVal": "Folder",
+      "ios": "folder",
+      "caller": "AllWorkspacesFilesView:87; workspace panes"
+    },
+    {
+      "key": "plus",
+      "floeVal": "Plus",
+      "ios": "plus",
+      "caller": "ThreadComposerView plus affordance"
+    },
+    {
+      "key": "chevron_right",
+      "floeVal": "ChevronForward",
+      "ios": "chevron.right",
+      "caller": "List disclosure chevrons (FloeValueRow)"
+    },
+    {
+      "key": "chevron_left",
+      "floeVal": "ChevronBack",
+      "ios": "chevron.left",
+      "caller": "Settings back button"
+    },
+    {
+      "key": "chevron_down",
+      "floeVal": "ChevronDown",
+      "ios": "chevron.down",
+      "caller": "Composer/expander rows (ThreadComposerView 3x)"
+    },
+    {
+      "key": "chevron_up",
+      "floeVal": "ChevronUp",
+      "ios": "chevron.up",
+      "caller": "Expander rows"
+    },
+    {
+      "key": "chevron_up_chevron_down",
+      "floeVal": "ChevronUpDown",
+      "ios": "chevron.up.chevron.down",
+      "caller": "Value-field chooser affordance"
+    },
+    {
+      "key": "paperclip",
+      "floeVal": "Paperclip",
+      "ios": "paperclip",
+      "caller": "ThreadComposerView:749 attachment"
+    },
+    {
+      "key": "mic_fill",
+      "floeVal": "Mic",
+      "ios": "mic.fill",
+      "caller": "ThreadComposerView mic affordance is FILLED on iOS; filled role kept"
+    },
+    {
+      "key": "arrow_up",
+      "floeVal": "ArrowUp",
+      "ios": "arrow.up",
+      "caller": "ThreadComposerView:1190 send"
+    },
+    {
+      "key": "stop_fill",
+      "floeVal": "StopSquare",
+      "ios": "stop.fill",
+      "caller": "ThreadComposerView running stop; filled role"
+    },
+    {
+      "key": "gauge",
+      "floeVal": "Gauge",
+      "ios": "gauge",
+      "caller": "Reasoning 'automatic' chip"
+    },
+    {
+      "key": "wand_stars",
+      "floeVal": "Wand",
+      "ios": "wand.and.stars",
+      "caller": "Agent mode chip (HomeLaunchpad Wand usage)"
+    },
+    {
+      "key": "desktopcomputer",
+      "floeVal": "DeviceLocal",
+      "ios": "desktopcomputer",
+      "caller": "Execution target 'This device'"
+    },
+    {
+      "key": "checkmark_shield",
+      "floeVal": "ShieldCheck",
+      "ios": "checkmark.shield",
+      "caller": "Approval-mode chip; SettingsRootView .permissions"
+    },
+    {
+      "key": "exclamationmark_shield",
+      "floeVal": "ShieldAlert",
+      "ios": "exclamationmark.shield",
+      "caller": "Pending approval card (ConversationApprovalUi)"
+    },
+    {
+      "key": "xmark",
+      "floeVal": "Xmark",
+      "ios": "xmark",
+      "caller": "Dismiss/close (ThreadComposerView 4x, IDESidebar)"
+    },
+    {
+      "key": "checkmark",
+      "floeVal": "Checkmark",
+      "ios": "checkmark",
+      "caller": "Confirm rows (SettingsHostPages:554)"
+    },
+    {
+      "key": "clock",
+      "floeVal": "Clock",
+      "ios": "clock",
+      "caller": "Scheduled section"
+    },
+    {
+      "key": "play_rectangle",
+      "floeVal": "PlayRuns",
+      "ios": "play.rectangle",
+      "caller": "Runs"
+    },
+    {
+      "key": "info_circle",
+      "floeVal": "InfoCircle",
+      "ios": "info.circle",
+      "caller": "Availability dialogs (SettingsHostPages:2205)"
+    },
+    {
+      "key": "eye",
+      "floeVal": "Eye",
+      "ios": "eye",
+      "caller": "Reveal secret (providers)"
+    },
+    {
+      "key": "eye_slash",
+      "floeVal": "EyeSlash",
+      "ios": "eye.slash",
+      "caller": "Hide secret"
+    },
+    {
+      "key": "antenna_radiowaves_left_right",
+      "floeVal": "Antenna",
+      "ios": "antenna.radiowaves.left.and.right",
+      "caller": "SettingsRootView .providers; provider empty state"
+    },
+    {
+      "key": "arrow_clockwise",
+      "floeVal": "Refresh",
+      "ios": "arrow.clockwise",
+      "caller": "IDESidebar refresh; catalog refresh"
+    },
+    {
+      "key": "exclamationmark_triangle",
+      "floeVal": "WarningTriangle",
+      "ios": "exclamationmark.triangle",
+      "caller": "WebSearchSettings validation"
+    },
+    {
+      "key": "checkmark_circle",
+      "floeVal": "CheckCircle",
+      "ios": "checkmark.circle",
+      "caller": "ThreadComposerView connected/verified (outline role, not .fill)"
+    },
+    {
+      "key": "xmark_octagon",
+      "floeVal": "XOctagon",
+      "ios": "xmark.octagon",
+      "caller": "ThreadComposerView/HomeLaunchpad failed test marker"
+    },
+    {
+      "key": "search",
+      "floeVal": "Magnifier",
+      "ios": "magnifyingglass",
+      "caller": "SettingsRootView .webSearch; search affordance; SF search/magnifyingglass is the same glyph, named 'search' in Cupertino"
+    },
+    {
+      "key": "plus_circled",
+      "floeVal": "PlusCircle",
+      "ios": "plus.circle",
+      "caller": "Stage a candidate model"
+    },
+    {
+      "key": "trash",
+      "floeVal": "Trash",
+      "ios": "trash",
+      "caller": "Delete provider"
+    },
+    {
+      "key": "pencil",
+      "floeVal": "Pencil",
+      "ios": "pencil",
+      "caller": "Edit provider"
+    },
+    {
+      "key": "bubble_left_bubble_right",
+      "floeVal": "ChatRole",
+      "ios": "bubble.left.and.bubble.right",
+      "caller": "Chat model service role"
+    },
+    {
+      "key": "photo_on_rectangle",
+      "floeVal": "ImageRole",
+      "ios": "photo.on.rectangle.angled",
+      "caller": "Image service role; approx: non-angled stacked-photo variant"
+    },
+    {
+      "key": "photo",
+      "floeVal": "Photo",
+      "ios": "photo",
+      "caller": "Vision badge (SettingsRootView .auxiliary is photo.badge.plus; role here is plain photo)"
+    },
+    {
+      "key": "person_crop_circle_badge_checkmark",
+      "floeVal": "PersonCircleCheck",
+      "ios": "person.crop.circle.badge.checkmark",
+      "caller": "SettingsRootView .personalization (Memories) — replaces BookPages substitute",
+      "new": true
+    },
+    {
+      "key": "hand_raised",
+      "floeVal": "HandRaised",
+      "ios": "hand.raised",
+      "caller": "SettingsRootView .privacy — replaces ShieldCheck substitute",
+      "new": true
+    },
+    {
+      "key": "chart_bar",
+      "floeVal": "ChartBar",
+      "ios": "chart.bar",
+      "caller": "SettingsRootView .usage — replaces Gauge substitute",
+      "new": true
+    },
+    {
+      "key": "ellipsis",
+      "floeVal": "Ellipsis",
+      "ios": "ellipsis",
+      "caller": "WorkspaceFilesPane compact toolbar More trigger (iOS ellipsis.circle: FileInspectorView.swift:320 workspaceActions, FilePreviewView.swift:841 file.preview.more; circle chrome drawn by FloeCircleButton)",
+      "new": true
+    }
+  ],
+  "fallback": [
+    {
+      "floeVal": "Checklist",
+      "ios": "checklist",
+      "reason": "no 'checklist' composite in CupertinoIcons 2.0.0; hand-drawn double-check list already carries the role"
+    },
+    {
+      "floeVal": "Puzzle",
+      "ios": "puzzlepiece.extension",
+      "reason": "no puzzlepiece glyph in 2.0.0"
+    },
+    {
+      "floeVal": "Chip",
+      "ios": "cpu",
+      "reason": "no cpu glyph in 2.0.0"
+    },
+    {
+      "floeVal": "Stethoscope",
+      "ios": "stethoscope",
+      "reason": "no stethoscope glyph in 2.0.0"
+    },
+    {
+      "floeVal": "Terminal",
+      "ios": "terminal",
+      "reason": "no terminal glyph in 2.0.0"
+    },
+    {
+      "floeVal": "PlanList",
+      "ios": "list.bullet.clipboard",
+      "reason": "Main review: 'list_bullet_below_rectangle' is a rectangle with rows underneath, not the clipboard affordance — keep hand-drawn clipboard glyph"
+    },
+    {
+      "floeVal": "Key",
+      "ios": "key.fill",
+      "reason": "no standalone key glyph in 2.0.0 (keyboard only)"
+    },
+    {
+      "floeVal": "Target",
+      "ios": "target",
+      "reason": "Main review: concentric bullseye is the accurate SF target affordance; Cupertino 'scope' crosshair is a mismatch — keep hand-drawn"
+    },
+    {
+      "floeVal": "VideoPlus",
+      "ios": "video.badge.plus",
+      "reason": "Main review: plain videocam loses the plus badge — keep the specific hand-drawn video.badge.plus glyph"
+    }
+  ]
+}

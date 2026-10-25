@@ -51,6 +51,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeActivityIndicator
@@ -244,6 +245,13 @@ private fun ThreadTopBar(holder: ConversationFlowHolder, onBack: (() -> Unit)?) 
                 Box(
                     modifier = Modifier
                         .heightIn(min = FloeLayout.MinimumTarget)
+                        // Icon-only toolbar targets need BOTH dimensions at the
+                        // 48dp floor: the bare 20dp glyph measured a 40px hitbox
+                        // (e.g. [2504,52][2544,148]) next to "Round ended"
+                        // (device evidence 2026-10-25). The CenterEnd actions
+                        // row grows leftward, so widening this target cannot
+                        // push it offscreen; the title ellipsises instead.
+                        .widthIn(min = FloeLayout.MinimumTarget)
                         .clickable { menuExpanded = true }
                         .semantics { contentDescription = menuCd },
                     contentAlignment = Alignment.Center,
@@ -518,12 +526,40 @@ private fun GoalBuilderSheet(holder: ConversationFlowHolder) {
     }
 }
 
-/** ⇄ PendingInputEditor sheet. */
+/** ⇄ PendingInputEditor sheet.
+ *
+ * Safe complete-content editing (G04R2): the editable field binds ONLY a
+ * PROVEN body — the published full text from the bounded pending-input
+ * detail read, or a row the native snapshot proved to travel complete.
+ * While the full body is not yet proven the sheet keeps the original
+ * read-only (an explicitly labelled preview when one exists, otherwise a
+ * loading/typed-failure notice) and Save is disabled: a blank or bounded
+ * preview can NEVER replace the unread original. Cancel always preserves
+ * the row (unchanged existing behaviour). */
 @Composable
 private fun PendingInputEditorSheet(holder: ConversationFlowHolder) {
     val inputId = holder.editingPendingInputId.value
     val input = remember(inputId) { holder.snapshot.value?.pendingInputs?.firstOrNull { it.id == inputId } }
-    var text by remember(inputId) { mutableStateOf(TextFieldValue(input?.content ?: "")) }
+    val body = inputId?.let { holder.snapshot.value?.pendingInputBodies?.get(it) }
+    // The editor text is the proven body ONLY: Ready (detail read) or a
+    // COMPLETE projection slot. PREVIEW/NOT_READ never seed the field.
+    val provenText = when {
+        body is PendingInputBodyUi.Ready -> body.text
+        input?.bodyState == PendingInputBodyStateUi.COMPLETE -> input.content
+        else -> null
+    }
+    var text by remember(inputId) { mutableStateOf(TextFieldValue(provenText ?: "")) }
+    // Re-seed exactly once when the read publishes while the sheet is open
+    // (an already-typed edit is never clobbered by a late hydration).
+    LaunchedEffect(inputId, provenText) {
+        if (provenText != null && text.text.isEmpty()) text = TextFieldValue(provenText)
+    }
+    val bodyPending = provenText == null
+    val previewText = if (bodyPending && input?.bodyState == PendingInputBodyStateUi.PREVIEW) {
+        input.content + stringResource(R.string.queue_content_preview_suffix)
+    } else {
+        null
+    }
     FloePageSheet(
         visible = inputId != null,
         onDismiss = holder::closePendingInputEditor,
@@ -543,20 +579,46 @@ private fun PendingInputEditorSheet(holder: ConversationFlowHolder) {
                 Box(
                     modifier = Modifier
                         .heightIn(min = FloeLayout.MinimumTarget)
-                        .clickable(enabled = text.text.isNotBlank() && input != null) {
+                        .clickable(enabled = !bodyPending && text.text.isNotBlank() && input != null) {
                             input?.let { holder.editPendingInput(it.id, text.text) }
                         }
                         .semantics { contentDescription = saveLabel },
-                ) { FloeText(saveLabel, style = Floe.typography.bodyEmphasized, color = Floe.colors.accent) }
+                ) { FloeText(saveLabel, style = Floe.typography.bodyEmphasized, color = if (!bodyPending && text.text.isNotBlank()) Floe.colors.accent else Floe.colors.tertiaryLabel) }
             }
             FloeText(stringResource(R.string.queue_edit_title), style = Floe.typography.section, color = Floe.colors.label)
-            FloePlainFormField(
-                label = stringResource(R.string.queue_message_field),
-                value = text.text,
-                onValueChange = { text = TextFieldValue(it) },
-                singleLine = false,
-                maxLines = 10,
-            )
+            if (bodyPending) {
+                // Honest non-editable state while the full body is unread.
+                // The loading promise renders ONLY for an actually owned
+                // in-flight read (C04 cold-load repair): a null slot — the
+                // host refused to dispatch and no typed state exists — and a
+                // typed Failed both show the honest unread marker, never an
+                // endless spinner with no read behind it. A labelled preview
+                // still wins while the full body is unproven.
+                val notice = when (
+                    PendingInputQueueLogic.editorNoticeKey(body, previewText != null)
+                ) {
+                    PendingInputQueueLogic.EditorNoticeKey.PREVIEW -> previewText!!
+                    PendingInputQueueLogic.EditorNoticeKey.LOADING ->
+                        stringResource(R.string.queue_body_loading)
+                    PendingInputQueueLogic.EditorNoticeKey.UNREAD ->
+                        stringResource(R.string.queue_body_unread)
+                }
+                FloeText(
+                    notice,
+                    style = Floe.typography.body,
+                    color = Floe.colors.secondaryLabel,
+                    maxLines = 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                FloePlainFormField(
+                    label = stringResource(R.string.queue_message_field),
+                    value = text.text,
+                    onValueChange = { text = TextFieldValue(it) },
+                    singleLine = false,
+                    maxLines = 10,
+                )
+            }
         }
     }
 }

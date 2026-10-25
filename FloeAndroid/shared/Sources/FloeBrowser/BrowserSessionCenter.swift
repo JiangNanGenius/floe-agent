@@ -436,6 +436,22 @@ public actor BrowserSessionCenter {
         emitProjection()
     }
 
+    /// Draft-carrying commit (G04-R2 address-bar repair): ONE await into a
+    /// single session-owned commit operation. The center deliberately does
+    /// not split this into separate address/editing/navigate hops — between
+    /// two awaits of different actor calls, an older per-keystroke echo Task
+    /// could interleave and overwrite the draft. Inside the session
+    /// operation the draft is applied, the editing flag cleared and the
+    /// navigation target captured + policy-validated before its first
+    /// suspension, so a late echo can never change what THIS commit
+    /// navigates to. [draft] nil keeps the exact legacy two-op flow (the UI
+    /// cleared editing through `setEditingAddress` before committing).
+    public func navigateFromAddressBar(in conversationID: UUID, draft: String?) async {
+        guard let session = sessions[conversationID], conversationID == self.conversationID else { return }
+        await session.navigateFromAddressBar(draft: draft)
+        emitProjection()
+    }
+
     /// Panel "Retry" path (the iOS BrowserView retried via the session's web
     /// view directly). Reloads only this conversation's active tab.
     public func reloadVisibleTab(in conversationID: UUID) async {

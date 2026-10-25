@@ -55,7 +55,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
     private val leaseTtlMillis = 120_000L
     private val maxLeases = 8
 
-    override fun classifyUri(uriString: String): SafUriKind = guarded {
+    override fun classifyUri(uriString: String): SafUriKind = guarded("classifyUri") {
         val uri = Uri.parse(uriString)
         when {
             DocumentsContract.isTreeUri(uri) -> SafUriKind.TREE
@@ -64,7 +64,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         }
     }
 
-    override fun persistedGrants(): List<GrantSnapshot> = guarded {
+    override fun persistedGrants(): List<GrantSnapshot> = guarded("persistedGrants") {
         resolver.persistedUriPermissions.map { permission ->
             GrantSnapshot(
                 uri = SafUriRef(permission.uri.toString()),
@@ -148,6 +148,24 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         return built?.let { SafUriRef(it.toString()) }
     }
 
+    override fun documentIdOf(uri: SafUriRef): String? = try {
+        val real = Uri.parse(uri.uriString)
+        when {
+            // A document URI wins even when it is scoped under a tree
+            // (/tree/<rootId>/document/<childId>): isTreeUri is ALSO true
+            // there, and answering getTreeDocumentId would hand back the
+            // ROOT id and poison child reads/writes (Main steer 2026-10-25).
+            DocumentsContract.isDocumentUri(context, real) -> DocumentsContract.getDocumentId(real)
+            DocumentsContract.isTreeUri(real) -> DocumentsContract.getTreeDocumentId(real)
+            else -> null
+        }
+    } catch (t: RuntimeException) {
+        // Identity probing never throws a provider fault across the seam:
+        // null means "the platform refused", and the host stores an honest
+        // absence rather than a guessed segment.
+        null
+    }
+
     override fun queryChildDocuments(
         tree: SafUriRef,
         parentDocumentId: String?,
@@ -186,7 +204,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
             } catch (fault: SafBackendFaultException) {
                 throw fault
             } catch (t: Throwable) {
-                throw mapThrowable(t)
+                throw mapThrowable(t, "childScan")
             }
             lease = Lease("cs-" + leaseSeq.incrementAndGet(), realTree, parentId, cursor, 0, nowMillis())
             leases[lease.token] = lease
@@ -214,7 +232,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
                     closeLease(lease.token)
                     return ChildScan(rows, nextCursorToken = null, truncatedByLimit = false, note = note)
                 }
-                rows += mapRow(cursor, tree, parentId)
+                rows += mapRow(cursor, tree, parentId, "childScan")
                 position++
             }
         } catch (cancelled: SafCancelledException) {
@@ -225,7 +243,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
             throw fault
         } catch (t: Throwable) {
             closeLease(lease.token)
-            throw mapThrowable(t)
+            throw mapThrowable(t, "childScan")
         }
     }
 
@@ -239,7 +257,17 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         leases.keys.toList().forEach { closeLease(it) }
     }
 
-    private fun mapRow(cursor: Cursor, tree: SafUriRef, parentDocumentId: String): SafDocument {
+    /** Provider-row facts shared by child scans and single-document reads. */
+    private class RowFacts(
+        val docId: String,
+        val displayName: String?,
+        val mimeType: String?,
+        val size: SafSize,
+        val lastModified: Long?,
+        val capabilities: SafCapabilities,
+    )
+
+    private fun readRowFacts(cursor: Cursor, rowStage: String): RowFacts {
         fun columnString(name: String): String? =
             cursor.getColumnIndex(name).takeIf { it >= 0 }?.let { cursor.getString(it) }
         fun columnLong(name: String): Long? =
@@ -252,29 +280,67 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
                 if (cursor.isNull(it)) 0 else runCatching { cursor.getInt(it) }.getOrDefault(0)
             } ?: 0
         val docId = columnString(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            ?: throw SafBackendFaultException(SafBackendFault.FAILED, "provider row without DOCUMENT_ID")
+            ?: throw SafBackendFaultException(SafBackendFault.FAILED, "$rowStage.rowWithoutDocumentId")
+        return RowFacts(
+            docId = docId,
+            displayName = columnString(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            mimeType = columnString(DocumentsContract.Document.COLUMN_MIME_TYPE),
+            size = SafSize.fromProviderColumn(columnLong(DocumentsContract.Document.COLUMN_SIZE)),
+            lastModified = columnLong(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+            capabilities = SafCapabilities.fromProviderFlags(columnInt(DocumentsContract.Document.COLUMN_FLAGS)),
+        )
+    }
+
+    /** Child-scan rows under a REAL tree URI: the child URI is synthesized
+     * with buildDocumentUriUsingTree (the only place that is legitimate). */
+    private fun mapRow(cursor: Cursor, tree: SafUriRef, parentDocumentId: String, rowStage: String): SafDocument {
+        val facts = readRowFacts(cursor, rowStage)
         val childUri = runCatching {
-            DocumentsContract.buildDocumentUriUsingTree(Uri.parse(tree.uriString), docId)
-        }.getOrNull() ?: throw SafBackendFaultException(SafBackendFault.FAILED, "cannot build child uri")
-        val flags = columnInt(DocumentsContract.Document.COLUMN_FLAGS)
+            DocumentsContract.buildDocumentUriUsingTree(Uri.parse(tree.uriString), facts.docId)
+        }.getOrNull() ?: throw SafBackendFaultException(SafBackendFault.FAILED, "$rowStage.documentUriBuildFailed")
         return SafDocument(
             ref = SafDocumentRef(
                 tree = tree,
-                documentId = docId,
+                documentId = facts.docId,
                 parentDocumentId = parentDocumentId,
                 uri = SafUriRef(childUri.toString()),
             ),
-            displayName = columnString(DocumentsContract.Document.COLUMN_DISPLAY_NAME) ?: docId.substringAfterLast('/'),
-            mimeType = columnString(DocumentsContract.Document.COLUMN_MIME_TYPE) ?: "application/octet-stream",
-            size = SafSize.fromProviderColumn(columnLong(DocumentsContract.Document.COLUMN_SIZE)),
-            lastModifiedMillis = columnLong(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
-            capabilities = SafCapabilities.fromProviderFlags(flags),
+            displayName = facts.displayName ?: facts.docId.substringAfterLast('/'),
+            mimeType = facts.mimeType ?: "application/octet-stream",
+            size = facts.size,
+            lastModifiedMillis = facts.lastModified,
+            capabilities = facts.capabilities,
+        )
+    }
+
+    /** Single-document metadata (Main review fix 2026-10-25): the GRANTED URI
+     * and identity are preserved EXACTLY. A tree-scoped child URI must never
+     * be synthesized for a direct `/document/<id>` pick — building one from a
+     * non-tree URI makes DocumentsContract.getTreeDocumentId throw
+     * IllegalArgumentException, and that previously surfaced as the FAILED
+     * "provider failure" behind EVERY direct ACTION_OPEN_DOCUMENT import and
+     * ACTION_CREATE_DOCUMENT save-as read-back (row doc id only fills an
+     * identity the pick did not carry; a differing known id refuses, never
+     * guesses). */
+    private fun mapQueriedDocument(cursor: Cursor, ref: SafDocumentRef): SafDocument {
+        val facts = readRowFacts(cursor, "queryDoc")
+        val known = ref.documentId
+        if (known != null && known != facts.docId) {
+            throw SafBackendFaultException(SafBackendFault.FAILED, "queryDoc.rowIdentityMismatch")
+        }
+        return SafDocument(
+            ref = ref.copy(documentId = facts.docId),
+            displayName = facts.displayName ?: facts.docId.substringAfterLast('/'),
+            mimeType = facts.mimeType ?: "application/octet-stream",
+            size = facts.size,
+            lastModifiedMillis = facts.lastModified,
+            capabilities = facts.capabilities,
         )
     }
 
     // ---- metadata + mutations ---------------------------------------------
 
-    override fun queryDocument(ref: SafDocumentRef, cancel: SafCancelToken): SafDocument? = guarded(cancel) {
+    override fun queryDocument(ref: SafDocumentRef, cancel: SafCancelToken): SafDocument? = guarded("queryDoc", cancel) {
         // A document URI is directly queryable; DocumentsContract.queryDocument is a
         // provider-side name, not a reliable public client helper. Plain query with
         // no selection/sort keeps us provider-agnostic and SQL-free.
@@ -284,11 +350,11 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
             return@guarded null
         }
         cursor?.use {
-            if (!it.moveToFirst()) null else mapRow(it, ref.tree ?: fallbackTreeOf(ref), ref.parentDocumentId ?: ref.documentId ?: "")
+            if (!it.moveToFirst()) null else mapQueriedDocument(it, ref)
         }
     }
 
-    override fun isChildOf(child: SafDocumentRef, ancestorTree: SafUriRef, cancel: SafCancelToken): Boolean = guarded(cancel) {
+    override fun isChildOf(child: SafDocumentRef, ancestorTree: SafUriRef, cancel: SafCancelToken): Boolean = guarded("isChildDoc", cancel) {
         val rootRef = resolveTreeRoot(ancestorTree) ?: return@guarded false
         try {
             val parentUri = Uri.parse(rootRef.uri.uriString)
@@ -315,7 +381,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
             when (t) {
                 is SecurityException -> throw SafBackendFaultException(SafBackendFault.REVOKED, t.message ?: "revoked")
                 is IllegalArgumentException -> false
-                else -> throw mapThrowable(t)
+                else -> throw mapThrowable(t, "isChildDoc")
             }
         }
     }
@@ -340,7 +406,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         } catch (fnf: FileNotFoundException) {
             ReadOpen.NotFound
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "openRead")
         }
     }
 
@@ -358,7 +424,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         } catch (unsupported: UnsupportedOperationException) {
             WriteOpen.UnsupportedMode
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "openWrite")
         }
     }
 
@@ -386,7 +452,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         val created = try {
             DocumentsContract.createDocument(resolver, parentUri, mimeType, displayName)
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "createDoc")
         } ?: return OpResult.NullReturned("provider returned null")
         val docId = runCatching { DocumentsContract.getDocumentId(created) }.getOrNull()
         return OpResult.Ok(
@@ -399,7 +465,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         val renamed = try {
             DocumentsContract.renameDocument(resolver, Uri.parse(ref.uri.uriString), newName)
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "renameDoc")
         } ?: return OpResult.NullReturned("provider returned null")
         return OpResult.Ok(ref.copy(uri = SafUriRef(renamed.toString()), documentId = runCatching { DocumentsContract.getDocumentId(renamed) }.getOrNull() ?: ref.documentId))
     }
@@ -433,7 +499,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
                 destParentUri,
             )
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "moveDoc")
         } ?: return OpResult.NullReturned("provider returned null")
         val docId = runCatching { DocumentsContract.getDocumentId(moved) }.getOrNull() ?: ref.documentId
         return OpResult.Ok(SafDocumentRef(tree = destTree, documentId = docId, parentDocumentId = destParentDocumentId, uri = SafUriRef(moved.toString())))
@@ -453,7 +519,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         val copied = try {
             DocumentsContract.copyDocument(resolver, Uri.parse(ref.uri.uriString), destParentUri)
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "copyDoc")
         } ?: return OpResult.NullReturned("provider returned null")
         val docId = runCatching { DocumentsContract.getDocumentId(copied) }.getOrNull()
         return OpResult.Ok(SafDocumentRef(tree = destTree, documentId = docId, parentDocumentId = destParentDocumentId, uri = SafUriRef(copied.toString())))
@@ -464,7 +530,7 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         return try {
             OpResult.Ok(DocumentsContract.deleteDocument(resolver, Uri.parse(ref.uri.uriString)))
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, "deleteDoc")
         }
     }
 
@@ -524,26 +590,24 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         lease.cursor = null
     }
 
-    private fun fallbackTreeOf(ref: SafDocumentRef): SafUriRef = ref.tree ?: ref.uri
-
-    private inline fun <T> guarded(cancel: SafCancelToken, block: () -> T): T {
+    private inline fun <T> guarded(stage: String, cancel: SafCancelToken, block: () -> T): T {
         ensureActive(cancel)
         return try {
             block()
         } catch (t: Throwable) {
-            throw mapThrowable(t)
+            throw mapThrowable(t, stage)
         }
     }
 
-    private inline fun <T> guarded(block: () -> T): T = try {
+    private inline fun <T> guarded(stage: String, block: () -> T): T = try {
         block()
     } catch (fault: SafBackendFaultException) {
         throw fault
     } catch (t: Throwable) {
-        throw mapThrowable(t)
+        throw mapThrowable(t, stage)
     }
 
-    private fun mapThrowable(t: Throwable): SafBackendFaultException = when {
+    private fun mapThrowable(t: Throwable, stage: String): SafBackendFaultException = when {
         t is SafBackendFaultException -> t
         t is SafCancelledException -> SafBackendFaultException(SafBackendFault.CANCELLED, "cancelled", t)
         // Android CancellationSignal throws OperationCanceledException; keep it
@@ -559,8 +623,19 @@ class AndroidSafBackend(private val context: Context) : SafPlatformBackend {
         // Exception with those names; binder death is an offline provider state.
         t.javaClass.name.contains("DeadObject") || t.javaClass.name.contains("RemoteException") ->
             SafBackendFaultException(SafBackendFault.OFFLINE, t.message ?: "binder", t)
-        else -> SafBackendFaultException(SafBackendFault.FAILED, t.message ?: t.javaClass.simpleName, t)
+        // Closed diagnostic shape ONLY: `<stage>.<ExceptionClass>`. The raw
+        // provider message can embed URIs, headers or other users' paths and
+        // must never cross the seam as user-visible text; the exception class
+        // name is closed evidence that pinpoints WHERE the platform call
+        // failed without exposing what it said (repair 2026-10-25).
+        else -> SafBackendFaultException(SafBackendFault.FAILED, "$stage.${closedClassName(t)}", t)
     }
+
+    /** Java/Kotlin-identifier-safe class name for the closed FAILED token. */
+    private fun closedClassName(t: Throwable): String =
+        t.javaClass.simpleName.filter { ch ->
+            ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch == '_'
+        }.ifBlank { "Unnamed" }
 
     companion object {
         private val DOCUMENT_PROJECTION = arrayOf(

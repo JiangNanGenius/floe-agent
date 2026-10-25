@@ -6,6 +6,7 @@
 extern "C" {
 int32_t floe_linux_workspace_binding(uint64_t, const char*, const char*, char*, int32_t);
 int32_t floe_linux_workspace_binding_for_call(uint64_t, const char*, const char*, const char*, char*, int32_t);
+int32_t floe_linux_workspace_binding_for_operation(uint64_t, const char*, const char*, const char*, char*, int32_t);
 int32_t floe_linux_workspace_session_open(const char*, int32_t, char*, int32_t);
 int32_t floe_linux_workspace_baseline_begin(const char*, char*, int32_t);
 int32_t floe_linux_workspace_baseline_header(const char*, int64_t, char*, int32_t);
@@ -69,6 +70,14 @@ Java_com_floe_android_bridge_LinuxWorkspaceNative_bindingForCall(JNIEnv* env, jo
     if (epoch <= 0 || !identifier(env, runID, run) || !identifier(env, toolCallID, call) || !identifier(env, grantID, grant)) return nullptr;
     return response(env, [&](char* out, int32_t cap) {
         return floe_linux_workspace_binding_for_call(static_cast<uint64_t>(epoch), run.c_str(), call.c_str(), grant.c_str(), out, cap);
+    });
+}
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_floe_android_bridge_LinuxWorkspaceNative_bindingForOperation(JNIEnv* env, jobject, jlong epoch, jstring operationID, jstring runID, jstring grantID) {
+    std::string operation, run, grant;
+    if (epoch <= 0 || !identifier(env, operationID, operation) || !identifier(env, runID, run) || !identifier(env, grantID, grant)) return nullptr;
+    return response(env, [&](char* out, int32_t cap) {
+        return floe_linux_workspace_binding_for_operation(static_cast<uint64_t>(epoch), operation.c_str(), run.c_str(), grant.c_str(), out, cap);
     });
 }
 extern "C" JNIEXPORT jbyteArray JNICALL

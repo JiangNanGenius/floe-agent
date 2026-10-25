@@ -73,7 +73,7 @@ import kotlinx.serialization.json.jsonObject
  *  * downloads perform NO Kotlin IO: facts go up, signals come down.
  */
 internal class BrowserHostController(private val host: RuntimeHost) {
-    private val main = Handler(Looper.getMainLooper())
+    private val main by lazy { Handler(Looper.getMainLooper()) }
     private val json = Json { ignoreUnknownKeys = false }
     private val starts = Mutex()
     private val bindingAdmission = Mutex()
@@ -956,6 +956,16 @@ internal class BrowserHostController(private val host: RuntimeHost) {
         override fun navigateFromAddressBar() {
             if (!isBindingCurrent()) return
             ownedUICall( mapOf("op" to "navigateAddressBar"))
+        }
+
+        override fun navigateFromAddressBar(draft: String) {
+            if (!isBindingCurrent()) return
+            // One owned call carries the exact draft; the Swift session
+            // applies the draft, clears editing and captures/validates the
+            // target before its first suspension, so the newest typed URL
+            // is what THIS commit navigates to regardless of in-flight
+            // keystroke-echo Tasks.
+            ownedUICall( mapOf("op" to "navigateAddressBar", "text" to draft))
         }
 
         override fun requestReload() {

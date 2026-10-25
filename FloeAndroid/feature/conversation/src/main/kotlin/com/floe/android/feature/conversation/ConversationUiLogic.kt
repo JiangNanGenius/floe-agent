@@ -436,15 +436,38 @@ object PendingInputQueueLogic {
     }
 
     /** ⇄ displayText(for:): trusted decision rows show the host-projected
-     * concise summary; browser-handoff rows their fixed notice; everything
-     * else shows the verbatim content. */
+     * concise summary; browser-handoff rows their fixed notice; a row whose
+     * body has NOT arrived yet shows the honest unread marker (never a
+     * silently blank slot — the observed G04R2 defect); everything else
+     * shows the projected text (a PREVIEW is labelled by the view from
+     * [PendingInputUi.bodyState], which this logic never rewrites). */
     fun displayText(input: PendingInputUi): String = when {
         input.trustedSummary != null -> input.trustedSummary
         input.isBrowserHandoff -> BROWSER_HANDED_BACK
-        else -> input.content
+        input.content.isNotEmpty() -> input.content
+        else -> BODY_UNREAD
     }
 
-    private const val BROWSER_HANDED_BACK = "__floe.browser_control_returned__"
+    /** ⇄ PendingInputEditorSheet notice selection (C04 cold-load repair):
+     * the "Loading the full message…" promise is shown ONLY while a bounded
+     * body read actually owns this row's slot ([PendingInputBodyUi.Loading]).
+     * A null slot means the host never started a read for this open (a guard
+     * refusal now publishes a typed Failed instead, and a refused open with
+     * no live surface keeps the honest unread marker) — the sheet must never
+     * promise a load that is not in flight. A labelled preview still wins
+     * over both while the full body is unproven. */
+    fun editorNoticeKey(body: PendingInputBodyUi?, hasPreview: Boolean): EditorNoticeKey = when {
+        hasPreview -> EditorNoticeKey.PREVIEW
+        body is PendingInputBodyUi.Loading -> EditorNoticeKey.LOADING
+        else -> EditorNoticeKey.UNREAD
+    }
+
+    enum class EditorNoticeKey { PREVIEW, LOADING, UNREAD }
+
+    /** Marker vocabulary resolved by the queue view into localized copy
+     * (kept out of pure logic so unit tests bind exact strings). */
+    const val BROWSER_HANDED_BACK = "__floe.browser_control_returned__"
+    const val BODY_UNREAD = "__floe.queue_body_unread__"
 }
 
 /** ⇄ ThreadDetailViewModel plan-mode reconciliation: a session refresh must

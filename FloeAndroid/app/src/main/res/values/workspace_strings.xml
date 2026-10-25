@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="workspace_new_menu">New</string>
+    <string name="workspace_more_menu">More</string>
     <string name="workspace_new_file">New file</string>
     <string name="workspace_new_folder">New folder</string>
     <string name="workspace_move">Move or rename</string>
@@ -19,4 +21,5 @@
     <string name="workspace_run_pending">The run has not returned a result yet. Check its status in Terminal before starting another.</string>
     <string name="workspace_owner_error">The workspace changed. Close and reopen Files.</string>
     <string name="workspace_operation_error">The operation could not be completed. Check the path and try again.</string>
+    <string name="workspace_runtime_slot_busy">Runtime busy. Close the terminal, stop the program, or pause language services, then try again.</string>
 </resources>

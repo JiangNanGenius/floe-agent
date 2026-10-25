@@ -37,6 +37,7 @@ fun FloeApp() {
     val store = androidx.compose.runtime.remember(context) { FloeThemeStore(context) }
     var themeMode by rememberSaveable { mutableStateOf(store.mode) }
     FloeTheme(themeMode = themeMode) {
+        FloeSystemBarAppearance(themeMode)
         FloeShell(
             themeMode = themeMode,
             onThemeModeChange = { next ->

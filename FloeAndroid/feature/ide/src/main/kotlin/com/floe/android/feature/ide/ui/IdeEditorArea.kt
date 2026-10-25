@@ -35,6 +35,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -42,13 +43,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeActionSheet
 import com.floe.android.design.FloeCircleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloeLayout
-import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloeText
-import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.IconGlyph
 import com.floe.android.feature.ide.IdeDiffLineKind
 import com.floe.android.feature.ide.IdePresenter
@@ -115,17 +115,20 @@ internal fun IdeEditorArea(
         IdeStatusStrip(state)
     }
 
-    // Close-with-dirty decision.
-    FloePageSheet(
+    // Close-with-dirty decision. Window-bounded secondary popup (device
+    // evidence 2026-10-25): the old fractions keyed `compact` from the
+    // 430dp inspector pane, so on the real tablet window the sheet opened
+    // 1f-wide across the whole 2560x1600 screen. FloeActionSheet sizes
+    // against the ACTUAL window inside its Dialog — bounded centered card
+    // on wide windows, bottom sheet on compact ones — exactly like the
+    // already-fixed filetree picker. All decision callbacks unchanged.
+    FloeActionSheet(
         visible = state.closeRequest != null,
         onDismiss = presenter::dismissCloseRequest,
-        widthFraction = if (compact) 1f else 0.62f,
-        heightFraction = if (compact) 0.34f else 0.34f,
-        placement = if (compact) FloeSheetPlacement.BOTTOM else FloeSheetPlacement.CENTER,
     ) {
-        val request = state.closeRequest ?: return@FloePageSheet
+        val request = state.closeRequest ?: return@FloeActionSheet
         Column(
-            modifier = Modifier.fillMaxSize().padding(20.dp),
+            modifier = Modifier.fillMaxWidth().padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             FloeText(stringResource(R.string.ide_close_title), style = Floe.typography.section, color = colors.label)
@@ -142,13 +145,16 @@ internal fun IdeEditorArea(
         }
     }
 
-    // Conflict / recovery surface — both versions stay available.
-    FloePageSheet(
+    // Conflict / recovery surface — both versions stay available. Same
+    // window-bounded secondary popup as above (device evidence
+    // 2026-10-25 c05-cas-save-conflict: the old pane-derived compact=1f
+    // sheet spanned the entire 2560x1600 window). The review body keeps its
+    // bounded fill + scroll; KeepLocal/KeepBoth/UseRemote/CAS callbacks and
+    // styling are byte-identical.
+    FloeActionSheet(
         visible = state.conflict != null,
         onDismiss = presenter::dismissConflict,
-        widthFraction = if (compact) 1f else 0.8f,
-        heightFraction = if (compact) 0.9f else 0.8f,
-        placement = if (compact) FloeSheetPlacement.BOTTOM else FloeSheetPlacement.CENTER,
+        maxCardWidth = 640.dp,
     ) {
         state.conflict?.let { IdeConflictContent(presenter, it) }
     }
@@ -238,65 +244,81 @@ private fun IdeCommandBar(
                 .padding(horizontal = 6.dp),
         )
         Spacer(Modifier.width(4.dp))
-        val readOnly = state.snapshot?.readOnly == true || !state.inputAdmissionOpen
-        if (readOnly) {
-            FloeText(
-                stringResource(R.string.ide_status_read_only),
-                style = Floe.typography.metadata,
-                color = colors.secondaryLabel,
-            )
-            Spacer(Modifier.width(6.dp))
-        }
-        // Save (native authority), enabled only with real dirty + host save.
-        val saveEnabled = !readOnly && caps?.save == true && state.dirtyLocal && !state.saveInFlight
-        // Resolved in the composable context, then captured by the callback.
-        val saveCd = stringResource(R.string.ide_save_cd)
-        Box(
+        // Command cluster: leading tree/back + title stay pinned, while the
+        // trailing actions are measured inside a viewport-bounded, horizontally
+        // scrollable Row. On narrow widths (430dp inspector, compact phone)
+        // every command stays reachable by swiping with its original
+        // minimum touch target and native-authority callback, instead of being
+        // clipped past the right edge; on wide windows the cluster keeps its
+        // intrinsic width and no scrollbar ever appears.
+        Row(
             modifier = Modifier
-                .heightIn(min = FloeLayout.MinimumTarget)
-                .clip(RoundedCornerShape(9.dp))
-                .background(if (saveEnabled || state.saveInFlight) colors.accent.copy(alpha = 0.14f) else colors.chromeSurface)
-                .clickable(enabled = saveEnabled) { presenter.requestSave() }
-                .semantics { contentDescription = saveCd }
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            contentAlignment = Alignment.Center,
+                .weight(2f, fill = false)
+                .clipToBounds()
+                .horizontalScroll(rememberScrollState()),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            if (state.saveInFlight) {
-                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = colors.accent)
-            } else {
+            val readOnly = state.snapshot?.readOnly == true || !state.inputAdmissionOpen
+            if (readOnly) {
                 FloeText(
-                    stringResource(R.string.ide_save),
-                    style = Floe.typography.bodyEmphasized,
-                    color = if (saveEnabled) colors.accent else colors.tertiaryLabel,
+                    stringResource(R.string.ide_status_read_only),
+                    style = Floe.typography.metadata,
+                    color = colors.secondaryLabel,
                 )
+                Spacer(Modifier.width(6.dp))
             }
-        }
-        IconAction(FloeIdeIcons.Undo, stringResource(R.string.ide_undo_cd), enabled = caps?.undo == true && !readOnly) {
-            presenter.requestUndo()
-        }
-        IconAction(FloeIdeIcons.Redo, stringResource(R.string.ide_redo_cd), enabled = caps?.redo == true && !readOnly) {
-            presenter.requestRedo()
-        }
-        IconAction(FloeIcons.Magnifier, stringResource(R.string.ide_find_cd), enabled = caps?.find == true) {
-            presenter.showFind(!state.find.open)
-        }
-        IconAction(FloeIdeIcons.Diff, stringResource(R.string.ide_diff_cd), enabled = caps?.diff == true && state.snapshot != null) {
-            if (state.diff != null) presenter.dismissDiff() else presenter.requestLoadDiff()
-        }
-        if (caps?.run == true) {
-            IconAction(FloeIcons.PlayRuns, stringResource(R.string.ide_run_cd), enabled = state.snapshot != null && !state.documentLoading) {
-                presenter.requestRun()
+            // Save (native authority), enabled only with real dirty + host save.
+            val saveEnabled = !readOnly && caps?.save == true && state.dirtyLocal && !state.saveInFlight
+            // Resolved in the composable context, then captured by the callback.
+            val saveCd = stringResource(R.string.ide_save_cd)
+            Box(
+                modifier = Modifier
+                    .heightIn(min = FloeLayout.MinimumTarget)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (saveEnabled || state.saveInFlight) colors.accent.copy(alpha = 0.14f) else colors.chromeSurface)
+                    .clickable(enabled = saveEnabled) { presenter.requestSave() }
+                    .semantics { contentDescription = saveCd }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (state.saveInFlight) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = colors.accent)
+                } else {
+                    FloeText(
+                        stringResource(R.string.ide_save),
+                        style = Floe.typography.bodyEmphasized,
+                        color = if (saveEnabled) colors.accent else colors.tertiaryLabel,
+                    )
+                }
             }
-        }
-        if (caps?.openPreview == true) {
-            IconAction(FloeIcons.Eye, stringResource(R.string.ide_preview_cd)) { presenter.requestOpenPreview() }
-        }
-        if (caps?.terminal == true) {
-            IconAction(
-                FloeIcons.Terminal,
-                stringResource(R.string.ide_terminal_cd),
-                active = state.bottomPaneOpen,
-            ) { presenter.toggleBottomPane() }
+            IconAction(FloeIdeIcons.Undo, stringResource(R.string.ide_undo_cd), enabled = caps?.undo == true && !readOnly) {
+                presenter.requestUndo()
+            }
+            IconAction(FloeIdeIcons.Redo, stringResource(R.string.ide_redo_cd), enabled = caps?.redo == true && !readOnly) {
+                presenter.requestRedo()
+            }
+            IconAction(FloeIcons.Magnifier, stringResource(R.string.ide_find_cd), enabled = caps?.find == true) {
+                presenter.showFind(!state.find.open)
+            }
+            IconAction(FloeIdeIcons.Diff, stringResource(R.string.ide_diff_cd), enabled = caps?.diff == true && state.snapshot != null) {
+                if (state.diff != null) presenter.dismissDiff() else presenter.requestLoadDiff()
+            }
+            if (caps?.run == true) {
+                IconAction(FloeIcons.PlayRuns, stringResource(R.string.ide_run_cd), enabled = state.snapshot != null && !state.documentLoading) {
+                    presenter.requestRun()
+                }
+            }
+            if (caps?.openPreview == true) {
+                IconAction(FloeIcons.Eye, stringResource(R.string.ide_preview_cd)) { presenter.requestOpenPreview() }
+            }
+            if (caps?.terminal == true) {
+                IconAction(
+                    FloeIcons.Terminal,
+                    stringResource(R.string.ide_terminal_cd),
+                    active = state.bottomPaneOpen,
+                ) { presenter.toggleBottomPane() }
+            }
         }
     }
 }
@@ -622,7 +644,9 @@ private fun IdeStatusStrip(state: IdeViewState) {
             )
         }
         if (state.snapshot != null) {
-            if (state.pendingTransactionCount > 0) {
+            if (state.hasRejectedEdits) {
+                FloeText(stringResource(R.string.ide_status_recovery), style = Floe.typography.metadata, color = colors.pending, maxLines = 1)
+            } else if (state.pendingTransactionCount > 0) {
                 FloeText(
                     stringResource(R.string.ide_status_pending_n, state.pendingTransactionCount),
                     style = Floe.typography.metadata,
@@ -793,7 +817,7 @@ private fun BoxScope.IdeConflictContent(
                 presenter.resolveConflict(IdeConflictChoice.USE_REMOTE, conflict.remoteText)
             }
             FloeChipButton(stringResource(R.string.ide_conflict_keep_both)) {
-                presenter.resolveConflict(IdeConflictChoice.KEEP_BOTH, conflict.localDraftText + "\n" + conflict.remoteText)
+                presenter.resolveConflict(IdeConflictChoice.KEEP_BOTH, conflict.localDraftText)
             }
             FloeChipButton(stringResource(R.string.ide_conflict_keep_local), emphasized = true) {
                 presenter.resolveConflict(IdeConflictChoice.KEEP_LOCAL, conflict.localDraftText)

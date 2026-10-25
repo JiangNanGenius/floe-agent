@@ -858,20 +858,35 @@ public struct RunQueueQuery: Sendable, Equatable {
     public var mode: RunningInputMode
     public var selectedModelID: UUID?
     public var stagedAttachmentHandles: [String]
+    /// G04R2 queue-input repair: the composer's REAL execution mode
+    /// (`agent|chat|plan|goal` — the ORIGINAL iOS AgentExecutionMode raw
+    /// vocabulary persisted with the row). The terminal drain launches the
+    /// row under exactly this mode instead of a silent default. An absent
+    /// key keeps the historical `agent` default, so old envelopes are
+    /// unchanged.
+    public var executionMode: String
+
+    /// The CLOSED execution-mode vocabulary a queued row may carry.
+    public static let allowedExecutionModes: Set<String> = [
+        "agent", "chat", "plan", "goal",
+    ]
 
     public static let allowedKeys: Set<String> = [
         "content", "mode", "selectedModelID", "stagedAttachments",
+        "executionMode",
     ]
 
     public init(conversationID: UUID, runID: UUID, content: String,
                 mode: RunningInputMode, selectedModelID: UUID?,
-                stagedAttachmentHandles: [String]) {
+                stagedAttachmentHandles: [String],
+                executionMode: String = "agent") {
         self.conversationID = conversationID
         self.runID = runID
         self.content = content
         self.mode = mode
         self.selectedModelID = selectedModelID
         self.stagedAttachmentHandles = stagedAttachmentHandles
+        self.executionMode = executionMode
     }
 
     public static func parse(payload: SettingsDomainV1.JSONValue?, owner: OwnerIdentity) throws
@@ -895,10 +910,15 @@ public struct RunQueueQuery: Sendable, Equatable {
                 return handle
             }
         }
+        let executionMode = try object.optionalString("executionMode", maxBytes: 12) ?? "agent"
+        guard allowedExecutionModes.contains(executionMode) else {
+            throw RunDomainError(.invalidState, .payloadInvalid)
+        }
         return RunQueueQuery(conversationID: owner.taskID, runID: owner.runID,
                              content: content, mode: mode,
                              selectedModelID: try object.optionalUUID("selectedModelID"),
-                             stagedAttachmentHandles: handles)
+                             stagedAttachmentHandles: handles,
+                             executionMode: executionMode)
     }
 }
 

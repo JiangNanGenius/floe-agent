@@ -6,6 +6,7 @@
 // the real engine: the typed transport seam is injected exactly like the
 // G03 mailbox tests do.
 import XCTest
+import FloeCore
 @testable import FloeAndroidCore
 import FloeAndroidShellTools
 
@@ -246,5 +247,46 @@ final class G04TerminalDomainTests: XCTestCase {
         let token = G04TerminalStore.faultToken("engine reported the request failed (code=operation_failed)")
         XCTAssertLessThanOrEqual(token.count, 128)
         XCTAssertTrue(token.allSatisfy { !$0.isWhitespace || $0 == "_" })
+    }
+
+    // MARK: Single engine slot truth (device 2026-10-25: Retry/run/reset refusals)
+
+    func testOpenSessionRefusesWhileSingleEngineSlotHeld() async throws {
+        // The single runtime-UID workload gate is held by a live session: a
+        // second interactive open must refuse with the occupied-slot error
+        // and dispatch NO second shell.start. This is the exact condition
+        // the G04 lanes now surface pre-dispatch as typed saturated /
+        // engineSlotBusy (terminal open, run draft, LSP start) instead of
+        // collapsing into a generic backendFailed after the gate timeout.
+        let transport = FakeTerminalTransport()
+        let backend = AndroidLinuxShellBackend(
+            transport: transport,
+            readiness: LinuxShellInjectedReadiness { true },
+            configuration: AndroidLinuxShellBackend.Configuration(pollIntervalNanos: 1_000_000))
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("floe-slot-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runA = UUID()
+        _ = try await backend.openSession(ShellOpenRequest(
+            command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
+            gateTimeout: 2, sessionID: runA.uuidString.lowercased(), runID: runA,
+            toolEnvironment: nil, conversationID: runA, prepareLinuxIfMissing: false),
+            cancellation: nil)
+        let slotIsBusy = await backend.isEngineSlotBusy()
+        XCTAssertTrue(slotIsBusy)
+        let runB = UUID()
+        do {
+            _ = try await backend.openSession(ShellOpenRequest(
+                command: "", cwd: ".", rootURL: root, environment: [:], columns: 80, rows: 24,
+                gateTimeout: 0.2, sessionID: runB.uuidString.lowercased(), runID: runB,
+                toolEnvironment: nil, conversationID: runB, prepareLinuxIfMissing: false),
+                cancellation: nil)
+            XCTFail("the second open must refuse while the single slot is held")
+        } catch let error as FloeError {
+            XCTAssertTrue(String(describing: error).contains("single Linux workload slot is occupied"),
+                          String(describing: error))
+        }
+        XCTAssertEqual(transport.dispatches.filter { $0.operation == "shell.start" }.count, 1,
+                       "the refused open must never reach the engine transport")
     }
 }

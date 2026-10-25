@@ -78,4 +78,5 @@
     <string name="network_workspace_error_journal">A previous save is still awaiting verification. Use Verify to settle it before saving again.</string>
     <string name="network_workspace_error_busy">Another transfer is running on this workspace right now.</string>
     <string name="network_workspace_error_generic">The action did not finish. You can try again.</string>
+    <string name="network_workspace_short_title">Network</string>
 </resources>

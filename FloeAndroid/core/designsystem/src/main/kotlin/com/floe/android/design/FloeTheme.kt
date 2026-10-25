@@ -17,6 +17,22 @@ import io.github.robinpcrd.cupertino.theme.lightColorScheme
 @Immutable
 enum class FloeThemeMode { AUTO, LIGHT, DARK }
 
+/**
+ * Effective dark appearance for the saved mode: AUTO mirrors the system
+ * night mode (re-read on configuration changes), LIGHT/DARK are app-forced.
+ * Single source of truth shared by [FloeTheme] and the window-level system
+ * bar bridge in the app module, so Compose surfaces and platform
+ * status/navigation icon contrast can never diverge. Changing the user's
+ * global system theme is never implied here — the system value is only read.
+ */
+@Composable
+@ReadOnlyComposable
+fun floeIsDarkAppearance(themeMode: FloeThemeMode): Boolean = when (themeMode) {
+    FloeThemeMode.AUTO -> isSystemInDarkTheme()
+    FloeThemeMode.LIGHT -> false
+    FloeThemeMode.DARK -> true
+}
+
 internal val LocalFloeColors: ProvidableCompositionLocal<FloeColors> = staticCompositionLocalOf { FloeLightColors }
 internal val LocalFloeType: ProvidableCompositionLocal<FloeTypography> = staticCompositionLocalOf { FloeTypography() }
 
@@ -39,11 +55,7 @@ fun FloeTheme(
     themeMode: FloeThemeMode = FloeThemeMode.AUTO,
     content: @Composable () -> Unit,
 ) {
-    val dark = when (themeMode) {
-        FloeThemeMode.AUTO -> isSystemInDarkTheme()
-        FloeThemeMode.LIGHT -> false
-        FloeThemeMode.DARK -> true
-    }
+    val dark = floeIsDarkAppearance(themeMode)
     val colors = if (dark) FloeDarkColors else FloeLightColors
     val scheme = if (dark) {
         darkColorScheme(

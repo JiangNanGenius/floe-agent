@@ -1947,6 +1947,11 @@ public struct ConversationDetailQuery: Sendable, Equatable {
         case plan
         /// Original ordinary-task progress, separate from Goal authority.
         case checklist
+        /// Queue-content hydration (G04R2 repair): the FULL editable body of
+        /// ONE durable pending-input row, named by its exact `id` on every
+        /// page (no id-less "latest row" resolution exists for this kind —
+        /// an editor must never read a row it did not select).
+        case pendingInput
     }
     public var kind: Kind
     /// Optional on the first page (resolve the CURRENT durable plan /
@@ -2087,6 +2092,12 @@ public struct ConversationDetailWire: Sendable, Equatable {
 /// ACTUAL UTF-8 length (no excerpt text is inlined into the snapshot: the
 /// queue content belongs to the message/event lanes). Attachment lists
 /// surface counts only — binary/URI ingress is P8.
+///
+/// `executionMode` is the ORIGINAL persisted row vocabulary (App-layer raw,
+/// e.g. "agent"/"browserHandoff"). It is metadata, not body text: the queue
+/// row's trusted presentation (the iOS-parity browser-handoff notice) needs
+/// the REAL row vocabulary instead of a default guess. A consumer treats an
+/// absent member as a legacy page (never a synthesized current value).
 public struct PendingUserInputWire: Sendable, Equatable {
     public let id: UUID
     public let mode: String
@@ -2096,6 +2107,7 @@ public struct PendingUserInputWire: Sendable, Equatable {
     public let createdAtRaw: String
     public let contentUTF8Bytes: Int
     public let attachmentCount: Int
+    public let executionMode: String
 
     public init(input: PendingUserInput) {
         self.id = input.id
@@ -2106,6 +2118,7 @@ public struct PendingUserInputWire: Sendable, Equatable {
         self.createdAtRaw = ConversationWireDate.encode(input.createdAt)
         self.contentUTF8Bytes = input.content.utf8.count
         self.attachmentCount = input.attachments.count
+        self.executionMode = input.executionMode
     }
 
     public var wireObject: [String: Any] {
@@ -2117,9 +2130,52 @@ public struct PendingUserInputWire: Sendable, Equatable {
             "createdAt": createdAtRaw,
             "contentBytes": contentUTF8Bytes,
             "attachmentCount": attachmentCount,
+            "executionMode": executionMode,
         ]
         object["targetRunID"] = targetRunID?.uuidString ?? NSNull()
         return object
+    }
+}
+
+/// Closed canonical projection of ONE durable pending-input row for the
+/// additive `conversation.get.detail{kind:"pendingInput"}` byte-exact read
+/// (queue-content hydration lane, G04R2 repair 2026-10-25). This is the
+/// message/event-lane body the snapshot deliberately does NOT inline: the
+/// consumer only trusts the COMPLETE assembled chain (digest-verified) and
+/// proves the REAL row CAS identity (`pendingInput.<UPPER uuid>` /
+/// updatedAt-derived `inputVersion`) before any `run.input.edit` dispatch.
+/// Attachments stay counts-only (P8 ingress unchanged); no path/URI bytes
+/// cross this JSON channel. Sorted-key canonical encoding makes the digest a
+/// stable continuation proof (same rule as the plan/goal/checklist rows).
+struct PendingInputDetailProjection: Encodable {
+    let id: String
+    let conversationID: String
+    let mode: String
+    let status: String
+    let position: Int64
+    let content: String
+    let contentUTF8Bytes: Int
+    let executionMode: String
+    let attachmentCount: Int
+    let targetRunID: String?
+    let consumedRunID: String?
+    /// The SAME vocabulary `run.input.edit` CAS-proves
+    /// (`RunWireRevision.inputVersion(updatedAt:)`).
+    let inputVersion: String
+
+    init(input: PendingUserInput) {
+        id = input.id.uuidString
+        conversationID = input.conversationID.uuidString
+        mode = input.mode.rawValue
+        status = input.status.rawValue
+        position = input.position
+        content = input.content
+        contentUTF8Bytes = input.content.utf8.count
+        executionMode = input.executionMode
+        attachmentCount = input.attachments.count
+        targetRunID = input.targetRunID.map { $0.uuidString }
+        consumedRunID = input.consumedRunID.map { $0.uuidString }
+        inputVersion = RunWireRevision.inputVersion(updatedAt: input.updatedAt)
     }
 }
 
@@ -3002,6 +3058,7 @@ public actor FacadeConversationDomain {
             case goal(ConversationGoal)
             case plan(PlanDraft)
             case checklist(TaskChecklist)
+            case pendingInput(PendingUserInput)
         }
         let resolved: Resolved
         switch query.kind {
@@ -3045,6 +3102,20 @@ public actor FacadeConversationDomain {
                 throw ConversationDomainError.notFound
             }
             resolved = .checklist(checklist)
+        case .pendingInput:
+            // Queue-content hydration: the row MUST be named by its exact
+            // durable identity on EVERY page (first page included) and MUST
+            // belong to THIS conversation. The store read answers nil for a
+            // retired id — the same typed notFound as a foreign identity.
+            // The row's REAL status travels inside the canonical content;
+            // the consumer re-verifies it against fresh pages before any
+            // editor publication (never a stale editable body).
+            guard let inputID = query.id,
+                  let input = try await runningInputStore.input(id: inputID),
+                  input.conversationID == conversationID else {
+                throw ConversationDomainError.notFound
+            }
+            resolved = .pendingInput(input)
         }
 
         let canonical: Data
@@ -3077,6 +3148,22 @@ public actor FacadeConversationDomain {
             // work or independently verified Goal completion.
             rowStatus = checklist.isFinished ? "finished" : "inProgress"
             rowRevision = checklist.revision
+        case .pendingInput(let input):
+            // The durable queue row has NO integer revision column: `0` is
+            // the explicit "not an integer-revision row" value, never a
+            // fabricated counter. The REAL CAS identity for this row kind is
+            // the same pair `run.input.edit` proves — `pendingInput.<UPPER
+            // uuid>` + the updatedAt-derived `inputVersion` — carried by
+            // `revisionResourceID`/`revisionVersion`. The digest binds the
+            // content/status/version together: a moved row makes every
+            // continuation a typed staleRevision, exactly like the other
+            // detail kinds.
+            canonical = try Self.canonicalDetailJSON(PendingInputDetailProjection(input: input))
+            rowID = input.id
+            rowStatus = input.status.rawValue
+            rowRevision = 0
+            revisionResourceID = RunWireRevision.pendingInputResourceID(input.id)
+            revisionVersion = RunWireRevision.inputVersion(updatedAt: input.updatedAt)
         }
         let digest = FloeDigest.sha256Hex(canonical)
         if let expected = query.digest, expected != digest {

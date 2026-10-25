@@ -19,7 +19,7 @@
     <string name="workspace_source_recovery_pending">有一次外部恢复尚未完成；校验完成前不能释放授权。</string>
     <string name="workspace_source_repick_required">该文件的应用会话已过期，请重新选取以恢复访问。</string>
     <string name="workspace_source_transient">本次选取仅在应用运行期间有效；停止应用后需重新选取。</string>
-    <string name="workspace_source_tree_limits">Android 的选取器不提供私有或系统受限目录（包括应用存储、下载和可移动卷）。</string>
+    <string name="workspace_source_tree_limits">请在系统选取器中选择可授权的文件或文件夹。部分受保护的目录无法选择。</string>
     <string name="workspace_source_import_title">从文件系统导入</string>
     <string name="workspace_source_target_path">工作区内路径</string>
     <string name="workspace_source_display_name">文件名</string>
@@ -68,4 +68,5 @@
     <string name="workspace_source_provider_offline">提供方当前不可用。工作区日志会保留此待办项——提供方恢复后执行校验即可。</string>
     <string name="workspace_source_revoke_retained">已保留：Floe 的其他功能仍在使用此授权，因此未释放。</string>
     <string name="workspace_source_failed">操作未完成。你的工作区文件完好，请重试。</string>
+    <string name="workspace_source_error_details">详情</string>
 </resources>

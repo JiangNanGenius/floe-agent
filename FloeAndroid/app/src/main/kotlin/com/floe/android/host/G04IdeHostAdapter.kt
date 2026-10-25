@@ -165,8 +165,10 @@ internal class G04IdeHostAdapter(
                     IdeReplyOutcome.StaleRevision(snapshot(reload(header.id))))
                 return@enqueue
             }
-            cache(Loaded(header, text, previous.generation))
-            reply(transaction.transactionId, transaction.documentKey, IdeReplyOutcome.Acknowledged(header.revision))
+            val acknowledged = Loaded(header, text, previous.generation)
+            cache(acknowledged)
+            reply(transaction.transactionId, transaction.documentKey,
+                IdeReplyOutcome.Acknowledged(header.revision, snapshot(acknowledged).capabilities))
             publishTabs()
         }
     }
@@ -311,9 +313,15 @@ internal class G04IdeHostAdapter(
                 if (run != null) run(value.header.id, value.header.path) else {
                     val controller = runtimeHost.workspaceTerminal ?: throw G04WorkspaceBridgeClient.Failure("backendUnavailable")
                     val type = language(value.header.path) ?: throw G04WorkspaceBridgeClient.Failure("unsupportedContent")
-                    when (controller.runDraft(taskId, workspaceId, value.header.path, type)) {
+                    when (val answer = controller.runDraft(taskId, workspaceId, value.header.path, type)) {
                         is TerminalActionReply.Success -> Unit
-                        is TerminalActionReply.Refused -> throw G04WorkspaceBridgeClient.Failure("backendUnavailable")
+                        is TerminalActionReply.Refused -> throw G04WorkspaceBridgeClient.Failure(
+                            // The occupied single engine slot is its own
+                            // honest condition (typed pre-dispatch refusal):
+                            // say "runtime busy", never a generic
+                            // "backend unavailable" that hides the remedy.
+                            if (answer.code == "notStarted" && answer.reason == "engineSlotBusy") "runtimeBusy"
+                            else "backendUnavailable")
                         TerminalActionReply.TimedOut -> throw G04WorkspaceBridgeClient.Failure("operationPending")
                     }
                 }

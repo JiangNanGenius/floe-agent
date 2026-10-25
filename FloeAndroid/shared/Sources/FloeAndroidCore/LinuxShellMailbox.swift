@@ -660,10 +660,19 @@ public struct MailboxLinuxShellTransport: LinuxShellTransport {
             "columns": request.columns,
             "timeoutSeconds": request.timeoutSeconds,
         ]
+        var hostObject: [String: Any] = [:]
         if let owner = request.hostToolCallID {
             // Private Core host metadata, STRIPPED before the runtime wire.
-            payload["host"] = ["toolCallID": owner]
+            hostObject["toolCallID"] = owner
         }
+        if let operation = request.hostOperationID {
+            // G04-R2 UI operation lease identity (trusted host only; same
+            // strip-before-wire rule). nil omits the key entirely, so every
+            // existing payload — ordinary run AND durable job starts — stays
+            // byte-for-byte unchanged.
+            hostObject["operationID"] = operation
+        }
+        if !hostObject.isEmpty { payload["host"] = hostObject }
         if let conversationID = request.conversationID {
             payload["conversationID"] = conversationID.uuidString
         }

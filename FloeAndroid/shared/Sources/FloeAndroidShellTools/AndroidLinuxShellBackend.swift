@@ -485,7 +485,11 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             environment: request.environment,
             rows: request.rows,
             columns: request.columns,
-            timeoutSeconds: configuration.interactiveEngineDeadline
+            timeoutSeconds: configuration.interactiveEngineDeadline,
+            // G04-R2: the trusted UI operation lease identity (interactive
+            // terminal / LSP opens mint their workspace grant against it).
+            // nil for every other open — payload stays byte-for-byte.
+            hostOperationID: request.workspaceOperationID?.uuidString,
             // stdinDelivery intentionally UNSET: an interactive session
             // rides the legacy PTY input path (engine default "pty"). The
             // wire key is omitted entirely (never null), so canonical

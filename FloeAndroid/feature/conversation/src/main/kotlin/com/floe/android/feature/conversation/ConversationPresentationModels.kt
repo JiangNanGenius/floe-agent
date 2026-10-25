@@ -249,7 +249,11 @@ enum class PendingInputStatusUi(val swiftRaw: String) {
 
 data class PendingInputUi(
     val id: String,
-    /** Verbatim queue text (user content — masked in toString below). */
+    /** Projected queue text: a native-proven full short body, a bounded
+     * UTF-8 PREVIEW (see [bodyState]), or the hydrated complete body after
+     * the bounded `pendingInput` detail read. It is NEVER a stand-in for
+     * unread content: the editor only binds a [PendingInputBodyStateUi
+     * .COMPLETE] slot. User content — masked in toString below. */
     val content: String,
     val status: PendingInputStatusUi,
     val mode: RunningInputModeUi,
@@ -260,12 +264,37 @@ data class PendingInputUi(
      * instead of the raw grant/target payload (⇄ ProposalDecisionPresentation
      * .summary(for:)); null = show content verbatim. */
     val trustedSummary: String? = null,
+    /** REAL durable UTF-8 length from the wire (null = a legacy page that
+     * never reported it — unknown, never guessed). */
+    val contentBytes: Long? = null,
+    /** Body truthfulness of [content] (queue-content repair G04R2). */
+    val bodyState: PendingInputBodyStateUi = PendingInputBodyStateUi.NOT_READ,
+    /** The durable row's CAS version (`pendingInput.<uuid>` / updatedAt),
+     * proven by the `run.snapshot` lane only. null = no version observed. */
+    val inputVersion: String? = null,
 ) {
     val isBrowserHandoff: Boolean get() = executionModeRaw == "browserHandoff"
 
     /** User prompts are sensitive content: never dump them into logs. */
     override fun toString(): String =
         "PendingInputUi(id=$id, status=${status.swiftRaw}, mode=${mode.swiftRaw}, chars=${content.length})"
+}
+
+/** Body-truthfulness of one projected queue row's text (G04R2 repair). A
+ * PREVIEW is a bounded excerpt and NEVER editor content; COMPLETE means the
+ * slot equals the durable row text, proven by the native snapshot (a short
+ * row travels whole) or by the digest-verified detail read. */
+enum class PendingInputBodyStateUi { NOT_READ, PREVIEW, COMPLETE }
+
+/** Editor hydration state for one durable queue row, published by the
+ * bounded `conversation.get.detail{kind:"pendingInput"}` chain. Ready
+ * carries the proven-complete text AND the native CAS version it was read
+ * at; an editor binds only a Ready/COMPLETE body, and every save re-proves
+ * the version against a fresh snapshot before dispatch. */
+sealed interface PendingInputBodyUi {
+    data object Loading : PendingInputBodyUi
+    data class Ready(val text: String, val inputVersion: String) : PendingInputBodyUi
+    data class Failed(val code: String) : PendingInputBodyUi
 }
 
 /* ------------------------------- plan / goal ------------------------------- */
@@ -769,6 +798,12 @@ data class ThreadUiState(
     /** Pending approvals of the SELECTED run (host-scoped filter like the VM). */
     val pendingApprovals: List<ApprovalCardUi>,
     val pendingInputs: List<PendingInputUi>,
+    /** Editor hydration state by durable queue-row id (G04R2 repair): the
+     * full editable body exists ONLY for rows whose digest-verified detail
+     * read completed (or which the native snapshot proved short/complete).
+     * Rows without an entry (or in Loading/Failed) keep the editor
+     * read-locked; the unread original is never replaced. */
+    val pendingInputBodies: Map<String, PendingInputBodyUi> = emptyMap(),
     val models: List<ModelOptionUi>,
     val projects: List<ProjectOptionUi>,
     /**

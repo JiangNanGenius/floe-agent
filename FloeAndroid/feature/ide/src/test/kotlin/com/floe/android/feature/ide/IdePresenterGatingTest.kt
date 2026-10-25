@@ -35,6 +35,7 @@ import com.floe.android.feature.ide.api.IdeUtf16Range
 import com.floe.android.feature.ide.api.NativeRevision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -130,6 +131,48 @@ class IdePresenterGatingTest {
         // Mirror advanced immediately for the projection, revision still r0.
         assertEquals("abc", f.presenter.state.value.mirrorText)
         assertEquals(NativeRevision("r0"), f.presenter.state.value.snapshot?.revision)
+    }
+
+    @Test
+    fun nativeEditAckEnablesUndoWhileUnprovenLocalInputDoesNot() {
+        val f = Fixture()
+        val caps = IdeDocumentCapabilities(undo = false, redo = false, save = true)
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc").copy(capabilities = caps))
+        f.presenter.applyProjectionEdit(key, IdeUtf16Range(3, 3), "!", IdeEditOrigin.USER_TYPING)
+        f.presenter.requestUndo()
+        assertTrue(f.host.commands.none { it is IdeCommandRequest.Undo })
+        val txn = f.host.edits.single()
+        f.host.receiver!!.onCommandReply(IdeCommandReply(txn.transactionId, owner, key,
+            IdeReplyOutcome.Acknowledged(NativeRevision("r1"), caps.copy(undo = true))))
+        assertEquals("abc!", f.presenter.state.value.mirrorText)
+        assertTrue(f.presenter.state.value.snapshot!!.capabilities.undo)
+        assertFalse(f.presenter.state.value.snapshot!!.capabilities.redo)
+        f.presenter.requestUndo()
+        f.presenter.requestRedo()
+        assertEquals(1, f.host.commands.filterIsInstance<IdeCommandRequest.Undo>().size)
+        assertTrue(f.host.commands.none { it is IdeCommandRequest.Redo })
+    }
+
+    @Test
+    fun capabilityAckKeepsQueuedKeystrokesAndRejectsWrongOwner() {
+        val f = Fixture()
+        val caps = IdeDocumentCapabilities(undo = false, redo = false, save = true)
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc").copy(capabilities = caps))
+        f.presenter.applyProjectionEdit(key, IdeUtf16Range(3, 3), "!", IdeEditOrigin.USER_TYPING)
+        f.presenter.applyProjectionEdit(key, IdeUtf16Range(4, 4), "?", IdeEditOrigin.USER_TYPING)
+        val txn = f.host.edits.single()
+        val ack = IdeReplyOutcome.Acknowledged(NativeRevision("r1"), caps.copy(undo = true))
+        f.host.receiver!!.onCommandReply(IdeCommandReply(txn.transactionId,
+            owner.copy(bindingGeneration = 8L), key, ack))
+        assertFalse(f.presenter.state.value.snapshot!!.capabilities.undo)
+        assertEquals(2, f.presenter.state.value.pendingTransactionCount)
+        f.host.receiver!!.onCommandReply(IdeCommandReply(txn.transactionId, owner, key, ack))
+        assertEquals("abc!?", f.presenter.state.value.mirrorText)
+        assertEquals(1, f.presenter.state.value.pendingTransactionCount)
+        assertTrue(f.presenter.state.value.snapshot!!.capabilities.undo)
+        assertEquals(NativeRevision("r1"), f.host.edits.last().expectedRevision)
     }
 
     @Test
@@ -896,4 +939,192 @@ class IdePresenterGatingTest {
 
     private fun diag(id: Long, msg: String) =
         IdeDiagnostic(id, IdeUtf16Range(0, 1), IdeDiagnosticSeverity.WARNING, msg)
+
+    @Test
+    fun acceptedCompletionBumpsVersionAndRejectedOnesDoNot() {
+        val f = Fixture()
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        val caps = IdeDocumentCapabilities(completion = true)
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc", "r0").copy(capabilities = caps))
+        f.presenter.reportEditorSelection("doc-1", IdeTextSelection(1, 1), 0)
+        val request = f.host.commands.filterIsInstance<IdeCommandRequest.RequestCompletion>().single()
+        assertEquals(0, f.presenter.state.value.completionVersion)
+        // Fenced-out arrivals must not re-trigger the editor completion pass.
+        f.host.receiver!!.onCompletion(
+            IdeCompletionSnapshot(key, "forged", NativeRevision("r0"), IdeTextSelection(1, 1), listOf(comp("no"))))
+        f.host.receiver!!.onCompletion(
+            IdeCompletionSnapshot(key, request.requestId, NativeRevision("r-old"), IdeTextSelection(1, 1), listOf(comp("no2"))))
+        assertEquals(0, f.presenter.state.value.completionVersion)
+        // The fresh accepted arrival bumps the version exactly once.
+        f.host.receiver!!.onCompletion(
+            IdeCompletionSnapshot(key, request.requestId, NativeRevision("r0"), IdeTextSelection(1, 1), listOf(comp("yes"))))
+        assertEquals(1, f.presenter.state.value.completionVersion)
+    }
+
+    @Test
+    fun refusedRunBecomesVisibleSyncError() {
+        val f = Fixture()
+        val caps = IdeDocumentCapabilities(run = true)
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("hello").copy(capabilities = caps))
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.presenter.activateTab("doc-1")
+        f.presenter.requestRun()
+        val run = f.host.commands.filterIsInstance<IdeCommandRequest.Run>().single()
+        assertNull(f.presenter.state.value.syncError)
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(run.requestId, owner, run.documentKey,
+                IdeReplyOutcome.Failed(IdeErrorCode.HOST_UNAVAILABLE, "runtimeBusy")),
+        )
+        assertNotNull(f.presenter.state.value.syncError)
+    }
+
+    @Test
+    fun resolveConflictSuccessDismissesModalAndFreshensTreeForNewCopy() {
+        val f = Fixture()
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc", "r0"))
+        f.presenter.activateTab("doc-1")
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply("save-c", owner, key, IdeReplyOutcome.Executed(
+                IdeCommandPayload(kind = IdeCommandPayload.Kind.SAVE, save = com.floe.android.feature.ide.api.IdeSaveOutcome(
+                    NativeRevision("r1"),
+                    conflict = com.floe.android.feature.ide.api.IdeConflictPayload(key, "base", "mine", "theirs", NativeRevision("r2")),
+                )),
+            )),
+        )
+        assertNotNull(f.presenter.state.value.conflict)
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_BOTH, "mine")
+        val resolve = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().single()
+        // A FAILED resolve never dismisses the modal (no optimistic UI).
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(resolve.requestId, owner, resolve.documentKey,
+                IdeReplyOutcome.Failed(IdeErrorCode.HOST_UNAVAILABLE, "nope")),
+        )
+        assertNotNull(f.presenter.state.value.conflict)
+        val treesBefore = f.host.commands.filterIsInstance<IdeCommandRequest.ExpandTree>().size
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_BOTH, "mine")
+        val resolve2 = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().last()
+        // The accepted fork snapshot under a NEW docID dismisses the modal AND
+        // re-requests the tree so the new copy appears without manual refresh.
+        val forkKey = IdeDocumentKey("task", "ws", "doc-2")
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(resolve2.requestId, owner, resolve2.documentKey,
+                IdeReplyOutcome.Executed(IdeCommandPayload(kind = IdeCommandPayload.Kind.SNAPSHOT,
+                    snapshot = snapshotWith("forked", "rf").copy(key = forkKey)))),
+        )
+        assertNull(f.presenter.state.value.conflict)
+        assertTrue(f.host.commands.filterIsInstance<IdeCommandRequest.ExpandTree>().size > treesBefore)
+    }
+
+    @Test
+    fun staleSameDocResolveCannotDismissOrOverwriteANewerConflict() {
+        val f = Fixture()
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc", "r0"))
+        f.presenter.activateTab("doc-1")
+        // The local draft is accepted natively before the save attempt.
+        f.presenter.applyProjectionEdit(key, IdeUtf16Range(3, 3), "!", IdeEditOrigin.USER_TYPING)
+        val edit = f.host.edits.single()
+        f.host.receiver!!.onCommandReply(IdeCommandReply(edit.transactionId, owner, key,
+            IdeReplyOutcome.Acknowledged(NativeRevision("r1"))))
+        assertEquals("abc!", f.presenter.state.value.mirrorText)
+        // SAVE conflict A on doc-1: the guest changed the file externally.
+        f.presenter.requestSave()
+        val saveA = f.host.commands.filterIsInstance<IdeCommandRequest.Save>().last()
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(saveA.requestId, owner, key, IdeReplyOutcome.Executed(
+                IdeCommandPayload(kind = IdeCommandPayload.Kind.SAVE,
+                    save = com.floe.android.feature.ide.api.IdeSaveOutcome(NativeRevision("r1"),
+                        conflict = com.floe.android.feature.ide.api.IdeConflictPayload(
+                            key, "abc", "abc!", "external-A", NativeRevision("r2")))),
+            )),
+        )
+        val conflictA = f.presenter.state.value.conflict!!
+        // The user accepts a KEEP_LOCAL resolution; its reply is still in
+        // flight when the SAME document produces a NEWER conflict B.
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_LOCAL, "abc!")
+        val staleResolve = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().single()
+        // Work continues on the draft: a further accepted keystroke…
+        f.presenter.applyProjectionEdit(key, IdeUtf16Range(4, 4), "?", IdeEditOrigin.USER_TYPING)
+        val edit2 = f.host.edits.last()
+        f.host.receiver!!.onCommandReply(IdeCommandReply(edit2.transactionId, owner, key,
+            IdeReplyOutcome.Acknowledged(NativeRevision("r3"))))
+        // …and a second save surfaces the newer conflict on the same docID.
+        f.presenter.requestSave()
+        val saveB = f.host.commands.filterIsInstance<IdeCommandRequest.Save>().last()
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(saveB.requestId, owner, key, IdeReplyOutcome.Executed(
+                IdeCommandPayload(kind = IdeCommandPayload.Kind.SAVE,
+                    save = com.floe.android.feature.ide.api.IdeSaveOutcome(NativeRevision("r3"),
+                        conflict = com.floe.android.feature.ide.api.IdeConflictPayload(
+                            key, "abc", "abc!?", "external-B", NativeRevision("r4")))),
+            )),
+        )
+        val conflictB = f.presenter.state.value.conflict!!
+        assertNotEquals(conflictA, conflictB) // Same docID, different conflict occurrence.
+        val treesBefore = f.host.commands.filterIsInstance<IdeCommandRequest.ExpandTree>().size
+        // The OLD resolve finally arrives as an accepted snapshot on the SAME
+        // document with a no-longer-current body (native fork of the old
+        // intent may exist; the UI intent moved on).
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(staleResolve.requestId, owner, staleResolve.documentKey,
+                IdeReplyOutcome.Executed(IdeCommandPayload(kind = IdeCommandPayload.Kind.SNAPSHOT,
+                    snapshot = snapshotWith("abc!", "r2-resolved")))),
+        )
+        val fenced = f.presenter.state.value
+        assertEquals(conflictB, fenced.conflict) // the newer modal is NOT dismissed
+        assertEquals("abc!?", fenced.mirrorText) // the current draft is NOT clobbered
+        assertEquals(NativeRevision("r3"), fenced.snapshot?.revision)
+        assertEquals(treesBefore, f.host.commands.filterIsInstance<IdeCommandRequest.ExpandTree>().size)
+        // The fence is not sticky: the NEWER conflict's own successful
+        // same-document resolution still dismisses and adopts.
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_LOCAL, "abc!?")
+        val freshResolve = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().last()
+        f.host.receiver!!.onCommandReply(
+            IdeCommandReply(freshResolve.requestId, owner, freshResolve.documentKey,
+                IdeReplyOutcome.Executed(IdeCommandPayload(kind = IdeCommandPayload.Kind.SNAPSHOT,
+                    snapshot = snapshotWith("abc!?", "r5")))),
+        )
+        assertNull(f.presenter.state.value.conflict)
+        assertEquals(NativeRevision("r5"), f.presenter.state.value.snapshot?.revision)
+        assertEquals("abc!?", f.presenter.state.value.mirrorText)
+    }
+    @Test
+    fun equalNewConflictAndNewerChoiceInvalidateOlderResolution() {
+        val f = Fixture()
+        f.host.receiver!!.onTabs(IdeTabsSnapshot(owner, "doc-1", listOf(tab()), 1))
+        f.host.receiver!!.onDocumentSnapshot(snapshotWith("abc", "r0"))
+        f.presenter.activateTab("doc-1")
+        val conflict = com.floe.android.feature.ide.api.IdeConflictPayload(
+            key, "base", "mine", "theirs", NativeRevision("r2"))
+        fun showConflict(request: String) {
+            f.host.receiver!!.onCommandReply(IdeCommandReply(request, owner, key,
+                IdeReplyOutcome.Executed(IdeCommandPayload(kind = IdeCommandPayload.Kind.SAVE,
+                    save = com.floe.android.feature.ide.api.IdeSaveOutcome(
+                        NativeRevision("r0"), conflict = conflict.copy())))))
+        }
+        fun complete(request: IdeCommandRequest.ResolveConflict, text: String) {
+            f.host.receiver!!.onCommandReply(IdeCommandReply(request.requestId, owner, key,
+                IdeReplyOutcome.Executed(IdeCommandPayload(kind = IdeCommandPayload.Kind.SNAPSHOT,
+                    snapshot = snapshotWith(text, "resolved")))))
+        }
+        showConflict("first-conflict")
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_LOCAL, "mine")
+        val old = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().last()
+        showConflict("new-equal-conflict") // Equal fields still describe a NEW occurrence.
+        complete(old, "old-body")
+        assertEquals(conflict, f.presenter.state.value.conflict)
+        assertEquals("abc", f.presenter.state.value.mirrorText)
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.KEEP_LOCAL, "mine")
+        val superseded = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().last()
+        f.presenter.resolveConflict(com.floe.android.feature.ide.api.IdeConflictChoice.USE_REMOTE, "theirs")
+        val latest = f.host.commands.filterIsInstance<IdeCommandRequest.ResolveConflict>().last()
+        complete(superseded, "superseded-body")
+        assertEquals(conflict, f.presenter.state.value.conflict)
+        assertEquals("abc", f.presenter.state.value.mirrorText)
+        complete(latest, "theirs")
+        assertNull(f.presenter.state.value.conflict)
+        assertEquals("theirs", f.presenter.state.value.mirrorText)
+    }
+
 }

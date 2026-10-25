@@ -28,6 +28,11 @@ class RecordingHost : ConversationUiCallbacks {
     var markdownBackendAvailable = true
     var selectModelPersisted = true
 
+    /** C04 queue-body lane: default false = "the host refused the bounded
+     * body read" (the interface default); calls are recorded so tests can
+     * assert exact dispatch counts and retry behaviour. */
+    var pendingBodyReadAccepted = false
+
     private fun record(name: String, vararg args: Any?) {
         effects += HostEffect(name, args.toList())
     }
@@ -69,6 +74,11 @@ class RecordingHost : ConversationUiCallbacks {
 
     override fun promotePendingInput(session: ConversationSessionToken, inputId: String, expectedRunId: String): Boolean {
         record("promotePendingInput", session, inputId, expectedRunId); return true
+    }
+
+    override fun requestPendingInputBody(session: ConversationSessionToken, inputId: String): Boolean {
+        record("requestPendingInputBody", session, inputId)
+        return pendingBodyReadAccepted
     }
 
     override fun editPendingInput(session: ConversationSessionToken, inputId: String, content: String): Boolean {

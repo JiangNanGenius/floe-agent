@@ -734,9 +734,9 @@ private fun settingsIcon(section: FloeSettingsSection) = when (section) {
     FloeSettingsSection.GENERAL -> FloeIcons.Gearshape
     FloeSettingsSection.PROVIDERS -> FloeIcons.Antenna
     FloeSettingsSection.SKILLS -> FloeIcons.Puzzle
-    FloeSettingsSection.MEMORY -> FloeIcons.BookPages
-    FloeSettingsSection.USAGE -> FloeIcons.Gauge
-    FloeSettingsSection.PRIVACY -> FloeIcons.ShieldCheck
+    FloeSettingsSection.MEMORY -> FloeIcons.PersonCircleCheck
+    FloeSettingsSection.USAGE -> FloeIcons.ChartBar
+    FloeSettingsSection.PRIVACY -> FloeIcons.HandRaised
     FloeSettingsSection.WEB_SEARCH -> FloeIcons.Magnifier
     FloeSettingsSection.DIAGNOSTICS -> FloeIcons.Stethoscope
 }

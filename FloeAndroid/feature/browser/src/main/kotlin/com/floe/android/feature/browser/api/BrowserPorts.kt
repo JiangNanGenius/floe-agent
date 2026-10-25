@@ -77,6 +77,20 @@ public interface BrowserServicePort {
     /** Commit the address bar entry; Swift applies URL policy + reload rules. */
     public fun navigateFromAddressBar()
 
+    /**
+     * Atomic commit carrying the exact draft: the text rides in the ONE
+     * owned navigate op and the Swift session applies it, clears the editing
+     * flag and captures + policy-validates the navigation target BEFORE its
+     * first suspension, so a late keystroke echo can never change what this
+     * commit navigates to. The default keeps legacy hosts behaviorally
+     * identical to the old UI sequence (clear editing, then commit); only
+     * hosts whose native commit op carries text override it.
+     */
+    public fun navigateFromAddressBar(draft: String) {
+        setEditingAddress(false)
+        navigateFromAddressBar()
+    }
+
     /** Panel Retry: Swift reloads this conversation's active tab. */
     public fun requestReload()
 

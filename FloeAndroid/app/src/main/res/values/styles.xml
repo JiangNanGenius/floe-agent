@@ -1,7 +1,10 @@
 <resources>
     <style name="Theme.Floe" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <!-- Status bar icon contrast is resolved per-window at runtime from the
+             saved app theme mode (FloeSystemBarAppearance); a hard-coded
+             windowLightStatusBar here assumed always-light chrome and made
+             forced Night render dark icons on a dark background. -->
         <item name="android:windowActionModeOverlay">true</item>
         <item name="android:colorAccent">#245BC5</item>
     </style>

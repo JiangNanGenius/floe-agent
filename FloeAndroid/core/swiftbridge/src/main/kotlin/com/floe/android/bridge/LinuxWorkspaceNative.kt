@@ -6,6 +6,7 @@ object LinuxWorkspaceNative {
     init { System.loadLibrary("floe_jni") }
     external fun binding(epoch: Long, runID: String, grantID: String): ByteArray?
     external fun bindingForCall(epoch: Long, runID: String, toolCallID: String, grantID: String): ByteArray?
+    external fun bindingForOperation(epoch: Long, operationID: String, runID: String, grantID: String): ByteArray?
     external fun openSession(binding: ByteArray): ByteArray?
     external fun baselineBegin(sessionKey: String): ByteArray?
     external fun baselineHeader(sessionKey: String, index: Long): ByteArray?

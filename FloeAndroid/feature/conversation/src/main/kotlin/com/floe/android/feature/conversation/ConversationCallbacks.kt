@@ -349,6 +349,17 @@ interface ConversationUiCallbacks {
      * re-reads the durable queue afterwards. */
     fun reorderPendingInputs(session: ConversationSessionToken, orderedInputIds: List<String>): Boolean
 
+    /** Queue-content hydration (G04R2): start ONE bounded
+     * `conversation.get.detail{kind:"pendingInput",id}` read for the EXACT
+     * durable row. The host publishes the outcome into the projection
+     * (`ThreadUiState.pendingInputBodies`): Ready only after the full
+     * digest-verified assembly, Failed with a typed code otherwise. True
+     * means the read was started or the row is already proven complete;
+     * false means nothing was dispatched (no session/no durable row).
+     * The default refuses (hosts without the read lane keep the editor
+     * edit-locked instead of exposing an unread row as editable). */
+    fun requestPendingInputBody(session: ConversationSessionToken, inputId: String): Boolean = false
+
     /* --------------------------------- approvals ------------------------------ */
 
     /** ⇄ center.resolve(approval, decision:) for the EXACT run+call identity.

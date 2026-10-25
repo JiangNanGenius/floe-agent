@@ -13,14 +13,17 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
@@ -160,6 +163,91 @@ fun FloePageSheet(
                             content = content,
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Explicit opt-in presentation for SECONDARY workspace forms (G04 repair
+ * batch 2026-10-25): action / source / network / recovery / sibling sheets.
+ *
+ * [FloePageSheet]'s legacy default (1f/1f BOTTOM) is the main full-window
+ * settings split view and must stay byte-for-byte unchanged. Measured device
+ * evidence showed secondary workspace forms reusing that default stretched to
+ * the whole tablet (full-width fields and giant Apply/Cancel). This helper is
+ * the bounded iOS form-sheet idiom instead: on a wide window it is a
+ * content-hugging rounded card centered and clamped to [maxCardWidth] (never
+ * a fixed pixel size — the usable window after insets governs); on a compact
+ * window it keeps the bottom-sheet idiom (full width, top corners only).
+ * Height always hugs its content up to [maxCardHeightFraction] of the usable
+ * window, and fixed-height panes (a `fillMaxSize` scrollable list) are
+ * capped rather than stretched.
+ *
+ * Window/IME ownership is identical to [FloePageSheet]: the same Dialog
+ * properties, scrim, corner radius, surface color and `safeDrawingPadding`
+ * (which includes the IME), so keyboard-driven forms keep Apply/Cancel
+ * reachable and system Back still dismisses.
+ */
+@Composable
+fun FloeActionSheet(
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    maxCardWidth: Dp = 560.dp,
+    maxCardHeightFraction: Float = 0.86f,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(220, easing = LinearOutSlowInEasing)) +
+            slideInVertically(tween(320, easing = LinearOutSlowInEasing)) { it / 6 },
+        exit = fadeOut(tween(160)) +
+            slideOutVertically(tween(280, easing = LinearOutSlowInEasing)) { it / 6 },
+        modifier = modifier,
+    ) {
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false,
+            ),
+        ) {
+            BackHandler(onBack = onDismiss)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.28f))
+                    // safeDrawing includes the IME; the card is sized inside
+                    // that space exactly like FloePageSheet.
+                    .safeDrawingPadding(),
+            ) {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    val wide = maxWidth >= FloeLayout.PersistentTwoColumnMinWidth
+                    val cardMaxWidth = if (wide) {
+                        minOf(maxCardWidth, maxWidth - 32.dp)
+                    } else {
+                        maxWidth
+                    }
+                    val cardMaxHeight = maxHeight * maxCardHeightFraction.coerceIn(0.3f, 0.95f)
+                    val shape = if (wide) {
+                        RoundedCornerShape(FloeLayout.SettingsSheetCorner)
+                    } else {
+                        RoundedCornerShape(
+                            topStart = FloeLayout.SettingsSheetCorner,
+                            topEnd = FloeLayout.SettingsSheetCorner,
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .align(if (wide) Alignment.Center else Alignment.BottomCenter)
+                            .widthIn(max = cardMaxWidth)
+                            .heightIn(max = cardMaxHeight)
+                            .clip(shape)
+                            .background(Floe.colors.readingSurface),
+                        content = content,
+                    )
                 }
             }
         }

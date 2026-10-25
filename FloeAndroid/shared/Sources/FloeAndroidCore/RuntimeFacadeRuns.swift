@@ -533,6 +533,48 @@ public actor FacadeRunDomain {
     /// own step-1/step-6 fence re-checks) instead of racing the Stop.
     /// Cleared only at REAL review settlement.
     internal var goalReviewStops: Set<UUID> = []
+    /// Exact `.conversation`-kind registry leases for the queued-input
+    /// drain lane (G04R2 queue-input repair; receipt-keyed per conversation
+    /// like `goalReviewLeases` — the delete drain and root shutdown wait
+    /// these to real completion, never a timer).
+    internal var queueDrainLeases: [UUID: [String: RuntimeOwnedWorkToken]] = [:]
+    /// Conversations with an IN-FLIGHT drain lane (actor-synchronous
+    /// single-flight — the registry itself mints a fresh token per attach
+    /// and does NOT dedupe by ownerID). A terminal that arrives while the
+    /// lane is mid-await coalesces into [queueDrainRecheck] instead of
+    /// dispatching a second lane.
+    internal var queueDrainActive: Set<UUID> = []
+    /// Coalesced pending wakeups: a real terminal dispatched the drain
+    /// while this conversation's lane was in flight. The lane consumes the
+    /// flag AFTER a successful launch+receipt (continuing under the SAME
+    /// lease) and re-checks sibling liveness before claiming the next row.
+    /// C05 repair (the captured queued-message retirement failure): every
+    /// OTHER lane exit (refusal-restored, live-sibling deferral, store
+    /// failure, no-rows, bound) HONORS a parked flag by re-dispatching ONE
+    /// bounded follow-up lane through the original dispatch gate instead of
+    /// dropping it — dropping stranded the queue forever when the parked
+    /// terminal belonged to the conversation's last run (the fast loopback
+    /// follow-up settled while the lane was mid-await, the lane then exited
+    /// on a refusal and the coalesced wakeup was silently removed).
+    internal var queueDrainRecheck: Set<UUID> = []
+    /// C05 repair — committed-run proof for the queued-input drain. The
+    /// ORIGINAL launch pipeline refuses AFTER the atomic prepare in closed
+    /// landings (`cancelledBeforeStart` after the post-prepare cancel/fence
+    /// re-check, `serviceAssemblyFailed` after the step-8 construction
+    /// throw); BOTH keep the committed user turn durable and mark the run
+    /// failed. The drain must retire its claimed row against that real
+    /// committed run identity instead of restoring the row (restoring
+    /// strands a row whose exact text is ALREADY persisted and re-persists
+    /// the SAME user turn on the next drain — the observed
+    /// persisted-as-user-but-row-queued device state). Keyed ONLY by the
+    /// internal `queuedInputProofID` the drain passes for its claimed row
+    /// (default nil keeps the wire grammar and every historical in-process
+    /// caller byte-unchanged; same trusted-internal precedent as
+    /// `capturedLaunch`/`preResolvedAttachments`); written ONLY in the
+    /// post-prepare landings, removed by the lane on read. A pre-prepare
+    /// refusal never writes here (provable C0 no-effect), so an entry is
+    /// the durable proof that the row's content became a user turn.
+    internal var postCommitRefusedLaunches: [UUID: UUID] = [:]
 
     public let epoch: UInt64
     internal let components: RunDomainComponents
@@ -933,6 +975,15 @@ public actor FacadeRunDomain {
     ///   (the continuation is then a real same-activation run — never
     ///   silently killed, and its parent's completed history is never
     ///   rewritten). Wire handlers never pass this parameter.
+    /// * `queuedInputProofID` — ONLY the in-process queued-input drain
+    ///   passes its claimed row id (C05 queue-retirement repair; default
+    ///   nil keeps every wire and historical in-process call site
+    ///   byte-unchanged). When the pipeline refuses AFTER the atomic
+    ///   prepare committed — the `cancelledBeforeStart` landing and the two
+    ///   step-8 `serviceAssemblyFailed` landings, which keep the committed
+    ///   user turn durable and mark the run failed — the committed run id
+    ///   is recorded under this key so the drain retires the row against
+    ///   that real abandoned run instead of re-queuing persisted content.
     public func start(query: RunStartQuery,
                       conversationTitle: String = "",
                       receipt: String?,
@@ -943,7 +994,9 @@ public actor FacadeRunDomain {
                       atomicIntelligence: (@Sendable (Database) throws -> Void)? = nil,
                       capturedLaunch: RunModelAssembly.ResolvedPair? = nil,
                       continuationStopPermit: UUID? = nil,
-                      expectedActivationProof: String? = nil) async
+                      expectedActivationProof: String? = nil,
+                      preResolvedAttachments: [AttachmentRef]? = nil,
+                      queuedInputProofID: UUID? = nil) async
         -> RunDomainReply {
         let bundle = bundleOverride ?? durable
         let isCreateIntent = conversationID == nil
@@ -1192,6 +1245,41 @@ public actor FacadeRunDomain {
             register(admitted)
         }
 
+        // 4b. G04R2 queue-input repair — trusted INTERNAL pre-resolved
+        //     attachments (the queued-row terminal drain). These are
+        //     durable `AttachmentRef`s the ORIGINAL `run.queue` ingress
+        //     already resolved, validated and committed to the row
+        //     (queue-time document consumption); their exclusive launch
+        //     right is the row claim CAS, so no staging-handle lease
+        //     exists or is needed. This in-process-only parameter (default
+        //     nil; the wire grammar is unchanged) rides the SAME atomic
+        //     prepare binding, the SAME image/capability admission and the
+        //     SAME C1 transaction as lease refs. Provenance is re-proved
+        //     here with the ORIGINAL storage rules and the durable
+        //     conversation binding before anything is reserved — never a
+        //     model-supplied bypass, never a parallel permission.
+        let preResolved = preResolvedAttachments ?? []
+        if !preResolved.isEmpty, !query.stagedAttachmentHandles.isEmpty {
+            return refuseLaunch(runID: runID, error: RunDomainError(
+                .invalidState, .payloadInvalid, phase: .stagedReservation))
+        }
+        for ref in preResolved {
+            switch ref.storage {
+            case .securityScopedBookmark:
+                return refuseLaunch(runID: runID, error: RunDomainError(
+                    .unsupportedRole, .payloadInvalid, phase: .stagedReservation))
+            case .none, .applicationSupport:
+                break
+            }
+            // A ref already bound to a DIFFERENT conversation is foreign
+            // provenance; an unbound ref is prepared exactly like a fresh
+            // lease ref (the transaction binds the real ids).
+            if let bound = ref.conversationID, bound != effectiveConversation {
+                return refuseLaunch(runID: runID, error: RunDomainError(
+                    .invalidState, .payloadInvalid, phase: .stagedReservation))
+            }
+        }
+
         // 5. Staged attachment LEASES before the transaction (RUN-S4
         //    repair): each handle is RESERVED for this exact launch owner
         //    (typed double-launch refusal); the ORIGINAL prepare stays the
@@ -1215,7 +1303,11 @@ public actor FacadeRunDomain {
                 storePrimaryCode: Self.storePrimaryCode(of: error),
                 storeExtendedCode: Self.storeExtendedCode(of: error)))
         }
-        let hasImages = leases.contains { $0.ref.kind == .image }
+        // The launch's REAL attachment set: reserved lease refs plus the
+        // trusted pre-resolved row refs (image/capability admission and the
+        // atomic prepare see the combined truth).
+        let launchAttachments = leases.map(\.ref) + preResolved
+        let hasImages = launchAttachments.contains { $0.kind == .image }
         if hasImages, bundle.identity == .temporary {
             // Temporary denies images BEFORE any staged IO (RAM-only
             // contract; nothing binary crosses the temporary path).
@@ -1305,7 +1397,23 @@ public actor FacadeRunDomain {
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             initialState: "preparing",
             workspaceID: nil,
-            attachments: leases.map(\.ref),
+            // c04-native repair B (G04R2 queue-input closure): the atomic
+            // prepare is the ORIGINAL sole attachment binder, so the
+            // request must carry the REAL combined set — reserved lease
+            // refs PLUS the trusted pre-resolved row refs. This is the
+            // seam's own documented contract above (1214-1247: preResolved
+            // refs "ride the SAME atomic prepare binding … same C1
+            // transaction as lease refs"). Passing only the lease refs
+            // dropped the queued row's attachments BEFORE the binder even
+            // saw them: the drain launch committed a TEXT-ONLY user turn
+            // (no attachments-table rows, no file parts), so the drained
+            // row lost ownership of its documents while the assertion's
+            // durable ref binding could never exist. A plain wire
+            // `run.start` passes no preResolved refs, so `launchAttachments
+            // == leases.map(\.ref)` there — the ordinary path is
+            // byte-unchanged; only the drain seam gains its intended
+            // FULL row ownership.
+            attachments: launchAttachments,
             conversationMode: query.mode.rawValue,
             initialPolicy: query.policy,
             // goal-core batch: the ORIGINAL frozen role vocabulary
@@ -1425,6 +1533,9 @@ public actor FacadeRunDomain {
                                                bundle: bundle)
             await retire(runID: prepared.run.id, terminalSucceeded: false,
                          feedTerminal: false)
+            if let queuedInputProofID {
+                postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
+            }
             return RunDomainReply(.rejected(RunDomainError(.sessionFenced, .deletingGuarded)))
         }
 
@@ -1465,6 +1576,9 @@ public actor FacadeRunDomain {
                                                bundle: bundle)
             await retire(runID: prepared.run.id, terminalSucceeded: false,
                          feedTerminal: false)
+            if let queuedInputProofID {
+                postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
+            }
             return RunDomainReply(.rejected(error.addingPhase(assemblyPhase)))
         } catch {
             await markCommittedLaunchAbandoned(runID: prepared.run.id,
@@ -1472,6 +1586,9 @@ public actor FacadeRunDomain {
                                                bundle: bundle)
             await retire(runID: prepared.run.id, terminalSucceeded: false,
                          feedTerminal: false)
+            if let queuedInputProofID {
+                postCommitRefusedLaunches[queuedInputProofID] = prepared.run.id
+            }
             return RunDomainReply(.rejected(RunDomainError(
                 .persistenceUnavailable, .storeWriteFailed,
                 phase: assemblyPhase,
@@ -2168,14 +2285,35 @@ public actor FacadeRunDomain {
         do {
             let stored = try await durable.runningInputs.enqueue(PendingUserInput(
                 conversationID: query.conversationID,
-                targetRunID: query.runID,
+                // c04-native repair A (G04R2 queue-input closure): the
+                // durable `run.queue` lane is identity-only — the envelope
+                // run token is a scope identity, NEVER a committed-run
+                // liveness proof (the same documented grammar the accepted
+                // `run.input.edit`/`run.input.remove` lanes already use).
+                // Persisting it into `target_run_id` (FK
+                // `REFERENCES runs(id)` with PRAGMA foreign_keys = ON)
+                // made every queue whose envelope named a not-yet-committed
+                // run fail the INSERT with an opaque storeWriteFailed.
+                // A queue-mode row is conversation-owned until the terminal
+                // drain claims it: the ORIGINAL store semantics keep
+                // `target_run_id` NULL for queue rows (restoreQueued and
+                // recoverTransientInputs both NULL it), the steer CAS
+                // (`beginSteerPromotion`) is what binds a real target later,
+                // and `consumed_run_id` remains the exactly-once launch
+                // receipt. The LIVE temporary lane keeps its original
+                // `targetRunID: query.runID` (its run liveness is proven
+                // above that write and the RAM store carries no FK).
+                targetRunID: nil,
                 content: scanned.sanitizedText
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                 mode: .queue,
                 attachments: attachments,
                 selectedModelID: query.selectedModelID,
                 workspaceID: nil,
-                executionMode: "agent"))
+                // G04R2 queue-input repair: persist the composer's REAL
+                // execution mode (iOS parity) so the terminal drain
+                // launches exactly the mode the user queued under.
+                executionMode: query.executionMode))
             // Queue accepted is NOT approval resolved, NOT secret committed
             // and NOT a started run; the durable row + position are the
             // truth, and consumption stays the service's exactly-once
@@ -2357,18 +2495,17 @@ public actor FacadeRunDomain {
                 query: query, route: route, envelope: envelope,
                 editText: query.content)
         }
-        do {
-            let digest = try await components.conversationRevisions
-                .digest(conversationID: query.conversationID) ?? ""
-            try envelope.revisionMatches(
-                resourceID: ConversationRowRevision.resourceID(conversationID: query.conversationID),
-                version: digest)
-        } catch let error as RunDomainError {
-            return RunDomainReply(.rejected(error))
-        } catch {
-            return RunDomainReply(.rejected(RunDomainError(.persistenceUnavailable,
-                                                           .storeReadFailed)))
-        }
+        // G04R2 queue-input repair: the DURABLE edit envelope CAS is the
+        // pending-input row revision (`pendingInput.<UPPER uuid>/<input
+        // version>`), proven inside `mutateInput` against the re-read
+        // durable row — the exact pair the detail read publishes and the
+        // App dispatch carries. The former conversation-row digest check
+        // demanded a SECOND, mutually exclusive resource from the SAME
+        // single envelope revision, so no envelope could ever satisfy both
+        // and every durable `run.input.edit` was rejected before
+        // `updateContent` (the real queued-Save no-op). The row-level
+        // version equality inside `mutateInput` remains the authoritative
+        // freshness proof; `requireNoGuard` stays enforced there.
         let scanned = RunIngressScan.scan(query.content)
         guard !scanned.isBlank else {
             return RunDomainReply(.rejected(RunDomainError(.invalidState, .payloadInvalid)))
@@ -2604,7 +2741,9 @@ public actor FacadeRunDomain {
                     attachments: [],
                     selectedModelID: query.selectedModelID,
                     workspaceID: nil,
-                    executionMode: "agent"))
+                    // G04R2 queue-input repair: the LIVE temporary row
+                    // carries the same REAL execution-mode vocabulary.
+                    executionMode: query.executionMode))
             return RunDomainReply(.mutationAccepted(detail: [
                 "inputID": stored.id.uuidString,
                 "position": String(stored.position),
@@ -3513,6 +3652,18 @@ public actor FacadeRunDomain {
             }
             goalModeRuns.remove(runID)
             frozenRoutes[runID] = nil
+            // G04R2 queue-input repair — iOS parity
+            // (ConversationCenter.swift:5456): a REAL completed/failed
+            // ordinary terminal launches the next queued user input. The
+            // drain is ONE bounded owned maintenance task (registry lease,
+            // delete/shutdown-waited); every refusal restores the durable
+            // row to `queued` — never a fake launch, never a dropped row.
+            // Sibling live runs skip here and re-drain at their own real
+            // terminal (the run this call retired is already unregistered).
+            if feedTerminal {
+                dispatchQueuedInputDrain(conversationID: ownership.conversationID,
+                                         bundle: ownership.bundle)
+            }
         }
     }
 

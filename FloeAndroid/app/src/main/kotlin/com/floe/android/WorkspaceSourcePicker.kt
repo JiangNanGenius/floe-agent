@@ -21,14 +21,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeActivityIndicator
+import com.floe.android.design.FloeActionSheet
 import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeDivider
-import com.floe.android.design.FloePageSheet
 import com.floe.android.design.FloePlainFormField
 import com.floe.android.design.FloeText
 import com.floe.android.host.PickPurpose
@@ -94,6 +95,26 @@ internal fun WorkspaceSourcePanel(
     var targetPath by remember(lane) { mutableStateOf("") }
     var displayName by remember(lane) { mutableStateOf("") }
     var browse by remember(lane) { mutableStateOf(WorkspaceSourceBrowseOutcome(WorkspaceSourceResult("unbound"))) }
+    // Opening the panel IS the explicit user read (same ownership as the
+    // network panel's LaunchedEffect(lane) refresh): without it the lane kept
+    // its cold default "runtime unavailable" copy until a manual Refresh even
+    // though Core10 was available (device evidence saf-entry-3 vs
+    // saf-panel-refresh, 2026-10-25). No background grant or mutation runs.
+    var initialReadDone by remember(lane) { mutableStateOf(false) }
+    LaunchedEffect(lane) {
+        lane.refresh()
+        initialReadDone = true
+    }
+    // Returned typed operation outcome for the ACTIVE form. The controller
+    // can early-return non-ok results (unbound/busy/egress refusals) without
+    // publishing state.lastResult, so the form renders the RETURNED outcome;
+    // a failure keeps the form open with the honest token text — never a
+    // fake success, never silent (device evidence 2026-10-25 Save As).
+    var operationOutcome by remember(lane) { mutableStateOf<WorkspaceSourceResult?>(null) }
+    var operationRunning by remember(lane) { mutableStateOf(false) }
+    // Row saves may return a refusal before publishing controller.lastResult.
+    var rowOperationOutcome by remember(lane) { mutableStateOf<WorkspaceSourceResult?>(null) }
+    LaunchedEffect(sheet) { operationOutcome = null }
 
     // ---- platform launch ownership (persisted, per-lane namespace) -------
     val ledger = remember(lane) { PlatformLaunchOwnership.LaneLedger(lane.launchNamespace) }
@@ -138,7 +159,16 @@ internal fun WorkspaceSourcePanel(
            verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FloeText(stringResource(R.string.workspace_source_title),
                  style = Floe.typography.toolbarTitle, color = Floe.colors.label)
-        if (!state.runtimeAvailable) {
+        if (!state.runtimeAvailable && !initialReadDone) {
+            // Distinguish "first owned read still in flight" from the honest
+            // truly-unavailable statement below (no misleading red warning on
+            // a lane that has not been read yet).
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                FloeActivityIndicator()
+                FloeText(stringResource(R.string.inspector_runtime_pending),
+                         style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+            }
+        } else if (!state.runtimeAvailable) {
             FloeText(stringResource(R.string.workspace_source_runtime_unavailable),
                      style = Floe.typography.body, color = Floe.colors.secondaryLabel)
         }
@@ -189,29 +219,41 @@ internal fun WorkspaceSourcePanel(
                     FloeText(sourceStateLine(context, row, state),
                              style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                 }
+                // Weighted siblings: unweighted capsule buttons collapse to
+                // zero width behind the first fillMaxWidth button (observed
+                // at the 420dp inspector width, 2026-10-25).
                 FloeCapsuleButton(stringResource(R.string.workspace_source_open),
-                                  enabled = !state.busy, onClick = { onOpenWorkspaceFile(row.path) })
+                                  enabled = !state.busy, modifier = Modifier.weight(1f),
+                                  onClick = { onOpenWorkspaceFile(row.path) })
                 FloeCapsuleButton(stringResource(R.string.workspace_source_save),
                                   enabled = !state.busy && row.sha256.isNotEmpty(),
+                                  modifier = Modifier.weight(1f),
                                   onClick = {
+                                      rowOperationOutcome = null
                                       scope.launch {
                                           val outcome = lane.savePathToProvider(row.path)
-                                          if (outcome.statusEquals("ok")) onWorkspaceTreeChanged()
+                                          if (outcome.statusEquals("ok")) {
+                                              onWorkspaceTreeChanged()
+                                          } else {
+                                              rowOperationOutcome = outcome
+                                          }
                                       }
                                   })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FloeCapsuleButton(stringResource(R.string.workspace_source_save_as),
-                                  enabled = !state.busy,
+                                  enabled = !state.busy, modifier = Modifier.weight(1f),
                                   onClick = { targetPath = row.path; sheet = SourceSheet.SAVE_AS })
                 FloeCapsuleButton(stringResource(R.string.workspace_source_revoke),
                                   enabled = !state.busy && row.reference !in state.blockedReferences,
+                                  modifier = Modifier.weight(1f),
                                   onClick = { scope.launch { lane.revoke(row.reference) } })
                 FloeCapsuleButton(stringResource(R.string.workspace_source_repick),
                                   enabled = !state.busy &&
                                       (row.reference in state.expiredReferences ||
                                           row.reference in state.blockedReferences ||
                                           state.accepted?.purpose != PickPurpose.IMPORT),
+                                  modifier = Modifier.weight(1f),
                                   onClick = {
                                       lane.requestPick(PickKind.OPEN_DOCUMENT, PickPurpose.IMPORT)
                                   })
@@ -234,7 +276,8 @@ internal fun WorkspaceSourcePanel(
                 }
             }
         }
-        state.lastResult?.let { outcome ->
+        rowOperationOutcome?.let { OperationOutcomeLine(it) }
+        state.lastResult?.takeIf { rowOperationOutcome == null }?.let { outcome ->
             FloeText(outcomeText(context, outcome),
                      style = Floe.typography.body, color = Floe.colors.secondaryLabel)
         }
@@ -242,8 +285,9 @@ internal fun WorkspaceSourcePanel(
                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
     }
 
-    FloePageSheet(visible = sheet != SourceSheet.NONE,
-                  onDismiss = { if (!state.busy) sheet = SourceSheet.NONE }) {
+    FloeActionSheet(visible = sheet != SourceSheet.NONE,
+                    onDismiss = { if (!state.busy && !operationRunning) sheet = SourceSheet.NONE },
+                    maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
                verticalArrangement = Arrangement.spacedBy(12.dp)) {
             when (sheet) {
@@ -252,7 +296,7 @@ internal fun WorkspaceSourcePanel(
                     FloeText(stringResource(R.string.workspace_source_import_title),
                              style = Floe.typography.toolbarTitle, color = Floe.colors.label)
                     FloePlainFormField(stringResource(R.string.workspace_source_target_path),
-                                       targetPath, { targetPath = it }, enabled = !state.busy,
+                                       targetPath, { targetPath = it }, enabled = !state.busy && !operationRunning,
                                        monospaced = true)
                     state.accepted?.takeIf { it.purpose == PickPurpose.IMPORT }?.let { accepted ->
                         FloeText(acceptedSummary(context, accepted),
@@ -264,34 +308,44 @@ internal fun WorkspaceSourcePanel(
                     } ?: FloeText(stringResource(R.string.workspace_source_import_hint),
                                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                     FloeCapsuleButton(stringResource(R.string.workspace_source_pick_document),
-                                      enabled = !state.busy,
+                                      enabled = !state.busy && !operationRunning,
                                       onClick = { lane.requestPick(PickKind.OPEN_DOCUMENT, PickPurpose.IMPORT) })
                     FloeCapsuleButton(stringResource(R.string.workspace_source_pick_folder),
-                                      enabled = !state.busy,
+                                      enabled = !state.busy && !operationRunning,
                                       onClick = { lane.requestPick(PickKind.OPEN_TREE, PickPurpose.IMPORT) })
-                    if (state.busy) FloeActivityIndicator()
+                    if (state.busy || operationRunning) FloeActivityIndicator()
                     FloeCapsuleButton(stringResource(R.string.workspace_source_import),
                                       prominent = true,
-                                      enabled = !state.busy && targetPath.isNotBlank() &&
+                                      enabled = !state.busy && !operationRunning && targetPath.isNotBlank() &&
                                           state.accepted?.purpose == PickPurpose.IMPORT,
                                       onClick = {
                                           val path = targetPath.trim()
+                                          operationRunning = true
                                           scope.launch {
-                                              val outcome = lane.importAcceptedToWorkspace(path)
-                                              if (outcome.statusEquals("ok")) {
-                                                  onWorkspaceTreeChanged()
-                                                  sheet = SourceSheet.NONE
+                                              try {
+                                                  val outcome = lane.importAcceptedToWorkspace(path)
+                                                  if (outcome.statusEquals("ok")) {
+                                                      operationOutcome = null
+                                                      onWorkspaceTreeChanged()
+                                                      sheet = SourceSheet.NONE
+                                                  } else {
+                                                      operationOutcome = outcome
+                                                  }
+                                              } finally {
+                                                  operationRunning = false
                                               }
                                           }
                                       })
+                    operationOutcome?.let { OperationOutcomeLine(it) }
                     FloeCapsuleButton(stringResource(R.string.cancel),
-                                      enabled = !state.busy, onClick = { sheet = SourceSheet.NONE })
+                                      enabled = !state.busy && !operationRunning,
+                                      onClick = { sheet = SourceSheet.NONE })
                 }
                 SourceSheet.SAVE_AS -> {
                     FloeText(stringResource(R.string.workspace_source_save_as_title),
                              style = Floe.typography.toolbarTitle, color = Floe.colors.label)
                     FloePlainFormField(stringResource(R.string.workspace_source_target_path),
-                                       targetPath, { targetPath = it }, enabled = !state.busy,
+                                       targetPath, { targetPath = it }, enabled = !state.busy && !operationRunning,
                                        monospaced = true)
                     FloeText(stringResource(R.string.workspace_source_save_as_hint),
                              style = Floe.typography.body, color = Floe.colors.secondaryLabel)
@@ -300,68 +354,88 @@ internal fun WorkspaceSourcePanel(
                                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                     }
                     FloeCapsuleButton(stringResource(R.string.workspace_source_pick_new_file),
-                                      enabled = !state.busy && targetPath.isNotBlank(),
+                                      enabled = !state.busy && !operationRunning && targetPath.isNotBlank(),
                                       onClick = {
                                           lane.requestPick(PickKind.CREATE_DOCUMENT, PickPurpose.SAVE_TARGET,
                                                            emptyList(),
                                                            targetPath.trim().substringAfterLast('/'))
                                       })
-                    if (state.busy) FloeActivityIndicator()
+                    if (state.busy || operationRunning) FloeActivityIndicator()
                     FloeCapsuleButton(stringResource(R.string.workspace_source_save_as_confirm),
                                       prominent = true,
-                                      enabled = !state.busy && targetPath.isNotBlank() &&
+                                      enabled = !state.busy && !operationRunning && targetPath.isNotBlank() &&
                                           state.accepted?.purpose == PickPurpose.SAVE_TARGET,
                                       onClick = {
                                           val path = targetPath.trim()
+                                          operationRunning = true
                                           scope.launch {
-                                              val outcome = lane.saveAsAccepted(path)
-                                              if (outcome.statusEquals("ok")) {
-                                                  onWorkspaceTreeChanged()
-                                                  sheet = SourceSheet.NONE
+                                              try {
+                                                  val outcome = lane.saveAsAccepted(path)
+                                                  if (outcome.statusEquals("ok")) {
+                                                      operationOutcome = null
+                                                      onWorkspaceTreeChanged()
+                                                      sheet = SourceSheet.NONE
+                                                  } else {
+                                                      operationOutcome = outcome
+                                                  }
+                                              } finally {
+                                                  operationRunning = false
                                               }
                                           }
                                       })
                     FloeText(stringResource(R.string.workspace_source_nondestructive),
                              style = Floe.typography.body, color = Floe.colors.secondaryLabel)
+                    operationOutcome?.let { OperationOutcomeLine(it) }
                     FloeCapsuleButton(stringResource(R.string.cancel),
-                                      enabled = !state.busy, onClick = { sheet = SourceSheet.NONE })
+                                      enabled = !state.busy && !operationRunning,
+                                      onClick = { sheet = SourceSheet.NONE })
                 }
                 SourceSheet.EXPORT -> {
                     FloeText(stringResource(R.string.workspace_source_export_title),
                              style = Floe.typography.toolbarTitle, color = Floe.colors.label)
                     FloePlainFormField(stringResource(R.string.workspace_source_target_path),
-                                       targetPath, { targetPath = it }, enabled = !state.busy,
+                                       targetPath, { targetPath = it }, enabled = !state.busy && !operationRunning,
                                        monospaced = true)
                     FloePlainFormField(stringResource(R.string.workspace_source_display_name),
-                                       displayName, { displayName = it }, enabled = !state.busy)
+                                       displayName, { displayName = it }, enabled = !state.busy && !operationRunning)
                     state.accepted?.takeIf { it.purpose == PickPurpose.EXPORT_TARGET }?.let { accepted ->
                         FloeText(acceptedSummary(context, accepted),
                                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                     } ?: FloeText(stringResource(R.string.workspace_source_export_hint),
                                  style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                     FloeCapsuleButton(stringResource(R.string.workspace_source_pick_folder),
-                                      enabled = !state.busy,
+                                      enabled = !state.busy && !operationRunning,
                                       onClick = { lane.requestPick(PickKind.OPEN_TREE, PickPurpose.EXPORT_TARGET) })
-                    if (state.busy) FloeActivityIndicator()
+                    if (state.busy || operationRunning) FloeActivityIndicator()
                     FloeCapsuleButton(stringResource(R.string.workspace_source_export_confirm),
                                       prominent = true,
-                                      enabled = !state.busy && targetPath.isNotBlank() &&
+                                      enabled = !state.busy && !operationRunning && targetPath.isNotBlank() &&
                                           state.accepted?.purpose == PickPurpose.EXPORT_TARGET,
                                       onClick = {
                                           val path = targetPath.trim()
                                           val name = displayName.trim().ifBlank {
                                               path.substringAfterLast('/')
                                           }
+                                          operationRunning = true
                                           scope.launch {
-                                              val outcome = lane.exportToAcceptedTree(path, name, null)
-                                              if (outcome.statusEquals("ok")) {
-                                                  onWorkspaceTreeChanged()
-                                                  sheet = SourceSheet.NONE
+                                              try {
+                                                  val outcome = lane.exportToAcceptedTree(path, name, null)
+                                                  if (outcome.statusEquals("ok")) {
+                                                      operationOutcome = null
+                                                      onWorkspaceTreeChanged()
+                                                      sheet = SourceSheet.NONE
+                                                  } else {
+                                                      operationOutcome = outcome
+                                                  }
+                                              } finally {
+                                                  operationRunning = false
                                               }
                                           }
                                       })
+                    operationOutcome?.let { OperationOutcomeLine(it) }
                     FloeCapsuleButton(stringResource(R.string.cancel),
-                                      enabled = !state.busy, onClick = { sheet = SourceSheet.NONE })
+                                      enabled = !state.busy && !operationRunning,
+                                      onClick = { sheet = SourceSheet.NONE })
                 }
                 SourceSheet.BROWSE -> {
                     FloeText(stringResource(R.string.workspace_source_browse_title),
@@ -370,7 +444,7 @@ internal fun WorkspaceSourcePanel(
                              style = Floe.typography.body, color = Floe.colors.secondaryLabel)
                     state.accepted?.takeIf { it.purpose == PickPurpose.IMPORT && it.kind == "TREE" }?.let { tree ->
                         FloeCapsuleButton(stringResource(R.string.workspace_source_browse_go),
-                                          enabled = !state.busy,
+                                          enabled = !state.busy && !operationRunning,
                                           onClick = {
                                               scope.launch { browse = lane.browseTree(tree.uri, null, null) }
                                           })
@@ -383,7 +457,7 @@ internal fun WorkspaceSourcePanel(
                                      browse = lane.browseTree(browseTreeAnchor(state), null, browse.nextCursor)
                                  } })
                     FloeCapsuleButton(stringResource(R.string.cancel),
-                                      enabled = !state.busy, onClick = { sheet = SourceSheet.NONE })
+                                      enabled = !state.busy && !operationRunning, onClick = { sheet = SourceSheet.NONE })
                 }
             }
         }
@@ -435,6 +509,40 @@ private fun sourceStateLine(context: Context, row: WorkspaceSourceRowUi,
 
 private fun recoveryLine(context: Context, recovery: WorkspaceSourceRecoveryUi): String =
     context.getString(R.string.workspace_source_recovery_row, recovery.state)
+
+/**
+ * Honest returned-operation line inside the ACTIVE form: the controller may
+ * early-return a non-ok token without publishing state.lastResult (observed
+ * Save As refusal, 2026-10-25), so the form renders the RETURNED outcome via
+ * the same frozen token mapping. Never relabeled success; "cancelled" stays
+ * a quiet secondary note, real refusals use the destructive tone.
+ */
+@Composable
+private fun OperationOutcomeLine(outcome: WorkspaceSourceResult) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var detailsExpanded by remember(outcome) { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        FloeText(
+            outcomeText(context, outcome),
+            style = Floe.typography.body,
+            color = if (outcome.statusEquals("cancelled")) Floe.colors.secondaryLabel
+                    else Floe.colors.destructive,
+        )
+        if (outcome.detail.isNotBlank()) {
+            FloeCapsuleButton(
+                stringResource(R.string.workspace_source_error_details),
+                onClick = { detailsExpanded = !detailsExpanded },
+            )
+            if (detailsExpanded) {
+                FloeText(
+                    "${outcome.status}\n${outcome.detail.take(2048)}",
+                    style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel,
+                )
+            }
+        }
+    }
+}
 
 private fun progressText(context: Context, bytes: Long): String =
     context.getString(R.string.workspace_source_progress, bytes / 1024)
@@ -489,7 +597,8 @@ private fun browseResult(context: Context, browse: WorkspaceSourceBrowseOutcome,
             }
             if (!child.isDirectory) {
                 FloeCapsuleButton(stringResource(R.string.workspace_source_use_file),
-                                  enabled = !busy, onClick = { onPickChild(child) })
+                                  enabled = !busy, modifier = Modifier.weight(1f),
+                                  onClick = { onPickChild(child) })
             }
         }
     }

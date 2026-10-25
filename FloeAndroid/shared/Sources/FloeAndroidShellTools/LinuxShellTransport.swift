@@ -117,6 +117,12 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
     public var columns: Int
     public var timeoutSeconds: Double
     public var hostToolCallID: String?
+    /// G04-R2: private Core host metadata for the UI operation-scoped grant
+    /// (native-issued canonical UUID of the LIVE conversation lease). The
+    /// mailbox stamps it into `host` (stripped before the runtime wire, same
+    /// as `hostToolCallID`) and the trusted pump forwards it to the native
+    /// authority mint. It is NEVER model-, env- or session-text-supplied.
+    public var hostOperationID: String?
     /// Engine stdin delivery mode for this start. nil OMITS the wire key so
     /// the engine defaults to the legacy "pty" input path — interactive
     /// `openSession` MUST stay nil. Only the trusted platform one-shot run
@@ -127,6 +133,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
                 environmentID: String?, command: String, cwd: String,
                 environment: [String: String] = [:],
                 rows: Int, columns: Int, timeoutSeconds: Double, hostToolCallID: String? = nil,
+                hostOperationID: String? = nil,
                 stdinDelivery: LinuxShellStdinDelivery? = nil) {
         self.projectID = projectID
         self.runID = runID
@@ -139,6 +146,7 @@ public struct LinuxShellStartRequest: Sendable, Equatable {
         self.columns = columns
         self.timeoutSeconds = timeoutSeconds
         self.hostToolCallID = hostToolCallID
+        self.hostOperationID = hostOperationID
         self.stdinDelivery = stdinDelivery
     }
 

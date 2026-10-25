@@ -337,7 +337,12 @@ public data class IdeReplaceOutcome(
 
 public sealed interface IdeReplyOutcome {
     /** Native accepted the operation and advanced to a new revision. */
-    public data class Acknowledged(public val newRevision: NativeRevision) : IdeReplyOutcome
+    public data class Acknowledged(
+        public val newRevision: NativeRevision,
+        /** Native-proven capabilities at this acknowledged revision. Null for
+         * legacy/non-edit acknowledgements; never infer undo from local input. */
+        public val capabilities: IdeDocumentCapabilities? = null,
+    ) : IdeReplyOutcome
 
     /** Native executed and produced a typed payload. */
     public data class Executed(public val payload: IdeCommandPayload) : IdeReplyOutcome

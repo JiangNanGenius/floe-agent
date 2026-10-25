@@ -31,6 +31,20 @@ interface WorkspaceNativeAuthority {
      *  Null toolCallID behaves like `binding(...)`. */
     fun bindingForCall(rootEpoch: Long, runID: String, toolCallID: String?, grantID: String): ByteArray?
 
+    /** Mint for the G04-R2 UI operation lease (real terminal/LSP admission):
+     *  `operationID` is the native-issued canonical UUID of the LIVE
+     *  `beginG04WorkspaceOperation` conversation lease that the trusted Swift
+     *  host registered IN-PROCESS before `shell.start`; `runID` is the SAME
+     *  open step's native-issued UI interaction identity (NOT a model Run).
+     *  The mint succeeds ONLY against that still-attached registry token, the
+     *  still-validating domain lease and the ORIGINAL conversation-owned
+     *  workspace row; unregistered/revoked/foreign/mismatched replies null.
+     *  This is NOT a fallback from the run/job lanes and never a boolean
+     *  bypass. DEFAULT null so an authority that does not implement the
+     *  operation lane FAILS CLOSED (no grant) and every existing fake/impl
+     *  compiles unchanged. */
+    fun bindingForOperation(rootEpoch: Long, operationID: String, runID: String, grantID: String): ByteArray? = null
+
     /** Open the native session for a minted binding JSON. Reply JSON carries
      *  {"ok":true,"sessionKey":...} or {"ok":false,"code":...}. */
     fun openSession(bindingJson: ByteArray): ByteArray

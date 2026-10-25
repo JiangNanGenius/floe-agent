@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeInlineSwitch
 import com.floe.android.design.FloePageSheet
@@ -43,6 +45,7 @@ import com.floe.android.design.FloeText
 import com.floe.android.feature.terminal.G04TerminalView
 import com.floe.android.host.G04TerminalHostController
 import com.floe.android.host.TerminalActionReply
+import com.floe.android.host.TerminalInputIssue
 import com.floe.android.host.TerminalLanguageRuntimeState
 import com.floe.android.host.TerminalSessionPhase
 import com.floe.android.host.TerminalSessionSnapshot
@@ -84,6 +87,21 @@ internal fun WorkspaceTerminalPane(
     var settingsKnown by remember { mutableStateOf(false) }
     var runtimeStates by remember { mutableStateOf<Map<String, TerminalLanguageRuntimeState>>(emptyMap()) }
     var busyLanguage by remember { mutableStateOf<String?>(null) }
+    // The controller is Application-owned, so its cached availability can
+    // hold a known-but-stale unqualified answer from before the lane
+    // qualified. The pane keeps OBSERVABLE copies of the live gate and of
+    // what it actually dispatched, so a readiness change recomposes here and
+    // the status line never claims a start that is not happening.
+    var terminalReady by remember(conversationID) { mutableStateOf(false) }
+    var startDispatched by remember(conversationID) { mutableStateOf(false) }
+    var workspaceMappingPending by remember(conversationID) { mutableStateOf(false) }
+    var openFailure by remember(controller, conversationID) { mutableStateOf<TerminalActionReply?>(null) }
+    var showFailureDetails by remember(controller, conversationID) { mutableStateOf(false) }
+    // Latest typed PTY input refusal (host-side truth, surfaced in the
+    // status strip; the diagnostic code lives in the opened details).
+    var inputIssue by remember(conversationID) { mutableStateOf<TerminalInputIssue?>(null) }
+    var showInputIssueDetails by remember(controller, conversationID) { mutableStateOf(false) }
+    val application = LocalContext.current.applicationContext as? FloeApplication
 
     // Pane-scoped observation ONLY (detaching never stops the session).
     DisposableEffect(controller, conversationID) {
@@ -97,7 +115,9 @@ internal fun WorkspaceTerminalPane(
                     TerminalLanguageRuntimeState(status.state, status.code))
             }
         }
-        onDispose { unregisterSessions(); unregisterLanguage() }
+        // Typed input refusals are a user-visible truth, not a log-only one.
+        val unregisterInputIssues = controller.watchInputIssues(conversationID) { inputIssue = it }
+        onDispose { unregisterSessions(); unregisterLanguage(); unregisterInputIssues() }
     }
 
     // ACTUAL availability is re-read every time the sheet opens (bounded
@@ -121,13 +141,38 @@ internal fun WorkspaceTerminalPane(
     // Gated by the honest availability predicate — never a fake log.
     LaunchedEffect(controller, conversationID) {
         val host = controller ?: return@LaunchedEffect
-        if (!host.availability().capabilitiesKnown) host.refreshCapabilities()
+        openFailure = null
+        showFailureDetails = false
+        // Read the gate LIVE. `capabilitiesKnown` alone lets an
+        // Application-owned known-false snapshot pin the pane forever: on a
+        // false cached gate the pane performs ONE bounded capabilities
+        // refresh (the same refresh-then-recheck idiom as the IDE language
+        // binding) before it decides to start or to explain. A true cached
+        // gate is still re-validated natively — the open request consults
+        // the SAME live ingress authority and fail-closed refuses on drift.
+        if (!host.availability().let { it.qualified && it.workspaceAttached }) {
+            host.refreshCapabilities()
+        }
+        terminalReady = host.availability().let { it.qualified && it.workspaceAttached }
         val current = host.currentSnapshot(conversationID)
         val needsStart = current == null || current.phase == TerminalSessionPhase.CLOSED
-        if (needsStart && host.availability().let { it.qualified && it.workspaceAttached }) {
-            host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+        if (needsStart && terminalReady) {
+            startDispatched = true
+            if (host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24,
+                    onRefusal = { openFailure = it }) == null) {
+                // Native refused or timed out: nothing is starting.
+                startDispatched = false
+            }
         } else if (!needsStart && current?.phase?.isLive() == true) {
             host.attachOrOpen(conversationID, workspaceID = null, columns = 80, rows = 24)
+        }
+        if (needsStart && !startDispatched) {
+            // Nothing was dispatched for this opening: ONE bounded read of
+            // the ORIGINAL stage authority (the closed-token surface
+            // Settings uses, off-main) selects truthful guidance. It
+            // qualifies and gates nothing.
+            workspaceMappingPending = terminalWorkspaceMappingPending(
+                runCatching { application?.linuxTaskExecutionDiagnostic() }.getOrNull())
         }
         snapshot = host.currentSnapshot(conversationID) ?: snapshot
     }
@@ -140,8 +185,13 @@ internal fun WorkspaceTerminalPane(
     }
 
     val statusText = when (snapshot?.phase) {
-        null -> if (controller == null) stringResource(R.string.inspector_runtime_pending)
-        else stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
+        null -> when {
+            controller == null -> stringResource(R.string.inspector_runtime_pending)
+            // "Starting…" is only said when a start actually went out for
+            // this opening; a gate that dispatched nothing says so plainly.
+            startDispatched -> stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
+            else -> stringResource(com.floe.android.feature.terminal.R.string.terminal_not_ready)
+        }
         TerminalSessionPhase.STARTING -> stringResource(com.floe.android.feature.terminal.R.string.terminal_starting)
         TerminalSessionPhase.RUNNING -> stringResource(com.floe.android.feature.terminal.R.string.terminal_running)
         TerminalSessionPhase.WAITING_OUTPUT -> stringResource(com.floe.android.feature.terminal.R.string.terminal_waiting)
@@ -184,21 +234,99 @@ internal fun WorkspaceTerminalPane(
                     maxLines = 1,
                 )
             }
+            // Latest typed input refusal: a short honest message; tapping
+            // opens the diagnostic code (same details idiom as openFailure).
+            // The native phase/fault projection is never touched by this.
+            val issue = inputIssue
+            if (issue != null) {
+                val issueLabel = stringResource(
+                    com.floe.android.feature.terminal.R.string.terminal_input_refused)
+                FloeText(
+                    text = issueLabel,
+                    style = Floe.typography.metadata,
+                    color = colors.destructive,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .clickable { showInputIssueDetails = !showInputIssueDetails }
+                        .semantics { contentDescription = issueLabel },
+                )
+                if (showInputIssueDetails) {
+                    val suffix = if (issue.count > 1) " ×${issue.count}" else ""
+                    FloeText(
+                        text = issue.code.take(96)
+                            .filter { it.isLetterOrDigit() || it in "_.-" }
+                            .ifEmpty { "refused" } + suffix,
+                        style = Floe.typography.metadata,
+                        color = colors.secondaryLabel,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
         FloeDivider()
 
-        val qualified = controller?.availability()?.let { it.qualified && it.workspaceAttached } == true
+        val qualified = terminalReady
         val hasSession = snapshot != null && snapshot!!.phase != TerminalSessionPhase.CLOSED
-        if (engine == null || transport == null || (!qualified && !hasSession)) {
+        if (engine == null || transport == null || (!hasSession && !startDispatched)) {
             // Honest unavailability: no engine, or the runtime is not
-            // qualified. The guidance text points to the REAL setup surface.
+            // qualified. The guidance text points to the REAL setup surface;
+            // when the ORIGINAL stage authority reports the exact shape of
+            // workspace facts awaiting the frozen first-use producer, it
+            // names that instead of a completed installation.
             Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
-                FloeText(
-                    text = if (controller == null) stringResource(R.string.inspector_runtime_pending)
-                    else stringResource(com.floe.android.feature.terminal.R.string.terminal_engine_unqualified),
-                    style = Floe.typography.body,
-                    color = colors.secondaryLabel,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    FloeText(
+                        text = when {
+                            controller == null -> stringResource(R.string.inspector_runtime_pending)
+                            openFailure != null -> stringResource(
+                                if (openFailure.isEngineSlotBusyRefusal) R.string.workspace_runtime_slot_busy
+                                else com.floe.android.feature.terminal.R.string.terminal_start_failed)
+                            workspaceMappingPending -> stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_workspace_mapping_pending)
+                            else -> stringResource(
+                                com.floe.android.feature.terminal.R.string.terminal_engine_unqualified)
+                        },
+                        style = Floe.typography.body,
+                        color = colors.secondaryLabel,
+                    )
+                    if (openFailure != null) {
+                        FloeCapsuleButton(stringResource(R.string.workspace_source_error_details),
+                            onClick = { showFailureDetails = !showFailureDetails })
+                        if (showFailureDetails) {
+                            val code = when (val failure = openFailure) {
+                                is TerminalActionReply.Refused -> failure.code.take(96)
+                                    .filter { it.isLetterOrDigit() || it in "_.-" }
+                                    .ifEmpty { "refused" }
+                                TerminalActionReply.TimedOut -> "timedOut"
+                                else -> "unavailable"
+                            }
+                            FloeText(code, style = Floe.typography.metadata, color = colors.secondaryLabel)
+                        }
+                    }
+                    if (openFailure != null && controller != null && qualified) {
+                        // Explicit user retry — the ONLY way a refused
+                        // opening starts again (never a silent relaunch).
+                        FloeCapsuleButton(
+                            stringResource(com.floe.android.feature.terminal.R.string.terminal_reset),
+                            onClick = {
+                                val host = controller ?: return@FloeCapsuleButton
+                                scope.launch {
+                                    openFailure = null
+                                    startDispatched = true
+                                    val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                        onRefusal = { openFailure = it })
+                                    snapshot = opened
+                                    if (opened == null) startDispatched = false
+                                }
+                            },
+                        )
+                    }
+                    if (controller != null && qualified) {
+                        FloeCapsuleButton(stringResource(com.floe.android.feature.terminal.R.string.terminal_settings),
+                            onClick = { settingsVisible = true })
+                    }
+                }
             }
         } else {
             Box(modifier = Modifier.fillMaxSize().weight(1f)) {
@@ -249,10 +377,42 @@ internal fun WorkspaceTerminalPane(
                         // unavailable one keeps the session untouched.
                         val host = controller ?: return@TerminalControlLabel
                         scope.launch {
-                            // Native close/adoption must settle before a new
-                            // open; separate launches race the old token.
-                            host.closeSession(conversationID)
-                            snapshot = host.attachOrOpen(conversationID, null, 80, 24)
+                            // Native close/adoption must settle before a
+                            // new open; separate launches race the old
+                            // token. An accepted close answers BEFORE the
+                            // native settlement completes, so the reopen
+                            // waits for the ACTUAL settled/CLOSED
+                            // projection instead of minting a second
+                            // operation lease against the retiring one
+                            // (that refusal left the pane stuck at
+                            // "Terminal closed" with no start dispatched).
+                            // If the bounded wait expires with the old
+                            // native ownership still live, NO replacement
+                            // is dispatched: that is an honest refusal the
+                            // user can retry explicitly — never a forced
+                            // retire, a second lease against a live one,
+                            // or a silent relaunch after the timeout.
+                            val closed = host.closeSession(conversationID)
+                            val settled = if (closed is TerminalActionReply.Success) {
+                                host.awaitSessionSettled(conversationID, 20_000)
+                            } else {
+                                // The close never started (refused/timeout):
+                                // attachOrOpen below either attaches to
+                                // what is actually live or answers the
+                                // honest refusal itself.
+                                true
+                            }
+                            openFailure = null
+                            if (!settled) {
+                                openFailure = TerminalActionReply.Refused("closeNotSettled", null)
+                                snapshot = null
+                                startDispatched = false
+                            } else {
+                                val opened = host.attachOrOpen(conversationID, null, 80, 24,
+                                    onRefusal = { openFailure = it })
+                                snapshot = opened
+                                startDispatched = opened != null
+                            }
                         }
                     }
                 }
@@ -398,19 +558,41 @@ private val LanguageCatalog = listOf(
 
 /** Honest label from the ACTUAL lifecycle answer — never inferred from the
  * catalog: an unchecked language says "Not checked yet", not "Ready". */
-private fun languageStateRes(enabled: Boolean, state: TerminalLanguageRuntimeState?): Int {
+internal fun languageStateRes(enabled: Boolean, state: TerminalLanguageRuntimeState?): Int {
     if (!enabled) return R.string.workspace_language_state_disabled
     return when (state?.state) {
         null -> R.string.workspace_language_state_unknown
         "ready" -> R.string.workspace_language_state_ready
         "starting" -> R.string.workspace_language_state_starting
-        "unavailable" -> if (state.code == "toolMissing")
-            R.string.workspace_language_state_missing else R.string.workspace_language_state_failed
+        "unavailable" -> when (state.code) {
+            "toolMissing" -> R.string.workspace_language_state_missing
+            // The single-slot busy refusal is its own honest condition: the
+            // user must close the live terminal/run, not "fix an error".
+            "saturated" -> R.string.workspace_language_state_busy
+            else -> R.string.workspace_language_state_failed
+        }
         "failed" -> R.string.workspace_language_state_failed
         "stopping", "stopped" -> R.string.workspace_language_state_released
         else -> R.string.workspace_language_state_unknown
     }
 }
+
+/** The occupied-slot refusal is a typed, actionable native condition
+ * (device-proven 2026-10-25): the pane names what to close instead of a
+ * generic start failure. The guard itself is unchanged and stays honest. */
+private val TerminalActionReply?.isEngineSlotBusyRefusal: Boolean
+    get() = (this as? TerminalActionReply.Refused)
+        ?.let { it.code == "saturated" && it.reason == "engineSlotBusy" } == true
+
+/** Exactly the observed mapping-pending stage shape: the lane is bound and
+ * every prerequisite is live, but one receipt-backed workspace fact has not
+ * been produced yet and no attempt failed this generation (both attempt
+ * tokens empty). Anything else — `ready`, a non-empty refusal/stage, a
+ * prerequisite or lane shape, unknown text — is false, so the pane keeps
+ * the existing setup guidance. Pure, total, never throws. */
+internal fun terminalWorkspaceMappingPending(diagnostic: String?): Boolean =
+    diagnostic == "missing:workspaceMappingSynced|refusal:|stage:" ||
+        diagnostic == "missing:leaseAuthorityQualified|refusal:|stage:"
 
 @Composable
 private fun TerminalControlLabel(label: String, onClick: () -> Unit) {

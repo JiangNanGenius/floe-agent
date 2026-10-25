@@ -21,6 +21,7 @@
     <string name="browser_back_cd">Back</string>
     <string name="browser_forward_cd">Forward</string>
     <string name="browser_address_placeholder">Search or enter address</string>
+    <string name="browser_go_cd">Go</string>
     <string name="browser_local_preview_badge">Local preview</string>
     <string name="browser_reload_cd">Reload</string>
     <string name="browser_retry_cd">Retry</string>
@@ -28,4 +29,6 @@
     <string name="browser_temporary_unbound">Temporary tasks cannot open a durable browser.</string>
     <string name="browser_ephemeral_limitation">Private/incognito profiles are not supported by this Android WebView; sign-in state uses the shared browser storage.</string>
     <string name="browser_ocr_limitation">On-device text recognition is unavailable; visual clicks fall back to the native screenshot-requirement message.</string>
+    <string name="browser_private_navigation_blocked">This local address is blocked. Open local files through the workspace preview.</string>
+    <string name="browser_failure_details">Details</string>
 </resources>

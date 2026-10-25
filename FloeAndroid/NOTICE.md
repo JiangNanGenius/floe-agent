@@ -14,6 +14,7 @@ license texts or the final distribution source/notice obligations.
 | AndroidX Activity/Core/Compose/Material/icons and transitive AndroidX runtime | https://android.googlesource.com/platform/frameworks/support/ | Apache-2.0; preserve individual file notices |
 | kotlinx.coroutines | https://github.com/Kotlin/kotlinx.coroutines | Apache-2.0 |
 | Compose Cupertino 3.3.1 (selected for the G01 UI foundation) | https://github.com/RobinPcrd/compose-cupertino/tree/3.3.1 | Apache-2.0; retain upstream NOTICE and contributor lineage |
+| Cupertino Icons font 2.0.0 — source-derived vector glyph data only (generated ImageVector paths; the font binary is not shipped and is not a runtime dependency) | https://github.com/flutter/packages/tree/main/third_party/packages/cupertino_icons | MIT; copyright per the shipped license ("Copyright (c) 2016 Vladimir Kharlampidi"), full text bundled at `assets/legal/cupertino-icons/LICENSE`; pinned inputs and hashes in `FloeAndroid/licenses/cupertino-icons/PROVENANCE.json` |
 | commonmark-java 0.30.1 (`org.commonmark:commonmark`, `commonmark-ext-gfm-tables`, `commonmark-ext-gfm-strikethrough`) — pure-JVM Markdown parse adapter for the conversation rich-body projection | https://github.com/atlassian/commonmark-java | BSD-2-Clause; copyright per the shipped license ("Copyright (c) 2015, Atlassian Pty Ltd"), full text preserved at `FloeAndroid/licenses/commonmark/LICENSE.txt` (extracted from the pinned jar's `META-INF/LICENSE.txt`) |
 | Sora Editor 0.24.4 (`io.github.rosemoe:editor`) | https://github.com/Rosemoe/sora-editor/tree/0.24.4 | LGPL-2.1; retain per-file version notices. Exact text and source provenance are preserved at `FloeAndroid/licenses/sora-editor/`. |
 | Swift standard libraries and Foundation | https://github.com/swiftlang/swift and https://github.com/swiftlang/swift-foundation | Apache-2.0 with Runtime Library Exception where specified; preserve bundled ICU/third-party notices |
@@ -35,11 +36,29 @@ or any local LLM. Future goals must add the corresponding exact upstream notices
 and source obligations when they integrate those components.
 
 The Cupertino selection excludes `cupertino-icons-extended`: its original README
-separately identifies the SF Symbols artwork as copyrighted. Floe uses its own
-permitted assets and geometric outline icons. The selected widget code is
-distinct from that optional icon collection. See the upstream `LICENSE.txt` and
+separately identifies the SF Symbols artwork as copyrighted. Floe ships none of that
+artwork: the shared icon family is generated from the MIT-licensed Cupertino
+Icons font below (plus a few Floe-owned hand-drawn roles), and the selected
+widget code is distinct from that optional icon collection. See the upstream `LICENSE.txt` and
 `NOTICE.txt` at the pinned revision; final distribution notices must also cover
 the exact resolved transitive graph.
+
+### Shared icon family (Cupertino Icons derived vectors)
+
+The `FloeGlyphs.kt` outlines are generated at development time from
+`CupertinoIcons.ttf` in the pinned Flutter third_party package
+`cupertino_icons` 2.0.0, which is handcrafted to preserve the SF Symbols
+style. Converter: `FloeAndroid/tools/icons/generate_floe_glyphs.py` with
+`roles.json` (input hashes enforced by the script itself). Only the
+resulting path strings are compiled into the app; the font binary, Flutter
+engine and Flutter SDK are not shipped and no Gradle dependency was added.
+Roles with no glyph in the licensed family keep Floe-owned hand-drawn
+geometry. MIT text bundled at `assets/legal/cupertino-icons/LICENSE`;
+archive/font/codepoint-source hashes, the transform constants and the
+per-glyph map are recorded in `licenses/cupertino-icons/PROVENANCE.json`.
+The pinned codepoint-name table (`licenses/cupertino-icons/upstream/flutter-3.35.0-icons.dart`)
+is a separate upstream artifact under BSD-3-Clause (The Flutter Authors); its
+license text is bundled next to it at `licenses/cupertino-icons/upstream/Flutter-BSD-LICENSE`.
 
 ### G04 native archive, network and source-control components
 

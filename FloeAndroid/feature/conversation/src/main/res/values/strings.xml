@@ -173,6 +173,10 @@
     <string name="queue_edit_title">Edit queue message</string>
     <string name="queue_message_field">Queue message</string>
     <string name="queue_browser_handoff_note">Saved to the original task; continue from the browser</string>
+    <string name="queue_browser_handoff_body">Browser control returned</string>
+    <string name="queue_body_unread">Message content not loaded yet</string>
+    <string name="queue_body_loading">Loading the full message…</string>
+    <string name="queue_content_preview_suffix"> (preview)</string>
     <string name="queue_status_waits_for_run">Waits for the current run to finish</string>
     <string name="queue_status_converting">Converting to steer…</string>
     <string name="queue_status_waiting_insert">Waiting for a safe insertion point</string>

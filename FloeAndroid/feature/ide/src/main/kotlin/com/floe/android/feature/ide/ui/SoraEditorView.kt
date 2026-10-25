@@ -34,6 +34,7 @@ import io.github.rosemoe.sora.lang.diagnostic.DiagnosticDetail
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticRegion
 import io.github.rosemoe.sora.lang.diagnostic.DiagnosticsContainer
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.component.EditorAutoCompletion
 
 /** Editor surface tints derived from the shared Floe palette (no new truth). */
 internal fun FloeColors.windowEditorBackground(): Int = readingSurface.toArgb()
@@ -112,6 +113,16 @@ internal fun SoraEditorView(
     LaunchedEffect(state.diagnosticsVersion, docId) {
         holder.editor?.let { holder.applyDiagnostics(it, state.diagnostics) }
     }
+
+    // Host (LSP) completion items can land AFTER Sora's own insert-triggered
+    // pass already ran (the native round trip is asynchronous; Sora only
+    // pulls on content/selection events). Re-run the editor completion pass
+    // when fresh items arrive so the async answer becomes visible.
+    LaunchedEffect(state.completionVersion, docId) {
+        if (state.completionVersion > 0 && state.snapshot?.capabilities?.completion == true) {
+            holder.editor?.let { it.getComponent(EditorAutoCompletion::class.java).requireCompletion() }
+        }
+    }
 }
 
 /** Bridges Sora events into the presenter; owns no document truth. */
@@ -124,6 +135,7 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
     private var compositionAnchor: String? = null
     private var loadedDocumentId: String? = null
     private var language: FloeKeywordLanguage? = null
+    private var languageNeedsInstall = false
     private var schemeSignature: Int? = null
 
     fun build(ctx: Context, roles: FloeEditorRoles): CodeEditor {
@@ -140,6 +152,20 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
         // Swift undo/drafts are the only undo truth: never let Sora diverge.
         view.setUndoEnabled(false)
         view.setColorScheme(floeEditorScheme(roles))
+        // Bounded completion surface (device evidence 2026-10-25, PID 16724
+        // ANR): DefaultCompletionLayout scrolls its list with an UNBOUNDED
+        // synthetic-touch loop that never converges once the popup viewport
+        // collapses to a sub-row strip (compressed editor + IME), and Sora's
+        // below-caret placement clipped the candidate under the IME. The
+        // replacement flips the popup above the caret when — and only when —
+        // the below strip is sub-usable, and places the list in ONE bounded
+        // step. Completion stays fully enabled; edit/undo/CAS authority is
+        // untouched. replaceComponent disables the old component's event
+        // subscriptions (supported 0.24.4 route).
+        view.replaceComponent(
+            EditorAutoCompletion::class.java,
+            com.floe.android.feature.ide.sora.FloeAutoCompletion(view),
+        )
         view.contentDescription = "Floe IDE editor"
         return view
     }
@@ -178,7 +204,7 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
         if (newDoc != loadedDocumentId) {
             val previous = loadedDocumentId
             loadedDocumentId = newDoc
-            applyLanguage(view, state.activeDocumentKey, snapshot)
+            detachLanguageForFullSync(view)
             if (previous != null && newDoc != null) {
                 // Tab switch: an in-flight composition cannot cross documents.
                 finishComposition(abortTransaction = true)
@@ -190,6 +216,18 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
         view.subscribeEvent(ContentChangeEvent::class.java) { event, _ -> onContentChange(view, event) }
         view.subscribeEvent(SelectionChangeEvent::class.java) { _, _ -> reportSelection(view) }
         view.subscribeEvent(ScrollEvent::class.java) { _, _ -> reportSelection(view) }
+    }
+
+    /** A Sora 0.24.4 analyzer must never start against the old Content before
+     * setText replaces it. Its async worker reads ContentReference and then
+     * request ID separately, so an empty old Content can be paired with the
+     * new request and publish one-line spans for a restored multiline file.
+     * Retire that manager, replace Content, then attach a fresh manager. */
+    private fun detachLanguageForFullSync(view: CodeEditor) {
+        language?.destroy()
+        language = null
+        view.setEditorLanguage(EmptyLanguage())
+        languageNeedsInstall = true
     }
 
     private fun applyLanguage(
@@ -225,6 +263,7 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
         when (val plan = presenter.syncPlanFor(docId, current, composing)) {
             IdeSyncPlan.Keep -> Unit
             is IdeSyncPlan.ReplaceFull -> {
+                detachLanguageForFullSync(view)
                 programmatic { view.setText(plan.text) }
                 restoreCaret(view, state)
             }
@@ -232,16 +271,23 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
                 programmatic { view.getText().replace(plan.startUtf16, plan.endUtf16, plan.replacement) }
             }
         }
+        if (languageNeedsInstall && state.snapshot != null) {
+            applyLanguage(view, state.activeDocumentKey, state.snapshot)
+            languageNeedsInstall = false
+        }
     }
 
     private fun restoreCaret(view: CodeEditor, state: IdeViewState) {
-        val snapshot = state.snapshot ?: return
-        val caret = snapshot.selection?.startUtf16 ?: snapshot.caretUtf16 ?: return
-        applyUtf16Selection(
-            view,
-            snapshot.selection?.let { IdeUtf16Range(it.startUtf16, it.endUtf16) }
-                ?: IdeUtf16Range(caret, caret),
-        )
+        // Live presenter truth, never the captured state's snapshot echo:
+        // the native selection echo can lag behind the renderer's own last
+        // report, and re-asserting a stale range here re-selects text the
+        // next keystroke would silently replace (and resurfaces as a stale
+        // "N selected" header after every view reconstruction). The
+        // presenter orders local reports against caret-authoritative native
+        // adoptions and clamps the result to the current projection.
+        val docId = state.activeDocumentKey?.documentId ?: return
+        val selection = presenter.restoreSelectionFor(docId) ?: return
+        applyUtf16Selection(view, IdeUtf16Range(selection.startUtf16, selection.endUtf16))
     }
 
     private inline fun programmatic(block: () -> Unit) {
@@ -295,11 +341,12 @@ private class SoraEditorHolder(private val presenter: IdePresenter) {
             }
             ContentChangeEvent.ACTION_DELETE -> {
                 val deleted = event.changedText.toString()
-                val start = event.changeStart.index.coerceIn(0, view.getText().length)
-                val end = (start + deleted.length).coerceIn(start, view.getText().length)
+                val beforeLength = presenter.mirrorLengthFor(docKey.documentId) ?: return
+                val range = IdeTextMath.deletionRange(beforeLength,
+                    event.changeStart.index, deleted.length) ?: return
                 presenter.applyProjectionEdit(
                     docKey,
-                    IdeUtf16Range(start, end),
+                    range,
                     "",
                     IdeEditOrigin.USER_DELETE,
                 )

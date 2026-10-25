@@ -43,6 +43,9 @@
     <string name="providers_headers_placeholder">请求头: 值（每行一个）</string>
     <string name="providers_headers_hint">仅填写非机密请求头，密钥请勿填在这里。</string>
     <string name="providers_allow_plain_http">允许明文 HTTP（仅限本地/内网）</string>
+    <string name="providers_error_plain_http_ack">该端点使用明文 HTTP。请打开“允许明文 HTTP（仅限本地/内网）”开关，或改用 HTTPS 地址。</string>
+    <string name="providers_error_plain_http_private">明文 HTTP 仅允许本机或内网地址。请改用本地或内网地址，或切换到 HTTPS。</string>
+    <string name="providers_error_settings_invalid">当前服务商设置无法使用。请检查端点、协议、名称和请求头后重试。</string>
     <string name="providers_credentials">凭据</string>
     <string name="providers_api_key">API 密钥</string>
     <string name="providers_api_key_hint">密钥安全保存在此设备上。</string>

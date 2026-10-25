@@ -42,6 +42,20 @@ interface SafPlatformBackend {
     fun documentUriFor(tree: SafUriRef, documentId: String): SafUriRef?
 
     /**
+     * The platform's TRUE document id for a URI — the DECODED id the provider
+     * itself uses, never a value re-derived from raw URI string segments
+     * (percent-encoded guesses like "downloads%3A1234" poison durable
+     * identities; identity rule 2026-10-25). Resolution order is exact:
+     * `DocumentsContract.isDocumentUri` + `getDocumentId` FIRST (this also
+     * covers tree-SCOPED child URIs `/tree/<root>/document/<child>`, whose
+     * id is the CHILD's), and only a pure tree URI falls back to
+     * `getTreeDocumentId`. A scoped child must never inherit the root id.
+     * Default null: an implementation that cannot ask the platform must not
+     * guess.
+     */
+    fun documentIdOf(uri: SafUriRef): String? = null
+
+    /**
      * Truthful live access probe for one anchor URI: persisted rows from the
      * OS PLUS the real current-session permission (`checkUriPermission` with
      * own pid/uid on Android; actual descriptor open remains the final word
@@ -73,7 +87,14 @@ interface SafPlatformBackend {
     /** Release every held cursor (service shutdown; leases also expire on their own). */
     fun releaseAllCursors()
 
-    /** Single-document metadata via DocumentsContract.queryDocument; null = not found. */
+    /**
+     * Single-document metadata via a plain provider query. The returned
+     * document keeps the GRANTED uri/identity EXACTLY as passed in (a direct
+     * `/document/<id>` pick must never be rewritten into a tree-scoped child
+     * URI); the row's document id only fills an identity the caller did not
+     * carry, and a conflicting known id is refused typed, never guessed
+     * (Main review fix 2026-10-25). Null = not found.
+     */
     fun queryDocument(ref: SafDocumentRef, cancel: SafCancelToken): SafDocument?
 
     /** Real tree membership via isChildDocument or the provider canonical path on API 28. */

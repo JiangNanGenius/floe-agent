@@ -361,12 +361,37 @@ public actor G04TerminalStore {
         guard sessions.count < G04TerminalLimits.maximumLiveSessions else {
             reply(requestID, ok: false, code: .saturated, reason: "uiSessionsSaturated"); return
         }
+        if await components.backend.isEngineSlotBusy() {
+            // G04-R2 single-workload truth (the same honest pre-check the run
+            // lane makes): the gate is held by a live language server or
+            // program run, so NOTHING is minted, registered or dispatched.
+            // The refusal names the exact condition instead of waiting the
+            // gate timeout and collapsing into a generic backendFailed
+            // (ORIGINAL .notStarted truth; never a queue, never a lie).
+            reply(requestID, ok: false, code: .saturated, reason: "engineSlotBusy")
+            return
+        }
         guard let (runDomain, _) = RunDomainFacade.current(epoch: epoch),
               let receipt = await runDomain.beginG04WorkspaceOperation(conversationID: conversationID,
                                                                        expectedEpoch: epoch) else {
             reply(requestID, ok: false, code: .retired); return
         }
         let ownerRunID = UUID()   // native-issued UI interaction identity
+        // G04-R2 operation-owned admission (Main contract 2026-10-25): the
+        // workspace grant for this explicit UI action mints ONLY against the
+        // REAL receipt lease registered here — the authority re-checks the
+        // registry token, the domain's fences/cancellation and the ORIGINAL
+        // conversation-ownership row on mint, open and every transaction.
+        // A registration refusal (not installed / generation moved / live
+        // table saturated) is an honest refusal BEFORE any dispatch: the
+        // receipt is released and nothing starts. No model Run is fabricated.
+        let operationGrantID = receipt.operationID
+        guard LinuxWorkspaceAuthority.registerWorkspaceOperation(receipt, epoch: epoch,
+                                                                 uiRunID: ownerRunID) else {
+            await runDomain.endG04WorkspaceOperation(receipt)
+            reply(requestID, ok: false, code: .retired)
+            return
+        }
         // The owner identity is registered BEFORE the await so a late
         // settlement always finds its exact record; the engine call keeps
         // the receipt attached until its real terminal.
@@ -383,7 +408,8 @@ public actor G04TerminalStore {
                 forTerminal: true,           // ORIGINAL terminal semantics: raw bytes + no forced prepare
                 toolEnvironment: nil,        // ORIGINAL persisted workspace binding resolves the layer
                 clientSessionID: nil,        // ORIGINAL nil-owner = existing UI terminals
-                conversationID: conversationID)
+                conversationID: conversationID,
+                workspaceOperationID: operationGrantID)
             let record = TerminalSessionRecord(sessionToken: result.sessionID, ownerRunID: ownerRunID,
                                                conversationID: conversationID, workspaceID: workspaceID,
                                                purpose: purpose, requestID: requestID,
@@ -407,7 +433,10 @@ public actor G04TerminalStore {
                 await finishSession(sessionToken: result.sessionID, reason: "exited-immediately")
             }
         } catch {
-            // The open never produced a session: release the receipt.
+            // The open never produced a session: clear the exact operation
+            // mapping and release the receipt (writeback truth unchanged —
+            // nothing is completed, nothing is fabricated).
+            LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: operationGrantID)
             await runDomain.endG04WorkspaceOperation(receipt)
             reply(requestID, ok: false, code: .backendFailed, reason: Self.faultToken(error))
         }
@@ -635,6 +664,9 @@ public actor G04TerminalStore {
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {
             await runDomain.endG04WorkspaceOperation(record.receipt)
         }
+        // G04-R2: the operation mapping ends exactly with its real lease
+        // (settle/stop/exit/fault/cancel/retirement all route here).
+        LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: record.receipt.operationID)
         pumpTasks[sessionToken]?.cancel()
         pumpTasks[sessionToken] = nil
     }

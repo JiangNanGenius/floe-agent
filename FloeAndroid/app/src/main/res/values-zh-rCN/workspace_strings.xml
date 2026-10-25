@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="workspace_new_menu">新建</string>
+    <string name="workspace_more_menu">更多</string>
     <string name="workspace_new_file">新建文件</string>
     <string name="workspace_new_folder">新建文件夹</string>
     <string name="workspace_move">移动或重命名</string>
@@ -17,6 +19,7 @@
     <string name="workspace_size_error">内容过大，暂时无法在此打开。</string>
     <string name="workspace_owner_error">工作区已变化，请关闭并重新打开文件。</string>
     <string name="workspace_operation_error">操作未完成，请检查路径后重试。</string>
+    <string name="workspace_runtime_slot_busy">运行环境正忙，请先关闭终端、停止程序或暂停语言服务，再重试。</string>
     <string name="workspace_language_unavailable">语言支持暂不可用。请在本地环境中安装语言服务器后重试。</string>
     <string name="workspace_run_pending">运行尚未返回结果。请先在终端中查看状态，再开始新的运行。</string>
 </resources>

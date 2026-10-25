@@ -172,6 +172,10 @@
     <string name="queue_edit_title">编辑队列消息</string>
     <string name="queue_message_field">队列消息</string>
     <string name="queue_browser_handoff_note">已保存到原任务，可在浏览器中继续</string>
+    <string name="queue_browser_handoff_body">浏览器控制权已交还</string>
+    <string name="queue_body_unread">消息内容尚未读取</string>
+    <string name="queue_body_loading">正在读取完整消息…</string>
+    <string name="queue_content_preview_suffix">（预览）</string>
     <string name="queue_status_waits_for_run">等待当前运行结束</string>
     <string name="queue_status_converting">正在转为引导…</string>
     <string name="queue_status_waiting_insert">等待安全的插入位置</string>

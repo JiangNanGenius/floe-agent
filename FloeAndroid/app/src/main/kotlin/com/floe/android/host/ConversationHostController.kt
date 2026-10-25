@@ -31,6 +31,8 @@ import com.floe.android.feature.conversation.MessagePageCursorUi
 import com.floe.android.feature.conversation.MessageRoleUi
 import com.floe.android.feature.conversation.MessageUi
 import com.floe.android.feature.conversation.ModelOptionUi
+import com.floe.android.feature.conversation.PendingInputBodyStateUi
+import com.floe.android.feature.conversation.PendingInputBodyUi
 import com.floe.android.feature.conversation.PlanGoalDetailStateUi
 import com.floe.android.feature.conversation.PlanRecommendationUi
 import com.floe.android.contracts.Revision
@@ -751,6 +753,7 @@ class ConversationHostController internal constructor(
         // detail chain for this conversation is fenced off first, so a late
         // native callback can never publish into another owner's surface.
         invalidatePlanGoalDetails(conversationId)
+        invalidatePendingInputBodies(conversationId)
         holders.remove(conversationId)?.let { entry ->
             retireHolderResources(conversationId, entry)
         }
@@ -2114,6 +2117,11 @@ class ConversationHostController internal constructor(
                         buildMap {
                             put("content", JsonPrimitive(request.content))
                             put("mode", JsonPrimitive(RunningInputModeUi.QUEUE.swiftRaw))
+                            // G04R2 queue-input repair: the durable row
+                            // owns the composer's REAL execution mode
+                            // (iOS parity; the terminal drain launches
+                            // exactly the queued mode).
+                            put("executionMode", JsonPrimitive(request.executionMode.swiftRaw))
                             request.modelId?.let { put("selectedModelID", JsonPrimitive(it)) }
                             if (stagedHandles.isNotEmpty()) put("stagedAttachments",
                                 JsonArray(stagedHandles.map { JsonPrimitive(it) }))
@@ -2429,12 +2437,25 @@ class ConversationHostController internal constructor(
     ): Boolean {
         if (!admitted()) return false
         val entry = holders[session.conversationId] ?: return false
+        // Safe complete-content editing (G04R2): `run.input.edit` REPLACES
+        // the durable row. It may only carry text the App has PROVEN to be
+        // the whole original — a hydrated full body from the digest-verified
+        // detail read, or a row the native snapshot proved short
+        // (`previewComplete`). An unread or preview-bound row refuses here
+        // (and again against a fresh CAS below); blank/preview NEVER
+        // overwrites the original.
+        val provenBodyVersion = entry.builder.provenBodyVersion(inputId)
+        if (provenBodyVersion == null) {
+            surfaceError(entry, "queue_body_not_loaded")
+            return false
+        }
         dispatchPendingInputMutation(
             entry = entry,
             session = session,
             inputId = inputId,
             command = "run.input.edit",
             correlationPrefix = "red",
+            expectedBodyVersion = provenBodyVersion,
             payloadFor = { inputVersion ->
                 JsonObject(
                     mapOf(
@@ -2473,10 +2494,29 @@ class ConversationHostController internal constructor(
     }
 
     /**
-     * `run.input.edit`/`run.input.remove`: the envelope CAS is the CURRENT
-     * conversation row revision AND the payload proves
-     * `pendingInput.<uuid>/<inputVersion>`. Both are re-read at action time
-     * (row digest + durable pending-row version), never guessed.
+     * `run.input.edit`/`run.input.remove`: a DURABLE row's envelope CAS is
+     * the pending-input row revision `pendingInput.<UPPER uuid>/<input
+     * version>` — the EXACT pair the native `mutateInput` proves against the
+     * re-read durable row and the detail read publishes (queue-content
+     * contract). The payload repeats `expectedInputVersion`. A LIVE
+     * TEMPORARY session keeps its ORIGINAL session-revision envelope (the
+     * native temporary lane CAS-matches the session revision and the row CAS
+     * stays the payload version). Both inputs are re-read at action time
+     * (fresh conversation page + fresh `run.snapshot` row version), never
+     * guessed. [expectedBodyVersion] (edit only) re-proves against the FRESH
+     * snapshot that the proven-complete editor body still describes the
+     * current row: a row that moved since the body read refuses with a typed
+     * error instead of letting old text replace a newer original.
+     *
+     * G04R2 queue-input repair: the durable dispatch previously carried the
+     * CONVERSATION-row revision, which the native pending-input envelope CAS
+     * can never match — every durable edit/remove was rejected
+     * (staleRevision/revisionMismatch) AFTER the editor sheet had already
+     * closed optimistically, and the typed refusal only reached the
+     * continuation detail of a retryable run: an invisible no-op that kept
+     * the original row. The envelope now carries the row CAS the native lane
+     * actually proves, and every refusal additionally surfaces on the
+     * holder's error banner.
      */
     private fun dispatchPendingInputMutation(
         entry: ConversationFlowHolderEntry,
@@ -2484,42 +2524,75 @@ class ConversationHostController internal constructor(
         inputId: String,
         command: String,
         correlationPrefix: String,
+        expectedBodyVersion: String? = null,
         payloadFor: (inputVersion: String) -> JsonObject,
     ) {
         withFreshConversationRevision(entry) { conversationRevision ->
             if (conversationRevision == null) {
-                surfaceError(entry, "revision_unavailable")
+                surfaceQueueMutationError(entry, "revision_unavailable")
                 return@withFreshConversationRevision
             }
             entry.builder.selectedRunId?.let { runID ->
                 refreshRunSnapshot(entry, runID) { applied ->
                     val inputVersion = entry.builder.inputVersion(inputId)
                     if (!applied || inputVersion == null) {
-                        surfaceError(entry, "input_version_unavailable")
+                        surfaceQueueMutationError(entry, "input_version_unavailable")
                         return@refreshRunSnapshot
                     }
-                    val runIDForScope = entry.builder.selectedRunId ?: return@refreshRunSnapshot
+                    if (expectedBodyVersion != null && expectedBodyVersion != inputVersion) {
+                        surfaceQueueMutationError(entry, "queue_row_changed")
+                        return@refreshRunSnapshot
+                    }
+                    val runIDForScope = entry.builder.selectedRunId
+                    if (runIDForScope == null) {
+                        surfaceQueueMutationError(entry, "run_unavailable")
+                        return@refreshRunSnapshot
+                    }
                     host.trackOperation(
                         HostCommandRequest(
                             command = command,
                             scope = HostScope.TaskExecution(session.conversationId, runIDForScope),
                             stateful = true,
                             correlationID = client().correlationID(correlationPrefix),
-                            revision = conversationRevision,
+                            // Durable rows CAS on their OWN revision identity
+                            // (native `mutateInput`); a live temporary session
+                            // keeps the session-revision envelope grammar.
+                            revision = if (entry.builder.isTemporary) {
+                                conversationRevision
+                            } else {
+                                HostRevision(
+                                    ConversationWire.pendingInputResourceID(inputId),
+                                    inputVersion,
+                                )
+                            },
                             payload = payloadFor(inputVersion),
                         ),
                     ) { outcome ->
                         when (outcome) {
                             is HostOperationOutcome.Completed ->
                                 refreshRunSnapshot(entry, runIDForScope)
-                            is HostOperationOutcome.Rejected -> surfaceError(entry, outcome.code)
-                            is HostOperationOutcome.Failed -> surfaceError(entry, outcome.code)
+                            is HostOperationOutcome.Rejected ->
+                                surfaceQueueMutationError(entry, outcome.code)
+                            is HostOperationOutcome.Failed ->
+                                surfaceQueueMutationError(entry, outcome.code)
                             else -> Unit
                         }
                     }
                 }
-            } ?: surfaceError(entry, "run_unavailable")
+            } ?: surfaceQueueMutationError(entry, "run_unavailable")
         }
+    }
+
+    /**
+     * Queue-mutation failures are USER-VISIBLE. The editor sheet closes
+     * optimistically when the dispatch is queued, so an honest refusal must
+     * reach the thread error banner (`ThreadErrorBanner` reads
+     * `holder.actionError`) in addition to the continuation detail — the
+     * durable row keeps its original body on every refusal.
+     */
+    private fun surfaceQueueMutationError(entry: ConversationFlowHolderEntry, code: String) {
+        surfaceError(entry, code)
+        entry.holder.noteHostActionError(code)
     }
 
     override fun reorderPendingInputs(
@@ -3964,6 +4037,261 @@ class ConversationHostController internal constructor(
         }
     }
 
+    // ------------------------------ bounded pending-input body read (G04R2)
+
+    /** Generation fence per (conversation, input id): re-opening another row
+     * (or the same row again) cancels the previous chain, and a late chunk
+     * callback can never publish into a newer read. */
+    private val pendingBodyGenerations = ConcurrentHashMap<String, AtomicLong>()
+
+    private fun pendingBodyKey(conversationId: String, inputId: String) =
+        "$conversationId/$inputId"
+
+    /** Ownership fence: releasing/retiring a conversation cancels every
+     * in-flight queue-body read for it (same rule as the plan/goal chain). */
+    internal fun invalidatePendingInputBodies(conversationId: String) {
+        pendingBodyGenerations.keys
+            .filter { it.startsWith("$conversationId/") }
+            .forEach { pendingBodyGenerations[it]?.incrementAndGet() }
+    }
+
+    /**
+     * Start ONE bounded `conversation.get.detail{kind:"pendingInput",id}`
+     * read for the EXACT durable queue row — the queue editor's full-body
+     * hydration authority. This REUSES the existing digest-verified
+     * byte-exact assembly lane (closed additive kind, same as plan/goal/
+     * checklist): no parallel queue database, no plaintext cache, no
+     * fabricated text, no widened budget. Success publishes
+     * `Ready(text, native CAS version)`; every typed refusal publishes
+     * `Failed(code)` and the editor stays edit-locked — an unread original
+     * is never replaced by blank or preview text.
+     */
+    override fun requestPendingInputBody(
+        session: ConversationSessionToken,
+        inputId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        // Typed-refusal publication (C04 cold-load repair): every refusal
+        // with a live surface moves the editor slot to an honest actionable
+        // failure — the sheet must never render an endless "Loading" promise
+        // for a read that was never started. Re-opening the editor
+        // re-requests (the row is still unproven), so a transient refusal
+        // self-heals on the user's next attempt.
+        if (!conversationAdmitted()) {
+            publishPendingInputBodyFailure(entry, inputId, "hostUnavailable")
+            return false
+        }
+        if (entry.isTemporary) {
+            // A RAM-only session has no durable queue row.
+            publishPendingInputBodyFailure(entry, inputId, "temporarySession")
+            return false
+        }
+        val row = entry.builder.pendingInputRow(inputId) ?: return false
+        // Already proven complete (hydrated body or a native-proven short
+        // row): the editor binds the projection; no redundant read.
+        if (entry.builder.provenBodyVersion(inputId) != null) return true
+        val key = pendingBodyKey(session.conversationId, inputId)
+        val generation = pendingBodyGenerations
+            .getOrPut(key) { AtomicLong(0) }.incrementAndGet()
+        entry.builder.setPendingInputBody(inputId, PendingInputBodyUi.Loading)
+        entry.holder.applyHostSnapshot(entry.builder.build())
+        readPendingInputBodyPage(
+            conversationId = session.conversationId,
+            entry = entry,
+            inputId = inputId,
+            generation = generation,
+            rootEpoch = host.nativeRootEpoch(),
+            id = inputId,
+            offset = 0L,
+            digest = null,
+            assembled = ConversationDetailAssembler("pendingInput", detailMaxTotalBytes),
+        )
+        return true
+    }
+
+    /** Publish one typed editor-slot refusal for a still-live surface. The
+     * slot never stays a silent null/Loading after a guard refused the
+     * read; the sheet renders the honest unread notice and a re-open
+     * re-dispatches. */
+    private fun publishPendingInputBodyFailure(
+        entry: ConversationFlowHolderEntry,
+        inputId: String,
+        code: String,
+    ) {
+        entry.builder.setPendingInputBody(inputId, PendingInputBodyUi.Failed(code))
+        entry.holder.applyHostSnapshot(entry.builder.build())
+    }
+
+    private fun readPendingInputBodyPage(
+        conversationId: String,
+        entry: ConversationFlowHolderEntry,
+        inputId: String,
+        generation: Long,
+        rootEpoch: Long?,
+        id: String,
+        offset: Long,
+        digest: String?,
+        assembled: ConversationDetailAssembler,
+        epochReissued: Boolean = false,
+    ) {
+        // Slot OWNERSHIP vs PUBLISH SAFETY are separate fences (C04
+        // cold-load repair). Ownership: this is still the newest request for
+        // the row — a re-request, a release or an invalidation bumped the
+        // generation, and only the newest chain may touch the slot. Publish
+        // safety additionally requires the SAME holder entry and the SAME
+        // admitted native root epoch, so a full body can never publish from
+        // a moved world. The old single all-or-nothing fence silently
+        // dropped EVERY terminal — including typed refusals — whenever any
+        // component moved between capture and callback, stranding the owned
+        // Loading slot with no retry and no failure. That stranding is the
+        // device-proven C04 cold defect; its exact live sub-case (an
+        // epoch/readback race, an admission flicker or a mailbox
+        // replacement) is INFERRED from the closed silent-hole set, not
+        // traced — the release build exposes no epoch telemetry.
+        val key = pendingBodyKey(conversationId, inputId)
+        fun ownsSlot(): Boolean = pendingBodyGenerations[key]?.get() == generation
+        fun entryCurrent(): Boolean = holders[conversationId] === entry
+        fun publishSafe(): Boolean = ownsSlot() && entryCurrent() &&
+            host.nativeRootEpoch() == rootEpoch
+        fun fail(code: String) {
+            // FAILURE publication keeps the explicit holder-entry fence
+            // too: a replaced/released owner may not publish to its old
+            // surface. Release/replace paths already bump the generation
+            // (invalidatePendingInputBodies), so the entry guard is
+            // defensive — kept explicit for clarity and regression.
+            if (!ownsSlot()) return
+            if (!entryCurrent()) return
+            entry.builder.setPendingInputBody(inputId, PendingInputBodyUi.Failed(code))
+            entry.holder.applyHostSnapshot(entry.builder.build())
+        }
+        val detailMembers = buildMap<String, JsonElement> {
+            put("kind", JsonPrimitive("pendingInput"))
+            // The pendingInput kind REQUIRES the exact row identity on EVERY
+            // page (first included): there is no id-less "latest row"
+            // resolution for queue content and never will be.
+            put("id", JsonPrimitive(id))
+            if (offset > 0L) {
+                put("offset", JsonPrimitive(offset))
+                digest?.let { put("digest", JsonPrimitive(it)) }
+            }
+            put("maxBytes", JsonPrimitive(detailMaxChunkBytes))
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID("cgetbody"),
+                payload = JsonObject(mapOf("detail" to JsonObject(detailMembers))),
+            ),
+        ) { outcome ->
+            // A newer request (or a release/invalidation) owns the slot now:
+            // this chain's terminal must not touch it.
+            if (!ownsSlot()) return@trackOperation
+            if (!publishSafe()) {
+                // The holder entry or the native root generation moved while
+                // this owned read was in flight (inferred cold-start race:
+                // the epoch readback is nil while the mailbox is
+                // admission-fenced and flips when the root re-admits, so the
+                // value captured at dispatch can be nil/stale against the
+                // terminal's world). NEVER publish a body across that move —
+                // but the owned slot must not strand either: re-issue this
+                // row's read exactly ONCE, only for the EXACT same holder
+                // entry, against the current root; a second move surfaces
+                // the typed actionable failure (re-open retries).
+                if (entryCurrent() && !epochReissued) {
+                    readPendingInputBodyPage(
+                        conversationId = conversationId,
+                        entry = entry,
+                        inputId = inputId,
+                        generation = generation,
+                        rootEpoch = host.nativeRootEpoch(),
+                        id = inputId,
+                        offset = 0L,
+                        digest = null,
+                        assembled = ConversationDetailAssembler(
+                            "pendingInput", detailMaxTotalBytes),
+                        epochReissued = true,
+                    )
+                } else if (entryCurrent()) {
+                    fail("hostGenerationChanged")
+                }
+                // A replaced/released holder entry publishes NOTHING to its
+                // old surface (fail() carries the same explicit entry
+                // fence); the new surface re-hydrates fresh on its open.
+                return@trackOperation
+            }
+            when (outcome) {
+                is HostOperationOutcome.Completed -> {
+                    val page = outcome.value?.let { ConversationWire.decodeDetailPage(it) }
+                    if (page == null) {
+                        fail("detailRowUnreadable")
+                        return@trackOperation
+                    }
+                    when (val result = assembled.accept(page)) {
+                        is ConversationDetailAssembler.Result.Failed -> fail(result.code)
+                        is ConversationDetailAssembler.Result.Complete -> {
+                            val root = runCatching {
+                                kotlinx.serialization.json.Json
+                                    .parseToJsonElement(result.content) as? JsonObject
+                            }.getOrNull()
+                            val decoded = root?.let {
+                                ConversationWire.decodePendingInputBodyRow(
+                                    it, page.id, page.revisionResourceID, page.revisionVersion,
+                                )
+                            }
+                            if (decoded == null) {
+                                fail("detailRowUnreadable")
+                                return@trackOperation
+                            }
+                            // Publish ONLY a still-pending durable row: a
+                            // row consumed/cancelled during the read is a
+                            // typed refusal, never an editable body.
+                            if (decoded.statusRaw != "queued" &&
+                                decoded.statusRaw != "promoting" &&
+                                decoded.statusRaw != "steerPending"
+                            ) {
+                                fail("pendingInputRowResolved")
+                                return@trackOperation
+                            }
+                            if (!entry.builder.applyPendingInputBody(
+                                    inputId, decoded.content, decoded.inputVersion,
+                                )
+                            ) {
+                                // The projection retired or moved this row
+                                // mid-read: never publish a body whose CAS
+                                // no longer describes the current row.
+                                fail("pendingInputRowStale")
+                                return@trackOperation
+                            }
+                            entry.holder.applyHostSnapshot(entry.builder.build())
+                        }
+                        ConversationDetailAssembler.Result.Continue -> readPendingInputBodyPage(
+                            conversationId = conversationId,
+                            entry = entry,
+                            inputId = inputId,
+                            generation = generation,
+                            rootEpoch = rootEpoch,
+                            id = page.id,
+                            offset = page.nextOffset,
+                            digest = page.digest,
+                            assembled = assembled,
+                            epochReissued = epochReissued,
+                        )
+                    }
+                }
+                is HostOperationOutcome.Rejected -> fail(outcome.code)
+                is HostOperationOutcome.Failed -> fail(outcome.code)
+                // The mailbox retired/replaced under this read (host
+                // generation bump, mailbox close): the owned slot must land
+                // on a typed actionable failure, never a silent endless
+                // Loading. A re-open re-dispatches against the live root.
+                HostOperationOutcome.Cancelled, HostOperationOutcome.Superseded ->
+                    fail("operationSuperseded")
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- history
 
     override fun reloadHistory() = refreshHistory()
@@ -4094,6 +4422,7 @@ class ConversationHostController internal constructor(
                         entry
                     } else {
                         invalidatePlanGoalDetails(conversationId)
+                        invalidatePendingInputBodies(conversationId)
                         retireHolderResources(conversationId, entry)
                         released = entry
                         null

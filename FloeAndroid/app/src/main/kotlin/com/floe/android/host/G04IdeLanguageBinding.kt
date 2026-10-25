@@ -182,7 +182,18 @@ internal class G04IdeLanguageBinding(
                     document.id, document.revision.opaque, document.text)
             else controller.lspOpenDocument(client.taskID, client.workspaceID, document.language,
                 document.id, document.revision.opaque, document.text)
-            if (answer !is TerminalActionReply.Success || !live()) return false
+            if (answer !is TerminalActionReply.Success || !live()) {
+                if (isServerGoneRefusal(answer)) {
+                    // The cached "ready" is stale: the server died (device
+                    // reality 2026-10-25: the interactive engine deadline
+                    // also bounds an LSP PTY). Drop it so the NEXT
+                    // interaction re-runs the explicit ensure and honestly
+                    // replaces the terminal session — never a silent
+                    // relaunch behind the caller, never a permanent lie.
+                    readyLanguages.remove(document.language)
+                }
+                return false
+            }
             opened[document.id] = Opened(document.id, document.path, document.language, document.revision)
             known.add(document.id)
             return true
@@ -224,6 +235,12 @@ internal class G04IdeLanguageBinding(
     }
 
     companion object {
+        /** Pure recovery predicate (JVM-tested): a document-sync refusal
+         * that names the SERVER itself means the ready cache is stale. */
+        internal fun isServerGoneRefusal(reply: TerminalActionReply?): Boolean =
+            reply is TerminalActionReply.Refused &&
+                (reply.code == "serverUnavailable" || reply.code == "serverGone")
+
         private val LANGUAGES = setOf("shell", "python", "javascript", "typescript", "json", "html", "css", "yaml")
         /** REAL native capacity (G04WorkspaceDocumentSession): 32 open
          * documents / 16 MiB body total / 4 MiB per document. The old "at

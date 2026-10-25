@@ -295,6 +295,24 @@ class CoreWorkspaceGrant private constructor(
          *    survives a terminal parent run and dies only with real job
          *    settlement/cancellation; null (ordinary in-run call) keeps the
          *    original active-parent currency requirement;
+         *  * `trustedOperationID` — OPTIONAL G04-R2 UI operation-lease identity:
+         *    the native-issued canonical UUID of the LIVE
+         *    `beginG04WorkspaceOperation` conversation lease the trusted Swift
+         *    host registered in-process before `shell.start` (captured from the
+         *    private `host` mailbox object, never a model value, never a
+         *    fabricated or borrowed Run). It rides the `bindingForOperation`
+         *    mint, which re-checks the accepted epoch, the still-attached
+         *    registry token, the domain lease validator and the ORIGINAL
+         *    conversation-owned workspace row; lease end revokes currency
+         *    through the native `revalidateRun` operation branch. It is
+         *    mutually exclusive with `trustedCallID` — a durable-job claim and
+         *    a UI operation lease cannot both apply — and the factory fails
+         *    closed if BOTH are present, even for a caller that bypasses the
+         *    pump. A malformed/empty/oversize/non-ASCII operation id refuses
+         *    before mint. An operation-scoped reply must echo the exact trusted
+         *    canonical `operationID` and carry NO job scope (`toolCallID`/
+         *    `jobID`), otherwise it is refused. The ordinary run and durable-job
+         *    paths below are byte-for-byte UNCHANGED.
          *  * `isOwned` is the host's real ownership predicate (run active +
          *    foreground lease held + ledger ownership); a grant with a
          *    fail-closed probe is inert, which is the intended absence of a
@@ -319,6 +337,7 @@ class CoreWorkspaceGrant private constructor(
             rootEpoch: Long,
             runID: String,
             trustedCallID: String? = null,
+            trustedOperationID: String? = null,
             isOwned: WorkspaceOwnershipProbe,
             authority: WorkspaceNativeAuthority,
             refusalObserver: ((String) -> Unit)? = null,
@@ -327,8 +346,9 @@ class CoreWorkspaceGrant private constructor(
                 refusalObserver?.invoke(refusalToken(branch, nativeCode))
                 return null
             }
-            if (rootEpoch <= 0 || runID.length > WorkspaceBridgeWire.MAX_IDENTIFIER_CHARS)
-                return refuse(REFUSAL_ARGUMENTS_INVALID)
+            if (rootEpoch <= 0 || runID.length > WorkspaceBridgeWire.MAX_IDENTIFIER_CHARS ||
+                operationArgumentsRejected(trustedCallID, trustedOperationID)
+            ) return refuse(REFUSAL_ARGUMENTS_INVALID)
             val corePackage = contextCore.packageName
             val packages = runCatching { RuntimePackages.forCore(corePackage) }.getOrNull()
                 ?: return refuse(REFUSAL_PEER_REFUSED)
@@ -337,11 +357,10 @@ class CoreWorkspaceGrant private constructor(
             runCatching { verifier.verifyPeer(packages.runtime) }.getOrNull()
                 ?: return refuse(REFUSAL_PEER_REFUSED)
             val grantID = randomGrantID()
-            val bindingBytes = if (trustedCallID == null) {
-                authority.binding(rootEpoch, runID, grantID)
-            } else {
-                authority.bindingForCall(rootEpoch, runID, trustedCallID, grantID)
-            } ?: return refuse(REFUSAL_BINDING_UNPARSABLE)
+            val bindingBytes = selectBindingBytes(
+                authority = authority, rootEpoch = rootEpoch, runID = runID, grantID = grantID,
+                trustedCallID = trustedCallID, trustedOperationID = trustedOperationID,
+            ) ?: return refuse(REFUSAL_BINDING_UNPARSABLE)
             if (bindingBytes.size > WorkspaceBridgeWire.MAX_CONTROL_BYTES)
                 return refuse(REFUSAL_BINDING_UNPARSABLE)
             val binding = runCatching { JSONObject(String(bindingBytes, Charsets.UTF_8)) }.getOrNull()
@@ -351,6 +370,14 @@ class CoreWorkspaceGrant private constructor(
             if (binding.optString("runID") != runID || binding.optLong("rootEpoch") != rootEpoch ||
                 binding.optString("grantID") != grantID
             ) {
+                return refuse(REFUSAL_IDENTITY_MISMATCH)
+            }
+            // G04-R2 operation lane (Main consumer requirement): an operation-
+            // scoped reply MUST echo the exact trusted canonical operationID
+            // and must NOT carry the durable-job scope. Historical run/job
+            // replies stay unchanged; an unexpected new operation scope is
+            // refused in those lanes BEFORE openSession.
+            if (!operationReplyInScope(binding, trustedOperationID)) {
                 return refuse(REFUSAL_IDENTITY_MISMATCH)
             }
             val openReply = runCatching {
@@ -435,6 +462,56 @@ class CoreWorkspaceGrant private constructor(
          *  unknown text through. */
         fun refusalToken(branch: String, nativeCode: String?): String =
             nativeCode?.takeIf { it in NATIVE_REFUSAL_CODES } ?: branch
+
+        // MARK: G04-R2 operation-lane decisions (pure, module-local; the UI
+        // terminal/LSP mint lane only). Every helper returns the SAME result
+        // for the ordinary run/job inputs (trustedOperationID == null) that the
+        // inline code did before, so the existing run/job path is byte-for-byte
+        // unchanged; they are separated only so this module's pure JVM seam can
+        // assert the operation behavior without an Android Context. No new
+        // refusal token or native code is introduced — refusals reuse the
+        // existing closed vocabulary (arguments_invalid / identity_mismatch).
+
+        /** True only when the mint MUST be refused BEFORE any authority call:
+         *  a durable-job claim and a UI operation lease are mutually exclusive,
+         *  and an operation identity must be a non-empty, <=64-char printable
+         *  ASCII token (the canonical uppercase UUID rides this bound). Maps to
+         *  the existing REFUSAL_ARGUMENTS_INVALID branch — no new vocabulary. */
+        internal fun operationArgumentsRejected(trustedCallID: String?, trustedOperationID: String?): Boolean =
+            (trustedCallID != null && trustedOperationID != null) ||
+            (trustedOperationID != null && (trustedOperationID.isEmpty() ||
+                trustedOperationID.length > 64 ||
+                trustedOperationID.any { it.code < 0x21 || it.code > 0x7e }))
+
+        /** The exact three-way mint routing: an operation lease mints through
+         *  `bindingForOperation`, an ordinary in-run call through `binding`, and
+         *  a durable-job call through `bindingForCall` — identical selection to
+         *  the original inline expression, with the operation lane selected ONLY
+         *  when `trustedOperationID` is present (pump + arguments guard already
+         *  exclude `trustedCallID` in that case). */
+        internal fun selectBindingBytes(
+            authority: WorkspaceNativeAuthority,
+            rootEpoch: Long,
+            runID: String,
+            grantID: String,
+            trustedCallID: String?,
+            trustedOperationID: String?,
+        ): ByteArray? = when {
+            trustedOperationID != null -> authority.bindingForOperation(rootEpoch, trustedOperationID, runID, grantID)
+            trustedCallID == null -> authority.binding(rootEpoch, runID, grantID)
+            else -> authority.bindingForCall(rootEpoch, runID, trustedCallID, grantID)
+        }
+
+        /** Exact requested-scope validation. Ordinary run/job replies (null
+         *  identity) must not acquire the new operation scope. An operation grant
+         *  MUST echo the exact trusted canonical `operationID` and MUST NOT
+         *  carry the durable-job scope (`toolCallID`/`jobID`) — otherwise the
+         *  binding is widened/foreign and the session must never open. */
+        internal fun operationReplyInScope(binding: JSONObject, trustedOperationID: String?): Boolean {
+            if (trustedOperationID == null) return !binding.has("operationID")
+            return binding.optString("operationID") == trustedOperationID &&
+                !binding.has("toolCallID") && !binding.has("jobID")
+        }
 
         /** Host-side process check used by tests/diagnostics only; the
          *  authoritative UID/signature gate is `requireCallingPeer` inside

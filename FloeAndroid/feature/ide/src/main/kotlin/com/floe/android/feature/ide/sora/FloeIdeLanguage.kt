@@ -2,9 +2,14 @@
 package com.floe.android.feature.ide.sora
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import java.util.concurrent.atomic.AtomicLong
 import io.github.rosemoe.sora.lang.Language
 import io.github.rosemoe.sora.lang.analysis.AnalyzeManager
 import io.github.rosemoe.sora.lang.analysis.SimpleAnalyzeManager
+import io.github.rosemoe.sora.lang.analysis.StyleReceiver
+import io.github.rosemoe.sora.lang.analysis.StyleUpdateRange
 import io.github.rosemoe.sora.lang.completion.CompletionCancelledException
 import io.github.rosemoe.sora.lang.completion.CompletionHelper
 import io.github.rosemoe.sora.lang.completion.IdentifierAutoComplete
@@ -96,21 +101,75 @@ internal object NoopFormatter : Formatter {
  * Line scanner feeding Sora's [MappedSpans] builder. Tokenizes one logical
  * line at a time with carried state (block comments, string quotes), so
  * highlighting survives multi-line constructs without extra dependencies.
+ *
+ * CRITICAL lifecycle contract (device crash 2026-10-25, FATAL
+ * IndexOutOfBoundsException Index 1 / length 1 at
+ * MappedSpans$MappedSpansAccessor.getSpansOnLine): the renderer indexes the
+ * published spans PER CONTENT LINE with no bounds clamp, so the returned
+ * Styles MUST cover every line of the analyzed text. Two rules guarantee it:
+ *  1. lines are split exactly like Sora's LineSeparator (CR, LF or CRLF as
+ *     one break) — counting only LF under-covered lone-CR content;
+ *  2. Builder.determine() takes the LAST LINE INDEX of the whole text. The
+ *     previous code passed `lineIndex - 1` even after breaking on the final
+ *     line, and addIfNeeded de-duplicates a trailing empty line's normal
+ *     span away, so any text ending with a newline published one line fewer
+ *     than the content had — pressing Enter at end-of-document therefore
+ *     crashed the next draw. determine() extends every missing line with the
+ *     carried normal style, so it is called with the true separator count.
  */
 internal class FloeAnalyzeManager(
     private val definition: FloeLanguageDefinition,
 ) : SimpleAnalyzeManager<Unit>() {
 
+    private val receiverEpoch = AtomicLong()
+    private val uiHandler by lazy { Handler(Looper.getMainLooper()) }
+
+    override fun setReceiver(receiver: StyleReceiver?) {
+        val epoch = receiverEpoch.incrementAndGet()
+        super.setReceiver(receiver?.let { target ->
+            object : StyleReceiver by target {
+                // Sora checks manager identity BEFORE posting its UI callback.
+                // Fence on the UI thread as well so an old queued style cannot
+                // be applied after this manager's Content/owner was retired.
+                override fun setStyles(source: AnalyzeManager, styles: Styles?) {
+                    deliverStyles(epoch) { target.setStyles(source, styles) }
+                }
+                override fun setStyles(source: AnalyzeManager, styles: Styles?, onComplete: Runnable?) {
+                    deliverStyles(epoch) { target.setStyles(source, styles, onComplete) }
+                }
+                override fun updateStyles(source: AnalyzeManager, styles: Styles, range: StyleUpdateRange) {
+                    deliverStyles(epoch) { target.updateStyles(source, styles, range) }
+                }
+            }
+        })
+    }
+
+    private fun deliverStyles(epoch: Long, apply: () -> Unit) {
+        uiHandler.post {
+            if (receiverEpoch.get() == epoch) apply()
+        }
+    }
+
+    override fun destroy() {
+        receiverEpoch.incrementAndGet()
+        super.destroy()
+    }
+
     override fun analyze(text: StringBuilder, delegate: Delegate<Unit>): Styles {
         val builder = MappedSpans.Builder()
+        // Sora joins the analyzed container with the content's OWN per-line
+        // separators; the final index equals the separator count. Computed
+        // up front so even a cancelled partial scan still determines the
+        // full coverage (a cancelled result is re-run by SimpleAnalyzeManager
+        // before publishing, but the geometry must never be short).
+        val lastLineIndex = countLineSeparators(text)
         var state = FloeLanguageTokenizer.FloeLineState()
         var lineIndex = 0
         var lineStart = 0
         while (lineStart <= text.length) {
-            val lineEnd = text.indexOf("\n", lineStart).let { if (it < 0) text.length else it }
             if (delegate.isCancelled()) break
-            var end = lineEnd
-            if (end > lineStart && text[end - 1] == '\r') end -= 1
+            var end = lineStart
+            while (end < text.length && text[end] != '\n' && text[end] != '\r') end++
             val spans = FloeLanguageTokenizer.spansFor(
                 text = text.subSequence(lineStart, end),
                 definition = definition,
@@ -121,13 +180,37 @@ internal class FloeAnalyzeManager(
                 if (delegate.isCancelled()) break
                 builder.addIfNeeded(lineIndex, column, styleId)
             }
-            if (lineStart >= text.length) break
-            lineStart = lineEnd + 1
+            if (end >= text.length) break
+            // Consume the one separator (CR, LF or CRLF) that ends this line.
+            lineStart = if (text[end] == '\r' && end + 1 < text.length && text[end + 1] == '\n') {
+                end + 2
+            } else {
+                end + 1
+            }
             lineIndex++
         }
-        builder.determine(lineIndex - 1)
+        builder.determine(lastLineIndex)
         builder.addNormalIfNull()
         return Styles(builder.build())
+    }
+
+    private fun countLineSeparators(text: CharSequence): Int {
+        var count = 0
+        var i = 0
+        while (i < text.length) {
+            when (text[i]) {
+                '\r' -> {
+                    count++
+                    i += if (i + 1 < text.length && text[i + 1] == '\n') 2 else 1
+                }
+                '\n' -> {
+                    count++
+                    i++
+                }
+                else -> i++
+            }
+        }
+        return count
     }
 }
 

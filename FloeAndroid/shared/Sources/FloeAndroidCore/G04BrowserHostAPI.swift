@@ -413,7 +413,19 @@ public func floeBrowserUICall(_ json: UnsafePointer<CChar>?) -> Int32 {
         Task { await center.setEditingAddress(editing, in: taskID) }
         return 0
     case "navigateAddressBar":
-        Task { await center.navigateFromAddressBar(in: taskID) }
+        // Draft-carrying commit (G04-R2 address repair): the text rides in
+        // THIS op and is handed to ONE session-owned commit operation with a
+        // single actor hop — the session applies the draft, clears editing
+        // and captures/validates the target before its first suspension, so
+        // an older per-keystroke echo Task can never change what this commit
+        // navigates to. No draft (legacy op) keeps the original flow
+        // byte-for-byte: editing stays owned by the preceding
+        // setEditingAddress op, exactly as before.
+        if let draft = object["text"] as? String, !draft.isEmpty {
+            Task { await center.navigateFromAddressBar(in: taskID, draft: draft) }
+        } else {
+            Task { await center.navigateFromAddressBar(in: taskID) }
+        }
         return 0
     case "reload":
         Task { await center.reloadVisibleTab(in: taskID) }

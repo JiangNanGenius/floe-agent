@@ -107,8 +107,16 @@ fun G04TerminalView(
             }
 
             override fun keyEvent(event: KeyEvent): Boolean {
+                if (event.action == KeyEvent.ACTION_MULTIPLE) {
+                    // Batch-injected text (ACTION_MULTIPLE characters):
+                    // real ordered PTY bytes, never EditText retention.
+                    val text = event.characters.orEmpty()
+                    if (text.isEmpty()) return false
+                    transport.write(TerminalInputEncoder.encodeText(text))
+                    return true
+                }
                 if (event.action != KeyEvent.ACTION_DOWN) return true
-                val bytes = engine.encodeKeyEvent(event) ?: return false
+                val bytes = engine.encodePhysicalKeyEvent(event) ?: return false
                 transport.write(bytes)
                 return true
             }
@@ -199,8 +207,11 @@ fun G04TerminalView(
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown) {
                     // The Compose wrapper exposes the real android.view
-                    // KeyEvent; the engine's mapping stays the native one.
-                    val bytes = engine.encodeKeyEvent(event.nativeKeyEvent)
+                    // KeyEvent; the engine's mapping stays the native one
+                    // (KeyHandler tables + the event's unicode character,
+                    // so physical keyboards and injected key events reach
+                    // the PTY instead of the focused proxy's defaults).
+                    val bytes = engine.encodePhysicalKeyEvent(event.nativeKeyEvent)
                     if (bytes != null) {
                         transport.write(bytes)
                         true

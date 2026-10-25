@@ -13,6 +13,21 @@ import org.junit.Test
 class IdeTextMathTest {
 
     @Test
+    fun deletionUsesPreEditLengthIncludingEofEmojiAndWholeBuffer() {
+        for ((text, start, length) in listOf(Triple("abcZ", 3, 1),
+            Triple("a🐍", 1, 2), Triple("all", 0, 3), Triple("abXYcd", 2, 2))) {
+            val range = IdeTextMath.deletionRange(text.length, start, length)!!
+            assertEquals(start, range.startUtf16)
+            assertEquals(start + length, range.endUtf16)
+            val after = text.removeRange(start, start + length)
+            assertEquals(after, text.replaceRange(range.startUtf16, range.endUtf16, ""))
+        }
+        assertNull(IdeTextMath.deletionRange(3, 2, 2))
+        assertNull(IdeTextMath.deletionRange(0, 0, 1))
+        assertNull(IdeTextMath.deletionRange(3, -1, 1))
+    }
+
+    @Test
     fun lineColumnLfAndCrlf() {
         val text = "ab\r\ncd\nef"
         assertEquals(0 to 0, IdeTextMath.lineColumnAt(text, 0))

@@ -124,6 +124,19 @@ public object FloeBrowserIcons {
         }
     }
 
+    /** arrow.right — commit the typed address (visible Go action). */
+    val Go = icon("floe.browser.go") {
+        stroke {
+            moveTo(5f, 12f)
+            lineTo(18.6f, 12f)
+        }
+        stroke {
+            moveTo(13.6f, 7f)
+            lineTo(18.8f, 12f)
+            lineTo(13.6f, 17f)
+        }
+    }
+
     /** arrow.trianglehead.clockwise — reload/retry. */
     val Retry = icon("floe.browser.retry") {
         stroke {

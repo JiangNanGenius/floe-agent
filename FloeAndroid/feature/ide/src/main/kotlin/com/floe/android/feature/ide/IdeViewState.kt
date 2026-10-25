@@ -38,6 +38,9 @@ public data class IdeViewState(
     public val diff: IdeDiffState? = null,
     public val diagnostics: List<IdeDiagnostic> = emptyList(),
     public val diagnosticsVersion: Int = 0,
+    /** Bumped when fresh host (LSP) completion items are accepted, so the
+     * editor re-runs its completion pass for an asynchronous arrival. */
+    public val completionVersion: Int = 0,
     public val tree: IdeTreeState = IdeTreeState(),
     public val tabs: List<IdeTabItem> = emptyList(),
     public val closeRequest: IdeCloseRequest? = null,

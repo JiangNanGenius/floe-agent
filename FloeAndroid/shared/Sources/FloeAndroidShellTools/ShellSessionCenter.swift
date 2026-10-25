@@ -130,7 +130,8 @@ public actor ShellSessionCenter {
         forTerminal: Bool = false,
         toolEnvironment: ToolEnvironment? = nil,
         clientSessionID: String? = nil,
-        conversationID: UUID? = nil
+        conversationID: UUID? = nil,
+        workspaceOperationID: UUID? = nil
     ) async throws -> ShellOpenResult {
         try cancellation?.throwIfCancelled()
         try ShellInputValidation.validate(command: command, cwd: cwd, environment: environment)
@@ -160,6 +161,7 @@ public actor ShellSessionCenter {
             runID: runID,
             toolEnvironment: lease.context.environment,
             conversationID: conversationID,   // A1 (see file header)
+            workspaceOperationID: workspaceOperationID, // G04-R2 trusted UI operation lease (nil = unchanged path)
             prepareLinuxIfMissing: !forTerminal
         )
         let result: ShellOpenResult

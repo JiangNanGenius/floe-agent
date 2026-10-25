@@ -36,6 +36,8 @@ import com.floe.android.feature.conversation.PlanCriterionRowUi
 import com.floe.android.feature.conversation.PlanDetailUi
 import com.floe.android.feature.conversation.PlanRiskRowUi
 import com.floe.android.feature.conversation.PlanSectionRowUi
+import com.floe.android.feature.conversation.PendingInputBodyStateUi
+import com.floe.android.feature.conversation.PendingInputBodyUi
 import com.floe.android.feature.conversation.ProjectOptionUi
 import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunEventKindUi
@@ -228,6 +230,169 @@ class ThreadProjectionBuilder internal constructor(
     /** Pending-input row CAS versions (`pendingInput.<uuid>` / updatedAt). */
     private val inputVersions = LinkedHashMap<String, String>()
 
+    /**
+     * Editor hydration state for one durable queue row, published ONLY by
+     * the bounded `conversation.get.detail{kind:"pendingInput"}` chain on a
+     * digest-verified complete assembly (Loading → Ready(text, native CAS
+     * version) | Failed(code)). The full editable body NEVER exists before
+     * Ready; a preview is display content, not editor content.
+     */
+    private val pendingInputBodies = LinkedHashMap<String, PendingInputBodyUi>()
+
+    /**
+     * Rows ABSENT from the most recent authoritative COMPLETE queue page.
+     * A row is retired only after TWO consecutive complete pages proved its
+     * absence: one late pre-change complete page (read before a newer row
+     * was durable, settled after a newer page showed it) can mark it a
+     * candidate but never deletes it, while the steady state (consumed /
+     * cancelled rows leaving the native pending predicate) retires within
+     * one extra refresh. Truncated pages never touch this set.
+     */
+    private val queueAbsentCandidates = LinkedHashSet<String>()
+
+    /** One projected queue row, by durable id (editor-open validation). */
+    fun pendingInputRow(inputID: String): PendingInputUi? = pendingInputs[inputID]
+
+    /** The current editor hydration state for one queue row. */
+    fun pendingInputBody(inputID: String): PendingInputBodyUi? = pendingInputBodies[inputID]
+
+    /** Publish/clear one editor hydration state (bounded; stale rows drop). */
+    internal fun setPendingInputBody(inputID: String, state: PendingInputBodyUi?) {
+        if (state == null) {
+            pendingInputBodies.remove(inputID)
+            return
+        }
+        pendingInputBodies[inputID] = state
+        while (pendingInputBodies.size > 32) {
+            val drop = pendingInputBodies.keys.firstOrNull { it !in pendingInputs }
+                ?: pendingInputBodies.keys.firstOrNull()
+                ?: break
+            pendingInputBodies.remove(drop)
+        }
+    }
+
+    /**
+     * Publishes ONE proven-complete durable body: the row's display slot
+     * becomes the exact full text (never blank, never preview) and the
+     * editor binding carries the native CAS version the read proved. A row
+     * the projection has already retired (or whose projected version moved
+     * past this read) is refused — the caller re-reads instead.
+     */
+    internal fun applyPendingInputBody(inputID: String, text: String, inputVersion: String): Boolean {
+        val row = pendingInputs[inputID] ?: return false
+        val version = inputVersions[inputID]
+        if (version != null && version != inputVersion) return false
+        pendingInputs[inputID] = row.copy(
+            content = text,
+            bodyState = PendingInputBodyStateUi.COMPLETE,
+            inputVersion = inputVersion,
+        )
+        pendingInputBodies[inputID] = PendingInputBodyUi.Ready(text, inputVersion)
+        return true
+    }
+
+    /**
+     * The CAS version at which this row CURRENTLY has a proven complete
+     * body, or null when no editable full text exists. `run.input.edit`
+     * dispatch re-proves this against a FRESH snapshot before any envelope
+     * leaves the App (an unread original is never overwritten by blank or
+     * by a bounded preview).
+     */
+    internal fun provenBodyVersion(inputID: String): String? {
+        val version = inputVersions[inputID]
+        when (val body = pendingInputBodies[inputID]) {
+            is PendingInputBodyUi.Ready ->
+                if (version == null || version == body.inputVersion) return body.inputVersion
+            is PendingInputBodyUi.Loading, is PendingInputBodyUi.Failed, null -> Unit
+        }
+        val row = pendingInputs[inputID]
+            ?: return null
+        return if (row.bodyState == PendingInputBodyStateUi.COMPLETE &&
+            row.inputVersion != null &&
+            (version == null || version == row.inputVersion)
+        ) row.inputVersion else null
+    }
+
+    /**
+     * Applies the retirement rule described on [queueAbsentCandidates].
+     * `complete` is the native PROVEN completeness of this page's queue
+     * window (`pendingInputsTruncated == false`); a trimmed/legacy page is
+     * never retirement authority and keeps every unknown row.
+     */
+    private fun reconcileQueueAbsentRows(presentIDs: Set<String>, complete: Boolean) {
+        if (!complete) return
+        val absent = pendingInputs.keys.filterTo(LinkedHashSet()) { it !in presentIDs }
+        val retire = absent.intersect(queueAbsentCandidates)
+        queueAbsentCandidates.clear()
+        queueAbsentCandidates.addAll(absent)
+        if (retire.isEmpty()) return
+        for (id in retire) {
+            pendingInputs.remove(id)
+            inputVersions.remove(id)
+            pendingInputBodies.remove(id)
+            queueAbsentCandidates.remove(id)
+        }
+    }
+
+    /**
+     * Merge one `conversation.get` page row into a known projection. That
+     * lane carries NO body and NO CAS version, so an already proven body
+     * (hydrated full text or native-complete content) and the tracked
+     * version stay exactly as they are; only metadata refreshes.
+     */
+    private fun PendingInputUi.mergeSessionPage(incoming: PendingInputUi): PendingInputUi =
+        copy(
+            status = incoming.status,
+            mode = incoming.mode,
+            executionModeRaw = incoming.executionModeRaw,
+            position = incoming.position,
+            contentBytes = incoming.contentBytes ?: contentBytes,
+            trustedSummary = incoming.trustedSummary ?: trustedSummary,
+        )
+
+    /**
+     * Merge one `run.snapshot` wire row (typed `PendingInputWire`) into the
+     * projection. Body precedence: a proven COMPLETE slot is NEVER replaced
+     * by a bounded preview; the native `previewComplete` proof may promote
+     * the slot to COMPLETE (short bodies travel whole); otherwise the fresh
+     * preview replaces an unproven slot, and a same-version PREVIEW is kept
+     * when this page carries no preview member. A version move resets the
+     * slot to THIS page's truth (the old text described the previous row).
+     */
+    private fun PendingInputUi?.mergeSnapshotWire(
+        input: ConversationWire.PendingInputWire,
+        versionMoved: Boolean,
+    ): PendingInputUi {
+        val known = this
+        val knownComplete = known != null && !versionMoved &&
+            known.bodyState == PendingInputBodyStateUi.COMPLETE
+        val incomingComplete = input.preview != null && input.previewComplete == true
+        val (text, state) = when {
+            knownComplete -> known!!.content to PendingInputBodyStateUi.COMPLETE
+            incomingComplete -> input.preview!! to PendingInputBodyStateUi.COMPLETE
+            input.preview != null -> input.preview to PendingInputBodyStateUi.PREVIEW
+            known != null && !versionMoved &&
+                known.bodyState == PendingInputBodyStateUi.PREVIEW ->
+                known.content to PendingInputBodyStateUi.PREVIEW
+            else -> "" to PendingInputBodyStateUi.NOT_READ
+        }
+        return PendingInputUi(
+            id = input.id,
+            content = text,
+            status = input.status,
+            mode = input.mode,
+            executionModeRaw = input.executionModeRaw
+                ?: known?.takeIf { !versionMoved }?.executionModeRaw
+                ?: "agent",
+            position = input.position,
+            contentBytes = input.contentBytes
+                ?: known?.takeIf { !versionMoved }?.contentBytes,
+            bodyState = state,
+            inputVersion = input.inputVersion,
+            trustedSummary = if (versionMoved) null else known?.trustedSummary,
+        )
+    }
+
     /** Durable queue order revision (`pendingQueue.<uuid>` / queue digest). */
     var queueRevision: Revision? = null
         private set
@@ -331,8 +496,18 @@ class ThreadProjectionBuilder internal constructor(
             }
         }
         for (input in reply.pendingInputs) {
-            pendingInputs[input.id] = input
+            val known = pendingInputs[input.id]
+            pendingInputs[input.id] = if (known == null) input else known.mergeSessionPage(input)
         }
+        // Authoritative queue reconciliation (G04R2 repair): only a page
+        // whose native builder PROVED completeness (`pendingInputsTruncated
+        // == false`) may retire absent rows. A trimmed page, or a legacy
+        // page without the member, keeps every known row — an unknown row
+        // is never a gone row. See [reconcileQueueAbsentRows].
+        reconcileQueueAbsentRows(
+            presentIDs = reply.pendingInputs.map { it.id }.toSet(),
+            complete = reply.pendingInputsTruncated == false,
+        )
         reply.approvalMode?.let { policyApprovalMode = it }
         reply.policyRecoveryRaw?.let { policyRecoveryRaw = it }
         reply.policyNotificationRaw?.let { policyNotificationRaw = it }
@@ -435,17 +610,29 @@ class ThreadProjectionBuilder internal constructor(
             }
         }
         for (input in page.pendingInputs) {
+            val previousVersion = inputVersions[input.id]
             inputVersions[input.id] = input.inputVersion
             val known = pendingInputs[input.id]
-            pendingInputs[input.id] = (known ?: PendingInputUi(
-                id = input.id,
-                content = "",
-                status = input.status,
-                mode = input.mode,
-                executionModeRaw = "agent",
-                position = input.position,
-            )).copy(status = input.status, position = input.position)
+            val versionMoved = (previousVersion != null && previousVersion != input.inputVersion) ||
+                (known?.inputVersion != null && known.inputVersion != input.inputVersion)
+            if (versionMoved) {
+                // The CAS version moved: any previously read full body or
+                // preview described the OLD row content and must never keep
+                // the editor bound to it. The slot rebuilds from THIS page.
+                pendingInputBodies.remove(input.id)
+            }
+            pendingInputs[input.id] = known.mergeSnapshotWire(input, versionMoved)
         }
+        // Snapshot-side retirement: the native builder reports the REAL
+        // truncation of this page's queue window. Completeness here is
+        // authoritative for the pending predicate (queued/promoting/
+        // steerPending); absent pending rows on TWO consecutive complete
+        // pages are retired from the projection (display only — the durable
+        // store stays the sole content authority).
+        reconcileQueueAbsentRows(
+            presentIDs = page.pendingInputs.map { it.id }.toSet(),
+            complete = page.pendingInputsTruncated == false,
+        )
         page.queueRevision?.let { queueRevision = it }
         // The snapshot is the authoritative CAS source for the live task
         // policy (the native builder computes `policyRevision` from the
@@ -980,6 +1167,7 @@ class ThreadProjectionBuilder internal constructor(
             rows = rows,
             pendingApprovals = approvals,
             pendingInputs = pendingInputs.values.toList(),
+            pendingInputBodies = pendingInputBodies.toMap(),
             models = models,
             // The ONE honest projection: at most the thread's OWN bound
             // workspace (never the first project, never an empty placeholder
@@ -1113,6 +1301,13 @@ internal object ConversationWire {
          * binding. A missing/null member decodes to null — the honest
          * unbound. */
         val workspace: WorkspaceBindingUi? = null,
+        /** Additive queue-content repair (G04R2): the native page's REAL
+         * full-store pending count and the honest truncation flag of this
+         * window. Only `pendingInputsTruncated == false` proves the page
+         * listed every durable pending row (retirement authority); a
+         * trimmed page (`true`) or a legacy null NEVER is. */
+        val pendingInputsTotalCount: Long? = null,
+        val pendingInputsTruncated: Boolean? = null,
     )
 
     /** One honest conversation workspace binding (native `{workspaceID,
@@ -1182,6 +1377,14 @@ internal object ConversationWire {
          * local timer or ack word substitutes for it. Null = a round-1
          * page without the member (never assumed). */
         val goalReviewRaw: String? = null,
+        /** Additive queue-content repair (G04R2): the native builder's REAL
+         * completeness proof for this page's `pendingInputs` window. False
+         * means EVERY durable pending row (the store's pending predicate)
+         * was listed — the only state from which absent rows may retire.
+         * True means the window was budget-trimmed (unknown rows exist);
+         * null = a legacy page without the member (never retirement
+         * authority). */
+        val pendingInputsTruncated: Boolean? = null,
     )
 
     class PendingApprovalWire(
@@ -1197,6 +1400,16 @@ internal object ConversationWire {
         val status: PendingInputStatusUi,
         val mode: RunningInputModeUi,
         val inputVersion: String,
+        /** Bounded UTF-8 preview of the durable row (native ≤512-byte
+         * lane). Null = a legacy page WITHOUT the member — the slot stays
+         * unread, never blank-as-complete. */
+        val preview: String? = null,
+        /** Native PROOF the preview equals the whole row text (short body). */
+        val previewComplete: Boolean? = null,
+        /** REAL durable UTF-8 length (preview labelling). */
+        val contentBytes: Long? = null,
+        /** ORIGINAL row vocabulary (null = legacy absence, never guessed). */
+        val executionModeRaw: String? = null,
     )
 
     fun decodeSessionReply(value: JsonElement): SessionReply? {
@@ -1233,6 +1446,9 @@ internal object ConversationWire {
                 },
                 executionModeRaw = obj.string("executionMode") ?: "agent",
                 position = obj.long("position") ?: 0L,
+                // The conversation page carries REAL durable byte length
+                // (metadata only — the body stays on the read lanes).
+                contentBytes = obj.long("contentBytes"),
             )
         } ?: emptyList()
         val policy = root["taskPolicy"] as? JsonObject
@@ -1261,6 +1477,8 @@ internal object ConversationWire {
             planAvailabilityRaw = root.string("planAvailability"),
             goalAvailabilityRaw = root.string("goalAvailability"),
             workspace = decodeWorkspaceBinding(root["workspace"] as? JsonObject),
+            pendingInputsTotalCount = root.long("pendingInputsTotalCount"),
+            pendingInputsTruncated = root.bool("pendingInputsTruncated"),
         )
     }
 
@@ -1562,6 +1780,13 @@ internal object ConversationWire {
                     RunningInputModeUi.QUEUE
                 },
                 inputVersion = version,
+                // Queue-content members are honest nullables: a legacy page
+                // without them keeps the row UNREAD (never a blank slot that
+                // claims completeness).
+                preview = obj.string("preview"),
+                previewComplete = obj.bool("previewComplete"),
+                contentBytes = obj.long("contentBytes"),
+                executionModeRaw = obj.string("executionMode"),
             )
         }
         val queueRevision = (root["queueRevision"] as? JsonObject)?.let {
@@ -1600,6 +1825,7 @@ internal object ConversationWire {
                 if (resourceID != null && version != null) Revision(resourceID, version) else null
             },
             goalReviewRaw = root.string("goalReview"),
+            pendingInputsTruncated = root.bool("pendingInputsTruncated"),
         )
     }
 
@@ -1632,7 +1858,8 @@ internal object ConversationWire {
         val root = value as? JsonObject ?: return null
         val detail = root["detail"] as? JsonObject ?: return null
         val kind = detail.string("kind") ?: return null
-        if (kind != "goal" && kind != "plan" && kind != "checklist") return null
+        if (kind != "goal" && kind != "plan" && kind != "checklist" &&
+            kind != "pendingInput") return null
         val id = detail.string("id") ?: return null
         val digest = detail.string("digest") ?: return null
         if (!digest.matches(Regex("[0-9a-f]{64}")) || detail.string("encoding") != "json-utf8") return null
@@ -1659,6 +1886,51 @@ internal object ConversationWire {
             isDecisionComplete = detail.bool("isDecisionComplete"),
         )
     }
+
+    /** Reconstruct the projected queue row from the fully accumulated
+     * `detail{kind:"pendingInput"}` byte-exact chain (only ever called on
+     * a COMPLETE digest-verified assembly). Strict: the row id must match
+     * the page identity, the native CAS pair (`pendingInput.<UPPER uuid>`
+     * + updatedAt-derived `inputVersion`) must agree between the page
+     * members and the row document, and content/status/mode/executionMode
+     * must be REAL members. Any mismatch decodes to null — a partial or
+     * foreign document never reaches the editor, and nothing here guesses
+     * queue bytes. */
+    fun decodePendingInputBodyRow(
+        json: JsonObject,
+        pageID: String,
+        pageRevisionResourceID: String?,
+        pageRevisionVersion: String?,
+    ): PendingInputBodyRow? {
+        val id = json.string("id") ?: return null
+        if (id != pageID) return null
+        val content = json.string("content") ?: return null
+        val status = json.string("status") ?: return null
+        val mode = json.string("mode") ?: return null
+        val executionMode = json.string("executionMode") ?: return null
+        val inputVersion = json.string("inputVersion") ?: return null
+        if (pageRevisionVersion != null && pageRevisionVersion != inputVersion) return null
+        if (pageRevisionResourceID != null &&
+            pageRevisionResourceID != pendingInputResourceID(id)) return null
+        return PendingInputBodyRow(
+            id = id,
+            content = content,
+            statusRaw = status,
+            modeRaw = mode,
+            executionModeRaw = executionMode,
+            inputVersion = inputVersion,
+        )
+    }
+
+    /** One proven-complete durable queue row (editor hydration input). */
+    class PendingInputBodyRow(
+        val id: String,
+        val content: String,
+        val statusRaw: String,
+        val modeRaw: String,
+        val executionModeRaw: String,
+        val inputVersion: String,
+    )
 
     /** Reconstruct the ORIGINAL durable goal row from the fully accumulated
      * canonical JSON (only ever called on a COMPLETE byte-exact chain).
@@ -1935,14 +2207,21 @@ internal object ConversationWire {
 
     /**
      * `run.queue` payload (allowedKeys `content,mode,selectedModelID,
-     * stagedAttachments`). `run.queue` enqueues a NEW durable pending row;
-     * an `inputID` key is not part of this grammar (the previous App sent the
-     * RUN id under it, which native rejected).
+     * stagedAttachments,executionMode`). `run.queue` enqueues a NEW durable
+     * pending row; an `inputID` key is not part of this grammar (the
+     * previous App sent the RUN id under it, which native rejected).
+     *
+     * G04R2 queue-input repair: the composer's REAL execution mode rides
+     * the payload so the durable row owns it (iOS parity) and the native
+     * terminal drain launches exactly the queued mode instead of a silent
+     * default. Native keeps the historical `agent` default for an absent
+     * key, so the grammar stays additive.
      */
     fun runningInputPayload(request: RunningInputRequest, stagedHandles: List<String>): JsonObject {
         val members = mutableMapOf<String, JsonElement>(
             "content" to JsonPrimitive(request.content),
             "mode" to JsonPrimitive(RunningInputModeUi.QUEUE.swiftRaw),
+            "executionMode" to JsonPrimitive(request.executionMode.swiftRaw),
         )
         request.modelId?.let { members["selectedModelID"] = JsonPrimitive(it) }
         if (stagedHandles.isNotEmpty()) members["stagedAttachments"] =
