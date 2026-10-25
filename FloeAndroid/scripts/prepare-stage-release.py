@@ -40,6 +40,18 @@ The checks are deliberately fail-closed:
   are stored, 16 KiB zip-aligned, 16 KiB ELF ``PT_LOAD``-aligned, carry build
   IDs, resolve their ``DT_NEEDED`` entries, and contain no meaningful
   ``.debug_*`` data;
+* for a release embedding the pinned Office engine, ``--office-pins`` is the
+  ONE bounded build-ID exception: the GNU build-id requirement is waived
+  only for libraries whose bytes hash exactly to a
+  ``core/officeengine/payload-pins.json`` entry (the producer's prebuilt
+  libraries ship without a build-id note). Every other gate — stored,
+  zip/ELF 16 KiB alignment, ``DT_NEEDED`` resolution, debug-section,
+  test-only — stays fully enforced on them; a pinned library missing from
+  the APK, a hash that drifts from its pin, or the producer's official
+  ``libc++_shared.so`` appearing in the APK are each hard failures, and the
+  report records the pins file digest and every waived library. Without
+  ``--office-pins`` the behavior is exactly as before (every library needs
+  a build id).
 * the supplied preverified SHA-256, source commit, tag and formal signer
   certificate are bound to the exact bytes that are staged and published;
 * an existing non-empty destination is never replaced, and a failure leaves
@@ -122,6 +134,16 @@ TEST_ONLY_NATIVE = {
     "libfloe_qualification_jni.so",
 }
 REQUIRED_NATIVE = ("libFloeAndroidCore.so", "libfloe_jni.so")
+
+# The ONE bounded build-ID exception for the pinned Office engine (see the
+# module docstring). payload-pins.json is the module-owned authority for the
+# producer libraries; this toolkit binds the APK bytes to the supplied pins
+# file and records the file digest. It never rewrites pins.
+OFFICE_PINS_SCHEMA = "floe-office-payload-pins/1"
+OFFICE_LIBCXX_NAME = "libc++_shared.so"
+MAX_OFFICE_PINS_JSON_BYTES = 256 * 1024
+OFFICE_SAFE_REL_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*$")
 
 # The ONE exception to the generic nested-package refusal. The formal
 # full-channel app embeds exactly one independently signed Linux runtime
@@ -288,6 +310,8 @@ class ReleasePolicy:
     stage_label: Optional[str] = None
     native_manifest: Optional[Dict[str, Any]] = None
     native_manifest_role: str = "canonical"
+    office_pins: Optional[Dict[str, Any]] = None
+    office_pins_sha256: Optional[str] = None
     aapt2: Optional[Path] = None
     apksigner: Optional[Path] = None
 
@@ -462,6 +486,149 @@ def load_native_manifest(path_value: str) -> Dict[str, Any]:
     }
 
 
+def load_office_pins(path_value: str) -> Dict[str, Any]:
+    """Load and validate the module-owned Office payload pins file.
+
+    This validates internal consistency and shapes only; producer identity
+    constants (revision, whole-APK and signer hashes) are pinned by the
+    corresponding-source tooling, and every packaged library byte is bound to
+    these hashes by the native gate when the pins are supplied.
+    """
+    path = Path(path_value).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except FileNotFoundError:
+        raise StageReleaseError(
+            "office.pins.missing",
+            "office payload pins not found: {}".format(path),
+        )
+    if not resolved.is_file():
+        raise StageReleaseError(
+            "office.pins.not-file",
+            "office payload pins is not a regular file: {}".format(path),
+        )
+    if resolved.stat().st_size > MAX_OFFICE_PINS_JSON_BYTES:
+        raise StageReleaseError(
+            "office.pins.too-large",
+            "office payload pins exceeds the bounded JSON size",
+        )
+    try:
+        data = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise StageReleaseError(
+            "office.pins.invalid",
+            "office payload pins is not readable JSON: {}".format(exc),
+        )
+    if not isinstance(data, dict) or data.get("schema") != OFFICE_PINS_SCHEMA:
+        raise StageReleaseError(
+            "office.pins.schema",
+            "office payload pins schema must be {}".format(OFFICE_PINS_SCHEMA),
+        )
+    source = data.get("source")
+    if not isinstance(source, dict) or not SOURCE_COMMIT_RE.fullmatch(
+            str(source.get("revision", ""))):
+        raise StageReleaseError(
+            "office.pins.source",
+            "office payload pins must record a full hexadecimal source revision",
+        )
+    if source.get("embeddedBuildId") != str(source["revision"])[:10]:
+        raise StageReleaseError(
+            "office.pins.buildid",
+            "office payload pins embeddedBuildId must be the first 10 hex of "
+            "the pinned source revision",
+        )
+    artifact = data.get("artifact")
+    if not isinstance(artifact, dict) or not str(artifact.get("url", "")).startswith(
+            "https://"):
+        raise StageReleaseError(
+            "office.pins.artifact",
+            "office payload pins must record the producer APK https URL",
+        )
+    artifact["sha256"] = normalize_sha256(
+        artifact.get("sha256"), "office pins producer APK sha256")
+    artifact["signerCertSha256"] = normalize_sha256(
+        artifact.get("signerCertSha256"), "office pins producer signer cert sha256")
+    payload = data.get("payload")
+    if not isinstance(payload, dict) or payload.get("arm64And16KiBAligned") is not True:
+        raise StageReleaseError(
+            "office.pins.payload",
+            "office payload pins must assert arm64And16KiBAligned true",
+        )
+    payload["manifestSha256"] = normalize_sha256(
+        payload.get("manifestSha256"), "office pins payload manifest sha256")
+    for field in ("files", "selectedBytes", "nativeLibraries"):
+        value = payload.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise StageReleaseError(
+                "office.pins.payload",
+                "office payload pins payload.{} must be a positive integer".format(field),
+            )
+    if not isinstance(payload.get("consumedSelection"), str):
+        raise StageReleaseError(
+            "office.pins.payload",
+            "office payload pins must record the consumedSelection contract",
+        )
+    libraries = data.get("libraries")
+    if not isinstance(libraries, dict) or not libraries:
+        raise StageReleaseError(
+            "office.pins.libraries",
+            "office payload pins must record a non-empty libraries object",
+        )
+    normalized: Dict[str, str] = {}
+    for name, digest in libraries.items():
+        if not isinstance(name, str) or not NATIVE_LIBRARY_NAME_RE.fullmatch(name):
+            raise StageReleaseError(
+                "office.pins.libraries",
+                "office payload pins contains an invalid library name",
+            )
+        normalized[name] = normalize_sha256(
+            digest, "office pins library {}".format(name))
+    if OFFICE_LIBCXX_NAME in normalized:
+        raise StageReleaseError(
+            "office.pins.libraries",
+            "office payload pins must not pin the deliberately-excluded producer "
+            "{} among the packaged libraries".format(OFFICE_LIBCXX_NAME),
+        )
+    if len(normalized) != payload["nativeLibraries"] - 1:
+        raise StageReleaseError(
+            "office.pins.libraries",
+            "office payload pins libraries count {} != nativeLibraries {} - 1 "
+            "(the single deliberately excluded official libc++)".format(
+                len(normalized), payload["nativeLibraries"]),
+        )
+    policy = data.get("libcxxPolicy")
+    if not isinstance(policy, dict) or policy.get("packaged") is not False:
+        raise StageReleaseError(
+            "office.pins.libcxx",
+            "office payload pins libcxxPolicy.packaged must be false",
+        )
+    policy["officialSha256"] = normalize_sha256(
+        policy.get("officialSha256"), "office pins official libc++ sha256")
+    policy["appOwnSha256"] = normalize_sha256(
+        policy.get("appOwnSha256"), "office pins app-owned libc++ sha256")
+    if not isinstance(policy.get("evidence"), str) or not policy["evidence"].strip():
+        raise StageReleaseError(
+            "office.pins.libcxx",
+            "office payload pins must record the libc++ compatibility evidence",
+        )
+    anchors = data.get("anchorAssets")
+    if not isinstance(anchors, dict) or not anchors:
+        raise StageReleaseError(
+            "office.pins.anchors",
+            "office payload pins must record anchorAssets",
+        )
+    for rel, digest in anchors.items():
+        if (not isinstance(rel, str) or OFFICE_SAFE_REL_RE.fullmatch(rel) is None
+                or ".." in rel.split("/")):
+            raise StageReleaseError(
+                "office.pins.anchors",
+                "office payload pins anchor asset path is unsafe: {!r}".format(rel),
+            )
+        anchors[rel] = normalize_sha256(digest, "office pins anchor {}".format(rel))
+    data["libraries"] = normalized
+    return data
+
+
 def policy_from_args(args: argparse.Namespace) -> ReleasePolicy:
     apk_path = Path(args.apk).expanduser()
     try:
@@ -576,6 +743,16 @@ def policy_from_args(args: argparse.Namespace) -> ReleasePolicy:
     if args.native_manifest:
         native_manifest = load_native_manifest(args.native_manifest)
 
+    office_pins = None
+    office_pins_sha256 = None
+    # getattr keeps hand-built Namespaces (and callers predating the Office
+    # gate) working; the production CLI always sets --office-pins explicitly.
+    office_pins_arg = getattr(args, "office_pins", None)
+    if office_pins_arg:
+        office_pins = load_office_pins(office_pins_arg)
+        pins_resolved = Path(office_pins_arg).expanduser().resolve(strict=True)
+        office_pins_sha256 = hashlib.sha256(pins_resolved.read_bytes()).hexdigest()
+
     return ReleasePolicy(
         apk=apk,
         expected_sha256=normalize_sha256(args.expected_sha256, "expected artifact"),
@@ -596,6 +773,8 @@ def policy_from_args(args: argparse.Namespace) -> ReleasePolicy:
         stage_label=validate_stage_label(args.stage_label),
         native_manifest=native_manifest,
         native_manifest_role=args.native_manifest_role,
+        office_pins=office_pins,
+        office_pins_sha256=office_pins_sha256,
         aapt2=Path(args.aapt2).expanduser() if args.aapt2 else None,
         apksigner=Path(args.apksigner).expanduser() if args.apksigner else None,
     )
@@ -1542,13 +1721,19 @@ def zip_data_offset(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> int:
     return info.header_offset + 30 + name_len + extra_len
 
 
-def native_facts(path: Path) -> Dict[str, Any]:
+def native_facts(
+    path: Path, office_pins: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     problems = []
     libraries = []
     total_debug = 0
     max_debug_section = 0
     debug_problem = False
     test_only_libraries = []
+    office_libraries = dict((office_pins or {}).get("libraries") or {})
+    office_waived: List[str] = []
+    office_drift: List[str] = []
+    official_libcxx_packaged = False
     with zipfile.ZipFile(str(path), "r") as archive:
         infos = archive.infolist()
         native_infos = [
@@ -1610,6 +1795,29 @@ def native_facts(path: Path) -> Dict[str, Any]:
                     }
                 )
             sha256 = hashlib.sha256(data).hexdigest()
+            if basename in office_libraries and sha256 != office_libraries[basename]:
+                office_drift.append(basename)
+                problems.append(
+                    {
+                        "id": "office.pin-drift",
+                        "message": "{} bytes hash {} do not match the pinned "
+                        "Office producer hash {}; the release must ship the "
+                        "exact producer library bytes".format(
+                            name, sha256, office_libraries[basename]),
+                    }
+                )
+            if (office_libraries and basename == OFFICE_LIBCXX_NAME
+                    and sha256 == (office_pins or {}).get(
+                        "libcxxPolicy", {}).get("officialSha256")):
+                official_libcxx_packaged = True
+                problems.append(
+                    {
+                        "id": "office.libcxx-official-packaged",
+                        "message": "{} matches the producer's official "
+                        "libc++_shared.so; Floe deliberately excludes that copy "
+                        "and ships its own pinned runtime".format(name),
+                    }
+                )
             try:
                 elf = elf_facts(data)
             except ElfError as exc:
@@ -1661,12 +1869,23 @@ def native_facts(path: Path) -> Dict[str, Any]:
                     }
                 )
             if not elf["buildId"]:
-                problems.append(
-                    {
-                        "id": "native.build-id",
-                        "message": "{} has no GNU build id".format(name),
-                    }
-                )
+                if (
+                    office_libraries
+                    and basename in office_libraries
+                    and sha256 == office_libraries[basename]
+                ):
+                    # The ONE bounded exception: a byte-exact pinned producer
+                    # library without a build-id note. Every other gate above
+                    # (stored, zip/ELF alignment, later debug/needed/test-only)
+                    # still applies to this library.
+                    office_waived.append(basename)
+                else:
+                    problems.append(
+                        {
+                            "id": "native.build-id",
+                            "message": "{} has no GNU build id".format(name),
+                        }
+                    )
             max_section_debug = max(elf["debugSections"].values() or [0])
             if (
                 elf["debugSectionBytes"] > MAX_DEBUG_TOTAL_BYTES
@@ -1744,6 +1963,33 @@ def native_facts(path: Path) -> Dict[str, Any]:
                         "message": "required native library {} is missing".format(required),
                     }
                 )
+        office_block: Optional[Dict[str, Any]] = None
+        if office_pins:
+            missing = sorted(set(office_libraries) - present)
+            for name in missing:
+                problems.append(
+                    {
+                        "id": "office.library-missing",
+                        "message": "pinned Office library {} is not packaged".format(name),
+                    }
+                )
+            office_block = {
+                "pinsSchema": office_pins.get("schema"),
+                "pinsProducerApkSha256": (office_pins.get("artifact") or {}).get("sha256"),
+                "pinsProducerSignerCertSha256": (
+                    office_pins.get("artifact") or {}).get("signerCertSha256"),
+                "pinsSourceRevision": (office_pins.get("source") or {}).get("revision"),
+                "pinsPayloadManifestSha256": (office_pins.get("payload") or {}).get(
+                    "manifestSha256"),
+                "pinnedLibraries": sorted(office_libraries),
+                "packagedCount": len(set(office_libraries) & present),
+                "missing": missing,
+                "pinDrift": sorted(set(office_drift)),
+                "buildIdWaived": sorted(set(office_waived)),
+                "officialLibcxxPackaged": official_libcxx_packaged,
+                "note": "the build-id requirement is waived only for byte-exact "
+                "pinned producer libraries; all other native gates unchanged",
+            }
     return {
         "abi": ANDROID_ABI,
         "libraries": libraries,
@@ -1752,6 +1998,7 @@ def native_facts(path: Path) -> Dict[str, Any]:
         "maxDebugSectionBytes": max_debug_section,
         "testOnlyLibraries": sorted(set(test_only_libraries)),
         "stripped": not debug_problem,
+        "office": office_block,
     }
 
 
@@ -2043,9 +2290,11 @@ def expected_runtime_package(package: str) -> Optional[str]:
 class ApkInspector:
     """Real read-only inspector; constructed only by the production CLI."""
 
-    def __init__(self, aapt2: Path, apksigner: Path):
+    def __init__(self, aapt2: Path, apksigner: Path,
+                 office_pins: Optional[Dict[str, Any]] = None):
         self.aapt2 = Path(aapt2)
         self.apksigner = Path(apksigner)
+        self.office_pins = office_pins
         self.versions = {
             "aapt2": tool_version([str(self.aapt2), "version"]),
             "apksigner": tool_version([str(self.apksigner), "version"]),
@@ -2058,7 +2307,7 @@ class ApkInspector:
             "badging": badging_facts(self.aapt2, apk),
             "signing": signing_facts(self.apksigner, apk),
             "dex": dex_facts(apk),
-            "native": native_facts(apk),
+            "native": native_facts(apk, self.office_pins),
             "toolVersions": dict(self.versions),
         }
         facts["runtimeChild"] = self._inspect_runtime_child(apk)
@@ -2628,6 +2877,33 @@ def evaluate(
         native_report["libraryBasis"] = "not-compared"
     native_report["runtimeEquivalenceVerified"] = False
 
+    office_limitations: List[str] = []
+    if policy.office_pins is not None:
+        office = native.get("office")
+        if not isinstance(office, dict):
+            _failure(
+                failures,
+                "office.facts-missing",
+                "office pins were supplied but the native facts carry no office "
+                "gate result; refusing to evaluate without the pinned-library "
+                "binding",
+            )
+        else:
+            native_report["officePinsFileSha256"] = policy.office_pins_sha256
+            office_limitations.append(
+                "Office pins gate active (pins file sha256 {}): the GNU build-id "
+                "requirement was waived only for byte-exact pinned producer "
+                "libraries ({}); stored, 16 KiB zip/ELF alignment, DT_NEEDED, "
+                "debug-section and test-only gates remained fully enforced, every "
+                "pinned library had to be packaged with its exact hash, and the "
+                "producer's official libc++_shared.so had to stay out of the APK. "
+                "Main confirms the pins file digest against the module authority."
+                .format(
+                    policy.office_pins_sha256,
+                    ", ".join(office.get("buildIdWaived", [])) or "none",
+                )
+            )
+
     if apk_sha256 != policy.expected_sha256:
         _failure(
             failures,
@@ -2778,8 +3054,11 @@ def evaluate(
             "retained.",
             "Main performs the actual stage/basic-usability acceptance; this "
             "toolkit does not claim G02 or first-release acceptance.",
+            "With --office-pins supplied, Main confirms the recorded pins file "
+            "sha256 matches the reviewed core/officeengine/payload-pins.json "
+            "authority at freeze time.",
         ],
-        "limitations": list(LIMITATIONS),
+        "limitations": list(LIMITATIONS) + office_limitations,
         "ok": not failures,
         "failures": failures,
     }
@@ -3233,7 +3512,7 @@ def build_inspector(policy: ReleasePolicy) -> ApkInspector:
     apksigner = find_sdk_tool(
         "apksigner", str(policy.apksigner) if policy.apksigner else None, "--apksigner"
     )
-    return ApkInspector(aapt2, apksigner)
+    return ApkInspector(aapt2, apksigner, policy.office_pins)
 
 
 def prepare_release(
@@ -3416,6 +3695,13 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         default="canonical",
         help="canonical compares hashes and reports derived differences; derived "
         "requires exact staged hashes",
+    )
+    parser.add_argument(
+        "--office-pins",
+        help="existing core/officeengine/payload-pins.json; enables the exact "
+        "Office producer-library gate (hash pinning, packaging presence, "
+        "official-libc++ exclusion, bounded build-id waiver). Without it every "
+        "library must still carry a GNU build id.",
     )
 
 

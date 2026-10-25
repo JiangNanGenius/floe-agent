@@ -169,6 +169,27 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     var destination by remember(owner) { mutableStateOf("") }
     var operationError by remember(owner) { mutableStateOf<String?>(null) }
     var busy by remember(owner) { mutableStateOf(false) }
+    val office = (context as? FloeApplication)?.officePreviews
+    fun openOffice(path: String): Boolean {
+        if (!com.floe.android.host.OfficePreviewController.supports(path)) return false
+        val epoch = host.nativeRootEpoch()
+        if (office == null || epoch == null || epoch <= 0 || !bound.isCurrent()) {
+            office?.reportSourceUnavailable()
+            return true
+        }
+        val generation = host.commandClient.generation()
+        val sourceOwner = com.floe.android.host.WorkspaceOfficeSnapshotStager.Owner(
+            bound.client.taskID, bound.client.workspaceID, epoch, generation)
+        office.openWorkspace(sourceOwner, path) {
+            // After the explicit click, the request belongs to the service,
+            // not this pane's composition. Native egress revalidates its exact
+            // workspace authority; rotation must not retire an input read.
+            host.nativeRootEpoch() == epoch && host.commandClient.generation() == generation &&
+                host.conversations.entryFor(sourceOwner.taskID)?.isTemporary == false
+        }
+        return true
+    }
+    fun openFile(path: String) { if (!openOffice(path)) presenter.openFile(path) }
     Column(Modifier.fillMaxSize()) {
         // One header row: title + New (+) + More (…) + close. The six REAL
         // actions are unchanged and simply regroup the way the iPad files
@@ -215,6 +236,7 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
             presenter,
             onBack = onDismiss,
             modifier = Modifier.weight(1f),
+            onOpenDocument = ::openOffice,
             bottomAccessory = IdeBottomAccessory(
                 id = "terminal",
                 label = stringResource(R.string.inspector_terminal),
@@ -271,13 +293,13 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
         )
     }
     WorkspaceRecoveryPanel(host, bound.client, recoveryVisible, onDismiss = { recoveryVisible = false },
-        onOpenFile = { presenter.openFile(it) }, onTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() })
+        onOpenFile = ::openFile, onTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() })
     FloeActionSheet(visible = networkVisible, onDismiss = { networkVisible = false }, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
             WorkspaceNetworkPanel(
                 host = host, taskID = bound.client.taskID, workspaceID = bound.client.workspaceID,
                 isOwnerCurrent = bound.isCurrent,
-                onOpenWorkspaceFile = { path -> presenter.openFile(path); networkVisible = false },
+                onOpenWorkspaceFile = { path -> openFile(path); networkVisible = false },
                 onWorkspaceTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() },
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -286,7 +308,7 @@ internal fun WorkspaceFilesPane(host: RuntimeHost?, taskID: String?, title: Stri
     FloeActionSheet(visible = sourcesVisible, onDismiss = { sourcesVisible = false }, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
             WorkspaceSourcePanel(sourceLane,
-                onOpenWorkspaceFile = { path -> presenter.openFile(path); sourcesVisible = false },
+                onOpenWorkspaceFile = { path -> openFile(path); sourcesVisible = false },
                 onWorkspaceTreeChanged = { bound.ide.refreshWorkspace(); presenter.refreshTreeKeepingExpansion() },
                 modifier = Modifier.fillMaxWidth())
         }

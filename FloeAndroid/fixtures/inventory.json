@@ -779,5 +779,36 @@
   "fixtureVersion": "g02.2026-10-19.1",
   "previousArtifact": "floe-android-g01-synthetic-fixtures",
   "previousFixtureCount": 26,
-  "schemaVersion": 1
+  "schemaVersion": 1,
+  "officePreviewAdditive": {
+    "schema": "floe-office-preview-fixtures/1",
+    "baselineEntryCount": 33,
+    "note": "G05-R1 render fixtures/support; unchanged original baseline entries and operation IDs. The old parser PPTX remains intact.",
+    "files": [
+      {
+        "path": "office/docx/blank-preview.docx",
+        "bytes": 915,
+        "sha256": "fb0e0270a2064a3acf2999adf0434c4a99ef0b9c8c1344dbe66d21ad01df0b7d",
+        "kind": "render-fixture"
+      },
+      {
+        "path": "office/pptx/two-slides-preview.pptx",
+        "bytes": 20965,
+        "sha256": "a5b5c524ae40bc10ebd6ed54785508589cf285c2ec406bc95ebe718db3c6a7a0",
+        "kind": "render-fixture"
+      },
+      {
+        "path": "office/pptx/generate_two_slides_preview.py",
+        "bytes": 21307,
+        "sha256": "49092de68b05fe47f95f5f29847083df9bf271044675bf47b1664ccb33a21bc8",
+        "kind": "fixture-source"
+      },
+      {
+        "path": "office/pptx/README.md",
+        "bytes": 634,
+        "sha256": "6ffcd81c31a3aa3f49b3349bfadf74b3e2d12c87f2778cd3f54307891ea67a0d",
+        "kind": "fixture-source"
+      }
+    ]
+  }
 }

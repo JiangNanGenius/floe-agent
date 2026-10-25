@@ -18,7 +18,13 @@ cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks ar
 complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
 has been pushed and independently read back. G04-R2 adds representative App
 integration and is now closed for its representative Alpha11 stage (build 13).
-The next goal is G05-R1: native Office integration and offline document preview.
+G05-R1 now has a signed Alpha12 candidate with embedded Office. Offline DOCX,
+XLSX and an explicit-geometry two-slide PPTX were visibly rendered in the reused
+Android 37 / 16 KiB tablet emulator without a configured model or Linux preview
+fallback. Normal-close process/result handling is still being repaired; Alpha12
+has not been released. G05-R2 prioritizes basic manual editing and save/reopen
+before AI editing or advanced layout. These are staged requirements, not claims
+that editing or reliable saving is already available.
 Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no

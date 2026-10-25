@@ -476,6 +476,32 @@ def check_inventory():
         if sha256(data) != e["sha256"]:
             fail("SHA-256 mismatch: %s" % e["path"])
     _inventory_paths = set(paths)
+    # The original baseline count/digests stay frozen. G05 render samples
+    # are an explicit, separately checked additive set, not hidden extras.
+    additive = inv.get("officePreviewAdditive", {})
+    additive_names = {
+        "office/docx/blank-preview.docx", "office/pptx/two-slides-preview.pptx",
+        "office/pptx/generate_two_slides_preview.py", "office/pptx/README.md",
+    }
+    if additive:
+        if additive.get("schema") != "floe-office-preview-fixtures/1" or additive.get("baselineEntryCount") != 33:
+            fail("Office preview additive fixture schema/baseline mismatch")
+        extra_entries = additive.get("files", [])
+        extra_paths = [e.get("path") for e in extra_entries]
+        if len(extra_paths) != len(additive_names) or set(extra_paths) != additive_names or paths & additive_names:
+            fail("Office preview additive fixture set mismatch")
+        for e in extra_entries:
+            name = e.get("path")
+            if name not in additive_names:
+                continue
+            fixture = FIXDIR / name
+            if not fixture.is_file() or fixture.is_symlink():
+                fail("Office preview additive file missing/linked: %s" % name)
+                continue
+            body = fixture.read_bytes()
+            if len(body) != e.get("bytes") or sha256(body) != e.get("sha256"):
+                fail("Office preview additive file digest mismatch: %s" % name)
+            paths.add(name)
     # no unrecorded extra files (excluding generator/README/inventory/pyc)
     for p in FIXDIR.rglob("*"):
         if p.is_file():

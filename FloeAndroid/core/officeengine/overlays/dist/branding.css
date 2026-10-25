@@ -1,0 +1,98 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * Floe neutral branding overlay (self-authored, 2026-10-26).
+ *
+ * Replaces the producer's unpublished --with-app-branding branding.css.
+ * No upstream branding code, logo artwork, remote URLs or proprietary
+ * assets are copied. The variables are functional theme hooks used by the
+ * shipped frontend; values match the accepted core/designsystem Floe light/dark tokens.
+ *
+ * Copyright 2026 the Floe project contributors.
+ */
+
+:root {
+  --co-primary-color: #0081f6;
+  --co-secondary-color: #0071d9;
+  --co-color-main-text: #000000;
+  --co-color-background-hover: #f2f2f7;
+  --co-color-background-dark: #e6eaee;
+  --co-color-background-light: #f6f6f7;
+  --co-color-border-dark: #c6c6c8;
+  --co-color-text-lighter: rgba(60, 60, 67, 0.6);
+  --co-text-accent: #0081f6;
+  --co-primary-element: #0081f6;
+  --co-primary-element-light: rgba(0, 129, 246, 0.09);
+  --co-primary-elment-rgb: 0, 129, 246;
+  --co-primary-text: #ffffff;
+  --co-border-radius: 4px;
+  --co-color-warning: #a86b12;
+  --co-body-bg: #ffffff;
+  --co-color-main-background-translucent: transparent;
+
+  --color-primary: #0081f6;
+  --color-primary-dark: #0071d9;
+  --color-primary-darker: #0064c1;
+  --color-primary-lighter: rgba(0, 129, 246, 0.14);
+
+  --settings-background-hover: #f2f2f7;
+  --settings-border: #c6c6c8;
+}
+
+[data-theme="dark"] {
+  --co-primary-color: #0a84ff;
+  --co-secondary-color: #409cff;
+  --co-color-main-text: #ffffff;
+  --co-color-background-hover: #2c2c2e;
+  --co-color-background-dark: #000000;
+  --co-color-background-light: #2c2c2e;
+  --co-color-border-dark: rgba(84, 84, 88, 0.4);
+  --co-color-text-lighter: rgba(235, 235, 245, 0.7);
+  --co-text-accent: #0a84ff;
+  --co-primary-element: #0a84ff;
+  --co-primary-element-light: rgba(10, 132, 255, 0.09);
+  --co-primary-elment-rgb: 10, 132, 255;
+  --co-primary-text: #ffffff;
+  --co-color-warning: #e0b35a;
+  --co-body-bg: #000000;
+  --co-color-main-background-translucent: transparent;
+
+  --color-primary: #0a84ff;
+  --color-primary-dark: #409cff;
+  --color-primary-darker: #ffffff;
+  --color-primary-lighter: rgba(10, 132, 255, 0.09);
+
+  --settings-background-hover: #2c2c2e;
+  --settings-border: rgba(84, 84, 88, 0.4);
+}
+
+/* No producer logo or brand artwork is presented. The document-type icon
+ * supplied by the open-source frontend remains the only header glyph. */
+#toolbar-logo,
+#product-logo,
+#integrator-logo,
+#about-dialog-logos,
+#lokit-extra {
+  display: none !important;
+}
+
+#toolbar-logo {
+  width: 0 !important;
+  min-width: 0 !important;
+}
+
+.logo {
+  background-image: none !important;
+}
+
+#document-header > a.document-logo {
+  background-image: var(--doc-icon-url) !important;
+  background-repeat: no-repeat !important;
+  background-position: center !important;
+  background-size: 16px 16px !important;
+}
+
+/* The upstream backstage header normally carries a producer wordmark.
+ * Hide it if a desktop-style backstage is ever shown in this build. */
+.backstage-header-title::before {
+  background-image: none !important;
+  display: none !important;
+}

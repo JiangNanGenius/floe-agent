@@ -42,6 +42,8 @@ import kotlinx.coroutines.isActive
  *  * onTerminate is never used as a shutdown/cleanup signal.
  */
 class FloeApplication : Application() {
+    internal lateinit var officePreviews: com.floe.android.host.OfficePreviewController
+        private set
     lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
         private set
     private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
@@ -104,6 +106,12 @@ class FloeApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The native Office module owns its own service and engine in this
+        // same-UID process. Starting another credential/store/Core owner here
+        // would duplicate the main process's lifecycle and database writers.
+        // Its standalone components must not access main-host lateinit state.
+        if (Application.getProcessName() == "$packageName:floe_office") return
+        officePreviews = com.floe.android.host.OfficePreviewController(this, hostScope)
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
         workspaceSources = com.floe.android.host.WorkspaceSourcePump(this, hostScope) {

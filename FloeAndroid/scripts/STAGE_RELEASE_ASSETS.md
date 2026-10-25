@@ -257,3 +257,91 @@ The unsigned artifact must fail signature and native-debug/test-library
 checks. The debug artifact must fail debuggable/debug-certificate checks. A
 real formally signed APK check and the actual download/hash/coverage-upgrade
 steps remain Main gates.
+
+## 10. Office-generation releases (pinned Office engine)
+
+A release that embeds the pinned Collabora Office producer payload adds two
+things to the above flow: the exact Office native gate and the Office
+corresponding-source group. Both stay read-only/offline like the rest of this
+runbook; builds, signing, publication and device acceptance remain Main's.
+
+### 10.1 Native gate: `--office-pins`
+
+The producer ships fourteen prebuilt arm64 libraries; twelve of them carry no
+GNU build-id note, which the generic `native.build-id` gate (correctly)
+refuses. `prepare-stage-release.py check|prepare` accepts
+`--office-pins /path/to/core/officeengine/payload-pins.json` as the ONE
+bounded exception:
+
+- the waiver applies only to libraries whose packaged bytes hash exactly to a
+  pins `libraries` entry; every other gate (stored, 16 KiB zip/ELF alignment,
+  `DT_NEEDED`, debug sections, test-only) stays enforced on them;
+- a pinned library missing from the APK, a hash drifting from its pin, or the
+  producer's official `libc++_shared.so` appearing in the APK are hard
+  failures (`office.library-missing`, `office.pin-drift`,
+  `office.libcxx-official-packaged`);
+- the report records the pins-file digest, every waived library and the
+  producer identity copied from the pins; without `--office-pins` behaviour
+  is exactly as before.
+
+```sh
+python3 FloeAndroid/scripts/prepare-stage-release.py check \
+  ...same arguments as section 2... \
+  --office-pins FloeAndroid/core/officeengine/payload-pins.json
+```
+
+Main confirms the recorded pins digest against the reviewed module authority
+at freeze time.
+
+### 10.2 Single combined public corresponding-source asset
+
+The publication chain for one release is:
+
+1. `produce-corresponding-source.py produce` — Linux-runtime offer bound to
+   the final freeze commit (unchanged, proven v1.1.1);
+2. the frozen private `assemble-android-corresponding-source.py` (G04 c06) —
+   Linux + Sora editor combined generation, same final commit/APK binding;
+3. `produce-office-corresponding-source.py produce` — adds the Office engine
+   group to that combined generation **without repacking it**: the Linux/IDE
+   archive/MANIFEST/SHA256SUMS are embedded byte-exact under `linux-ide/`,
+   and `office/` carries the frozen module's host/JNI sources (upstream
+   notices preserved), overlays plus their 142-entry binding manifest, the
+   public producer manifest and payload pins (14 library hashes, the
+   official-libc++ exclusion), the staging recipe, and the bilingual notices
+   with the public-safe source index. `payload-pins.json` and
+   `tools/README.md` travel as deterministic sanitized renderings (host-local
+   staging/toolchain references dropped; every pinned value byte-preserved;
+   input digests recorded in MANIFEST.json). Output: one
+   `floe-android-corresponding-source-<version>.tar.gz` + MANIFEST.json +
+   SHA256SUMS.
+
+```sh
+python3 FloeAndroid/scripts/produce-office-corresponding-source.py check \
+  --combined-ccs-dir /path/to/combined-source \
+  --office-source-dir FloeAndroid/core/officeengine \
+  --release-version <version> --source-commit <final freeze commit> \
+  --source-repository OWNER/REPO \
+  --apk-name Floe-Android-<version>-full-arm64-v8a.apk \
+  --apk-sha256 <final signed APK sha256>
+# then the same command with produce --out /path/to/office-source
+```
+
+Fail-closed bindings include the pinned upstream revision/producer APK/signer
+constants, the manifest↔pins↔overlays↔overlay-files↔notice-index cross-hashes
+(the index's own digest is bound through its overlay add entry, never
+self-embedded), the exact overlay file-set equality, the release tag/archive
+URL binding (`android/v<version>` must match this run), MPL notice retention,
+the credential/private-path deny scans, and the deterministic archive. The
+producer binding stays the publisher's build-id/commit mechanism: no
+reproducible-build or third-party attestation is claimed, and proving the
+shipped APK carries these bytes stays section 2's `check` with
+`--office-pins` plus Main's readback.
+
+`check-apk.py` needs no Office change: it carries no build-id requirement.
+
+Office-generation tests (synthetic, offline, no device/APK):
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v \
+  FloeAndroid/scripts/tests/test_office_release_source.py
+```

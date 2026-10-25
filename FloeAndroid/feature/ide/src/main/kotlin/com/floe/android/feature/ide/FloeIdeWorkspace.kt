@@ -68,6 +68,9 @@ public fun rememberIdePresenter(host: IdeHost): IdePresenter {
  *
  * [isTemporarySession] keeps the temporary-chat file ceiling: no tree, no
  * open, no save — an honest unavailable explanation instead of samples.
+ * [onOpenDocument] lets the App route supported binary documents to its
+ * owned native viewer before the text editor attempts UTF-8 decoding. True
+ * means the host accepted the request, not that rendering has succeeded.
  */
 @Composable
 public fun FloeIdeWorkspace(
@@ -76,6 +79,7 @@ public fun FloeIdeWorkspace(
     modifier: Modifier = Modifier,
     bottomAccessory: IdeBottomAccessory? = null,
     isTemporarySession: Boolean = false,
+    onOpenDocument: ((String) -> Boolean)? = null,
 ) {
     val state by presenter.state.collectAsState()
     BackHandler(onBack = onBack)
@@ -98,8 +102,14 @@ public fun FloeIdeWorkspace(
                     state = state.tree,
                     onQuery = presenter::setTreeSearchQuery,
                     onToggle = presenter::toggleTreeExpansion,
-                    onOpenFile = { path -> presenter.openFile(path) },
-                    onOpenHit = { hit -> presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH) },
+                    onOpenFile = { path ->
+                        if (onOpenDocument?.invoke(path) != true) presenter.openFile(path)
+                    },
+                    onOpenHit = { hit ->
+                        if (onOpenDocument?.invoke(hit.relativePath) != true) {
+                            presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH)
+                        }
+                    },
                     onRefresh = presenter::refreshTreeKeepingExpansion,
                     modifier = Modifier.width(FloeLayout.SidebarIdealWidth).fillMaxSize(),
                 )
@@ -130,11 +140,13 @@ public fun FloeIdeWorkspace(
                     onToggle = presenter::toggleTreeExpansion,
                     onOpenFile = { path ->
                         compactTreeOpen = false
-                        presenter.openFile(path)
+                        if (onOpenDocument?.invoke(path) != true) presenter.openFile(path)
                     },
                     onOpenHit = { hit ->
                         compactTreeOpen = false
-                        presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH)
+                        if (onOpenDocument?.invoke(hit.relativePath) != true) {
+                            presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH)
+                        }
                     },
                     onRefresh = presenter::refreshTreeKeepingExpansion,
                     modifier = Modifier.fillMaxSize(),

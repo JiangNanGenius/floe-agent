@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="office_viewer_back_cd">Close document</string>
+    <string name="office_viewer_readonly_cd">Read-only preview</string>
+    <string name="office_viewer_opening">Opening document…</string>
+    <string name="office_viewer_failed_title">Couldn\'t open this document</string>
+    <string name="office_notice_save_unavailable">Preview only — saving and export aren\'t available yet.</string>
+    <string name="office_notice_readonly_only">This document is open in preview; editing isn\'t available yet.</string>
+    <string name="office_notice_link_blocked">Opening links from the document isn\'t available in preview.</string>
+    <string name="office_notice_macro_blocked">Macros are not run in preview.</string>
+    <string name="office_notice_transport_failed">The document preview was interrupted and will close.</string>
+    <string name="office_notice_load_error">The document could not be loaded.</string>
+    <string name="office_notice_internal_error">Something went wrong in the document view.</string>
+    <string name="office_fail_missing">The document file is missing or unreadable.</string>
+    <string name="office_fail_mismatch">The document could not be verified. Please open it again.</string>
+    <string name="office_fail_format">This file format isn\'t supported in preview yet.</string>
+    <string name="office_fail_prepare">Document preview could not finish preparing. Please try again.</string>
+    <string name="office_fail_native">Document preview is not available on this device.</string>
+    <string name="office_fail_busy">Another document is open. Close it before opening this one.</string>
+    <string name="office_fail_isolation">The document view couldn\'t start safely.</string>
+    <string name="office_fail_load">The document failed to load.</string>
+    <string name="office_fail_transport">The document preview was interrupted.</string>
+    <string name="office_fail_route">This action isn\'t available in preview yet.</string>
+    <string name="office_fail_cancelled">The document preview was cancelled.</string>
+    <string name="office_fail_process_lost">The document preview stopped unexpectedly.</string>
+    <string name="office_fail_internal">Something went wrong opening the document.</string>
+    <string name="office_viewer_preview_info">This is a local, read-only preview. The original document is kept unchanged.</string>
+    <string name="office_viewer_done">Done</string>
+    <string name="office_viewer_notices">Open-source notices</string>
+    <string name="office_notices_link_unavailable">This link could not be opened. Please use a browser to access the source URL shown on this page.</string>
+    <string name="office_notices_back">Back</string>
+    <string name="office_notice_awaiting_render">The preview is taking longer to display. Please wait a moment.</string>
+</resources>

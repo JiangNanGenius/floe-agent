@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  G05-R1 embedded Office engine module manifest.
+
+  Everything here except the host-owner anchor service below runs in the
+  dedicated `:floe_office` process (same UID = lifecycle/crash segregation,
+  NOT a security sandbox). Nothing is exported:
+  the viewer Activity is launchable only by explicit Intent from this same
+  application, and only with a trusted staged-file request produced by the
+  App-side stager (Main-owned). No new permissions are requested: the engine
+  reads only App-owned staged snapshots via the existing filesystem identity.
+
+  WebView data-directory ownership (Android >=28 requirement): the engine
+  process initialises its own WebView data directory BEFORE any WebView class
+  is touched in that process, through the library-owned ContentProvider below
+  (installed exactly in the :floe_office process, first, and idempotent). The
+  default process (Floe browser WebViews) is never affected and no WebView
+  state is deleted or reset.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <provider
+            android:name="com.floe.android.core.officeengine.OfficeWebViewDirectoryProvider"
+            android:authorities="${applicationId}.floe-office-webview-directory"
+            android:exported="false"
+            android:process=":floe_office" />
+
+        <activity
+            android:name="com.floe.android.core.officeengine.OfficePreviewActivity"
+            android:exported="false"
+            android:process=":floe_office"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name="com.floe.android.core.officeengine.OfficeNoticesActivity"
+            android:exported="false"
+            android:process=":floe_office"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+        <service
+            android:name="com.floe.android.core.officeengine.OfficeEngineService"
+            android:exported="false"
+            android:process=":floe_office" />
+
+        <!--
+          Host owner anchor, intentionally in the DEFAULT (main app) process:
+          no android:process attribute. Bound-only by the foreground
+          OfficePreviewActivity (BIND_AUTO_CREATE | BIND_ADJUST_WITH_ACTIVITY)
+          so the cached freezer keeps the App process — owner of the close
+          capability — available for the exact user close while Office is
+          visible. Inert Binder only; never exported; no new permission.
+        -->
+        <service
+            android:name="com.floe.android.core.officeengine.OfficeHostOwnerService"
+            android:exported="false" />
+
+    </application>
+
+</manifest>

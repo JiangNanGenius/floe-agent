@@ -1,0 +1,58 @@
+{
+  "schema": "floe-office-payload-pins/1",
+  "recorded": "2026-10-26",
+  "source": {
+    "repository": "https://gerrit.collaboraoffice.com/online",
+    "branch": "Collabora Online 26.04 mobile release line",
+    "revision": "2333344185931274f9c49d6c12a408cefcef6844",
+    "apkVersion": "26.04.4.2",
+    "apkCode": 937,
+    "embeddedBuildId": "2333344185",
+    "bindingLimit": "APK embedded buildid prefix matches the mobile release source revision; no producer attestation or reproducible-build claim."
+  },
+  "artifact": {
+    "url": "https://www.collaboraoffice.com/downloads/fdroid/repo/collabora-office-mobile-26.04.4.2-937-release-arm64-v8a-2026-10-05.apk",
+    "sha256": "79e72f810d711706d205a9ff457b4bb830c607a2b988cf44246829ec4593c393",
+    "signerCertSha256": "573258c84e149b5f4d9299e7434b2b69a8410372921d4ae586ba91ec767892cc",
+    "signature": "apksigner v2/v3 verified by Main preflight against the certificate published on the official download page; the official F-Droid index JAR signature is NOT accepted as proof because Java 21 treats its weak algorithm as unsigned (documented limitation)."
+  },
+  "payload": {
+    "manifestFile": "producer-manifest.json",
+    "manifestSha256": "3ed475c63ff48d58bf957f42ac32a4871fed815dc6c596e504a91e9a424d7020",
+    "files": 5291,
+    "selectedBytes": 305107165,
+    "nativeLibraries": 15,
+    "arm64And16KiBAligned": true,
+    "consumedSelection": "5276 asset files + 14 selected native libraries (5290 files, 303732829 bytes). The manifest's 15th library libc++_shared.so is deliberately not consumed; the Gradle verify task hashes every consumed file at the first/changed-input boundary against this pinned manifest digest."
+  },
+  "libcxxPolicy": {
+    "packaged": false,
+    "officialSha256": "c4c2fe5cbcb1fba0003a31fc7ab29a9bb12df6cc187ec45a806462540e83d93b",
+    "appOwnSha256": "b5d97c38a728afe28d341cda3369f512d35eaf9c680c1b0563cd6a63e395230f",
+    "evidence": "The existing Floe libc++ exports all 257 strong C++ symbol names imported by the producer. Representative offline DOCX/XLSX/PPTX rendering was subsequently observed in the release candidate on Android37/16KiB. This is not a general ABI or device-matrix guarantee; no pickFirst or replacement of the existing runtime copy.",
+    "failClosed": "The Gradle staging task refuses packaging if libc++_shared.so appears among the selected libraries."
+  },
+  "libraries": {
+    "libandroidapp.so": "dbc2a5b77601081817ecf4e31415f681fcf58181ab09ce71e2db62ff56d93467",
+    "libfreebl3.so": "86ae5a23b15ed7e7b45295c98827c05dfbe73bf5837914261ae57e9fd32199af",
+    "liblo-native-code.so": "944c97e9a0d23d7842ca61458a6c3b27b2f3e51fad0f51ddf7a96627705c2035",
+    "libnspr4.so": "d7558bc7e2936f51a795791003057a6ff8725de8793c93ccb62f4a3e9bdca770",
+    "libnss3.so": "0c03b4043514d998511a06d329e926ae1ee6d4b27a871f2a9235d7c5335d5c51",
+    "libnssckbi.so": "1e2d9c8c885b3b452217b9a733005d267f702d3aa75108650519038f83fa5cb0",
+    "libnssdbm3.so": "9fcf413c039fd8b99d53e0b5ad30dbf07cec49d4348adcc61fac6e173a4afeda",
+    "libnssutil3.so": "0510a4524ee1f3e0cabccc9b69d20963e6ee1ac3d15dd39b6d374eaed0ce3152",
+    "libplc4.so": "29cc78557f2c9bdaf6a0b929aa2d22fa3d424e8def89fbaa939fef8eb8720eba",
+    "libplds4.so": "19bf0a603ef41dcb5b04fa19f9f37fd78bdef28b3cb8b1b65808f93cbbf4f067",
+    "libsmime3.so": "7c00d141172504bff1c2d3fd808f5ffa8dd50648c59ffc9388978da0d0994a37",
+    "libsoftokn3.so": "58e236ec989b12d823e8577cea743a63b9b05e3094fe8dde0758f9e830fd855e",
+    "libsqlite3.so": "06883c87fd2ccb25a357d31b166ab76657e64ab7dbc7e65e454f9d7a50bfe8d5",
+    "libssl3.so": "085c7d200407d2b93493bb125c4dabeee9956ad5b4536708acd233ad09fb534c"
+  },
+  "anchorAssets": {
+    "dist/cool.html": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
+    "license.html": "97ef2ae8cad32deeb053db278c714b71cdab7f43a0c88d8b0e76fd516744a87d",
+    "notice.txt": "68421bcdfed13d444be60c23baea19c6fbd7dc5a45bd8522c924e17eff3e1903",
+    "program/fundamentalrc": "183cdc179ee0bbd44c4f5cd89167140ae03dd35758e08a4cb24883d3e3826bd7",
+    "unpack/etc/fonts/fonts.conf": "1c3a08fb78f051968a86b5574d1b46156882d5e21cf980a9344f42228c8edbf1"
+  }
+}

@@ -1,0 +1,1038 @@
+{
+  "schema": 1,
+  "producerSource": "2333344185931274f9c49d6c12a408cefcef6844",
+  "entries": [
+    {
+      "operation": "add",
+      "destination": "share/registry/floe-preview-policy.xcd",
+      "source": "share/registry/floe-preview-policy.xcd",
+      "sha256": "a0584ae44dfb199475f839011ca19b4c4f422b6aa6730478eace1c7a212c6906",
+      "originalSha256": null,
+      "reason": "Read-only preview native policy in real loaded xcsxcu layer; exact dependency order main/calc/writer"
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/checkbox-off-disabled.svg",
+      "originalSha256": "33073bd85a2fa455bd698dfb7e6bbdfdd9243632e90135360938e4f4a60ba662",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/checkbox-off.svg",
+      "originalSha256": "5ee8d8ff305efd70d1f5cd774247a072e87bfbddfff3d405959eebc270906896",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/checkbox-on-disabled.svg",
+      "originalSha256": "8f5075b82b6663565f360ef62b48fb092adc383c291d1700a5a6d30ccd8b2dd2",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/checkbox-on.svg",
+      "originalSha256": "8350b06c826c6db581fb0fa5d4de53d48660eeaf99176d9f82006e1cabc038dc",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/close-widget-dark.svg",
+      "originalSha256": "be9103ecb0b040698b13fb9bd8cea3d1198c8883443b9a0ce7e10057a7bf191e",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/close-widget-hover.svg",
+      "originalSha256": "1ffd5fc63443703dc0c5e13d075c4cccb697801442e8bd8e40d346e8d2dbebaf",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/close-widget.svg",
+      "originalSha256": "17448a2e2b6f7d8d61a65fb9ba04543360ff4543c3a1cfd62d093159423bc8cc",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/closedoc-dark_branding.svg",
+      "originalSha256": "33c2b2576cdda0484f41c579d21fb7f0daa608755e130836db1667bd32594b21",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/compact_open-local-editor-dark.svg",
+      "originalSha256": "ced4574408f1858083d8180196f0ff2041ccace34caa8056543612408ece2376",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/compact_open-local-editor.svg",
+      "originalSha256": "09981da2a60f8866f5989a709140ef442091e0b223932d431dae029162150d4b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/compact_setborderstyle_branding.svg",
+      "originalSha256": "a4fdb3cb47ca0809bebf752b6edc2d98b678a1c3e07493bf05e6219d3694b899",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/edit_branding.svg",
+      "originalSha256": "7531b671d186d62477d8701b0b8a3be50e3c9aee9fa7beb49f920057211b8f0b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/fit-cell_branding.svg",
+      "originalSha256": "27442e5ee98256768c69ffedd85212a0336a4166ee43c8432b17556b4ac1bd43",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/full-logo-white.svg",
+      "originalSha256": "ebb66e037f0d2c422bf434439967d01f53571a619cdf6e59dcea717bf309de8e",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/full-logo.svg",
+      "originalSha256": "ae1dd284e47b9404d9668f582d83d4fdaa2cf94fa16b90d19202aa82b6f140f6",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/indentation_marker_down_branding.svg",
+      "originalSha256": "9e1e2bc762a3d12019507fa753cb77e70c2d62fae1ff554b4085ef31207a388d",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/indentation_marker_up_branding.svg",
+      "originalSha256": "fbc773eaf497ec89a205b3cab39ab176d495ade18c343b589c2e98dc005b3e7e",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/ios_handle_end.svg",
+      "originalSha256": "40224399ad8fb90297549e55984401a01a7dd14997f3c65da72f0c780d637e6b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/ios_handle_start.svg",
+      "originalSha256": "1167e4acd6cefc675f8e0c0ef4fa24a73faae50d72b783bda7988f2c489bd779",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_autosum_branding.svg",
+      "originalSha256": "f4880401c788ba6ee4476822d7472985fefcd2bf86178e1c3d9b73f12a581b17",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_closedocmobile_branding.svg",
+      "originalSha256": "5338390a8b40316ec18bf1d6f13f889889980738bda3b394ba766fca4dca6808",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_deletepage_branding.svg",
+      "originalSha256": "97a3cda919374221066171d8e66f8b7f47fc14eae36291b52fddadf90f76f210",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_downpage_branding.svg",
+      "originalSha256": "62fbdf14628e40d869b21ea4915b340b6e920716ce557334f70736f2fbc77efb",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_duplicatepage_branding.svg",
+      "originalSha256": "23b68b222192b9916fc41a54f224f7b99ac85b52a28c488899ef8fd0affc6fec",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_ellipse_branding.svg",
+      "originalSha256": "7bc9a4c15ceb4922b7e54e1f39c0ffa5ff955db005116c85fffa6bce10ec5bdd",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_firstrecord_branding.svg",
+      "originalSha256": "b3241ff11e569785c6dcf463cee31156317ee8911f9656f238a56b7a1d2987fe",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_functiondialog_branding.svg",
+      "originalSha256": "647c3ec6926751a2a97511261ee8165aa3a09fdd07b8a7f24f4590c1cabd042c",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_inserthyperlink_branding.svg",
+      "originalSha256": "30445731b34a151fc386b329bccf48bc150a9b2852e96b4611a21c7d7f97bc68",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_insertpage_branding.svg",
+      "originalSha256": "8eacfaaf04f0f89fa9c2a9eb9f96488d325d7878695fdadcff58e4d6bd4d6917",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_menu_downloadas_pdf_branding.svg",
+      "originalSha256": "2ecee9bdba25065617763d130a30728f29721a4316ded076da9847ce3db77d5d",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_menu_fullscreen_branding.svg",
+      "originalSha256": "e6d12ce8bfba96b300d9d16b797bc05bc2fd0403b3ee5a84d2e47f7e4cfc51e0",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_menu_zoomreset_branding.svg",
+      "originalSha256": "c7d8be51ff4765b14ec5ed354e5d3e26622dae817699a1fb990aa88670e4d751",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_multipageview_branding.svg",
+      "originalSha256": "ea2f27e1e53cd074300b2b0c3b92855dd5653c73e44dccb53e1eda57651f5ab9",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_nextrecord_branding.svg",
+      "originalSha256": "28cc947ac84267ccf477b6d72d64f3e57a8c16e8cf92e046d14ac68966b03051",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_numberformatcurrency_branding.svg",
+      "originalSha256": "337eadc97f11829b8002735b68e4d5cdec819f6979e80cbb4f0ef23479d43a72",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_numberformatdecdecimals_branding.svg",
+      "originalSha256": "171a47e2e752a553708724322dcef2c1d63d47a9df35f70520662631fafa39af",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_numberformatdecimal_branding.svg",
+      "originalSha256": "3bb80e846bb81b87dfca1deb457881c1c8639eb890aa829d19f2a55dcea488bb",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_numberformatincdecimals_branding.svg",
+      "originalSha256": "0c96d248bcdec97235e17c4ad0235d9b5de263730e655a5d0b1205d49ee8ee83",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_numberformatpercent_branding.svg",
+      "originalSha256": "cf58e516db5a55aca867eeedd86e3f789e4268d79ed16fbcfb54312357900497",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_prevrecord_branding.svg",
+      "originalSha256": "b598e46edc5064c243757ac7bff898410fb3441c851777d6bfa854187a1ece6b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_save_branding.svg",
+      "originalSha256": "8acab0b6c907b6e86e58e3c388cef6e998145b4b508e6bbfef79ca20d238b01c",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_saved_branding.svg",
+      "originalSha256": "df4b9294ff0933cf55a2fdb12c95ee023ca90cbc54b65777cd03d4fe7f052390",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_savemodified_branding.svg",
+      "originalSha256": "5284cbad8e8f8a46fcbec3579662d44e884ef3fd7b97e9306f77d61b6af928d3",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_searchnext_branding.svg",
+      "originalSha256": "fb49ae311211a1be74cd2bb5ccd68e08b1679424aeb7700fcc35d5dda5593ce2",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_searchprev_branding.svg",
+      "originalSha256": "7dd756135ce4f071c0fa8d333eee9cf8dfca56a1250210697ab35a9726cd0936",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_setborderstyle_branding.svg",
+      "originalSha256": "51b7207ddf03de7bbab4ea5451e1699d52eea75c0d2c84ba25003058c4656927",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sheetlist_branding.svg",
+      "originalSha256": "5d2b0beaca55f521e3bdce98fd27f5f53901b078cf1ea8fccf95343ab2295853",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar-animation.svg",
+      "originalSha256": "2b1db4820244d57862583c260702119260431d1c885814f1cf62a526b4d22a52",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar-transition.svg",
+      "originalSha256": "ee9cbb7837905fbdd590b2b8852587cf94b5fa04788e8d75e01909d06b4b2789",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar_calc.svg",
+      "originalSha256": "bc7d22e8e9d4c2d174fcefbee9bc66594c35799e055f9eb71a8e829840dab148",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar_draw.svg",
+      "originalSha256": "fac993b2ecf1e33116e6ea875427a1607d9415d9427532d3b17dec8fcce9b8c4",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar_impress.svg",
+      "originalSha256": "624424b9c33bc67d7cb270e35c92f6fcddf6d505bc72ad84b370e371b7b07980",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar_masterslide.svg",
+      "originalSha256": "39f5058b5017e800684fd5357c1b901c97bfe2c24dc87a9b60a0c3a61b416da4",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_sidebar_writer.svg",
+      "originalSha256": "6b5002578ef1b60e57a10d4c19ed7bc16ebefeab408ffc405b323ed4e1e1ca24",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_stylepreviews-scrolldown_branding.svg",
+      "originalSha256": "be37a2e6732e0ba31dcbbcf31fe207a7f63413a44edc1e16505c8219a75c16fe",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_stylepreviews-scrollup_branding.svg",
+      "originalSha256": "ef7cc9fad8300b1fd60cf170fdcbc3ac21c5c61197fbc8cccc6536f1508f21b6",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/lc_uppage_branding.svg",
+      "originalSha256": "8a3317ebb61b7ac6380cad6aa60134d4f2dc5e20cf2353405ff19393636a891b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/open-local-editor.svg",
+      "originalSha256": "01d042b4b21987b756ea954e917ac6ec1aad9153174e09942b42008f845941a4",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/plus_branding.svg",
+      "originalSha256": "3a9b4d0c0e067d602d467f852a3b9b2c2b72d1f5d4b0da189035fa578bfc416a",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-off-dark.svg",
+      "originalSha256": "321c113ff33f7ed05d3c6e80498db1f4425fa0374861cf32f8cf5ef106b071f6",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-off-disabled-dark.svg",
+      "originalSha256": "a5b652740d51460732b6b1571f37cc81ebc71284032e110504e58d43e173801c",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-off-disabled.svg",
+      "originalSha256": "ce2bf490292fe9b81a85ad6b0e7ebd4857029b4bac1f0785713d6d3c13facbd4",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-off.svg",
+      "originalSha256": "4f54fd616d3f6c0a3bd9d9ed814f0cfbac4a00fbe3e53149d59489dd5f59dc96",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-on-dark.svg",
+      "originalSha256": "186d0862fa30de662ee5e01f8c788bd52a28f954552534011dcb07c23a947dcf",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-on-disabled-dark.svg",
+      "originalSha256": "0c251b417573da43698dadf923d0b6a9782a539c4cab05df7586637c18341986",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-on-disabled.svg",
+      "originalSha256": "b8ba02a8ee20561713d93bc6738e20162684e140cd0c4119db4e2f64303d794e",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/radio-on.svg",
+      "originalSha256": "8ca19725b9db184fd330b52a67530d7320e11906ae607841584d74f82e022276",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/scroll-double-white.svg",
+      "originalSha256": "84903b99bbaa84a8280c75192179fa925b37273fe1af6f3844718921614b2ef0",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/table-column-resize-marker-hover_branding.svg",
+      "originalSha256": "f5fcbe160467d37c0b8a51d973f9289774e5bc9edbd61b9ab07c1a3c05f3aea2",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/table-column-resize-marker_branding.svg",
+      "originalSha256": "324df27e71c8e52584b6a6e9a242dc4a3c760a6b78ea53e98e363623244d95a0",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/table-row-resize-marker-hover_branding.svg",
+      "originalSha256": "ec14f3b0c8e5bcd8277c7b5b60e52c8dd6a7a7aa017af59210b14121c8b94b99",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/table-row-resize-marker_branding.svg",
+      "originalSha256": "fdbfc1b09507c358932fe5d3391ef7284046276e21b18dbdb8f0494b74e8ddbc",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/text-path_branding.svg",
+      "originalSha256": "3237e3db2d766fbbb177118911f1c3d06ec3a6cb61643bac489b7ff1f347747e",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/toolbar-bg-logo-dark.svg",
+      "originalSha256": "4e7b37315e7e7569af517d837141211296e8dc2534d0924509c5f8c02c90e59c",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/toolbar-bg-logo-notebookbar.svg",
+      "originalSha256": "1c0bdaaa6ce328618994e1a9364b8bcb822715adfea22f9ab1e396ad1345619b",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/toolbar-bg-logo.svg",
+      "originalSha256": "9e0eda96c3b36287fdd70a88de5d3b450c783a2a7c94e93c72d242aa46770f1d",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/images/toolbar-bg.svg",
+      "originalSha256": "9e0eda96c3b36287fdd70a88de5d3b450c783a2a7c94e93c72d242aa46770f1d",
+      "reason": "Out-of-tree proprietary app-branding image: absent from the upstream browser/images tree at the pinned revision and supplied by the producer's unpublished app-branding directory (referenced by its branding CSS or copied by browser/Makefile.am). Removed so no All-Rights-Reserved brand artwork is redistributed after the neutral CSS replacement."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/branding-unsupported.css",
+      "originalSha256": "19b65040045f590b9b7e485d943e52adec92de68add624d94e2df63f6bc393ab",
+      "reason": "Unreferenced proprietary branding support file. No shipped HTML/JS/CSS references it after the neutral overlay; it is not needed for the mobile viewer."
+    },
+    {
+      "operation": "remove",
+      "destination": "dist/branding-unsupported.js",
+      "originalSha256": "a5eb6bfd4f842d86e0a40f9662094b4a7a5de241664163f66d4b83d886f1eb41",
+      "reason": "Unreferenced proprietary branding support file. No shipped HTML/JS/CSS references it after the neutral overlay; it is not needed for the mobile viewer."
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/branding.js",
+      "originalSha256": "695e5e399d84dadd1d9c67c0016d1388922f4ed7dcc75ca88420d7cb9ded8de8",
+      "reason": "Replace the All-Rights-Reserved branding script with two neutral globals only (no DOM handlers, timers, polling, remote fetches, or permissions).",
+      "source": "dist/branding.js",
+      "sha256": "c4e746551c497a67a7aeb734b412377d5ce49ad1c1f9ee47ca8fd5679e6201fd"
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/branding.css",
+      "originalSha256": "9cbfe7a2df470c3b70c868c69da20804ccf942bd2d0858ce87effbde7136a4e5",
+      "reason": "Replace the proprietary theme CSS and remove all remote/logo references with a neutral Floe palette and hidden producer logos.",
+      "source": "dist/branding.css",
+      "sha256": "671e67ddd407e6da2b50f842603040992ab7ad1873c677608cc9650654c7f0c4"
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/branding-mobile.css",
+      "originalSha256": "f7ffd35aac6b72d21801194784a59c9cd33afb212c5e9cfc311fd9d9ff223dd2",
+      "reason": "Replace proprietary mobile branding layout CSS with minimal neutral logo/size rules.",
+      "source": "dist/branding-mobile.css",
+      "sha256": "eb4893923ed95089b96d7bac7d98cd2eb1f168781407b7fb0e4c0263220fa31e"
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/branding-tablet.css",
+      "originalSha256": "683ba5994e26c51263fa7b3402998e6238688c88df824164c963b6c1678aa6fd",
+      "reason": "Replace proprietary tablet branding layout CSS with minimal neutral logo/size rules.",
+      "source": "dist/branding-tablet.css",
+      "sha256": "3bdb08fcae4f5ec0d45af11f54d8617ddf73b2cb4ab85645c1e8c5df25cc6f47"
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/branding-desktop.css",
+      "originalSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "reason": "Replace the empty producer branding file with a minimal neutral logo rule for completeness.",
+      "source": "dist/branding-desktop.css",
+      "sha256": "0e204f926abd44a7d0bcc180ecc3e3dc8d469e7e1d954b75ba1e50d67f238902"
+    },
+    {
+      "operation": "replace",
+      "destination": "dist/cool.html",
+      "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
+      "reason": "Change only the visible product name, vendor label and branding URL/theme placeholder values; retain the upstream MPL-2.0 notice and all behaviour.",
+      "source": "dist/cool.html",
+      "sha256": "6b419d62ca207d080defb3f32e0c09ad607d40017dc52a15e01b5028339c1f42"
+    },
+    {
+      "operation": "add",
+      "destination": "notices/index.html",
+      "originalSha256": null,
+      "reason": "Provide an explicitly opened, JavaScript-disabled notices/source entry with local license/notice links and immutable upstream source facts.",
+      "source": "notices/index.html",
+      "sha256": "837050517fe2e5a2eb016e737f00ea4608b36d7573aa1105726aaa52fbcf8f75"
+    },
+    {
+      "operation": "add",
+      "destination": "notices/source-index.json",
+      "originalSha256": null,
+      "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
+      "source": "notices/source-index.json",
+      "sha256": "1e3566c3180b2cffbbefd59b2d667734232d0fb02bcce0d67c192234c1443bd5"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/arrow-down.svg",
+      "source": "share/theme_definitions/online/arrow-down.svg",
+      "originalSha256": "c6a747152a99f6c59b2226fc552b0c92c30305f7895c8498b596e23dec2112aa",
+      "sha256": "d037134b2c4a97261c2b785bd49f6a44f5f3b1817fbb70288326384530fea618",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/arrow-up.svg",
+      "source": "share/theme_definitions/online/arrow-up.svg",
+      "originalSha256": "512e058c85c00c57fdd58a12c8dd7bdb75eb989df4d5f3b7b777f3d4fae0a2be",
+      "sha256": "a2817e61b77b9e7789269e18670a3ae3297892fcecb03df949870bd7923e0b22",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-off-disabled.svg",
+      "source": "share/theme_definitions/online/checkbox-off-disabled.svg",
+      "originalSha256": "33073bd85a2fa455bd698dfb7e6bbdfdd9243632e90135360938e4f4a60ba662",
+      "sha256": "249143843cc79fb9de141d8b71bb0a9b6611fe980c2a9f9abc19bf55aed7b49e",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-off-pressed.svg",
+      "source": "share/theme_definitions/online/checkbox-off-pressed.svg",
+      "originalSha256": "0543aa3ca03af0c3c343afd9987ddc0eb54a348a4d952c3251fad88f94ba79de",
+      "sha256": "17486301a2b8455fb189ea79cac08f8571f9809e55d78ddb96f7120cda9649fe",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-off.svg",
+      "source": "share/theme_definitions/online/checkbox-off.svg",
+      "originalSha256": "5ee8d8ff305efd70d1f5cd774247a072e87bfbddfff3d405959eebc270906896",
+      "sha256": "9b8882a07dcf810eb5ea931d066eb029117103eedaaa11579182d4c2666dd731",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-on-disabled.svg",
+      "source": "share/theme_definitions/online/checkbox-on-disabled.svg",
+      "originalSha256": "8f5075b82b6663565f360ef62b48fb092adc383c291d1700a5a6d30ccd8b2dd2",
+      "sha256": "43bcab3e615254f8dc859f86b9da135308f0c5961da4036210e1175c52e3616c",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-on-pressed.svg",
+      "source": "share/theme_definitions/online/checkbox-on-pressed.svg",
+      "originalSha256": "e9bbc7e39de7003ea153f75482c7644399ea8051fcd50e7493aa29400ee98f19",
+      "sha256": "c511ae83ec76ad4a113d88e4216103bacd48c86f7e09da4e2a1f16e83a360d61",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/checkbox-on.svg",
+      "source": "share/theme_definitions/online/checkbox-on.svg",
+      "originalSha256": "8350b06c826c6db581fb0fa5d4de53d48660eeaf99176d9f82006e1cabc038dc",
+      "sha256": "380c220796bf42a955e4130e624a7d7e76df8c2cfbb96776720bae0263baee79",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox-button-disabled.svg",
+      "source": "share/theme_definitions/online/combobox-button-disabled.svg",
+      "originalSha256": "49355f6dba6f4494d39ab0cd4cd92b8512ded4317aff8e84140c905642822f4c",
+      "sha256": "5e1c7ccf74c33e7ec2a7be0a60e9b001b3930a0d0468f21883bff886c11e5ee0",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox-button.svg",
+      "source": "share/theme_definitions/online/combobox-button.svg",
+      "originalSha256": "f21de1c6c5405e335d0befbae9b8f1f2abdb32d57c7ff281b6c457ff4f5821fa",
+      "sha256": "64dbbf00fe2585eeabe790cac9882ac6e7e36a42f75e9ef9c4df8d4abac38b25",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox-default-focus.svg",
+      "source": "share/theme_definitions/online/combobox-default-focus.svg",
+      "originalSha256": "8082758130e98287c0522d7129fb795f4e77eedc764277cc9023f83c86ed22cf",
+      "sha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox-default-rollover.svg",
+      "source": "share/theme_definitions/online/combobox-default-rollover.svg",
+      "originalSha256": "3806ac55ac4dc64bcbdf977ed1f0f7045e8946ef47b657f2fbc6aa27baecb155",
+      "sha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox-disabled.svg",
+      "source": "share/theme_definitions/online/combobox-disabled.svg",
+      "originalSha256": "16a43f7ab1ee0cf5977f934bfe1a80cf5f26e794524cb23ae51b1ff8f6d35048",
+      "sha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/combobox.svg",
+      "source": "share/theme_definitions/online/combobox.svg",
+      "originalSha256": "771c0a995e7b59ecdf7051e23d28872b39ce80b1274b66828e8a356862e327fe",
+      "sha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/common-rect-disabled.svg",
+      "source": "share/theme_definitions/online/common-rect-disabled.svg",
+      "originalSha256": "a62b6ee560b7a3613cced2becee6ac6417344b28bc1c78f6a3e65f4d77700c6b",
+      "sha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/common-rect-focus-slim.svg",
+      "source": "share/theme_definitions/online/common-rect-focus-slim.svg",
+      "originalSha256": "432ac288b198eb23c79ce69792edb799cd85eafbd254bc730886cd9aee6ada9c",
+      "sha256": "03d6118a17fef558c01f78469119c3ae46c87db1ba7d9d6b5ba84a0d8989d67b",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/common-rect-focus.svg",
+      "source": "share/theme_definitions/online/common-rect-focus.svg",
+      "originalSha256": "29494a75b106ff1266d16dc53a62a227930287630e2b84c3b97f1e7df40e938e",
+      "sha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/common-rect-rollover.svg",
+      "source": "share/theme_definitions/online/common-rect-rollover.svg",
+      "originalSha256": "7d85d666a79a448b22db0a9bc1dfdd632c6e04e562672845bd7c4d714403920b",
+      "sha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/common-rect.svg",
+      "source": "share/theme_definitions/online/common-rect.svg",
+      "originalSha256": "e0153c4dd9920c49398fc8a06b1a4773ca3bc367a2d872ab494ea66fdc31c097",
+      "sha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/definition.xml",
+      "source": "share/theme_definitions/online/definition.xml",
+      "originalSha256": "272adca01751b74b5b1a161bf778de896b9cb521aa8b7aeb8d306616c0e1067a",
+      "sha256": "5129f7ef29c83ded35396632680845dccae326400fe96a7273865eafb35acdee",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-action-default.svg",
+      "source": "share/theme_definitions/online/pushbutton-action-default.svg",
+      "originalSha256": "733ac632b84b4d23cd5c519e954823349fb7dd76cabd8128ef306af0dca375ae",
+      "sha256": "03d6118a17fef558c01f78469119c3ae46c87db1ba7d9d6b5ba84a0d8989d67b",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-action-disabled.svg",
+      "source": "share/theme_definitions/online/pushbutton-action-disabled.svg",
+      "originalSha256": "d5bff7814188fa38f9f23be8dfe6764ba0f439b995bd4254edca916a624d82e4",
+      "sha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-action-pressed.svg",
+      "source": "share/theme_definitions/online/pushbutton-action-pressed.svg",
+      "originalSha256": "d141cf928e9c012804c06ea23632c01d760755cb348338689fc4c40da816dbf9",
+      "sha256": "4fa63e6d47e1dc825fc8bc9e4987464ff1b12c86c4f18b0465609495f00a8e32",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-action-rollover.svg",
+      "source": "share/theme_definitions/online/pushbutton-action-rollover.svg",
+      "originalSha256": "455f0a1b39698eb790bc35a3b1206346b3ae3c6d23b23b11849c26a57ce9fc1a",
+      "sha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-default-rollover.svg",
+      "source": "share/theme_definitions/online/pushbutton-default-rollover.svg",
+      "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+      "sha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-default.svg",
+      "source": "share/theme_definitions/online/pushbutton-default.svg",
+      "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+      "sha256": "bdd66f51bbdf11cfa5be746ed5a204c1b782a311e7d91ee44d5b73580bdfc052",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-disabled.svg",
+      "source": "share/theme_definitions/online/pushbutton-disabled.svg",
+      "originalSha256": "a62b6ee560b7a3613cced2becee6ac6417344b28bc1c78f6a3e65f4d77700c6b",
+      "sha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-focus-rectangle.svg",
+      "source": "share/theme_definitions/online/pushbutton-focus-rectangle.svg",
+      "originalSha256": "76ce5e932da1e2c29f17278967c378aba33dbd611412866e507e56df89ed9d61",
+      "sha256": "b4e87278b24f82fd12866bb3386ab6037503aff4f39ba16202e0e41fc578ccf0",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/pushbutton-rollover.svg",
+      "source": "share/theme_definitions/online/pushbutton-rollover.svg",
+      "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+      "sha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-off-disabled.svg",
+      "source": "share/theme_definitions/online/radio-off-disabled.svg",
+      "originalSha256": "ce2bf490292fe9b81a85ad6b0e7ebd4857029b4bac1f0785713d6d3c13facbd4",
+      "sha256": "def851b43b590bf546bc721b6b041d156944a6265f3173663fc18af08553a31a",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-off-pressed.svg",
+      "source": "share/theme_definitions/online/radio-off-pressed.svg",
+      "originalSha256": "1d97832820667c4f3bfdfd19fdd6b0bebeb4fb1726ae7862e020744892e91b1e",
+      "sha256": "fe74fe8b42be63a5d38152b7d8df5d0b27eda6ebec5e672c4f24d734c35a1c77",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-off.svg",
+      "source": "share/theme_definitions/online/radio-off.svg",
+      "originalSha256": "4f54fd616d3f6c0a3bd9d9ed814f0cfbac4a00fbe3e53149d59489dd5f59dc96",
+      "sha256": "014664b250638461d07a93a669205a695f924d5c5d80cf1ba6366258a7d25dd0",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-on-disabled.svg",
+      "source": "share/theme_definitions/online/radio-on-disabled.svg",
+      "originalSha256": "b8ba02a8ee20561713d93bc6738e20162684e140cd0c4119db4e2f64303d794e",
+      "sha256": "e9bf8a922f93a134b0cf93a3371119edd89579b8799fe8e98e5c4cd7b63dc347",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-on-pressed.svg",
+      "source": "share/theme_definitions/online/radio-on-pressed.svg",
+      "originalSha256": "0aa9d86e8930d1897f206226655016564940fc810de199afd5d29d57b660e0ad",
+      "sha256": "c740bce21e74603c0c1199093c92ccab097e90e7f16b0ac53aba520a4e3df1de",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/radio-on.svg",
+      "source": "share/theme_definitions/online/radio-on.svg",
+      "originalSha256": "8ca19725b9db184fd330b52a67530d7320e11906ae607841584d74f82e022276",
+      "sha256": "1944d8fd713a5e48daff095c3fa69b791b53c01196f2bcf700ae86189586c21b",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/scrollbar-horizontal.svg",
+      "source": "share/theme_definitions/online/scrollbar-horizontal.svg",
+      "originalSha256": "f2a0762dd69d51dd0b4dd88dafc158c966a42274c62bf0bf8c3f05ce154ff798",
+      "sha256": "bda22faa75830c6c096e7951b4b31e41f3a1718df8a762a74508d8309bf42c0d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/scrollbar-vertical.svg",
+      "source": "share/theme_definitions/online/scrollbar-vertical.svg",
+      "originalSha256": "8ea683789ad17b6a07e53890a227bd1cdae79b211de3bb4ce35ba079b1dea2b5",
+      "sha256": "37384ac93cd23e104d6021d2c0c76bbae55fc9fa9ad9c79383298fd6205fb997",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/slider-button-disabled.svg",
+      "source": "share/theme_definitions/online/slider-button-disabled.svg",
+      "originalSha256": "2abe4182b2259bc231f53fda14a22e125a773920674e0fe3d19971980455940a",
+      "sha256": "ba0e2b17d21015fd944edb6fcc6a30d82135e3d1b7b17ac64b40d5968864d662",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/slider-button.svg",
+      "source": "share/theme_definitions/online/slider-button.svg",
+      "originalSha256": "c722a802dec063a8987a7e75c31826e5ee3c2de45e3e858182d344ec1148183d",
+      "sha256": "c5393b8469d1305f3ccb16df7bd966fe7fa0d83ae761e6aa6f115e5677fa1c6b",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-default-focus.svg",
+      "source": "share/theme_definitions/online/spinbox-default-focus.svg",
+      "originalSha256": "8082758130e98287c0522d7129fb795f4e77eedc764277cc9023f83c86ed22cf",
+      "sha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-default-rollover.svg",
+      "source": "share/theme_definitions/online/spinbox-default-rollover.svg",
+      "originalSha256": "fa7e0034bbb55aaf6ea1f8b002931189ec94588eab6edf6ce66d1544a045ed5f",
+      "sha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-default.svg",
+      "source": "share/theme_definitions/online/spinbox-default.svg",
+      "originalSha256": "771c0a995e7b59ecdf7051e23d28872b39ce80b1274b66828e8a356862e327fe",
+      "sha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-left-disabled.svg",
+      "source": "share/theme_definitions/online/spinbox-left-disabled.svg",
+      "originalSha256": "1399309434ea4d6c303b61c9fa4d56ed47823a9eef940788ba402008fa4d1b1d",
+      "sha256": "460aae9b595b5ec5bfc7a668545902fb0a790f869a6580d720c607e2c36117ce",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-left-pressed.svg",
+      "source": "share/theme_definitions/online/spinbox-left-pressed.svg",
+      "originalSha256": "f9ec7fc1d3727f295d249ead2f864ac1c367543c920e3a8ab1e3aa806bb18cf8",
+      "sha256": "34069bc352047f8bf1b6fa1c32476f4384c0d97463dc58e9d9168ed84f6ff237",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-left.svg",
+      "source": "share/theme_definitions/online/spinbox-left.svg",
+      "originalSha256": "a95e26ce72ca8001b56f4e58bd218025caeac5d34258ef2566de2109ad5f404a",
+      "sha256": "216bc3919644069bb61cc758f86e12d2e5e06d2152ee27fe0cf93342da5c4c36",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-right-disabled.svg",
+      "source": "share/theme_definitions/online/spinbox-right-disabled.svg",
+      "originalSha256": "059f51abc8741caac18a7fa9c3db6d7a2da77398c69082c07f98035e7ad28a27",
+      "sha256": "5ff27332210348be703275dc12ab353dd78b2929c0fc2a57315edddc60713a46",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-right-pressed.svg",
+      "source": "share/theme_definitions/online/spinbox-right-pressed.svg",
+      "originalSha256": "97a7c3443873e3c44f9018335c3a73ca908cf6e29a3cce502bd1740d1dee63cf",
+      "sha256": "c39bf701ef40451c5f90393c57018ae643635889583f9c7af202dcc21fc2ea17",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/spinbox-right.svg",
+      "source": "share/theme_definitions/online/spinbox-right.svg",
+      "originalSha256": "45e34d5777908ab3e3ac02ca85f0272fda8bc6c92717e291a899ffa039e65a51",
+      "sha256": "b28cb932715f96d4b5892dd711b78485acc67c40eb2555951f65ce957707b7a6",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/tabitem-rollover.svg",
+      "source": "share/theme_definitions/online/tabitem-rollover.svg",
+      "originalSha256": "b4b86b5b3eaa7fc39bedfa2aff82b688fc6a5b723c5ffe3ec48af233f6bb4473",
+      "sha256": "e944cde0acbd8f23b73a0b613c8c5c98377f6c5e66effb2cd91b4f7b22be6f35",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/tabitem-selected.svg",
+      "source": "share/theme_definitions/online/tabitem-selected.svg",
+      "originalSha256": "b4b86b5b3eaa7fc39bedfa2aff82b688fc6a5b723c5ffe3ec48af233f6bb4473",
+      "sha256": "971c9d0908f30bb47ab84aea9525376bb7cfad1fbf256b98a0cd1421fbbbcb75",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/toolbar-button-enabled-on.svg",
+      "source": "share/theme_definitions/online/toolbar-button-enabled-on.svg",
+      "originalSha256": "c2d0aef723018ce5a0eff3595c97ce2733a19210193ad3c116d458d81bbe308a",
+      "sha256": "84a2b524b5f3c779d7ec76735b6d2932e62ad1d4c401d38a6d9b4ad4da8ecca6",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "replace",
+      "destination": "share/theme_definitions/online/toolbar-button-enabled-rollover.svg",
+      "source": "share/theme_definitions/online/toolbar-button-enabled-rollover.svg",
+      "originalSha256": "4cc91a5b6316c735b97908f6cf32282f3045e2bfbb99cb5de551e8914d8cf360",
+      "sha256": "e122453064f3bdf14c79a997bf319f65a1b0b6161f21ff670ce54348811cecb9",
+      "reason": "Self-authored neutral native control geometry and functional theme metadata, using existing Floe palette; opaque producer branding bytes not redistributed",
+      "license": "MPL-2.0 (Floe neutral controls)"
+    },
+    {
+      "operation": "remove",
+      "destination": "dexopt/baseline.prof",
+      "originalSha256": "b201518d4c35f076ddc30cf8a7d0d7f7ed0b203caedca29b7555d839a9b81579",
+      "reason": "Producer APK dex optimization profile describes upstream DEX, not Floe DEX. AGP emits the Floe profile at the same reserved APK path."
+    },
+    {
+      "operation": "remove",
+      "destination": "dexopt/baseline.profm",
+      "originalSha256": "f8c282adfc398d10de006357c847d0765d445f6c4772b233d365cf8512abde33",
+      "reason": "Producer APK dex optimization profile describes upstream DEX, not Floe DEX. AGP emits the Floe profile at the same reserved APK path."
+    }
+  ],
+  "sourceAccess": {
+    "tag": "android/v0.1.0-alpha.12",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.12/floe-android-corresponding-source-0.1.0-alpha.12.tar.gz",
+    "nativeSource": "https://github.com/CollaboraOnline/online.mirror/tree/2333344185931274f9c49d6c12a408cefcef6844",
+    "privatePathsExcluded": true
+  }
+}

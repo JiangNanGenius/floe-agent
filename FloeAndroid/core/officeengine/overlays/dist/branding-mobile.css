@@ -1,0 +1,29 @@
+/* SPDX-License-Identifier: MPL-2.0
+ * Floe neutral mobile layout overlay (self-authored, 2026-10-26).
+ * No upstream branding code, artwork or remote URLs.
+ *
+ * Copyright 2026 the Floe project contributors.
+ */
+
+#toolbar-logo,
+#product-logo,
+#integrator-logo,
+#about-dialog-logos,
+#lokit-extra {
+  display: none !important;
+}
+
+#about-dialog-header {
+  flex-flow: column;
+  align-items: center;
+}
+
+#product-name {
+  margin: 0.25rem 0;
+  font-size: 1.4rem;
+  text-align: center;
+}
+
+#mobile-edit-button {
+  background-color: var(--color-primary) !important;
+}

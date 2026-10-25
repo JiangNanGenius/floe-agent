@@ -1,0 +1,1719 @@
+{
+  "schema": "floe-office-notice-source-index/2",
+  "generatedAt": "2026-10-26",
+  "license": "MPL-2.0",
+  "status": "Floe source changes and producer identity recorded; actual publication and native runtime verified separately",
+  "product": {
+    "name": "Floe",
+    "note": "Floe is an independent product and is not an official Collabora release or endorsed by Collabora Productivity Ltd.",
+    "ordinaryUi": "Technical source/provenance detail belongs on this explicitly opened notice page, not in ordinary task UI."
+  },
+  "noticePage": {
+    "path": "notices/index.html",
+    "sha256": "837050517fe2e5a2eb016e737f00ea4608b36d7573aa1105726aaa52fbcf8f75",
+    "language": "English and Simplified Chinese",
+    "scripting": "None; local static page"
+  },
+  "payloadIdentity": {
+    "publisher": "Collabora Productivity Ltd.",
+    "package": "com.collabora.libreoffice",
+    "product": "Collabora Office for Android (mobile)",
+    "versionName": "26.04.4.2",
+    "versionCode": 937,
+    "abi": "arm64-v8a",
+    "apkFile": "collabora-office-mobile-26.04.4.2-937-release-arm64-v8a-2026-10-05.apk",
+    "apkUrl": "https://www.collaboraoffice.com/downloads/fdroid/repo/collabora-office-mobile-26.04.4.2-937-release-arm64-v8a-2026-10-05.apk",
+    "apkUrlLiveStatus": 200,
+    "apkBytes": 254391190,
+    "apkSha256": "79e72f810d711706d205a9ff457b4bb830c607a2b988cf44246829ec4593c393",
+    "signerCertSha256": "573258c84e149b5f4d9299e7434b2b69a8410372921d4ae586ba91ec767892cc",
+    "officialChannel": "https://www.collaboraoffice.com/downloads/fdroid/repo/?fingerprint=573258C84E149B5F4D9299E7434B2B69A8410372921D4AE586BA91EC767892CC",
+    "publicProducerManifestSha256": "3ed475c63ff48d58bf957f42ac32a4871fed815dc6c596e504a91e9a424d7020"
+  },
+  "sourceBinding": {
+    "primaryRepository": "https://gerrit.collaboraoffice.com/online",
+    "officialMirror": "https://github.com/CollaboraOnline/online.mirror",
+    "branch": "refs/heads/distro/collabora/co-26.04-mobile (branch tip on both Gerrit and the mirror, verified by ls-remote 2026-10-26)",
+    "revision": "2333344185931274f9c49d6c12a408cefcef6844",
+    "monorepo": true,
+    "monorepoNote": "At this revision the former Collabora Office core (LibreOffice fork) is in-tree under engine/ of the online monorepo; there is no separate core repository or core submodule. Upstream text: android/README.md at the revision — 'All the source code now lives in a single Gerrit monorepo; the former Collabora Office core is the engine/ subdirectory of the online repo'.",
+    "commitArchiveUrl": "https://codeload.github.com/CollaboraOnline/online.mirror/tar.gz/2333344185931274f9c49d6c12a408cefcef6844",
+    "commitArchiveLiveStatus": 200,
+    "embeddedBuildId": "2333344185",
+    "buildIdMechanism": "The shipped assets/program/versionrc buildid is written by android/lib/build.gradle createRCfiles from coVersionHash = @COOLWSD_VERSION_HASH@ = configure's 'git log -1 --format=%h --abbrev=10' of the producer's checkout. The packaged buildid is therefore the first 10 hex characters of the pinned revision SHA, produced by the documented build itself.",
+    "bindingLimit": "Self-stamped build identifier from the producer build procedure; not a third-party attestation and not a reproducible-build proof. The official F-Droid index metadata carries srcname=null (no publisher source name offered in the repo index).",
+    "immutableTagStatus": "No Git tag points at this revision for 26.04.4.2-mobile (latest mobile tag on the mirror is 26.04.3-mobile). The release branch tip + version stamps (26.04.4.2 in online configure.ac AC_INIT coolwsd and engine configure.ac AC_INIT 'Collabora Office', plus --with-android-package-versioncode scheme yielding code 937) are the maintained identification chain.",
+    "commitPageUrl": "https://github.com/CollaboraOnline/online.mirror/commit/2333344185931274f9c49d6c12a408cefcef6844",
+    "gerritClone": "https://gerrit.collaboraoffice.com/online",
+    "rawAtRevision": {
+      "androidReadme": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/android/README.md",
+      "androidLibBuildGradle": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/android/lib/build.gradle",
+      "engineDownloadLst": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/download.lst",
+      "engineMakefileFetch": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/Makefile.fetch",
+      "engineConfigureAc": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/configure.ac",
+      "browserMakefileAm": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/browser/Makefile.am",
+      "cmakeListsIn": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/android/lib/src/main/cpp/CMakeLists.txt.in",
+      "engineLicenseXml": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/readlicense_oo/license/license.xml",
+      "engineNotice": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/readlicense_oo/license/NOTICE"
+    },
+    "tagStatus": "No Git tag for 26.04.4.2-mobile; the 40-character revision is the identification pin."
+  },
+  "bundledOriginalNotices": {
+    "license.html": {
+      "bytes": 408856,
+      "sha256": "97ef2ae8cad32deeb053db278c714b71cdab7f43a0c88d8b0e76fd516744a87d",
+      "path": "assets/license.html",
+      "modified": false,
+      "role": "generated upstream licence/notice HTML"
+    },
+    "notice.txt": {
+      "bytes": 1652,
+      "sha256": "68421bcdfed13d444be60c23baea19c6fbd7dc5a45bd8522c924e17eff3e1903",
+      "path": "assets/notice.txt",
+      "modified": false,
+      "role": "Apache-2.0 NOTICE text, byte-identical to upstream engine/readlicense_oo/license/NOTICE at the revision"
+    }
+  },
+  "floeOverlay": {
+    "manifest": "core/officeengine/asset-overlays.json in matching Floe source",
+    "operationCount": 142,
+    "sourceFileRecords": [
+      {
+        "path": "share/registry/floe-preview-policy.xcd",
+        "operation": "add",
+        "originalSha256": null,
+        "newSha256": "a0584ae44dfb199475f839011ca19b4c4f422b6aa6730478eace1c7a212c6906"
+      },
+      {
+        "path": "dist/images/checkbox-off-disabled.svg",
+        "operation": "remove",
+        "originalSha256": "33073bd85a2fa455bd698dfb7e6bbdfdd9243632e90135360938e4f4a60ba662",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/checkbox-off.svg",
+        "operation": "remove",
+        "originalSha256": "5ee8d8ff305efd70d1f5cd774247a072e87bfbddfff3d405959eebc270906896",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/checkbox-on-disabled.svg",
+        "operation": "remove",
+        "originalSha256": "8f5075b82b6663565f360ef62b48fb092adc383c291d1700a5a6d30ccd8b2dd2",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/checkbox-on.svg",
+        "operation": "remove",
+        "originalSha256": "8350b06c826c6db581fb0fa5d4de53d48660eeaf99176d9f82006e1cabc038dc",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/close-widget-dark.svg",
+        "operation": "remove",
+        "originalSha256": "be9103ecb0b040698b13fb9bd8cea3d1198c8883443b9a0ce7e10057a7bf191e",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/close-widget-hover.svg",
+        "operation": "remove",
+        "originalSha256": "1ffd5fc63443703dc0c5e13d075c4cccb697801442e8bd8e40d346e8d2dbebaf",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/close-widget.svg",
+        "operation": "remove",
+        "originalSha256": "17448a2e2b6f7d8d61a65fb9ba04543360ff4543c3a1cfd62d093159423bc8cc",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/closedoc-dark_branding.svg",
+        "operation": "remove",
+        "originalSha256": "33c2b2576cdda0484f41c579d21fb7f0daa608755e130836db1667bd32594b21",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/compact_open-local-editor-dark.svg",
+        "operation": "remove",
+        "originalSha256": "ced4574408f1858083d8180196f0ff2041ccace34caa8056543612408ece2376",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/compact_open-local-editor.svg",
+        "operation": "remove",
+        "originalSha256": "09981da2a60f8866f5989a709140ef442091e0b223932d431dae029162150d4b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/compact_setborderstyle_branding.svg",
+        "operation": "remove",
+        "originalSha256": "a4fdb3cb47ca0809bebf752b6edc2d98b678a1c3e07493bf05e6219d3694b899",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/edit_branding.svg",
+        "operation": "remove",
+        "originalSha256": "7531b671d186d62477d8701b0b8a3be50e3c9aee9fa7beb49f920057211b8f0b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/fit-cell_branding.svg",
+        "operation": "remove",
+        "originalSha256": "27442e5ee98256768c69ffedd85212a0336a4166ee43c8432b17556b4ac1bd43",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/full-logo-white.svg",
+        "operation": "remove",
+        "originalSha256": "ebb66e037f0d2c422bf434439967d01f53571a619cdf6e59dcea717bf309de8e",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/full-logo.svg",
+        "operation": "remove",
+        "originalSha256": "ae1dd284e47b9404d9668f582d83d4fdaa2cf94fa16b90d19202aa82b6f140f6",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/indentation_marker_down_branding.svg",
+        "operation": "remove",
+        "originalSha256": "9e1e2bc762a3d12019507fa753cb77e70c2d62fae1ff554b4085ef31207a388d",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/indentation_marker_up_branding.svg",
+        "operation": "remove",
+        "originalSha256": "fbc773eaf497ec89a205b3cab39ab176d495ade18c343b589c2e98dc005b3e7e",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/ios_handle_end.svg",
+        "operation": "remove",
+        "originalSha256": "40224399ad8fb90297549e55984401a01a7dd14997f3c65da72f0c780d637e6b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/ios_handle_start.svg",
+        "operation": "remove",
+        "originalSha256": "1167e4acd6cefc675f8e0c0ef4fa24a73faae50d72b783bda7988f2c489bd779",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_autosum_branding.svg",
+        "operation": "remove",
+        "originalSha256": "f4880401c788ba6ee4476822d7472985fefcd2bf86178e1c3d9b73f12a581b17",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_closedocmobile_branding.svg",
+        "operation": "remove",
+        "originalSha256": "5338390a8b40316ec18bf1d6f13f889889980738bda3b394ba766fca4dca6808",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_deletepage_branding.svg",
+        "operation": "remove",
+        "originalSha256": "97a3cda919374221066171d8e66f8b7f47fc14eae36291b52fddadf90f76f210",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_downpage_branding.svg",
+        "operation": "remove",
+        "originalSha256": "62fbdf14628e40d869b21ea4915b340b6e920716ce557334f70736f2fbc77efb",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_duplicatepage_branding.svg",
+        "operation": "remove",
+        "originalSha256": "23b68b222192b9916fc41a54f224f7b99ac85b52a28c488899ef8fd0affc6fec",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_ellipse_branding.svg",
+        "operation": "remove",
+        "originalSha256": "7bc9a4c15ceb4922b7e54e1f39c0ffa5ff955db005116c85fffa6bce10ec5bdd",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_firstrecord_branding.svg",
+        "operation": "remove",
+        "originalSha256": "b3241ff11e569785c6dcf463cee31156317ee8911f9656f238a56b7a1d2987fe",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_functiondialog_branding.svg",
+        "operation": "remove",
+        "originalSha256": "647c3ec6926751a2a97511261ee8165aa3a09fdd07b8a7f24f4590c1cabd042c",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_inserthyperlink_branding.svg",
+        "operation": "remove",
+        "originalSha256": "30445731b34a151fc386b329bccf48bc150a9b2852e96b4611a21c7d7f97bc68",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_insertpage_branding.svg",
+        "operation": "remove",
+        "originalSha256": "8eacfaaf04f0f89fa9c2a9eb9f96488d325d7878695fdadcff58e4d6bd4d6917",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_menu_downloadas_pdf_branding.svg",
+        "operation": "remove",
+        "originalSha256": "2ecee9bdba25065617763d130a30728f29721a4316ded076da9847ce3db77d5d",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_menu_fullscreen_branding.svg",
+        "operation": "remove",
+        "originalSha256": "e6d12ce8bfba96b300d9d16b797bc05bc2fd0403b3ee5a84d2e47f7e4cfc51e0",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_menu_zoomreset_branding.svg",
+        "operation": "remove",
+        "originalSha256": "c7d8be51ff4765b14ec5ed354e5d3e26622dae817699a1fb990aa88670e4d751",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_multipageview_branding.svg",
+        "operation": "remove",
+        "originalSha256": "ea2f27e1e53cd074300b2b0c3b92855dd5653c73e44dccb53e1eda57651f5ab9",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_nextrecord_branding.svg",
+        "operation": "remove",
+        "originalSha256": "28cc947ac84267ccf477b6d72d64f3e57a8c16e8cf92e046d14ac68966b03051",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_numberformatcurrency_branding.svg",
+        "operation": "remove",
+        "originalSha256": "337eadc97f11829b8002735b68e4d5cdec819f6979e80cbb4f0ef23479d43a72",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_numberformatdecdecimals_branding.svg",
+        "operation": "remove",
+        "originalSha256": "171a47e2e752a553708724322dcef2c1d63d47a9df35f70520662631fafa39af",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_numberformatdecimal_branding.svg",
+        "operation": "remove",
+        "originalSha256": "3bb80e846bb81b87dfca1deb457881c1c8639eb890aa829d19f2a55dcea488bb",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_numberformatincdecimals_branding.svg",
+        "operation": "remove",
+        "originalSha256": "0c96d248bcdec97235e17c4ad0235d9b5de263730e655a5d0b1205d49ee8ee83",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_numberformatpercent_branding.svg",
+        "operation": "remove",
+        "originalSha256": "cf58e516db5a55aca867eeedd86e3f789e4268d79ed16fbcfb54312357900497",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_prevrecord_branding.svg",
+        "operation": "remove",
+        "originalSha256": "b598e46edc5064c243757ac7bff898410fb3441c851777d6bfa854187a1ece6b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_save_branding.svg",
+        "operation": "remove",
+        "originalSha256": "8acab0b6c907b6e86e58e3c388cef6e998145b4b508e6bbfef79ca20d238b01c",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_saved_branding.svg",
+        "operation": "remove",
+        "originalSha256": "df4b9294ff0933cf55a2fdb12c95ee023ca90cbc54b65777cd03d4fe7f052390",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_savemodified_branding.svg",
+        "operation": "remove",
+        "originalSha256": "5284cbad8e8f8a46fcbec3579662d44e884ef3fd7b97e9306f77d61b6af928d3",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_searchnext_branding.svg",
+        "operation": "remove",
+        "originalSha256": "fb49ae311211a1be74cd2bb5ccd68e08b1679424aeb7700fcc35d5dda5593ce2",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_searchprev_branding.svg",
+        "operation": "remove",
+        "originalSha256": "7dd756135ce4f071c0fa8d333eee9cf8dfca56a1250210697ab35a9726cd0936",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_setborderstyle_branding.svg",
+        "operation": "remove",
+        "originalSha256": "51b7207ddf03de7bbab4ea5451e1699d52eea75c0d2c84ba25003058c4656927",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sheetlist_branding.svg",
+        "operation": "remove",
+        "originalSha256": "5d2b0beaca55f521e3bdce98fd27f5f53901b078cf1ea8fccf95343ab2295853",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar-animation.svg",
+        "operation": "remove",
+        "originalSha256": "2b1db4820244d57862583c260702119260431d1c885814f1cf62a526b4d22a52",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar-transition.svg",
+        "operation": "remove",
+        "originalSha256": "ee9cbb7837905fbdd590b2b8852587cf94b5fa04788e8d75e01909d06b4b2789",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar_calc.svg",
+        "operation": "remove",
+        "originalSha256": "bc7d22e8e9d4c2d174fcefbee9bc66594c35799e055f9eb71a8e829840dab148",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar_draw.svg",
+        "operation": "remove",
+        "originalSha256": "fac993b2ecf1e33116e6ea875427a1607d9415d9427532d3b17dec8fcce9b8c4",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar_impress.svg",
+        "operation": "remove",
+        "originalSha256": "624424b9c33bc67d7cb270e35c92f6fcddf6d505bc72ad84b370e371b7b07980",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar_masterslide.svg",
+        "operation": "remove",
+        "originalSha256": "39f5058b5017e800684fd5357c1b901c97bfe2c24dc87a9b60a0c3a61b416da4",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_sidebar_writer.svg",
+        "operation": "remove",
+        "originalSha256": "6b5002578ef1b60e57a10d4c19ed7bc16ebefeab408ffc405b323ed4e1e1ca24",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_stylepreviews-scrolldown_branding.svg",
+        "operation": "remove",
+        "originalSha256": "be37a2e6732e0ba31dcbbcf31fe207a7f63413a44edc1e16505c8219a75c16fe",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_stylepreviews-scrollup_branding.svg",
+        "operation": "remove",
+        "originalSha256": "ef7cc9fad8300b1fd60cf170fdcbc3ac21c5c61197fbc8cccc6536f1508f21b6",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/lc_uppage_branding.svg",
+        "operation": "remove",
+        "originalSha256": "8a3317ebb61b7ac6380cad6aa60134d4f2dc5e20cf2353405ff19393636a891b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/open-local-editor.svg",
+        "operation": "remove",
+        "originalSha256": "01d042b4b21987b756ea954e917ac6ec1aad9153174e09942b42008f845941a4",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/plus_branding.svg",
+        "operation": "remove",
+        "originalSha256": "3a9b4d0c0e067d602d467f852a3b9b2c2b72d1f5d4b0da189035fa578bfc416a",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-off-dark.svg",
+        "operation": "remove",
+        "originalSha256": "321c113ff33f7ed05d3c6e80498db1f4425fa0374861cf32f8cf5ef106b071f6",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-off-disabled-dark.svg",
+        "operation": "remove",
+        "originalSha256": "a5b652740d51460732b6b1571f37cc81ebc71284032e110504e58d43e173801c",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-off-disabled.svg",
+        "operation": "remove",
+        "originalSha256": "ce2bf490292fe9b81a85ad6b0e7ebd4857029b4bac1f0785713d6d3c13facbd4",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-off.svg",
+        "operation": "remove",
+        "originalSha256": "4f54fd616d3f6c0a3bd9d9ed814f0cfbac4a00fbe3e53149d59489dd5f59dc96",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-on-dark.svg",
+        "operation": "remove",
+        "originalSha256": "186d0862fa30de662ee5e01f8c788bd52a28f954552534011dcb07c23a947dcf",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-on-disabled-dark.svg",
+        "operation": "remove",
+        "originalSha256": "0c251b417573da43698dadf923d0b6a9782a539c4cab05df7586637c18341986",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-on-disabled.svg",
+        "operation": "remove",
+        "originalSha256": "b8ba02a8ee20561713d93bc6738e20162684e140cd0c4119db4e2f64303d794e",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/radio-on.svg",
+        "operation": "remove",
+        "originalSha256": "8ca19725b9db184fd330b52a67530d7320e11906ae607841584d74f82e022276",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/scroll-double-white.svg",
+        "operation": "remove",
+        "originalSha256": "84903b99bbaa84a8280c75192179fa925b37273fe1af6f3844718921614b2ef0",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/table-column-resize-marker-hover_branding.svg",
+        "operation": "remove",
+        "originalSha256": "f5fcbe160467d37c0b8a51d973f9289774e5bc9edbd61b9ab07c1a3c05f3aea2",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/table-column-resize-marker_branding.svg",
+        "operation": "remove",
+        "originalSha256": "324df27e71c8e52584b6a6e9a242dc4a3c760a6b78ea53e98e363623244d95a0",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/table-row-resize-marker-hover_branding.svg",
+        "operation": "remove",
+        "originalSha256": "ec14f3b0c8e5bcd8277c7b5b60e52c8dd6a7a7aa017af59210b14121c8b94b99",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/table-row-resize-marker_branding.svg",
+        "operation": "remove",
+        "originalSha256": "fdbfc1b09507c358932fe5d3391ef7284046276e21b18dbdb8f0494b74e8ddbc",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/text-path_branding.svg",
+        "operation": "remove",
+        "originalSha256": "3237e3db2d766fbbb177118911f1c3d06ec3a6cb61643bac489b7ff1f347747e",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/toolbar-bg-logo-dark.svg",
+        "operation": "remove",
+        "originalSha256": "4e7b37315e7e7569af517d837141211296e8dc2534d0924509c5f8c02c90e59c",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/toolbar-bg-logo-notebookbar.svg",
+        "operation": "remove",
+        "originalSha256": "1c0bdaaa6ce328618994e1a9364b8bcb822715adfea22f9ab1e396ad1345619b",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/toolbar-bg-logo.svg",
+        "operation": "remove",
+        "originalSha256": "9e0eda96c3b36287fdd70a88de5d3b450c783a2a7c94e93c72d242aa46770f1d",
+        "newSha256": null
+      },
+      {
+        "path": "dist/images/toolbar-bg.svg",
+        "operation": "remove",
+        "originalSha256": "9e0eda96c3b36287fdd70a88de5d3b450c783a2a7c94e93c72d242aa46770f1d",
+        "newSha256": null
+      },
+      {
+        "path": "dist/branding-unsupported.css",
+        "operation": "remove",
+        "originalSha256": "19b65040045f590b9b7e485d943e52adec92de68add624d94e2df63f6bc393ab",
+        "newSha256": null
+      },
+      {
+        "path": "dist/branding-unsupported.js",
+        "operation": "remove",
+        "originalSha256": "a5eb6bfd4f842d86e0a40f9662094b4a7a5de241664163f66d4b83d886f1eb41",
+        "newSha256": null
+      },
+      {
+        "path": "dist/branding.js",
+        "operation": "replace",
+        "originalSha256": "695e5e399d84dadd1d9c67c0016d1388922f4ed7dcc75ca88420d7cb9ded8de8",
+        "newSha256": "c4e746551c497a67a7aeb734b412377d5ce49ad1c1f9ee47ca8fd5679e6201fd"
+      },
+      {
+        "path": "dist/branding.css",
+        "operation": "replace",
+        "originalSha256": "9cbfe7a2df470c3b70c868c69da20804ccf942bd2d0858ce87effbde7136a4e5",
+        "newSha256": "671e67ddd407e6da2b50f842603040992ab7ad1873c677608cc9650654c7f0c4"
+      },
+      {
+        "path": "dist/branding-mobile.css",
+        "operation": "replace",
+        "originalSha256": "f7ffd35aac6b72d21801194784a59c9cd33afb212c5e9cfc311fd9d9ff223dd2",
+        "newSha256": "eb4893923ed95089b96d7bac7d98cd2eb1f168781407b7fb0e4c0263220fa31e"
+      },
+      {
+        "path": "dist/branding-tablet.css",
+        "operation": "replace",
+        "originalSha256": "683ba5994e26c51263fa7b3402998e6238688c88df824164c963b6c1678aa6fd",
+        "newSha256": "3bdb08fcae4f5ec0d45af11f54d8617ddf73b2cb4ab85645c1e8c5df25cc6f47"
+      },
+      {
+        "path": "dist/branding-desktop.css",
+        "operation": "replace",
+        "originalSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "newSha256": "0e204f926abd44a7d0bcc180ecc3e3dc8d469e7e1d954b75ba1e50d67f238902"
+      },
+      {
+        "path": "dist/cool.html",
+        "operation": "replace",
+        "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
+        "newSha256": "6b419d62ca207d080defb3f32e0c09ad607d40017dc52a15e01b5028339c1f42"
+      },
+      {
+        "path": "notices/index.html",
+        "operation": "add",
+        "originalSha256": null,
+        "newSha256": "837050517fe2e5a2eb016e737f00ea4608b36d7573aa1105726aaa52fbcf8f75"
+      },
+      {
+        "path": "share/theme_definitions/online/arrow-down.svg",
+        "operation": "replace",
+        "originalSha256": "c6a747152a99f6c59b2226fc552b0c92c30305f7895c8498b596e23dec2112aa",
+        "newSha256": "d037134b2c4a97261c2b785bd49f6a44f5f3b1817fbb70288326384530fea618"
+      },
+      {
+        "path": "share/theme_definitions/online/arrow-up.svg",
+        "operation": "replace",
+        "originalSha256": "512e058c85c00c57fdd58a12c8dd7bdb75eb989df4d5f3b7b777f3d4fae0a2be",
+        "newSha256": "a2817e61b77b9e7789269e18670a3ae3297892fcecb03df949870bd7923e0b22"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-off-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "33073bd85a2fa455bd698dfb7e6bbdfdd9243632e90135360938e4f4a60ba662",
+        "newSha256": "249143843cc79fb9de141d8b71bb0a9b6611fe980c2a9f9abc19bf55aed7b49e"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-off-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "0543aa3ca03af0c3c343afd9987ddc0eb54a348a4d952c3251fad88f94ba79de",
+        "newSha256": "17486301a2b8455fb189ea79cac08f8571f9809e55d78ddb96f7120cda9649fe"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-off.svg",
+        "operation": "replace",
+        "originalSha256": "5ee8d8ff305efd70d1f5cd774247a072e87bfbddfff3d405959eebc270906896",
+        "newSha256": "9b8882a07dcf810eb5ea931d066eb029117103eedaaa11579182d4c2666dd731"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-on-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "8f5075b82b6663565f360ef62b48fb092adc383c291d1700a5a6d30ccd8b2dd2",
+        "newSha256": "43bcab3e615254f8dc859f86b9da135308f0c5961da4036210e1175c52e3616c"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-on-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "e9bbc7e39de7003ea153f75482c7644399ea8051fcd50e7493aa29400ee98f19",
+        "newSha256": "c511ae83ec76ad4a113d88e4216103bacd48c86f7e09da4e2a1f16e83a360d61"
+      },
+      {
+        "path": "share/theme_definitions/online/checkbox-on.svg",
+        "operation": "replace",
+        "originalSha256": "8350b06c826c6db581fb0fa5d4de53d48660eeaf99176d9f82006e1cabc038dc",
+        "newSha256": "380c220796bf42a955e4130e624a7d7e76df8c2cfbb96776720bae0263baee79"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox-button-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "49355f6dba6f4494d39ab0cd4cd92b8512ded4317aff8e84140c905642822f4c",
+        "newSha256": "5e1c7ccf74c33e7ec2a7be0a60e9b001b3930a0d0468f21883bff886c11e5ee0"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox-button.svg",
+        "operation": "replace",
+        "originalSha256": "f21de1c6c5405e335d0befbae9b8f1f2abdb32d57c7ff281b6c457ff4f5821fa",
+        "newSha256": "64dbbf00fe2585eeabe790cac9882ac6e7e36a42f75e9ef9c4df8d4abac38b25"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox-default-focus.svg",
+        "operation": "replace",
+        "originalSha256": "8082758130e98287c0522d7129fb795f4e77eedc764277cc9023f83c86ed22cf",
+        "newSha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox-default-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "3806ac55ac4dc64bcbdf977ed1f0f7045e8946ef47b657f2fbc6aa27baecb155",
+        "newSha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "16a43f7ab1ee0cf5977f934bfe1a80cf5f26e794524cb23ae51b1ff8f6d35048",
+        "newSha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d"
+      },
+      {
+        "path": "share/theme_definitions/online/combobox.svg",
+        "operation": "replace",
+        "originalSha256": "771c0a995e7b59ecdf7051e23d28872b39ce80b1274b66828e8a356862e327fe",
+        "newSha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d"
+      },
+      {
+        "path": "share/theme_definitions/online/common-rect-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "a62b6ee560b7a3613cced2becee6ac6417344b28bc1c78f6a3e65f4d77700c6b",
+        "newSha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d"
+      },
+      {
+        "path": "share/theme_definitions/online/common-rect-focus-slim.svg",
+        "operation": "replace",
+        "originalSha256": "432ac288b198eb23c79ce69792edb799cd85eafbd254bc730886cd9aee6ada9c",
+        "newSha256": "03d6118a17fef558c01f78469119c3ae46c87db1ba7d9d6b5ba84a0d8989d67b"
+      },
+      {
+        "path": "share/theme_definitions/online/common-rect-focus.svg",
+        "operation": "replace",
+        "originalSha256": "29494a75b106ff1266d16dc53a62a227930287630e2b84c3b97f1e7df40e938e",
+        "newSha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999"
+      },
+      {
+        "path": "share/theme_definitions/online/common-rect-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "7d85d666a79a448b22db0a9bc1dfdd632c6e04e562672845bd7c4d714403920b",
+        "newSha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca"
+      },
+      {
+        "path": "share/theme_definitions/online/common-rect.svg",
+        "operation": "replace",
+        "originalSha256": "e0153c4dd9920c49398fc8a06b1a4773ca3bc367a2d872ab494ea66fdc31c097",
+        "newSha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d"
+      },
+      {
+        "path": "share/theme_definitions/online/definition.xml",
+        "operation": "replace",
+        "originalSha256": "272adca01751b74b5b1a161bf778de896b9cb521aa8b7aeb8d306616c0e1067a",
+        "newSha256": "5129f7ef29c83ded35396632680845dccae326400fe96a7273865eafb35acdee"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-action-default.svg",
+        "operation": "replace",
+        "originalSha256": "733ac632b84b4d23cd5c519e954823349fb7dd76cabd8128ef306af0dca375ae",
+        "newSha256": "03d6118a17fef558c01f78469119c3ae46c87db1ba7d9d6b5ba84a0d8989d67b"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-action-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "d5bff7814188fa38f9f23be8dfe6764ba0f439b995bd4254edca916a624d82e4",
+        "newSha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-action-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "d141cf928e9c012804c06ea23632c01d760755cb348338689fc4c40da816dbf9",
+        "newSha256": "4fa63e6d47e1dc825fc8bc9e4987464ff1b12c86c4f18b0465609495f00a8e32"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-action-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "455f0a1b39698eb790bc35a3b1206346b3ae3c6d23b23b11849c26a57ce9fc1a",
+        "newSha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-default-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+        "newSha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-default.svg",
+        "operation": "replace",
+        "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+        "newSha256": "bdd66f51bbdf11cfa5be746ed5a204c1b782a311e7d91ee44d5b73580bdfc052"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "a62b6ee560b7a3613cced2becee6ac6417344b28bc1c78f6a3e65f4d77700c6b",
+        "newSha256": "fd1cdc87c7a7efa6656e4909f977f6afc4adc4188bb85449f8f9eb702c7b3e4d"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-focus-rectangle.svg",
+        "operation": "replace",
+        "originalSha256": "76ce5e932da1e2c29f17278967c378aba33dbd611412866e507e56df89ed9d61",
+        "newSha256": "b4e87278b24f82fd12866bb3386ab6037503aff4f39ba16202e0e41fc578ccf0"
+      },
+      {
+        "path": "share/theme_definitions/online/pushbutton-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "3f06edd79c9e4ab50638e65f67a85828e93cb2fd86a7c18d6b30f025698e8780",
+        "newSha256": "377c1ccaa7cd31c4c2c804670ebd18238481ac563f42e3350111420f01f939b6"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-off-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "ce2bf490292fe9b81a85ad6b0e7ebd4857029b4bac1f0785713d6d3c13facbd4",
+        "newSha256": "def851b43b590bf546bc721b6b041d156944a6265f3173663fc18af08553a31a"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-off-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "1d97832820667c4f3bfdfd19fdd6b0bebeb4fb1726ae7862e020744892e91b1e",
+        "newSha256": "fe74fe8b42be63a5d38152b7d8df5d0b27eda6ebec5e672c4f24d734c35a1c77"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-off.svg",
+        "operation": "replace",
+        "originalSha256": "4f54fd616d3f6c0a3bd9d9ed814f0cfbac4a00fbe3e53149d59489dd5f59dc96",
+        "newSha256": "014664b250638461d07a93a669205a695f924d5c5d80cf1ba6366258a7d25dd0"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-on-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "b8ba02a8ee20561713d93bc6738e20162684e140cd0c4119db4e2f64303d794e",
+        "newSha256": "e9bf8a922f93a134b0cf93a3371119edd89579b8799fe8e98e5c4cd7b63dc347"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-on-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "0aa9d86e8930d1897f206226655016564940fc810de199afd5d29d57b660e0ad",
+        "newSha256": "c740bce21e74603c0c1199093c92ccab097e90e7f16b0ac53aba520a4e3df1de"
+      },
+      {
+        "path": "share/theme_definitions/online/radio-on.svg",
+        "operation": "replace",
+        "originalSha256": "8ca19725b9db184fd330b52a67530d7320e11906ae607841584d74f82e022276",
+        "newSha256": "1944d8fd713a5e48daff095c3fa69b791b53c01196f2bcf700ae86189586c21b"
+      },
+      {
+        "path": "share/theme_definitions/online/scrollbar-horizontal.svg",
+        "operation": "replace",
+        "originalSha256": "f2a0762dd69d51dd0b4dd88dafc158c966a42274c62bf0bf8c3f05ce154ff798",
+        "newSha256": "bda22faa75830c6c096e7951b4b31e41f3a1718df8a762a74508d8309bf42c0d"
+      },
+      {
+        "path": "share/theme_definitions/online/scrollbar-vertical.svg",
+        "operation": "replace",
+        "originalSha256": "8ea683789ad17b6a07e53890a227bd1cdae79b211de3bb4ce35ba079b1dea2b5",
+        "newSha256": "37384ac93cd23e104d6021d2c0c76bbae55fc9fa9ad9c79383298fd6205fb997"
+      },
+      {
+        "path": "share/theme_definitions/online/slider-button-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "2abe4182b2259bc231f53fda14a22e125a773920674e0fe3d19971980455940a",
+        "newSha256": "ba0e2b17d21015fd944edb6fcc6a30d82135e3d1b7b17ac64b40d5968864d662"
+      },
+      {
+        "path": "share/theme_definitions/online/slider-button.svg",
+        "operation": "replace",
+        "originalSha256": "c722a802dec063a8987a7e75c31826e5ee3c2de45e3e858182d344ec1148183d",
+        "newSha256": "c5393b8469d1305f3ccb16df7bd966fe7fa0d83ae761e6aa6f115e5677fa1c6b"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-default-focus.svg",
+        "operation": "replace",
+        "originalSha256": "8082758130e98287c0522d7129fb795f4e77eedc764277cc9023f83c86ed22cf",
+        "newSha256": "3f43a9be2fcb2b3a6668220cd3bd713feff9c810da764abdc7f4169eb65fd999"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-default-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "fa7e0034bbb55aaf6ea1f8b002931189ec94588eab6edf6ce66d1544a045ed5f",
+        "newSha256": "c0eb593a416d3f758a123c2e238cba0d9206d1f6832ba00b223219e23ec0e0ca"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-default.svg",
+        "operation": "replace",
+        "originalSha256": "771c0a995e7b59ecdf7051e23d28872b39ce80b1274b66828e8a356862e327fe",
+        "newSha256": "cb237c558908bb7f173877be931024c5213bb9aa29c0a1c78ee4bdb8f7565b2d"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-left-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "1399309434ea4d6c303b61c9fa4d56ed47823a9eef940788ba402008fa4d1b1d",
+        "newSha256": "460aae9b595b5ec5bfc7a668545902fb0a790f869a6580d720c607e2c36117ce"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-left-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "f9ec7fc1d3727f295d249ead2f864ac1c367543c920e3a8ab1e3aa806bb18cf8",
+        "newSha256": "34069bc352047f8bf1b6fa1c32476f4384c0d97463dc58e9d9168ed84f6ff237"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-left.svg",
+        "operation": "replace",
+        "originalSha256": "a95e26ce72ca8001b56f4e58bd218025caeac5d34258ef2566de2109ad5f404a",
+        "newSha256": "216bc3919644069bb61cc758f86e12d2e5e06d2152ee27fe0cf93342da5c4c36"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-right-disabled.svg",
+        "operation": "replace",
+        "originalSha256": "059f51abc8741caac18a7fa9c3db6d7a2da77398c69082c07f98035e7ad28a27",
+        "newSha256": "5ff27332210348be703275dc12ab353dd78b2929c0fc2a57315edddc60713a46"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-right-pressed.svg",
+        "operation": "replace",
+        "originalSha256": "97a7c3443873e3c44f9018335c3a73ca908cf6e29a3cce502bd1740d1dee63cf",
+        "newSha256": "c39bf701ef40451c5f90393c57018ae643635889583f9c7af202dcc21fc2ea17"
+      },
+      {
+        "path": "share/theme_definitions/online/spinbox-right.svg",
+        "operation": "replace",
+        "originalSha256": "45e34d5777908ab3e3ac02ca85f0272fda8bc6c92717e291a899ffa039e65a51",
+        "newSha256": "b28cb932715f96d4b5892dd711b78485acc67c40eb2555951f65ce957707b7a6"
+      },
+      {
+        "path": "share/theme_definitions/online/tabitem-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "b4b86b5b3eaa7fc39bedfa2aff82b688fc6a5b723c5ffe3ec48af233f6bb4473",
+        "newSha256": "e944cde0acbd8f23b73a0b613c8c5c98377f6c5e66effb2cd91b4f7b22be6f35"
+      },
+      {
+        "path": "share/theme_definitions/online/tabitem-selected.svg",
+        "operation": "replace",
+        "originalSha256": "b4b86b5b3eaa7fc39bedfa2aff82b688fc6a5b723c5ffe3ec48af233f6bb4473",
+        "newSha256": "971c9d0908f30bb47ab84aea9525376bb7cfad1fbf256b98a0cd1421fbbbcb75"
+      },
+      {
+        "path": "share/theme_definitions/online/toolbar-button-enabled-on.svg",
+        "operation": "replace",
+        "originalSha256": "c2d0aef723018ce5a0eff3595c97ce2733a19210193ad3c116d458d81bbe308a",
+        "newSha256": "84a2b524b5f3c779d7ec76735b6d2932e62ad1d4c401d38a6d9b4ad4da8ecca6"
+      },
+      {
+        "path": "share/theme_definitions/online/toolbar-button-enabled-rollover.svg",
+        "operation": "replace",
+        "originalSha256": "4cc91a5b6316c735b97908f6cf32282f3045e2bfbb99cb5de551e8914d8cf360",
+        "newSha256": "e122453064f3bdf14c79a997bf319f65a1b0b6161f21ff670ce54348811cecb9"
+      },
+      {
+        "path": "dexopt/baseline.prof",
+        "operation": "remove",
+        "originalSha256": "b201518d4c35f076ddc30cf8a7d0d7f7ed0b203caedca29b7555d839a9b81579",
+        "newSha256": null
+      },
+      {
+        "path": "dexopt/baseline.profm",
+        "operation": "remove",
+        "originalSha256": "f8c282adfc398d10de006357c847d0765d445f6c4772b233d365cf8512abde33",
+        "newSha256": null
+      }
+    ],
+    "selfEntry": "Own digest excluded to avoid circular hash; it is present in the source overlay manifest."
+  },
+  "floeCorrespondingSource": {
+    "status": "release-source-links",
+    "tag": "android/v0.1.0-alpha.12",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.12/floe-android-corresponding-source-0.1.0-alpha.12.tar.gz",
+    "sourceRoot": "FloeAndroid/core/officeengine",
+    "coveredSource": "Floe host/bridge sources, explicit overlays, overlay manifest and public staging tool in the matching source archive. Unmodified native core/frontend and external pins use immutable upstream links below.",
+    "publicationVerification": "Publisher checks exact tag/source/archive identity and download access before declaring the Android release delivered. No native reproducible-build or third-party attestation claim."
+  },
+  "externalPins": {
+    "recipe": "engine/download.lst",
+    "recipeUrl": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/download.lst",
+    "recipeSha256": "6689bffe889d047388c7ce704bbde2d97d7b8361a70532876c2900d312675fa3",
+    "fetchRecipe": "engine/Makefile.fetch",
+    "fetchRecipeUrl": "https://raw.githubusercontent.com/CollaboraOnline/online.mirror/2333344185931274f9c49d6c12a408cefcef6844/engine/Makefile.fetch",
+    "tarballPinCount": 134,
+    "ordinaryTarballPinCount": 133,
+    "exportedTarballPinCount": 1,
+    "countCorrection": "The completed provenance handoff said 133 tarball pins. Re-parsing the exact download.lst also finds export FONT_NOTO_SANS_JP_TARBALL := NotoSansJP.zip; this package lists 134 (133 ordinary + 1 exported) instead of silently dropping it.",
+    "tarballs": [
+      {
+        "key": "ABW",
+        "tarball": "libabw-0.1.4.tar.xz",
+        "sha256": "fa2685a3440da6e03a66a778480d93cb95f6064e4541e58e37397680760fd6a0"
+      },
+      {
+        "key": "ARGON2",
+        "tarball": "phc-winner-argon2-20190702.tar.gz",
+        "sha256": "daf972a89577f8772602bf2eb38b6a3dd3d922bf5724d45e7f9589b5e830442c"
+      },
+      {
+        "key": "BOOST",
+        "tarball": "boost_1_91_0.tar.xz",
+        "sha256": "2f975c10da79511c2f218189fc8a12eef1a92e3bd18206e9841d406296d065eb"
+      },
+      {
+        "key": "BZIP2",
+        "tarball": "bzip2-1.0.8.tar.gz",
+        "sha256": "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+      },
+      {
+        "key": "CAIRO",
+        "tarball": "cairo-1.18.4.tar.xz",
+        "sha256": "445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb"
+      },
+      {
+        "key": "CDR",
+        "tarball": "libcdr-0.1.9.tar.xz",
+        "sha256": "f7bb6abdd7f226820f288a93dd8d07759833c0250d9e202af90f9b312c4665a3"
+      },
+      {
+        "key": "CLUCENE",
+        "tarball": "48d647fbd8ef8889e5a7f422c1bfda94-clucene-core-2.3.3.4.tar.gz",
+        "sha256": "ddfdc433dd8ad31b5c5819cc4404a8d2127472a3b720d3e744e8c51d79732eab"
+      },
+      {
+        "key": "DRAGONBOX",
+        "tarball": "dragonbox-1.1.3.tar.gz",
+        "sha256": "09d63b05e9c594ec423778ab59b7a5aa1d76fdd71d25c7048b0258c4ec9c3384"
+      },
+      {
+        "key": "FAST_FLOAT",
+        "tarball": "fast_float-8.2.10.tar.gz",
+        "sha256": "76f958dd97b1cf4d8862d1f0986a47d4bdfa8845252bae15ef0f40de3b95961f"
+      },
+      {
+        "key": "LIBCMIS",
+        "tarball": "libcmis-0.6.3.tar.xz",
+        "sha256": "5adb3781f374adf491103b2cb2dc290085150c9b7d097baf56d8ac35df84e792"
+      },
+      {
+        "key": "COINMP",
+        "tarball": "CoinMP-1.8.4.tgz",
+        "sha256": "3459fb0ccbdd39342744684338984ac4cc153fb0434f4cae8cf74bd67490a38d"
+      },
+      {
+        "key": "CPPUNIT",
+        "tarball": "cppunit-1.15.1.tar.gz",
+        "sha256": "89c5c6665337f56fd2db36bc3805a5619709d51fb136e51937072f63fcc717a7"
+      },
+      {
+        "key": "CURL",
+        "tarball": "curl-8.14.1.tar.xz",
+        "sha256": "f4619a1e2474c4bbfedc88a7c2191209c8334b48fa1f4e53fd584cc12e9120dd"
+      },
+      {
+        "key": "EBOOK",
+        "tarball": "libe-book-0.1.4.tar.xz",
+        "sha256": "104b7e791b6632745898e9b6a0037b7540235771a4d8c3bde2c764466ad912f1"
+      },
+      {
+        "key": "ECMA376_OPC",
+        "tarball": "ECMA-376-2_5th_edition_december_2021.zip",
+        "sha256": "1d489dc491168ea1f9e9a59063acc8dd5f02b4ad1d21aa7ec19ba9a58d020c70"
+      },
+      {
+        "key": "ECMA376_TRANSITIONAL",
+        "tarball": "ECMA-376-4_5th_edition_december_2016.zip",
+        "sha256": "bd25da1109f73762356596918bf5ff8b74a1331642dba5f1c1d1dfc6bed34ecd"
+      },
+      {
+        "key": "EPM",
+        "tarball": "3ade8cfe7e59ca8e65052644fed9fca4-epm-3.7.tar.gz",
+        "sha256": "b3fc4c5445de6c9a801504a3ea3efb2d4ea9d5a622c9427e716736e7713ddb91"
+      },
+      {
+        "key": "EPUBGEN",
+        "tarball": "libepubgen-0.1.1.tar.xz",
+        "sha256": "03e084b994cbeffc8c3dd13303b2cb805f44d8f2c3b79f7690d7e3fc7f6215ad"
+      },
+      {
+        "key": "ETONYEK",
+        "tarball": "libetonyek-0.1.13.tar.xz",
+        "sha256": "032b71cb597edd92a0b270b916188281bc35be55296b263f6817b29adbcb1709"
+      },
+      {
+        "key": "EXPAT",
+        "tarball": "expat-2.8.4.tar.xz",
+        "sha256": "656ae1cc8da3b4ea513bb4e254f33e6243938084c0ec6239da873376b09985a7"
+      },
+      {
+        "key": "FONTCONFIG",
+        "tarball": "fontconfig-2.17.1.tar.xz",
+        "sha256": "9f5cae93f4fffc1fbc05ae99cdfc708cd60dfd6612ffc0512827025c026fa541"
+      },
+      {
+        "key": "FONT_CALADEA",
+        "tarball": "368f114c078f94214a308a74c7e991bc-crosextrafonts-20130214.tar.gz",
+        "sha256": "c48d1c2fd613c9c06c959c34da7b8388059e2408d2bb19845dc3ed35f76e4d09"
+      },
+      {
+        "key": "FONT_CARLITO",
+        "tarball": "c74b7223abe75949b4af367942d96c7a-crosextrafonts-carlito-20130920.tar.gz",
+        "sha256": "4bd12b6cbc321c1cf16da76e2c585c925ce956a08067ae6f6c64eff6ccfdaf5a"
+      },
+      {
+        "key": "FONT_DEJAVU",
+        "tarball": "33e1e61fab06a547851ed308b4ffef42-dejavu-fonts-ttf-2.37.zip",
+        "sha256": "7576310b219e04159d35ff61dd4a4ec4cdba4f35c00e002a136f00e96a908b0a"
+      },
+      {
+        "key": "FONT_GENTIUM",
+        "tarball": "1725634df4bb3dcb1b2c91a6175f8789-GentiumBasic_1102.zip",
+        "sha256": "2f1a2c5491d7305dffd3520c6375d2f3e14931ee35c6d8ae1e8f098bf1a7b3cc"
+      },
+      {
+        "key": "FONT_KARLA",
+        "tarball": "2024-09-19-karla-main.zip",
+        "sha256": "c64cdbc55389c1bfb320dcef41a19f156bad271a99bc9253be118564dbb738b5"
+      },
+      {
+        "key": "FONT_LIBERATION_NARROW",
+        "tarball": "liberation-narrow-fonts-ttf-1.07.6.tar.gz",
+        "sha256": "8879d89b5ff7b506c9fc28efc31a5c0b954bbe9333e66e5283d27d20a8519ea3"
+      },
+      {
+        "key": "FONT_LIBERATION",
+        "tarball": "liberation-fonts-ttf-2.1.5.tar.gz",
+        "sha256": "7191c669bf38899f73a2094ed00f7b800553364f90e2637010a69c0e268f25d0"
+      },
+      {
+        "key": "FONT_LINLIBERTINEG",
+        "tarball": "e7a384790b13c29113e22e596ade9687-LinLibertineG-20120116.zip",
+        "sha256": "54adcb2bc8cac0927a647fbd9362f45eff48130ce6e2379dc3867643019e08c5"
+      },
+      {
+        "key": "FONT_SOURCESANS",
+        "tarball": "edc4d741888bc0d38e32dbaa17149596-source-sans-pro-2.010R-ro-1.065R-it.tar.gz",
+        "sha256": "e7bc9a1fec787a529e49f5a26b93dcdcf41506449dfc70f92cdef6d17eb6fb61"
+      },
+      {
+        "key": "FONT_NOTO_KUFI_ARABIC",
+        "tarball": "NotoKufiArabic-v2.110.zip",
+        "sha256": "34390882c196f032811f2a3db8982c1e839f69aae3e4c2c1fdd63203150690df"
+      },
+      {
+        "key": "FONT_NOTO_SANS",
+        "tarball": "NotoSans-v2.015.zip",
+        "sha256": "0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5"
+      },
+      {
+        "key": "FONT_NOTO_SERIF",
+        "tarball": "NotoSerif-v2.015.zip",
+        "sha256": "0e9a43c8a4b94ac76f55069ed1d7385bbcaf6b99527a94deb5619e032b7e76c1"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_HEBREW",
+        "tarball": "NotoSerifHebrew-v2.004.zip",
+        "sha256": "99523f4f21051495f18cbd5169ed0d1e9b395eefe770fece1844a4a7a00c46da"
+      },
+      {
+        "key": "FONT_NOTO_SANS_ARABIC",
+        "tarball": "NotoSansArabic-v2.010.zip",
+        "sha256": "a5a34ac1ea01d0d71c083f99440ebfb1f64224474a0d88bb7ef0e2f8d9a996d2"
+      },
+      {
+        "key": "FONT_NOTO_NASKH_ARABIC",
+        "tarball": "NotoNaskhArabic-v2.021.zip",
+        "sha256": "6c050ab9bd087d69b733c505a7576e60c528c2f33cd7b91005a5bd7da4514032"
+      },
+      {
+        "key": "FONT_NOTO_SANS_HEBREW",
+        "tarball": "NotoSansHebrew-v3.001.zip",
+        "sha256": "df0a71814b4e63644cf40fcc4529111b61266b7a2dafbe95068b29a7520cc3cb"
+      },
+      {
+        "key": "FONT_NOTO_SANS_ARMENIAN",
+        "tarball": "NotoSansArmenian-v2.008.zip",
+        "sha256": "eab89b99e134177ca6a3f9f0412a7cb812aafceb13175d686b4c45cb237f64ac"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_ARMENIAN",
+        "tarball": "NotoSerifArmenian-v2.008.zip",
+        "sha256": "b21c198a4c76ae598a304decefb3b5c2a4c2d4c3ae226728eff359185f291c6f"
+      },
+      {
+        "key": "FONT_NOTO_SANS_GEORGIAN",
+        "tarball": "NotoSansGeorgian-v2.005.zip",
+        "sha256": "10e85011008108308e6feab0408242acb07804da61ede3d3ff236461ae07ab1b"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_GEORGIAN",
+        "tarball": "NotoSerifGeorgian-v2.003.zip",
+        "sha256": "cfb41a264b97d463bab6807a5be937ba4a6ddcfa93d519a21b98b0ba73ca27d4"
+      },
+      {
+        "key": "FONT_NOTO_SANS_LAO",
+        "tarball": "NotoSansLao-v2.003.zip",
+        "sha256": "5a87c31b1a40ef8147c1e84437e5f0ceba2d4dbbfc0b56a65821ad29870da8c0"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_LAO",
+        "tarball": "NotoSerifLao-v2.003.zip",
+        "sha256": "e96a303d3347790b0ef3db274971a989a736ce766ec9ea1bea0e1458568a80b2"
+      },
+      {
+        "key": "FONT_NOTO_SANS_LISU",
+        "tarball": "NotoSansLisu-v2.102.zip",
+        "sha256": "b12a1ff762680681b7ce4d98dd29a7f54d90f5bcadd10c955afc640a27b3a268"
+      },
+      {
+        "key": "FONT_NOTO_MORE",
+        "tarball": "Noto-hinted.zip",
+        "sha256": "837b4a9352fce32ad7f298fbf155af1da5b6f3f8dbd995eb63fdd8e82117e4ae"
+      },
+      {
+        "key": "FONT_NOTO_SANS_JP",
+        "tarball": "NotoSansJP.zip",
+        "sha256": "6886c5526628c08f1e21a84f4658ab3daf6d0233de8dc54526ccf9f40bfab18e"
+      },
+      {
+        "key": "FONT_NOTO_SANS_KR",
+        "tarball": "NotoSansKR.zip",
+        "sha256": "5147b755c29f16f82b706b1c7ff7982894fccbebcf99e6c5fb0d48c315604b98"
+      },
+      {
+        "key": "FONT_NOTO_SANS_SC",
+        "tarball": "NotoSansSC.zip",
+        "sha256": "bee1af8c0722cfb3eb1b2fa91a7f3dc011dca231c25c8fcd9d9d544699ababf9"
+      },
+      {
+        "key": "FONT_NOTO_SANS_TC",
+        "tarball": "NotoSansTC.zip",
+        "sha256": "ec9e8a4156593e1b3ff7cff843989f43f114f96eff0b5db9691ef3c2bdefb73e"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_JP",
+        "tarball": "NotoSerifJP.zip",
+        "sha256": "362438901cb871bf84b01ff4734c668dab57b4905f39e5ec76d8b68a7a7b5fa8"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_KR",
+        "tarball": "NotoSerifKR.zip",
+        "sha256": "3c0d276fb05aaefbbca808b4f8c7b1520b4b4e7c0be46296d6e8a5e42f559f5c"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_SC",
+        "tarball": "NotoSerifSC.zip",
+        "sha256": "00ed5970680a82453619ac5952c5631ea138372bbb0f864d156d91a0fd9c8279"
+      },
+      {
+        "key": "FONT_NOTO_SERIF_TC",
+        "tarball": "NotoSerifTC.zip",
+        "sha256": "c33e04199f6d69056a6de0ebc5522dbe36e02f145208c71c9a4c803841151ad2"
+      },
+      {
+        "key": "FONT_CULMUS",
+        "tarball": "culmus-0.140.tar.gz",
+        "sha256": "6daed104481007752a76905000e71c0093c591c8ef3017d1b18222c277fc52e3"
+      },
+      {
+        "key": "FONT_LIBRE_HEBREW",
+        "tarball": "libre-hebrew-1.0.tar.gz",
+        "sha256": "f596257c1db706ce35795b18d7f66a4db99d427725f20e9384914b534142579a"
+      },
+      {
+        "key": "FONT_ALEF",
+        "tarball": "alef-1.001.tar.gz",
+        "sha256": "b98b67602a2c8880a1770f0b9e37c190f29a7e2ade5616784f0b89fbdb75bf52"
+      },
+      {
+        "key": "FONT_AMIRI",
+        "tarball": "Amiri-1.001.zip",
+        "sha256": "cae999a9fc5638cb69cf0812e8bca1437ef1ebbf094f8b3c5b3f0a3ea2ef8c3a"
+      },
+      {
+        "key": "FONT_REEM",
+        "tarball": "ReemKufi-2.0.zip",
+        "sha256": "94ae468fd88f37011607f03466bfc3a03fb617682b7bac6419b70de94cac22f0"
+      },
+      {
+        "key": "FONT_SCHEHERAZADE",
+        "tarball": "Scheherazade-2.100.zip",
+        "sha256": "251c8817ceb87d9b661ce1d5b49e732a0116add10abc046be4b8ba5196e149b5"
+      },
+      {
+        "key": "FONT_OPENDYSLEXIC",
+        "tarball": "opendyslexic-0.910.12-rc2-2019.10.17.zip",
+        "sha256": "b92d7fcb9409f2bcfd23b65ac71647256eb49c429f4fbb1cc870381fc93eb486"
+      },
+      {
+        "key": "FONT_OPEN_SANS",
+        "tarball": "Open_Sans.zip",
+        "sha256": "85d79a39d26acb207ba13fb1007189d55355a0faf2cf7ccfe6a2edf2abac06d9"
+      },
+      {
+        "key": "FONT_AGDASIMA",
+        "tarball": "Agdasima-2.002.zip",
+        "sha256": "b4c17499f8bc183320ffdcf1f8491c778dd68a237adc056dc08e1fcb2da488f3"
+      },
+      {
+        "key": "FONT_BACASIME_ANTIQUE",
+        "tarball": "Bacasime_Antique-2.000.zip",
+        "sha256": "81127cebc97d4ee0b950c2bc2d6be0ed29abfe0d5988435eb9a39e382557250a"
+      },
+      {
+        "key": "FONT_BELANOSIMA",
+        "tarball": "Belanosima-2.000.zip",
+        "sha256": "9c30e9e7cdb0797b651113a77f6b789659b8d8598a466b2ba92754e9dec30449"
+      },
+      {
+        "key": "FONT_CAPRASIMO",
+        "tarball": "Caprasimo-1.001.zip",
+        "sha256": "f066d27cfc99b6601083be102d08b4039da8d2834e2795aabd890f16c6fd1b9b"
+      },
+      {
+        "key": "FONT_LUGRASIMO",
+        "tarball": "Lugrasimo-1.001.zip",
+        "sha256": "db24dff31e8ddf6a113556c947a219f9534b072852e9ce2079a08c94854a7503"
+      },
+      {
+        "key": "FONT_LUMANOSIMO",
+        "tarball": "Lumanosimo-1.010.zip",
+        "sha256": "d4545ad6afded9a55d9a7728cfc7453cf5637861db87aafe0a730676a0cb960f"
+      },
+      {
+        "key": "FONT_LUNASIMA",
+        "tarball": "Lunasima-2.009.zip",
+        "sha256": "4302809cf4b95b481bec53de87484d919b391c90a518d065f6c775fd435a5393"
+      },
+      {
+        "key": "FREEHAND",
+        "tarball": "libfreehand-0.1.4.tar.xz",
+        "sha256": "350b10d24a76d7e8c8ae98b74c2d432a2c8ddec08935d09856d20b695a35e600"
+      },
+      {
+        "key": "FREETYPE",
+        "tarball": "freetype-2.14.2.tar.xz",
+        "sha256": "4b62dcab4c920a1a860369933221814362e699e26f55792516d671e6ff55b5e1"
+      },
+      {
+        "key": "FROZEN",
+        "tarball": "frozen-1.2.0.tar.gz",
+        "sha256": "ed8339c017d7c5fe019ac2c642477f435278f0dc643c1d69d3f3b1e95915e823"
+      },
+      {
+        "key": "GLM",
+        "tarball": "glm-1.0.3.zip",
+        "sha256": "3aa4347b8f13cba882df1c7b61a6ca910c75a875c56ec3d75d7dc9ae8eac34df"
+      },
+      {
+        "key": "GRAPHITE",
+        "tarball": "graphite2-minimal-1.3.15.tgz",
+        "sha256": "10cfc69a6f859ce875b9708d170b8222eba76cdb89b6dbb4ee1e375bc7242409"
+      },
+      {
+        "key": "HARFBUZZ",
+        "tarball": "harfbuzz-14.3.0.tar.xz",
+        "sha256": "16070d77cfc4ba1f1e7327e83bf9b3f55898081cabdb94e56a33e04fc8874eae"
+      },
+      {
+        "key": "HUNSPELL",
+        "tarball": "hunspell-1.7.3.tar.gz",
+        "sha256": "433274dac0619cb00c2e18b43a3dd3a9d50da5b5613fa9b5c21781e35dd76bc1"
+      },
+      {
+        "key": "HYPHEN",
+        "tarball": "442b985e604f8143a5a0e7bacd6b2e40-hyphen-2.8.9.tar.gz",
+        "sha256": "783743daf477de8c4d16e3c74b4d2827377017718d8e17e2d9440210246f6abe"
+      },
+      {
+        "key": "ICU",
+        "tarball": "icu4c-78.2-sources.tgz",
+        "sha256": "3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35"
+      },
+      {
+        "key": "ICU_DATA",
+        "tarball": "icu4c-78.2-data.zip",
+        "sha256": "582968cf174c9498b2046b4f4e7f786def5f18222bd8d98432d7a29399c38c70"
+      },
+      {
+        "key": "JAVA_WEBSOCKET",
+        "tarball": "Java-WebSocket-1.6.0.tar.gz",
+        "sha256": "f3ce29efde338707241d47ab4784b19a1e3658bfa0564b5bc5f80c27e5118728"
+      },
+      {
+        "key": "LIBJPEG_TURBO",
+        "tarball": "libjpeg-turbo-3.1.3.tar.gz",
+        "sha256": "3a13a5ba767dc8264bc40b185e41368a80d5d5f945944d1dbaa4b2fb0099f4e5"
+      },
+      {
+        "key": "LANGTAGREG",
+        "tarball": "language-subtag-registry-2025-08-25.tar.bz2",
+        "sha256": "9b008d21f97bbf37c5aefd07805ff5500524bccbe8c39d623e184b1ed425ff39"
+      },
+      {
+        "key": "LCMS2",
+        "tarball": "lcms2-2.19.tar.gz",
+        "sha256": "49e7e134e4299733dd0eda434fa468997a28ab3d33fa397c642b03644f552216"
+      },
+      {
+        "key": "LIBEOT",
+        "tarball": "libeot-0.01.tar.bz2",
+        "sha256": "cf5091fa8e7dcdbe667335eb90a2cfdd0a3fe8f8c7c8d1ece44d9d055736a06a"
+      },
+      {
+        "key": "LIBEXTTEXTCAT",
+        "tarball": "libexttextcat-3.4.8.tar.xz",
+        "sha256": "93eb89fd4fc8f565806354e100e778b3ac9a24e5fc04c24e6a83fb1e9b6c9d59"
+      },
+      {
+        "key": "LIBFFI",
+        "tarball": "libffi-3.5.2.tar.gz",
+        "sha256": "f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc"
+      },
+      {
+        "key": "LIBLANGTAG",
+        "tarball": "liblangtag-0.6.8.tar.bz2",
+        "sha256": "a96975b79ddd8fef6d9295c083fe3f1afa1a8898a57235d4069255ade44e5cf2"
+      },
+      {
+        "key": "LIBNUMBERTEXT",
+        "tarball": "libnumbertext-1.0.11.tar.xz",
+        "sha256": "5dcb4db3b2340f81f601ce86d8d76b69e34d70f84f804192c901e4b7f84d5fb0"
+      },
+      {
+        "key": "LIBWEBP",
+        "tarball": "libwebp-1.6.0.tar.gz",
+        "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+      },
+      {
+        "key": "XMLSEC",
+        "tarball": "xmlsec1-1.3.12.tar.gz",
+        "sha256": "24045199af12d93fe5fdbbbf7e386e823e4842071e9432e2b90ac108b889a923"
+      },
+      {
+        "key": "LIBXML",
+        "tarball": "libxml2-2.15.3.tar.xz",
+        "sha256": "78262a6e7ac170d6528ebfe2efccdf220191a5af6a6cd61ea4a9a9a5042c7a07"
+      },
+      {
+        "key": "LIBXSLT",
+        "tarball": "libxslt-1.1.45.tar.xz",
+        "sha256": "9acfe68419c4d06a45c550321b3212762d92f41465062ca4ea19e632ee5d216e"
+      },
+      {
+        "key": "LXML",
+        "tarball": "lxml-6.0.2.tar.gz",
+        "sha256": "cd79f3367bd74b317dda655dc8fcfa304d9eb6e4fb06b7168c5cf27f96e0cd62"
+      },
+      {
+        "key": "MDDS",
+        "tarball": "mdds-3.1.0.tar.xz",
+        "sha256": "ca295f4c86968a7eb1f5d503ff7ae180e6605210cfb26d01658be42048c0924c"
+      },
+      {
+        "key": "MESON",
+        "tarball": "meson-1.8.3.tar.gz",
+        "sha256": "f118aa910fc0a137cc2dd0122232dbf82153d9a12fb5b0f5bb64896f6a157abf"
+      },
+      {
+        "key": "MSPUB",
+        "tarball": "libmspub-0.1.5.tar.xz",
+        "sha256": "3671095f5a10bee8a755052a30576952c5b16d8b0f2ba9f2fb998338c18cb119"
+      },
+      {
+        "key": "MWAW",
+        "tarball": "libmwaw-0.3.23.tar.xz",
+        "sha256": "ac3590f691a2904eb8c7dc8b757b8a29f125f592449e421459ae8fa928b399eb"
+      },
+      {
+        "key": "MYTHES",
+        "tarball": "mythes-1.2.6.tar.xz",
+        "sha256": "97bd2ba5738aebdba1bc31f30f1be42f1404386c94105ad5990d839a1311c8a5"
+      },
+      {
+        "key": "GYP",
+        "tarball": "gyp-next-0.22.2.tar.gz",
+        "sha256": "eec4d9ca36028a28bffa6313fb7db51d664f06f49387cb734369777a55730d4d"
+      },
+      {
+        "key": "NSS",
+        "tarball": "nss-3.126-with-nspr-4.39.tar.gz",
+        "sha256": "c95a4cf93d6939000642254422d71dffccb5c017d0f40733d3e2be18aa93f1be"
+      },
+      {
+        "key": "ODFGEN",
+        "tarball": "libodfgen-0.1.8.tar.xz",
+        "sha256": "55200027fd46623b9bdddd38d275e7452d1b0ff8aeddcad6f9ae6dc25f610625"
+      },
+      {
+        "key": "OPENSSL",
+        "tarball": "openssl-3.5.8.tar.gz",
+        "sha256": "a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"
+      },
+      {
+        "key": "ORCUS",
+        "tarball": "liborcus-0.21.0.tar.xz",
+        "sha256": "1c6e473d6b8a63d61d0e6874a1762d6f0e0e78338d763e48ac93126ecde19b37"
+      },
+      {
+        "key": "PAGEMAKER",
+        "tarball": "libpagemaker-0.0.4.tar.xz",
+        "sha256": "66adacd705a7d19895e08eac46d1e851332adf2e736c566bef1164e7a442519d"
+      },
+      {
+        "key": "POCO",
+        "tarball": "poco-1.15.3-all.tar.bz2",
+        "sha256": "562a1ba1a6db4665f81091c35e997b73f87e1b45e2ab2854cd720d2349518abc"
+      },
+      {
+        "key": "PDFIUM",
+        "tarball": "pdfium-7988.tar.bz2",
+        "sha256": "0340b2fca57cecdf6e2e0366129a3340f6764c132cb090f57db96d9f0f349855"
+      },
+      {
+        "key": "AFDKO",
+        "tarball": "afdko-5.0.1.tar.gz",
+        "sha256": "083b504a1cd865e8bfbb42134a34318ce42ef5130daebfc5b0e2f2fb444326c5"
+      },
+      {
+        "key": "ANTLR4CPPRUNTIME",
+        "tarball": "antlr4-cpp-runtime-4.13.2-source.zip",
+        "sha256": "0ed13668906e86dbc0dcddf30fdee68c10203dea4e83852b4edb810821bee3c4"
+      },
+      {
+        "key": "PIXMAN",
+        "tarball": "pixman-0.46.4.tar.xz",
+        "sha256": "a098c33924754ad43f981b740f6d576c70f9ed1006e12221b1845431ebce1239"
+      },
+      {
+        "key": "LIBPNG",
+        "tarball": "libpng-1.6.58.tar.xz",
+        "sha256": "28eb403f51f0f7405249132cecfe82ea5c0ef97f1b32c5a65828814ae0d34775"
+      },
+      {
+        "key": "LIBTIFF",
+        "tarball": "tiff-4.7.2.tar.xz",
+        "sha256": "4996f0c4f93094719b1ca5c6279b20e588773ba8a247533e486416fb662ddb88"
+      },
+      {
+        "key": "PYTHON",
+        "tarball": "Python-3.14.7.tar.xz",
+        "sha256": "3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81"
+      },
+      {
+        "key": "PYTHON_BOOTSTRAP",
+        "tarball": "python.3.12.8.nupkg",
+        "sha256": "406856be971d957e0bee7a5cefe20a5ec78d70a495e9e33cd0e53d31faec049d"
+      },
+      {
+        "key": "QUICKJS",
+        "tarball": "quickjs-0.16.2-amalgam.zip",
+        "sha256": "866bad1e2f148b6f8144a4a3d4c3f8a0754495a6920fe56a7dd698cf0ad27f65"
+      },
+      {
+        "key": "QXP",
+        "tarball": "libqxp-0.0.3.tar.xz",
+        "sha256": "4687a9cc96c32d7406e5072c4da150fca696c563e5cde62b024f82fa53d32332"
+      },
+      {
+        "key": "RAPTOR",
+        "tarball": "raptor2-2.0.16.tar.gz",
+        "sha256": "089db78d7ac982354bdbf39d973baf09581e6904ac4c92a98c5caadb3de44680"
+      },
+      {
+        "key": "RASQAL",
+        "tarball": "1f5def51ca0026cd192958ef07228b52-rasqal-0.9.33.tar.gz",
+        "sha256": "6924c9ac6570bd241a9669f83b467c728a322470bf34f4b2da4f69492ccfd97c"
+      },
+      {
+        "key": "REDLAND",
+        "tarball": "e5be03eda13ef68aabab6e42aa67715e-redland-1.0.17.tar.gz",
+        "sha256": "de1847f7b59021c16bdc72abb4d8e2d9187cd6124d69156f3326dd34ee043681"
+      },
+      {
+        "key": "REVENGE",
+        "tarball": "librevenge-0.0.6.tar.bz2",
+        "sha256": "52a65e904d255dbdd97a8b7bb28d6574e14f999eb01416aff004502406d0904d"
+      },
+      {
+        "key": "MD4C",
+        "tarball": "md4c-release-0.5.3.tar.gz",
+        "sha256": "353c346f376b87c954a13f3415ede2d51264cc61dc5abcd38ff1d2aa0d059b9e"
+      },
+      {
+        "key": "RNV",
+        "tarball": "rnv-1.7.10.zip",
+        "sha256": "0840ce00ebd2a2ce72f92dd7d5abcd9695204c6b21b0668502cedc84695b6b8b"
+      },
+      {
+        "key": "SKIA",
+        "tarball": "skia-m142-f4ed99d2443962782cf5f8b4dd27179f131e7cbe.tar.xz",
+        "sha256": "45ae58e84fa2d1e261bfc980e1c5b7bbfaf83887e3813795bd343d3786f4d0bc"
+      },
+      {
+        "key": "SQLITE3",
+        "tarball": "sqlite-amalgamation-3520000.zip",
+        "sha256": "45d0fea15971dd1300e5b509f48ca134621e10d9297713b64618fbca21b325fa"
+      },
+      {
+        "key": "STAROFFICE",
+        "tarball": "libstaroffice-0.0.8.tar.xz",
+        "sha256": "bbca92882e96c55bd1527670866d6bc7529ccb12786da55a2398b60a063378da"
+      },
+      {
+        "key": "TWAIN_DSM",
+        "tarball": "twaindsm_2.4.1.orig.tar.gz",
+        "sha256": "82c818be771f242388457aa8c807e4b52aa84dc22b21c6c56184a6b4cbb085e6"
+      },
+      {
+        "key": "VISIO",
+        "tarball": "libvisio-0.1.11.tar.xz",
+        "sha256": "2a6efd40b6d9dbcb70fba3be53112366882ba97b57151df3698dfa478c8d8dd3"
+      },
+      {
+        "key": "WPD",
+        "tarball": "libwpd-0.10.3.tar.xz",
+        "sha256": "2465b0b662fdc5d4e3bebcdc9a79027713fb629ca2bff04a3c9251fdec42dd09"
+      },
+      {
+        "key": "WPG",
+        "tarball": "libwpg-0.3.4.tar.xz",
+        "sha256": "b55fda9440d1e070630eb2487d8b8697cf412c214a27caee9df69cec7c004de3"
+      },
+      {
+        "key": "WPS",
+        "tarball": "libwps-0.4.14.tar.xz",
+        "sha256": "365b968e270e85a8469c6b160aa6af5619a4e6c995dbb04c1ecc1b4dd13e80de"
+      },
+      {
+        "key": "YRS",
+        "tarball": "y-crdt-0.23.5.tar.gz",
+        "sha256": "67c02f1b74fda33bcc824a310028c100ce2a84b6e63ade46ae1a3258e867a225"
+      },
+      {
+        "key": "ZLIB",
+        "tarball": "zlib-1.3.2.tar.xz",
+        "sha256": "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"
+      },
+      {
+        "key": "ZSTD",
+        "tarball": "zstd-1.5.7.tar.gz",
+        "sha256": "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+      },
+      {
+        "key": "ZMF",
+        "tarball": "libzmf-0.0.2.tar.xz",
+        "sha256": "27051a30cb057fdb5d5de65a1f165c7153dc76e27fe62251cbb86639eb2caf22"
+      },
+      {
+        "key": "ZXCVBN_C",
+        "tarball": "zxcvbn-c-2.6.tar.gz",
+        "sha256": "11e39f6776f9c82c68b2acb94336e32697d4ab6cdb4ac16f9583ccbdd735113a"
+      },
+      {
+        "key": "ZXING",
+        "tarball": "zxing-cpp-2.3.0.tar.gz",
+        "sha256": "64e4139103fdbc57752698ee15b5f0b0f7af9a0331ecbdc492047e0772c417ba"
+      }
+    ],
+    "opensymbolTtf": {
+      "key": "OPENSYMBOL",
+      "file": "f543e6e2d7275557a839a164941c0a86e5f2c3f2a0042bfc434c88c6dde9e140-opens___.ttf",
+      "sha256": "f543e6e2d7275557a839a164941c0a86e5f2c3f2a0042bfc434c88c6dde9e140",
+      "note": "In-tree OpenSymbol TTF produced from extras/source/truetype/symbol; download.lst records the file name with its SHA-256 prefix."
+    },
+    "unusedHashes": [
+      {
+        "key": "ODFVALIDATOR",
+        "sha256": "d55495ab3a86544650587de2a72180ddf8bfc6376d14ddfa923992dbc86a06e0"
+      },
+      {
+        "key": "OFFICEOTRON",
+        "sha256": "c72cdcb7fe7cfe917d1fb8766ddbc3f92b6124ecd5fb8c6dc0ddabb74a7e057c"
+      },
+      {
+        "key": "VERAPDF",
+        "sha256": "bdeef807f7e883fe3ff4e0a4712dc216064ca670d5c857fbc94408266719f0f4"
+      }
+    ],
+    "note": "download.lst is the upstream fetch recipe, not a complete mobile build manifest. Not every optional platform tarball is necessarily compiled into the mobile APK. No optional tarballs were downloaded for this package; this list exists so source can be located without blind bulk downloads."
+  },
+  "shippedComponentSourceMap": {
+    "lib/arm64-v8a/liblo-native-code.so": {
+      "source": "online@2333344185931274f9c49d6c12a408cefcef6844 engine/ (in-monorepo Collabora Office core, AC_INIT [Collabora Office],[26.04.4.2]) plus external tarballs pinned by engine/download.lst at the same revision",
+      "license": "MPL-2.0 (tri-license COPYING / COPYING.LGPL / COPYING.MPL in engine/); static externals per engine/readlicense_oo/license/license.xml conclusions",
+      "sha256": "944c97e9a0d23d7842ca61458a6c3b27b2f3e51fad0f51ddf7a96627705c2035"
+    },
+    "lib/arm64-v8a/libandroidapp.so": {
+      "source": "android/lib/src/main/cpp/androidapp.cpp + android/lib/src/main/cpp/CMakeLists.txt.in + top-level MPL sources compiled in-place: common/ (27 .cpp), kit/ (6), net/ (4), wsd/ (12) at the same revision; links POCO + zstd built as part of the engine",
+      "license": "MPL-2.0",
+      "sha256": "dbc2a5b77601081817ecf4e31415f681fcf58181ab09ce71e2db62ff56d93467"
+    },
+    "lib/arm64-v8a NSS family (libnss3, libnssutil3, libsmime3, libssl3, libnssckbi, libnssdbm3, libfreebl3, libsoftokn3, libplc4, libplds4, libnspr4)": {
+      "source": "engine/download.lst NSS_TARBALL = nss-3.126-with-nspr-4.39.tar.gz (SHA256 c95a4cf93d6939000642254422d71dffccb5c017d0f40733d3e2be18aa93f1be), upstream https://ftp.mozilla.org/pub/security/nss/releases/ (license.xml URL), built with the in-tree patches listed in engine/external/nss/UnpackedTarball_nss.mk at the same revision (including nss.patch, nss-android.patch.1 and other applied .patch files)",
+      "license": "MPL-2.0 (declared and concluded both MPL-2.0 in engine license.xml)"
+    },
+    "lib/arm64-v8a/libsqlite3.so": {
+      "source": "engine/download.lst SQLITE3_TARBALL = sqlite-amalgamation-3520000.zip (SHA256 45d0fea15971dd1300e5b509f48ca134621e10d9297713b64618fbca21b325fa)",
+      "license": "Public domain (license.xml SQLITE section)",
+      "sha256": "06883c87fd2ccb25a357d31b166ab76657e64ab7dbc7e65e454f9d7a50bfe8d5"
+    },
+    "libc++_shared.so": {
+      "note": "NOT shipped from the official APK (deliberately excluded). Floe supplies its own existing pinned NDK runtime copy (Apache-2.0 WITH LLVM-exception). Official copy sha c4c2fe5cbcb1fba0003a31fc7ab29a9bb12df6cc187ec45a806462540e83d93b is unused."
+    },
+    "assets/license.html": {
+      "source": "engine/readlicense_oo generation (license.xml 604,900 B + XSL + per-module notices) at the same revision, packaged from instdir/LICENSE.html per android/lib/build.gradle copyAssets; shipped bytes are the generated output, sha256 97ef2ae8cad32deeb053db278c714b71cdab7f43a0c88d8b0e76fd516744a87d (408,856 B)",
+      "note": "Header: 'Copyright the Collabora Online contributors … Mozilla Public License, v. 2.0' plus 242-component third-party matrix (libraries, extensions, fonts, dictionaries, artwork), full texts of MPL 1.1/2.0, GPL 2/3, LGPL 2.1/3, Apache-2.0, OFL 1.1, CC-BY/BY-SA, MIT/BSD/Zlib/FTL etc."
+    },
+    "assets/notice.txt": {
+      "source": "engine/readlicense_oo/license/NOTICE at the same revision (Apache-2.0 NOTICE for AOO-derived parts, Oracle/IBM copyright lines, Lucene, Redland, OpenSSL acknowledgment)",
+      "verifiedEqual": "upstream raw file SHA256 68421bcdfed13d444be60c23baea19c6fbd7dc5a45bd8522c924e17eff3e1903 == packaged notice.txt SHA256 (byte-identical)"
+    },
+    "assets/unpack/user/fonts/ (33 TTF)": {
+      "source": "engine/download.lst FONT_* tarballs at the same revision: Caladea (crosextrafonts-20130214, Declared Apache-2.0/Concluded MPL-2.0), Carlito (crosextrafonts-carlito-20130920, OFL-1.1), Gentium (GentiumBasic_1102, OFL-1.1), Liberation (liberation-fonts-ttf-2.1.5 + narrow 1.07.6, OFL-1.1), OpenSymbol (extras/source/truetype/symbol in-tree, LGPL-3.0-or-later OR MPL-2.0 → Concluded MPL-2.0)",
+      "note": "Fonts are shipped unmodified; OFL/Apache notice texts are carried inside license.html."
+    },
+    "assets/share/ (registry, filter, gallery, palette, liblangtag, dict-de/en/es/fr/pt-BR)": {
+      "source": "engine instdir outputs at the same revision; dictionaries per license.xml Dictionaries entries (tri-licensed data whose .dic/.aff files ship themselves)",
+      "note": "Copied per android/lib/build.gradle copyAssets/copyUnpackAssets include lists."
+    },
+    "assets/templates/untitled.*": {
+      "source": "android/templates/ at the same revision",
+      "license": "MPL-2.0 (online repo root COPYING)"
+    },
+    "assets/dist/ (frontend)": {
+      "source": "browser/ at the same revision, generated by 'make -C browser DIST_FOLDER=.../assets/dist BUNDLE=RELEASE' per android/lib/build.gradle at the revision; the bundle also carries dist/src/ with 547 unbundled frontend source files (Leaflet, core/, app/ JS) from the same generator",
+      "proprietaryOverlay": "Floe neutral overlay: removes 77 out-of-tree All-Rights-Reserved branding SVGs and the two unreferenced branding-unsupported files; replaces branding.js and the branding CSS files with self-authored MPL-2.0 assets; changes six visible branding strings in dist/cool.html. The original payload had 70 top-level dist entries; the 547 unbundled frontend source files under dist/src remain upstream MPL-2.0 sources.",
+      "frontendLicense": "MPL-2.0 for all git-tracked browser/ sources; branding overlay is separate proprietary upstream branding",
+      "floeOverlay": "See floeOverlay.operations and OVERLAY_MANIFEST.json for exact original/new SHA-256 values."
+    }
+  },
+  "relatedProprietarySurface": {
+    "originalProducerBranding": "Web branding and native online theme came from unpublished upstream branding inputs. They are removed or replaced by the explicit Floe source overlays. Native library bytes remain unchanged.",
+    "nativeTheme": "All52 original native-theme files replaced. Functional widget/part/state identifiers and dimensions are retained, SVG geometry is self-authored and source available.",
+    "notices": "Original license.html and NOTICE remain byte-identical; factual upstream attribution is retained."
+  },
+  "unresolved": [
+    "No third-party producer attestation or reproducible native build is claimed.",
+    "The final release owner separately verifies source/tag/archive availability and App runtime; a source index alone does not prove either."
+  ],
+  "verification": {
+    "scope": "Source/producer mapping and explicit operation identities. This metadata does not claim App rendering or publication has passed.",
+    "originalProducerEvidence": "Publisher APK SHA and signer pin, immutable source revision, byte-identical original licence and NOTICE",
+    "finalOutputEvidence": "Native/App and public-download readbacks are maintained by the release owner for the actual candidate."
+  },
+  "floePreviewPolicy": {
+    "source": "core/officeengine/overlays/share/registry/floe-preview-policy.xcd",
+    "layer": "Actual xcsxcu registry layer; this producer has no user: layer",
+    "properties": {
+      "DisableMacrosExecution": true,
+      "DisableActiveContent": true,
+      "BlockUntrustedRefererLinks": true,
+      "Calc.Content.Update.Link": 1,
+      "Writer.Content.Update.Link": 2
+    },
+    "nativeBytes": "Unmodified, hash-pinned official producer libraries; no kernel binary patch"
+  },
+  "floeFinalOverlayManifest": "core/officeengine/asset-overlays.json in matching Floe source"
+}

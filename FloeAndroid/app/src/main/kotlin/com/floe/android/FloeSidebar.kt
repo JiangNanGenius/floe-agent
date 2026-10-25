@@ -53,6 +53,7 @@ fun FloeSidebar(
     onCollapseRequested: (() -> Unit)?,
     modifier: Modifier = Modifier,
     runtimeHost: com.floe.android.host.RuntimeHost? = null,
+    onOpenDocument: (() -> Unit)? = null,
 ) {
     val newTaskKey = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
     val overviewKey = SidebarSelection.Workbench(WorkbenchSelection.OVERVIEW)
@@ -72,6 +73,16 @@ fun FloeSidebar(
                 stringResource(R.string.brand_shell_title),
                 style = Floe.typography.toolbarTitle,
             )
+            if (onOpenDocument != null) {
+                FloeCircleButton(
+                    icon = FloeIcons.Folder,
+                    contentDescription = stringResource(R.string.office_open_document),
+                    onClick = onOpenDocument,
+                    visualSize = 38.dp,
+                    iconSize = 20.dp,
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 10.dp),
+                )
+            }
             if (onCollapseRequested != null) {
                 com.floe.android.design.FloeCircleButton(
                     icon = FloeIcons.SidebarToggle,
