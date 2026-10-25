@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0070ECF46EFF755D1F97CE27 /* SkillPackageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E885F81241D7E8EC4489BB6 /* SkillPackageTests.swift */; };
 		00D36F86084F1651934DAB00 /* BrowserSessionCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9C72C2A24D117C574C0444C /* BrowserSessionCenter.swift */; };
 		00DEDDB56CF4808E07BA7B2C /* ChildToolDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99CFF4252734BBEEE4706FC4 /* ChildToolDiscoveryTests.swift */; };
 		01646694EFAB7D7FE8DD7F94 /* DesignFreezeProtectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790388040FBC66D6F19B4C85 /* DesignFreezeProtectionCoordinator.swift */; };
@@ -1559,6 +1560,7 @@
 		9E2C477C0FDB25F6328AC0EB /* bundled-boot-pair */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "bundled-boot-pair"; path = "ThirdParty/TinyEMU/guest-image/bundled-boot-pair"; sourceTree = SOURCE_ROOT; };
 		9E7484DF188E2D750D6F5E1D /* AllWorkspacesFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllWorkspacesFilesView.swift; sourceTree = "<group>"; };
 		9E86A8E54493DBC09A0A8BD0 /* ContinuousVoicePresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContinuousVoicePresentation.swift; sourceTree = "<group>"; };
+		9E885F81241D7E8EC4489BB6 /* SkillPackageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillPackageTests.swift; sourceTree = "<group>"; };
 		9EC4AAB6C30AFE28E301DAD8 /* TemporaryConversationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryConversationTests.swift; sourceTree = "<group>"; };
 		9ED88DC18A9D3D6ABA16DE7E /* ModelEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelEditorView.swift; sourceTree = "<group>"; };
 		9F1218DA8D0702E75F1CC49A /* NotesCoverPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesCoverPicker.swift; sourceTree = "<group>"; };
@@ -3153,6 +3155,7 @@
 				92CC3E2CE3E1B9BEF56EDF5A /* SkillHubTransportBudgetTests.swift */,
 				A9104F8287CF04D0A6927BDE /* SkillManagementTests.swift */,
 				487109D6D2AAA96BEBCA128F /* SkillOriginResolverTests.swift */,
+				9E885F81241D7E8EC4489BB6 /* SkillPackageTests.swift */,
 				F23CC877DDE2D9D12D3E0DBC /* SkillWorkspaceInstallToolTests.swift */,
 				EB4B727F538972530A959FFC /* TraditionalSkillTests.swift */,
 				BDE124479E669B7078D5BC7B /* Fixtures */,
@@ -4793,6 +4796,7 @@
 				BB32D4D7ECF75C1CCCD11A6A /* SkillMutationTests.swift in Sources */,
 				CCCDAF293FB9806156F44A8F /* SkillOriginResolverTests.swift in Sources */,
 				B087051AB870562326223474 /* SkillOriginTests.swift in Sources */,
+				0070ECF46EFF755D1F97CE27 /* SkillPackageTests.swift in Sources */,
 				3AAA2FF10AA7144B162F4518 /* SkillSourceTrackingTests.swift in Sources */,
 				769FDE974CAFBD14D8E75536 /* SkillWorkspaceInstallToolTests.swift in Sources */,
 				EEEE5BA66D994653A21C0521 /* SkillWorkspaceResourceStagerTests.swift in Sources */,

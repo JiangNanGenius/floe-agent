@@ -43,6 +43,12 @@ struct TraditionalSkillTests {
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: scripts.appendingPathComponent("escape"), withDestinationURL: outside)
         #expect(throws: (any Error).self) { try SkillScriptPath.destination(for: "escape/audit.py", in: scripts) }
+        try Data("print('outside')\n".utf8).write(to: outside.appendingPathComponent("audit.py"))
+        #expect(throws: (any Error).self) { try SkillScriptPath.destination(for: "escape/audit.py", in: scripts) }
+        try FileManager.default.createSymbolicLink(
+            at: scripts.appendingPathComponent("broken"),
+            withDestinationURL: root.appendingPathComponent("missing"))
+        #expect(throws: (any Error).self) { try SkillScriptPath.destination(for: "broken/audit.py", in: scripts) }
     }
 
     @Test("Runtime declarations distinguish host platform from guest architecture")

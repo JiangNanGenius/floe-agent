@@ -730,6 +730,7 @@ targets:
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
+      - path: Tests/FloeSkillsTests/SkillPackageTests.swift
       - path: Tests/FloeSkillsTests/TraditionalSkillTests.swift
       - path: Tests/FloeSkillsTests/SkillCreateToolTests.swift
       - path: Tests/FloeExecutionTests/LocalShellLargeScriptTests.swift

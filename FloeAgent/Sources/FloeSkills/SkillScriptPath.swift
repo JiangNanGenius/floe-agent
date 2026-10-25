@@ -20,6 +20,22 @@ public enum SkillScriptPath {
     public static func destination(for input: String, in scriptsRoot: URL) throws -> URL {
         let relative = try relativeToScripts(input)
         let root = scriptsRoot.resolvingSymlinksInPath().standardizedFileURL
+        // Resolving the whole URL can leave an existing symlink unresolved
+        // when the final script does not exist yet. Inspect each existing
+        // component before accepting a destination for a new file.
+        var component = root
+        for part in relative.split(separator: "/") {
+            component.appendPathComponent(String(part))
+            do {
+                let values = try component.resourceValues(forKeys: [.isSymbolicLinkKey])
+                guard values.isSymbolicLink != true else {
+                    throw FloeError.validationFailed("Skill Python script path is unsafe")
+                }
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile
+                || error.code == .fileNoSuchFile {
+                break
+            }
+        }
         let destination = root.appendingPathComponent(relative, isDirectory: false)
             .resolvingSymlinksInPath().standardizedFileURL
         // URL.path may retain a directory slash on some Foundation versions;
