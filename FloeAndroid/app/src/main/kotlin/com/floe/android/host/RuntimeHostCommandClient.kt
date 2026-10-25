@@ -319,6 +319,28 @@ class RuntimeHostCommandClient internal constructor(
         onLiveHint: () -> Unit,
         onFailure: (HostPumpFailure) -> Unit,
         startSequence: Long = 0L,
+        /** Typed durable-resync signal (C09 QREV-03): the native window could
+         *  NOT verify its durable tail against the journal (a degraded
+         *  queue-settle publication, carried on the EXISTING frozen
+         *  `resyncRequired` member — no schema change). The owner reconciles
+         *  from authoritative pages; the pump keeps delivering the frames of
+         *  the same page FIRST, then signals once per page.
+         *
+         *  MAIN_ADDENDUM B — queue-watcher-only notAttached opt-out: opening a
+         *  durable-resync consumer is what marks this stream as a QUEUE
+         *  OBSERVER (the only consumer of the member today; the ordinary run
+         *  pump passes no callback). A queue observer legitimately watches a
+         *  EVICTED or never-refreshed retired window, so the legacy
+         *  `notAttached` COUNT cutoff (~10 s) is skipped FOR THIS STREAM ONLY
+         *  and must never be presented as observation failure. Ordinary pumps
+         *  keep the baseline limit byte-identically (HostEventPumpTest
+         *  timeout expectations unchanged), and lifecycle (Superseded),
+         *  `runGone`, exchange-throw and decode-failure streaks still
+         *  terminate observation exactly as before.
+         *
+         *  Default null ⇒ every existing call site and positional test call
+         *  compiles and behaves byte-for-byte as before. */
+        onDurableResync: (() -> Unit)? = null,
     ): EventPumpHandle {
         val gen = generation()
         val handle = EventPumpHandle(
@@ -332,6 +354,7 @@ class RuntimeHostCommandClient internal constructor(
             onLiveHint = onLiveHint,
             onFailure = onFailure,
             initialSequence = startSequence,
+            onDurableResync = onDurableResync,
         )
         eventPumps[runID] = handle
         handle.job = scope.launch(ioDispatcher) { handle.run() }
@@ -882,6 +905,16 @@ class EventPumpHandle internal constructor(
     private val onLiveHint: () -> Unit,
     private val onFailure: (HostPumpFailure) -> Unit,
     initialSequence: Long = 0L,
+    /** C09 QREV-03 typed durable-resync consumer (facts first, signal second,
+     *  once per delivered page). Its presence is ALSO the MAIN_ADDENDUM B
+     *  marker that this stream is a QUEUE OBSERVER: the legacy `notAttached`
+     *  COUNT cutoff (~10 s) is skipped for this stream only (an evicted or
+     *  never-refreshed retired window is legitimate slow observation, never
+     *  an observation failure). Ordinary pumps pass nothing and keep the
+     *  baseline cutoff byte-identically; lifecycle (Superseded), `runGone`,
+     *  exchange-throw and decode-failure streaks still terminate exactly as
+     *  before, and NO timer/idle machinery exists anywhere on either path. */
+    private val onDurableResync: (() -> Unit)? = null,
 ) {
     internal var job: Job? = null
     private val disposed = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -948,7 +981,16 @@ class EventPumpHandle internal constructor(
                         }
                         if (page.windowState == "notAttached") {
                             notAttachedPolls += 1
-                            if (notAttachedPolls > NOT_ATTACHED_POLL_LIMIT) {
+                            // MAIN_ADDENDUM B: the COUNT cutoff belongs to
+                            // ordinary pumps chasing a just-committed window.
+                            // A queue observer (opened with the durable-resync
+                            // consumer) legitimately watches an evicted or
+                            // never-refreshed retired window: no count cutoff,
+                            // no timer — only lifecycle/typed exits terminate
+                            // it, and a late durable fact still arrives through
+                            // the SAME binder poll path.
+                            if (onDurableResync == null &&
+                                notAttachedPolls > NOT_ATTACHED_POLL_LIMIT) {
                                 onFailure(
                                     HostPumpFailure.Recoverable(
                                         "eventWindowUnavailable", "notAttached"),
@@ -966,6 +1008,13 @@ class EventPumpHandle internal constructor(
                         if (page.liveHint.dirty) onLiveHint()
                         for (frame in page.frames) onEvent(frame)
                         nextSequence = page.nextSequence
+                        // C09 QREV-03: facts first, typed resync signal second,
+                        // in the SAME poll page — a degraded settle window is
+                        // consumed once per watch by the queue observer. The
+                        // member is the EXISTING decoded `resyncRequired`
+                        // (`durableResync || outerResync`); ordinary pumps
+                        // pass no consumer and behave byte-for-byte as before.
+                        if (page.resyncRequired) onDurableResync?.invoke()
                         if (!page.hasMore || page.frames.isEmpty()) {
                             delay(client.budgets.effectPollIntervalMillis)
                         }

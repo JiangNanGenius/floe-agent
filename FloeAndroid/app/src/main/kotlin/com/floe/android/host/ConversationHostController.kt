@@ -188,6 +188,56 @@ class ConversationHostController internal constructor(
     private val terminalReconcileInFlight = ConcurrentHashMap.newKeySet<String>()
 
     /**
+     * C09 QREV-02 — causal queue-settle observer, ONE watch per conversation
+     * (key = conversationId; the latest terminal arm replaces the predecessor
+     * identity-fenced). The watch reads the drain lane's durable `notice` +
+     * `queueSettled` fact on the anchor's event stream (facts are the ONLY
+     * interest) plus the typed degraded-window resync signal; observation
+     * ends ONLY through the close-rule table (contract §6 P5): settle fact +
+     * quiescence, an honest chain-closed fact, a typed resync (once per
+     * watch), a typed pump failure's reconcile outcome, Superseded /
+     * generation bump / navigation / holder retire / stop. NO timers, NO
+     * idle-count cutoff (the queue observer opens with MAIN_ADDENDUM B's
+     * notAttached opt-out), NO repeated snapshot polling. The late-B
+     * discovery arm replaces time-based fallback with CAUSAL inheritance:
+     * every settle/resync reconcile with pending rows arms the newest
+     * unprocessed terminal run from its own authoritative session page.
+     */
+    private val queueSettleGate = Any()
+    internal val queueSettleWatches = ConcurrentHashMap<String, QueueSettleWatch>()
+
+    /**
+     * Per-conversation in-flight coalescing of the authoritative reconcile,
+     * scoped by the EXACT operation/entry/session identity (MAIN review H2):
+     * the value is the owning [QueueSettleReconcileRun], and release is a
+     * value-CAS — a stale completion can only ever release ITS OWN run,
+     * never a replacement owner's marker (a conversation-key-only remove
+     * let an old completion release a newer holder/watch's in-flight state
+     * after retire/new-entry on the same id).
+     */
+    internal val queueSettleReconcilesInFlight =
+        ConcurrentHashMap<String, QueueSettleReconcileRun>()
+
+    /** The blocked trigger's carried CAUSE: one bounded re-run, released
+     *  only for the CURRENT owner (identity-checked before consumption). */
+    internal val queueSettleRerunRequested =
+        ConcurrentHashMap<String, QueueSettleRerun>()
+
+    /**
+     * MAIN review H5 — the ACTUAL queue-consumed durable cursor per
+     * conversation/run (key = streamKey), advanced only by frames this
+     * surface's queue watch really received. A watch NEVER seeds from
+     * `runDurableWatermarks`: refreshRunSnapshot writes the page watermark
+     * BEFORE the terminal arm, and that watermark can already cover the
+     * settle notice no observer consumed — seeding from it would skip the
+     * only fact forever. Unconsumed ⇒ conservatively 0 (bounded by the
+     * native window/`resyncRequired` semantics; replay of an already
+     * consumed fact is the documented idempotent reconcile). The ORDINARY
+     * pump cursor is unchanged. Cleaned at holder retire / stop.
+     */
+    internal val queueSettleConsumedCursors = ConcurrentHashMap<String, Long>()
+
+    /**
      * The REAL composer model projection: `config.models.list` rows joined
      * with the configured providers and the persisted default-agent model
      * preference. Exactly one projection exists per host; it is republished
@@ -315,6 +365,18 @@ class ConversationHostController internal constructor(
     internal fun stop() {
         eventPumps.values.forEach { it.close() }
         eventPumps.clear()
+        // C09: root teardown closes every queue-settle watch and drops the
+        // coalescing bookkeeping (the watchers are pure observation — no
+        // durable state to settle; late callbacks fence on identity anyway).
+        queueSettleWatches.values.forEach { watch ->
+            if (queueSettleWatches.remove(watch.conversationId, watch)) {
+                watch.handleRef.get()?.close()
+            }
+        }
+        queueSettleWatches.clear()
+        queueSettleReconcilesInFlight.clear()
+        queueSettleRerunRequested.clear()
+        queueSettleConsumedCursors.clear()
         liveSnapshotRefreshes.clear()
         runStreamGenerations.clear()
         runDurableWatermarks.clear()
@@ -767,6 +829,13 @@ class ConversationHostController internal constructor(
         host.scope.launch(host.ioDispatcher) { host.attachments.drainSession(retiredSession) }
         eventPumps.values.filter { it.runID in entry.builder.runIds() }
             .forEach { it.close() }
+        // C09: holder retire ends observation for exactly this conversation
+        // (identity-CAS: a replacement surface's watch is never touched).
+        closeQueueSettleWatchesFor(conversationId)
+        queueSettleReconcilesInFlight.remove(conversationId)
+        queueSettleRerunRequested.remove(conversationId)
+        queueSettleConsumedCursors.keys.filter { it.startsWith("$conversationId/") }
+            .forEach { queueSettleConsumedCursors.remove(it) }
         entry.builder.runIds().forEach { runID ->
             liveSnapshotRefreshes.remove(runID)
             runStreamGenerations.remove(streamKey(conversationId, runID))
@@ -898,6 +967,16 @@ class ConversationHostController internal constructor(
         reconcileTerminal: Boolean = false,
         streamGeneration: Long? = null,
         onApplied: ((Boolean) -> Unit)? = null,
+    ) = refreshRunSnapshotGuarded(entry, runID, reconcileTerminal,
+        streamGeneration, null, onApplied)
+
+    private fun refreshRunSnapshotGuarded(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        reconcileTerminal: Boolean = false,
+        streamGeneration: Long? = null,
+        queueOwner: QueueSettleReconcileRun? = null,
+        onApplied: ((Boolean) -> Unit)? = null,
     ) {
         val ownerConversation = entry.holder.session.conversationId
         val sessionEpoch = entry.holder.session.sessionEpoch
@@ -918,27 +997,42 @@ class ConversationHostController internal constructor(
                 val sameIncarnation =
                     currentRunStreamGeneration(ownerConversation, runID) == generation
                 if (page != null && owned && sameIncarnation) {
-                    entry.builder.applySnapshot(page)
-                    val watermarkKey = streamKey(ownerConversation, runID)
-                    if (page.durableWatermark >
-                        (runDurableWatermarks[watermarkKey] ?: 0L)
-                    ) {
-                        runDurableWatermarks[watermarkKey] = page.durableWatermark
-                    }
-                    val selectedHere = entry.builder.selectedRunId == runID
-                    if (selectedHere) entry.builder.applySnapshotLiveText(page)
-                    entry.holder.applyHostSnapshot(entry.builder.build())
-                    applied = true
-                    if (reconcileTerminal && page.isTerminal) {
-                        // A terminal page is the durable close boundary for
-                        // ITS OWN run. Close that run's pump; only the SELECTED
-                        // run may clear the displayed tail and reload rows.
-                        eventPumps.remove(runID)?.close()
-                        if (selectedHere) {
-                            reconcileTerminalCommitted(entry, runID, generation)
-                        } else {
-                            refreshHistorySoon()
+                    val applyPage = {
+                        entry.builder.applySnapshot(page)
+                        val watermarkKey = streamKey(ownerConversation, runID)
+                        if (page.durableWatermark >
+                            (runDurableWatermarks[watermarkKey] ?: 0L)
+                        ) {
+                            runDurableWatermarks[watermarkKey] = page.durableWatermark
                         }
+                        val selectedHere = entry.builder.selectedRunId == runID
+                        if (selectedHere) entry.builder.applySnapshotLiveText(page)
+                        entry.holder.applyHostSnapshot(entry.builder.build())
+                        applied = queueOwner == null || page.pendingInputsTruncated == false
+                        if (reconcileTerminal && page.isTerminal) {
+                            // A terminal page is the durable close boundary for
+                            // ITS OWN run. Close that run's pump; only the SELECTED
+                            // run may clear the displayed tail and reload rows.
+                            eventPumps.remove(runID)?.close()
+                            if (selectedHere) {
+                                reconcileTerminalCommitted(entry, runID, generation)
+                            } else {
+                                refreshHistorySoon()
+                            }
+                            // C09 arm site 2 (contract §6 P3): a terminal LEARNED
+                            // FROM THE SNAPSHOT (its pump died before any durable
+                            // terminal frame) is exactly the shape where the drain
+                            // lane's fact already landed on this run's journal.
+                            // Fires for the selected AND non-selected terminal run
+                            // — the watch gate (real projected pending rows) is the
+                            // single decision point. Latest terminal arm wins.
+                            maybeArmQueueSettleWatch(entry, runID, generation)
+                        }
+                    }
+                    if (queueOwner == null) applyPage()
+                    else synchronized(queueSettleGate) {
+                        if (isCurrentQueueRead(queueOwner) &&
+                            currentRunStreamGeneration(ownerConversation, runID) == generation) applyPage()
                     }
                 }
             }
@@ -1345,6 +1439,15 @@ class ConversationHostController internal constructor(
         before: MessagePageCursorUi? = null,
         requireRun: CommittedPageFence? = null,
         onSettled: ((applied: Boolean, rows: List<MessageUi>) -> Unit)? = null,
+    ) = loadMessagePageGuarded(session, entry, before, requireRun, null, onSettled)
+
+    private fun loadMessagePageGuarded(
+        session: ConversationSessionToken,
+        entry: ConversationFlowHolderEntry,
+        before: MessagePageCursorUi? = null,
+        requireRun: CommittedPageFence? = null,
+        queueOwner: QueueSettleReconcileRun? = null,
+        onSettled: ((applied: Boolean, rows: List<MessageUi>) -> Unit)? = null,
     ) {
         // Latest-window reads carry a monotonic request identity so an older
         // response that completes late is dropped WHOLE. Earlier-history
@@ -1386,11 +1489,12 @@ class ConversationHostController internal constructor(
                     // incarnation for a settlement read, and newest-issued
                     // ordering for a latest-window read. Nothing is touched
                     // by a stale/foreign reply.
-                    val admitted = entry.withAdmittedMessagePage(
+                    val admitPage = { entry.withAdmittedMessagePage(
                         latest = latest,
                         issuedSeq = issuedSeq,
                         check = {
-                            !entry.holder.retired &&
+                            (queueOwner == null || isCurrentQueueRead(queueOwner)) &&
+                                !entry.holder.retired &&
                                 ownCurrentEntry(
                                     entry, session.conversationId, session.sessionEpoch,
                                 ) &&
@@ -1406,6 +1510,9 @@ class ConversationHostController internal constructor(
                         entry.builder.hasEarlierMessages = page.hasEarlier
                         entry.holder.applyHostSnapshot(entry.builder.build())
                     }
+                    }
+                    val admitted = if (queueOwner == null) admitPage()
+                        else synchronized(queueSettleGate) { admitPage() }
                     if (admitted) {
                         applied = true
                         rows = page.rows.filter {
@@ -2023,6 +2130,12 @@ class ConversationHostController internal constructor(
             refreshRunSnapshot(
                 entry, runID, streamGeneration = streamGeneration,
             )
+            // C09 arm site 1 (contract §6 P3): this run's REAL terminal
+            // closed its pump — the drain lane the native just dispatched
+            // publishes its settle fact on THIS run's journal. Arm the
+            // per-conversation watch HERE (identity-first, Addendum A) so
+            // the fact's reader exists before any of its IO can deliver.
+            maybeArmQueueSettleWatch(entry, runID, streamGeneration)
         } else if (frame.kind == "approval") {
             // A live approval request needs its requestedAt CAS version, which
             // only the authoritative snapshot carries; the card itself is
@@ -2031,6 +2144,436 @@ class ConversationHostController internal constructor(
                 entry, runID, streamGeneration = streamGeneration,
             )
         }
+    }
+
+    // -------------------------------------------------- C09 queue-settle watch
+
+    /**
+     * Identity-first arm (MAIN_ADDENDUM A). Opening the event stream launches
+     * IO IMMEDIATELY: a current durable fact or a degraded resync delivered
+     * BEFORE the watcher state exists would be discarded by the identity
+     * fence while its cursor advanced forever. So: install the watch
+     * identity first, identity-close the previous watcher, THEN open IO.
+     * After the handle is stored, the post-open recheck disposes a
+     * late-created handle if a fast callback already removed/replaced the
+     * watcher state; a callback whose close decision ran with `handleRef`
+     * still null only removed state (closeQueueSettleWatch below).
+     *
+     * `openStream` is the Addendum-A regression seam (synchronous/immediate
+     * callbacks deterministically BEFORE `open` returns); the production
+     * default opens the real client stream through the SAME code path.
+     */
+    internal fun maybeArmQueueSettleWatch(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        streamGeneration: Long,
+        openStream: (QueueSettleWatch) -> EventPumpHandle? = { watch ->
+            openQueueSettleStream(entry, runID, streamGeneration, watch)
+        },
+    ) {
+        if (!conversationAdmitted()) return
+        // A temporary surface's queue belongs to its RAM-only run lifecycle;
+        // the native drain gate never dispatches for a temporary identity.
+        if (entry.builder.isTemporary) return
+        val conversationId = entry.holder.session.conversationId
+        val sessionEpoch = entry.holder.session.sessionEpoch
+        if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
+        // Only REAL projected pending work gives the terminal drain something
+        // to act on; an empty queue keeps no stream warm (no forever-hot watch).
+        val drainable = entry.holder.snapshot.value?.pendingInputs
+            ?.any { it.status.isPending } == true
+        if (!drainable) return
+        val existing = queueSettleWatches[conversationId]
+        if (existing != null && existing.anchorRunID == runID &&
+            existing.streamGeneration == streamGeneration
+        ) {
+            return // idempotent re-arm
+        }
+        val watch = QueueSettleWatch(
+            conversationId = conversationId,
+            anchorRunID = runID,
+            streamGeneration = streamGeneration,
+            sessionEpoch = sessionEpoch,
+        )
+        // [1] Register identity BEFORE any IO; identity-close the predecessor
+        // (its handle is closed exactly; a retired predecessor callback can
+        // never close or mutate this replacement — map identity fences first).
+        watch.failureToken = entry.holder.queueRefreshFailureToken
+        val replaced = synchronized(queueSettleGate) {
+            queueSettleWatches.put(conversationId, watch)
+        }
+        if (replaced != null && replaced !== watch) {
+            closeQueueSettleWatchHandle(replaced)
+        }
+        // [2] Open IO only now.
+        val handle = openStream(watch)
+        watch.handleRef.set(handle)
+        // [3] Post-open recheck — MAIN review H1: fence LOST OWNERSHIP only
+        // (identity / entry / generation). A pump job that already finished
+        // is NOT a finished recovery: an immediate typed failure or resync
+        // delivered before `open` returned has legitimately started the async
+        // authoritative reconcile, and unregistering the watcher here would
+        // discard that pending read once callback identity fences apply.
+        val current = queueSettleWatches[conversationId]
+        if (current !== watch) {
+            // Replaced or already closed by its own fenced callback: dispose
+            // ONLY the late-created handle; never touch the replacement.
+            handle?.close()
+            return
+        }
+        if (!ownCurrentEntry(entry, conversationId, sessionEpoch) ||
+            currentRunStreamGeneration(conversationId, runID) != streamGeneration
+        ) {
+            // The registration window is lost: identity-remove, then close.
+            if (queueSettleWatches.remove(conversationId, watch)) {
+                handle?.close()
+            }
+            return
+        }
+        if (handle == null) {
+            // Null-handle test seam: no IO exists to dispose, and an already
+            // delivered fact/resync recovery through this watcher must run to
+            // its own fenced close. Never cancel it here.
+            return
+        }
+
+    }
+
+    /** The production opener: the SAME client API every ordinary pump uses —
+     *  with the typed durable-resync consumer, which is ALSO what marks this
+     *  stream as a queue observer (MAIN_ADDENDUM B: no notAttached COUNT
+     *  cutoff for this stream; lifecycle and typed failures still exit). */
+    private fun openQueueSettleStream(
+        entry: ConversationFlowHolderEntry,
+        runID: String,
+        streamGeneration: Long,
+        watch: QueueSettleWatch,
+    ): EventPumpHandle {
+        val conversationId = watch.conversationId
+        val sessionEpoch = watch.sessionEpoch
+        return client().openRunEventStream(
+            taskID = conversationId,
+            runID = runID,
+            environmentID = null,
+            jobID = null,
+            onEvent = { frame ->
+                onQueueSettleFrame(entry, watch, frame, conversationId, sessionEpoch)
+            },
+            onLiveHint = { /* durable facts and the typed resync signal only */ },
+            onFailure = { failure ->
+                onQueueSettleWatchFailure(entry, watch, failure, conversationId, sessionEpoch)
+            },
+            // MAIN review H5: the ACTUAL queue-consumed cursor (never the
+            // snapshot watermark, which can already cover an unconsumed
+            // notice). An already-appended fact then arrives on the FIRST
+            // real binder poll at ANY attach timing (append-only sequence).
+            startSequence = queueSettleConsumedCursors[
+                streamKey(conversationId, runID)] ?: 0L,
+            onDurableResync = {
+                onQueueSettleResync(entry, watch, conversationId, sessionEpoch)
+            },
+        )
+    }
+
+    private fun isCurrentQueueSettleWatch(watch: QueueSettleWatch): Boolean =
+        queueSettleWatches[watch.conversationId] === watch
+
+    private fun queueTriggerCurrent(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        watch: QueueSettleWatch?,
+        failureToken: String? = null,
+    ): Boolean = conversationAdmitted() &&
+        ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+        (watch == null || (isCurrentQueueSettleWatch(watch) &&
+            currentRunStreamGeneration(conversationId, watch.anchorRunID) ==
+                watch.streamGeneration)) &&
+        (failureToken == null || entry.holder.queueRefreshFailureToken == failureToken)
+
+    private fun isCurrentQueueRead(run: QueueSettleReconcileRun): Boolean =
+        !run.completed.get() &&
+            queueSettleReconcilesInFlight[run.conversationId] === run &&
+            queueTriggerCurrent(run.entry, run.conversationId, run.sessionEpoch,
+                run.watch, run.failureToken)
+
+    internal fun onQueueSettleFrame(
+        entry: ConversationFlowHolderEntry,
+        watch: QueueSettleWatch,
+        frame: HostRunEventFrame,
+        conversationId: String,
+        sessionEpoch: Long,
+    ) {
+        if (!isQueueSettleFrame(frame) || frame.runID != watch.anchorRunID) return
+        val accepted = synchronized(queueSettleGate) {
+            if (!queueTriggerCurrent(entry, conversationId, sessionEpoch, watch)) false
+            else {
+                val key = streamKey(conversationId, watch.anchorRunID)
+                val previous = queueSettleConsumedCursors[key] ?: 0L
+                if (frame.sequence <= previous) false else {
+                    queueSettleConsumedCursors[key] = frame.sequence
+                    true
+                }
+            }
+        }
+        if (!accepted) return
+        reconcileQueueAfterDrainSettle(entry, conversationId, sessionEpoch,
+            watch, decodeQueueSettleFact(frame), false)
+    }
+
+    internal fun onQueueSettleResync(
+        entry: ConversationFlowHolderEntry,
+        watch: QueueSettleWatch,
+        conversationId: String,
+        sessionEpoch: Long,
+    ) {
+        if (!queueTriggerCurrent(entry, conversationId, sessionEpoch, watch)) return
+        if (!watch.resyncConsumed.compareAndSet(false, true)) return
+        reconcileQueueAfterDrainSettle(entry, conversationId, sessionEpoch,
+            watch, null, true)
+    }
+
+    internal fun onQueueSettleWatchFailure(
+        entry: ConversationFlowHolderEntry,
+        watch: QueueSettleWatch,
+        failure: HostPumpFailure,
+        conversationId: String,
+        sessionEpoch: Long,
+    ) {
+        if (!isCurrentQueueSettleWatch(watch)) return
+        if (failure is HostPumpFailure.Superseded ||
+            (failure is HostPumpFailure.Recoverable && failure.code == "runGone")
+        ) {
+            closeQueueSettleWatch(watch)
+            return
+        }
+        if (!queueTriggerCurrent(entry, conversationId, sessionEpoch, watch)) {
+            closeQueueSettleWatch(watch)
+            return
+        }
+        if (!watch.failureConsumed.compareAndSet(false, true)) return
+        reconcileQueueAfterDrainSettle(entry, conversationId, sessionEpoch,
+            watch, null, true)
+    }
+
+    internal fun reconcileQueueAfterDrainSettle(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        watch: QueueSettleWatch?,
+        fact: QueueSettleFact?,
+        resync: Boolean,
+    ) {
+        beginQueueRead(entry, conversationId, sessionEpoch, watch, fact, resync, null)
+    }
+
+    /** Claim an exact read owner before any callback can arrive. Replacement
+     * and coalescing share the same lock, so no completion can release a newer
+     * owner's marker or lose a signal arriving at the release boundary. */
+    private fun beginQueueRead(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        watch: QueueSettleWatch?,
+        fact: QueueSettleFact?,
+        resync: Boolean,
+        failureToken: String?,
+    ): Boolean {
+        val run = synchronized(queueSettleGate) {
+            if (!queueTriggerCurrent(entry, conversationId, sessionEpoch,
+                    watch, failureToken)) return false
+            val previous = queueSettleReconcilesInFlight[conversationId]
+            if (previous != null && isCurrentQueueRead(previous)) {
+                if (failureToken == null) {
+                    queueSettleRerunRequested[conversationId] = QueueSettleRerun(
+                        previous, entry, sessionEpoch, watch, fact, resync)
+                }
+                return false
+            }
+            val next = QueueSettleReconcileRun(entry, conversationId,
+                sessionEpoch, watch, fact, resync, failureToken)
+            queueSettleReconcilesInFlight[conversationId] = next
+            // This new valid trigger subsumes the invalid predecessor's
+            // carried cause; stale completions cannot consume this slot.
+            queueSettleRerunRequested[conversationId]?.let { carried ->
+                if (carried.blockedBy === previous) {
+                    queueSettleRerunRequested.remove(conversationId, carried)
+                }
+            }
+            next
+        }
+        host.trackOperation(
+            HostCommandRequest(
+                command = "conversation.get",
+                scope = HostScope.ConversationLifecycle(conversationId),
+                stateful = false,
+                correlationID = client().correlationID(
+                    if (failureToken == null) "cget-qstl" else "cget-qrr"),
+            ),
+        ) { outcome ->
+            val reply = (outcome as? HostOperationOutcome.Completed)?.value
+                ?.let { ConversationWire.decodeSessionReply(it) }
+            val applied = synchronized(queueSettleGate) {
+                if (reply == null || !isCurrentQueueRead(run)) false else {
+                    run.reply = reply
+                    entry.builder.applySession(reply)
+                    val models = currentModels()
+                    entry.builder.applyModels(models.models, models.needsProvider)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                    true
+                }
+            }
+            if (!applied) {
+                finishQueueRead(run, false)
+                return@trackOperation
+            }
+            if (!isCurrentQueueRead(run)) {
+                finishQueueRead(run, false)
+                return@trackOperation
+            }
+            resumeLiveRuns(entry.holder.session, entry, reply!!)
+            val selected = entry.builder.selectedRunId ?: watch?.anchorRunID
+                ?: reply.runs.firstOrNull()?.runID
+            if (selected == null) {
+                // No run exists to snapshot: only an explicitly complete,
+                // empty queue can prove this disappearance. Never pretend a
+                // snapshot was applied when it was not issued.
+                val emptyAuthority = reply.pendingInputsTruncated == false &&
+                    reply.runs.isEmpty() && entry.holder.snapshot.value
+                        ?.pendingInputs?.none { it.status.isPending } == true
+                readQueueMessages(run, emptyAuthority)
+            } else {
+                refreshRunSnapshotGuarded(entry, selected, queueOwner = run) { snapshotComplete ->
+                    if (!snapshotComplete) finishQueueRead(run, false)
+                    else readQueueMessages(run, reply.pendingInputsTruncated == false)
+                }
+            }
+        }
+        return true
+    }
+
+    private fun readQueueMessages(run: QueueSettleReconcileRun, queueComplete: Boolean) {
+        if (!isCurrentQueueRead(run)) {
+            finishQueueRead(run, false)
+            return
+        }
+        loadMessagePageGuarded(run.entry.holder.session, run.entry,
+            queueOwner = run) { applied, _ -> finishQueueRead(run, queueComplete && applied) }
+    }
+
+    private fun finishQueueRead(run: QueueSettleReconcileRun, readComplete: Boolean) {
+        var owned = false
+        var close = false
+        var discover = false
+        var carried: QueueSettleRerun? = null
+        synchronized(queueSettleGate) {
+            if (!run.completed.compareAndSet(false, true)) return
+            if (queueSettleReconcilesInFlight[run.conversationId] === run) {
+                owned = queueTriggerCurrent(run.entry, run.conversationId,
+                    run.sessionEpoch, run.watch, run.failureToken)
+                if (owned) {
+                    if (readComplete) {
+                        val token = run.failureToken ?: run.watch?.failureToken
+                        if (token != null) run.entry.holder.clearQueueRefreshFailure(token)
+                    } else if (run.failureToken == null) {
+                        surfaceQueueRefreshFailure(run.entry, run.watch)
+                    }
+                    val pending = run.entry.holder.snapshot.value?.pendingInputs
+                        ?.any { it.status.isPending } == true
+                    discover = pending && run.reply != null
+                    close = !readComplete || !pending || run.resync ||
+                        run.fact == null || !run.fact.chainOpen
+                }
+                queueSettleReconcilesInFlight.remove(run.conversationId, run)
+            }
+            val blocked = queueSettleRerunRequested[run.conversationId]
+            if (blocked?.blockedBy === run &&
+                queueSettleRerunRequested.remove(run.conversationId, blocked)
+            ) {
+                carried = blocked
+                // A later real signal must not be dropped by an earlier
+                // chain-closed result on the very same watch.
+                if (blocked.watch === run.watch && queueTriggerCurrent(
+                        blocked.entry, run.conversationId, blocked.sessionEpoch,
+                        blocked.watch)) close = false
+            }
+        }
+        if (owned && discover) {
+            maybeArmDiscoveredQueueSettleTerminal(run.entry, run.reply!!,
+                run.conversationId, run.watch)
+        }
+        if (close || !owned) run.watch?.let { closeQueueSettleWatch(it) }
+        carried?.let { next ->
+            if (queueTriggerCurrent(next.entry, run.conversationId,
+                    next.sessionEpoch, next.watch)) {
+                beginQueueRead(next.entry, run.conversationId, next.sessionEpoch,
+                    next.watch, next.fact, next.resync, null)
+            }
+        }
+    }
+
+    /** Discover the newest terminal FIRST; excluding the current anchor
+     * before ordering could bounce between equal-timestamp historical runs.
+     * Generic committed-row reconciliation is not queue acknowledgement. */
+    private fun maybeArmDiscoveredQueueSettleTerminal(
+        entry: ConversationFlowHolderEntry,
+        reply: ConversationWire.SessionReply,
+        conversationId: String,
+        watch: QueueSettleWatch?,
+    ) {
+        if (entry.builder.isTemporary || !queueTriggerCurrent(entry,
+                conversationId, entry.holder.session.sessionEpoch, watch)) return
+        if (entry.holder.snapshot.value?.pendingInputs
+                ?.any { it.status.isPending } != true) return
+        val candidate = reply.runs.filter {
+            it.state in ThreadProjectionBuilder.TERMINAL_STATES
+        }.maxByOrNull { it.startedAt } ?: return
+        if (candidate.runID == watch?.anchorRunID) return
+        val anchor = reply.runs.firstOrNull { it.runID == watch?.anchorRunID }
+        if (anchor != null && candidate.startedAt < anchor.startedAt) return
+        if (eventPumps.containsKey(candidate.runID)) return
+        maybeArmQueueSettleWatch(entry, candidate.runID,
+            currentRunStreamGeneration(conversationId, candidate.runID))
+    }
+
+    private fun closeQueueSettleWatch(watch: QueueSettleWatch) {
+        val removed = synchronized(queueSettleGate) {
+            queueSettleWatches.remove(watch.conversationId, watch)
+        }
+        if (removed) watch.handleRef.get()?.close()
+    }
+
+    private fun closeQueueSettleWatchHandle(watch: QueueSettleWatch) {
+        watch.handleRef.get()?.close()
+    }
+
+    private fun closeQueueSettleWatchesFor(conversationId: String) {
+        val watch = synchronized(queueSettleGate) {
+            queueSettleWatches.remove(conversationId)
+        }
+        watch?.handleRef?.get()?.close()
+    }
+
+    private fun surfaceQueueRefreshFailure(
+        entry: ConversationFlowHolderEntry,
+        watch: QueueSettleWatch?,
+    ) {
+        if (entry.holder.retired) return
+        val token = watch?.failureToken?.takeIf {
+            it == entry.holder.queueRefreshFailureToken
+        } ?: entry.holder.queueRefreshFailureToken ?: java.util.UUID.randomUUID().toString()
+        entry.holder.noteQueueRefreshFailure(token)
+        if (watch != null) watch.failureToken = token
+    }
+
+    override fun refreshQueuedInputProjection(
+        session: ConversationSessionToken,
+        expectedFailureToken: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        return beginQueueRead(entry, session.conversationId, session.sessionEpoch,
+            null, null, true, expectedFailureToken)
     }
 
     // ----------------------------------------------------------- run control
@@ -2410,14 +2953,14 @@ class ConversationHostController internal constructor(
      * the SAME run id and re-binds the presentation tail. Durable messages,
      * run rows, CAS revisions and checkpoint/queue state are untouched.
      */
-    private fun rearmRunStreamAfterRetry(
+    internal fun rearmRunStreamAfterRetry(
         entry: ConversationFlowHolderEntry,
         runID: String,
     ): Long {
         val conversationId = entry.holder.session.conversationId
         val key = streamKey(conversationId, runID)
         val generation = (runStreamGenerations[key] ?: 0L) + 1L
-        runStreamGenerations[key] = generation
+        synchronized(queueSettleGate) { runStreamGenerations[key] = generation }
         liveSnapshotRefreshes.remove(runID)
         entry.builder.rearmLiveTailForRetry(runID)
         entry.holder.applyHostSnapshot(entry.builder.build())
@@ -4958,3 +5501,97 @@ private const val TERMINAL_RECONCILE_CAPACITY = 256
  */
 private const val COMMITTED_ROW_SETTLEMENT_ATTEMPTS = 4
 private const val COMMITTED_ROW_SETTLEMENT_BASE_MILLIS = 120L
+
+// ---------------------------------------------------------------------------
+// C09 queue-settle observer vocabulary (contract §6 P1–P4, MAIN_ADDENDUM A–F;
+// fact kind FIXED to the existing `notice` vocabulary by Main's actual
+// native regression 2026-10-25 — the queueSettled fact is a NOTICE frame,
+// NEVER a trailing stateless `status`, which broke the original durable
+// last-status terminal truth in the unchanged RunControl suite).
+
+/** The stateless invalidation word. MUST stay byte-equal to the native
+ *  `FacadeRunDomain.queueSettledReason`. */
+internal const val QUEUE_SETTLE_REASON = "queueSettled"
+
+/** The ONLY frame kind the settle vocabulary uses (existing RunEventRecord
+ *  non-fatal info kind; renders nothing on its own once the internal notice
+ *  suppression lands — see the UI owner's ConversationTimelineRows scope). */
+internal const val QUEUE_SETTLE_FRAME_KIND = "notice"
+
+/** The queue watch's ONLY frame interest: a `notice` frame carrying the
+ *  stateless `queueSettled` reason and deliberately NO `state` member (it
+ *  is never a run-state transition; a frame with a `state` member is not
+ *  this fact). Queue authority remains the authoritative pages. */
+internal fun isQueueSettleFrame(frame: HostRunEventFrame): Boolean {
+    if (frame.kind != QUEUE_SETTLE_FRAME_KIND) return false
+    val payload = frame.payload ?: return false
+    if (payload.containsKey("state")) return false
+    val reason = (payload["reason"] as? JsonPrimitive)
+        ?.takeIf { it.isString }?.contentOrNull
+    return reason == QUEUE_SETTLE_REASON
+}
+
+/** Narrow lifecycle metadata decoded from the durable fact itself: `lane`
+ *  classifies WHY the lane exited, `chain` says whether ANOTHER fact is
+ *  guaranteed later. Absent/unknown decodes CONSERVATIVELY open (keep
+ *  observing); absent lane reads as the ordinary consumed exit. */
+internal data class QueueSettleFact(val lane: String, val chainOpen: Boolean)
+
+internal fun decodeQueueSettleFact(frame: HostRunEventFrame): QueueSettleFact {
+    val payload = frame.payload
+    val lane = (payload?.get("lane") as? JsonPrimitive)
+        ?.takeIf { it.isString }?.contentOrNull
+    val chain = (payload?.get("chain") as? JsonPrimitive)
+        ?.takeIf { it.isString }?.contentOrNull
+    return QueueSettleFact(
+        lane = lane ?: "consumed",
+        chainOpen = chain != "closed",
+    )
+}
+
+/** ONE identity-fenced watch per conversation (latest terminal arm wins).
+ *  `handleRef` starts NULL: the map identity is installed BEFORE any IO
+ *  (MAIN_ADDENDUM A), a fast callback's close decision removes only state,
+ *  and the arm's post-open recheck disposes a late-created handle. */
+internal class QueueSettleWatch(
+    val conversationId: String,
+    val anchorRunID: String,
+    val streamGeneration: Long,
+    val sessionEpoch: Long,
+) {
+    val handleRef = java.util.concurrent.atomic.AtomicReference<EventPumpHandle?>(null)
+
+    /** Once-per-watch bounds keep degraded-resync and typed-failure reads
+     *  finite (never a polling loop). */
+    val resyncConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
+    val failureConsumed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** The exact token THIS watch currently owns on the holder surface, if
+     *  any — never another watch's or the generic error surface's. */
+    @Volatile
+    var failureToken: String? = null
+}
+
+/** One owned bounded read cohort. Completion is idempotent and observable
+ * in gated tests; it never permits a stale owner to release its replacement. */
+internal class QueueSettleReconcileRun(
+    val entry: ConversationFlowHolderEntry,
+    val conversationId: String,
+    val sessionEpoch: Long,
+    val watch: QueueSettleWatch?,
+    val fact: QueueSettleFact?,
+    val resync: Boolean,
+    val failureToken: String?,
+) {
+    val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile var reply: ConversationWire.SessionReply? = null
+}
+
+internal class QueueSettleRerun(
+    val blockedBy: QueueSettleReconcileRun,
+    val entry: ConversationFlowHolderEntry,
+    val sessionEpoch: Long,
+    val watch: QueueSettleWatch?,
+    val fact: QueueSettleFact?,
+    val resync: Boolean,
+)

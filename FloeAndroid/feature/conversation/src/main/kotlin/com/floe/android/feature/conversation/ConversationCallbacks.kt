@@ -338,6 +338,13 @@ interface ConversationUiCallbacks {
      * user message. */
     fun retryRun(session: ConversationSessionToken, runId: String): Boolean
 
+    /** Read-only queue/message reconciliation. Never resumes a business run.
+     * The token fences late success against a newer projection failure. */
+    fun refreshQueuedInputProjection(
+        session: ConversationSessionToken,
+        expectedFailureToken: String,
+    ): Boolean = false
+
     /** ⇄ promoteToSteer(inputID:expectedRunID:). */
     fun promotePendingInput(session: ConversationSessionToken, inputId: String, expectedRunId: String): Boolean
 

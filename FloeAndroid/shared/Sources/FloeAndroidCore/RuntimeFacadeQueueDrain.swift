@@ -123,6 +123,45 @@ import FloeCore
 import FloeModels
 import FloePersistence
 
+// MARK: - Queue-settle publication vocabulary (C09 QREV-01/03)
+
+/// The drain lane's OWN exit classification — lifecycle metadata carried on
+/// the existing stateless `queueSettled` notice fact so the host observer
+/// knows from the durable fact itself whether another fact is guaranteed
+/// later. It is NEVER queue authority: the authoritative conversation/queue
+/// pages remain the truth, and this vocabulary renders nothing.
+enum QueueSettleLaneExit: String {
+    case consumed    // a row was consumed under its real receipt this lane
+    case refused     // a claimed row was restored (route/mode/receipt refusal)
+    case rested      // nothing claimable, or the bound was exhausted
+    case deferred    // a live sibling / launch-boundary deferral skipped work
+    case failed      // store throw or a closed fence ended the lane
+}
+
+/// Typed outcome of one settle publication attempt (internal Swift only;
+/// never a wire member, never a fabricated run state, never a fake ack).
+enum QueueSettlePublication: Equatable {
+    case published              // fact appended AND verified materialized
+    case fenced                 // fences closed — no owned write after retirement
+    case appendFailed           // journal append threw; degraded signal set
+    case windowUnmaterialized   // fact durable but window unverifiable
+    case noAnchor               // nil-anchor dispatch (byte-identical baseline path)
+}
+
+/// Honesty-floor counters, asserted by the native regressions. Counters
+/// alone are NOT the recovery path (Main rejected that design): recovery is
+/// the degraded-window → existing `resyncRequired` → authoritative host
+/// reconcile. These only prove a publication is never silently swallowed.
+/// Explicitly Sendable: the whole snapshot crosses the actor boundary into
+/// regression assertions.
+struct QueueSettleStats: Sendable {
+    var published = 0
+    var appendFailed = 0
+    var windowUnmaterialized = 0
+    var fencedSkipped = 0
+    var siblingPublishDeferred = 0
+}
+
 // MARK: - Dispatch + real lease (mirrors dispatchGoalReview exactly)
 
 extension FacadeRunDomain {
@@ -130,14 +169,36 @@ extension FacadeRunDomain {
     /// The terminal-settlement dispatch gate. Synchronous lease attach
     /// BEFORE the first await of the lane (RUN-S3 semantics): the delete
     /// drain and root shutdown observe real owned work, never a window.
+    ///
+    /// C09 QREV-01: `anchorRunID` is the REAL retired terminal whose
+    /// settlement dispatched this duty. Only a non-nil anchor activates the
+    /// settle publication; every nil-anchor dispatch (historical callers and
+    /// the existing direct-dispatch tests) behaves byte-identically to the
+    /// frozen baseline. The publication rides the STILL-HELD lane lease (see
+    /// `exitQueueDrain`), never a detached background write.
     func dispatchQueuedInputDrain(conversationID: UUID,
-                                  bundle: RunPersistenceBundle) {
+                                  bundle: RunPersistenceBundle,
+                                  anchorRunID: UUID? = nil) {
         guard bundle.identity == .ordinary,
               !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil else { return }
         // A live sibling run owns the queue: its own real terminal drains
         // (strict order, one lane per conversation).
-        guard owners(conversationID: conversationID).isEmpty else { return }
+        guard owners(conversationID: conversationID).isEmpty else {
+            // With an anchor this skip is a REAL observation boundary the
+            // host watch needs closed causally: publish the skip fact under
+            // a dedicated short lease (owned IO, exact-token detach last)
+            // so the watch on THIS anchor reconciles and its session page
+            // discovers the live sibling (resumeLiveRuns pumps it; a later
+            // terminal re-arms). A nil anchor keeps the frozen baseline
+            // bare-return behavior.
+            if let anchorRunID {
+                publishSiblingSkipSettle(conversationID: conversationID,
+                                         bundle: bundle,
+                                         anchorRunID: anchorRunID)
+            }
+            return
+        }
         // SINGLE FLIGHT: the lane is actor state, not the registry (attach
         // does not dedupe by ownerID). A terminal arriving while the lane
         // is mid-await coalesces into the pending-wakeup flag; the lane
@@ -145,12 +206,26 @@ extension FacadeRunDomain {
         // boundary is closed without a second concurrent lane.
         if queueDrainActive.contains(conversationID) {
             queueDrainRecheck.insert(conversationID)
+            if let anchorRunID {
+                // Park records the parking terminal's duty anchor: the
+                // honoring re-dispatch publishes where the host's CURRENT
+                // watch reads (the parked terminal is the newest durable
+                // terminal, so its journal is where its own watch's fact
+                // must land).
+                queueDrainDuties[conversationID] = anchorRunID
+            }
             return
         }
         let ownerID = conversationID.uuidString + ":queue-drain"
         switch RuntimeOwnedWorkRegistry.shared.attach(epoch: epoch, kind: .conversation,
                                                       ownerID: ownerID) {
         case .attached(let token):
+            // A direct attach SUBSUMES a stale duty: this lane's own chain
+            // (its exits publish, the tail honors new parks) covers the
+            // conversation from now on.
+            if anchorRunID != nil {
+                queueDrainDuties[conversationID] = nil
+            }
             queueDrainActive.insert(conversationID)
             queueDrainLeases[conversationID, default: [:]][token.receipt] = token
             recordFeedEvidence(conversationID: conversationID, token: token)
@@ -158,11 +233,20 @@ extension FacadeRunDomain {
                 guard let self else { return }
                 await self.drainQueuedInput(conversationID: conversationID,
                                             bundle: bundle,
-                                            token: token)
+                                            token: token,
+                                            anchorRunID: anchorRunID)
             }
         case .rejected, .invalidIdentity:
             // Lease saturation (or a foreign generation): honest skip — the
             // row stays durably queued and the next real terminal re-drains.
+            // R1 residual (Main lifecycle correction): NO duty dictionary
+            // write here — there is no active lane or park that could ever
+            // consume it, so a deferred-only entry would accumulate without
+            // causal function. The counter is the honest record; no IO is
+            // invented after a rejected lease. The host watch closes through
+            // its existing lifecycle (replacement by the next terminal arm,
+            // navigation, retire or stop) and the next REAL chain publishes
+            // and self-heals.
             feedStats.saturatedSkipped += 1
         }
     }
@@ -176,38 +260,201 @@ extension FacadeRunDomain {
         }
     }
 
-    /// Synchronous lane exit: clears the single-flight state, releases the
-    /// lease, and then HONORS a parked coalesced wakeup (C05 repair) by
-    /// re-dispatching ONE bounded follow-up lane through the original
-    /// dispatch gate. No await between the state clears and the registry
-    /// detach, so no dispatch can observe a busy lane without a live owner
-    /// afterwards; the re-dispatch runs only AFTER this lane's active flag
-    /// and lease are gone and re-validates identity, fences, sibling
-    /// liveness and single flight itself.
+    /// Lane exit (C09 QREV-01): the settle fact publishes FIRST, inside the
+    /// still-held registry lease with the lane still ACTIVE, so the delete
+    /// drain and root shutdown (registry `waitForDrain` on `count(for:)`)
+    /// observe real owned work across ALL publication IO — a terminal
+    /// arriving during the publish await still finds the lane active and
+    /// coalesces into `queueDrainRecheck` (single-flight untouched). Then the
+    /// ORIGINAL synchronous tail runs byte-for-byte: consume the parked flag,
+    /// drop the duty anchor, clear the active flag, release the EXACT token
+    /// LAST, and re-dispatch one bounded follow-up lane only after the active
+    /// flag and lease are gone. No await after the detach. The re-dispatch
+    /// re-validates identity, fences, sibling liveness and single flight
+    /// itself; duty inheritance publishes the follow-up chain where the
+    /// host's CURRENT watch reads (§2 park record).
     private func exitQueueDrain(conversationID: UUID,
                                 token: RuntimeOwnedWorkToken,
-                                bundle: RunPersistenceBundle) {
+                                bundle: RunPersistenceBundle,
+                                anchorRunID: UUID?,
+                                lane: QueueSettleLaneExit) async {
+        // Truthful at construction: only a park landing inside the publish
+        // await can falsify it, and the tail still honors that park while
+        // the duty anchor carries the follow-up's publication target
+        // (stale-"closed" neutralization: contract §6 P6).
+        let chainOpen = queueDrainRecheck.contains(conversationID)
+        _ = await publishQueueSettled(conversationID: conversationID,
+                                      bundle: bundle,
+                                      anchorRunID: anchorRunID,
+                                      lane: lane,
+                                      chainOpen: chainOpen)
+        // Synchronous tail — NO await between the state clears, the exact-
+        // token detach and the (post-detach) re-dispatch.
         let parked = queueDrainRecheck.remove(conversationID) != nil
+        let dutyAnchor = queueDrainDuties.removeValue(forKey: conversationID)
         queueDrainActive.remove(conversationID)
         releaseQueueDrainLease(conversationID: conversationID, token: token)
         if parked {
             dispatchQueuedInputDrain(conversationID: conversationID,
-                                     bundle: bundle)
+                                     bundle: bundle,
+                                     anchorRunID: dutyAnchor ?? anchorRunID)
+        }
+    }
+
+    // MARK: - Settle publication (QREV-01 owned IO / QREV-03 typed results)
+
+    /// Publishes the stateless `queueSettled` invalidation fact onto the
+    /// anchor run's OWN durable journal and materializes it into the shared
+    /// event pump window, ALL under the still-held lane lease. Fences are
+    /// re-proved after EVERY await: no silent write after root retirement.
+    /// Rows/receipts are untouched by any publication failure (consumption
+    /// committed in separate earlier transactions): a failed append or an
+    /// unverifiable window drives the CURRENT host observer through the
+    /// EXISTING `resyncRequired` durable member (`markSettlePublication
+    /// Degraded`), never a fabricated status, never a swallowed write.
+    ///
+    /// MAIN_ADDENDUM F: no append RETRY. An auxiliary append throw is not
+    /// assumed to prove non-commit (that guarantee belongs to the store);
+    /// the fact degrades IMMEDIATELY and the host reconciles from real
+    /// pages. Business run creation/consumption/user turn are NEVER retried
+    /// here.
+    ///
+    /// Materialization is PROGRESS-DRIVEN, not attempt-counted: each refresh
+    /// returns the post-merge watermark and the loop continues while it
+    /// strictly advances toward the committed sequence (a valid multi-page
+    /// backlog pages through deterministically); the page bound (64 pages =
+    /// 12,800 events) is generous headroom over any real terminal-tail
+    /// backlog, and exhaustion degrades honestly into the same host resync
+    /// path — never a timer, never a fixed "two attempts = failure" guess.
+    private func publishQueueSettled(conversationID: UUID,
+                                     bundle: RunPersistenceBundle,
+                                     anchorRunID: UUID?,
+                                     lane: QueueSettleLaneExit,
+                                     chainOpen: Bool) async -> QueueSettlePublication {
+        guard let anchorRunID else { return .noAnchor }
+        guard drainFencesOpen(conversationID: conversationID) else {
+            queueSettleStats.fencedSkipped += 1
+            return .fenced
+        }
+        let payload = Self.jsonString([
+            "reason": Self.queueSettleReason,
+            "lane": lane.rawValue,
+            "chain": chainOpen ? "open" : "closed",
+        ])
+        let record: RunEventRecord
+        do {
+            record = try await bundle.runs.appendEvent(runID: anchorRunID,
+                                                       kind: .notice,
+                                                       payloadJSON: payload)
+        } catch {
+            guard drainFencesOpen(conversationID: conversationID) else {
+                queueSettleStats.fencedSkipped += 1
+                return .fenced
+            }
+            queueSettleStats.appendFailed += 1
+            components.events.markSettlePublicationDegraded(
+                runID: anchorRunID, expectedSequence: nil)
+            return .appendFailed
+        }
+        var lastWatermark = -1
+        var readFailures = 0
+        for _ in 0..<Self.queueSettleMaterializationPageBound {
+            guard drainFencesOpen(conversationID: conversationID) else {
+                queueSettleStats.fencedSkipped += 1
+                // The fact IS durable; the window refresh is skipped because
+                // the root is retiring. The consumer's own lifecycle closes.
+                return .fenced
+            }
+            switch await components.events.refreshDurableWindow(
+                runID: anchorRunID, store: bundle.runs) {
+            case .refreshed(let watermark):
+                if watermark >= record.sequence {
+                    components.events.clearSettlePublicationDegraded(runID: anchorRunID)
+                    queueSettleStats.published += 1
+                    return .published
+                }
+                if watermark > lastWatermark {
+                    lastWatermark = watermark
+                    continue          // real backlog progress — keep paging
+                }
+                readFailures += 1      // committed frame missing with NO progress
+                if readFailures < 2 { continue }
+            case .failedRead:
+                readFailures += 1
+                if readFailures < 2 { continue }  // transient-tolerant, bounded
+            }
+            queueSettleStats.windowUnmaterialized += 1
+            components.events.markSettlePublicationDegraded(
+                runID: anchorRunID, expectedSequence: record.sequence)
+            return .windowUnmaterialized
+        }
+        queueSettleStats.windowUnmaterialized += 1
+        components.events.markSettlePublicationDegraded(
+            runID: anchorRunID, expectedSequence: record.sequence)
+        return .windowUnmaterialized
+    }
+
+    /// QREV-01 sibling-skip publication: a dedicated SHORT lease wraps only
+    /// the publication IO (attach → publish → exact-token detach last, no
+    /// await after the detach). `recordFeedEvidence` makes the per-
+    /// conversation delete drain wait this token too, so the skip fact is
+    /// durable-or-typed-degraded before anything can retire underneath it.
+    /// Registry saturation defers the duty honestly (R1): the next real
+    /// chain publishes and the host watch is replaced by that terminal's arm.
+    private func publishSiblingSkipSettle(conversationID: UUID,
+                                          bundle: RunPersistenceBundle,
+                                          anchorRunID: UUID) {
+        let ownerID = conversationID.uuidString + ":queue-settle-skip"
+        switch RuntimeOwnedWorkRegistry.shared.attach(epoch: epoch, kind: .conversation,
+                                                      ownerID: ownerID) {
+        case .attached(let token):
+            queueDrainLeases[conversationID, default: [:]][token.receipt] = token
+            recordFeedEvidence(conversationID: conversationID, token: token)
+            Task { [weak self] in
+                guard let self else {
+                    // Domain gone with the generation: the registry's own
+                    // generation teardown removes the leftover token.
+                    _ = RuntimeOwnedWorkRegistry.shared.detach(token)
+                    return
+                }
+                _ = await self.publishQueueSettled(conversationID: conversationID,
+                                                   bundle: bundle,
+                                                   anchorRunID: anchorRunID,
+                                                   lane: .deferred,
+                                                   chainOpen: true)
+                await self.releaseQueueDrainLease(conversationID: conversationID,
+                                                  token: token)
+            }
+        case .rejected, .invalidIdentity:
+            // Main lifecycle correction: a rejected dedicated lease writes
+            // NO duty entry (no consuming lane exists — deferred-only
+            // entries would accumulate across conversations with no causal
+            // function). The counter is the honest record; the host watch
+            // ends through its existing lifecycle and the next real chain
+            // publishes where that watch's replacement reads.
+            queueSettleStats.siblingPublishDeferred += 1
         }
     }
 
     // MARK: - The lane (claim → launch → receipt; coalesced recheck loop)
 
+    /// The lane body. `anchorRunID` is the dispatch's settle-publication
+    /// anchor (nil keeps every exit publication-free, byte-identical to the
+    /// frozen baseline behavior of the historical direct-dispatch tests);
+    /// every real exit now routes through the async `exitQueueDrain`, whose
+    /// honest `lane:` class labels WHY the lane ended.
     private func drainQueuedInput(conversationID: UUID,
                                   bundle: RunPersistenceBundle,
-                                  token: RuntimeOwnedWorkToken) async {
+                                  token: RuntimeOwnedWorkToken,
+                                  anchorRunID: UUID?) async {
         // Bounded by the durable queue bound: every iteration either
         // consumes one row (launch + receipt) or exits; refusals never
         // loop. 100 rows is the store's own maximumPendingPerConversation.
         for _ in 0..<SQLiteRunningInputStore.maximumPendingPerConversation {
             guard drainFencesOpen(conversationID: conversationID) else {
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .failed)
                 return
             }
             let claimed: PendingUserInput?
@@ -217,13 +464,15 @@ extension FacadeRunDomain {
             } catch {
                 // Store failure: nothing claimed, nothing to restore. The
                 // rows stay queued; the next real terminal re-drains.
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .failed)
                 return
             }
             guard let row = claimed else {
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .rested)
                 return
             }
             // From the claim on the row is `promoting`: EVERY refusal below
@@ -232,8 +481,9 @@ extension FacadeRunDomain {
             // re-looped into a spin.
             guard drainFencesOpen(conversationID: conversationID) else {
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .failed)
                 return
             }
             guard let mode = Self.queuedLaunchMode(row.executionMode) else {
@@ -241,14 +491,16 @@ extension FacadeRunDomain {
                 // original vocabulary does not cover (browserHandoff rows
                 // are already excluded by the claim SQL).
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .refused)
                 return
             }
             guard let route = await queuedInputRoute(selectedModelID: row.selectedModelID) else {
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .refused)
                 return
             }
             guard drainFencesOpen(conversationID: conversationID),
@@ -259,8 +511,9 @@ extension FacadeRunDomain {
                 // NO durable effect; the live sibling's own real terminal
                 // re-dispatches (and any parked wakeup is honored below).
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                               bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .deferred)
                 return
             }
             // The SAME real launch pipeline (admission, reservation,
@@ -309,14 +562,22 @@ extension FacadeRunDomain {
                             id: row.id, runID: committedRunID)
                     } catch {
                         await restoreQueuedRow(bundle: bundle, id: row.id)
+                        await exitQueueDrain(conversationID: conversationID,
+                                             token: token, bundle: bundle,
+                                             anchorRunID: anchorRunID,
+                                             lane: .refused)
+                        return
                     }
-                    exitQueueDrain(conversationID: conversationID,
-                                   token: token, bundle: bundle)
+                    await exitQueueDrain(conversationID: conversationID,
+                                         token: token, bundle: bundle,
+                                         anchorRunID: anchorRunID,
+                                         lane: .consumed)
                     return
                 }
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                               bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .refused)
                 return
             }
             do {
@@ -328,8 +589,9 @@ extension FacadeRunDomain {
                 // user turn and the re-queued row; a later terminal drain
                 // is bounded by the claim CAS and the visible queue.
                 await restoreQueuedRow(bundle: bundle, id: row.id)
-                exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+                await exitQueueDrain(conversationID: conversationID, token: token,
+                                     bundle: bundle, anchorRunID: anchorRunID,
+                                     lane: .refused)
                 return
             }
             // One row consumed under its real receipt. COALESCED WAKEUP:
@@ -344,14 +606,16 @@ extension FacadeRunDomain {
                owners(conversationID: conversationID).isEmpty {
                 continue
             }
-            exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+            await exitQueueDrain(conversationID: conversationID, token: token,
+                                 bundle: bundle, anchorRunID: anchorRunID,
+                                 lane: .consumed)
             return
         }
         // Queue bound exhausted (a pathological 100-row instant chain):
         // honest exit; the next real terminal re-drains.
-        exitQueueDrain(conversationID: conversationID, token: token,
-                             bundle: bundle)
+        await exitQueueDrain(conversationID: conversationID, token: token,
+                             bundle: bundle, anchorRunID: anchorRunID,
+                             lane: .rested)
     }
 
     /// The fence re-proof used at every post-await boundary of the lane.

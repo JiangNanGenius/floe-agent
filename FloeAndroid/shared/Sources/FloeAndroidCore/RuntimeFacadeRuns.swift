@@ -557,6 +557,34 @@ public actor FacadeRunDomain {
     /// follow-up settled while the lane was mid-await, the lane then exited
     /// on a refusal and the coalesced wakeup was silently removed).
     internal var queueDrainRecheck: Set<UUID> = []
+    /// C09 QREV-01/02 — coalesced-park settle-duty anchor per conversation
+    /// (Main lifecycle correction: ONLY an actual active-lane park is ever
+    /// written, so the entries are bounded by live owned lanes; nil-anchor
+    /// behavior stays byte-identical to the frozen baseline). The park
+    /// records the parking terminal's anchor so the honoring re-dispatch
+    /// publishes the settle fact where the host's CURRENT watch reads; a
+    /// direct attach SUBSUMES the stale duty (its own chain covers the
+    /// conversation from then on). Lease-rejection paths write NOTHING here
+    /// (no consuming lane could exist — the counters are the honest record,
+    /// no IO is invented after a rejected lease, the host watch ends
+    /// through its existing lifecycle and the next real chain self-heals).
+    /// Lifecycle metadata ONLY — never queue authority (the authoritative
+    /// pages stay the truth) and never a second execution or user turn.
+    internal var queueDrainDuties: [UUID: UUID] = [:]
+    /// C09 QREV-03c — honesty-floor counters for the settle publication
+    /// (asserted by regressions N4–N6). NOT the recovery path: recovery is
+    /// the degraded-window → `resyncRequired` → host authoritative reconcile.
+    internal var queueSettleStats = QueueSettleStats()
+    /// The stateless invalidation vocabulary word. MUST stay byte-equal to
+    /// the Kotlin host's `QUEUE_SETTLE_REASON`. Never a `state` member —
+    /// this fact renders nothing and never transitions run state.
+    internal static let queueSettleReason = "queueSettled"
+    /// Generous PROGRESS cap for the settle-window materialization (64
+    /// pages = 12,800 events): a valid multi-page terminal-tail backlog
+    /// pages through while the watermark advances. This is headroom, NOT a
+    /// correctness bound; exhaustion degrades honestly into the same host
+    /// resync path, never a timer.
+    internal static let queueSettleMaterializationPageBound = 64
     /// C05 repair — committed-run proof for the queued-input drain. The
     /// ORIGINAL launch pipeline refuses AFTER the atomic prepare in closed
     /// landings (`cancelledBeforeStart` after the post-prepare cancel/fence
@@ -3661,8 +3689,16 @@ public actor FacadeRunDomain {
             // Sibling live runs skip here and re-drain at their own real
             // terminal (the run this call retired is already unregistered).
             if feedTerminal {
+                // C09 QREV-01: the REAL terminal being retired is the settle-
+                // publication anchor — the host arms its queue watch exactly
+                // on this terminal's close, so the lane's durable fact lands
+                // where that watch reads (delivered through the binder at any
+                // attach timing, or typed-degraded via the existing
+                // `resyncRequired`). Nil-anchor callers keep the frozen
+                // baseline behavior.
                 dispatchQueuedInputDrain(conversationID: ownership.conversationID,
-                                         bundle: ownership.bundle)
+                                         bundle: ownership.bundle,
+                                         anchorRunID: runID)
             }
         }
     }

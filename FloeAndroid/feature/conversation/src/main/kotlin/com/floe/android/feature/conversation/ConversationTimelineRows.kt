@@ -466,9 +466,16 @@ private fun ErrorRow(event: RunEventUi, holder: ConversationFlowHolder, modifier
     }
 }
 
+/** Internal invalidation is durable metadata, not an empty user notice.
+ * Keep ordinary informational notices, including ones carrying a message. */
+internal fun isInternalQueueRefreshNotice(event: RunEventUi): Boolean =
+    event.kind == RunEventKindUi.NOTICE && event.statusReason == "queueSettled" &&
+        event.message.isNullOrBlank()
+
 /** ⇄ notice events: non-fatal information, never failure-styled. */
 @Composable
 private fun NoticeRow(event: RunEventUi, modifier: Modifier) {
+    if (isInternalQueueRefreshNotice(event)) return
     Row(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
