@@ -3,6 +3,14 @@
 
 文档更新时间 / Document updated: 2026-10-25. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
+## 1.7.56（297）内部与无签名已交付，公测待审 / Delivered; external review pending
+
+连续语音共享播放路径已修复转换器重复创建、实际输出帧数记账和失败重试分类。完整 Swift 6 编译、83 项相关测试（0 失败、0 跳过）与设备归档通过；真机听感、语音界面帧率和麦克风打断效果不以模拟器结果替代。[297 修复与交付记录](releases/repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)。
+
+Floe QA 已独立核验 `VALID`、未过期、`IN_BETA_TESTING`。publictest1 提交一次，重新打开后为“正在等待审核”。[稳定无签名 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.56)及同次 Feather 已核验实际文件、摘要、源码和链接。源码已合并 main，本轮分支及无用产物已清理，实测释放 11.84 GiB。
+
+Build 297 repairs shared continuous-voice resampling, played-frame accounting and refusal handling. All 83 focused tests and the device archive passed. Internal installation and verified unsigned/Feather delivery are available; publictest1 awaits review. Physical voice-screen performance and acoustic interruption remain separate acceptance boundaries.
+
 ## 1.7.55（296）内部与无签名已交付，公测待审 / Delivered; external review pending
 
 本轮修复连续语音收尾导致回答未播报，以及增强语音朗读生成预算不足的问题。Swift 6 完整 App 编译、115 项相关测试（0 失败、0 跳过）和单次设备版归档通过；真实 Mac CoreML 数字朗读反例已完成前后对照，本轮未使用真机。[296 修复与交付记录](releases/repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)保留失败、验证和清理边界。

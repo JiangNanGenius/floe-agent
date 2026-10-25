@@ -11,7 +11,7 @@
 | [builds/](builds/) | 专项构建记录 | 2 |
 | [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 51 |
 
-最近交付：[1.7.55（296）修复与交付记录](repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)、[双语发布说明](notes/RELEASE_NOTES_1.7.55_BUILD_296.md)。内部 Floe QA可用，publictest1等待审核，稳定无签名 Release／同次 Feather已独立核验；[295记录](repairs/FLOE_VOICE_SEARCH_BUILD295_20261025.md)及更早文档保留各自的原始状态。
+最近交付：[1.7.56（297）修复与交付记录](repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)、[双语发布说明](notes/RELEASE_NOTES_1.7.56_BUILD_297.md)。内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release／同次 Feather 已独立核验；[296 记录](repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)及更早文档保留各自的原始状态。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 

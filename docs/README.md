@@ -75,7 +75,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.55（296）](releases/repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)：内部 Floe QA可用，publictest1等待审核，稳定无签名 Release与同次 Feather已完成独立回读。115项相关测试通过；真机效果不以模拟器或 Mac推理代替。[295记录](releases/repairs/FLOE_VOICE_SEARCH_BUILD295_20261025.md)和[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery:296; internal and unsigned/Feather available, external review pending. Historical records remain dated evidence.
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.56（297）](releases/repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)：内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release 与同次 Feather 已完成独立回读。83 项相关测试通过，真机听感与界面性能另行区分。[296 记录](releases/repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)和[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 297; internal and unsigned/Feather available, external review pending. Historical records remain dated evidence.
 
 ## 历史研究（结论以现行代码为准）
 
