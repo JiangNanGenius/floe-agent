@@ -842,6 +842,17 @@ struct ChildToolDiscoveryTests {
             )
             try await ActiveParentTestScope.activate(runtime)
 
+            // The active parent's first request persists its core schemas.
+            // Settle that baseline before testing the child's isolation.
+            var beforeChild = try await store.load(conversationID: conversationID)
+            for _ in 0..<50 where beforeChild == nil {
+                try await Task.sleep(for: .milliseconds(20))
+                beforeChild = try await store.load(conversationID: conversationID)
+            }
+            let parentBaseline = try #require(beforeChild)
+            #expect(parentBaseline.names == Set(["skill.read"]))
+            #expect(parentBaseline.priority.isEmpty)
+
             // 1. A CHILD's skill.read is audited in the child's own scope: the
             //    parent's discovery store stays untouched.
             let childRead = try TestFixtures.toolCall(
@@ -864,7 +875,10 @@ struct ChildToolDiscoveryTests {
             #expect(childResult.status == .ok)
             try await Task.sleep(nanoseconds: 300_000_000)
             let afterChild = try await store.load(conversationID: conversationID)
-            #expect(afterChild == nil, "a child's skill.read must not persist parent discovery")
+            #expect(afterChild?.names == parentBaseline.names,
+                    "a child's skill.read must not change parent discovery")
+            #expect(afterChild?.priority == parentBaseline.priority,
+                    "a child's skill.read must not change parent priority")
 
             // 2. Control: the SAME skill.read as the main run's own call does
             //    activate + persist the parent's discovery, proving the assertion

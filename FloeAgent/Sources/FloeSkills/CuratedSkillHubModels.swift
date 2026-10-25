@@ -304,6 +304,10 @@ public struct CuratedSkillFeed: Sendable, Equatable {
     /// because trust mode is not part of the bytes.
     public static func decode(bytes: Data, expectedChannel: CuratedSkillChannel) throws -> CuratedSkillFeed {
         let root = try CuratedSkillStrictJSON.object(bytes)
+        let schemaVersion = try CuratedSkillStrictJSON.integer(root["schemaVersion"], path: "catalog.schemaVersion")
+        guard schemaVersion == schemaVersionValue else {
+            throw CuratedSkillHubFailure.feed("catalog schemaVersion must be \(schemaVersionValue), found \(schemaVersion)")
+        }
         try CuratedSkillStrictJSON.exactKeys(
             root,
             required: ["schemaVersion", "publisher", "channel", "feedStatus", "hubRepository",
@@ -311,10 +315,6 @@ public struct CuratedSkillFeed: Sendable, Equatable {
             optional: ["generatedNote"],
             path: "catalog"
         )
-        let schemaVersion = try CuratedSkillStrictJSON.integer(root["schemaVersion"], path: "catalog.schemaVersion")
-        guard schemaVersion == schemaVersionValue else {
-            throw CuratedSkillHubFailure.feed("catalog schemaVersion must be \(schemaVersionValue), found \(schemaVersion)")
-        }
         let publisher = try CuratedSkillStrictJSON.string(root["publisher"], path: "catalog.publisher")
         guard publisher == publisherValue else {
             throw CuratedSkillHubFailure.feed("catalog publisher must be '\(publisherValue)', found '\(publisher)'")

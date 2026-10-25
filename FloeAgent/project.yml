@@ -760,6 +760,7 @@ targets:
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
       - path: Tests/FloeProvidersTests/ChatReasoningTests.swift
       - path: Tests/FloeAgentRuntimeTests/ChatModePolicyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/LocalRuntimeCurationTests.swift
       - path: Tests/FloeAgentRuntimeTests/ProfessionalSearchAuthorizationTests.swift
       - path: Tests/FloeToolsTests/ChatToolPolicyTests.swift
       - path: Tests/FloePersistenceTests/ChatPreferenceStoreTests.swift

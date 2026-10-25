@@ -397,7 +397,7 @@ struct CuratedSkillHubTests {
         var duplicated = try mutate(catalog, "\"id\":\"fixture-script\"", to: "\"id\":\"fixture-guide\"")
         duplicated = try mutate(duplicated, "\"packages/fixture-script/1.0.0/fixture-script.zip\"",
                                 to: "\"packages/fixture-guide/1.0.0/fixture-guide.zip\"")
-        try expectFeedDecodeFailure(duplicated, "duplicate id")
+        try expectFeedDecodeFailure(duplicated, "duplicate entry id")
     }
 
     @Test("Real production-signed legacy bytes verify under the legacy decoder and fail closed in the curated client")

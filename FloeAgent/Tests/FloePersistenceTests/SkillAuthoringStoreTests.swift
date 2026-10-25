@@ -658,9 +658,29 @@ struct SkillAuthoringStoreTests {
         for mode in ["missing", "foreign", "route", "nilRun"] {
             let f = try await Fixture.make(), draft = try await f.draft()
             let runID: UUID?
-            if mode == "nilRun" { runID = nil }
-            else { runID = try await f.run(conversationID: draft.id) }
-            let running = try await f.start(draft, binding: .init(runID: runID))
+            let binding: SkillAuthoringBinding
+            var alternateModelID: UUID?
+            if mode == "route" {
+                let provider = TestFixtures.localhostProvider()
+                let original = TestFixtures.testModel(providerID: provider.id)
+                let alternate = ModelProfile(id: UUID(), providerID: provider.id,
+                    remoteModelID: "alternate-test-model", displayName: "Alternate",
+                    limits: original.limits, pricing: nil,
+                    capabilities: original.capabilities, isEnabled: true)
+                let config = ModelConfigurationStore(database: f.database)
+                try await config.saveProvider(provider)
+                try await config.saveModel(original)
+                try await config.saveModel(alternate)
+                runID = try await f.run(conversationID: draft.id,
+                    providerID: provider.id, modelID: original.id)
+                binding = .init(runID: runID, providerID: provider.id, modelID: original.id)
+                alternateModelID = alternate.id
+            } else {
+                if mode == "nilRun" { runID = nil }
+                else { runID = try await f.run(conversationID: draft.id) }
+                binding = .init(runID: runID)
+            }
+            let running = try await f.start(draft, binding: binding)
             let question = try await f.store.setProcessingPhase(try #require(running.attempt?.token), phase: .needsUser)
             if let runID {
                 try await SQLiteRunStore(database: f.database).updateRunState(id: runID, state: "completed", endedAt: Date())
@@ -673,8 +693,9 @@ struct SkillAuthoringStoreTests {
                 } else if mode == "missing" {
                     try await f.database.writer { db in try db.execute(sql: "DELETE FROM runs WHERE id = ?", arguments: [runID.uuidString]) }
                 } else {
+                    let changedModelID = try #require(alternateModelID)
                     try await f.database.writer { db in
-                        try db.execute(sql: "UPDATE runs SET model_id = ? WHERE id = ?", arguments: [UUID().uuidString, runID.uuidString])
+                        try db.execute(sql: "UPDATE runs SET model_id = ? WHERE id = ?", arguments: [changedModelID.uuidString, runID.uuidString])
                     }
                 }
             }

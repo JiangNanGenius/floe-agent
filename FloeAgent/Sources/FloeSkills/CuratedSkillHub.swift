@@ -384,7 +384,7 @@ public enum CuratedSkillHub {
         let signatureBytes: Data
         do {
             signatureBytes = try await fetchSignatureBytes(
-                source: source, commit: commit, recordPath: catalogPath(for: channel), fetch: fetch)
+                source: source, commit: commit, signaturePath: signaturePath(for: channel), fetch: fetch)
         } catch let failure as CuratedSkillHubFailure {
             throw failure
         } catch {
@@ -551,7 +551,7 @@ public enum CuratedSkillHub {
             do {
                 reviewSignature = try await fetchSignatureBytes(
                     source: publication.source, commit: commit,
-                    recordPath: reviewBinding.path, fetch: fetch)
+                    signaturePath: reviewBinding.path + ".sig", fetch: fetch)
             } catch let failure as CuratedSkillHubFailure {
                 throw failure
             } catch {
@@ -643,7 +643,7 @@ public enum CuratedSkillHub {
         return .archive(error.localizedDescription)
     }
 
-    /// Fetches `<recordPath>.sig`. When the transport returns content that is
+    /// Fetches the exact sidecar path declared by the catalog/review contract. When the transport returns content that is
     /// not a signature envelope for that guess (some proxies answer missing
     /// raw files with a JSON 404 body), the client discovers the real entry
     /// through the pinned GitHub directory listing at the SAME commit Y and
@@ -651,15 +651,14 @@ public enum CuratedSkillHub {
     private static func fetchSignatureBytes(
         source: GitHubSkillSource,
         commit: String,
-        recordPath: String,
+        signaturePath: String,
         fetch: GitHubSkillDownload.FetchFile
     ) async throws -> Data {
-        let signaturePath = recordPath + ".sig"
         if let direct = try? await fetch(source, commit, signaturePath),
            (try? CuratedSkillEnvelope.decode(direct)) != nil {
             return direct
         }
-        let directory = recordPath.split(separator: "/", omittingEmptySubsequences: false)
+        let directory = signaturePath.split(separator: "/", omittingEmptySubsequences: false)
             .dropLast().map(String.init).joined(separator: "/")
         guard !directory.isEmpty else {
             if let direct = try? await fetch(source, commit, signaturePath) { return direct }
@@ -685,8 +684,8 @@ public enum CuratedSkillHub {
             if let direct = try? await fetch(source, commit, signaturePath) { return direct }
             throw CuratedSkillHubFailure.unavailable("signature directory listing is invalid")
         }
-        let expectedName = recordPath.split(separator: "/").last.map(String.init) ?? recordPath
-        guard let entry = entries.first(where: { $0.name == expectedName + ".sig" && $0.type == "file" }),
+        let expectedName = signaturePath.split(separator: "/").last.map(String.init) ?? signaturePath
+        guard let entry = entries.first(where: { $0.name == expectedName && $0.type == "file" }),
               entry.target == nil,
               entry.path == directory + "/" + entry.name else {
             if let direct = try? await fetch(source, commit, signaturePath) { return direct }
