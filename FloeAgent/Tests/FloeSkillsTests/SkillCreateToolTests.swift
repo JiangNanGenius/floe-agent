@@ -6,6 +6,16 @@ import FloeTools
 
 @Suite("FloeSkills.SkillCreate")
 struct SkillCreateToolTests {
+    @Test("Normalized aliases cannot overwrite another bundled script")
+    func scriptAliasesAreUnique() throws {
+        let tool = SkillCreateTool(creator: FakeSkillCreator())
+        #expect(throws: FloeError.self) {
+            try tool.validate(.init(name: "Duplicate", description: "d", instructions: "i", pythonScripts: [
+                .init(relativePath: "audit.py", source: "print(1)"),
+                .init(relativePath: "scripts/AUDIT.py", source: "print(2)")
+            ]))
+        }
+    }
 
     @Test("descriptor is side-effecting and writes files")
     func descriptorContract() {

@@ -57,6 +57,14 @@ public struct WebToolsSkillsRemoteTransport: SkillsRemoteTransport {
     static let allowedHosts: Set<String> = [
         "api.github.com", "raw.githubusercontent.com", "github.com",
     ]
+    // The fixed Android skill channel (`skill-hub/android/catalog.json`,
+    // `skill-hub/android/catalog.sig` and the matching immutable package ZIPs)
+    // is served by these SAME hosts: api.github.com for commit resolution,
+    // raw.githubusercontent.com for immutable blobs, and github.com for the
+    // reviewed blob URL shape (provenance/finder envelopes). Enabling the
+    // Android channel therefore adds NO host, wildcard, redirect widening or
+    // private-repo credential path; the per-request byte bounds below are
+    // unchanged (catalog/signature 256 KiB, package ZIP ≤8 MiB).
 
     static func validated(url: URL) throws -> URL {
         guard let host = url.host?.lowercased(),

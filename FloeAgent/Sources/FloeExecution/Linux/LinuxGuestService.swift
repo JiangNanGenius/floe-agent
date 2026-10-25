@@ -145,7 +145,19 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     /// Per-command output ceiling, and the hard ceiling callers are clamped to.
     public var defaultMaxOutputBytes: Int
     public var maxOutputBytes: Int
+    /// Ceiling for the command portion of one EXEC/SPAWN envelope (working
+    /// directory plus argv). Large script bodies are staged by the shell
+    /// backend and never count here; this is a protocol-safety bound on the
+    /// reassembled command itself, not a user-visible script size limit.
     public var maxCommandBytes: Int
+    /// Ceiling for one reassembled console envelope: command bytes plus the
+    /// stdin field plus framing. It exists because stdin travels the same
+    /// EXEC envelope as the command; the guest runner never accepts a whole
+    /// envelope above its own MAX_PAYLOAD (256 KiB), so the host pre-checks
+    /// exactly that and reports an oversized stdin as a stdin problem, never
+    /// as a "command exceeds" message. The tool's own stdin policy is a
+    /// separate, smaller bound owned by the shell validation layer.
+    public var maxEnvelopeBytes: Int
     public var defaultCommandTimeout: TimeInterval
     public var maxCommandTimeout: TimeInterval
     /// How long to wait for the guest console to answer a command.
@@ -185,6 +197,11 @@ public struct LinuxGuestLimits: Sendable, Equatable {
     /// start. Tests override it with a small value.
     public var runnerProbeTimeout: TimeInterval
 
+    /// Hard reassembly ceiling of the guest runner (`floe_exec.c`
+    /// MAX_PAYLOAD). The host never frames an envelope above it, whatever
+    /// the host-side configuration numbers say.
+    public static let runnerEnvelopeBytes = 256 * 1024
+
     /// - Parameters:
     ///   - defaultRAMMB: default for an environment that declares no RAM
     ///     and where the advisory has no workload evidence: the 256 MiB
@@ -201,6 +218,7 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         defaultMaxOutputBytes: Int = 256 * 1024,
         maxOutputBytes: Int = 1024 * 1024,
         maxCommandBytes: Int = 32 * 1024,
+        maxEnvelopeBytes: Int = 256 * 1024,
         defaultCommandTimeout: TimeInterval = 300,
         maxCommandTimeout: TimeInterval = 1800,
         commandTimeout: TimeInterval = 300,
@@ -218,7 +236,13 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         self.minRAMMB = minRAMMB
         self.defaultMaxOutputBytes = defaultMaxOutputBytes
         self.maxOutputBytes = maxOutputBytes
-        self.maxCommandBytes = maxCommandBytes
+        // The guest runner never reassembles an envelope beyond its own
+        // MAX_PAYLOAD (256 KiB), and every command is an envelope, so BOTH
+        // bounds are pinned inside the runner ceiling: a custom host number
+        // can never advertise more than the guest will accept. Staged large
+        // scripts are unaffected — they never ride the envelope.
+        self.maxCommandBytes = max(1024, min(Self.runnerEnvelopeBytes, maxCommandBytes))
+        self.maxEnvelopeBytes = max(self.maxCommandBytes, min(Self.runnerEnvelopeBytes, maxEnvelopeBytes))
         self.defaultCommandTimeout = defaultCommandTimeout
         self.maxCommandTimeout = maxCommandTimeout
         self.commandTimeout = commandTimeout

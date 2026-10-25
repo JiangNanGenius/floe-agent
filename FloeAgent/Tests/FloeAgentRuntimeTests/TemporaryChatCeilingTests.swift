@@ -123,7 +123,7 @@ struct TemporaryChatCeilingTests {
     }
 
     private func makeRuntime(
-        adapter: MockAdapter,
+        adapter: any ProviderAdapter,
         executor: any ToolExecutor,
         auditSink: MockAuditSink = MockAuditSink(),
         policy: any ApprovalPolicy = FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
@@ -202,7 +202,7 @@ struct TemporaryChatCeilingTests {
         // the always-callable discovery tools — schemas and the raw
         // allToolNames list cannot leak private or denied families.
         let wireRequest = try #require(adapter.requests.first)
-        let wireCeiling = temporaryCeiling().union([ToolDiscovery.name, ToolDiscovery.listName])
+        let wireCeiling = temporaryCeiling().union([ToolDiscovery.name, ToolDiscovery.listName, ToolResultPagingTool.name])
         let schemaNames = Set(wireRequest.toolSchemas.map(\.name))
         #expect(schemaNames.isSubset(of: wireCeiling))
         #expect(Set(wireRequest.allToolNames).isSubset(of: wireCeiling))
@@ -247,91 +247,95 @@ struct TemporaryChatCeilingTests {
 
     @Test("Child dispatch: temporary children cannot inherit private reads, mixed tools, delegation, jobs or execution")
     func childDispatchCeilingIsInherited() async throws {
-        let adapter = MockAdapter()
-        let executor = ContextCapturingExecutor(descriptors: ordinaryCatalog())
-        let runtime = makeRuntime(adapter: adapter, executor: executor)
-        let identity = ChildExecutionIdentity(
-            parentRunID: await runtime.runID,
-            rootTaskID: UUID(),
-            delegateCallID: "call-temp"
-        )
-        // The child inherits the parent's ACTUAL temporary name set (fetch,
-        // search and configured AI search), plus private/mixed/write/
-        // execution/delegation names that are deliberately wider than the
-        // ceiling. Deriving the public half from `temporaryCeiling()` keeps the
-        // fixture faithful if the policy ever adds another public web tool.
-        let childAllowedNames = temporaryCeiling().union([
-            "notes.read", "mail.read", "apple.calendar.list", "media.models",
-            "workspace.writeFile", "exec.shell", "delegate", "batch.run",
-            "jobs.submit", "memory.remember",
-        ])
-        func childContext() -> ToolContext {
-            ToolContext(
+        try await ActiveParentTestScope.withScope {
+            let adapter = ActiveParentTestAdapter()
+            let executor = ContextCapturingExecutor(descriptors: ordinaryCatalog())
+            let runtime = makeRuntime(adapter: adapter, executor: executor)
+            try await ActiveParentTestScope.activate(runtime)
+            let identity = ChildExecutionIdentity(
+                parentRunID: await runtime.runID,
+                rootTaskID: UUID(),
+                delegateCallID: "call-temp"
+            )
+            // The child inherits the parent's ACTUAL temporary name set (fetch,
+            // search and configured AI search), plus private/mixed/write/
+            // execution/delegation names that are deliberately wider than the
+            // ceiling. Deriving the public half from `temporaryCeiling()` keeps the
+            // fixture faithful if the policy ever adds another public web tool.
+            let childAllowedNames = temporaryCeiling().union([
+                "notes.read", "mail.read", "apple.calendar.list", "media.models",
+                "workspace.writeFile", "exec.shell", "delegate", "batch.run",
+                "jobs.submit", "memory.remember",
+            ])
+            func childContext() -> ToolContext {
+                ToolContext(
+                    runID: UUID(),
+                    scope: .local,
+                    allowedToolNames: childAllowedNames,
+                    workspaceRootURL: nil,
+                    cancellation: CancellationToken(),
+                    conversationID: UUID(),
+                    temporaryReadOnly: true
+                )
+            }
+
+            for denied in [
+                "notes.read", "mail.read", "apple.calendar.list", "media.models",
+                "workspace.writeFile", "exec.shell", "delegate", "batch.run",
+                "jobs.submit", "memory.remember",
+            ] {
+                let call = try TestFixtures.toolCall(
+                    id: "child-\(denied)", toolName: denied, arguments: #"{"x":1}"#)
+                let result = await runtime.dispatchChildTool(
+                    call, identity: identity, childContext: childContext())
+                #expect(result.status == .denied, "\(denied) must be denied, got \(result.status.rawValue)")
+            }
+            #expect(executor.entries.isEmpty)
+
+            // The public web tools stay reachable for temporary children, and the
+            // public-web-only boundary reaches the actual execute path.
+            let fetch = try TestFixtures.toolCall(
+                id: "child-fetch", toolName: "web.fetch",
+                arguments: #"{"url":"https://example.com"}"#)
+            let fetched = await runtime.dispatchChildTool(
+                fetch, identity: identity, childContext: childContext())
+            #expect(fetched.status == .ok)
+            let search = try TestFixtures.toolCall(
+                id: "child-search", toolName: "web.search",
+                arguments: #"{"query":"weather"}"#)
+            let searched = await runtime.dispatchChildTool(
+                search, identity: identity, childContext: childContext())
+            #expect(searched.status == .ok)
+            let aiSearch = try TestFixtures.toolCall(
+                id: "child-ai-search", toolName: "web.searchAI",
+                arguments: #"{"query":"weather summary"}"#)
+            let aiSearched = await runtime.dispatchChildTool(
+                aiSearch, identity: identity, childContext: childContext())
+            #expect(aiSearched.status == .ok)
+            #expect(executor.entries.map(\.call.toolName) == ["web.fetch", "web.search", "web.searchAI"])
+            #expect(executor.entries.allSatisfy { $0.context.publicWebOnly })
+            #expect(executor.entries.allSatisfy { $0.context.temporaryReadOnly })
+
+            // Frozen catalog identity: even a stale/forged child context that
+            // excludes the public pair cannot dispatch it.
+            let forgedFrozen = ToolContext(
                 runID: UUID(),
                 scope: .local,
-                allowedToolNames: childAllowedNames,
-                workspaceRootURL: nil,
+                allowedToolNames: ["web.fetch", "notes.read"],
+                publicWebOnly: true,
                 cancellation: CancellationToken(),
                 conversationID: UUID(),
-                temporaryReadOnly: true
+                temporaryReadOnly: true,
+                frozenEffectiveCatalogNames: ["notes.read"]
             )
+            let forgedFetch = try TestFixtures.toolCall(
+                id: "child-forged-fetch", toolName: "web.fetch",
+                arguments: #"{"url":"https://example.com"}"#)
+            let forgedResult = await runtime.dispatchChildTool(
+                forgedFetch, identity: identity, childContext: forgedFrozen)
+            #expect(forgedResult.status == .denied)
+            #expect(forgedResult.outputSummary.contains("offered catalog"))
+
         }
-
-        for denied in [
-            "notes.read", "mail.read", "apple.calendar.list", "media.models",
-            "workspace.writeFile", "exec.shell", "delegate", "batch.run",
-            "jobs.submit", "memory.remember",
-        ] {
-            let call = try TestFixtures.toolCall(
-                id: "child-\(denied)", toolName: denied, arguments: #"{"x":1}"#)
-            let result = await runtime.dispatchChildTool(
-                call, identity: identity, childContext: childContext())
-            #expect(result.status == .denied, "\(denied) must be denied, got \(result.status.rawValue)")
-        }
-        #expect(executor.entries.isEmpty)
-
-        // The public web tools stay reachable for temporary children, and the
-        // public-web-only boundary reaches the actual execute path.
-        let fetch = try TestFixtures.toolCall(
-            id: "child-fetch", toolName: "web.fetch",
-            arguments: #"{"url":"https://example.com"}"#)
-        let fetched = await runtime.dispatchChildTool(
-            fetch, identity: identity, childContext: childContext())
-        #expect(fetched.status == .ok)
-        let search = try TestFixtures.toolCall(
-            id: "child-search", toolName: "web.search",
-            arguments: #"{"query":"weather"}"#)
-        let searched = await runtime.dispatchChildTool(
-            search, identity: identity, childContext: childContext())
-        #expect(searched.status == .ok)
-        let aiSearch = try TestFixtures.toolCall(
-            id: "child-ai-search", toolName: "web.searchAI",
-            arguments: #"{"query":"weather summary"}"#)
-        let aiSearched = await runtime.dispatchChildTool(
-            aiSearch, identity: identity, childContext: childContext())
-        #expect(aiSearched.status == .ok)
-        #expect(executor.entries.map(\.call.toolName) == ["web.fetch", "web.search", "web.searchAI"])
-        #expect(executor.entries.allSatisfy { $0.context.publicWebOnly })
-        #expect(executor.entries.allSatisfy { $0.context.temporaryReadOnly })
-
-        // Frozen catalog identity: even a stale/forged child context that
-        // excludes the public pair cannot dispatch it.
-        let forgedFrozen = ToolContext(
-            runID: UUID(),
-            scope: .local,
-            allowedToolNames: ["web.fetch", "notes.read"],
-            publicWebOnly: true,
-            cancellation: CancellationToken(),
-            conversationID: UUID(),
-            temporaryReadOnly: true,
-            frozenEffectiveCatalogNames: ["notes.read"]
-        )
-        let forgedFetch = try TestFixtures.toolCall(
-            id: "child-forged-fetch", toolName: "web.fetch",
-            arguments: #"{"url":"https://example.com"}"#)
-        let forgedResult = await runtime.dispatchChildTool(
-            forgedFetch, identity: identity, childContext: forgedFrozen)
-        #expect(forgedResult.status == .denied)
-        #expect(forgedResult.outputSummary.contains("offered catalog"))
     }
 }

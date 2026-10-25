@@ -16,10 +16,27 @@ public enum ToolScope: Sendable, Codable, Hashable {
 /// Maximum size of validated tool arguments, in bytes.
 public let toolArgumentsMaxBytes = 65_536 // 64 KiB
 
-/// Text-file mutations accept a bounded long document; all other tools retain
-/// the smaller default. Underscore aliases cover compatible provider wire names.
+/// Per-tool application byte ceiling for validated arguments.
+///
+/// `exec.shell` (and its provider wire alias `exec_shell`) intentionally has
+/// NO application-level command-size ceiling: real scripts routinely exceed
+/// 64 KiB and the execution transport (staged script file, not argv) owns the
+/// real bound. `Int.max` states that uncapped semantic explicitly instead of
+/// raising the number to a new guess. The JSON-object validation in
+/// `ToolCall.init` still applies, and every other tool keeps its bound.
+///
+/// `jobs.submit` is deliberately NOT exempted here: its own tool name is
+/// stable while only the WRAPPED target may be `exec.shell`, and the job tool
+/// must preserve per-target payload limits. `ToolCall.init` admits an oversized
+/// wrapper only for its parsed canonical Shell target; the submission tool
+/// independently checks the target payload. Other wrappers keep this limit.
+///
+/// Text-file mutations accept a bounded long document; underscore aliases
+/// cover compatible provider wire names.
 public func toolArgumentsByteLimit(for toolName: String) -> Int {
     switch toolName {
+    case "exec.shell", "exec_shell":
+        return Int.max
     case "document.createMarkdown", "document_createMarkdown",
          "workspace.createFile", "workspace.writeFile", "workspace.applyPatch",
          "workspace_createFile", "workspace_writeFile", "workspace_applyPatch":
@@ -44,7 +61,9 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
 
     public init(id: String, toolName: String, argumentsJSON: Data, scope: ToolScope) throws {
         let maximumBytes = toolArgumentsByteLimit(for: toolName)
-        guard argumentsJSON.count <= maximumBytes else {
+        let oversizedJob = ["jobs.submit", "jobs_submit"].contains(toolName)
+            && argumentsJSON.count > maximumBytes
+        guard argumentsJSON.count <= maximumBytes || oversizedJob else {
             throw FloeError.validationFailed(
                 "Tool arguments exceed \(maximumBytes) bytes"
             )
@@ -55,14 +74,32 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
         } catch {
             throw FloeError.validationFailed("Tool arguments must be valid JSON: \(error.localizedDescription)")
         }
-        guard decoded is [String: Any] else {
+        guard let object = decoded as? [String: Any] else {
             throw FloeError.validationFailed("Tool arguments must be a JSON object")
+        }
+        guard !oversizedJob || Self.isShellJobEnvelope(object) else {
+            throw FloeError.validationFailed("Tool arguments exceed \(maximumBytes) bytes")
         }
         self.id = id
         self.toolName = toolName
         self.argumentsJSON = argumentsJSON
         self.scope = scope
         self.idempotencyKey = ""
+    }
+
+    /// Only the Shell body can justify a larger job envelope. Keep metadata
+    /// bounded and reject unknown fields rather than widening every job tool.
+    private static func isShellJobEnvelope(_ object: [String: Any]) -> Bool {
+        guard object["tool"] as? String == "exec.shell",
+              object["arguments"] is String,
+              Set(object.keys).isSubset(of: ["tool", "arguments", "purpose", "wait"]) else {
+            return false
+        }
+        if let purpose = object["purpose"], !(purpose is NSNull) {
+            guard let text = purpose as? String, text.utf8.count <= 240 else { return false }
+        }
+        if let wait = object["wait"], !(wait is NSNull), !(wait is Bool) { return false }
+        return true
     }
 
     /// Computes the idempotency key once the run identifier is known.
@@ -77,7 +114,18 @@ public struct ToolCall: Sendable, Codable, Identifiable, Hashable {
 
 /// Terminal outcome of a tool execution. Only results in a terminal state
 /// (or explicit recoverable failure) are returned to the model.
+///
+/// `Equatable`/`Hashable` are implemented explicitly over the durable fields
+/// only. The transient capture (`capturedOutput`, up to the tool-layer cap)
+/// is deliberately NOT part of result identity: it is excluded from Codable,
+/// exists only between execution and retention, and must never make a UI
+/// dictionary/set hash megabytes or make a decoded result unequal to the
+/// result it was encoded from.
 public struct ToolResult: Sendable, Codable, Hashable {
+    /// Transient sanitized capture: deliberately excluded from CodingKeys so
+    /// checkpoints retain their bounded projection rather than large outputs.
+    public var capturedOutput: String? = nil
+    public var capturedOutputTruncated: Bool = false
     public var callID: String
     public var status: Status
     /// Ordinary results use 4096 characters; native skill reads may carry a
@@ -121,17 +169,59 @@ public struct ToolResult: Sendable, Codable, Hashable {
         artifacts: [ToolArtifactReference] = [],
         outputFiles: [RunOutputFile] = [],
         provenance: ToolResultProvenance? = nil,
-        maximumSummaryCharacters: Int = 4096
+        maximumSummaryCharacters: Int = 4096,
+        capturedOutput: String? = nil,
+        capturedOutputTruncated: Bool = false
     ) {
         self.callID = callID
         self.status = status
         self.maximumSummaryCharacters = min(max(0, maximumSummaryCharacters), 262_144)
         self.outputSummary = String(outputSummary.prefix(self.maximumSummaryCharacters))
+        self.capturedOutput = capturedOutput
+        self.capturedOutputTruncated = capturedOutputTruncated
+            || (capturedOutput == nil && self.outputSummary != outputSummary)
         self.outputDigest = outputDigest
         self.exitStatus = exitStatus
         self.artifacts = artifacts
         self.outputFiles = outputFiles
         self.provenance = provenance
+    }
+
+    /// Drops the transient capture fields. Durable projections (checkpoints,
+    /// provider/replay history, UI state) use this so a large capture is
+    /// neither encoded nor retained, and so comparisons/hashes stay bounded.
+    public func durableProjection() -> ToolResult {
+        var projected = self
+        projected.capturedOutput = nil
+        projected.capturedOutputTruncated = false
+        return projected
+    }
+
+    /// Identity covers only what a checkpoint round-trip preserves. The
+    /// transient capture and its truncation flag are execution-time evidence
+    /// owned by the retention store, not part of the settled result.
+    public static func == (lhs: ToolResult, rhs: ToolResult) -> Bool {
+        lhs.callID == rhs.callID
+            && lhs.status == rhs.status
+            && lhs.outputSummary == rhs.outputSummary
+            && lhs.maximumSummaryCharacters == rhs.maximumSummaryCharacters
+            && lhs.outputDigest == rhs.outputDigest
+            && lhs.exitStatus == rhs.exitStatus
+            && lhs.artifacts == rhs.artifacts
+            && lhs.outputFiles == rhs.outputFiles
+            && lhs.provenance == rhs.provenance
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(callID)
+        hasher.combine(status)
+        hasher.combine(outputSummary)
+        hasher.combine(maximumSummaryCharacters)
+        hasher.combine(outputDigest)
+        hasher.combine(exitStatus)
+        hasher.combine(artifacts)
+        hasher.combine(outputFiles)
+        hasher.combine(provenance)
     }
 
     private enum CodingKeys: String, CodingKey {

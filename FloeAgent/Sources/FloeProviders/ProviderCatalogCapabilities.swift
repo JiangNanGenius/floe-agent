@@ -24,6 +24,55 @@ import FloeCore
 /// Pure mapping from catalog metadata to model capability defaults.
 public enum ProviderCatalogCapabilityResolver {
 
+    /// Metadata fallback for a new row whose editor was opened from a
+    /// built-in/manual preset rather than a catalog selection. Only the
+    /// actual endpoint and compatible wire/auth family establish identity;
+    /// display names, search aliases and model-name patterns do not.
+    /// This is capability evidence only, never a credential/routing decision.
+    public static func metadata(
+        forRemoteID remoteID: String,
+        kind: ProviderKind,
+        baseURL: URL,
+        modelProtocol: ModelProtocol,
+        catalog: ProviderCatalogIndex
+    ) -> ProviderCatalogModelMetadata? {
+        guard kind != .local, let endpoint = metadataEndpoint(baseURL) else { return nil }
+        let auth = ProviderConfigurationValidation.ProviderConnectionIdentity.authStyle(for: kind)
+        let matches = catalog.all.filter { entry in
+            guard entry.availability == .available,
+                  !ProviderCatalogIndex.hiddenPresetIDs.contains(entry.presetID),
+                  entry.authStyle == auth,
+                  entry.kind == kind || kind == .custom,
+                  let url = entry.baseURL, metadataEndpoint(url) == endpoint else { return false }
+            // The two OpenAI conversation protocols carry the same image
+            // capability. Anthropic stays a distinct wire family.
+            return entry.defaultProtocol == modelProtocol
+                || (entry.defaultProtocol != .anthropicMessages && modelProtocol != .anthropicMessages)
+        }
+        // Ambiguous directory identities are unknown, not first-match wins.
+        guard matches.count == 1 else { return nil }
+        return matches[0].modelMetadata?[remoteID]
+    }
+
+    private struct MetadataEndpoint: Equatable {
+        let host: String
+        let port: Int
+        let path: String
+    }
+
+    private static func metadataEndpoint(_ url: URL) -> MetadataEndpoint? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "https",
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              var host = components.host?.lowercased(), !host.isEmpty else { return nil }
+        while host.hasSuffix(".") { host.removeLast() }
+        guard !host.isEmpty else { return nil }
+        var path = components.percentEncodedPath
+        while path.hasSuffix("/") { path.removeLast() }
+        return MetadataEndpoint(host: host, port: components.port ?? 443, path: path)
+    }
+
     /// Modality token for image input.
     public static let imageModality = "image"
     /// Modality token for text output.

@@ -125,6 +125,11 @@ public extension AgentTool {
 /// Bounded execution output; the digest covers the full pre-truncation bytes.
 public struct ToolExecutionOutput: Sendable {
     public var summary: String
+    /// Optional already-sanitized capture for runtime paging, separate from
+    /// the short display summary. Producers must never supply raw logs here.
+    public var capturedOutput: String?
+    public var capturedOutputTruncated: Bool
+    public var summaryTruncated: Bool
     public var fullOutputSHA256: String
     public var exitStatus: Int32?
     public var artifacts: [ToolArtifactReference]
@@ -146,9 +151,14 @@ public struct ToolExecutionOutput: Sendable {
         artifacts: [ToolArtifactReference] = [],
         outputFiles: [RunOutputFile] = [],
         requiresUserAction: Bool = false,
-        maximumSummaryCharacters: Int = 4096
+        maximumSummaryCharacters: Int = 4096,
+        capturedOutput: String? = nil,
+        capturedOutputTruncated: Bool = false
     ) {
         self.summary = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
+        self.summaryTruncated = self.summary != summary
+        self.capturedOutput = capturedOutput
+        self.capturedOutputTruncated = capturedOutputTruncated
         self.fullOutputSHA256 = fullOutputSHA256
         self.exitStatus = exitStatus
         self.artifacts = artifacts
@@ -164,7 +174,9 @@ public struct ToolExecutionOutput: Sendable {
         artifacts: [ToolArtifactReference] = [],
         outputFiles: [RunOutputFile] = [],
         requiresUserAction: Bool = false,
-        maximumSummaryCharacters: Int = 4096
+        maximumSummaryCharacters: Int = 4096,
+        capturedOutput: String? = nil,
+        capturedOutputTruncated: Bool = false
     ) {
         self.init(
             summary: summary,
@@ -173,7 +185,9 @@ public struct ToolExecutionOutput: Sendable {
             artifacts: artifacts,
             outputFiles: outputFiles,
             requiresUserAction: requiresUserAction,
-            maximumSummaryCharacters: maximumSummaryCharacters
+            maximumSummaryCharacters: maximumSummaryCharacters,
+            capturedOutput: capturedOutput,
+            capturedOutputTruncated: capturedOutputTruncated
         )
     }
 }

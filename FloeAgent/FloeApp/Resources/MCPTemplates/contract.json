@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "templateID": "floe.mcp.node-http",
+  "templateVersion": "1.0.1",
+  "storefrontSkill": false,
+  "projectRoot": "node-http",
+  "language": "typescript",
+  "runtime": {
+    "os": "linux",
+    "node": ">=20.19.0",
+    "guestExecutionVerified": false,
+    "architecture": "verify-in-resolved-environment"
+  },
+  "sdk": {
+    "package": "@modelcontextprotocol/sdk",
+    "version": "1.32.2",
+    "sourceCommit": "3b73021a0a2272c0c04c3917bcdb03398b3ec63f",
+    "license": "MIT"
+  },
+  "commands": {
+    "install": ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+    "build": ["npm", "run", "build"],
+    "test": ["npm", "test"],
+    "start": ["node", "dist/server.js"]
+  },
+  "service": {
+    "owner": "existing-task-environment-service-supervisor",
+    "transport": "streamable-http",
+    "sessionMode": "stateless",
+    "mcpPath": "/mcp",
+    "healthPath": "/healthz",
+    "defaultHost": "127.0.0.1",
+    "portSource": "existing-supervisor-assigned-PORT",
+    "endpointSource": "verified-owned-service-forwarding-record",
+    "readyLogIsAcceptance": false
+  },
+  "smokeTest": {
+    "methods": ["initialize", "notifications/initialized", "tools/list", "tools/call"],
+    "tool": "service_status",
+    "arguments": { "label": "floe-native-verification" },
+    "expectedStructuredContent": {
+      "status": "ready",
+      "service": "floe-mcp-service",
+      "label": "floe-native-verification"
+    },
+    "requiresRealNativeClient": true,
+    "automaticallyTestGeneratedSideEffects": false
+  },
+  "persistence": {
+    "project": "existing-explicit-workspace",
+    "environment": "existing-resolved-environmentID",
+    "service": "existing-owned-service-handle",
+    "connection": "existing-MCP-manager-draft",
+    "credentials": "existing-credential-store"
+  }
+}

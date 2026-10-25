@@ -1,0 +1,36 @@
+{
+  "contract": "floe.impeccable.snapshot",
+  "contractVersion": 1,
+  "count": 23,
+  "pseudoProps": [
+    "content",
+    "position",
+    "opacity",
+    "display",
+    "width",
+    "height",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "backgroundColor",
+    "backgroundImage",
+    "background",
+    "borderRadius",
+    "transform",
+    "visibility",
+    "zIndex",
+    "translate",
+    "scale",
+    "rotate",
+    "filter",
+    "fontSize",
+    "maskImage"
+  ],
+  "recordedWhen": "::before / ::after whose computed content is not none or empty",
+  "provenance": {
+    "crates/foundation/src/browser/snapshot.rs": "3f8fc2efedfaa8bd6d3f39d0bb6169738caf229d6aa2b348e60da04fc82666d5",
+    "browser-bundle/15-snapshot.js": "b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0",
+    "ENGINE_VERSION": "bd270b0ddecef6c53cde260e7964048b1186147606e6643d2ccb8cf04e167bd1"
+  }
+}

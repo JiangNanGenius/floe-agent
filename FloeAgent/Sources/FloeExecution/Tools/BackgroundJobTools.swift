@@ -422,7 +422,7 @@ public struct JobsSubmitTool: AgentTool {
     with a promise to check later. Pass "wait": false only for explicitly detached work you will collect later. Never \
     submit a duplicate payload for the same purpose — one job is enough.
     """
-    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name. Admitted: exec.localService, exec.shell, network.download, network.http, web.fetch, video.edit, video.interpolate, video.superResolution, media.project, document.pdf.edit, document.pdf.export, document.office.updateText, document.office.edit (export/authorized apply)."},"arguments":{"type":"string","maxLength":65536,"description":"JSON-encoded arguments object for the target tool. For media/PDF/Office targets the input path, workspace confinement and any expectedSHA256/base revision are preflighted before the job is persisted."},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"},"wait":{"type":"boolean","description":"Default true: keep this task open until the job finishes (or a service is ready) and continue in the same run with the result. false = explicitly detached fire-and-forget work."}},"required":["tool","arguments"],"additionalProperties":false}"#
+    public static let parametersJSON = #"{"type":"object","properties":{"tool":{"type":"string","description":"Target tool name. Admitted: exec.localService, exec.shell, network.download, network.http, web.fetch, video.edit, video.interpolate, video.superResolution, media.project, document.pdf.edit, document.pdf.export, document.office.updateText, document.office.edit (export/authorized apply)."},"arguments":{"type":"string","description":"JSON-encoded arguments object for the target tool. Shell scripts have no application command-size ceiling; other targets retain their own argument bounds. For media/PDF/Office targets the input path, workspace confinement and any expectedSHA256/base revision are preflighted before the job is persisted."},"purpose":{"type":"string","maxLength":240,"description":"Short human-visible reason for this job"},"wait":{"type":"boolean","description":"Default true: keep this task open until the job finishes (or a service is ready) and continue in the same run with the result. false = explicitly detached fire-and-forget work."}},"required":["tool","arguments"],"additionalProperties":false}"#
     // The real risk profile belongs to the named target; the union keeps
     // approval policy conservative because labels are compile-time static.
     public static let riskLabels: Set<RiskLabel> = [.networkAccess, .executesLocalCode, .readsFiles, .writesFiles, .deletesFiles]
@@ -467,8 +467,16 @@ public struct JobsSubmitTool: AgentTool {
         guard BackgroundJobService.supportedTargets.contains(args.tool) else {
             throw FloeError.validationFailed("Unsupported job target '\(args.tool)'; admitted: \(BackgroundJobService.supportedTargets.sorted().joined(separator: ", "))")
         }
-        guard let data = args.arguments.data(using: .utf8),
-              (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
+        guard let data = args.arguments.data(using: .utf8) else {
+            throw FloeError.validationFailed("arguments must be UTF-8 JSON")
+        }
+        // Shell bodies use the staged-file transport; background wrapping
+        // must not restore a command-length ceiling. Other targets retain
+        // their normal ToolCall argument boundary before durable submission.
+        guard data.count <= toolArgumentsByteLimit(for: args.tool) else {
+            throw FloeError.validationFailed("Job target arguments exceed the tool limit")
+        }
+        guard (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else {
             throw FloeError.validationFailed("arguments must be a JSON-encoded object for the target tool")
         }
         if let purpose = args.purpose {

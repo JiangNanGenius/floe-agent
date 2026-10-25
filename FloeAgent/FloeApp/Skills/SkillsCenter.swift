@@ -32,6 +32,8 @@ final class SkillsCenter: ObservableObject {
     @Published var errorMessage: String?
     @Published var pendingInstallation: PendingInstallation?
     @Published private(set) var pendingUpgrade: SkillUpgradeCandidate?
+    @Published private(set) var rollbackEligibleDigests: [String: String] = [:]
+    private var journalSources: [String: GitHubSkillSource] = [:]
     /// A completed update check proved the known remote is not newer than
     /// this row's installed version. The upgrade transaction guard still
     /// rejects any non-newer candidate unchanged; this flag only carries the
@@ -40,6 +42,339 @@ final class SkillsCenter: ObservableObject {
     @Published private(set) var upgradeIsUpToDate = false
     private var upgradeStagingRoot: URL?
     private var upgradeStagingLease: ScratchLeaseToken?
+
+    @Published private(set) var curatedPublication: CuratedSkillHub.Publication?
+    @Published private(set) var curatedCatalogError: String?
+    @Published private(set) var isRefreshingCuratedCatalog = false
+    private var lastCuratedCatalogCheck: Date?
+    private var pendingCuratedUpgradeReceipt: CuratedSkillHub.Receipt?
+    private var pendingReviewChoiceKey: String?
+    private var busyHubReadRuns: Set<UUID> = []
+
+    private var appVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
+
+    var curatedCards: [CuratedSkillHub.Card] {
+        guard let publication = curatedPublication else { return [] }
+        return CuratedSkillHub.cards(feed: publication.feed, mode: .production, appVersion: appVersion)
+            .filter { $0.entry.status.published && $0.entry.status.reviewed && $0.entry.status.qualified }
+    }
+
+    func refreshCuratedCatalog(force: Bool = false) async {
+        guard !isRefreshingCuratedCatalog,
+              force || lastCuratedCatalogCheck.map({ Date().timeIntervalSince($0) > 3600 }) != false else { return }
+        isRefreshingCuratedCatalog = true
+        lastCuratedCatalogCheck = Date()
+        defer { isRefreshingCuratedCatalog = false }
+        do {
+            curatedPublication = try await loadCuratedPublication()
+            curatedCatalogError = nil
+            lastCuratedCatalogCheck = Date()
+        } catch {
+            // A failed refresh retains the last authenticated publication.
+            curatedCatalogError = FloeL10n.l("skills.hub.catalog_unavailable")
+        }
+    }
+
+    private func loadCuratedPublication(ref: String = "main") async throws -> CuratedSkillHub.Publication {
+        let connector = environment.sourceControlCenter
+        return try await CuratedSkillHub.loadPublication(channel: .ios, mode: .production, ref: ref,
+            resolve: { source in
+                let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                    ref: source.ref, path: nil, usesConnectorCredential: false)
+                struct Commit: Decodable { let sha: String }
+                return try JSONDecoder().decode(Commit.self, from: bytes).sha
+            }, fetch: { source, commit, path in
+                try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                    ref: commit, path: path, usesConnectorCredential: false)
+            })
+    }
+
+    func verifiedHubCatalogEntries() async throws -> [SkillHubCatalogEntry] {
+        await refreshCuratedCatalog()
+        guard let publication = curatedPublication else {
+            throw SkillHubCatalogError.unavailable(FloeL10n.l("skills.hub.catalog_unavailable"))
+        }
+        return try curatedCards.map { try hubCatalogEntry($0.entry, publication: publication) }
+    }
+
+    private func hubCatalogEntry(_ entry: CuratedSkillEntry, publication: CuratedSkillHub.Publication) throws -> SkillHubCatalogEntry {
+        let provenance = try SkillHubProvenance(hubRepository: CuratedSkillHub.hubRepository,
+            publisher: CuratedSkillHub.publisher, channel: .ios, feedStatus: .production,
+            signatureKeyID: publication.verifiedFeed.keyID, sourceCommit: publication.auditedSourceCommit,
+            publicationCommit: publication.publicationCommit, catalogDigest: publication.verifiedFeed.catalogSHA256,
+            contentDigest: entry.package?.contentDigest, packageSHA256: entry.package?.sha256,
+            reviewDigest: entry.review?.sha256)
+        return try SkillHubCatalogEntry(id: entry.id, version: entry.version,
+            kind: entry.kind == .builtin ? .builtin : .optional,
+            name: .name(en: entry.name.en, zhHans: entry.name.zhHans),
+            description: .description(en: entry.description.en, zhHans: entry.description.zhHans),
+            category: entry.category.rawValue, tags: entry.tags,
+            containsScripts: entry.package?.containsScripts ?? false,
+            installOffer: entry.installOffer == .qualified ? .qualified : .none,
+            reviewed: entry.status.reviewed, qualified: entry.status.qualified, published: entry.status.published,
+            minimumAppVersion: entry.minimumAppVersion, provenance: provenance)
+    }
+
+    func verifiedHubCatalogDetail(id: String) async throws -> SkillHubCatalogDetail? {
+        await refreshCuratedCatalog()
+        guard let publication = curatedPublication else {
+            throw SkillHubCatalogError.unavailable(FloeL10n.l("skills.hub.catalog_unavailable"))
+        }
+        return try await hubCatalogDetail(id: id, publication: publication)
+    }
+
+    private func hubCatalogDetail(id: String, publication: CuratedSkillHub.Publication) async throws -> SkillHubCatalogDetail? {
+        guard let card = CuratedSkillHub.cards(feed: publication.feed, mode: .production, appVersion: appVersion)
+            .first(where: { $0.entry.id == id && $0.entry.status.published && $0.showsInstallAction }) else { return nil }
+        let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+        defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
+        let staged = try await stageCuratedPackage(publication, id: id, at: scratch.url)
+        let snapshot = staged.content
+        return try SkillHubCatalogDetail(entry: hubCatalogEntry(card.entry, publication: publication),
+            instructions: String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self),
+            bundledFiles: snapshot.files.keys.sorted(), fileCount: snapshot.files.count,
+            totalBytes: snapshot.files.values.reduce(0) { $0 + $1.count },
+            reviewedCapabilities: snapshot.package.manifest.capabilities, reviewedTools: snapshot.package.manifest.tools)
+    }
+
+    private struct HubReadPin: Codable {
+        let schemaVersion: Int
+        let ownerID: UUID
+        let runID: UUID
+        let publicationCommit: String
+        let catalogDigest: String
+    }
+
+    private struct HubReadCache: Codable {
+        let ownerID: UUID
+        let runID: UUID
+        let publicationCommit: String
+        let catalogDigest: String
+        let payload: Data
+        let digest: String
+    }
+
+    private func hubReadOwnerRoot(_ ownerID: UUID) throws -> URL {
+        try FloeArtifactStore.root().appendingPathComponent("SkillHubReads", isDirectory: true)
+            .appendingPathComponent(ownerID.uuidString, isDirectory: true)
+    }
+
+    private func readHubCacheBytes(_ url: URL, limit: Int) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let bytes = try handle.read(upToCount: limit + 1) ?? Data()
+        guard !bytes.isEmpty, bytes.count <= limit else { throw SkillUpgradeError.localConflict }
+        return bytes
+    }
+
+    func verifiedHubCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
+        try SkillIdentifier.validate(id)
+        guard let ownerID = context.conversationID, !context.temporaryReadOnly, !context.publicWebOnly else {
+            throw SkillHubInstallError.userChoiceBlocked
+        }
+        // This is a cancellable per-run gate, not an unowned background task:
+        // the existing run joins its IO before deletion can remove the cache.
+        while busyHubReadRuns.contains(context.runID) {
+            try context.cancellation.throwIfCancelled()
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        busyHubReadRuns.insert(context.runID)
+        defer { busyHubReadRuns.remove(context.runID) }
+        try context.cancellation.throwIfCancelled()
+        let root = try hubReadOwnerRoot(ownerID).appendingPathComponent(context.runID.uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let pinURL = root.appendingPathComponent("publication.json")
+        let detailURL = root.appendingPathComponent(id + ".json")
+        let pin: HubReadPin
+        let publication: CuratedSkillHub.Publication
+        if FileManager.default.fileExists(atPath: pinURL.path) {
+            let value = try JSONDecoder().decode(HubReadPin.self, from: readHubCacheBytes(pinURL, limit: 4096))
+            guard value.schemaVersion == 1, value.ownerID == ownerID, value.runID == context.runID,
+                  value.publicationCommit.count == 40, value.publicationCommit.allSatisfy(\.isHexDigit),
+                  value.catalogDigest.count == 64, value.catalogDigest.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.localConflict }
+            pin = value
+            if FileManager.default.fileExists(atPath: detailURL.path) {
+                let cache = try JSONDecoder().decode(HubReadCache.self, from: readHubCacheBytes(detailURL, limit: 1_048_576))
+                guard cache.ownerID == ownerID, cache.runID == context.runID,
+                      cache.publicationCommit == pin.publicationCommit, cache.catalogDigest == pin.catalogDigest,
+                      FloeDigest.sha256Hex(cache.payload) == cache.digest else { throw SkillUpgradeError.localConflict }
+                let detail = try JSONDecoder().decode(SkillHubCatalogDetail.self, from: cache.payload)
+                guard detail.entry.id == id, detail.entry.provenance?.publicationCommit == pin.publicationCommit,
+                      detail.entry.provenance?.catalogDigest == pin.catalogDigest else { throw SkillUpgradeError.localConflict }
+                try context.cancellation.throwIfCancelled()
+                return detail
+            }
+            publication = try await loadCuratedPublication(ref: pin.publicationCommit)
+        } else {
+            // The first read freezes Y before exposing any instruction body.
+            publication = try await loadCuratedPublication()
+            try context.cancellation.throwIfCancelled()
+            pin = HubReadPin(schemaVersion: 1, ownerID: ownerID, runID: context.runID,
+                publicationCommit: publication.publicationCommit, catalogDigest: publication.verifiedFeed.catalogSHA256)
+            try JSONEncoder().encode(pin).write(to: pinURL, options: .atomic)
+        }
+        guard publication.publicationCommit == pin.publicationCommit,
+              publication.verifiedFeed.catalogSHA256 == pin.catalogDigest else { throw SkillUpgradeError.localConflict }
+        let detail = try await hubCatalogDetail(id: id, publication: publication)
+        try context.cancellation.throwIfCancelled()
+        if let detail {
+            let payload = try JSONEncoder().encode(detail)
+            let cache = HubReadCache(ownerID: ownerID, runID: context.runID,
+                publicationCommit: pin.publicationCommit, catalogDigest: pin.catalogDigest,
+                payload: payload, digest: FloeDigest.sha256Hex(payload))
+            let encoded = try JSONEncoder().encode(cache)
+            guard encoded.count <= 1_048_576 else { throw SkillUpgradeError.localConflict }
+            try encoded.write(to: detailURL, options: .atomic)
+        }
+        return detail
+    }
+
+    func removeHubReadSnapshots(ownerID: UUID) throws {
+        let root = try hubReadOwnerRoot(ownerID)
+        if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+    }
+
+    private func hubInstallReceipt(_ row: PersistedSkill, status: SkillHubInstallStatus) throws -> SkillHubInstallReceipt {
+        guard let proof = Self.curatedReceipt(for: row), proof.contentDigest == row.rewrittenDigest else {
+            throw SkillUpgradeError.localConflict
+        }
+        let actual = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(row.id),
+            expectedDigest: row.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: row))
+        return try SkillHubInstallReceipt(status: status, skillID: row.id, version: row.version,
+            contentDigest: actual.package.canonicalSHA256, packageSHA256: proof.packageSHA256,
+            catalogDigest: proof.catalogSHA256, reviewDigest: proof.reviewSHA256,
+            sourceCommit: proof.auditedSourceCommit, publicationCommit: proof.publicationCommit,
+            containsScripts: proof.containsScripts, fileCount: actual.files.count,
+            totalBytes: actual.files.values.reduce(0) { $0 + $1.count },
+            reviewedCapabilities: actual.package.manifest.capabilities, reviewedTools: actual.package.manifest.tools)
+    }
+
+    func installHubSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> SkillHubInstallReceipt {
+        try context.cancellation.throwIfCancelled()
+        guard !context.temporaryReadOnly, !context.publicWebOnly, let ownerID = context.conversationID,
+              context.approvalGrantID != nil else { throw SkillHubInstallError.userChoiceBlocked }
+        guard !isWorking, !updates.isRunning, !packageMutationInProgress,
+              pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
+        let current = try await environment.skillStore.all().first { $0.id == request.id }
+        if let current, let proof = Self.curatedReceipt(for: current),
+           proof.contentDigest == current.rewrittenDigest,
+           request.publicationCommit == nil || request.publicationCommit == proof.publicationCommit {
+            return try hubInstallReceipt(current, status: .alreadyInstalled)
+        }
+        let wasRemoved = try await environment.skillStore.wasExplicitlyRemoved(id: request.id)
+        guard !wasRemoved else {
+            throw SkillHubInstallError.userChoiceBlocked
+        }
+        if let current {
+            guard current.status == "enabled",
+                  Self.curatedReceipt(for: current)?.contentDigest == current.rewrittenDigest || origin(of: current) == .official else {
+                throw SkillHubInstallError.userChoiceBlocked
+            }
+        }
+        let choiceKey = "skills.hub.reviewChoice." + ownerID.uuidString + "." + context.runID.uuidString + "." + request.id
+        let choices = SQLiteSettingsStore(database: environment.database)
+        if try await choices.value(forKey: choiceKey) == "false" { throw SkillHubInstallError.reviewDeclined }
+        if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillHubInstallError.reviewRequired }
+        isWorking = true
+        defer { isWorking = false }
+        let publication = try await loadCuratedPublication(ref: request.publicationCommit ?? "main")
+        if let pin = request.publicationCommit, publication.publicationCommit != pin { throw SkillHubValidationError.receiptIdentityMismatch }
+        try context.cancellation.throwIfCancelled()
+        let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+        defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
+        let staged = try await stageCuratedPackage(publication, id: request.id, at: scratch.url)
+        try await requireCompatibility(staged.content.package)
+        try context.cancellation.throwIfCancelled()
+        let candidate: SkillUpgradeCandidate?
+        if let current {
+            let previous = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(current.id),
+                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
+            candidate = try staged.upgradeCandidate(installed: previous)
+        } else { candidate = nil }
+        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
+            throw SkillUpgradeError.invalidSource
+        }
+        if staged.permissionDelta.requiresCombinedApproval {
+            pendingReviewChoiceKey = choiceKey
+            pendingInstallation = PendingInstallation(sourceURL: sourceURL,
+                skillMarkdown: String(decoding: staged.content.files["SKILL.md"] ?? Data(), as: UTF8.self),
+                manifest: staged.content.package.manifest, files: [:],
+                capabilityNames: staged.permissionDelta.missingCapabilities,
+                toolNames: staged.permissionDelta.missingTools, containsScripts: staged.receipt.containsScripts,
+                sourceDigest: staged.content.package.canonicalSHA256, rewriteModelID: "hub-reviewed-" + publication.publicationCommit,
+                snapshot: staged.content, curatedReceipt: staged.receipt, curatedUpgrade: candidate,
+                reviewOwnerID: ownerID)
+            throw SkillHubInstallError.reviewRequired
+        }
+        // No await between the final cancellation check and entering the
+        // existing commit flow. Once committed, report the read-back receipt.
+        try context.cancellation.throwIfCancelled()
+        if let candidate {
+            pendingCuratedUpgradeReceipt = staged.receipt
+            try await stageUpgradeForReview(candidate, at: scratch.url)
+            try await applyReviewedUpgradeCore()
+        } else {
+            try await installCanonicalPackage(at: scratch.url, sourceURL: sourceURL,
+                sourceDigest: staged.content.package.canonicalSHA256,
+                rewriteModelID: "hub-reviewed-" + publication.publicationCommit,
+                manifestOverride: staged.content.package.manifest, curatedReceipt: staged.receipt)
+        }
+        guard let committed = try await environment.skillStore.all().first(where: { $0.id == request.id }),
+              committed.rewrittenDigest == staged.receipt.contentDigest else { throw SkillUpgradeError.localConflict }
+        let receipt = try hubInstallReceipt(committed, status: current == nil ? .installed : .replaced)
+        await load()
+        return receipt
+    }
+
+    private func stageCuratedPackage(_ publication: CuratedSkillHub.Publication, id: String, at root: URL) async throws -> CuratedSkillHub.StagedSkill {
+        let connector = environment.sourceControlCenter
+        let grants = try await environment.skillStore.allowedCapabilities(skillID: id)
+        let existing = try await environment.skillStore.all().first { $0.id == id }
+        let manifest = existing.flatMap { Self.manifestOverride(fromJSON: $0.manifestJSON) }
+        let covered = manifest.map { Set($0.capabilities).isSubset(of: grants) } ?? false
+        let auditedPackages: Set<String>
+        if let existing, let object = try? JSONSerialization.jsonObject(with: Data(existing.compatibilityReportJSON.utf8)) as? [String: Any],
+           object["pythonPackageAuditSHA256"] is String, covered {
+            auditedPackages = Set(manifest?.pythonPackages.map(\.spec) ?? [])
+        } else { auditedPackages = [] }
+        return try await CuratedSkillHub.stage(publication, entryID: id, appVersion: appVersion, at: root,
+            effectiveCapabilities: grants, effectiveTools: covered ? Set(manifest?.tools ?? []) : [],
+            effectivePythonPackageSpecs: auditedPackages,
+            fetch: { source, commit, path in
+                try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                    ref: commit, path: path, usesConnectorCredential: false)
+            })
+    }
+
+    static func curatedReceipt(for skill: PersistedSkill) -> CuratedSkillHub.Receipt? {
+        guard let object = try? JSONSerialization.jsonObject(with: Data(skill.compatibilityReportJSON.utf8)) as? [String: Any],
+              let value = object["curatedHubReceipt"], let bytes = try? JSONSerialization.data(withJSONObject: value) else { return nil }
+        return try? JSONDecoder().decode(CuratedSkillHub.Receipt.self, from: bytes)
+    }
+
+    func prepareCuratedInstallation(id: String) async {
+        await perform {
+            guard !self.packageMutationInProgress, self.pendingInstallation == nil, self.pendingUpgrade == nil,
+                  try await self.environment.skillStore.all().allSatisfy({ $0.id != id }) else { throw SkillUpgradeError.localConflict }
+            let publication: CuratedSkillHub.Publication
+            if let current = self.curatedPublication { publication = current }
+            else { publication = try await self.loadCuratedPublication(); self.curatedPublication = publication }
+            let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+            defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
+            let staged = try await self.stageCuratedPackage(publication, id: id, at: scratch.url)
+            let snapshot = staged.content
+            try await self.requireCompatibility(snapshot.package)
+            guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else { throw SkillUpgradeError.invalidSource }
+            self.pendingInstallation = PendingInstallation(sourceURL: sourceURL,
+                skillMarkdown: String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self),
+                manifest: snapshot.package.manifest, files: [:],
+                capabilityNames: snapshot.package.manifest.capabilities,
+                toolNames: snapshot.package.manifest.tools,
+                containsScripts: staged.receipt.containsScripts,
+                sourceDigest: snapshot.package.canonicalSHA256, rewriteModelID: "hub-reviewed-\(publication.publicationCommit)",
+                snapshot: snapshot, curatedReceipt: staged.receipt)
+        }
+    }
 
     @Published private(set) var catalogPackages: [String: OfficialSkillHub.Package] = [:]
     @Published private(set) var isCheckingCatalog = false
@@ -91,7 +426,10 @@ final class SkillsCenter: ObservableObject {
     /// hub badge and the official-update gate; never inferred from the ID,
     /// name or enabled state alone.
     func origin(of skill: PersistedSkill) -> SkillOrigin {
-        SkillOriginResolver.origin(
+        if let receipt = Self.curatedReceipt(for: skill), receipt.contentDigest == skill.rewrittenDigest {
+            return .official
+        }
+        return SkillOriginResolver.origin(
             id: skill.id,
             sourceURL: skill.sourceURL,
             rewrittenDigest: skill.rewrittenDigest,
@@ -107,9 +445,13 @@ final class SkillsCenter: ObservableObject {
         // "official" update merely because its ID appears in the catalog.
         if let state = updateState(for: skill) {
             if state.phase == .upToDate { return nil }
-            if let version = state.version, SkillBulkUpdatePlan.isNewer(version, than: skill.version) { return version }
+            if let version = state.version,
+               SkillBulkUpdatePlan.isNewer(version, than: skill.version)
+                || (origin(of: skill) != .official && [.available, .reviewRequired].contains(state.phase)) { return version }
         }
         guard origin(of: skill) == .official else { return nil }
+        if let entry = curatedCards.first(where: { $0.entry.id == skill.id })?.entry,
+           SkillBulkUpdatePlan.isNewer(entry.version, than: skill.version) { return entry.version }
         guard let version = catalogPackages[skill.id]?.version,
               version.compare(skill.version, options: .numeric) == .orderedDescending else { return nil }
         return version
@@ -130,7 +472,14 @@ final class SkillsCenter: ObservableObject {
     /// from a plugin ID or a generic repository/finder URL.
     func updateSource(for skill: PersistedSkill) -> GitHubSkillSource? {
         guard DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false else { return nil }
+        if let receipt = Self.curatedReceipt(for: skill) {
+            guard receipt.contentDigest == skill.rewrittenDigest else { return nil }
+            return try? CuratedSkillHub.source(channel: receipt.channel)
+        }
         if origin(of: skill) == .official {
+            if curatedCards.contains(where: { $0.entry.id == skill.id && $0.showsInstallAction }) {
+                return try? CuratedSkillHub.source(channel: .ios)
+            }
             return OfficialSkillHub.skillIDs.contains(skill.id) ? try? OfficialSkillHub.source() : nil
         }
         guard origin(of: skill) != .internalCreated,
@@ -172,6 +521,7 @@ final class SkillsCenter: ObservableObject {
         guard canStartUpdateOperation else { return }
         updates.start { [self] in
             await refreshOfficialCatalog(force: true, applyAutomaticUpdates: false)
+            await refreshCuratedCatalog(force: true)
             let ids = SkillBulkUpdatePlan.checks(installed.map {
                 .init(id: $0.id, installedDigest: $0.rewrittenDigest,
                       hasKnownSource: updateSource(for: $0) != nil, availableVersion: nil)
@@ -233,12 +583,15 @@ final class SkillsCenter: ObservableObject {
                     continue
                 }
                 let version = candidate.snapshot.package.manifest.version
-                guard SkillBulkUpdatePlan.isNewer(version, than: skill.version) else {
+                guard !candidate.changedFiles.isEmpty,
+                      origin(of: skill) != .official || SkillBulkUpdatePlan.isNewer(version, than: skill.version) else {
                     cancelUpgrade()
                     updates.set(.init(installedDigest: skill.rewrittenDigest, sourceIdentity: updateSourceIdentity(source), phase: .upToDate), for: id)
                     continue
                 }
-                let needsReview = !candidate.addedCapabilities.isEmpty || !candidate.addedTools.isEmpty
+                let baseline = Self.gitHubBinding(for: skill)?.installedContentDigest
+                let locallyChanged = origin(of: skill) != .official && baseline != skill.rewrittenDigest
+                let needsReview = !candidate.addedCapabilities.isEmpty || !candidate.addedTools.isEmpty || locallyChanged
                 if applying && !needsReview {
                     try await applyReviewedUpgradeCore()
                     updates.set(.init(installedDigest: candidate.snapshot.package.canonicalSHA256, sourceIdentity: updateSourceIdentity(candidate.source), phase: .upToDate), for: id)
@@ -305,6 +658,7 @@ final class SkillsCenter: ObservableObject {
         guard self.pendingUpgrade == nil, self.pendingInstallation == nil,
               self.upgradeStagingLease == nil else { throw SkillUpgradeError.localConflict }
         self.upgradeIsUpToDate = false
+        self.pendingCuratedUpgradeReceipt = nil
         let current = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: skill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: skill))
         // Owned, leased scratch: the staging tree can survive across the
         // user's review window and must never be reclaimed mid-upgrade.
@@ -325,7 +679,14 @@ final class SkillsCenter: ObservableObject {
                     try await connector.skillRepositoryData(owner: source.owner, repository: source.repository, ref: commit, path: path, usesConnectorCredential: usesCredential)
                 }
             let candidate: SkillUpgradeCandidate
-            if OfficialSkillHub.skillIDs.contains(skill.id) {
+            if source.owner == CuratedSkillHub.owner && source.repository == CuratedSkillHub.repository {
+                try CuratedSkillHub.validateSource(source, for: .ios)
+                let publication = try await self.loadCuratedPublication(ref: source.ref)
+                let staged = try await self.stageCuratedPackage(publication, id: skill.id, at: staging)
+                candidate = try staged.upgradeCandidate(installed: current)
+                self.pendingCuratedUpgradeReceipt = staged.receipt
+                self.curatedPublication = publication
+            } else if OfficialSkillHub.skillIDs.contains(skill.id) {
                 try OfficialSkillHub.validateSource(source)
                 candidate = try await OfficialSkillHub.stage(id: skill.id,
                     appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0",
@@ -362,6 +723,7 @@ final class SkillsCenter: ObservableObject {
 
     func cancelUpgrade() {
         pendingUpgrade = nil
+        pendingCuratedUpgradeReceipt = nil
         upgradeIsUpToDate = false
         if let root = upgradeStagingRoot { try? FileManager.default.removeItem(at: root) }
         upgradeStagingRoot = nil
@@ -370,8 +732,33 @@ final class SkillsCenter: ObservableObject {
     }
 
     func lastGitHubSource(skillID: String) -> GitHubSkillSource? {
-        (try? upgradeJournals())?.filter { $0.1.oldSkill.id == skillID && $0.1.phase == "complete" }
-            .sorted { $0.1.createdAt > $1.1.createdAt }.first?.1.source
+        if let skill = installed.first(where: { $0.id == skillID }), let binding = Self.gitHubBinding(for: skill) {
+            return binding.source
+        }
+        return journalSources[skillID]
+    }
+
+    static func gitHubBinding(for skill: PersistedSkill) -> SkillGitHubBinding? {
+        guard let text = skill.sourceTrackingJSON else { return nil }
+        return try? JSONDecoder().decode(SkillGitHubBinding.self, from: Data(text.utf8))
+    }
+
+    func configureUpdateSource(skill: PersistedSkill, source: GitHubSkillSource) async {
+        await perform {
+            guard self.origin(of: skill) != .internalCreated,
+                  !OfficialSkillHub.skillIDs.contains(skill.id),
+                  DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false else {
+                throw SkillUpgradeError.invalidSource
+            }
+            guard !self.packageMutationInProgress else { throw SkillUpgradeError.localConflict }
+            self.packageMutationInProgress = true
+            defer { self.packageMutationInProgress = false }
+            // Explicit source intent is not evidence that the installed bytes
+            // came from that source. The first replacement requires review.
+            let binding = try SkillGitHubBinding(source: source, installedCommit: nil, installedContentDigest: nil)
+            let json = String(decoding: try JSONEncoder().encode(binding), as: UTF8.self)
+            try await self.environment.skillStore.setSourceTracking(json, id: skill.id, expectedDigest: skill.rewrittenDigest)
+        }
     }
 
     func applyReviewedUpgrade() async {
@@ -405,11 +792,13 @@ final class SkillsCenter: ObservableObject {
             newManifestJSON: String(data: (try? JSONEncoder().encode(candidate.snapshot.package.manifest)) ?? Data(), encoding: .utf8),
             source: candidate.source, commit: candidate.commit, phase: "prepared", createdAt: Date())
         try self.writeJournal(journal, at: history)
-        let sourceURL = URL(string: "https://github.com/\(candidate.source.owner)/\(candidate.source.repository)/blob/\(candidate.commit)/\(candidate.source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)")!
+        let sourceKind = candidate.source.path.lowercased().hasSuffix(".md") || candidate.source.path.lowercased().hasSuffix(".json") ? "blob" : "tree"
+        let sourceURL = URL(string: "https://github.com/\(candidate.source.owner)/\(candidate.source.repository)/\(sourceKind)/\(candidate.commit)/\(candidate.source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)")!
         do {
             try await self.installCanonicalPackage(at: staging, sourceURL: sourceURL,
                 sourceDigest: candidate.snapshot.package.canonicalSHA256, rewriteModelID: "github-reviewed-\(candidate.commit)",
-                initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true, verifiedUpgrade: candidate)
+                initialStatus: current.status, replaceExisting: true, callerHoldsMutationLock: true, verifiedUpgrade: candidate,
+                curatedReceipt: self.pendingCuratedUpgradeReceipt)
             _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             journal.phase = "complete"
             try self.writeJournal(journal, at: history)
@@ -489,6 +878,12 @@ final class SkillsCenter: ObservableObject {
         packageMutationInProgress = true
         defer { packageMutationInProgress = false }
         for (path, journal) in try upgradeJournals() where journal.phase == "prepared" || journal.phase == "rollingBack" {
+            if try await environment.skillStore.wasExplicitlyRemoved(id: journal.oldSkill.id) {
+                var retired = journal
+                retired.phase = "removed"
+                try writeJournal(retired, at: path)
+                continue
+            }
             let row = try await environment.skillStore.all().first { $0.id == journal.oldSkill.id }
             if journal.phase == "prepared", row?.rewrittenDigest == journal.newDigest,
                (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(journal.oldSkill.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))) != nil {
@@ -539,7 +934,21 @@ final class SkillsCenter: ObservableObject {
 
     func load() async {
         do { try await recoverUpgrades() } catch { errorMessage = error.localizedDescription }
-        installed = (try? await environment.skillStore.all()) ?? []
+        do {
+            installed = try await environment.skillStore.all()
+            let journals = try upgradeJournals().map(\.1).filter { $0.phase == "complete" }
+                .sorted { $0.createdAt > $1.createdAt }
+            var sources: [String: GitHubSkillSource] = [:], digests: [String: String] = [:]
+            let current = Dictionary(uniqueKeysWithValues: installed.map { ($0.id, $0.rewrittenDigest) })
+            for journal in journals where sources[journal.oldSkill.id] == nil {
+                sources[journal.oldSkill.id] = journal.source
+                if current[journal.oldSkill.id] == journal.newDigest { digests[journal.oldSkill.id] = journal.newDigest }
+            }
+            journalSources = sources
+            rollbackEligibleDigests = digests
+        } catch {
+            if !Task.isCancelled && !(error is CancellationError) { errorMessage = error.localizedDescription }
+        }
     }
 
     func create(name: String, description: String, instructions: String) async {
@@ -586,17 +995,13 @@ final class SkillsCenter: ObservableObject {
         if hasPython {
             let scriptsRoot = temporary.appendingPathComponent("scripts", isDirectory: true)
             try FileManager.default.createDirectory(at: scriptsRoot, withIntermediateDirectories: true)
+            var writtenPaths = Set<String>()
             for script in request.pythonScripts {
-                let relative = script.relativePath.hasPrefix("scripts/")
-                    ? String(script.relativePath.dropFirst("scripts/".count))
-                    : script.relativePath
-                let destination = scriptsRoot.appendingPathComponent(relative, isDirectory: false)
-                    .standardizedFileURL
-                let scriptsPrefix = scriptsRoot.standardizedFileURL.path + "/"
-                guard destination.path.hasPrefix(scriptsPrefix),
-                      destination.pathExtension.lowercased() == "py" else {
-                    throw FloeError.validationFailed("Skill Python script path is unsafe")
+                let relative = try SkillScriptPath.relativeToScripts(script.relativePath)
+                guard writtenPaths.insert(relative.lowercased()).inserted else {
+                    throw FloeError.validationFailed("Skill Python script paths must be unique")
                 }
+                let destination = try SkillScriptPath.destination(for: relative, in: scriptsRoot)
                 try FileManager.default.createDirectory(
                     at: destination.deletingLastPathComponent(),
                     withIntermediateDirectories: true
@@ -631,6 +1036,12 @@ final class SkillsCenter: ObservableObject {
             let url = try BrowserURLPolicy.validate(urlText)
             guard url.scheme?.lowercased() == "https" else {
                 throw FloeError.validationFailed("Skill Finder requires an HTTPS URL")
+            }
+            if let reference = SkillBulkUpdatePlan.githubReference(url.absoluteString) {
+                let source = try GitHubSkillSource(owner: reference.owner, repository: reference.repository,
+                    ref: reference.ref, path: reference.path)
+                try await self.installGitHubPackage(source: source)
+                return
             }
             var request = URLRequest(url: url)
             request.timeoutInterval = 30
@@ -725,6 +1136,286 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    /// Direct GitHub installation preserves original package bytes; model
+    /// rewriting is not a prerequisite for a standard SKILL.md bundle.
+    struct PreparedImport: Sendable {
+        let snapshot: SkillContentSnapshot
+        let sourceURL: URL
+        let gitHubBinding: SkillGitHubBinding?
+    }
+
+    /// Read-only input preparation for the single durable import flow. Reuses
+    /// the existing GitHub downloader/redirect policy and package validator;
+    /// no rewriting, install, enable or permission mutation occurs here.
+    func prepareImportForReview(urlText: String) async throws -> PreparedImport {
+        let url = try BrowserURLPolicy.validate(urlText)
+        guard url.scheme?.lowercased() == "https" else {
+            throw FloeError.validationFailed("Skill import requires an HTTPS URL")
+        }
+        let leased = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+        defer { try? FileManager.default.removeItem(at: leased.url); leased.lease.release() }
+        if let reference = SkillBulkUpdatePlan.githubReference(url.absoluteString) {
+            let source = try GitHubSkillSource(owner: reference.owner, repository: reference.repository,
+                                              ref: reference.ref, path: reference.path)
+            let connector = environment.sourceControlCenter
+            let resolve: GitHubSkillDownload.ResolveCommit = { source in
+                struct Commit: Decodable { let sha: String }
+                let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                                                                    ref: source.ref, path: nil)
+                return try JSONDecoder().decode(Commit.self, from: bytes).sha
+            }
+            let fetch: GitHubSkillDownload.FetchFile = { source, commit, path in
+                try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                                                        ref: commit, path: path)
+            }
+            let (commit, snapshot) = try await GitHubSkillDownload.stage(
+                source: source, at: leased.url, resolve: resolve, fetch: fetch)
+            let binding = try SkillGitHubBinding(source: source, installedCommit: commit,
+                                                installedContentDigest: snapshot.package.canonicalSHA256)
+            let kind = source.path.lowercased().hasSuffix(".md") || source.path.lowercased().hasSuffix(".json") ? "blob" : "tree"
+            guard let path = source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+                  let pinned = URL(string: "https://github.com/\(source.owner)/\(source.repository)/\(kind)/\(commit)/\(path)") else {
+                throw SkillUpgradeError.invalidSource
+            }
+            return PreparedImport(snapshot: snapshot, sourceURL: pinned, gitHubBinding: binding)
+        }
+        var request = URLRequest(url: url); request.timeoutInterval = 30
+        let session = URLSession(configuration: .ephemeral, delegate: FinderRedirectDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw FloeError.validationFailed("Skill import response is unavailable")
+        }
+        var data = Data(); data.reserveCapacity(262_144)
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard data.count < 262_144 else { throw FloeError.validationFailed("Skill import response is too large") }
+            data.append(byte)
+        }
+        let envelope = try Self.derivingManifest(for: JSONDecoder().decode(FinderEnvelope.self, from: data))
+        try Self.materialize(envelope, at: leased.url)
+        let prepared = try Self.prepareCanonicalPackage(at: leased.url, override: nil)
+        let snapshot = try SkillContentSnapshot(root: leased.url,
+            expectedDigest: prepared.package.canonicalSHA256, manifestOverride: prepared.override)
+        return PreparedImport(snapshot: snapshot, sourceURL: url, gitHubBinding: nil)
+    }
+
+    private func installGitHubPackage(source: GitHubSkillSource) async throws {
+        let leased = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+        defer {
+            try? FileManager.default.removeItem(at: leased.url)
+            leased.lease.release()
+        }
+        let connector = environment.sourceControlCenter
+        let resolve: GitHubSkillDownload.ResolveCommit = { source in
+            struct Commit: Decodable { let sha: String }
+            let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                ref: source.ref, path: nil)
+            return try JSONDecoder().decode(Commit.self, from: bytes).sha
+        }
+        let fetch: GitHubSkillDownload.FetchFile = { source, commit, path in
+            try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
+                ref: commit, path: path)
+        }
+        let (commit, snapshot) = try await GitHubSkillDownload.stage(source: source, at: leased.url, resolve: resolve, fetch: fetch)
+        let package = snapshot.package
+        guard !DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }) else {
+            throw SkillUpgradeError.identityChanged
+        }
+        try await requireCompatibility(package)
+        let binding = try SkillGitHubBinding(source: source, installedCommit: commit,
+            installedContentDigest: package.canonicalSHA256)
+        let sourceKind = source.path.lowercased().hasSuffix(".md") || source.path.lowercased().hasSuffix(".json") ? "blob" : "tree"
+        let url = URL(string: "https://github.com/\(source.owner)/\(source.repository)/\(sourceKind)/\(commit)/\(source.path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)!)")!
+        if SkillAutomaticInstallPolicy.mayInstallWithoutConfirmation(package, descriptors: ToolCatalog.allDescriptors) {
+            try await installCanonicalPackage(at: leased.url, sourceURL: url, sourceDigest: package.canonicalSHA256,
+                rewriteModelID: "github-package-\(commit)", manifestOverride: package.manifest, gitHubBinding: binding)
+        } else {
+            pendingInstallation = PendingInstallation(sourceURL: url,
+                skillMarkdown: package.metadata.instructions, manifest: package.manifest, files: [:],
+                capabilityNames: package.declaredCapabilities.map(\.rawValue).sorted(),
+                toolNames: package.manifest.tools.sorted(), containsScripts: package.containsScripts,
+                sourceDigest: package.canonicalSHA256, rewriteModelID: "github-package-\(commit)",
+                snapshot: snapshot, gitHubBinding: binding)
+        }
+    }
+
+    /// Model-callable workspace package install (`skill.install`).
+    ///
+    /// The App bridge has already resolved the task workspace directory,
+    /// staged an independent private copy and re-validated its bytes. This
+    /// applies the SAME reviewed installation transaction as folder import:
+    /// no package script is executed, no new tool or interpreter is
+    /// introduced, and the package's declared ceiling remains the only grant.
+    ///
+    /// `replaceExisting` additionally proves the installed revision is still
+    /// exactly the caller's `expectedInstalledDigest` and refuses a built-in,
+    /// official or locally created identity, so a workspace import can never
+    /// hijack another owner's skill row.
+    func installWorkspaceSkillPackage(
+        at url: URL,
+        sourceURL: URL,
+        expectedCanonicalDigest: String,
+        replaceExisting: Bool,
+        expectedInstalledDigest: String?
+    ) async throws -> SkillWorkspaceInstallCommit {
+        guard !packageMutationInProgress else {
+            throw FloeError.validationFailed("Another skill change is in progress")
+        }
+        // One serialized transaction: the digest gate below, the directory
+        // swap and the persistence write cannot interleave with another
+        // center-driven skill change.
+        packageMutationInProgress = true
+        defer { packageMutationInProgress = false }
+        // The same prepare contract every install route uses: a packaged
+        // floe.json wins; a traditional package gets its derived sidecar
+        // without any byte being written into the upstream package.
+        let prepared = try Self.prepareCanonicalPackage(at: url, override: nil)
+        let package = prepared.package
+        guard Self.isCanonicalDigest(expectedCanonicalDigest),
+              package.canonicalSHA256.caseInsensitiveCompare(expectedCanonicalDigest) == .orderedSame else {
+            throw SkillWorkspaceInstallError.packageChanged
+        }
+        guard !DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }),
+              !OfficialSkillHub.skillIDs.contains(package.manifest.id) else {
+            throw SkillWorkspaceInstallError.reservedIdentifier(package.manifest.id)
+        }
+        let installed = try await environment.skillStore.all()
+        var previousDigest: String?
+        var previousStatus: String?
+        if replaceExisting {
+            guard let expectedInstalledDigest, Self.isCanonicalDigest(expectedInstalledDigest) else {
+                throw SkillWorkspaceInstallError.expectedDigestRequired
+            }
+            guard let current = installed.first(where: { $0.id == package.manifest.id }) else {
+                throw SkillWorkspaceInstallError.notInstalled(package.manifest.id)
+            }
+            guard current.rewrittenDigest.caseInsensitiveCompare(expectedInstalledDigest) == .orderedSame else {
+                throw SkillWorkspaceInstallError.installConflict(current.id)
+            }
+            let origin = SkillOriginResolver.origin(
+                id: current.id,
+                sourceURL: current.sourceURL,
+                rewrittenDigest: current.rewrittenDigest,
+                rewriteModelID: current.rewriteModelID,
+                verifiedCatalogContentDigest: catalogPackages[current.id]?.contentDigest
+            )
+            guard origin == .external || origin == .unknown else {
+                throw SkillWorkspaceInstallError.ownershipDenied(current.id)
+            }
+            // The persisted digest alone is not proof. The installed bytes
+            // must still be exactly that revision, or this replacement would
+            // silently discard an edit made outside this call.
+            _ = try SkillContentSnapshot(
+                root: installationRoot.appendingPathComponent(current.id),
+                expectedDigest: current.rewrittenDigest,
+                manifestOverride: Self.sidecarManifest(for: current)
+            )
+            previousDigest = current.rewrittenDigest
+            previousStatus = current.status
+        } else if let current = installed.first(where: { $0.id == package.manifest.id }) {
+            throw SkillWorkspaceInstallError.alreadyInstalled(current.id)
+        }
+        try await installCanonicalPackage(
+            at: url,
+            sourceURL: sourceURL,
+            sourceDigest: expectedCanonicalDigest,
+            rewriteModelID: SkillWorkspaceInstallIdentity.rewriteModelID,
+            // A replacement keeps the row's existing enabled/disabled state;
+            // installing a new row starts enabled like every other import.
+            initialStatus: previousStatus ?? "enabled",
+            replaceExisting: replaceExisting,
+            callerHoldsMutationLock: true,
+            manifestOverride: prepared.override
+        )
+        guard let committed = try await environment.skillStore.all()
+                .first(where: { $0.id == package.manifest.id }),
+              committed.version == package.manifest.version,
+              committed.rewrittenDigest.caseInsensitiveCompare(package.canonicalSHA256) == .orderedSame else {
+            throw FloeError.validationFailed("The installed skill could not be verified")
+        }
+        return SkillWorkspaceInstallCommit(
+            skillID: committed.id,
+            version: committed.version,
+            canonicalSHA256: committed.rewrittenDigest,
+            previousDigest: previousDigest
+        )
+    }
+
+    /// User-confirmed Add from the durable authoring panel. The reviewed
+    /// digest binds exactly the displayed package; this API is not a model
+    /// tool and never grants storefront publisher review to authored bytes.
+    func installReviewedAuthoringPackage(
+        at url: URL,
+        sourceURL: URL,
+        expectedCanonicalDigest: String,
+        originalCanonicalDigest: String? = nil,
+        authoringModelID: UUID? = nil,
+        gitHubBinding: SkillGitHubBinding? = nil
+    ) async throws -> SkillWorkspaceInstallCommit {
+        guard !isWorking, !updates.isRunning, !packageMutationInProgress else {
+            throw FloeError.validationFailed(FloeL10n.l("skills.operation.busy"))
+        }
+        let scheme = sourceURL.scheme?.lowercased() ?? ""
+        guard ["floe-creator", "floe-folder", "https"].contains(scheme),
+              sourceURL.user == nil, sourceURL.password == nil else {
+            throw FloeError.validationFailed("An authoring source cannot claim a store publisher")
+        }
+        packageMutationInProgress = true
+        isWorking = true
+        defer { packageMutationInProgress = false; isWorking = false }
+        let prepared = try Self.prepareCanonicalPackage(at: url, override: nil)
+        let package = prepared.package
+        guard Self.isCanonicalDigest(expectedCanonicalDigest),
+              package.canonicalSHA256.caseInsensitiveCompare(expectedCanonicalDigest) == .orderedSame else {
+            throw SkillWorkspaceInstallError.packageChanged
+        }
+        if let originalCanonicalDigest, !Self.isCanonicalDigest(originalCanonicalDigest) {
+            throw SkillWorkspaceInstallError.packageChanged
+        }
+        if let gitHubBinding {
+            guard let commit = gitHubBinding.installedCommit,
+                  gitHubBinding.installedContentDigest?.caseInsensitiveCompare(package.canonicalSHA256) == .orderedSame,
+                  let pinned = SkillBulkUpdatePlan.githubReference(sourceURL.absoluteString),
+                  pinned.owner == gitHubBinding.source.owner,
+                  pinned.repository == gitHubBinding.source.repository,
+                  pinned.ref.lowercased() == commit,
+                  pinned.path == gitHubBinding.source.path else {
+                throw SkillWorkspaceInstallError.packageChanged
+            }
+        }
+        guard !DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }),
+              !OfficialSkillHub.skillIDs.contains(package.manifest.id) else {
+            throw SkillWorkspaceInstallError.reservedIdentifier(package.manifest.id)
+        }
+        if let existing = try await environment.skillStore.all().first(where: { $0.id == package.manifest.id }) {
+            throw SkillWorkspaceInstallError.alreadyInstalled(existing.id)
+        }
+        try await installCanonicalPackage(
+            at: url, sourceURL: sourceURL,
+            sourceDigest: (originalCanonicalDigest ?? expectedCanonicalDigest).lowercased(),
+            rewriteModelID: authoringModelID?.uuidString
+                ?? (sourceURL.scheme == "floe-creator" ? "local-skill-creator" : "floe-direct-import"),
+            replaceExisting: false, callerHoldsMutationLock: true,
+            manifestOverride: prepared.override, gitHubBinding: gitHubBinding
+        )
+        let committedSkills = try await environment.skillStore.all()
+        guard let committed = committedSkills.first(where: { $0.id == package.manifest.id }),
+              committed.version == package.manifest.version,
+              committed.rewrittenDigest.caseInsensitiveCompare(package.canonicalSHA256) == .orderedSame else {
+            throw SkillWorkspaceInstallError.commitMismatch
+        }
+        installed = committedSkills
+        return SkillWorkspaceInstallCommit(skillID: committed.id, version: committed.version,
+                                           canonicalSHA256: committed.rewrittenDigest, previousDigest: nil)
+    }
+
+    /// Shape check only; canonical digest comparisons stay case-insensitive
+    /// because upper/lowercase hex are the same digest representation.
+    private static func isCanonicalDigest(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy(\.isHexDigit)
+    }
+
     private static func derivingManifest(for source: FinderEnvelope) throws -> FinderEnvelope {
         let temporary = FileManager.default.temporaryDirectory
             .appendingPathComponent("floe-traditional-\(UUID().uuidString)", isDirectory: true)
@@ -740,23 +1431,53 @@ final class SkillsCenter: ObservableObject {
 
     func confirmPendingInstallation() async {
         guard let pending = pendingInstallation else { return }
+        guard !isWorking, !updates.isRunning else {
+            errorMessage = FloeL10n.l("skills.operation.busy")
+            return
+        }
+        if let ownerID = pending.reviewOwnerID {
+            do {
+                guard try await environment.conversationStore.conversation(id: ownerID) != nil else {
+                    throw SkillUpgradeError.localConflict
+                }
+            } catch {
+                pendingReviewChoiceKey = nil
+                pendingInstallation = nil
+                errorMessage = FloeL10n.l("skills.hub.review_task_unavailable")
+                return
+            }
+        }
+        pendingReviewChoiceKey = nil
         pendingInstallation = nil
         await perform {
             let temporary = FileManager.default.temporaryDirectory
                 .appendingPathComponent("floe-confirmed-\(UUID().uuidString)", isDirectory: true)
             defer { try? FileManager.default.removeItem(at: temporary) }
-            try Self.materialize(
+            if let snapshot = pending.snapshot {
+                try Self.writeSnapshot(snapshot, at: temporary, manifest: snapshot.package.manifest)
+            } else {
+                try Self.materialize(
                 FinderEnvelope(
                     skillMarkdown: pending.skillMarkdown,
                     manifest: pending.manifest,
                     files: pending.files
                 ),
-                at: temporary
-            )
+                    at: temporary
+                )
+            }
+            if let candidate = pending.curatedUpgrade {
+                self.pendingCuratedUpgradeReceipt = pending.curatedReceipt
+                try await self.stageUpgradeForReview(candidate, at: temporary)
+                try await self.applyReviewedUpgradeCore()
+                return
+            }
             try await self.installCanonicalPackage(
                 at: temporary, sourceURL: pending.sourceURL,
                 sourceDigest: pending.sourceDigest,
-                rewriteModelID: pending.rewriteModelID
+                rewriteModelID: pending.rewriteModelID,
+                manifestOverride: pending.snapshot?.package.manifest,
+                gitHubBinding: pending.gitHubBinding,
+                curatedReceipt: pending.curatedReceipt
             )
         }
     }
@@ -816,7 +1537,20 @@ final class SkillsCenter: ObservableObject {
         )
     }
 
-    func cancelPendingInstallation() { pendingInstallation = nil }
+    func discardHubReview(conversationID: UUID) {
+        guard pendingInstallation?.reviewOwnerID == conversationID else { return }
+        pendingReviewChoiceKey = nil
+        pendingInstallation = nil
+    }
+
+    func cancelPendingInstallation() async {
+        let key = pendingReviewChoiceKey
+        pendingReviewChoiceKey = nil
+        pendingInstallation = nil
+        guard let key else { return }
+        do { try await SQLiteSettingsStore(database: environment.database).setValue("false", forKey: key) }
+        catch { errorMessage = FloeL10n.l("skills.hub.review_choice_save_failed") }
+    }
 
     func setEnabled(_ enabled: Bool, skill: PersistedSkill) async {
         await perform {
@@ -1176,18 +1910,31 @@ final class SkillsCenter: ObservableObject {
         callerHoldsMutationLock: Bool = false,
         bundledSeed: Bool = false,
         verifiedUpgrade: SkillUpgradeCandidate? = nil,
-        manifestOverride: SkillManifest? = nil
+        manifestOverride: SkillManifest? = nil,
+        gitHubBinding: SkillGitHubBinding? = nil,
+        curatedReceipt: CuratedSkillHub.Receipt? = nil
     ) async throws {
         guard callerHoldsMutationLock || !packageMutationInProgress else { throw FloeError.validationFailed("Another skill change is in progress") }
         packageMutationInProgress = true
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
         let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride)
         let package = prepared.package
+        if let receipt = curatedReceipt {
+            guard receipt.feedStatus == .production,
+                  receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.reviewKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.reviewDecision == .approve,
+                  receipt.entryID == package.manifest.id,
+                  receipt.entryVersion == package.manifest.version,
+                  receipt.contentDigest == package.canonicalSHA256 else { throw SkillUpgradeError.localConflict }
+        }
         if DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }), !bundledSeed {
-            guard OfficialSkillHub.skillIDs.contains(package.manifest.id),
-                  let verifiedUpgrade,
-                  verifiedUpgrade.snapshot.package.manifest.id == package.manifest.id,
-                  verifiedUpgrade.snapshot.package.canonicalSHA256 == package.canonicalSHA256 else {
+            let legacyProof = verifiedUpgrade.map {
+                OfficialSkillHub.skillIDs.contains(package.manifest.id)
+                    && $0.snapshot.package.manifest.id == package.manifest.id
+                    && $0.snapshot.package.canonicalSHA256 == package.canonicalSHA256
+            } ?? false
+            guard legacyProof || (curatedReceipt != nil && OfficialSkillHub.skillIDs.contains(package.manifest.id)) else {
                 throw FloeError.validationFailed("Reserved skill IDs require a verified official GitHub update")
             }
         }
@@ -1227,10 +1974,22 @@ final class SkillsCenter: ObservableObject {
         if let pythonAuditDigest {
             compatibilityObject["pythonPackageAuditSHA256"] = pythonAuditDigest
         }
+        if let curatedReceipt {
+            compatibilityObject["curatedHubReceipt"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(curatedReceipt))
+        }
         let compatibilityData = try JSONSerialization.data(
             withJSONObject: compatibilityObject,
             options: [.sortedKeys]
         )
+        let verifiedBinding: SkillGitHubBinding?
+        if curatedReceipt != nil {
+            // Signed ZIP/review updates must never use the loose GitHub folder updater.
+            verifiedBinding = nil
+        } else if let verifiedUpgrade, !OfficialSkillHub.skillIDs.contains(package.manifest.id) {
+            verifiedBinding = try SkillGitHubBinding(source: verifiedUpgrade.source, installedCommit: verifiedUpgrade.commit,
+                installedContentDigest: package.canonicalSHA256)
+        } else { verifiedBinding = gitHubBinding }
+        let trackingJSON = try verifiedBinding.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
         let skill = PersistedSkill(
             id: package.manifest.id,
             name: DomainSkillLibrary.all.first(where: { $0.id == package.manifest.id })?.name ?? package.metadata.name,
@@ -1244,7 +2003,8 @@ final class SkillsCenter: ObservableObject {
             sourceDigest: provenance.originalSHA256,
             rewrittenDigest: package.canonicalSHA256,
             rewriteModelID: provenance.rewriteModelID,
-            compatibilityReportJSON: String(decoding: compatibilityData, as: UTF8.self)
+            compatibilityReportJSON: String(decoding: compatibilityData, as: UTF8.self),
+            sourceTrackingJSON: trackingJSON
         )
         // This grant authorizes the skill's declared ceiling only. Exact
         // audited Python source/package fingerprints can be reused without a
@@ -1415,7 +2175,10 @@ final class SkillsCenter: ObservableObject {
     }
 
     private func perform(_ operation: @escaping () async throws -> Void) async {
-        guard !isWorking, !updates.isRunning else { return }
+        guard !isWorking, !updates.isRunning else {
+            errorMessage = FloeL10n.l("skills.operation.busy")
+            return
+        }
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
@@ -1478,6 +2241,11 @@ final class SkillsCenter: ObservableObject {
         var containsScripts: Bool
         var sourceDigest: String
         var rewriteModelID: String?
+        var snapshot: SkillContentSnapshot? = nil
+        var gitHubBinding: SkillGitHubBinding? = nil
+        var curatedReceipt: CuratedSkillHub.Receipt? = nil
+        var curatedUpgrade: SkillUpgradeCandidate? = nil
+        var reviewOwnerID: UUID? = nil
     }
 
     private struct FinderEnvelope: Codable {

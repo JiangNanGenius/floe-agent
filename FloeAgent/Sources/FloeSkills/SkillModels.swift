@@ -18,7 +18,30 @@ public enum SkillCapability: String, Codable, CaseIterable, Sendable, Hashable {
 public enum SkillPlatform: String, Codable, CaseIterable, Sendable, Hashable {
     case iOS = "ios"
     case macOS = "macos"
+    /// Generic Linux execution host. This keeps its historical meaning
+    /// (macOS/Linux host qualifications and the Android facade's environment
+    /// projection); it is NOT an alias for the Android store OS.
     case linux = "linux"
+    /// Android store/host OS. Additive: manifests that do not list it are
+    /// unchanged, and builds that predate this case fail closed on the
+    /// unknown platform value instead of mis-certifying compatibility.
+    case android = "android"
+}
+
+/// Declared execution requirements for a package's bundled scripts. This is
+/// runtime metadata, distinct from `SkillManifest.platforms` (the store/host
+/// OS list): `os` names where scripts actually execute (for example the task
+/// Linux guest) and `architectures` names the CPU architectures the scripts
+/// are authored and qualified for (for example `riscv64` for the iOS guest).
+/// A missing block means UNPROVEN — never certified compatible.
+public struct SkillRuntimeRequirements: Codable, Equatable, Sendable, Hashable {
+    public var os: [String]
+    public var architectures: [String]
+
+    public init(os: [String], architectures: [String]) {
+        self.os = os
+        self.architectures = architectures
+    }
 }
 
 public enum SkillScriptRuntime: String, Codable, CaseIterable, Sendable, Hashable {
@@ -64,6 +87,11 @@ public struct SkillManifest: Codable, Equatable, Sendable {
     public var platforms: [String]
     public var scriptRuntime: SkillScriptRuntime
     public var pythonPackages: [SkillPythonPackageRequirement]
+    /// Optional declared execution requirements (runtime OS + CPU
+    /// architectures). Absent on every legacy manifest and never derived
+    /// automatically, so old signed package bytes stay valid and unknown
+    /// compatibility is never falsely certified.
+    public var runtime: SkillRuntimeRequirements?
 
     public init(
         schemaVersion: Int = 1,
@@ -73,7 +101,8 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         tools: [String] = [],
         platforms: [String] = [SkillPlatform.iOS.rawValue],
         scriptRuntime: SkillScriptRuntime = .none,
-        pythonPackages: [SkillPythonPackageRequirement] = []
+        pythonPackages: [SkillPythonPackageRequirement] = [],
+        runtime: SkillRuntimeRequirements? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -83,11 +112,12 @@ public struct SkillManifest: Codable, Equatable, Sendable {
         self.platforms = platforms
         self.scriptRuntime = scriptRuntime
         self.pythonPackages = pythonPackages
+        self.runtime = runtime
     }
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, id, version, capabilities, tools, platforms
-        case scriptRuntime, pythonPackages
+        case scriptRuntime, pythonPackages, runtime
     }
 
     public init(from decoder: any Decoder) throws {
@@ -104,6 +134,7 @@ public struct SkillManifest: Codable, Equatable, Sendable {
             [SkillPythonPackageRequirement].self,
             forKey: .pythonPackages
         ) ?? []
+        runtime = try container.decodeIfPresent(SkillRuntimeRequirements.self, forKey: .runtime)
     }
 }
 

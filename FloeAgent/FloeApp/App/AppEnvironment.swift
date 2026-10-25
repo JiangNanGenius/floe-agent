@@ -220,6 +220,26 @@ final class AppEnvironment: ObservableObject {
             }
         )
     }()
+    private lazy var _mcpServiceCreationBackend = MCPServiceCreationAppBackend(
+        environment: self, connections: .shared
+    )
+    private lazy var _mcpServiceCreationCoordinator: MCPServiceCreationCoordinator = {
+        let backend = _mcpServiceCreationBackend
+        let coordinator = MCPServiceCreationCoordinator(
+            backend: backend, settings: SQLiteSettingsStore(database: database)
+        )
+        backend.onServiceEvent = { [weak coordinator] event in
+            Task { await coordinator?.receive(event) }
+        }
+        return coordinator
+    }()
+    lazy var skillAuthoring: SkillAuthoringCoordinator = {
+        let coordinator = SkillAuthoringCoordinator(environment: self)
+        coordinator.onPromotion = { [weak self] id in
+            await self?.conversationCenter.authoringConversationBecameVisible(id)
+        }
+        return coordinator
+    }()
     private lazy var _contentUpdateCenter = ContentUpdateCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
     private lazy var _memoryDreamService = MemoryDreamService(environment: self)
@@ -330,6 +350,8 @@ final class AppEnvironment: ObservableObject {
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
+    var mcpServiceCreationBackend: MCPServiceCreationAppBackend { _mcpServiceCreationBackend }
+    var mcpServiceCreationCoordinator: MCPServiceCreationCoordinator { _mcpServiceCreationCoordinator }
     /// Signed declarative-content updates (prompts/help/templates/providers).
     var contentUpdateCenter: ContentUpdateCenter { _contentUpdateCenter }
     var memoryCenter: MemoryCenter { _memoryCenter }
@@ -721,7 +743,18 @@ final class AppEnvironment: ObservableObject {
         let arbiterLocalRuntime = self.localModelRuntime
         HeavyRuntimeArbiter.shared.configure(
             activityProbe: LinuxGuestRuntimeArbiterBridge.activityProbe(service: linuxGuests),
-            guestStopper: LinuxGuestRuntimeArbiterBridge.guestStopper(service: linuxGuests),
+            guestStopper: LinuxGuestRuntimeArbiterBridge.guestStopper(
+                service: linuxGuests,
+                // A user-confirmed stop ends real runtimes: report each guest
+                // the engine actually stopped through the same background-
+                // location seam as the direct stop entries. The bridge filters
+                // quarantined survivors itself.
+                onStopped: { environmentID in
+                    await FloePlatformServices.shared.reportLinuxRuntimeEnded(
+                        environmentID: environmentID
+                    )
+                }
+            ),
             decisionHandler: { activity in
                 await conflictCenter.requestDecision(activity)
             },
@@ -731,6 +764,12 @@ final class AppEnvironment: ObservableObject {
                     // The engine dropped this guest's forwards with it; clear
                     // the applied view but keep the durable rules.
                     await LinuxPortForwardCenter.shared.guestStopped(environmentID: environmentID)
+                    // Only `.released` reaches here (the bridge gates on the
+                    // registry's revalidated outcome), so this is a confirmed
+                    // runtime end and may invalidate background location.
+                    await FloePlatformServices.shared.reportLinuxRuntimeEnded(
+                        environmentID: environmentID
+                    )
                 }
             ),
             idleDrainHandler: {
@@ -865,6 +904,9 @@ final class AppEnvironment: ObservableObject {
                     // A stopped environment must not keep a guest running:
                     // its console would keep executing with the layer frozen.
                     await linuxGuests.stopGuest(environmentID: id)
+                    if !(await linuxGuests.guestIsRunning(environmentID: id)) {
+                        await FloePlatformServices.shared.reportLinuxRuntimeEnded(environmentID: id)
+                    }
                     guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
@@ -873,11 +915,17 @@ final class AppEnvironment: ObservableObject {
                     // the shared interpreter caches; the retired native
                     // CPython/Node workers no longer exist to stop.
                     await linuxGuests.stopGuest(environmentID: id)
+                    if !(await linuxGuests.guestIsRunning(environmentID: id)) {
+                        await FloePlatformServices.shared.reportLinuxRuntimeEnded(environmentID: id)
+                    }
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
                 terminateWorkers: { [linuxGuests] id in
                     await linuxGuests.stopGuest(environmentID: id)
+                    if !(await linuxGuests.guestIsRunning(environmentID: id)) {
+                        await FloePlatformServices.shared.reportLinuxRuntimeEnded(environmentID: id)
+                    }
                     try await environmentExecutions.stopAndWait(environmentID: id)
                     try await FloeShellCommandRegistry.shared.waitForWorkers(environmentID: id)
                     guard !(await linuxGuests.guestIsRunning(environmentID: id)) else {
@@ -1581,7 +1629,13 @@ final class AppEnvironment: ObservableObject {
         // Local preview server.
         registerPreviewTools(environment: previewCenter)
         // Skill authoring.
-        registerSkillTools(creator: LocalSkillCreator(center: skillsCenter), manager: LocalSkillCreator(center: skillsCenter))
+        registerSkillTools(creator: LocalSkillCreator(center: skillsCenter), manager: LocalSkillCreator(center: skillsCenter),
+            catalog: SkillHubAppBridge(center: skillsCenter))
+        // Complete-package install from the current task workspace.
+        ToolCatalog.register(SkillWorkspaceInstallTool.self)
+        ToolRunnerRegistry.shared.register(
+            SkillWorkspaceInstallTool(installer: SkillWorkspaceInstaller(center: skillsCenter), hub: SkillHubAppBridge(center: skillsCenter))
+        )
         // Bundled domain skills: seed/upgrade in the background; failures are
         // logged inside the seeder and never block startup.
         if shouldSeedBundledSkills { Task { await skillsCenter.seedBuiltinDomainSkills() } }
@@ -2311,6 +2365,24 @@ final class AppEnvironment: ObservableObject {
             // Explicit stops are filtered by the coordinator; no view owns a
             // monitor of its own.
             backgroundRunCoordinator.startLinuxGuestServiceLifecycleObservation()
+            // Runtime-ended → background location: one bounded callback on the
+            // existing platform-services seam, installed after the environment
+            // is fully initialized (never from the giant init). Only the
+            // production assembly binds it: a recovery (ephemeral) instance
+            // and a SwiftUI preview (`seedBundledSkills: false`) must not
+            // replace the production binding on the process-wide service. The
+            // services report only runtime-owned confirmed stops (direct
+            // stop/delete/backend switch, the arbiter's confirmed stop and a
+            // confirmed transient release), so a quarantined VM never marks a
+            // live guest dead. The coordinator drops that environment's
+            // location authority, PiP hold and surface cache on the spot; no
+            // polling or keepalive is involved.
+            if !isEphemeral, shouldSeedBundledSkills {
+                let coordinator = backgroundRunCoordinator
+                FloePlatformServices.shared.setLinuxRuntimeEndedHandler { [weak coordinator] environmentID in
+                    await coordinator?.linuxEnvironmentRuntimeEnded(environmentID: environmentID)
+                }
+            }
             // Office engine prewarm — intentionally removed from launch.
             // `cok_init_2` installs LibreOffice's process-wide signal handler
             // as a side effect, and that handler converts any later async

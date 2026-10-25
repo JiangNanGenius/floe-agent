@@ -504,184 +504,198 @@ struct SharedEnvironmentConcurrencyTests {
 
     @Test("a delegated call carries the child's own token, environment, client and skill provenance to the executor")
     func childContextStateReachesExecutor() async throws {
-        let recording = ContextRecordingExecutor(descriptors: [
-            "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
-        ])
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: UUID(),
-                provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
-                environmentID: "env-child-state"
-            ),
-            adapter: MockAdapter(),
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: recording,
-            auditSink: MockAuditSink(),
-            checkpointStore: MockCheckpointStore()
-        )
-        let childToken = CancellationToken()
-        let identity = await identity(runtime, delegateCallID: "d-state")
-        let childContext = ToolContext(
-            runID: await runtime.runID,
-            scope: .local,
-            activeSkillIDs: ["floe-child-guide"],
-            allowedToolNames: ["test.echo"],
-            cancellation: childToken,
-            childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
-            environmentID: "env-child-state",
-            conversationID: identity.rootTaskID,
-            // Deliberately spoofed: the runtime must ignore a passed client
-            // identity for a delegated call and derive the real one from the
-            // trusted child identity.
-            clientSessionID: "spoofed-session",
-            frozenEffectiveCatalogNames: ["test.echo"]
-        )
-        let call = try TestFixtures.toolCall(id: "state-1", toolName: "test.echo", arguments: "{}")
-        let result = await runtime.dispatchChildTool(call, identity: identity, childContext: childContext)
-        #expect(result.status == .ok)
-        let entry = try #require(recording.entries.first)
-        // The executor sees the CHILD's actual cancellation scope (so
-        // cancelling this child stops only its own calls)…
-        #expect(entry.context.cancellation === childToken)
-        // …the child's explicit environment, client identity and skill
-        // provenance…
-        #expect(entry.context.environmentID == "env-child-state")
-        #expect(entry.context.clientSessionID == "child:\(identity.childID.uuidString)")
-        #expect(entry.context.activeSkillIDs == ["floe-child-guide"])
-        // …while the trusted child identity and the parent's authority are
-        // intact.
-        #expect(entry.context.childExecution?.identity == identity)
-        #expect(entry.context.temporaryReadOnly == false)
+        try await ActiveParentTestScope.withScope {
+            let recording = ContextRecordingExecutor(descriptors: [
+                "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
+            ])
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: UUID(),
+                    provider: TestFixtures.localhostProvider(),
+                    model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
+                    environmentID: "env-child-state"
+                ),
+                adapter: ActiveParentTestAdapter(),
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: recording,
+                auditSink: MockAuditSink(),
+                checkpointStore: MockCheckpointStore()
+            )
+            try await ActiveParentTestScope.activate(runtime)
+            let childToken = CancellationToken()
+            let identity = await identity(runtime, delegateCallID: "d-state")
+            let childContext = ToolContext(
+                runID: await runtime.runID,
+                scope: .local,
+                activeSkillIDs: ["floe-child-guide"],
+                allowedToolNames: ["test.echo"],
+                cancellation: childToken,
+                childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
+                environmentID: "env-child-state",
+                conversationID: identity.rootTaskID,
+                // Deliberately spoofed: the runtime must ignore a passed client
+                // identity for a delegated call and derive the real one from the
+                // trusted child identity.
+                clientSessionID: "spoofed-session",
+                frozenEffectiveCatalogNames: ["test.echo"]
+            )
+            let call = try TestFixtures.toolCall(id: "state-1", toolName: "test.echo", arguments: "{}")
+            let result = await runtime.dispatchChildTool(call, identity: identity, childContext: childContext)
+            #expect(result.status == .ok)
+            let entry = try #require(recording.entries.first)
+            // The executor sees the CHILD's actual cancellation scope (so
+            // cancelling this child stops only its own calls)…
+            #expect(entry.context.cancellation === childToken)
+            // …the child's explicit environment, client identity and skill
+            // provenance…
+            #expect(entry.context.environmentID == "env-child-state")
+            #expect(entry.context.clientSessionID == "child:\(identity.childID.uuidString)")
+            #expect(entry.context.activeSkillIDs == ["floe-child-guide"])
+            // …while the trusted child identity and the parent's authority are
+            // intact.
+            #expect(entry.context.childExecution?.identity == identity)
+            #expect(entry.context.temporaryReadOnly == false)
 
-        // Cancelling the child token leaves the parent run's token alive: a
-        // sibling client is unaffected.
-        childToken.cancel()
-        #expect(childToken.isCancelled)
-        #expect(await runtime.state.name == "idle")
+            // Cancelling the child token leaves the parent run's token alive: a
+            // sibling client is unaffected.
+            childToken.cancel()
+            #expect(childToken.isCancelled)
+            #expect(await runtime.state.name == "streamingModel", "Cancelling the child leaves the legitimately active parent alive")
+
+        }
     }
 
     @Test("a delegated context cannot retarget the run's environment binding")
     func childEnvironmentBindingIsValidated() async throws {
-        let recording = ContextRecordingExecutor(descriptors: [
-            "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
-        ])
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: UUID(),
-                provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
-                environmentID: "env-bound"
-            ),
-            adapter: MockAdapter(),
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: recording,
-            auditSink: MockAuditSink(),
-            checkpointStore: MockCheckpointStore()
-        )
-        let identity = await identity(runtime, delegateCallID: "d-env")
-        let forged = ToolContext(
-            runID: await runtime.runID,
-            allowedToolNames: ["test.echo"],
-            cancellation: CancellationToken(),
-            childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
-            environmentID: "env-somewhere-else"
-        )
-        let call = try TestFixtures.toolCall(id: "env-1", toolName: "test.echo", arguments: "{}")
-        let result = await runtime.dispatchChildTool(call, identity: identity, childContext: forged)
-        #expect(result.status == .denied)
-        #expect(result.outputSummary.contains("env-somewhere-else"))
-        #expect(result.outputSummary.contains("env-bound"))
-        #expect(recording.entries.isEmpty)
+        try await ActiveParentTestScope.withScope {
+            let recording = ContextRecordingExecutor(descriptors: [
+                "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
+            ])
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: UUID(),
+                    provider: TestFixtures.localhostProvider(),
+                    model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
+                    environmentID: "env-bound"
+                ),
+                adapter: ActiveParentTestAdapter(),
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: recording,
+                auditSink: MockAuditSink(),
+                checkpointStore: MockCheckpointStore()
+            )
+            try await ActiveParentTestScope.activate(runtime)
+            let identity = await identity(runtime, delegateCallID: "d-env")
+            let forged = ToolContext(
+                runID: await runtime.runID,
+                allowedToolNames: ["test.echo"],
+                cancellation: CancellationToken(),
+                childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
+                environmentID: "env-somewhere-else"
+            )
+            let call = try TestFixtures.toolCall(id: "env-1", toolName: "test.echo", arguments: "{}")
+            let result = await runtime.dispatchChildTool(call, identity: identity, childContext: forged)
+            #expect(result.status == .denied)
+            #expect(result.outputSummary.contains("env-somewhere-else"))
+            #expect(result.outputSummary.contains("env-bound"))
+            #expect(recording.entries.isEmpty)
+
+        }
     }
 
     @Test("identical model call ids and idempotency keys across parent and two children never collide")
     func identicalProviderCallIDsDoNotCollide() async throws {
-        let recording = ContextRecordingExecutor(descriptors: [
-            "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
-        ])
-        let audit = MockAuditSink()
-        let adapter = MockAdapter()
-        // The parent run emits the same provider call id and idempotency key
-        // that both children will use.
-        var parentCall = try ToolCall(
-            id: "call_1",
-            toolName: "test.echo",
-            argumentsJSON: Data("{}".utf8),
-            scope: .local
-        )
-        parentCall.idempotencyKey = "dup-key"
-        adapter.script = [
-            [.toolRequest(parentCall)],
-            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
-        ]
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: UUID(),
-                provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
-                environmentID: "env-shared"
-            ),
-            adapter: adapter,
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: recording,
-            auditSink: audit,
-            checkpointStore: MockCheckpointStore()
-        )
-        func childCall() throws -> ToolCall {
-            var call = try ToolCall(
+        try await ActiveParentTestScope.withScope {
+            let recording = ContextRecordingExecutor(descriptors: [
+                "test.echo": .init(name: "test.echo", riskLabels: [], isSideEffecting: false)
+            ])
+            let audit = MockAuditSink()
+            let adapter = MockAdapter()
+            // The parent run emits the same provider call id and idempotency key
+            // that both children will use.
+            var parentCall = try ToolCall(
                 id: "call_1",
                 toolName: "test.echo",
                 argumentsJSON: Data("{}".utf8),
                 scope: .local
             )
-            call.idempotencyKey = "dup-key"
-            return call
+            parentCall.idempotencyKey = "dup-key"
+            adapter.script = [
+                [.toolRequest(parentCall)],
+                [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+            ]
+            let holdingAdapter = ActiveParentTestAdapter(continuation: adapter)
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: UUID(),
+                    provider: TestFixtures.localhostProvider(),
+                    model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
+                    environmentID: "env-shared"
+                ),
+                adapter: holdingAdapter,
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: recording,
+                auditSink: audit,
+                checkpointStore: MockCheckpointStore()
+            )
+            try await ActiveParentTestScope.activate(runtime)
+            func childCall() throws -> ToolCall {
+                var call = try ToolCall(
+                    id: "call_1",
+                    toolName: "test.echo",
+                    argumentsJSON: Data("{}".utf8),
+                    scope: .local
+                )
+                call.idempotencyKey = "dup-key"
+                return call
+            }
+            // Two distinct child clients with DIFFERENT identities but identical
+            // provider call ids/keys, plus the parent run.
+            let identityA = await identity(runtime, delegateCallID: "d-A")
+            let identityB = await identity(runtime, delegateCallID: "d-B")
+            let resultA = await runtime.dispatchChildTool(
+                try childCall(), identity: identityA,
+                childContext: childContext(
+                    identity: identityA, allowedToolNames: ["test.echo"],
+                    workspaceRootURL: nil, environmentID: "env-shared"
+                )
+            )
+            let resultB = await runtime.dispatchChildTool(
+                try childCall(), identity: identityB,
+                childContext: childContext(
+                    identity: identityB, allowedToolNames: ["test.echo"],
+                    workspaceRootURL: nil, environmentID: "env-shared"
+                )
+            )
+            await holdingAdapter.release()
+            try await ActiveParentTestScope.finish(runtime)
+            #expect(resultA.status == .ok, "\(resultA.outputSummary)")
+            #expect(resultB.status == .ok, "\(resultB.outputSummary)")
+            #expect(!resultA.outputSummary.contains("duplicate"))
+            #expect(!resultB.outputSummary.contains("duplicate"))
+            // Provider-visible feedback keeps the ORIGINAL model call id for each
+            // client, while the runtime correlates execution by run/child identity.
+            #expect(resultA.callID == "call_1")
+            #expect(resultB.callID == "call_1")
+            // All three clients really executed; none was silently skipped as a
+            // duplicate of another client's identical id/key.
+            #expect(recording.entries.count == 3)
+            #expect(recording.entries.allSatisfy { $0.call.id == "call_1" })
+            // Each client's execution was correlated with its own identity: the
+            // two child entries have distinct child identities and distinct
+            // client session ids.
+            let childEntries = recording.entries.filter { $0.context.childExecution != nil }
+            #expect(childEntries.count == 2)
+            let childIDs = Set(childEntries.compactMap { $0.context.childExecution?.identity.childID })
+            #expect(childIDs == [identityA.childID, identityB.childID])
+            let sessionIDs = Set(childEntries.compactMap(\.context.clientSessionID))
+            #expect(sessionIDs.count == 2)
+            // The audit trail recorded all three executions (no lost or merged
+            // entry under the shared provider id).
+            let allowed = audit.entries.filter { $0.decision.hasPrefix("allow") }
+            #expect(allowed.count == 3)
+
         }
-        // Two distinct child clients with DIFFERENT identities but identical
-        // provider call ids/keys, plus the parent run.
-        let identityA = await identity(runtime, delegateCallID: "d-A")
-        let identityB = await identity(runtime, delegateCallID: "d-B")
-        let resultA = await runtime.dispatchChildTool(
-            try childCall(), identity: identityA,
-            childContext: childContext(
-                identity: identityA, allowedToolNames: ["test.echo"],
-                workspaceRootURL: nil, environmentID: "env-shared"
-            )
-        )
-        let resultB = await runtime.dispatchChildTool(
-            try childCall(), identity: identityB,
-            childContext: childContext(
-                identity: identityB, allowedToolNames: ["test.echo"],
-                workspaceRootURL: nil, environmentID: "env-shared"
-            )
-        )
-        try await runtime.start(goal: "parent echo")
-        #expect(resultA.status == .ok, "\(resultA.outputSummary)")
-        #expect(resultB.status == .ok, "\(resultB.outputSummary)")
-        #expect(!resultA.outputSummary.contains("duplicate"))
-        #expect(!resultB.outputSummary.contains("duplicate"))
-        // Provider-visible feedback keeps the ORIGINAL model call id for each
-        // client, while the runtime correlates execution by run/child identity.
-        #expect(resultA.callID == "call_1")
-        #expect(resultB.callID == "call_1")
-        // All three clients really executed; none was silently skipped as a
-        // duplicate of another client's identical id/key.
-        #expect(recording.entries.count == 3)
-        #expect(recording.entries.allSatisfy { $0.call.id == "call_1" })
-        // Each client's execution was correlated with its own identity: the
-        // two child entries have distinct child identities and distinct
-        // client session ids.
-        let childEntries = recording.entries.filter { $0.context.childExecution != nil }
-        #expect(childEntries.count == 2)
-        let childIDs = Set(childEntries.compactMap { $0.context.childExecution?.identity.childID })
-        #expect(childIDs == [identityA.childID, identityB.childID])
-        let sessionIDs = Set(childEntries.compactMap(\.context.clientSessionID))
-        #expect(sessionIDs.count == 2)
-        // The audit trail recorded all three executions (no lost or merged
-        // entry under the shared provider id).
-        let allowed = audit.entries.filter { $0.decision.hasPrefix("allow") }
-        #expect(allowed.count == 3)
     }
 
     // MARK: - Environment lifecycle gate
@@ -786,179 +800,187 @@ struct SharedEnvironmentConcurrencyTests {
 
     @Test("the runtime refuses a lifecycle call while a child consumer is in flight, without executing it")
     func runtimeLifecycleRefusesUnderActiveConsumer() async throws {
-        let gate = EnvGate()
-        let executor = ContextRecordingExecutor(
-            descriptors: [
-                "exec.shell": .init(
-                    name: "exec.shell", riskLabels: [.executesLocalCode],
-                    isSideEffecting: true, effect: .mutating
-                ),
-                "environment.hardRestartLinux": .init(
-                    name: "environment.hardRestartLinux", riskLabels: [.executesLocalCode],
-                    isSideEffecting: true, effect: .mutating
-                )
-            ],
-            gate: gate,
-            parkFirstCall: true
-        )
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: UUID(),
-                provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
-                allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                environmentID: "env-VM",
-                environmentLifecycleWait: 0.2
-            ),
-            adapter: MockAdapter(),
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: executor,
-            auditSink: MockAuditSink(),
-            checkpointStore: MockCheckpointStore()
-        )
-        // A child consumer parks inside the executor and stays registered as
-        // an active consumer of the same environment.
-        let childCall = try TestFixtures.toolCall(
-            id: "child-shell", toolName: "exec.shell",
-            arguments: #"{"command":"sleep 1"}"#
-        )
-        let childIdentity = await identity(runtime, delegateCallID: "d-shell")
-        let childTask = Task {
-            await runtime.dispatchChildTool(
-                childCall,
-                identity: childIdentity,
-                childContext: self.childContext(
-                    identity: childIdentity,
+        try await ActiveParentTestScope.withScope {
+            let gate = EnvGate()
+            let executor = ContextRecordingExecutor(
+                descriptors: [
+                    "exec.shell": .init(
+                        name: "exec.shell", riskLabels: [.executesLocalCode],
+                        isSideEffecting: true, effect: .mutating
+                    ),
+                    "environment.hardRestartLinux": .init(
+                        name: "environment.hardRestartLinux", riskLabels: [.executesLocalCode],
+                        isSideEffecting: true, effect: .mutating
+                    )
+                ],
+                gate: gate,
+                parkFirstCall: true
+            )
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: UUID(),
+                    provider: TestFixtures.localhostProvider(),
+                    model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
                     allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                    workspaceRootURL: nil,
-                    environmentID: "env-VM"
-                )
-            )
-        }
-        await waitForGate(gate)
-        #expect(await gate.hasEntered)
-
-        // A second client (another delegated child of the same task) asks for
-        // a hard restart. The runtime must refuse it, bounded, naming the real
-        // active consumer — and never reach the executor.
-        let restartCall = try TestFixtures.toolCall(
-            id: "restart-1", toolName: "environment.hardRestartLinux", arguments: #"{"vcpus":2}"#
-        )
-        let restartIdentity = await identity(runtime, delegateCallID: "d-restart")
-        let restartResult = await runtime.dispatchChildTool(
-            restartCall,
-            identity: restartIdentity,
-            childContext: childContext(
-                identity: restartIdentity,
-                allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                workspaceRootURL: nil,
-                environmentID: "env-VM"
-            )
-        )
-        #expect(restartResult.status == .failed)
-        #expect(restartResult.outputSummary.contains("busy"))
-        #expect(restartResult.outputSummary.contains("exec.shell"))
-        #expect(!executor.entries.contains { $0.call.id == "restart-1" })
-
-        await gate.open()
-        let childResult = await childTask.value
-        #expect(childResult.status == .ok)
-        #expect(executor.entries.contains { $0.call.id == "child-shell" })
-    }
-
-    @Test("a runtime consumer call cannot dispatch while a lifecycle operation owns the environment")
-    func runtimeConsumerWaitsForLifecycle() async throws {
-        let gate = EnvGate()
-        let executor = ContextRecordingExecutor(
-            descriptors: [
-                "exec.shell": .init(
-                    name: "exec.shell", riskLabels: [.executesLocalCode],
-                    isSideEffecting: true, effect: .mutating
+                    environmentID: "env-VM",
+                    environmentLifecycleWait: 0.2
                 ),
-                "environment.hardRestartLinux": .init(
-                    name: "environment.hardRestartLinux", riskLabels: [.executesLocalCode],
-                    isSideEffecting: true, effect: .mutating
+                adapter: ActiveParentTestAdapter(),
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: executor,
+                auditSink: MockAuditSink(),
+                checkpointStore: MockCheckpointStore()
+            )
+            try await ActiveParentTestScope.activate(runtime)
+            // A child consumer parks inside the executor and stays registered as
+            // an active consumer of the same environment.
+            let childCall = try TestFixtures.toolCall(
+                id: "child-shell", toolName: "exec.shell",
+                arguments: #"{"command":"sleep 1"}"#
+            )
+            let childIdentity = await identity(runtime, delegateCallID: "d-shell")
+            let childTask = Task {
+                await runtime.dispatchChildTool(
+                    childCall,
+                    identity: childIdentity,
+                    childContext: self.childContext(
+                        identity: childIdentity,
+                        allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
+                        workspaceRootURL: nil,
+                        environmentID: "env-VM"
+                    )
                 )
-            ],
-            gate: gate,
-            parkFirstCall: true
-        )
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: UUID(),
-                provider: TestFixtures.localhostProvider(),
-                model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
-                allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                environmentID: "env-VM",
-                environmentLifecycleWait: 0.2
-            ),
-            adapter: MockAdapter(),
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: executor,
-            auditSink: MockAuditSink(),
-            checkpointStore: MockCheckpointStore()
-        )
-        // The lifecycle operation owns the environment and parks inside the
-        // executor.
-        let restartCall = try TestFixtures.toolCall(
-            id: "restart-owner", toolName: "environment.hardRestartLinux", arguments: #"{"vcpus":2}"#
-        )
-        let restartIdentity = await identity(runtime, delegateCallID: "d-restart")
-        let restartTask = Task {
-            await runtime.dispatchChildTool(
+            }
+            await waitForGate(gate)
+            #expect(await gate.hasEntered)
+
+            // A second client (another delegated child of the same task) asks for
+            // a hard restart. The runtime must refuse it, bounded, naming the real
+            // active consumer — and never reach the executor.
+            let restartCall = try TestFixtures.toolCall(
+                id: "restart-1", toolName: "environment.hardRestartLinux", arguments: #"{"vcpus":2}"#
+            )
+            let restartIdentity = await identity(runtime, delegateCallID: "d-restart")
+            let restartResult = await runtime.dispatchChildTool(
                 restartCall,
                 identity: restartIdentity,
-                childContext: self.childContext(
+                childContext: childContext(
                     identity: restartIdentity,
                     allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
                     workspaceRootURL: nil,
                     environmentID: "env-VM"
                 )
             )
+            #expect(restartResult.status == .failed)
+            #expect(restartResult.outputSummary.contains("busy"))
+            #expect(restartResult.outputSummary.contains("exec.shell"))
+            #expect(!executor.entries.contains { $0.call.id == "restart-1" })
+
+            await gate.open()
+            let childResult = await childTask.value
+            #expect(childResult.status == .ok)
+            #expect(executor.entries.contains { $0.call.id == "child-shell" })
+
         }
-        await waitForGate(gate)
-        #expect(await gate.hasEntered)
+    }
 
-        // A consumer arriving mid-lifecycle must not dispatch: bounded wait,
-        // then a truthful refusal naming the lifecycle holder.
-        let shellCall = try TestFixtures.toolCall(
-            id: "late-shell", toolName: "exec.shell", arguments: #"{"command":"echo hi"}"#
-        )
-        let shellIdentity = await identity(runtime, delegateCallID: "d-late")
-        let shellResult = await runtime.dispatchChildTool(
-            shellCall,
-            identity: shellIdentity,
-            childContext: childContext(
+    @Test("a runtime consumer call cannot dispatch while a lifecycle operation owns the environment")
+    func runtimeConsumerWaitsForLifecycle() async throws {
+        try await ActiveParentTestScope.withScope {
+            let gate = EnvGate()
+            let executor = ContextRecordingExecutor(
+                descriptors: [
+                    "exec.shell": .init(
+                        name: "exec.shell", riskLabels: [.executesLocalCode],
+                        isSideEffecting: true, effect: .mutating
+                    ),
+                    "environment.hardRestartLinux": .init(
+                        name: "environment.hardRestartLinux", riskLabels: [.executesLocalCode],
+                        isSideEffecting: true, effect: .mutating
+                    )
+                ],
+                gate: gate,
+                parkFirstCall: true
+            )
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: UUID(),
+                    provider: TestFixtures.localhostProvider(),
+                    model: TestFixtures.testModel(providerID: TestFixtures.localhostProvider().id),
+                    allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
+                    environmentID: "env-VM",
+                    environmentLifecycleWait: 0.2
+                ),
+                adapter: ActiveParentTestAdapter(),
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: executor,
+                auditSink: MockAuditSink(),
+                checkpointStore: MockCheckpointStore()
+            )
+            try await ActiveParentTestScope.activate(runtime)
+            // The lifecycle operation owns the environment and parks inside the
+            // executor.
+            let restartCall = try TestFixtures.toolCall(
+                id: "restart-owner", toolName: "environment.hardRestartLinux", arguments: #"{"vcpus":2}"#
+            )
+            let restartIdentity = await identity(runtime, delegateCallID: "d-restart")
+            let restartTask = Task {
+                await runtime.dispatchChildTool(
+                    restartCall,
+                    identity: restartIdentity,
+                    childContext: self.childContext(
+                        identity: restartIdentity,
+                        allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
+                        workspaceRootURL: nil,
+                        environmentID: "env-VM"
+                    )
+                )
+            }
+            await waitForGate(gate)
+            #expect(await gate.hasEntered)
+
+            // A consumer arriving mid-lifecycle must not dispatch: bounded wait,
+            // then a truthful refusal naming the lifecycle holder.
+            let shellCall = try TestFixtures.toolCall(
+                id: "late-shell", toolName: "exec.shell", arguments: #"{"command":"echo hi"}"#
+            )
+            let shellIdentity = await identity(runtime, delegateCallID: "d-late")
+            let shellResult = await runtime.dispatchChildTool(
+                shellCall,
                 identity: shellIdentity,
-                allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                workspaceRootURL: nil,
-                environmentID: "env-VM"
+                childContext: childContext(
+                    identity: shellIdentity,
+                    allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
+                    workspaceRootURL: nil,
+                    environmentID: "env-VM"
+                )
             )
-        )
-        #expect(shellResult.status == .failed)
-        #expect(shellResult.outputSummary.contains("busy") || shellResult.outputSummary.contains("restarting"))
-        #expect(shellResult.outputSummary.contains("hardRestartLinux"))
-        #expect(!executor.entries.contains { $0.call.id == "late-shell" })
+            #expect(shellResult.status == .failed)
+            #expect(shellResult.outputSummary.contains("busy") || shellResult.outputSummary.contains("restarting"))
+            #expect(shellResult.outputSummary.contains("hardRestartLinux"))
+            #expect(!executor.entries.contains { $0.call.id == "late-shell" })
 
-        await gate.open()
-        let restartResult = await restartTask.value
-        #expect(restartResult.status == .ok)
-        // Once the lifecycle clears, a consumer dispatches normally.
-        let retryCall = try TestFixtures.toolCall(
-            id: "later-shell", toolName: "exec.shell", arguments: #"{"command":"echo hi"}"#
-        )
-        let retryIdentity = await identity(runtime, delegateCallID: "d-retry")
-        let retryResult = await runtime.dispatchChildTool(
-            retryCall,
-            identity: retryIdentity,
-            childContext: childContext(
-                identity: retryIdentity,
-                allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
-                workspaceRootURL: nil,
-                environmentID: "env-VM"
+            await gate.open()
+            let restartResult = await restartTask.value
+            #expect(restartResult.status == .ok)
+            // Once the lifecycle clears, a consumer dispatches normally.
+            let retryCall = try TestFixtures.toolCall(
+                id: "later-shell", toolName: "exec.shell", arguments: #"{"command":"echo hi"}"#
             )
-        )
-        #expect(retryResult.status == .ok)
+            let retryIdentity = await identity(runtime, delegateCallID: "d-retry")
+            let retryResult = await runtime.dispatchChildTool(
+                retryCall,
+                identity: retryIdentity,
+                childContext: childContext(
+                    identity: retryIdentity,
+                    allowedToolNames: ["exec.shell", "environment.hardRestartLinux"],
+                    workspaceRootURL: nil,
+                    environmentID: "env-VM"
+                )
+            )
+            #expect(retryResult.status == .ok)
+
+        }
     }
 
     @Test("a delegation envelope never holds an environment consumer, so the child's own lifecycle call executes")

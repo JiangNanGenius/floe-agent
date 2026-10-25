@@ -190,14 +190,14 @@ final class ConversationStoreTaskDestinationProvider: TaskDestinationProviding, 
     func taskImportTargets() async throws -> [TaskImportTarget] {
         let records = try await store.conversations(includeArchived: false)
         return records
-            .filter { $0.purpose == .ordinary }
+            .filter { $0.purpose == .ordinary && $0.visibility == .normal }
             .sorted { $0.updatedAt > $1.updatedAt }
             .map { TaskImportTarget(id: $0.id, title: $0.title, updatedAt: $0.updatedAt) }
     }
 
     func isTaskTargetAvailable(_ conversationID: UUID) async -> Bool {
         let record = try? await store.conversation(id: conversationID)
-        return record?.purpose == .ordinary && record?.archivedAt == nil
+        return record?.purpose == .ordinary && record?.visibility == .normal && record?.archivedAt == nil
     }
 }
 

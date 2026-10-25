@@ -169,6 +169,8 @@ struct FloeAgentApp: App {
                 .environmentObject(environment.speechService)
                 .environmentObject(environment.ttsSettingsService)
                 .environmentObject(environment.designEntryState)
+                .environmentObject(environment.skillAuthoring)
+                .modifier(SkillAuthoringPresentationHost(coordinator: environment.skillAuthoring, router: router))
                 .task {
                     #if DEBUG
                     // Hosted actual-entry acceptance parks the entire scene
@@ -875,7 +877,7 @@ struct RootView: View {
                     pendingEntry = nil
                     return
                 }
-                guard let record, record.archivedAt == nil, record.purpose == .ordinary else {
+                guard let record, record.archivedAt == nil, record.purpose == .ordinary, record.visibility == .normal else {
                     entryNotice = FloeL10n.l("app.entry.task_unavailable")
                     break
                 }

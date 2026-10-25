@@ -255,8 +255,28 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// hold (and the VM is stopped) but never clears the preference.
     private var linuxBackgroundHold = LinuxBackgroundHoldPolicy()
     /// Point-in-time surface data for every running/held Linux environment,
-    /// including CPU, memory and the command/service/port counts.
+    /// including CPU, memory and the command/service/port counts. This is a
+    /// DISPLAY cache: it is never authority for whether work is still alive.
     private var linuxSurfaceEntries: [String: LinuxBackgroundSurfaceEntry] = [:]
+    /// The only Linux environments that count as background-location work: the
+    /// user permitted them AND the runtime owner reported them actually
+    /// running at the last authoritative read. A display entry, a durable
+    /// permission or an old hold alone never qualifies, so a guest that died
+    /// outside the coordinator cannot keep the assist alive.
+    private var locationLiveLinuxEnvironmentIDs: Set<String> = []
+    /// Bumped by every explicit stop, delete or preference-off transition. An
+    /// in-flight live read taken before that change is discarded instead of
+    /// being applied afterwards, so a late snapshot can never resurrect
+    /// stopped work.
+    private var locationAuthorityGeneration: UInt64 = 0
+    /// Monotonic epoch of authority reads: only the newest STARTED read may
+    /// apply, so two overlapping reads cannot reorder into a stale `running`
+    /// answer overwriting a newer `stopped` one.
+    private var locationAuthorityQueryEpoch: UInt64 = 0
+    /// Environments whose physical stop is in flight. The runtime may still
+    /// report them running until the engine leaves, so they are excluded from
+    /// every read until the stop actually completes.
+    private var locationStoppingLinuxEnvironmentIDs: Set<String> = []
     /// Multi-VM pager for the floating surface (one VM per page).
     private var linuxSurfacePager = LinuxBackgroundSurfacePager()
     /// Per-environment port count published from the active forward plans.
@@ -714,6 +734,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // Background location follows the honored capability OR; a settings
         // change re-evaluates it immediately (including in the background).
         reconcileLocationAssist()
+        // The task Live Activity is independent: this only makes the switch's
+        // new value take effect (ending promptly when it was turned off).
+        taskLiveActivityCoordinator().preferencesDidChange()
         if #available(iOS 26.0, *) {
             let launchPreferencesLoaded = environment.settingsCenter.launchPreferencesLoaded
             let keepsConversationTask = Self.shouldKeepContinuedProcessing(
@@ -980,6 +1003,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "runStart")
     }
 
     /// A user-started Canvas image request is also a long provider workload.
@@ -1056,10 +1080,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             }
             active.outputCharacters += characters
         }
+        let wasAwaitingUserAttention = active.isAwaitingUserAttention
         if let tokensPerSecond { active.reportedTokensPerSecond = tokensPerSecond }
         if active.isAwaitingUserAttention { active.isAwaitingUserAttention = false }
         activeRuns[runID] = active
         reconcileLocationAssist()
+        // Only a suspended run actually resuming is visible; ordinary
+        // per-token activity never reaches the Live Activity owner.
+        if wasAwaitingUserAttention {
+            reconcileTaskLiveActivity(reason: "resumed")
+        }
     }
 
     /// Live tool activity for the floating surface. `finished` clears the
@@ -1082,6 +1112,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.update(progress: active.presentation())
         }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "toolEvent")
     }
 
     func didUpdatePendingApproval(runID: UUID, toolName: String?) {
@@ -1093,6 +1124,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.update(progress: active.presentation())
         }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "approval")
     }
 
     enum ToolSurfaceOutcome: Sendable, Equatable {
@@ -1112,11 +1144,14 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.update(progress: active.presentation())
         }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "checklist")
     }
 
     func didUpdateProgress(runID: UUID, stage: String, progress: Int64, isGenerating: Bool = false) {
         guard var active = activeRuns[runID] else { return }
-        if active.stage != stage {
+        let stageChanged = active.stage != stage
+        let wasAwaitingUserAttention = active.isAwaitingUserAttention
+        if stageChanged {
             active.stageStartedAt = Date()
             active.outputWindowStartedAt = Date()
             active.outputCharacters = 0
@@ -1149,6 +1184,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 progress: Double(active.progress) / 100,
                 progressText: stage
             )
+        }
+        // Only a visible change (stage text, or resuming from a suspension)
+        // reaches the Live Activity; progress percentages alone never do.
+        if stageChanged || wasAwaitingUserAttention {
+            reconcileTaskLiveActivity(reason: "progress")
         }
     }
 
@@ -1194,6 +1234,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "suspended")
     }
 
     /// The three terminal outcomes a provider run can reach. Cancellation is
@@ -1383,7 +1424,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 resumeBackgroundSurfaceIfNeeded()
             }
         }
+        // The last local run ended. A guest can stop without any coordinator
+        // stop callback (engine stop from the environment card, delete, arbiter
+        // release, crash), so this existing terminal route re-verifies the
+        // cached live set with the runtime owner instead of leaving it armed.
+        if activeRuns.isEmpty, !locationLiveLinuxEnvironmentIDs.isEmpty {
+            Task { [weak self] in
+                await self?.reconcileLinuxBackgroundHold()
+            }
+        }
         reconcileLocationAssist()
+        reconcileTaskLiveActivity(reason: "runFinish")
     }
 
     /// Honest success caption for the completion dwell: the task name, the
@@ -1881,6 +1932,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
                 isEnabled: true
             )
             persistLinuxBackgroundPreferences()
+            // A fresh explicit start/enable ends any earlier in-flight-stop
+            // fence for this environment.
+            finishLocationLinuxStop(environmentID: environmentID)
             let deepLink = BackgroundWorkDeepLink(
                 kind: .linuxSession,
                 environmentID: environmentID
@@ -1928,6 +1982,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             continuedEligibility.finishRun(workID)
             stopLinuxMetricsSampling(environmentID: environmentID)
             linuxBackgroundHold.preferenceDisabled(environmentID)
+            invalidateLocationLinuxAuthority(environmentID: environmentID)
             linuxSurfaceEntries.removeValue(forKey: environmentID)
             linuxUnverifiedMetricsReported.remove(environmentID)
             publishLinuxSurfacePager()
@@ -1956,11 +2011,20 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     // MARK: - Linux background hold (PiP lifecycle)
 
     /// Running VMs the user allowed to run in the background, in a stable
-    /// order. This is the eligibility input of the hold policy.
+    /// order. This is the eligibility input of the hold policy and of
+    /// background-location work.
     func backgroundEligibleEnvironmentIDs() async -> [String] {
+        let enabled = linuxBackgroundEnabledEnvironmentIDs()
+        #if DEBUG
+        // Coordinator-decision tests supply their own live truth; shipping
+        // code never sets this, so the runtime owner stays the only authority.
+        if let override = linuxLiveGuestEnvironmentIDsOverrideForTesting {
+            return await override(enabled)
+        }
+        #endif
         let controller = FloePlatformServices.shared.linuxGuestController()
         var eligible: [String] = []
-        for environmentID in linuxBackgroundEnabledEnvironmentIDs() {
+        for environmentID in enabled {
             guard let controller else { continue }
             if await controller.guestIsRunning(environmentID: environmentID) {
                 eligible.append(environmentID)
@@ -1969,11 +2033,150 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         return eligible
     }
 
+    /// One authoritative read result. `generation`/`epoch` fence the snapshot:
+    /// it may only be applied while both still match the coordinator, so a
+    /// stop or a newer read that landed after this one started wins.
+    private struct LocationAuthoritySnapshot {
+        let environmentIDs: [String]
+        let generation: UInt64
+        let epoch: UInt64
+    }
+
+    /// Reads the live guest authority and makes it the only Linux fact behind
+    /// background-location eligibility and the PiP hold. A guest the user
+    /// allowed to run in the background is included only while the runtime
+    /// owner reports it actually running; a display entry, a durable
+    /// permission or an old hold alone never qualifies.
+    ///
+    /// The same read evicts cache entries for guests that stopped outside the
+    /// coordinator (engine stop from the environment card, a deleted
+    /// environment, the heavy-runtime arbiter, a guest crash) — those paths
+    /// never call a stop callback here, so this reconciliation is what ends
+    /// their background eligibility and location assist.
+    ///
+    /// Concurrency: every read takes a fresh epoch and only the newest started
+    /// read may apply, so two reads cannot finish out of order. A stop/delete
+    /// that lands while a read is awaiting bumps the generation; the snapshot
+    /// is discarded (never re-read) and the stop path's already-pruned set is
+    /// kept, so a guest whose physical stop is still pending can never be
+    /// re-added from a runtime that has not finished stopping.
+    private func refreshLocationLinuxAuthority() async -> LocationAuthoritySnapshot? {
+        let generation = locationAuthorityGeneration
+        locationAuthorityQueryEpoch &+= 1
+        let epoch = locationAuthorityQueryEpoch
+        let live = await backgroundEligibleEnvironmentIDs()
+        // A newer read started while this one was awaiting: only its answer
+        // may be applied.
+        guard epoch == locationAuthorityQueryEpoch else { return nil }
+        // An explicit stop/delete/preference change landed during the read.
+        // The runtime may still report a stopping guest as running, so this
+        // snapshot is not trustworthy and must not be re-read.
+        guard generation == locationAuthorityGeneration else {
+            let current = prunedLocationLinuxAuthority()
+            locationLiveLinuxEnvironmentIDs = current
+            evictStaleLinuxSurfaceEntries(keeping: current)
+            return nil
+        }
+        var liveSet = Set(live)
+        // A tombstone still reported running means the stop is genuinely in
+        // flight; one the runtime no longer reports running has completed (or
+        // was interrupted), so the tombstone is finished.
+        locationStoppingLinuxEnvironmentIDs.formIntersection(liveSet)
+        liveSet.subtract(locationStoppingLinuxEnvironmentIDs)
+        locationLiveLinuxEnvironmentIDs = liveSet
+        evictStaleLinuxSurfaceEntries(keeping: liveSet)
+        return LocationAuthoritySnapshot(
+            environmentIDs: liveSet.sorted(),
+            generation: generation,
+            epoch: epoch
+        )
+    }
+
+    /// The currently applied authority, re-derived from the durable permission
+    /// and the in-flight-stop tombstones. Used when a read must be discarded:
+    /// it never adds an environment the last verified read did not include.
+    private func prunedLocationLinuxAuthority() -> Set<String> {
+        let permitted = Set(linuxBackgroundEnabledEnvironmentIDs())
+        return locationLiveLinuxEnvironmentIDs
+            .intersection(permitted)
+            .subtracting(locationStoppingLinuxEnvironmentIDs)
+    }
+
+    /// The snapshot may still be applied only while no newer read started and
+    /// no stop/delete/preference change landed since it was taken.
+    private func isCurrent(_ snapshot: LocationAuthoritySnapshot) -> Bool {
+        snapshot.epoch == locationAuthorityQueryEpoch
+            && snapshot.generation == locationAuthorityGeneration
+    }
+
+    /// Drops every cached surface/projection for an environment the runtime no
+    /// longer reports running, so a stale `.running` display entry can neither
+    /// render a dead VM nor feed an eligibility decision. The stop paths that
+    /// own the durable work record and the terminal event still run when the
+    /// coordinator itself stops a guest; this only forgets the display cache.
+    private func evictStaleLinuxSurfaceEntries(keeping eligible: Set<String>) {
+        let stale = linuxSurfaceEntries.keys.filter { !eligible.contains($0) }
+        guard !stale.isEmpty else { return }
+        for environmentID in stale {
+            linuxSurfaceEntries.removeValue(forKey: environmentID)
+            linuxRuntimeStates.removeValue(forKey: environmentID)
+            linuxLastRuntimeSamples.removeValue(forKey: environmentID)
+            linuxUnverifiedMetricsReported.remove(environmentID)
+            linuxCommandCounts.removeValue(forKey: environmentID)
+            linuxPortCounts.removeValue(forKey: environmentID)
+            linuxTerminalCounts.removeValue(forKey: environmentID)
+            stopLinuxMetricsSampling(environmentID: environmentID)
+            linuxBackgroundHold.environmentStopped(environmentID)
+        }
+        publishLinuxSurfacePager()
+        FloeLogger(category: .app).info(
+            "linuxBackgroundAuthorityEvicted count=\(stale.count)"
+        )
+    }
+
+    /// An explicit stop/delete/preference-off whose physical stop has already
+    /// completed (or is not the coordinator's to observe): the environment
+    /// stops counting as live work immediately, and any in-flight authority
+    /// read that began before this point is invalidated.
+    private func invalidateLocationLinuxAuthority(environmentID: String) {
+        locationAuthorityGeneration &+= 1
+        locationLiveLinuxEnvironmentIDs.remove(environmentID)
+        locationStoppingLinuxEnvironmentIDs.remove(environmentID)
+    }
+
+    /// The coordinator is about to stop the guest physically. It leaves
+    /// eligibility now and is fenced out of every read until the stop
+    /// completes, because the runtime can still report it running.
+    private func beginLocationLinuxStop(environmentID: String) {
+        locationAuthorityGeneration &+= 1
+        locationLiveLinuxEnvironmentIDs.remove(environmentID)
+        locationStoppingLinuxEnvironmentIDs.insert(environmentID)
+    }
+
+    /// The physical stop completed: a later start may become eligible again.
+    private func finishLocationLinuxStop(environmentID: String) {
+        locationStoppingLinuxEnvironmentIDs.remove(environmentID)
+    }
+
     /// Reconciles the PiP hold with the live VM set. Called on a background
     /// transition, on a preference change, and whenever a VM starts or stops.
     func reconcileLinuxBackgroundHold() async {
-        let eligible = await backgroundEligibleEnvironmentIDs()
-        await refreshLinuxSurfaceEntries(environmentIDs: eligible)
+        guard let authority = await refreshLocationLinuxAuthority() else {
+            // A newer read or an explicit stop owns the outcome. Applying this
+            // older snapshot could re-arm a guest whose stop is still pending.
+            reconcileLocationAssist()
+            return
+        }
+        await refreshLinuxSurfaceEntries(environmentIDs: authority.environmentIDs)
+        // The surface refresh awaited, so a stop or a newer read may have
+        // landed. Never apply this snapshot's ids or hold decision then, and
+        // drop anything that refresh re-created for a no-longer-live guest.
+        guard isCurrent(authority) else {
+            evictStaleLinuxSurfaceEntries(keeping: locationLiveLinuxEnvironmentIDs)
+            reconcileLocationAssist()
+            return
+        }
+        let eligible = authority.environmentIDs
         guard isAppInBackground else {
             // Foreground: keep the hold membership current but never prepare
             // the floating surface; the next background transition does.
@@ -2042,6 +2245,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// state. The per-environment preference is deliberately untouched.
     func stopAndFlushLinuxEnvironment(environmentID: String, reason: String) async {
         linuxBackgroundHold.environmentStopped(environmentID)
+        // The engine may keep reporting the guest running until it leaves, so
+        // fence the environment out of every authority read until the physical
+        // stop below completes.
+        beginLocationLinuxStop(environmentID: environmentID)
         await linuxPortCenter.clearEngineForwards(environmentID: environmentID)
         linuxPortCenter.guestStopped(environmentID: environmentID)
         linuxPortCounts.removeValue(forKey: environmentID)
@@ -2054,6 +2261,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         linuxUnverifiedMetricsReported.remove(environmentID)
         publishLinuxSurfacePager()
         await FloePlatformServices.shared.stopLinuxGuest(id: environmentID)
+        finishLocationLinuxStop(environmentID: environmentID)
         let workID = BackgroundWorkSnapshot.stableID(for: environmentID)
         let snapshot = BackgroundWorkSnapshot(
             id: workID,
@@ -2112,6 +2320,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             guard let self else { return }
             let guestRunning = await self.environment.linuxGuestService?
                 .guestIsRunning(environmentID: environmentID) ?? false
+            if !guestRunning {
+                // The terminal route proved the guest is gone: no cached live
+                // authority may outlive it.
+                self.invalidateLocationLinuxAuthority(environmentID: environmentID)
+                self.reconcileLocationAssist()
+            }
             let snapshot = BackgroundWorkSnapshot(
                 id: workID,
                 kind: .linuxSession,
@@ -2201,6 +2415,15 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         _ event: LinuxGuestLocalServiceLifecycleEvent
     ) async {
         guard !event.reason.isExplicitHostStop else { return }
+        // A managed service that ended because its environment vanished proves
+        // the guest itself is gone. That is an observed guest end (not only a
+        // service end), so drop the environment's background eligibility and
+        // re-push the honest location answer now instead of waiting for the
+        // next scene transition.
+        if event.reason == .environmentGone {
+            invalidateLocationLinuxAuthority(environmentID: event.handle.environmentID)
+            reconcileLocationAssist()
+        }
         let handle = event.handle
         let key = "\(handle.environmentID)#\(handle.token)"
         guard !surfacedLinuxServiceStops.contains(key) else { return }
@@ -2225,6 +2448,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// start restores background running.
     func linuxEnvironmentDidStop(environmentID: String, title: String) async {
         linuxBackgroundHold.environmentStopped(environmentID)
+        invalidateLocationLinuxAuthority(environmentID: environmentID)
         await linuxPortCenter.clearEngineForwards(environmentID: environmentID)
         linuxPortCenter.guestStopped(environmentID: environmentID)
         linuxPortCounts.removeValue(forKey: environmentID)
@@ -2259,12 +2483,41 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         )
     }
 
+    /// A guest ended outside the coordinator: an engine stop from the
+    /// environment card, a deleted environment, a heavy-runtime arbiter release
+    /// or a crash. Those call sites are outside this file; they must invoke
+    /// this only after the physical stop has resolved. The environment leaves
+    /// background-location eligibility and the PiP hold immediately, its
+    /// display cache is dropped and the honest "no work" answer is pushed; no
+    /// durable work record or terminal notification is fabricated here because
+    /// the owning stop path decides that.
+    func linuxEnvironmentRuntimeEnded(environmentID: String) {
+        invalidateLocationLinuxAuthority(environmentID: environmentID)
+        linuxBackgroundHold.environmentStopped(environmentID)
+        linuxSurfaceEntries.removeValue(forKey: environmentID)
+        linuxUnverifiedMetricsReported.remove(environmentID)
+        linuxCommandCounts.removeValue(forKey: environmentID)
+        linuxPortCounts.removeValue(forKey: environmentID)
+        linuxTerminalCounts.removeValue(forKey: environmentID)
+        linuxRuntimeStates.removeValue(forKey: environmentID)
+        linuxLastRuntimeSamples.removeValue(forKey: environmentID)
+        stopLinuxMetricsSampling(environmentID: environmentID)
+        publishLinuxSurfacePager()
+    }
+
     /// One bounded surface sample per environment: metrics from the sampler,
     /// services from the supervisor, ports from the applied forward plans and
     /// commands from the bounded /proc probe. Runtime identity and the
     /// granted vCPU shape come from the runtime owner's session table
     /// (`runtimeStates()`), not from any surface's expectation.
     func refreshLinuxSurfaceEntries(environmentIDs: [String]) async {
+        #if DEBUG
+        // Coordinator-decision tests can interleave a stop with this awaited
+        // refresh; shipping code never sets it.
+        if let barrier = linuxSurfaceRefreshBarrierForTesting {
+            await barrier()
+        }
+        #endif
         let serviceController = FloePlatformServices.shared.linuxLocalServiceController()
         let runner = FloePlatformServices.shared.linuxCommandRunner()
         let guestController = FloePlatformServices.shared.linuxGuestController()
@@ -2746,6 +2999,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     func didClosePictureInPicture() {
         let holdDecision = linuxBackgroundHold.userClosedPictureInPicture()
         if case .endHoldAndStop(let environmentID) = holdDecision {
+            // The physical stop starts in the Task below; fence the id now so a
+            // read cannot re-add it in between.
+            beginLocationLinuxStop(environmentID: environmentID)
             linuxSurfaceEntries.removeValue(forKey: environmentID)
             linuxUnverifiedMetricsReported.remove(environmentID)
             linuxCommandCounts.removeValue(forKey: environmentID)
@@ -2994,6 +3250,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if surfacedRunID == runID {
             environment.backgroundVideoService.update(progress: FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"))
         }
+        reconcileTaskLiveActivity(reason: "approvalRequired")
         let taskName = activeRuns[runID]?.title ?? String(localized: "background.task.name_fallback")
         Task { [weak self] in
             guard let self else { return }
@@ -3197,6 +3454,9 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             lease = nil
             Task { [weak self] in
                 guard let self else { return }
+                // A previous process may have left an activity behind; end it
+                // and reflect only work this process can prove is running.
+                self.reconcileTaskLiveActivityForForeground()
                 // The authorization answer may have arrived while the app was
                 // away: flush anything the first-authorization race queued.
                 await self.refreshNotificationAuthorizationAndFlush()
@@ -3221,10 +3481,68 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    // MARK: - Ordinary-task Live Activity (independent)
+
+    /// The single owner of the ordinary-task Live Activity. Created on first
+    /// use, so a launch that never runs a task touches no ActivityKit state.
+    private var taskLiveActivities: TaskLiveActivityCoordinator?
+
+    private func taskLiveActivityCoordinator() -> TaskLiveActivityCoordinator {
+        if let existing = taskLiveActivities { return existing }
+        let coordinator = TaskLiveActivityCoordinator(
+            snapshotProvider: { [weak self] _ in
+                guard let self else { return .empty }
+                return TaskLiveActivityProjection.snapshot(
+                    from: self.taskLiveActivityCandidates()
+                )
+            },
+            isEnabledProvider: { [weak self] in
+                self?.environment.settingsCenter.backgroundExecutionOptions
+                    .taskLiveActivityEnabled ?? false
+            },
+            logger: { message in
+                FloeLogger(category: .app).debug(message)
+            }
+        )
+        taskLiveActivities = coordinator
+        return coordinator
+    }
+
+    /// Marks the real run state dirty for the Live Activity owner. The owner
+    /// coalesces passes, so repeated lifecycle events never stack work. This
+    /// is deliberately not called from the per-token activity callback.
+    private func reconcileTaskLiveActivity(reason: String) {
+        taskLiveActivityCoordinator().noteTasksChanged(reason: reason)
+    }
+
+    private func reconcileTaskLiveActivityForForeground() {
+        taskLiveActivityCoordinator().reconcileForForeground()
+    }
+
+    /// Only runs that own an ordinary conversation and may publish content
+    /// qualify: temporary sessions and route-less media work never reach a
+    /// Lock Screen.
+    private func taskLiveActivityCandidates() -> [TaskLiveActivityProjection.Candidate] {
+        activeRuns.map { runID, run in
+            TaskLiveActivityProjection.Candidate(
+                runID: runID,
+                conversationID: run.conversationID,
+                title: run.title,
+                stage: run.stage,
+                pendingApprovalToolName: run.pendingApprovalToolName,
+                isAwaitingUserAttention: run.isAwaitingUserAttention,
+                startedAt: run.startedAt,
+                publishesContent: run.publishesContent
+            )
+        }
+    }
+
     /// Every lifecycle transition that can change local work, background
     /// support or the aggregate scene phase pushes the same three facts to the
     /// shared location service. The service owns the actual session/update
-    /// lifecycle and never infers work from stage text or run counts.
+    /// lifecycle and never infers work from stage text or run counts. Linux
+    /// eligibility comes from the last authoritative runtime read, never from
+    /// the display cache or the durable permission alone.
     private func reconcileLocationAssist() {
         let inputs = Self.backgroundLocationInputs(
             options: environment.settingsCenter.backgroundExecutionOptions,
@@ -3232,9 +3550,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             runs: Array(activeRuns.values),
             enabledLinuxEnvironmentIDs: linuxBackgroundEnabledEnvironmentIDs(),
             heldLinuxEnvironmentIDs: linuxBackgroundHold.heldEnvironmentIDs,
-            runningLinuxEnvironmentIDs: linuxSurfaceEntries.compactMap {
-                $0.value.state == .running ? $0.key : nil
-            },
+            runningLinuxEnvironmentIDs: locationLiveLinuxEnvironmentIDs.sorted(),
             aggregateScenePhase: effectiveScenePhase
         )
         LocationServicesCenter.shared.applyBackgroundLocationInputs(
@@ -3247,9 +3563,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private func hasLocationEligibleWork() -> Bool {
         let eligibleLinux = Self.locationEligibleLinuxEnvironmentIDs(
             heldEnvironmentIDs: linuxBackgroundHold.heldEnvironmentIDs,
-            runningEnvironmentIDs: linuxSurfaceEntries.compactMap {
-                $0.value.state == .running ? $0.key : nil
-            },
+            runningEnvironmentIDs: locationLiveLinuxEnvironmentIDs.sorted(),
             enabledEnvironmentIDs: linuxBackgroundEnabledEnvironmentIDs()
         )
         return Self.hasLocationEligibleWork(
@@ -3267,6 +3581,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// Runs the same reconciliation the lifecycle paths run, after a test has
     /// swapped in a controlled-driver service.
     func reconcileLocationAssistForTesting() { reconcileLocationAssist() }
+
+    /// Controlled live-guest truth for coordinator-decision tests: it replaces
+    /// only the runtime probe, returning the eligible subset of the enabled
+    /// environments. Shipping code never sets it, so the runtime owner remains
+    /// the sole authority in the app.
+    var linuxLiveGuestEnvironmentIDsOverrideForTesting: (@MainActor ([String]) async -> [String])?
+
+    /// Coordinator-decision tests pause the awaited surface refresh here to
+    /// prove a stop that lands during it is not applied afterwards. Shipping
+    /// code never sets it.
+    var linuxSurfaceRefreshBarrierForTesting: (@MainActor () async -> Void)?
     #endif
 
     private func persistVisualSurfacePolicy() {

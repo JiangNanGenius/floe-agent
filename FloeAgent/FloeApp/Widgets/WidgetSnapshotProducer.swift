@@ -70,7 +70,7 @@ struct ConversationStoreWidgetSnapshotSource: WidgetSnapshotConversationSource {
             title: record.title,
             updatedAt: record.updatedAt,
             isArchived: record.archivedAt != nil,
-            isOrdinary: record.purpose == .ordinary
+            isOrdinary: record.purpose == .ordinary && record.visibility == .normal
         )
     }
 }

@@ -13,7 +13,8 @@ import FloeTools
 public func registerSkillTools(
     registry: ToolRunnerRegistry = .shared,
     creator: any SkillCreating,
-    manager: (any SkillManaging)? = nil
+    manager: (any SkillManaging)? = nil,
+    catalog: (any SkillHubCatalogProviding)? = nil
 ) -> any SkillCreating {
     ToolCatalog.register(SkillCreateTool.self)
     registry.register(SkillCreateTool(creator: creator))
@@ -23,8 +24,8 @@ public func registerSkillTools(
         ToolCatalog.register(SkillSearchTool.self)
         ToolCatalog.register(SkillReadTool.self)
         ToolCatalog.register(SkillManageTool.self)
-        registry.register(SkillReadTool(manager: manager))
-        registry.register(SkillSearchTool(manager: manager))
+        registry.register(SkillReadTool(manager: manager, catalog: catalog))
+        registry.register(SkillSearchTool(manager: manager, catalog: catalog))
         registry.register(SkillManageTool(manager: manager))
     }
     return creator

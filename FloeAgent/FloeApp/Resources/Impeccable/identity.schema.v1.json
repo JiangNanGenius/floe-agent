@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://floe-agent.com/schemas/impeccable/identity.v1.json",
+  "title": "Floe Impeccable capture identity v1",
+  "type": "object",
+  "required": [
+    "taskId",
+    "sessionId",
+    "tabId",
+    "documentId",
+    "captureId",
+    "documentGeneration",
+    "url",
+    "hostname",
+    "viewport",
+    "scroll",
+    "capturedAtMs",
+    "producerTrust",
+    "producer",
+    "redaction"
+  ],
+  "properties": {
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "captureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documentGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tabId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "hostname": {
+      "type": "string"
+    },
+    "viewport": {
+      "type": "object",
+      "required": [
+        "width",
+        "height"
+      ],
+      "properties": {
+        "width": {
+          "type": "number"
+        },
+        "height": {
+          "type": "number"
+        }
+      }
+    },
+    "scroll": {
+      "type": "object",
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "capturedAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "producerTrust": {
+      "const": "native-fixed-script",
+      "description": "Only a fixed, audited native producer is trusted. A model-declared or page-declared trust value is not accepted."
+    },
+    "producer": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "engine",
+        "scriptDigest"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "engine": {
+          "const": "WebKit"
+        },
+        "scriptDigest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "sha256 of the exact fixed measurement script bytes that produced this capture"
+        }
+      }
+    },
+    "redaction": {
+      "type": "object",
+      "required": [
+        "policy",
+        "applied",
+        "passwordInputs",
+        "formValues",
+        "credentialAttributes",
+        "textRuns"
+      ],
+      "properties": {
+        "policy": {
+          "const": "floe.impeccable.redaction.v1"
+        },
+        "applied": {
+          "const": true
+        },
+        "passwordInputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "formValues": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "credentialAttributes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "textRuns": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "fenced": {
+      "type": "boolean"
+    }
+  }
+}

@@ -14,6 +14,13 @@ public enum ConversationPurpose: String, Sendable, Hashable {
     case ordinary, notes, temporary
 }
 
+/// Persistent presentation ownership, independent of execution purpose.
+/// A lightweight authoring operation uses the ordinary durable runtime but
+/// stays out of the ordinary conversation list until explicitly converted.
+public enum ConversationVisibility: String, Codable, Sendable, Hashable {
+    case normal, skillAuthoring
+}
+
 /// A conversation row with its plain-text projection. Structured multimodal
 /// parts are loaded separately via `parts(messageID:)`.
 public struct ConversationRecord: Sendable, Hashable, Identifiable {
@@ -24,6 +31,7 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
     public var titleOrigin: ConversationTitleOrigin
     public var archivedAt: Date?
     public var purpose: ConversationPurpose
+    public var visibility: ConversationVisibility
 
     public init(
         id: UUID,
@@ -32,7 +40,8 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         updatedAt: Date,
         titleOrigin: ConversationTitleOrigin = .autoPending,
         archivedAt: Date? = nil,
-        purpose: ConversationPurpose = .ordinary
+        purpose: ConversationPurpose = .ordinary,
+        visibility: ConversationVisibility = .normal
     ) {
         self.id = id
         self.title = title
@@ -41,6 +50,7 @@ public struct ConversationRecord: Sendable, Hashable, Identifiable {
         self.titleOrigin = titleOrigin
         self.archivedAt = archivedAt
         self.purpose = purpose
+        self.visibility = visibility
     }
 }
 
@@ -203,8 +213,8 @@ public actor SQLiteConversationStore: ConversationStore {
         try await database.writer { db in
             try db.execute(
                 sql: """
-                    INSERT INTO conversations (id, title, created_at, updated_at, purpose)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO conversations (id, title, created_at, updated_at, purpose, visibility)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         title = excluded.title,
                         updated_at = excluded.updated_at
@@ -214,7 +224,8 @@ public actor SQLiteConversationStore: ConversationStore {
                     conversation.title,
                     PersistenceCodec.encode(conversation.createdAt),
                     PersistenceCodec.encode(conversation.updatedAt),
-                    conversation.purpose.rawValue
+                    conversation.purpose.rawValue,
+                    conversation.visibility.rawValue
                 ]
             )
         }
@@ -229,8 +240,8 @@ public actor SQLiteConversationStore: ConversationStore {
             try Row.fetchAll(
                 db,
                 sql: includeArchived
-                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' ORDER BY updated_at DESC, id"
-                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND archived_at IS NULL ORDER BY updated_at DESC, id"
+                    ? "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' ORDER BY updated_at DESC, id"
+                    : "SELECT * FROM conversations WHERE purpose = 'ordinary' AND visibility = 'normal' AND archived_at IS NULL ORDER BY updated_at DESC, id"
             ).map(Self.conversation(from:))
         }
     }
@@ -281,6 +292,7 @@ public actor SQLiteConversationStore: ConversationStore {
         let spoolPaths = try await database.writer { db -> [String] in
             let paths = try RunLifecycleRetention.deleteOwnedRecords(db: db, conversationID: id)
             try db.execute(sql: "DELETE FROM conversations WHERE id = ?", arguments: [id.uuidString])
+            try SQLiteSkillAuthoringStore.removeMetadataForDeletedConversation(id, db: db)
             return paths
         }
         RunLifecycleRetention.removeSpoolArtifacts(spoolPaths)
@@ -314,7 +326,7 @@ public actor SQLiteConversationStore: ConversationStore {
             guard let row = try Row.fetchOne(
                 db,
                 sql: """
-                    SELECT title, title_origin, purpose, archived_at
+                    SELECT title, title_origin, purpose, visibility, archived_at
                     FROM conversations WHERE id = ?
                     """,
                 arguments: [conversationID]
@@ -324,10 +336,15 @@ public actor SQLiteConversationStore: ConversationStore {
             let purpose = row["purpose"] as String? ?? "ordinary"
             let archivedAt = row["archived_at"] as String?
             guard purpose == "ordinary",
+                  row["visibility"] as String? == ConversationVisibility.normal.rawValue,
                   title.isEmpty,
                   titleOrigin == "autoPending",
                   archivedAt == nil
             else { return false }
+            // A converted authoring owner may still have only metadata and
+            // a recoverable composer/source snapshot. It is not an empty
+            // placeholder even when no provider message/run exists yet.
+            if try SQLiteSkillAuthoringStore.hasRecord(for: id, db: db) { return false }
             // (table, predicate) — every conversation-scoped durable table.
             let probes: [(table: String, predicate: String)] = [
                 ("messages", "conversation_id = ?"),
@@ -609,7 +626,8 @@ public actor SQLiteConversationStore: ConversationStore {
             titleOrigin: ConversationTitleOrigin(rawValue: row["title_origin"] as String? ?? "autoPending")
                 ?? .autoPending,
             archivedAt: (row["archived_at"] as String?).flatMap { try? PersistenceCodec.decodeDate($0) },
-            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary
+            purpose: ConversationPurpose(rawValue: row["purpose"]) ?? .ordinary,
+            visibility: ConversationVisibility(rawValue: row["visibility"] as String? ?? "normal") ?? .normal
         )
     }
 

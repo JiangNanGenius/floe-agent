@@ -1,0 +1,733 @@
+{
+  "contract": "floe.impeccable.snapshot",
+  "contractVersion": 1,
+  "schemaStatus": "frozen-v1",
+  "schemaStatusNote": "The wire schema, protocol fields, binding/fencing rules, error semantics and fixture set are frozen at v1: native (A2) may implement against them now. What is still pending is the engine side, not the contract.",
+  "engineValidation": {
+    "status": "pending",
+    "reason": "Golden outputs under contract/expected/ are produced by the built engine (host arm64 and riscv64) in this same lane; until then the fixtures are schema-validated inputs, not engine-observed results.",
+    "blocksNativeImplementation": false
+  },
+  "engine": {
+    "binary": "floe-impeccable",
+    "upstreamProject": "pbakaus/impeccable",
+    "upstreamEngineVersion": "0.1.17",
+    "upstreamCommit": "4fc2f83e1c8710dba772bfd4523d0efab57737b6",
+    "upstreamTree": "1363fadfb2141db1cf22b4ba171d6fc4dbf5cd72",
+    "pinAuthority": "floe-skill-hub docs/UPSTREAM-PINS.json (reviewBaselineDate 2026-10-26)",
+    "floeAdapterVersion": "1.0.0",
+    "engineId": "impeccable-0.1.17+floe.1.0.0",
+    "targetTriple": "riscv64gc-unknown-linux-musl",
+    "abi": "static ELF, no dynamic loader dependency"
+  },
+  "transport": {
+    "kind": "file",
+    "encoding": "utf-8 JSON",
+    "direction": "native producer -> task-owned file bridge -> engine -> result file",
+    "network": "none; the engine never fetches",
+    "evaluate": "none; the engine never asks for arbitrary JavaScript",
+    "cdp": "none; no DevTools protocol endpoint is opened or emulated"
+  },
+  "snapshot": {
+    "version": 1,
+    "producer": "fixed, audited native WebKit measurement in an isolated content world",
+    "maxElements": 30000,
+    "maxBytes": 50331648,
+    "floeMaxBytes": 50331648,
+    "styleProps": [
+      "animationComposition",
+      "animationDelay",
+      "animationDirection",
+      "animationDuration",
+      "animationFillMode",
+      "animationIterationCount",
+      "animationName",
+      "animationPlayState",
+      "animationTimeline",
+      "animationTimingFunction",
+      "aspectRatio",
+      "backdropFilter",
+      "backfaceVisibility",
+      "background",
+      "backgroundClip",
+      "backgroundColor",
+      "backgroundImage",
+      "backgroundPosition",
+      "backgroundRepeat",
+      "backgroundSize",
+      "blockSize",
+      "borderBottomColor",
+      "borderBottomWidth",
+      "borderBottomStyle",
+      "borderLeftColor",
+      "borderLeftWidth",
+      "borderLeftStyle",
+      "borderRadius",
+      "borderRightColor",
+      "borderRightWidth",
+      "borderRightStyle",
+      "borderTopColor",
+      "borderTopWidth",
+      "borderTopStyle",
+      "bottom",
+      "boxShadow",
+      "clip",
+      "clip-path",
+      "clipPath",
+      "color",
+      "colorScheme",
+      "contain",
+      "content",
+      "contentVisibility",
+      "cssFloat",
+      "cursor",
+      "direction",
+      "display",
+      "filter",
+      "flexWrap",
+      "float",
+      "fontFamily",
+      "fontFeatureSettings",
+      "fontSize",
+      "fontStretch",
+      "fontStyle",
+      "fontVariant",
+      "fontVariantCaps",
+      "fontWeight",
+      "height",
+      "hyphens",
+      "inlineSize",
+      "inset",
+      "insetBlock",
+      "insetBlockEnd",
+      "insetBlockStart",
+      "insetInline",
+      "insetInlineEnd",
+      "insetInlineStart",
+      "isolation",
+      "left",
+      "letterSpacing",
+      "lineHeight",
+      "marginBottom",
+      "marginLeft",
+      "marginRight",
+      "marginTop",
+      "maskImage",
+      "maxHeight",
+      "maxWidth",
+      "minHeight",
+      "minWidth",
+      "mixBlendMode",
+      "objectFit",
+      "objectPosition",
+      "opacity",
+      "order",
+      "outline",
+      "outlineColor",
+      "outlineOffset",
+      "outlineStyle",
+      "outlineWidth",
+      "overflow",
+      "overflowClipMargin",
+      "overflowX",
+      "overflowY",
+      "paddingBottom",
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "perspective",
+      "pointerEvents",
+      "position",
+      "right",
+      "rotate",
+      "scale",
+      "textAlign",
+      "textDecoration",
+      "textDecorationLine",
+      "textIndent",
+      "textOverflow",
+      "textShadow",
+      "textTransform",
+      "textWrap",
+      "textWrapStyle",
+      "top",
+      "transform",
+      "transitionDuration",
+      "transitionProperty",
+      "transitionTimingFunction",
+      "translate",
+      "unicodeBidi",
+      "verticalAlign",
+      "visibility",
+      "webkitBackgroundClip",
+      "webkitClipPath",
+      "webkitHyphens",
+      "webkitLineClamp",
+      "webkitMaskImage",
+      "webkitTextFillColor",
+      "webkitTextStrokeColor",
+      "webkitTextStrokeWidth",
+      "whiteSpace",
+      "width",
+      "willChange",
+      "wordBreak",
+      "wordSpacing",
+      "zIndex"
+    ],
+    "pseudoProps": [
+      "content",
+      "position",
+      "opacity",
+      "display",
+      "width",
+      "height",
+      "top",
+      "right",
+      "bottom",
+      "left",
+      "backgroundColor",
+      "backgroundImage",
+      "background",
+      "borderRadius",
+      "transform",
+      "visibility",
+      "zIndex",
+      "translate",
+      "scale",
+      "rotate",
+      "filter",
+      "fontSize",
+      "maskImage"
+    ],
+    "statePseudos": [
+      "hover",
+      "active",
+      "focus",
+      "focus-within",
+      "focus-visible",
+      "target",
+      "target-within",
+      "checked",
+      "indeterminate",
+      "disabled",
+      "required",
+      "invalid",
+      "user-invalid",
+      "user-valid",
+      "in-range",
+      "out-of-range",
+      "placeholder-shown",
+      "default",
+      "open",
+      "autofill",
+      "-webkit-autofill",
+      "popover-open",
+      "modal",
+      "fullscreen",
+      "-webkit-full-screen",
+      "picture-in-picture",
+      "playing",
+      "buffering",
+      "seeking",
+      "muted",
+      "volume-locked"
+    ],
+    "elementIdRule": "document-order index + 1; open shadow trees are appended after every light-DOM element so light ids never move",
+    "hitTestKey": "exact IEEE-754 double bits of (x, y); decimal text must round-trip"
+  },
+  "verbs": [
+    {
+      "name": "engine-probe",
+      "purpose": "launcher handshake",
+      "stdout": "impeccable-engine 0.1.17+floe.1.0.0\n",
+      "exit": 0
+    },
+    {
+      "name": "contract",
+      "purpose": "print this machine-readable contract",
+      "stdout": "contract JSON",
+      "exit": 0
+    },
+    {
+      "name": "snapshot-schema",
+      "purpose": "print the producer-facing capture contract (property columns, limits, shapes)",
+      "stdout": "schema JSON",
+      "exit": 0
+    },
+    {
+      "name": "snapshot-scan",
+      "purpose": "run the rule pass over a snapshot and answer needs from supplied facts",
+      "args": [
+        "--snapshot <path> (required)",
+        "--facts <path> (repeatable; pre-answered hit tests / scroll probes)",
+        "--config <path> (BrowserConfig JSON; optional)",
+        "--identity <path> (required in strict mode; document/session/viewport binding)",
+        "--out <path> (result document; stdout when omitted)",
+        "--max-rounds <n> (default 4)",
+        "--max-hit-tests <n> (default 4096 per round, 16384 total)",
+        "--max-snapshot-bytes <n> (default 48 MiB, hard floor 1 MiB)",
+        "--timeout-ms <n> (default 120000; cancellation leaves an explicit failed result)",
+        "--strict-schema (reject unknown snapshot fields; default on for v1)"
+      ],
+      "exit": {
+        "0": "complete and clean (verdict clean)",
+        "2": "complete with findings",
+        "3": "incomplete: needs facts (never a clean result)",
+        "4": "ran but coverage incomplete: verdict inconclusive",
+        "1": "usage error, invalid input, identity mismatch, budget exceeded or cancelled"
+      }
+    },
+    {
+      "name": "detect",
+      "purpose": "upstream static source/markup scan passthrough",
+      "exit": "upstream semantics: 0 clean, 2 findings, 1 operational failure"
+    },
+    {
+      "name": "context",
+      "purpose": "upstream project context brief passthrough (offline)",
+      "exit": "upstream semantics"
+    },
+    {
+      "name": "ignores",
+      "purpose": "upstream ignore management passthrough",
+      "exit": "upstream semantics"
+    }
+  ],
+  "excludedUpstreamPaths": [
+    {
+      "path": "skills install/update/check/link",
+      "owner": "Floe Skill Hub",
+      "reason": "installation and updates are Hub-owned and digest-bound; the engine never downloads"
+    },
+    {
+      "path": "telemetry",
+      "owner": "Floe",
+      "reason": "no upstream telemetry endpoint from a Floe guest"
+    },
+    {
+      "path": "generate-image / concept-seed / serve-question",
+      "owner": "Floe",
+      "reason": "network or local-server verbs outside v1"
+    },
+    {
+      "path": "live* / hook*",
+      "owner": "Floe",
+      "reason": "live rewrite server and editor hooks are not part of the Floe v1 flow"
+    },
+    {
+      "path": "capture-server / component-review / font-match / build-phase",
+      "owner": "Floe",
+      "reason": "Chromium/CDP capture; forbidden by the integration contract"
+    },
+    {
+      "path": "URL scan (--cdp, http targets)",
+      "owner": "Floe",
+      "reason": "no Chromium dependency for a native page scan"
+    }
+  ],
+  "needs": {
+    "shape": {
+      "hitTests": [
+        [
+          0.0,
+          0.0
+        ]
+      ]
+    },
+    "extra": {
+      "hitTestsBits": [
+        [
+          "<u64 x bits>",
+          "<u64 y bits>"
+        ]
+      ],
+      "scrollProbes": [
+        "<elementId>"
+      ]
+    },
+    "semantics": "Needs is a real answer, not an error and never a clean scan. Points must be answered on the same document identity, then the scan re-run."
+  },
+  "facts": {
+    "shape": {
+      "hits": [
+        {
+          "x": 0.0,
+          "y": 0.0,
+          "top": 0,
+          "stack": [
+            0
+          ]
+        }
+      ],
+      "shownOnScroll": [
+        {
+          "el": 0,
+          "shown": false
+        }
+      ]
+    },
+    "floeExtensions": {
+      "captureId": "must equal the identity the needs were issued for",
+      "documentId": "must equal the snapshot's document identity",
+      "xBits": "optional u64 verification of x",
+      "yBits": "optional u64 verification of y"
+    },
+    "rules": [
+      "top is the snapshot element id of document.elementFromPoint(x, y), 0 when nothing",
+      "stack is document.elementsFromPoint(x, y) mapped to snapshot ids, front to back, zeros dropped",
+      "an unanswerable point must be reported as top 0 with an empty stack, and the run then reports it as unanswered rather than clean",
+      "facts for a superseded captureId/documentId are rejected"
+    ]
+  },
+  "identity": {
+    "requiredFields": [
+      "taskId",
+      "sessionId",
+      "tabId",
+      "documentId",
+      "captureId",
+      "documentGeneration",
+      "url",
+      "hostname",
+      "viewport.width",
+      "viewport.height",
+      "scroll.x",
+      "scroll.y",
+      "capturedAtMs",
+      "producerTrust",
+      "producer.name",
+      "producer.version",
+      "producer.engine",
+      "producer.scriptDigest",
+      "redaction.policy",
+      "redaction.applied",
+      "redaction.passwordInputs",
+      "redaction.formValues",
+      "redaction.credentialAttributes",
+      "redaction.textRuns"
+    ],
+    "shape": {
+      "taskId": "string, the Floe task/conversation that owns this capture",
+      "sessionId": "string, native browser session",
+      "tabId": "string, native browser tab/page",
+      "documentId": "string, stable for the document the snapshot measured",
+      "captureId": "string, unique per capture",
+      "documentGeneration": "integer, monotonic per tab; bumps on navigation, reload or a document swap",
+      "url": "string, the document URL at capture",
+      "hostname": "string, must equal snapshot.hostname",
+      "viewport": {
+        "width": 0.0,
+        "height": 0.0
+      },
+      "scroll": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "capturedAtMs": 0,
+      "producerTrust": "native-fixed-script",
+      "producer": {
+        "name": "string",
+        "version": "string",
+        "engine": "WebKit",
+        "scriptDigest": "sha256 of the exact fixed measurement script bytes"
+      },
+      "redaction": {
+        "policy": "floe.impeccable.redaction.v1",
+        "applied": true,
+        "passwordInputs": 0,
+        "formValues": 0,
+        "credentialAttributes": [],
+        "textRuns": 0
+      }
+    },
+    "bindingRules": [
+      "the snapshot, every needs document and every facts document carry the same taskId/sessionId/tabId/documentId/captureId",
+      "hostname, viewport and scroll in the identity must equal the snapshot's own values",
+      "a facts file whose binding differs from the loaded snapshot is rejected, not merged"
+    ],
+    "fencing": [
+      "navigation, reload, a documentGeneration bump, a viewport change or a scroll change invalidates the snapshot and every needs/facts pair issued for it",
+      "the native side fences the capture at the moment of navigation or view change; a late answer for a fenced capture must be refused",
+      "the engine reports identityCheck.state as verified | absent | mismatch | superseded and never treats a mismatch as a scan result"
+    ],
+    "privacy": [
+      "the producer is a fixed, audited native script; no arbitrary or model-authored JavaScript and no model-declared trust",
+      "producer.scriptDigest binds the exact script bytes that ran",
+      "password input values, form control values and credential-bearing attributes are redacted before the snapshot leaves the device",
+      "a snapshot whose identity does not claim an applied redaction policy is rejected in strict mode"
+    ]
+  },
+  "budgets": {
+    "maxSnapshotBytes": 50331648,
+    "maxElements": 30000,
+    "maxRounds": 4,
+    "maxHitTestsPerRound": 4096,
+    "maxHitTestsTotal": 16384,
+    "timeoutMs": 120000,
+    "onExceeded": "fail closed: status failed, explicit reason, no findings presented as a scan result"
+  },
+  "result": {
+    "topLevelKeys": [
+      "contract",
+      "contractVersion",
+      "status",
+      "verdict",
+      "engine",
+      "identity",
+      "budget",
+      "coverage",
+      "needs",
+      "findings",
+      "diagnostics"
+    ],
+    "status": [
+      "complete",
+      "needs-facts",
+      "inconclusive",
+      "failed"
+    ],
+    "verdict": [
+      "clean",
+      "findings",
+      "inconclusive",
+      "none"
+    ],
+    "cleanVerdictRequires": [
+      "status == complete",
+      "needs empty (no hit tests, no scroll probes)",
+      "every pass with requiredForCleanVerdict == true is covered/complete",
+      "style-parity complete (no unknown style properties)",
+      "identity verified and not superseded",
+      "no budget exceeded and no cancellation"
+    ]
+  },
+  "coveragePasses": [
+    {
+      "id": "core-rule-pass",
+      "title": "Snapshot rule pass (impeccable-core over SnapshotDom)",
+      "implemented": true,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "covered",
+        "needs-facts",
+        "failed"
+      ]
+    },
+    {
+      "id": "hit-test-fixpoint",
+      "title": "elementFromPoint/elementsFromPoint answers for rule-decided points",
+      "implemented": true,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "covered",
+        "needs-facts",
+        "unanswered",
+        "failed"
+      ],
+      "notes": "Answered by the native producer on the same document identity; exact f64 bits must round-trip."
+    },
+    {
+      "id": "style-parity",
+      "title": "Computed-style property parity (unknown_style_props)",
+      "implemented": true,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "complete",
+        "partial"
+      ],
+      "notes": "A property the rules read but the capture did not record makes the run partial, never clean."
+    },
+    {
+      "id": "scroll-probes",
+      "title": "shown_when_scrolled_to answers (content hidden at rest)",
+      "implemented": true,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "covered",
+        "needs-facts",
+        "unanswered",
+        "not-asked"
+      ],
+      "notes": "Unanswered probes count as hidden upstream; Floe reports them as unanswered instead of clean."
+    },
+    {
+      "id": "static-html-source-scan",
+      "title": "Static markup/source scan (impeccable-html + impeccable-detect)",
+      "implemented": true,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "covered",
+        "not-run",
+        "failed"
+      ],
+      "notes": "Separate verb; a snapshot scan never claims it ran."
+    },
+    {
+      "id": "pixel-contrast",
+      "title": "Pixel-sampled contrast and routed low-contrast verdicts",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "Needs loadImage/readPixel or the PNG two-shot diff of the upstream URL engine; the v1 native capture has no pixel source."
+    },
+    {
+      "id": "screenshot-diff",
+      "title": "Two-shot screenshot hiding/diff evidence",
+      "implemented": false,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "URL-engine evidence pass; not part of the snapshot contract."
+    },
+    {
+      "id": "reveal-sweep",
+      "title": "Pre-capture scroll/reveal sweep and overlay settling",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "Content revealed only by scrolling is not measured; reveal-on-scroll findings cannot be produced or excluded."
+    },
+    {
+      "id": "content-hidden-at-rest-measure",
+      "title": "Hidden-text measurement with scroll probes (URL engine step)",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "The URL engine's hidden-text step is not ported; scroll-probe needs are surfaced but never answered by Floe v1."
+    },
+    {
+      "id": "consent-overlay-hiding",
+      "title": "Consent banner / page overlay hiding before capture",
+      "implemented": false,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "Requires live page mutation; Floe keeps the page untouched."
+    },
+    {
+      "id": "script-errors",
+      "title": "Console/script error capture",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "Needs a console channel; not part of the fixed measurement contract."
+    },
+    {
+      "id": "cross-origin-iframe",
+      "title": "Cross-origin frame content",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "SnapshotDom carries no frame content and WebKit isolation forbids cross-origin reads."
+    },
+    {
+      "id": "same-origin-iframe",
+      "title": "Same-origin frame content",
+      "implemented": false,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "uncovered"
+      ],
+      "reason": "The upstream capture producer never traverses iframes; rules inside frames are lost, not passed."
+    },
+    {
+      "id": "media-intrinsics",
+      "title": "Image/video natural size and load state",
+      "implemented": true,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "covered",
+        "unrecorded"
+      ],
+      "notes": "Carried per element as `md`; visual verdicts still need the uncovered pixel pass."
+    },
+    {
+      "id": "animations",
+      "title": "Running animation/transition properties",
+      "implemented": true,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "covered",
+        "unrecorded"
+      ],
+      "notes": "Driven by the snapshot `anim` flag."
+    },
+    {
+      "id": "shadow-trees",
+      "title": "Open shadow tree flat walk",
+      "implemented": true,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "covered",
+        "unrecorded"
+      ],
+      "notes": "Driven by the snapshot `shadow` flag."
+    },
+    {
+      "id": "text-lines",
+      "title": "Per-line rendered text rects",
+      "implemented": true,
+      "requiredForCleanVerdict": true,
+      "states": [
+        "covered",
+        "unrecorded"
+      ],
+      "notes": "Without `textLines` the line-level rules stand down; that is a coverage loss, not a pass."
+    },
+    {
+      "id": "keyframes-and-linked-css",
+      "title": "@keyframes rules and readable linked stylesheet corpus",
+      "implemented": true,
+      "requiredForCleanVerdict": false,
+      "states": [
+        "covered",
+        "partial",
+        "unrecorded"
+      ]
+    }
+  ],
+  "fixtures": {
+    "positive": "fixtures/snapshot-positive.v1.json",
+    "needs": "fixtures/snapshot-needs-hit-tests.v1.json",
+    "factsTemplate": "fixtures/facts-hit-tests.v1.json",
+    "scrollFacts": "fixtures/facts-shown-on-scroll.v1.json",
+    "config": "fixtures/config-default.v1.json",
+    "identity": "fixtures/identity-positive.v1.json",
+    "invalid": [
+      "fixtures/invalid/snapshot-truncated.v1.json",
+      "fixtures/invalid/snapshot-bad-version.v1.json",
+      "fixtures/invalid/snapshot-style-column-mismatch.v1.json",
+      "fixtures/invalid/identity-mismatch.v1.json",
+      "fixtures/invalid/identity-missing-session-binding.v1.json",
+      "fixtures/invalid/identity-redaction-not-applied.v1.json",
+      "fixtures/invalid/identity-model-declared-trust.v1.json",
+      "fixtures/invalid/identity-fenced.v1.json",
+      "fixtures/invalid/facts-bits-mismatch.v1.json",
+      "fixtures/invalid/facts-stale-capture.v1.json",
+      "fixtures/invalid/facts-other-tab.v1.json"
+    ]
+  },
+  "provenance": {
+    "upstreamCommit": "4fc2f83e1c8710dba772bfd4523d0efab57737b6",
+    "upstreamTree": "1363fadfb2141db1cf22b4ba171d6fc4dbf5cd72",
+    "engineVersionFile": "0.1.17",
+    "pinnedSourceDigests": {
+      "crates/foundation/src/browser/snapshot.rs": "3f8fc2efedfaa8bd6d3f39d0bb6169738caf229d6aa2b348e60da04fc82666d5",
+      "browser-bundle/15-snapshot.js": "b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0",
+      "ENGINE_VERSION": "bd270b0ddecef6c53cde260e7964048b1186147606e6643d2ccb8cf04e167bd1"
+    },
+    "generatedBy": "engines/impeccable/contract/tools/make_contract_fixtures.py"
+  }
+}

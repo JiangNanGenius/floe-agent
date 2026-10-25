@@ -43,7 +43,7 @@ struct SkillPackageTests {
         }
     }
 
-    @Test("Markdown-only upgrade changes no runtime, package or permission declaration")
+    @Test("A Markdown source stages its full containing package without inventing declarations")
     func markdownOnlyUpgrade() async throws {
         let fixture = try SkillFixture()
         try fixture.writeValidSkill()
@@ -51,8 +51,20 @@ struct SkillPackageTests {
         let installed = try SkillContentSnapshot(root: fixture.root, expectedDigest: digest)
         let markdown = installed.files["SKILL.md"]! + Data("\nUpdated instructions\n".utf8)
         let source = try GitHubSkillSource(owner: "o", repository: "r", ref: "main", path: "SKILL.md")
+        var files = installed.files
+        files["SKILL.md"] = markdown
+        let listing: [[String: Any]] = files.map { name, bytes in
+            let blob = Data("blob \(bytes.count)\0".utf8) + bytes
+            let sha = Insecure.SHA1.hash(data: blob).map { String(format: "%02x", $0) }.joined()
+            return ["type": "file", "name": name, "path": name, "size": bytes.count, "sha": sha]
+        }
+        let directory = try JSONSerialization.data(withJSONObject: listing)
+        let frozenFiles = files
         let (commit, proposed) = try await GitHubSkillDownload.stage(source: source, at: fixture.base.appendingPathComponent("markdown"), markdownBase: installed,
-            resolve: { _ in String(repeating: "b", count: 40) }, fetch: { _, _, _ in markdown })
+            resolve: { _ in String(repeating: "b", count: 40) }, fetch: { _, _, path in
+                if path.isEmpty { return directory }
+                return try #require(frozenFiles[path])
+            })
         let candidate = try SkillUpgradeCandidate(source: source, commit: commit, installed: installed, proposed: proposed)
         #expect(candidate.changedFiles == ["SKILL.md"])
         #expect(proposed.package.manifest == installed.package.manifest)

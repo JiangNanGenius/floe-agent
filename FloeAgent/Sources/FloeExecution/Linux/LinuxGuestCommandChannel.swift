@@ -2040,13 +2040,31 @@ public actor LinuxGuestCommandChannel {
 
         let effectiveTimeout = limits.clampedTimeout(timeout)
         let effectiveLimit = limits.clampedOutputBytes(maxOutputBytes)
+        // Command and stdin travel in one reassembled envelope but answer to
+        // different budgets: the command portion is protocol-safety bounded
+        // (large script bodies are staged by the shell backend before this
+        // point), while the full envelope is capped by the guest runner's
+        // fixed MAX_PAYLOAD reassembly ceiling. An oversized stdin must never
+        // be reported as an oversized command.
+        let commandBytes = LinuxGuestFraming.payload(
+            of: argv,
+            workingDirectory: workingDirectory,
+            standardInput: nil
+        ).count
+        guard commandBytes <= limits.maxCommandBytes else {
+            throw LinuxGuestError.invalidConfiguration(
+                "command and working directory exceed the \(limits.maxCommandBytes)-byte guest command envelope; the shell backend stages oversized script bodies"
+            )
+        }
         let payload = LinuxGuestFraming.payload(
             of: argv,
             workingDirectory: workingDirectory,
             standardInput: standardInput
         )
-        guard payload.count <= limits.maxCommandBytes else {
-            throw LinuxGuestError.invalidConfiguration("command exceeds the \(limits.maxCommandBytes) byte guest limit")
+        guard payload.count <= limits.maxEnvelopeBytes else {
+            throw LinuxGuestError.invalidConfiguration(
+                "stdin plus framing exceeds the \(limits.maxEnvelopeBytes)-byte guest envelope (command portion \(commandBytes) bytes); the guest runner never reassembles more than this per command"
+            )
         }
 
         // Interrupt bookkeeping: timeout/cancellation tasks record the
@@ -2202,7 +2220,9 @@ public actor LinuxGuestCommandChannel {
         }
         let payload = LinuxGuestFraming.servicePayload(of: argv, workingDirectory: workingDirectory, logPath: logPath)
         guard payload.count <= limits.maxCommandBytes else {
-            throw LinuxGuestError.invalidConfiguration("service command exceeds the \(limits.maxCommandBytes) byte guest limit")
+            throw LinuxGuestError.invalidConfiguration(
+                "service start command exceeds the \(limits.maxCommandBytes)-byte guest command envelope; start a short launcher that runs a script file already present in the workspace"
+            )
         }
         let outcome = try await performControl(
             name: "SPAWN",
@@ -2376,6 +2396,23 @@ public actor LinuxGuestCommandChannel {
         }
         try await ensureNegotiated()
 
+        let payload = LinuxGuestFraming.sessionPayload(
+            argv: argv,
+            workingDirectory: workingDirectory,
+            columns: columns,
+            rows: rows
+        )
+        // A session envelope above the command bound would be refused by the
+        // guest assembler without ever producing a BEGIN: the host must fail
+        // closed here instead of leaving a session that only times out.
+        // Interactive input itself is unbounded per line through
+        // shell.exchange; only the start command travels in OPEN.
+        guard payload.count <= limits.maxCommandBytes else {
+            throw LinuxGuestError.invalidConfiguration(
+                "session start command exceeds the \(limits.maxCommandBytes)-byte guest command envelope; open the session with a short command and continue with shell.exchange input, or run the long script body through exec.shell, which stages it as a script file"
+            )
+        }
+
         let session = LinuxGuestInteractiveSession(id: sessionID) { [weak self] frame in
             guard let self else {
                 throw LinuxGuestError.consoleUnavailable("the guest channel was released")
@@ -2389,12 +2426,6 @@ public actor LinuxGuestCommandChannel {
         try registerToken(sessionID, stream: tokenStream)
         sessions[sessionID] = session
 
-        let payload = LinuxGuestFraming.sessionPayload(
-            argv: argv,
-            workingDirectory: workingDirectory,
-            columns: columns,
-            rows: rows
-        )
         do {
             try await send(LinuxGuestFraming.payloadHeader("OPEN", token: sessionID, payload: payload))
         } catch {

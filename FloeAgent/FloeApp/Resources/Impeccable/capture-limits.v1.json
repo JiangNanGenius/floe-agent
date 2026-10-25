@@ -1,0 +1,27 @@
+{
+  "contract": "floe.impeccable.snapshot",
+  "contractVersion": 1,
+  "upstreamDefaults": {
+    "maxElements": 30000,
+    "maxBytes": 50331648
+  },
+  "floeBudgets": {
+    "maxSnapshotBytes": 50331648,
+    "maxElements": 30000,
+    "maxRounds": 4,
+    "maxHitTestsPerRound": 4096,
+    "maxHitTestsTotal": 16384,
+    "timeoutMs": 120000
+  },
+  "namespaces": {
+    "http://www.w3.org/1999/xhtml": 0,
+    "http://www.w3.org/2000/svg": 1,
+    "http://www.w3.org/1998/Math/MathML": 2,
+    "other": 3
+  },
+  "provenance": {
+    "crates/foundation/src/browser/snapshot.rs": "3f8fc2efedfaa8bd6d3f39d0bb6169738caf229d6aa2b348e60da04fc82666d5",
+    "browser-bundle/15-snapshot.js": "b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0",
+    "ENGINE_VERSION": "bd270b0ddecef6c53cde260e7964048b1186147606e6643d2ccb8cf04e167bd1"
+  }
+}

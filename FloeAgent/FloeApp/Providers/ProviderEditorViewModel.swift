@@ -643,7 +643,16 @@ final class ProviderEditorViewModel: ObservableObject {
     /// Verified catalog metadata for one remote model identifier, when the
     /// entry anchored to this editor declares it.
     func catalogModelMetadata(for remoteID: String) -> ProviderCatalogModelMetadata? {
-        resolvedCatalogEntry()?.modelMetadata?[remoteID]
+        if let metadata = resolvedCatalogEntry()?.modelMetadata?[remoteID] { return metadata }
+        // Built-in presets deliberately have no catalogPresetID (it also
+        // controls availability/service offers). Resolve capability evidence
+        // separately, without changing that policy or the saved provider.
+        guard let catalog,
+              let endpoint = URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)) else { return nil }
+        return ProviderCatalogCapabilityResolver.metadata(
+            forRemoteID: remoteID, kind: selectedPreset.kind,
+            baseURL: endpoint, modelProtocol: selectedProtocol, catalog: catalog
+        )
     }
 
     /// True when the catalog verifies image input for this model AND the

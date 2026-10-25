@@ -47,6 +47,11 @@ enum RunLifecycleRetention {
             )
             """, arguments: [id])
         try db.execute(sql: "DELETE FROM child_runs WHERE conversation_id = ?", arguments: [id])
+        // Native Hub review refusals belong to this exact durable owner,
+        // including all of its child/run attempts. UUIDs contain no LIKE
+        // wildcards; no independent settings are matched.
+        try db.execute(sql: "DELETE FROM app_settings WHERE key LIKE ?",
+            arguments: ["skills.hub.reviewChoice." + id + ".%"])
         try db.execute(sql: "DELETE FROM run_relations WHERE conversation_id = ?", arguments: [id])
         try db.execute(sql: "DELETE FROM run_dependencies WHERE conversation_id = ?", arguments: [id])
         // Jobs owned by this conversation: collect their spooled output

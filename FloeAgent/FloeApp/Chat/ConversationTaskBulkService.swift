@@ -220,7 +220,7 @@ struct ConversationTaskBulkService {
             // an ephemeral conversation is never touched from the task list.
             return .present(
                 archived: record.archivedAt != nil,
-                ordinary: record.purpose == .ordinary
+                ordinary: record.purpose == .ordinary && record.visibility == .normal
             )
         } catch {
             return .unreadable(TaskManagementCopy.readFailure)

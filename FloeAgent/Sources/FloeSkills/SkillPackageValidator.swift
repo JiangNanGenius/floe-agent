@@ -3,6 +3,16 @@ import Foundation
 import FloeCore
 
 public struct SkillPackageValidator: Sendable {
+    public static let packageTopLevelEntries: Set<String> = {
+        var names: Set<String> = ["SKILL.md", "floe.json", "references", "reference", "assets", "scripts", "agents", "LICENSES"]
+        for stem in ["LICENSE", "LICENCE", "NOTICE", "COPYING", "AUTHORS", "LICENSE-MIT", "LICENSE-APACHE", "README"] {
+            for suffix in ["", ".md", ".txt"] {
+                names.insert(stem + suffix)
+                names.insert((stem + suffix).lowercased())
+            }
+        }
+        return names
+    }()
     public var limits: SkillValidationLimits
 
     public init(limits: SkillValidationLimits = SkillValidationLimits()) {
@@ -80,6 +90,7 @@ public struct SkillPackageValidator: Sendable {
         } else {
             manifest = try Self.traditionalManifest(metadata: metadata, files: inventory)
         }
+        try validateRuntimeRequirements(manifest.runtime)
         let capabilities = try Set(manifest.capabilities.map { raw in
             guard let capability = SkillCapability(rawValue: raw) else {
                 throw SkillValidationError.unknownCapability(raw)
@@ -113,31 +124,14 @@ public struct SkillPackageValidator: Sendable {
     }
 
     /// Derives a conservative manifest for a traditional package that has no
-    /// `floe.json`. Only runtimes the app already owns are inferred:
-    ///  * Python, Shell and Node use the selected task environment.
-    ///  * Shell and/or Node (including mixed Python) → the existing task
-    ///    environment (`exec.shell`), which runs in the selected local Linux
-    ///    guest or an authorized remote host. No new engine is introduced.
-    /// JavaScriptCore is never inferred; it requires an explicit manifest,
-    /// and unknown file types fail closed instead of guessing.
+    /// `floe.json`. Bundled helpers and their data use the existing task
+    /// environment. File extensions do not prove that an interpreter exists;
+    /// that must be discovered before execution. Nothing runs during import,
+    /// and native payloads have already been rejected by the inventory gate.
     static func traditionalManifest(metadata: SkillMetadata, files: [SkillFile]) throws -> SkillManifest {
         let scripts = files.filter { $0.relativePath.hasPrefix("scripts/") }
-        let extensions = Set(scripts.map {
-            URL(fileURLWithPath: $0.relativePath).pathExtension.lowercased()
-        })
-        if scripts.isEmpty || extensions.isEmpty {
-            guard scripts.isEmpty else {
-                throw SkillValidationError.incompatibleScriptRuntime(
-                    "scripts/ contains entries with no usable file extension"
-                )
-            }
+        if scripts.isEmpty {
             return SkillManifest(id: metadata.name, version: "1.0.0")
-        }
-        let python = Set(["py"])
-        let taskEnvironment = Set(["sh", "js", "mjs"])
-        guard extensions.isSubset(of: python.union(taskEnvironment)) else {
-            let unknown = extensions.subtracting(python.union(taskEnvironment)).sorted().first ?? ""
-            throw SkillValidationError.unsupportedFile("scripts/*.\(unknown)")
         }
         // Python, Shell and Node run through the selected
         // execution environment; the manifest declares the environment tool
@@ -238,8 +232,7 @@ public struct SkillPackageValidator: Sendable {
             throw SkillValidationError.unsafePath(relativePath)
         }
         let topLevel = relativePath.split(separator: "/", maxSplits: 1).first.map(String.init) ?? ""
-        let allowedRoots: Set<String> = ["SKILL.md", "floe.json", "references", "assets", "scripts", "agents"]
-        guard allowedRoots.contains(topLevel),
+        guard Self.packageTopLevelEntries.contains(topLevel),
               !(["SKILL.md", "floe.json"].contains(topLevel) && relativePath != topLevel)
         else {
             throw SkillValidationError.unsupportedFile(relativePath)
@@ -247,7 +240,7 @@ public struct SkillPackageValidator: Sendable {
     }
 
     private func rejectNativePayload(at url: URL, relativePath: String) throws {
-        let forbiddenExtensions: Set<String> = ["dylib", "so", "wasm", "framework", "bundle", "a", "o"]
+        let forbiddenExtensions: Set<String> = ["dylib", "so", "wasm", "framework", "bundle", "a", "o", "exe", "dll"]
         if forbiddenExtensions.contains(url.pathExtension.lowercased()) {
             throw SkillValidationError.unsupportedFile(relativePath)
         }
@@ -260,7 +253,7 @@ public struct SkillPackageValidator: Sendable {
             [0xCA, 0xFE, 0xBA, 0xBE], [0x7F, 0x45, 0x4C, 0x46],
             [0x00, 0x61, 0x73, 0x6D]
         ]
-        if nativeMagics.contains(Array(bytes)) {
+        if nativeMagics.contains(Array(bytes)) || bytes.starts(with: [0x4D, 0x5A]) {
             throw SkillValidationError.unsupportedFile(relativePath)
         }
     }
@@ -327,7 +320,7 @@ public struct SkillPackageValidator: Sendable {
         }
         let allowedKeys: Set<String> = [
             "schemaVersion", "id", "version", "capabilities", "tools",
-            "platforms", "scriptRuntime", "pythonPackages"
+            "platforms", "scriptRuntime", "pythonPackages", "runtime"
         ]
         if let unknown = dictionary.keys.first(where: { !allowedKeys.contains($0) }) {
             throw SkillValidationError.invalidManifest("unknown field '\(unknown)'")
@@ -357,6 +350,20 @@ public struct SkillPackageValidator: Sendable {
 
     private func validateIdentifier(_ value: String) throws {
         try SkillIdentifier.validate(value)
+    }
+
+    private func validateRuntimeRequirements(_ requirements: SkillRuntimeRequirements?) throws {
+        guard let requirements else { return }
+        let operatingSystems: Set<String> = ["linux", "ios", "android", "macos", "device"]
+        let architectures: Set<String> = ["riscv64", "arm64", "x86_64", "any"]
+        guard !requirements.os.isEmpty, requirements.os.count <= operatingSystems.count,
+              Set(requirements.os).count == requirements.os.count,
+              Set(requirements.os).isSubset(of: operatingSystems),
+              !requirements.architectures.isEmpty, requirements.architectures.count <= architectures.count,
+              Set(requirements.architectures).count == requirements.architectures.count,
+              Set(requirements.architectures).isSubset(of: architectures) else {
+            throw SkillValidationError.invalidManifest("runtime must declare unique supported operating systems and architectures")
+        }
     }
 
     private func validateToolName(_ value: String) throws {
@@ -427,10 +434,12 @@ public struct SkillPackageValidator: Sendable {
             guard capabilities.contains(.remoteExecution) else {
                 throw SkillValidationError.incompatibleScriptRuntime("execution.remote capability is required")
             }
-            let allowed = Set(["js", "mjs", "py", "sh"])
-            for script in scripts where !allowed.contains(URL(fileURLWithPath: script.relativePath).pathExtension.lowercased()) {
-                throw SkillValidationError.unsupportedFile(script.relativePath)
-            }
+            // A task-environment bundle may contain extensionless launchers,
+            // Windows text wrappers and JSON/VERSION/supporting assets. Keep
+            // their exact bytes. These are data until an independently
+            // authorized exec.shell call selects an installed guest command;
+            // accepting a bundle never starts a host interpreter or certifies
+            // every helper as executable on this device.
         }
     }
 

@@ -7,20 +7,32 @@ public struct SkillRuntimeEnvironment: Sendable {
     public var registeredTools: Set<String>
     public var supportsJavaScriptCore: Bool
     public var hasRemoteExecutionHost: Bool
+    public var runtimeOS: String?
+    public var runtimeArchitecture: String?
 
     public init(
         platform: SkillPlatform,
         supportedCapabilities: Set<SkillCapability>,
         registeredTools: Set<String>,
         supportsJavaScriptCore: Bool,
-        hasRemoteExecutionHost: Bool
+        hasRemoteExecutionHost: Bool,
+        runtimeOS: String? = nil,
+        runtimeArchitecture: String? = nil
     ) {
         self.platform = platform
         self.supportedCapabilities = supportedCapabilities
         self.registeredTools = registeredTools
         self.supportsJavaScriptCore = supportsJavaScriptCore
         self.hasRemoteExecutionHost = hasRemoteExecutionHost
+        self.runtimeOS = runtimeOS
+        self.runtimeArchitecture = runtimeArchitecture
     }
+}
+
+/// A declaration match is not proof that a script or binary was executed.
+/// Guidance remains readable even when an optional execution path is unknown.
+public enum SkillDeclaredRuntimeCompatibility: String, Sendable, Equatable {
+    case notRequired, unverified, declaredCompatible, incompatible
 }
 
 public enum SkillCompatibilityProblem: Equatable, Sendable {
@@ -34,10 +46,12 @@ public enum SkillCompatibilityProblem: Equatable, Sendable {
 
 public struct SkillCompatibilityReport: Sendable {
     public var problems: [SkillCompatibilityProblem]
+    public var declaredRuntime: SkillDeclaredRuntimeCompatibility
     public var isRunnable: Bool { problems.isEmpty }
 
-    public init(problems: [SkillCompatibilityProblem]) {
+    public init(problems: [SkillCompatibilityProblem], declaredRuntime: SkillDeclaredRuntimeCompatibility = .unverified) {
         self.problems = problems
+        self.declaredRuntime = declaredRuntime
     }
 }
 
@@ -69,7 +83,22 @@ public enum SkillCompatibility {
         default:
             break
         }
-        return SkillCompatibilityReport(problems: problems)
+        return SkillCompatibilityReport(problems: problems, declaredRuntime: declaredRuntime(package, in: environment))
+    }
+
+    public static func declaredRuntime(
+        _ package: ValidatedSkillPackage,
+        in environment: SkillRuntimeEnvironment
+    ) -> SkillDeclaredRuntimeCompatibility {
+        guard package.manifest.scriptRuntime != .none else { return .notRequired }
+        guard let requirements = package.manifest.runtime,
+              let os = environment.runtimeOS, let architecture = environment.runtimeArchitecture else {
+            return .unverified
+        }
+        let normalized = architecture == "aarch64" ? "arm64" : architecture
+        return requirements.os.contains(os)
+            && (requirements.architectures.contains("any") || requirements.architectures.contains(normalized))
+            ? .declaredCompatible : .incompatible
     }
 }
 

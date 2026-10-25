@@ -8,6 +8,17 @@ public enum OfficialSkillHub {
     public static let owner = "JiangNanGenius"
     public static let repository = "floe-agent"
     public static let catalogPath = "skill-hub/catalog.json"
+    public static func catalogPath(for platform: SkillPlatform) throws -> String {
+        switch platform {
+        case .iOS: catalogPath
+        case .android: "skill-hub/android/catalog.json"
+        default: throw Failure.incompatible
+        }
+    }
+
+    public static func signaturePath(for platform: SkillPlatform) throws -> String {
+        String(try catalogPath(for: platform).dropLast(".json".count)) + ".sig"
+    }
     public static let skillIDs: Set<String> = ["floe-pdf", "floe-office", "floe-network", "floe-video"]
     /// App-signed bundles may advance an unmodified official install offline.
     /// This does not authorize imports, downgrades, or same-version rewrites.
@@ -25,14 +36,16 @@ public enum OfficialSkillHub {
         return parts.count == 6 && parts[0] == owner && parts[1] == repository
             && parts[2] == "blob" && parts[4] == "skill-hub" && parts[5] == "catalog.json"
     }
-    public static func source() throws -> GitHubSkillSource {
-        try GitHubSkillSource(owner: owner, repository: repository, ref: "main", path: catalogPath)
+    public static func source() throws -> GitHubSkillSource { try source(platform: .iOS) }
+    public static func source(platform: SkillPlatform) throws -> GitHubSkillSource {
+        try GitHubSkillSource(owner: owner, repository: repository, ref: "main", path: catalogPath(for: platform))
     }
 
     public struct Catalog: Codable, Sendable {
         public let schemaVersion: Int
         public let publisher: String
         public let packages: [Package]
+        public var platform: String? = nil
     }
     public struct Package: Codable, Sendable {
         public let id: String
@@ -43,6 +56,9 @@ public enum OfficialSkillHub {
         public let contentDigest: String
         public let minimumAppVersion: String
         public let releaseNotes: [String: String]
+        public var platforms: [String]? = nil
+        public var guideOnly: Bool? = nil
+        public var executionVerified: Bool? = nil
     }
     public struct Signature: Codable, Sendable {
         public let keyID: String
@@ -64,11 +80,11 @@ public enum OfficialSkillHub {
 
     public static func validateSource(_ source: GitHubSkillSource) throws {
         guard source.owner == owner, source.repository == repository,
-              source.path == catalogPath else { throw Failure.source }
+              [catalogPath, "skill-hub/android/catalog.json"].contains(source.path) else { throw Failure.source }
     }
 
     public static func verifiedPackage(catalog bytes: Data, signature: Data, id: String,
-                                       appVersion: String, trustedKeys: [String: Data]) throws -> Package {
+                                       appVersion: String, trustedKeys: [String: Data], platform: SkillPlatform = .iOS) throws -> Package {
         do {
             _ = try SignedContentFeedVerifier.verifyEnvelope(
                 bytes: bytes, signature: signature, trustedKeys: trustedKeys
@@ -82,13 +98,24 @@ public enum OfficialSkillHub {
         } catch {
             throw Failure.catalog
         }
-        guard [1, 2].contains(catalog.schemaVersion), catalog.publisher == owner,
+        let prefix: String
+        switch platform {
+        case .iOS:
+            guard [1, 2, 3].contains(catalog.schemaVersion), catalog.platform == nil || catalog.platform == "ios" else { throw Failure.catalog }
+            prefix = "skill-hub"
+        case .android:
+            guard catalog.schemaVersion == 3, catalog.platform == "android" else { throw Failure.catalog }
+            prefix = "skill-hub/android"
+        default: throw Failure.incompatible
+        }
+        guard catalog.publisher == owner,
               catalog.packages.count == skillIDs.count,
               Set(catalog.packages.map(\.id)) == skillIDs else { throw Failure.catalog }
         for package in catalog.packages {
             guard (try? SignedContentVersion(package.version)) != nil,
                   (try? SignedContentVersion(package.minimumAppVersion)) != nil,
-                  package.path == "skill-hub/packages/\(package.id)/\(package.version)/\(package.id).zip",
+                  package.path == "\(prefix)/packages/\(package.id)/\(package.version)/\(package.id).zip",
+                  package.platforms?.contains(platform.rawValue) ?? (platform == .iOS),
                   (1...8_388_608).contains(package.size),
                   [package.sha256, package.contentDigest].allSatisfy({ $0.count == 64 && $0.allSatisfy(\.isHexDigit) }),
                   package.releaseNotes["zh-Hans"]?.isEmpty == false,
@@ -104,14 +131,15 @@ public enum OfficialSkillHub {
     public static func stage(id: String, appVersion: String, installed: SkillContentSnapshot,
                              at root: URL, trustedKeys: [String: Data],
                              resolve: GitHubSkillDownload.ResolveCommit,
-                             fetch: GitHubSkillDownload.FetchFile) async throws -> SkillUpgradeCandidate {
-        let source = try source()
+                             fetch: GitHubSkillDownload.FetchFile,
+                             platform: SkillPlatform = .iOS) async throws -> SkillUpgradeCandidate {
+        let source = try source(platform: platform)
         let commit = try await resolve(source)
         guard commit.count == 40, commit.allSatisfy(\.isHexDigit) else { throw SkillUpgradeError.invalidCommit }
-        let catalog = try await fetch(source, commit, catalogPath)
-        let signature = try await fetch(source, commit, "skill-hub/catalog.sig")
+        let catalog = try await fetch(source, commit, catalogPath(for: platform))
+        let signature = try await fetch(source, commit, signaturePath(for: platform))
         let package = try verifiedPackage(catalog: catalog, signature: signature, id: id,
-                                          appVersion: appVersion, trustedKeys: trustedKeys)
+            appVersion: appVersion, trustedKeys: trustedKeys, platform: platform)
         guard installed.package.manifest.id == id else { throw Failure.catalog }
         let zip = try await fetch(source, commit, package.path)
         guard zip.count == package.size, digest(zip) == package.sha256.lowercased() else { throw SkillUpgradeError.hashMismatch(package.path) }
@@ -131,7 +159,7 @@ public enum OfficialSkillHub {
     /// The shared archive gate owns path/size/checksum bounds; the skill
     /// validator owns the package contract.
     public static func unpack(_ zip: Data, at root: URL) throws -> SkillContentSnapshot {
-        let allowedTopLevel: Set<String> = ["SKILL.md", "floe.json", "scripts", "references", "assets", "agents"]
+        let allowedTopLevel = SkillPackageValidator.packageTopLevelEntries
         do {
             let files = try SignedContentArchive.extract(
                 zip, at: root,

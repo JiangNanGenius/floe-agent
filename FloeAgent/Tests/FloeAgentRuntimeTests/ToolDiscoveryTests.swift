@@ -12,9 +12,12 @@ struct ToolDiscoveryTests {
         let ordinary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: false)
         let temporary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: true)
         let task = ToolDiscovery.runtimeDescriptors(scopedConversation: false, publicWebOnly: false)
-        #expect(task.map(\.authorizationIdentity) == [ToolDiscovery.descriptor.authorizationIdentity, ToolDiscovery.listDescriptor.authorizationIdentity])
+        #expect(task.map(\.authorizationIdentity) == [ToolDiscovery.descriptor.authorizationIdentity, ToolDiscovery.listDescriptor.authorizationIdentity, ToolResultPagingTool.descriptor.authorizationIdentity])
         for descriptors in [ordinary, temporary] {
-            #expect(descriptors.map(\.name) == ["tools.search", "tools.list"])
+            // tools.readResult is runtime metadata over the task's OWN
+            // post-redaction captures (RAM-only in a temporary conversation),
+            // so it stays offered with the same read-only, no-approval shape.
+            #expect(descriptors.map(\.name) == ["tools.search", "tools.list", "tools.readResult"])
             #expect(descriptors.map(\.parametersJSON) == task.map(\.parametersJSON))
             for descriptor in descriptors {
                 #expect(descriptor.riskLabels.isEmpty)

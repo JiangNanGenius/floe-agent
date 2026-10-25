@@ -1,0 +1,344 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://floe-agent.com/schemas/impeccable/snapshot.v1.json",
+  "title": "Floe Impeccable snapshot v1 (native WebKit measurement capture)",
+  "type": "object",
+  "required": [
+    "v",
+    "els",
+    "strings",
+    "styleProps",
+    "documentElement",
+    "body"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "hostname": {
+      "type": "string"
+    },
+    "quirks": {
+      "type": "boolean"
+    },
+    "innerWidth": {
+      "type": "number"
+    },
+    "innerHeight": {
+      "type": "number"
+    },
+    "scrollX": {
+      "type": "number"
+    },
+    "scrollY": {
+      "type": "number"
+    },
+    "html": {
+      "type": "string",
+      "description": "document.documentElement.outerHTML with tool-injected nodes removed"
+    },
+    "keyframes": {
+      "type": "array"
+    },
+    "keyframeKeys": {
+      "type": "array"
+    },
+    "linkedCss": {
+      "type": "string",
+      "description": "same-origin or CORS-readable linked stylesheet text"
+    },
+    "styleProps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 138
+    },
+    "pseudoProps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "strings": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "els": {
+      "type": "array",
+      "maxItems": 30000,
+      "items": {
+        "type": "object",
+        "required": [
+          "t",
+          "s"
+        ],
+        "properties": {
+          "t": {
+            "type": "string",
+            "description": "tagName, uppercase"
+          },
+          "n": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 3
+          },
+          "nu": {
+            "type": "string"
+          },
+          "p": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "c": {
+            "type": "array",
+            "description": "childNodes: element id (number), text data (string) or CDATA ([string])"
+          },
+          "a": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "s": {
+            "type": "array",
+            "minItems": 138,
+            "maxItems": 138,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "One interned string index per styleProps column, in column order."
+          },
+          "b": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            }
+          },
+          "f": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer"
+            }
+          },
+          "ph": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "r": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "m": {
+            "type": "array",
+            "minItems": 7,
+            "maxItems": 8,
+            "items": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "v": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 1
+          },
+          "d": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "dl": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "number"
+              },
+              "description": "[x, y, width, height] in CSS pixels, viewport coordinate space."
+            }
+          },
+          "lw": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "array",
+              "minItems": 4,
+              "maxItems": 4,
+              "items": {
+                "type": "number"
+              },
+              "description": "[x, y, width, height] in CSS pixels, viewport coordinate space."
+            }
+          },
+          "e": {
+            "type": "boolean"
+          },
+          "h": {
+            "type": "boolean"
+          },
+          "i": {
+            "type": "boolean"
+          },
+          "k": {
+            "type": "boolean"
+          },
+          "st": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "hover",
+                "active",
+                "focus",
+                "focus-within",
+                "focus-visible",
+                "target",
+                "target-within",
+                "checked",
+                "indeterminate",
+                "disabled",
+                "required",
+                "invalid",
+                "user-invalid",
+                "user-valid",
+                "in-range",
+                "out-of-range",
+                "placeholder-shown",
+                "default",
+                "open",
+                "autofill",
+                "-webkit-autofill",
+                "popover-open",
+                "modal",
+                "fullscreen",
+                "-webkit-full-screen",
+                "picture-in-picture",
+                "playing",
+                "buffering",
+                "seeking",
+                "muted",
+                "volume-locked",
+                "undefined"
+              ]
+            }
+          },
+          "md": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "an": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "sh": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "as": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "ts": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "documentElement": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "body": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "bodyInnerText": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "textLines": {
+      "type": "boolean"
+    },
+    "hits": {
+      "type": "array"
+    },
+    "anim": {
+      "type": "boolean"
+    },
+    "shadow": {
+      "type": "boolean"
+    },
+    "floe": {
+      "type": "object",
+      "description": "Optional Floe binding block; ignored by the upstream parser, cross-checked by the adapter.",
+      "properties": {
+        "captureId": {
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        },
+        "contractVersion": {
+          "type": "integer"
+        },
+        "redaction": {
+          "type": "object"
+        }
+      }
+    }
+  }
+}

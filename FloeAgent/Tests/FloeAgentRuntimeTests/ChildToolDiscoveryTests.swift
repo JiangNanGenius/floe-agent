@@ -781,100 +781,106 @@ struct ChildToolDiscoveryTests {
 
     @Test("a child's skill.read never mutates the parent's discovery state or persists it")
     func childSkillReadDoesNotActivateParentDiscovery() async throws {
-        // A real persistence store proves the parent's discovery was neither
-        // mutated nor saved by a CHILD's skill.read.
-        let database = try DatabaseManager.inMemory()
-        try await database.migrate()
-        let store = SQLiteConversationDiscoveryStore(database: database)
-        let conversationID = UUID()
+        try await ActiveParentTestScope.withScope {
+            // A real persistence store proves the parent's discovery was neither
+            // mutated nor saved by a CHILD's skill.read.
+            let database = try DatabaseManager.inMemory()
+            try await database.migrate()
+            let store = SQLiteConversationDiscoveryStore(database: database)
+            let conversationID = UUID()
 
-        let json = #"[{"id":"floe-test-guide","digest":"rev-1","requiredToolNames":["test.artifact"]}]"#
-        final class SkillExecutor: ToolExecutor, @unchecked Sendable {
-            let json: String
-            private let storage = AsyncLock<[String]>([])
-            init(json: String) { self.json = json }
-            var executed: [String] { storage.withLock { $0 } }
-            func descriptor(named name: String) -> ToolCatalog.Descriptor? {
-                switch name {
-                case "skill.read": return .init(name: "skill.read", riskLabels: [], isSideEffecting: false)
-                case "test.artifact": return .init(name: "test.artifact", riskLabels: [], isSideEffecting: false)
-                default: return nil
+            let json = #"[{"id":"floe-test-guide","digest":"rev-1","requiredToolNames":["test.artifact"]}]"#
+            final class SkillExecutor: ToolExecutor, @unchecked Sendable {
+                let json: String
+                private let storage = AsyncLock<[String]>([])
+                init(json: String) { self.json = json }
+                var executed: [String] { storage.withLock { $0 } }
+                func descriptor(named name: String) -> ToolCatalog.Descriptor? {
+                    switch name {
+                    case "skill.read": return .init(name: "skill.read", riskLabels: [], isSideEffecting: false)
+                    case "test.artifact": return .init(name: "test.artifact", riskLabels: [], isSideEffecting: false)
+                    default: return nil
+                    }
+                }
+                var allDescriptors: [ToolCatalog.Descriptor] {
+                    [
+                        .init(name: "skill.read", riskLabels: [], isSideEffecting: false),
+                        .init(name: "test.artifact", riskLabels: [], isSideEffecting: false)
+                    ]
+                }
+                func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
+                    storage.withLock { $0.append(call.toolName) }
+                    if call.toolName == "skill.read" {
+                        return ToolResult(callID: call.id, status: .ok, outputSummary: json, outputDigest: "d")
+                    }
+                    return ToolResult(callID: call.id, status: .ok, outputSummary: "ok", outputDigest: "d")
                 }
             }
-            var allDescriptors: [ToolCatalog.Descriptor] {
-                [
-                    .init(name: "skill.read", riskLabels: [], isSideEffecting: false),
-                    .init(name: "test.artifact", riskLabels: [], isSideEffecting: false)
-                ]
-            }
-            func execute(_ call: ToolCall, context: ToolContext) async throws -> ToolResult {
-                storage.withLock { $0.append(call.toolName) }
-                if call.toolName == "skill.read" {
-                    return ToolResult(callID: call.id, status: .ok, outputSummary: json, outputDigest: "d")
-                }
-                return ToolResult(callID: call.id, status: .ok, outputSummary: "ok", outputDigest: "d")
-            }
-        }
-        let executor = SkillExecutor(json: json)
-        let provider = TestFixtures.localhostProvider()
-        let adapter = MockAdapter()
-        adapter.script = [
-            [.toolRequest(try TestFixtures.toolCall(
-                id: "skill-main", toolName: "skill.read", arguments: #"{"id":"floe-test-guide"}"#
-            ))],
-            [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
-        ]
-        let runtime = FloeAgentRuntime(
-            configuration: FloeAgentRuntime.Configuration(
-                conversationID: conversationID,
-                provider: provider,
-                model: TestFixtures.testModel(providerID: provider.id),
-                allowedToolNames: ["skill.read", "test.artifact"]
-            ),
-            adapter: adapter,
-            policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
-            executor: executor,
-            auditSink: MockAuditSink(),
-            checkpointStore: MockCheckpointStore(),
-            discoveryStore: store
-        )
-
-        // 1. A CHILD's skill.read is audited in the child's own scope: the
-        //    parent's discovery store stays untouched.
-        let childRead = try TestFixtures.toolCall(
-            id: "skill-child", toolName: "skill.read", arguments: #"{"id":"floe-test-guide"}"#
-        )
-        let identity = ChildExecutionIdentity(
-            parentRunID: await runtime.runID, rootTaskID: conversationID, delegateCallID: "d"
-        )
-        let childResult = await runtime.dispatchChildTool(
-            childRead,
-            identity: identity,
-            childContext: ToolContext(
-                runID: await runtime.runID,
-                allowedToolNames: ["skill.read", "test.artifact"],
-                cancellation: CancellationToken(),
-                childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
-                conversationID: conversationID
+            let executor = SkillExecutor(json: json)
+            let provider = TestFixtures.localhostProvider()
+            let adapter = MockAdapter()
+            adapter.script = [
+                [.toolRequest(try TestFixtures.toolCall(
+                    id: "skill-main", toolName: "skill.read", arguments: #"{"id":"floe-test-guide"}"#
+                ))],
+                [.textDelta(.init(text: "done")), .completed(.init(stopReason: .endTurn))]
+            ]
+            let holdingAdapter = ActiveParentTestAdapter(continuation: adapter)
+            let runtime = FloeAgentRuntime(
+                configuration: FloeAgentRuntime.Configuration(
+                    conversationID: conversationID,
+                    provider: provider,
+                    model: TestFixtures.testModel(providerID: provider.id),
+                    allowedToolNames: ["skill.read", "test.artifact"]
+                ),
+                adapter: holdingAdapter,
+                policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
+                executor: executor,
+                auditSink: MockAuditSink(),
+                checkpointStore: MockCheckpointStore(),
+                discoveryStore: store
             )
-        )
-        #expect(childResult.status == .ok)
-        try await Task.sleep(nanoseconds: 300_000_000)
-        let afterChild = try await store.load(conversationID: conversationID)
-        #expect(afterChild == nil, "a child's skill.read must not persist parent discovery")
+            try await ActiveParentTestScope.activate(runtime)
 
-        // 2. Control: the SAME skill.read as the main run's own call does
-        //    activate + persist the parent's discovery, proving the assertion
-        //    above is sensitive.
-        try await runtime.start(goal: "read the guide")
-        var saved: (names: Set<String>, priority: [String])?
-        var attempts = 0
-        while saved == nil, attempts < 50 {
-            try await Task.sleep(nanoseconds: 50_000_000)
-            saved = try await store.load(conversationID: conversationID)
-            attempts += 1
+            // 1. A CHILD's skill.read is audited in the child's own scope: the
+            //    parent's discovery store stays untouched.
+            let childRead = try TestFixtures.toolCall(
+                id: "skill-child", toolName: "skill.read", arguments: #"{"id":"floe-test-guide"}"#
+            )
+            let identity = ChildExecutionIdentity(
+                parentRunID: await runtime.runID, rootTaskID: conversationID, delegateCallID: "d"
+            )
+            let childResult = await runtime.dispatchChildTool(
+                childRead,
+                identity: identity,
+                childContext: ToolContext(
+                    runID: await runtime.runID,
+                    allowedToolNames: ["skill.read", "test.artifact"],
+                    cancellation: CancellationToken(),
+                    childBudget: ChildBudgetContext(maximumIterations: 2, reserve: { true }, finish: {}),
+                    conversationID: conversationID
+                )
+            )
+            #expect(childResult.status == .ok)
+            try await Task.sleep(nanoseconds: 300_000_000)
+            let afterChild = try await store.load(conversationID: conversationID)
+            #expect(afterChild == nil, "a child's skill.read must not persist parent discovery")
+
+            // 2. Control: the SAME skill.read as the main run's own call does
+            //    activate + persist the parent's discovery, proving the assertion
+            //    above is sensitive.
+            await holdingAdapter.release()
+            try await ActiveParentTestScope.finish(runtime)
+            var saved: (names: Set<String>, priority: [String])?
+            var attempts = 0
+            while saved == nil, attempts < 50 {
+                try await Task.sleep(nanoseconds: 50_000_000)
+                saved = try await store.load(conversationID: conversationID)
+                attempts += 1
+            }
+            #expect(saved?.names.contains("test.artifact") == true)
+
         }
-        #expect(saved?.names.contains("test.artifact") == true)
     }
 
     @Test("two sibling children never share discovery state: one child's loads stay out of the other's wire")

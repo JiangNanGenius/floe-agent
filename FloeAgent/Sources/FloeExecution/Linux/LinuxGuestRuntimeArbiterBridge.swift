@@ -75,13 +75,23 @@ public enum LinuxGuestRuntimeArbiterBridge {
 
     /// The confirmation path: stops the reported guests only after the user
     /// answered `stopGuestsAndProceed` (the arbiter never calls this on its
-    /// own for foreign or non-transient work).
+    /// own for foreign or non-transient work). `onStopped` runs only for a
+    /// guest the runtime owner reports as no longer running after the stop:
+    /// the engine can refuse to destroy a VM and keep it as a quarantined
+    /// survivor, which must never be reported as an ended runtime.
     public static func guestStopper(
-        service: any LinuxGuestControlling
+        service: any LinuxGuestControlling,
+        onStopped: (@Sendable (String) async -> Void)? = nil
     ) -> HeavyRuntimeArbiter.GuestStopper {
         { activity in
             for environmentID in activity.guestEnvironmentIDs {
                 await service.stopGuest(environmentID: environmentID)
+                // The engine's own run-loop truth, not the request: a
+                // quarantined survivor keeps isRunning true.
+                let running = await service.guestIsRunning(environmentID: environmentID)
+                if !running {
+                    await onStopped?(environmentID)
+                }
             }
         }
     }

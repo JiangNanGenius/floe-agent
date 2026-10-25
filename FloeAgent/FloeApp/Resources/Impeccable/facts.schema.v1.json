@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://floe-agent.com/schemas/impeccable/facts.v1.json",
+  "title": "Floe Impeccable facts v1 (answers to an engine Needs)",
+  "type": "object",
+  "required": [
+    "hits",
+    "captureId",
+    "documentId",
+    "sessionId",
+    "tabId",
+    "taskId"
+  ],
+  "properties": {
+    "hits": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": {
+        "type": "object",
+        "required": [
+          "x",
+          "y"
+        ],
+        "properties": {
+          "x": {
+            "type": "number"
+          },
+          "y": {
+            "type": "number"
+          },
+          "xBits": {
+            "type": [
+              "integer",
+              "string"
+            ],
+            "description": "u64 to_bits of x; verified against the needs that asked for the point"
+          },
+          "yBits": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          },
+          "top": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "elementFromPoint as a snapshot id; 0 when nothing"
+          },
+          "stack": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "elementsFromPoint as snapshot ids, front to back"
+          },
+          "unanswerable": {
+            "type": "boolean",
+            "description": "the native side could not answer this point; the run must report it, not pass"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "shownOnScroll": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "el",
+          "shown"
+        ],
+        "properties": {
+          "el": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "shown": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "taskId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "tabId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "captureId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "documentGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fenced": {
+      "type": "boolean",
+      "description": "the native side fenced this capture (navigation/view change); the engine must refuse it"
+    }
+  }
+}

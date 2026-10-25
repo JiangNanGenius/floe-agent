@@ -608,6 +608,16 @@ public actor ConversationRunService {
         await runtime.cancel()
     }
 
+    /// Removes this service's retained tool-result captures for one task.
+    /// Called by the conversation-deletion lifecycle only after this run's
+    /// writers were cancelled and joined. A temporary run's RAM-only store is
+    /// covered here; ordinary runs share the app-process durable store, whose
+    /// cleanup outcome is returned rather than swallowed.
+    @discardableResult
+    public func purgeRetainedToolResults(conversationID: UUID) async -> ToolResultCapturePurgeResult {
+        await runtime.purgeRetainedToolResults(conversationID: conversationID)
+    }
+
     public func persistRecoveryPoint() async {
         await persistRecoveryPointReliably(boundary: "externalRecoveryPoint")
     }

@@ -25,7 +25,7 @@ public actor DatabaseManager {
     /// match the highest registered migration; every historical bump
     /// paired this constant with the new migration so that
     /// `user_version == currentSchemaVersion` after `migrate()`.
-    public static let currentSchemaVersion = 52
+    public static let currentSchemaVersion = 53
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -94,6 +94,7 @@ public actor DatabaseManager {
         V50ScheduleCleanupReminders.register(into: &migrator)
         V51ChatPreferences.register(into: &migrator)
         V52PersonalizationRetention.register(into: &migrator)
+        V53ConversationVisibility.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

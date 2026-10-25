@@ -15,6 +15,11 @@
 import Foundation
 import FloeCore
 import FloeTools
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 public struct LinuxGuestShellBackend: LocalShellBackend {
     private let runner: any LinuxCommandRunning
@@ -64,15 +69,50 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
                 + LinuxGuestNodeEnvironment.activationPreamble()
                 + environmentPreamble
                 + request.command
-            let result = try await runner.run(
-                environmentID: environmentID,
-                argv: ["/bin/sh", "-c", command],
-                workingDirectory: try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL),
-                standardInput: request.stdin,
-                timeout: timeout,
-                maxOutputBytes: maxOutput,
-                cancellation: cancellation
+            let workingDirectory = try Self.guestWorkingDirectory(cwd: request.cwd, root: request.rootURL)
+            let result: LinuxCommandResult
+            let stdinBytes = request.stdin?.utf8.count ?? 0
+            let directCommandBytes = Self.framedPayloadBytes(
+                workingDirectory: workingDirectory,
+                standardInput: nil,
+                argv: ["/bin/sh", "-c", command]
             )
+            let directEnvelopeBytes = directCommandBytes + 4 + stdinBytes
+            if directCommandBytes <= limits.maxCommandBytes, directEnvelopeBytes <= limits.maxEnvelopeBytes {
+                // Small commands travel exactly as before: one inline/chunked
+                // EXEC whose argv carries the assembled script text.
+                result = try await runner.run(
+                    environmentID: environmentID,
+                    argv: ["/bin/sh", "-c", command],
+                    workingDirectory: workingDirectory,
+                    standardInput: request.stdin,
+                    timeout: timeout,
+                    maxOutputBytes: maxOutput,
+                    cancellation: cancellation
+                )
+            } else {
+                // Large script bodies are staged as a file in THIS task's
+                // workspace share (streamed, bounded memory, exclusive
+                // creation) and executed through a tiny `.` wrapper inside
+                // the same -c form, so the command text is still guest
+                // /bin/sh code, never an argv blob, stdin stays an
+                // independent channel, and the guest's own exec never
+                // approaches ARG_MAX. cwd, exit status, timeout budget and
+                // cancellation semantics are unchanged; the staged file is
+                // removed on every path.
+                result = try await Self.runStaged(
+                    command: command,
+                    runner: runner,
+                    environmentID: environmentID,
+                    request: request,
+                    workingDirectory: workingDirectory,
+                    started: started,
+                    timeout: timeout,
+                    maxOutputBytes: maxOutput,
+                    limits: limits,
+                    cancellation: cancellation
+                )
+            }
             let durationMs = Int(Date().timeIntervalSince(started) * 1000)
             return .exited(
                 code: result.exitCode,
@@ -219,5 +259,365 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
     /// openSession size.
     public func resizeSession(sessionID: String, columns: Int, rows: Int) async {
         await sessions?.resizeSession(sessionID: sessionID, columns: columns, rows: rows)
+    }
+}
+
+// MARK: - Large-script staging transport
+//
+// `exec.shell` has no application-level command-size ceiling: a script body
+// is a file, not an argv blob. Commands whose assembled EXEC envelope would
+// exceed the guest command budget are staged into THIS task's workspace
+// share (the same host directory the guest already mounts at /workspace) and
+// executed through a tiny `/bin/sh -c ". '<staged>'"` wrapper:
+//   * the command text still runs as guest /bin/sh code, so pipelines,
+//     redirections, loops and the env preamble keep working verbatim;
+//   * stdin stays an independent channel: the EXEC stdin field is still
+//     piped to the child by the runner (`feed_stdin`), so script size and
+//     stdin size never share a budget;
+//   * the guest `execvp` never approaches ARG_MAX, and the reassembled
+//     console envelope stays inside the runner's fixed 256 KiB MAX_PAYLOAD
+//     (a protocol-safety bound the host never tries to raise);
+//   * exit code, working directory, timeout budget, interrupt/cancellation
+//     and the poisoned-channel semantics are exactly the single-EXEC
+//     semantics from before — only where the script bytes live changed.
+//
+// Staging is reached ONLY through directory descriptors opened from the
+// trusted workspace root: nothing is written, replaced or deleted through a
+// re-resolved parent path, so a writable guest share cannot redirect this
+// code with a racing symlink. Every invocation gets a fresh random name
+// (run identity is recorded only as metadata), entries are created with
+// `openat(O_CREAT|O_EXCL)` and cleanup unlinks ONLY the exact inode this
+// operation created; a failed exclusive create never touches the
+// pre-existing entry. There is deliberately no stale-file sweep: UUID-shaped
+// names or a producer string in a model-writable marker are not proof of
+// ownership. Crash leftovers are inert hidden files inside the task
+// workspace and leave with the task workspace itself.
+extension LinuxGuestShellBackend {
+    /// Workspace-relative staging entrypoint. A dot-name keeps it out of
+    /// ordinary workspace listings while staying inside the task's own
+    /// share, so another task's workspace root can never contain these paths.
+    static let stagingDirectoryName = ".floe-shell"
+    /// Durable marker written (exclusively) before each script. It records
+    /// run correlation for operators and app-side lifecycle cleanup; cleanup
+    /// in this module never trusts the marker for ownership — it trusts the
+    /// inode this exact operation created.
+    static let stagingMarkerSuffix = ".floe-staged"
+    /// Bounded write window: the script streams through host memory 64 KiB
+    /// at a time regardless of total script size.
+    static let stagingChunkBytes = 64 * 1_024
+
+    struct StagedScript {
+        var rootFD: Int32
+        var directoryFD: Int32
+        var directoryName: String
+        var scriptName: String
+        var scriptInode: UInt64
+        var markerName: String
+        var markerInode: UInt64
+        var guestPath: String
+    }
+
+    /// Exact size of one EXEC/OPEN reassembled envelope: u32 field count,
+    /// then u32 length + raw bytes per field, in the framing order
+    /// [cwd, stdin, argv...]. Computed from the strings without building a
+    /// copy of the payload, so a multi-megabyte script never allocates a
+    /// second full buffer just to measure it.
+    static func framedPayloadBytes(
+        workingDirectory: String?,
+        standardInput: String?,
+        argv: [String]
+    ) -> Int {
+        var total = 4
+        total += 4 + (workingDirectory?.utf8.count ?? 0)
+        total += 4 + (standardInput?.utf8.count ?? 0)
+        for field in argv { total += 4 + field.utf8.count }
+        return total
+    }
+
+    static func runStaged(
+        command: String,
+        runner: any LinuxCommandRunning,
+        environmentID: String,
+        request: ShellRunRequest,
+        workingDirectory: String,
+        started: Date,
+        timeout: TimeInterval,
+        maxOutputBytes: Int,
+        limits: LinuxGuestLimits,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        let staged = try stageScript(
+            command,
+            root: request.rootURL,
+            runID: request.runID,
+            cancellation: cancellation
+        )
+        defer { closeStaged(staged) }
+        let wrapper = ". '" + staged.guestPath.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let envelopeBytes = framedPayloadBytes(
+            workingDirectory: workingDirectory,
+            standardInput: request.stdin,
+            argv: ["/bin/sh", "-c", wrapper]
+        )
+        guard envelopeBytes <= limits.maxEnvelopeBytes else {
+            // The wrapper is tiny: this can only be the stdin field. Name
+            // the actual bound precisely — it is the guest reassembly
+            // envelope, not a script or file-size limit.
+            throw LinuxGuestError.invalidConfiguration(
+                "stdin plus framing exceeds the \(limits.maxEnvelopeBytes)-byte guest envelope; script size is unlimited on the staged path, stdin is capped by this envelope and by the tool's stdin policy"
+            )
+        }
+        if cancellation?.isCancelled == true { throw FloeError.cancelled }
+        // The guest execution shares the run's single wall-clock budget: the
+        // host staging write already consumed part of it, so the guest gets
+        // what is left and never a fresh full deadline. A budget exhausted
+        // before the guest could start is a real deadline, not a started
+        // command that timed out with empty output.
+        let remaining = timeout - Date().timeIntervalSince(started)
+        // The guest channel's own floor is one second, so a smaller leftover
+        // budget could not be honoured: report the deadline instead of
+        // starting a command that is allowed to outlive it.
+        guard remaining >= 1 else {
+            throw LinuxGuestError.timedOut(seconds: timeout)
+        }
+        return try await runner.run(
+            environmentID: environmentID,
+            argv: ["/bin/sh", "-c", wrapper],
+            workingDirectory: workingDirectory,
+            standardInput: request.stdin,
+            timeout: remaining,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    /// Creates `<workspace>/.floe-shell/<random UUID>.sh` plus its marker
+    /// through directory descriptors opened from the trusted workspace root.
+    /// Every entry name is fresh per invocation; a pre-existing name is never
+    /// adopted, and a failure to create exclusively deletes nothing.
+    static func stageScript(
+        _ command: String,
+        root: URL,
+        runID: UUID?,
+        cancellation: CancellationToken?
+    ) throws -> StagedScript {
+        if cancellation?.isCancelled == true { throw FloeError.cancelled }
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let rootFD = open(rootPath, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        guard rootFD >= 0 else {
+            throw LinuxGuestError.invalidConfiguration(
+                "the task workspace is unavailable for large-script staging"
+            )
+        }
+        var directoryFD = openat(
+            rootFD,
+            stagingDirectoryName,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        if directoryFD < 0, errno == ENOENT {
+            // Another command may create the shared directory after our
+            // first open. Reopen it with O_NOFOLLOW in either case.
+            guard mkdirat(rootFD, stagingDirectoryName, mode_t(0o700)) == 0 || errno == EEXIST else {
+                close(rootFD)
+                throw LinuxGuestError.invalidConfiguration(
+                    "the task workspace share is not writable, so a large script could not be staged"
+                )
+            }
+            directoryFD = openat(
+                rootFD,
+                stagingDirectoryName,
+                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+            )
+        }
+        guard directoryFD >= 0 else {
+            close(rootFD)
+            throw LinuxGuestError.invalidConfiguration(
+                "workspace staging entrypoint '\(stagingDirectoryName)' is not a plain directory (alias or file present); nothing was executed and nothing was deleted there"
+            )
+        }
+        do {
+            let stem = UUID().uuidString.lowercased()
+            let markerName = stem + stagingMarkerSuffix
+            let scriptName = stem + ".sh"
+            let markerPayload = try JSONEncoder().encode([
+                "producer": "exec.shell",
+                "run": runID?.uuidString ?? "unbound",
+                "createdAt": String(Int(Date().timeIntervalSince1970)),
+            ])
+            let markerInode = try writeNewFile(
+                directoryFD: directoryFD,
+                name: markerName,
+                data: markerPayload,
+                cancellation: cancellation
+            )
+            let scriptInode: UInt64
+            do {
+                scriptInode = try writeNewScript(
+                    directoryFD: directoryFD,
+                    name: scriptName,
+                    text: command,
+                    cancellation: cancellation
+                )
+            } catch {
+                // Only the marker this operation created is removed; the
+                // failed script create never had an inode to own.
+                unlinkOwned(directoryFD: directoryFD, name: markerName, inode: markerInode)
+                throw error
+            }
+            return StagedScript(
+                rootFD: rootFD,
+                directoryFD: directoryFD,
+                directoryName: stagingDirectoryName,
+                scriptName: scriptName,
+                scriptInode: scriptInode,
+                markerName: markerName,
+                markerInode: markerInode,
+                guestPath: LinuxGuestMountPoint.workspace + "/" + stagingDirectoryName + "/" + scriptName
+            )
+        } catch {
+            close(directoryFD)
+            close(rootFD)
+            throw error
+        }
+    }
+
+    /// Removes only this invocation's inode-guarded entries. The empty
+    /// service directory remains stable: a concurrent invocation can already
+    /// hold its descriptor before creating files, so removing even an empty
+    /// directory here would detach that invocation from the guest mount.
+    static func closeStaged(_ staged: StagedScript) {
+        unlinkOwned(directoryFD: staged.directoryFD, name: staged.scriptName, inode: staged.scriptInode)
+        unlinkOwned(directoryFD: staged.directoryFD, name: staged.markerName, inode: staged.markerInode)
+        close(staged.directoryFD)
+        close(staged.rootFD)
+    }
+
+    /// Unlinks `name` only when it is still the plain regular file with the
+    /// inode number this operation created. Never follows a symlink and
+    /// never removes a substituted file.
+    private static func unlinkOwned(directoryFD: Int32, name: String, inode: UInt64) {
+        var info = stat()
+        guard fstatat(directoryFD, name, &info, AT_SYMLINK_NOFOLLOW) == 0,
+              info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              UInt64(info.st_ino) == inode else { return }
+        _ = unlinkat(directoryFD, name, 0)
+    }
+
+    /// Exclusive create of one staging entry, returning the open descriptor
+    /// and the inode this operation now owns.
+    private static func createExclusive(
+        directoryFD: Int32,
+        name: String
+    ) throws -> (fd: Int32, inode: UInt64) {
+        let fd = openat(
+            directoryFD,
+            name,
+            O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            mode_t(0o600)
+        )
+        guard fd >= 0 else {
+            throw LinuxGuestError.invalidConfiguration(
+                "staging entry '\(name)' could not be created exclusively; refusing to adopt a pre-existing entry"
+            )
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else {
+            close(fd)
+            throw LinuxGuestError.invalidConfiguration("staging entry '\(name)' is not a plain file")
+        }
+        return (fd, UInt64(info.st_ino))
+    }
+
+    /// Bounded, cancellation-checked write of one byte run to an open
+    /// descriptor. `EINTR` is retried; a zero-byte write is a failure, never
+    /// an assumed completion.
+    private static func writeAll(
+        fd: Int32,
+        base: UnsafePointer<UInt8>,
+        count: Int,
+        cancellation: CancellationToken?
+    ) throws {
+        var offset = 0
+        while offset < count {
+            if cancellation?.isCancelled == true { throw FloeError.cancelled }
+            let written = write(fd, base.advanced(by: offset), count - offset)
+            if written < 0 {
+                if errno == EINTR { continue }
+                throw LinuxGuestError.invalidConfiguration("staging write failed")
+            }
+            guard written > 0 else {
+                throw LinuxGuestError.invalidConfiguration("staging write stalled")
+            }
+            offset += written
+        }
+    }
+
+    private static func writeNewFile(
+        directoryFD: Int32,
+        name: String,
+        data: Data,
+        cancellation: CancellationToken?
+    ) throws -> UInt64 {
+        let created = try createExclusive(directoryFD: directoryFD, name: name)
+        do {
+            try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                try writeAll(
+                    fd: created.fd,
+                    base: base,
+                    count: data.count,
+                    cancellation: cancellation
+                )
+            }
+        } catch {
+            close(created.fd)
+            unlinkOwned(directoryFD: directoryFD, name: name, inode: created.inode)
+            throw error
+        }
+        _ = fsync(created.fd)
+        close(created.fd)
+        return created.inode
+    }
+
+    /// Streams arbitrary-length script text through a fixed-size window: no
+    /// path ever holds more than one 64 KiB chunk in addition to the caller's
+    /// own string.
+    private static func writeNewScript(
+        directoryFD: Int32,
+        name: String,
+        text: String,
+        cancellation: CancellationToken?
+    ) throws -> UInt64 {
+        let created = try createExclusive(directoryFD: directoryFD, name: name)
+        do {
+            var index = text.utf8.startIndex
+            let view = text.utf8
+            while index < view.endIndex {
+                if cancellation?.isCancelled == true { throw FloeError.cancelled }
+                let next = view.index(
+                    index,
+                    offsetBy: stagingChunkBytes,
+                    limitedBy: view.endIndex
+                ) ?? view.endIndex
+                let chunk = Array(view[index..<next])
+                try chunk.withUnsafeBufferPointer { buffer in
+                    guard let base = buffer.baseAddress else { return }
+                    try writeAll(
+                        fd: created.fd,
+                        base: base,
+                        count: chunk.count,
+                        cancellation: cancellation
+                    )
+                }
+                index = next
+            }
+        } catch {
+            close(created.fd)
+            unlinkOwned(directoryFD: directoryFD, name: name, inode: created.inode)
+            throw error
+        }
+        _ = fsync(created.fd)
+        close(created.fd)
+        return created.inode
     }
 }

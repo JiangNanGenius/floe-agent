@@ -110,10 +110,8 @@ public struct SkillCreateTool: AgentTool {
         }
         var paths = Set<String>()
         for script in scripts {
-            let path = script.relativePath
-            guard !path.isEmpty, !path.hasPrefix("/"), !path.contains("\\"),
-                  !path.split(separator: "/").contains(".."),
-                  URL(fileURLWithPath: path).pathExtension.lowercased() == "py",
+            let path = try SkillScriptPath.relativeToScripts(script.relativePath)
+            guard
                   paths.insert(path.lowercased()).inserted,
                   !script.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   script.source.utf8.count <= Self.maxScriptBytes else {

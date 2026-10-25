@@ -870,7 +870,7 @@ struct AgentRuntimeTests {
         #expect(adapter.requests.count == 3)
         // Both discovery entry points stay available before any execution
         // schema is loaded; enumerating the catalog must not load test.echo.
-        #expect(Set(adapter.requests[0].toolSchemas.map(\.name)) == Set(["tools.search", "tools.list"]))
+        #expect(Set(adapter.requests[0].toolSchemas.map(\.name)) == Set(["tools.search", "tools.list", "tools.readResult"]))
         #expect(adapter.requests[1].toolSchemas.contains { $0.name == "test.echo" })
         #expect(executor.executedCalls.map(\.id) == ["execute"])
         #expect(adapter.requests[1].messages.contains { $0.content.contains("Loaded for the next request") })

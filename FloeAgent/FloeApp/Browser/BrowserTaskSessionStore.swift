@@ -135,6 +135,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         let id: UUID
         let webView: WKWebView
         var documentID: String
+        /// Monotonic per-tab Impeccable document generation: bumped whenever
+        /// the document is replaced (commit, handoff invalidation). A capture
+        /// record binds the generation it measured; answers require it to be
+        /// unchanged (contract `documentGeneration`).
+        var documentGeneration: Int
         var revision: Int
         var nextEventSequence: Int
         var events: [BrowserProtocolEvent]
@@ -156,10 +161,16 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     private var pendingProbes: [UUID: BrowserProbeRequest] = [:]
     private(set) var lastActivityAt = Date()
 
+    /// Native Impeccable capture/Needs bridge for this task's browser.
+    /// Records are fenced synchronously from the lifecycle points below;
+    /// the service itself never issues work to other sessions.
+    private(set) lazy var impeccableCaptures = BrowserImpeccableCaptureService(session: self)
+
     private weak var host: BrowserTaskSessionHost?
     private let protocolVersion: String
-    private let contentWorld: WKContentWorld
-    private let artifactDirectory: URL
+    /// Internal for the task-owned Impeccable capture service only.
+    let contentWorld: WKContentWorld
+    let artifactDirectory: URL
     private let maximumTabs: Int
     private let maximumEventsPerTab: Int
 
@@ -214,6 +225,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             id: id,
             webView: webView,
             documentID: UUID().uuidString,
+            documentGeneration: 0,
             revision: 0,
             nextEventSequence: 1,
             events: [],
@@ -233,6 +245,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
 
     func close(_ id: UUID) {
         guard !isReleased, tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        impeccableCaptures.fence(tabID: id, reason: .tabClosed)
         tabs[index].webView.stopLoading()
         tabs.remove(at: index)
         if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id }
@@ -243,9 +256,11 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         if let currentURL = activeWebView?.url,
            Self.isLocalPreview(currentURL),
            addressText == Self.visibleAddress(for: activeWebView) {
+            if let activeTabID { impeccableCaptures.fence(tabID: activeTabID, reason: .reload) }
             activeWebView?.reload()
             return
         }
+        if let activeTabID { impeccableCaptures.fence(tabID: activeTabID, reason: .navigation) }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
         guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID),
               let activeWebView else { return }
@@ -278,6 +293,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     func setUserControlling(_ value: Bool) {
         isUserControlling = value
         if value {
+            // The user can move any tab at any moment now; every capture
+            // bound to this session fences at the instant of takeover.
+            impeccableCaptures.fenceAll(reason: .userTakeover)
             surfaceState = .needsUser("User takeover is active")
         } else if case .needsUser = surfaceState {
             surfaceState = .ready
@@ -290,7 +308,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard !isReleased else { return }
         for index in tabs.indices {
             tabs[index].documentID = UUID().uuidString
+            tabs[index].documentGeneration += 1
             tabs[index].visualFallbackEvidence = nil
+            impeccableCaptures.fence(tabID: tabs[index].id, reason: .ownerHandoff)
         }
     }
 
@@ -299,6 +319,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     func release() {
         guard !isReleased else { return }
         isReleased = true
+        impeccableCaptures.fenceAll(reason: .released)
         let probes = Array(pendingProbes.values)
         pendingProbes.removeAll()
         probes.forEach { $0.invalidate() }
@@ -380,12 +401,16 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             switch command.action {
             case .navigate(let value):
                 let url = try BrowserURLPolicy.validate(value, conversationID: conversationID)
+                impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 tab.webView.load(URLRequest(url: url))
             case .back:
+                impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 tab.webView.goBack()
             case .forward:
+                impeccableCaptures.fence(tabID: tabID, reason: .navigation)
                 tab.webView.goForward()
             case .reload:
+                impeccableCaptures.fence(tabID: tabID, reason: .reload)
                 tab.webView.reload()
             case .observe(let cursor):
                 return await observeResult(command, tabID: tabID, cursor: cursor)
@@ -503,6 +528,9 @@ final class BrowserTaskSession: NSObject, ObservableObject {
                     visualFallbackReason: nil
                 )
             case .scroll(let x, let y):
+                // Any scroll invalidates every outstanding capture on this
+                // tab before the page actually moves.
+                impeccableCaptures.fence(tabID: tabID, reason: .scroll)
                 _ = try await tab.webView.callAsyncJavaScript(
                     "window.scrollBy(dx, dy); return true;",
                     arguments: ["dx": x, "dy": y],
@@ -1291,6 +1319,10 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard !isReleased, let index = tabs.firstIndex(where: { $0.webView === webView }) else { return }
         tabs[index].documentID = UUID().uuidString
+        tabs[index].documentGeneration += 1
+        // Fence at the moment of the document change, before anything else
+        // can answer against the replaced page.
+        impeccableCaptures.fence(tabID: tabs[index].id, reason: .navigation)
         tabs[index].revision = 0
         tabs[index].visualFallbackEvidence = nil
         appendEvent(

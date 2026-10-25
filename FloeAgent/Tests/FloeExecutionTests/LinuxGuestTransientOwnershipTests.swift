@@ -710,6 +710,50 @@ final class LinuxGuestTransientOwnershipTests: XCTestCase {
         XCTAssertTrue(afterStop.isEmpty)
     }
 
+    /// The arbiter's user-confirmed stop is a real runtime end: after the stop
+    /// resolves, the bridge reports exactly the guests the engine actually
+    /// stopped, once each, in the reported order. This is the notification the
+    /// app uses to drop background-location authority.
+    func testGuestStopperReportsConfirmedStopsOnly() async throws {
+        let harness = try makeHarness(environmentIDs: ["env-1", "env-2"])
+        let service = harness.service
+        _ = try await service.startGuest(environmentID: "env-1", taskID: nil)
+        _ = try await service.startGuest(environmentID: "env-2", taskID: nil)
+        let reported = F3OrderLog()
+        let stopper = LinuxGuestRuntimeArbiterBridge.guestStopper(
+            service: service,
+            onStopped: { environmentID in reported.append("stopped:\(environmentID)") }
+        )
+
+        await stopper(HeavyRuntimeArbiter.LinuxActivity(guestEnvironmentIDs: ["env-1", "env-2"]))
+
+        XCTAssertEqual(reported.events, ["stopped:env-1", "stopped:env-2"])
+        let firstRunning = await service.guestIsRunning(environmentID: "env-1")
+        let secondRunning = await service.guestIsRunning(environmentID: "env-2")
+        XCTAssertFalse(firstRunning)
+        XCTAssertFalse(secondRunning)
+    }
+
+    /// A stop the engine cannot complete leaves a quarantined, still-running
+    /// VM. The bridge must not report it: an unconfirmed stop may never mark a
+    /// live guest as an ended runtime.
+    func testGuestStopperDoesNotReportQuarantinedSurvivor() async throws {
+        let harness = try makeHarness(environmentIDs: ["env-1"], stopsOnClose: false)
+        let service = harness.service
+        _ = try await service.startGuest(environmentID: "env-1", taskID: nil)
+        let reported = F3OrderLog()
+        let stopper = LinuxGuestRuntimeArbiterBridge.guestStopper(
+            service: service,
+            onStopped: { environmentID in reported.append("stopped:\(environmentID)") }
+        )
+
+        await stopper(HeavyRuntimeArbiter.LinuxActivity(guestEnvironmentIDs: ["env-1"]))
+
+        XCTAssertEqual(reported.events, [], "a quarantined survivor is not an ended runtime")
+        let running = await service.guestIsRunning(environmentID: "env-1")
+        XCTAssertTrue(running, "the quarantined VM is retained truthfully")
+    }
+
     /// A failed cold start leaves no phantom guest: the tool reports the
     /// engine's honest error and the registry owns nothing, so the next model
     /// generation has no conflict to resolve.

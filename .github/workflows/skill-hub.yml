@@ -7,7 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Sign and commit official skill and content packages
+        description: Sign and commit official skill and content packages (legacy iOS feed plus Android catalog)
+        required: false
+        type: boolean
+        default: false
+      publish_android:
+        description: Sign and commit only the Android skill catalog (legacy iOS feed and content hub stay untouched)
         required: false
         type: boolean
         default: false
@@ -29,15 +34,43 @@ jobs:
       - run: python -m pip install cryptography==46.0.6
       - run: python -m unittest discover -s skill-hub -p 'test_*.py'
       # Staged sources are allowed to be newer than the last signed feed; this
-      # gate validates them and the released feed independently without
+      # gate validates them and each released feed independently without
       # requiring a signature for the unpublished candidate.
-      - name: Verify staged skill sources and released feed
-        run: python skill-hub/build.py --check-staged
-      # After a publication dispatch the checked-out commit must satisfy the
-      # strict signed-candidate gate; ordinary pushes and PRs never reach it.
+      - name: Verify staged skill sources and released feeds
+        run: |
+          python skill-hub/build.py --check-staged
+          python skill-hub/build_android.py --check-staged
+      # After a FULL publication dispatch the checked-out commit must satisfy
+      # the strict signed-candidate gate for both channels; ordinary pushes and
+      # PRs never reach it.
       - name: Verify published commit strictly
-        if: ${{ needs.publish.outputs.commit != '' }}
-        run: python skill-hub/build.py --check
+        if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'both' }}
+        run: |
+          python skill-hub/build.py --check
+          python skill-hub/build_android.py --check
+      # An Android-only dispatch publishes ONLY the Android channel, so the
+      # strict gate covers exactly that channel. The legacy iOS feed was not
+      # built or committed by that route; staged validation above still checks
+      # its released bytes and any unpublished sources.
+      - name: Verify published Android channel strictly
+        if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'android' }}
+        run: python skill-hub/build_android.py --check
+      # Independent post-publish boundary: the Android-only commit may differ
+      # from the dispatched commit ONLY inside skill-hub/android. This catches
+      # any accidental legacy-feed, seed or content-hub rewrite even if the
+      # publish-step index guard were bypassed.
+      - name: Verify Android-only publication boundary
+        if: ${{ needs.publish.outputs.commit != '' && needs.publish.outputs.channels == 'android' }}
+        env:
+          DISPATCHED: ${{ github.sha }}
+          PUBLISHED: ${{ needs.publish.outputs.commit }}
+        run: |
+          unexpected="$(git diff --name-only "$DISPATCHED" "$PUBLISHED" | grep -v '^skill-hub/android/' || true)"
+          if [ -n "$unexpected" ]; then
+            echo 'Android-only publication changed unrelated paths:'
+            echo "$unexpected"
+            exit 1
+          fi
       - run: python -m unittest discover -s content-hub -p 'test_*.py'
       - run: python content-hub/build.py --check
       - name: Reject changes to published ZIP versions
@@ -48,7 +81,7 @@ jobs:
         run: |
           base="${BASE:-${BEFORE:-$DISPATCH_BASE}}"
           if [ -n "$base" ] && git cat-file -e "$base^{commit}" 2>/dev/null; then
-            changed="$(git diff --name-only --diff-filter=MDR "$base" HEAD -- 'skill-hub/packages/*.zip' 'skill-hub/packages/**/*.zip' 'content-hub/packages/**/*.zip')"
+            changed="$(git diff --name-only --diff-filter=MDR "$base" HEAD -- 'skill-hub/packages/*.zip' 'skill-hub/packages/**/*.zip' 'skill-hub/android/packages/**/*.zip' 'content-hub/packages/**/*.zip')"
             if [ -n "$changed" ]; then
               echo 'Published ZIP versions may not be changed or removed. Bump the package version.'
               exit 1
@@ -57,7 +90,8 @@ jobs:
   publish:
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
+      channels: ${{ steps.scope.outputs.channels }}
+    if: github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.publish_android)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -67,7 +101,18 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install cryptography==46.0.6
-      - name: Build signed official packages
+      # Full publication takes precedence when both inputs are true; the
+      # Android-only route is selected only when publish is false.
+      - name: Resolve publication channels
+        id: scope
+        run: |
+          if [ "${{ inputs.publish }}" = "true" ]; then
+            echo "channels=both" >> "$GITHUB_OUTPUT"
+          else
+            echo "channels=android" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build signed iOS and content feeds
+        if: ${{ inputs.publish }}
         env:
           FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
           FLOE_CONTENT_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
@@ -76,22 +121,52 @@ jobs:
           python content-hub/build.py --sign
           python skill-hub/build.py --check
           python content-hub/build.py --check
+      - name: Build signed Android skill catalog
+        if: ${{ inputs.publish || inputs.publish_android }}
+        env:
+          FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
+        run: |
+          python skill-hub/build_android.py
+          python skill-hub/build_android.py --check
       - name: Commit signed artifacts
         id: commit
         env:
           TARGET_BRANCH: ${{ github.ref_name }}
+          PUBLISH_LEGACY: ${{ inputs.publish }}
+          PUBLISH_ANDROID: ${{ inputs.publish || inputs.publish_android }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add content-hub/index.json content-hub/index.sig content-hub/packages
-          git add skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages \
-            FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift \
-            FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
+          if [ "$PUBLISH_LEGACY" = "true" ]; then
+            git add content-hub/index.json content-hub/index.sig content-hub/packages
+            git add skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages \
+              FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift \
+              FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
+          fi
+          if [ "$PUBLISH_ANDROID" = "true" ]; then
+            git add skill-hub/android
+          fi
+          if [ "$PUBLISH_LEGACY" != "true" ]; then
+            # Enforce the Android-only boundary on the exact staged set: an
+            # Android publication must never carry the legacy signed feed,
+            # generated app seed or content hub.
+            unexpected="$(git diff --cached --name-only | grep -v '^skill-hub/android/' || true)"
+            if [ -n "$unexpected" ]; then
+              echo 'Android-only publication staged unrelated paths:'
+              echo "$unexpected"
+              exit 1
+            fi
+          fi
           if git diff --cached --quiet; then
             echo "No signed artifact changes"
             echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git commit -m "Publish signed official skill and content packages"
+          if [ "$PUBLISH_LEGACY" = "true" ]; then
+            message="Publish signed official skill and content packages"
+          else
+            message="Publish signed Android skill catalog"
+          fi
+          git commit -m "$message"
           git push origin "HEAD:$TARGET_BRANCH"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

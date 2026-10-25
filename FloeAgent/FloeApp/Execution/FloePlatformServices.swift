@@ -67,6 +67,16 @@ final class FloePlatformServices: @unchecked Sendable {
     /// guest is running. Injected by the Linux backend assembly; nil leaves the
     /// explicit-shape match check failing closed instead of guessing.
     private var linuxRunningGuestVCPUProbe: (@Sendable (String) async -> Int?)?
+    /// Late-injection, single-slot notification seam installed once by the
+    /// production `AppEnvironment` after full initialization. It receives the
+    /// environment id only after the runtime owner confirms a Linux guest has
+    /// actually ended (the guest is no longer running) from a direct stop, a
+    /// delete, a backend switch away from `linuxVM` or a confirmed transient
+    /// release. A quarantined survivor (the engine refused to stop the VM) is
+    /// never reported here. Nil (previews, tests, early launch) makes every
+    /// report an honest no-op; there is no polling and no second observer
+    /// architecture.
+    private var linuxRuntimeEndedHandler: (@Sendable (String) async -> Void)?
     /// Verified boot-pair update service owned by the Linux backend
     /// assembly (Bundle-staged `bundled-boot-pair` resource). Exposed here
     /// so settings/tools can drive explicit adopt/rollback without the
@@ -215,6 +225,11 @@ final class FloePlatformServices: @unchecked Sendable {
         if let guests = currentLinuxCommandService() as? any LinuxGuestControlling {
             await guests.stopGuest(environmentID: id)
             await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
+            // The runtime owner's own post-stop status decides: a virtual
+            // machine the engine could not destroy stays running and must not
+            // have its background-location authority or surface records
+            // invalidated as if it had ended.
+            await reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
         }
         try await managementService().stopEnvironment(id: id)
     }
@@ -233,11 +248,21 @@ final class FloePlatformServices: @unchecked Sendable {
         }
     }
     func deleteEnvironment(id: String) async throws {
+        // Ownership is read while the record still exists; after a successful
+        // delete only the runtime's own session table can answer.
+        let wasLinuxOwned = await linuxEnvironmentOwned(id: id)
         try await managementService().deleteEnvironment(id: id)
         // A deleted environment has no future VM to restore: forget its rules.
         await LinuxPortForwardCenter.shared.forget(environmentID: id)
         // The container's files are gone: the cached snapshot is stale.
         StorageMutationHooks.invalidate(.environmentChanged)
+        // A deleted Linux environment ends its background-location authority
+        // and surface cache. The runtime owner's post-delete status still
+        // decides: a stop-quarantined VM the engine reports running is not
+        // claimed dead, so a live guest can never be marked stopped.
+        if wasLinuxOwned, let guests = currentLinuxCommandService() as? any LinuxGuestControlling {
+            await reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
+        }
     }
     func saveEnvironmentTemplate(id: String, name: String) async throws { try await managementService().saveEnvironmentTemplate(id: id, name: name) }
 
@@ -306,6 +331,42 @@ final class FloePlatformServices: @unchecked Sendable {
     /// running. Never a guess: a missing probe answers nil.
     func setLinuxRunningGuestVCPUProbe(_ probe: (@Sendable (String) async -> Int?)?) {
         lock.withLock { linuxRunningGuestVCPUProbe = probe }
+    }
+
+    /// Installs the single runtime-ended notification (or nil to detach).
+    /// Called by the production `AppEnvironment` from its post-initialization
+    /// bootstrap; the handler must be `Sendable` and must not call back into a
+    /// stop path. Replacing the slot is idempotent, and reading it never
+    /// happens while the lock is held across an await.
+    func setLinuxRuntimeEndedHandler(_ handler: (@Sendable (String) async -> Void)?) {
+        lock.withLock { linuxRuntimeEndedHandler = handler }
+    }
+
+    /// Reports one confirmed Linux runtime termination to the installed
+    /// handler. This is the only fan-in: the direct service paths
+    /// (stop/delete/backend switch), the explicit guest stop and the
+    /// heavy-runtime arbiter's confirmation stop and confirmed transient
+    /// release all call it. Callers must have already proven the guest is no
+    /// longer running; a quarantined survivor must not reach this method.
+    func reportLinuxRuntimeEnded(environmentID: String) async {
+        let handler = lock.withLock { linuxRuntimeEndedHandler }
+        await handler?(environmentID)
+    }
+
+    /// Post-stop classification shared by the direct stop entry points: the
+    /// runtime owner's own status is the truth (`running` stays true for a
+    /// quarantined survivor the engine could not destroy). Reports only a
+    /// confirmed stop, so a failed/quarantined stop never marks a live guest
+    /// dead. Returns whether the termination was reported.
+    @discardableResult
+    private func reportLinuxRuntimeEndedIfStopped(
+        _ guests: any LinuxGuestControlling,
+        environmentID: String
+    ) async -> Bool {
+        let status = await guests.guestStatus(environmentID: environmentID)
+        guard !status.running else { return false }
+        await reportLinuxRuntimeEnded(environmentID: environmentID)
+        return true
     }
 
     func setLinuxBootAssetUpdater(_ updater: LinuxGuestBootAssetUpdateService?) {
@@ -1252,7 +1313,12 @@ final class FloePlatformServices: @unchecked Sendable {
         }
         let guests = currentLinuxCommandService() as? any LinuxGuestControlling
         if backend != .linuxVM {
-            await guests?.stopGuest(environmentID: id)
+            if let guests {
+                await guests.stopGuest(environmentID: id)
+                // Switching away must not leave background-location
+                // eligibility armed; only a stop the engine confirms counts.
+                await reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
+            }
             // A different backend must not reuse the Linux environment's
             // shared-Python or Node resolution.
             await LinuxGuestPythonProvisioner.shared.forget(environmentID: id)
@@ -1485,6 +1551,9 @@ final class FloePlatformServices: @unchecked Sendable {
         // The engine drops the VM's forwards with it; clear the applied view
         // but keep the durable rules.
         await LinuxPortForwardCenter.shared.guestStopped(environmentID: id)
+        // Covers the environment card and install card: both stop through
+        // this entry. A quarantined survivor is not reported as ended.
+        await reportLinuxRuntimeEndedIfStopped(guests, environmentID: id)
     }
 
     /// Runs one command inside the environment's Linux guest with exactly the

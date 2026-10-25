@@ -124,7 +124,7 @@ public actor ConversationPromoter {
     /// every identity is known-good, so a throw here mutates nothing.
     static func validate(_ snapshot: Snapshot, db: Database) throws {
         let conversation = snapshot.conversation
-        guard conversation.purpose == .ordinary else {
+        guard conversation.purpose == .ordinary, conversation.visibility == .normal else {
             throw ValidationError.targetNotOrdinary(conversation.id)
         }
         let target = conversation.id

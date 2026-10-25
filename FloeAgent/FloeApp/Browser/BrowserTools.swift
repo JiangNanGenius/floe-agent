@@ -6,9 +6,22 @@ import CryptoKit
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeWorkspace
 
 private final class BrowserToolEnvironment: @unchecked Sendable {
     weak var center: BrowserSessionCenter?
+
+    @MainActor private var designOwners: [UUID: BrowserDesignCaptureOwner] = [:]
+    @MainActor private var busyDesignTasks: Set<UUID> = []
+
+    @MainActor
+    private struct BrowserDesignCaptureOwner {
+        weak var session: BrowserTaskSession?
+        let runID: UUID
+        let root: URL
+        let environmentID: String
+        let tabID: UUID
+    }
 
     init(center: BrowserSessionCenter) {
         self.center = center
@@ -44,6 +57,95 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         // superseded) run can never recreate a browser for its owner.
         try context.cancellation.throwIfCancelled()
         return (owner, try center.taskSession(for: owner))
+    }
+
+    /// Fixed native measurement only. Engine execution remains in the
+    /// resolved Linux environment through the existing exec.shell lifecycle.
+    @MainActor
+    func design(context: ToolContext, action: String, tabID: UUID?, captureID: UUID?, needsFile: String?) async throws -> ToolExecutionOutput {
+        let resolved = try session(for: context)
+        guard let root = context.workspaceRootURL, root.isFileURL,
+              let environmentID = context.environmentID, !environmentID.isEmpty else {
+            throw FloeError.validationFailed("Design capture requires this task's workspace and execution environment")
+        }
+        let physicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        try context.authorizeWorkspacePath("Impeccable/" + resolved.owner.uuidString)
+        guard busyDesignTasks.insert(resolved.owner).inserted else {
+            throw FloeError.validationFailed("A design measurement is already running for this task")
+        }
+        defer { busyDesignTasks.remove(resolved.owner) }
+        designOwners = designOwners.filter { $0.value.session?.isReleased == false }
+        let session = resolved.session
+        switch action {
+        case "capture":
+            guard let selectedTab = tabID ?? session.activeTabID else { throw FloeError.validationFailed("Open a browser tab before capturing its design") }
+            let ticket = try await session.impeccableCaptures.capture(tabID: selectedTab, bridgeRoot: root)
+            do { try context.cancellation.throwIfCancelled() }
+            catch {
+                session.impeccableCaptures.fence(captureID: ticket.captureID, reason: .taskCancelled)
+                session.impeccableCaptures.cleanup(captureID: ticket.captureID)
+                throw error
+            }
+            guard ticket.bridgeRootIsTaskWorkspace, ticket.bridgeRoot == physicalRoot else {
+                session.impeccableCaptures.cleanup(captureID: ticket.captureID)
+                throw FloeError.validationFailed("The design capture belongs to a different workspace")
+            }
+            designOwners[ticket.captureID] = BrowserDesignCaptureOwner(session: session, runID: context.runID,
+                root: physicalRoot, environmentID: environmentID, tabID: selectedTab)
+            struct CaptureResponse: Encodable {
+                let profile = "design"
+                let state = "captured"
+                let engineRun = false
+                let capture: ImpeccableCaptureReceipt
+            }
+            let bytes = try JSONEncoder().encode(CaptureResponse(capture: ticket.receipt))
+            return ToolExecutionOutput(summary: String(decoding: bytes, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(bytes))
+        case "facts", "release":
+            guard let captureID, let owner = designOwners[captureID],
+                  owner.session === session, owner.runID == context.runID,
+                  owner.root == physicalRoot, owner.environmentID == environmentID,
+                  tabID == nil || tabID == owner.tabID else {
+                throw FloeError.validationFailed("The design capture is unavailable for this run or workspace")
+            }
+            if action == "release" {
+                session.impeccableCaptures.cleanup(captureID: captureID)
+                let directory = physicalRoot.appendingPathComponent("Impeccable/" + resolved.owner.uuidString + "/" + captureID.uuidString)
+                guard !FileManager.default.fileExists(atPath: directory.path) else {
+                    throw FloeError.storageCorrupted("The design capture files could not be removed")
+                }
+                designOwners[captureID] = nil
+                return ToolExecutionOutput(digesting: "Design capture released")
+            }
+            guard let needsFile else { throw FloeError.validationFailed("facts requires the engine's Needs file") }
+            try context.authorizeWorkspacePath(needsFile)
+            let pathGuard = WorkspacePathGuard(rootURL: physicalRoot, maxReadBytes: 1_048_576)
+            let input = try pathGuard.resolve(needsFile)
+            try pathGuard.assertReadableSize(input)
+            let file = try FileHandle(forReadingFrom: input)
+            defer { try? file.close() }
+            let needs = try file.read(upToCount: 1_048_577) ?? Data()
+            guard !needs.isEmpty, needs.count <= 1_048_576 else { throw FloeError.validationFailed("The Needs file is empty or exceeds 1 MiB") }
+            try context.cancellation.throwIfCancelled()
+            let needsInput: Data
+            if let envelope = try JSONSerialization.jsonObject(with: needs) as? [String: Any], envelope["needs"] != nil {
+                let assessment = await session.impeccableCaptures.resultAssessment(captureID: captureID, resultJSON: needs)
+                guard assessment.exit == .needsFacts, let request = envelope["needs"] as? [String: Any] else {
+                    throw FloeError.validationFailed("The engine result does not contain a matching pending measurement request")
+                }
+                needsInput = try JSONSerialization.data(withJSONObject: request, options: [.sortedKeys])
+            } else { needsInput = needs }
+            let facts = try await session.impeccableCaptures.answerNeeds(captureID: captureID, needsJSON: needsInput)
+            try context.cancellation.throwIfCancelled()
+            let relative = "Impeccable/" + resolved.owner.uuidString + "/" + captureID.uuidString + "/" + facts.lastPathComponent
+            guard try pathGuard.resolve(relative) == facts.standardizedFileURL else {
+                throw FloeError.validationFailed("The measurements belong to a different workspace")
+            }
+            struct FactsResponse: Encodable { let state = "factsReady"; let captureID: UUID; let relativeFactsFile: String }
+            let bytes = try JSONEncoder().encode(FactsResponse(captureID: captureID, relativeFactsFile: relative))
+            return ToolExecutionOutput(summary: String(decoding: bytes, as: UTF8.self), fullOutputSHA256: FloeDigest.sha256Hex(bytes))
+        default:
+            throw FloeError.validationFailed("Unknown design action")
+        }
     }
 
     /// Resolves the exact run that owns a durable browser handoff for this
@@ -299,26 +401,62 @@ private struct BrowserNavigateTool: AgentTool {
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
     let environment: BrowserToolEnvironment
-    func validate(_ args: Arguments) throws { _ = try BrowserURLPolicy.validate(args.url, allowRegisteredServices: true) }
-    func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(context: context, action: .navigate(url: args.url), tabID: args.tabID)
+    func validate(_ args: Arguments) throws { _ = try BrowserURLPolicy.parseNavigationURL(args.url) }
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        let owner = try environment.owner(for: context)
+        _ = try BrowserURLPolicy.validate(args.url, conversationID: owner)
+        return try await environment.run(context: context, action: .navigate(url: args.url), tabID: args.tabID)
     }
 }
 
 private struct BrowserObserveTool: AgentTool {
-    struct Arguments: Decodable, Sendable { let tabID: UUID?; let cursor: Int? }
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let cursor: Int?
+        let profile: String?
+        let designAction: String?
+        let captureID: UUID?
+        let needsFile: String?
+    }
     static let name = "browser.observe"
-    static let toolDescription = "FIRST choice for reading a page: return a bounded semantic DOM snapshot with stable element refs, text, values, state, and bounds. Continue pagination before concluding that structured information is missing."
-    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string"},"cursor":{"type":"integer","minimum":0}},"additionalProperties":false}"#
+    static let toolDescription = "FIRST choice for reading a page: bounded semantic DOM with stable refs, text, state and bounds. Default profile=semantic; continue pagination before concluding information is absent. profile=design captures a fixed, redacted design snapshot in this task's workspace; designAction=capture returns native capture metadata and relative files, not an engine verdict. Run the installed design engine through the existing task Linux exec.shell. For an actual needs-facts result, use designAction=facts with captureID and the workspace-relative Needs JSON file; native measurements remain bound to that exact run, tab and document. Release the capture after the scan. Navigation, scrolling or resizing invalidates it. No JavaScript is accepted."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"cursor":{"type":"integer","minimum":0},"profile":{"type":"string","enum":["semantic","design"]},"designAction":{"type":"string","enum":["capture","facts","release"]},"captureID":{"type":"string","format":"uuid"},"needsFile":{"type":"string","maxLength":1024}},"additionalProperties":false}"#
     static let riskLabels: Set<RiskLabel> = []
     static let isSideEffecting = false
     static let toolEffect: ToolEffect = .readOnly
     let environment: BrowserToolEnvironment
     func validate(_ args: Arguments) throws {
+        let profile = args.profile ?? "semantic"
+        guard ["semantic", "design"].contains(profile) else { throw FloeError.validationFailed("Unknown observation profile") }
         if let cursor = args.cursor, cursor < 0 { throw FloeError.validationFailed("cursor must be non-negative") }
+        if profile == "semantic" {
+            guard args.designAction == nil, args.captureID == nil, args.needsFile == nil else {
+                throw FloeError.validationFailed("Design arguments require profile=design")
+            }
+            return
+        }
+        guard args.cursor == nil else { throw FloeError.validationFailed("Design captures do not accept a semantic cursor") }
+        switch args.designAction ?? "capture" {
+        case "capture":
+            guard args.captureID == nil, args.needsFile == nil else { throw FloeError.validationFailed("A new capture does not accept previous capture files") }
+        case "facts":
+            guard args.captureID != nil, let file = args.needsFile, !file.isEmpty, file.utf8.count <= 1024 else {
+                throw FloeError.validationFailed("facts requires captureID and a bounded workspace-relative needsFile")
+            }
+        case "release":
+            guard args.captureID != nil, args.needsFile == nil else { throw FloeError.validationFailed("release requires only captureID and optional tabID") }
+        default:
+            throw FloeError.validationFailed("Unknown design action")
+        }
     }
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
-        try await environment.run(context: context, action: .observe(cursor: args.cursor), tabID: args.tabID)
+        try validate(args)
+        if args.profile == "design" {
+            return try await environment.design(context: context, action: args.designAction ?? "capture",
+                tabID: args.tabID, captureID: args.captureID, needsFile: args.needsFile)
+        }
+        return try await environment.run(context: context, action: .observe(cursor: args.cursor), tabID: args.tabID)
     }
 }
 

@@ -9,8 +9,9 @@ import FloeTools
 
 public struct LocalShellTool: AgentTool {
     public struct Arguments: Decodable, Sendable {
-        /// Command string (≤16 KiB). Pipelines, redirections and globs are
-        /// supported by the backend shell.
+        /// Command string. Pipelines, redirections and globs are supported
+        /// by the backend shell. Command length has no application-level cap:
+        /// large bodies are staged as a script file inside the guest.
         public var command: String?
         /// Alias for `command` when the payload is a multi-line script body.
         public var script: String?
@@ -18,6 +19,9 @@ public struct LocalShellTool: AgentTool {
         public var env: [String: String]?
         public var stdin: String?
         public var timeout: Double?
+        /// Alias for `timeout`. Rejected when both are present with
+        /// different values; equal duplicates are accepted.
+        public var timeoutSeconds: Double?
         public var maxOutputBytes: Int?
         /// Legacy managed dependency input; prefer python3 -m pip in the command.
         public var packages: [String]?
@@ -31,6 +35,7 @@ public struct LocalShellTool: AgentTool {
             env: [String: String]? = nil,
             stdin: String? = nil,
             timeout: Double? = nil,
+            timeoutSeconds: Double? = nil,
             maxOutputBytes: Int? = nil,
             packages: [String]? = nil,
             packagePurpose: String? = nil,
@@ -42,6 +47,7 @@ public struct LocalShellTool: AgentTool {
             self.env = env
             self.stdin = stdin
             self.timeout = timeout
+            self.timeoutSeconds = timeoutSeconds
             self.maxOutputBytes = maxOutputBytes
             self.packages = packages
             self.packagePurpose = packagePurpose
@@ -53,19 +59,45 @@ public struct LocalShellTool: AgentTool {
             if let script, !script.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return script }
             return nil
         }
+
+        /// Canonical timeout argument. `timeout` stays the canonical name;
+        /// `timeoutSeconds` is an accepted alias because models spell it that
+        /// way. A silent ignore previously turned such a request into the
+        /// 10-second default, so the alias now works and a real disagreement
+        /// fails loudly instead of picking one.
+        public var resolvedTimeout: Double? {
+            get throws {
+                switch (timeout, timeoutSeconds) {
+                case let (value?, alias?):
+                    guard value == alias else {
+                        throw FloeError.validationFailed(
+                            "timeout and timeoutSeconds disagree (\(value) vs \(alias)); pass one value or make both equal"
+                        )
+                    }
+                    return value
+                case let (value?, nil):
+                    return value
+                case let (nil, alias?):
+                    return alias
+                case (nil, nil):
+                    return nil
+                }
+            }
+        }
     }
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. Effective timeout is reported (foreground max 120 seconds; jobs max 600); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
+        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. There is no application-level command-length limit: an oversized script body is staged as a file inside the task's guest workspace and executed as guest /bin/sh code, while stdin stays a separate bounded channel. The requested and effective timeout are reported with the clamp reason (foreground max 120 seconds; jobs max 600); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
-      "command":{"type":"string","description":"Shell command line (max 16 KiB). Pipelines and redirections supported."},
+      "command":{"type":"string","description":"Shell command line or whole script body. No application-level length cap: large scripts are staged as a file inside the task's guest workspace, so pipelines, redirections and loops all run as guest /bin/sh code."},
       "script":{"type":"string","description":"Alias for command when passing a multi-line script body"},
       "cwd":{"type":"string","description":"Workspace-relative working directory (default: session cwd or workspace root)"},
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
-      "timeout":{"type":"number","description":"Wall-clock timeout seconds (default 10, max 120; 600 for jobs.submit background jobs)"},
+      "timeout":{"type":"number","description":"Wall-clock timeout seconds (default 10, max 120; 600 for jobs.submit background jobs). Canonical name; timeoutSeconds is an accepted alias."},
+      "timeoutSeconds":{"type":"number","description":"Alias for timeout. If both are present they must be equal."},
       "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"}},
      "additionalProperties":false}
     """#
@@ -75,7 +107,6 @@ public struct LocalShellTool: AgentTool {
     public static let isSideEffecting = true
     public static let toolEffect: ToolEffect = .mutating
 
-    static let maximumCommandBytes = 16 * 1024
     static let maximumStdinBytes = 256 * 1024
     static let maximumEnvEntries = 32
 
@@ -92,9 +123,6 @@ public struct LocalShellTool: AgentTool {
             throw FloeError.validationFailed("command (or script) must not be empty")
         }
         try ShellInputValidation.validate(command: command, cwd: args.cwd ?? ".", environment: args.env ?? [:], stdin: args.stdin)
-        if Data(command.utf8).count > Self.maximumCommandBytes {
-            throw FloeError.validationFailed("command exceeds the \(Self.maximumCommandBytes)-byte limit")
-        }
         if let cwd = args.cwd {
             guard !cwd.hasPrefix("/"), !cwd.hasPrefix("~"), !cwd.split(separator: "/").contains("..") else {
                 throw FloeError.validationFailed("cwd must be a workspace-relative path without '..'")
@@ -106,7 +134,7 @@ public struct LocalShellTool: AgentTool {
         if let env = args.env, env.count > Self.maximumEnvEntries {
             throw FloeError.validationFailed("env accepts at most \(Self.maximumEnvEntries) variables")
         }
-        if let timeout = args.timeout, (!timeout.isFinite || timeout <= 0) {
+        if let timeout = try args.resolvedTimeout, !timeout.isFinite || timeout <= 0 {
             throw FloeError.validationFailed("timeout must be > 0")
         }
         if let maxOutputBytes = args.maxOutputBytes, maxOutputBytes <= 0 {
@@ -160,12 +188,13 @@ public struct LocalShellTool: AgentTool {
         }
         let isBackground = context.toolCallID?.hasPrefix("jobs.") == true
         let cwd = args.cwd ?? "."
+        let requestedTimeout = try args.resolvedTimeout
         let result = await shell.run(
             command: command,
             cwd: cwd,
             environment: args.env ?? [:],
             stdin: args.stdin,
-            timeout: args.timeout,
+            timeout: requestedTimeout,
             maxOutputBytes: args.maxOutputBytes,
             isBackground: isBackground,
             context: context
@@ -175,7 +204,15 @@ public struct LocalShellTool: AgentTool {
             let text = "status=blocked pattern=\(verdict.matchedPatternID ?? "policy")\n\(verdict.reason ?? "Command blocked")\nexit=126"
             return Self.output(text, exitStatus: 126)
         case .outcome(let outcome):
-            return render(outcome: outcome, command: command, cwd: cwd, installOutput: installOutput, effectiveTimeout: shell.normalizedTimeout(args.timeout, isBackground: isBackground), isBackground: isBackground)
+            return render(
+                outcome: outcome,
+                command: command,
+                cwd: cwd,
+                installOutput: installOutput,
+                requestedTimeout: requestedTimeout,
+                effectiveTimeout: shell.normalizedTimeout(requestedTimeout, isBackground: isBackground),
+                isBackground: isBackground
+            )
         }
     }
 
@@ -184,6 +221,7 @@ public struct LocalShellTool: AgentTool {
         command: String,
         cwd: String,
         installOutput: String,
+        requestedTimeout: TimeInterval?,
         effectiveTimeout: TimeInterval,
         isBackground: Bool
     ) -> ToolExecutionOutput {
@@ -192,12 +230,32 @@ public struct LocalShellTool: AgentTool {
             if !installOutput.isEmpty { header += "--- managed packages ---\n\(installOutput)\n" }
             return header
         }
+        /// Requested/effective/clamp receipt. The effective value is the one
+        /// the guest command actually received; the reason names why it
+        /// differs from the request so a clamped deadline is never mistaken
+        /// for the model's own value.
+        func timeoutReceipt() -> String {
+            let requested = requestedTimeout.map { String($0) } ?? "none"
+            let reason: String
+            if let requestedTimeout {
+                if requestedTimeout < effectiveTimeout {
+                    reason = "minimumFloor"
+                } else if requestedTimeout > effectiveTimeout {
+                    reason = isBackground ? "backgroundCeiling" : "foregroundCeiling"
+                } else {
+                    reason = "none"
+                }
+            } else {
+                reason = "default"
+            }
+            return "timeoutRequestedSeconds=\(requested) effectiveTimeoutSeconds=\(effectiveTimeout) timeoutClamp=\(reason)"
+        }
         switch outcome {
         case .exited(let code, let stdout, let stderr, let truncated, let stderrTruncated, let durationMs):
             let cleanOut = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stdout))
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stderr))
             var text = prefix()
-            text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd) effectiveTimeoutSeconds=\(effectiveTimeout)"
+            text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd) \(timeoutReceipt())"
             if truncated { text += " stdoutTruncated" }
             if stderrTruncated { text += " stderrTruncated" }
             text += "\n--- stdout ---\n\(cleanOut)"
@@ -205,7 +263,7 @@ public struct LocalShellTool: AgentTool {
             return Self.output(text, exitStatus: code)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
             var text = prefix()
-            text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut effectiveTimeoutSeconds=\(effectiveTimeout)"
+            text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut \(timeoutReceipt())"
             text += isBackground
                 ? "\nThe background command reached its effective deadline. Inspect existing outputs before explicitly continuing; do not blindly repeat side effects."
                 : "\nThe foreground command reached its effective deadline. Inspect existing outputs before explicitly continuing long work through jobs.submit; do not blindly repeat side effects."
@@ -227,6 +285,6 @@ public struct LocalShellTool: AgentTool {
     }
 
     private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        ToolExecutionOutput(digesting: text, exitStatus: exitStatus)
+        ToolExecutionOutput(digesting: text, exitStatus: exitStatus, capturedOutput: text)
     }
 }

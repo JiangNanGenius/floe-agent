@@ -290,6 +290,15 @@ public actor MCPRemoteClient {
     public var isDisconnected: Bool { disconnected }
     public var inFlightRequests: Int { inFlightRequestCount }
 
+    /// Explicit handshake for a caller targeting a reviewed MCP 2025 SDK
+    /// service. Existing generic clients keep their current-first behavior.
+    public func prepareLegacySession() async throws {
+        guard !disconnected else { throw MCPClientError.disconnected }
+        try await ensureLegacyInitialized()
+        guard !disconnected else { throw MCPClientError.disconnected }
+        transportEra = .legacy
+    }
+
     public func discoverTools() async throws -> [MCPDiscoveredTool] {
         var cursor: String?
         var discovered: [MCPDiscoveredTool] = []

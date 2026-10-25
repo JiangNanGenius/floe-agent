@@ -701,3 +701,112 @@ struct BundledCatalogCapabilitiesTests {
         #expect(ProviderCatalogCapabilityResolver.supportsImageInput(imageModel) == false)
     }
 }
+
+@Suite("FloeProviders.NewModelEndpointMetadata")
+struct NewModelEndpointMetadataTests {
+    private func index(_ entries: [ProviderCatalogEntry]? = nil) throws -> ProviderCatalogIndex {
+        try validatedIndex(metadataDocument(entries ?? [metadataEntry(
+            "known", name: "Known", kind: .openAI,
+            defaultProtocol: .openAIResponses,
+            baseURL: "https://api.example.com/v1", models: ["vision", "text", "generate"],
+            modelMetadata: [
+                "vision": catalogMetadata(input: ["text", "image"], output: ["text"]),
+                "text": catalogMetadata(input: ["text", "audio"], output: ["text"]),
+                "generate": catalogMetadata(input: ["image"], output: ["image"])
+            ]
+        )]))
+    }
+
+    @Test("Built-in and compatible manual presets inherit verified new-row vision defaults")
+    func verifiedEndpointDefaults() throws {
+        let catalog = try index()
+        for kind in [ProviderKind.openAI, .custom] {
+            let metadata = ProviderCatalogCapabilityResolver.metadata(
+                forRemoteID: "vision", kind: kind,
+                baseURL: URL(string: "https://api.example.com/v1")!,
+                modelProtocol: .openAIChatCompletions, catalog: catalog
+            )
+            let defaults = ProviderCatalogCapabilityResolver.capabilities(for: metadata, base: [.text, .tools])
+            #expect(defaults.contains(.vision))
+        }
+    }
+
+    @Test("Endpoint spelling normalizes only host case, HTTPS default port and trailing slash")
+    func endpointCanonicalization() throws {
+        let metadata = ProviderCatalogCapabilityResolver.metadata(
+            forRemoteID: "vision", kind: .openAI,
+            baseURL: URL(string: "https://API.EXAMPLE.COM.:443/v1/")!,
+            modelProtocol: .openAIResponses, catalog: try index()
+        )
+        #expect(ProviderCatalogCapabilityResolver.supportsImageInput(metadata))
+    }
+
+    @Test("Unknown origins, routes and credential-bearing URLs never borrow catalog capabilities")
+    func rejectDifferentEndpoint() throws {
+        let catalog = try index()
+        for address in [
+            "https://api.example.com.attacker.invalid/v1", "https://other.example.com/v1",
+            "https://api.example.com/coding/v1", "https://api.example.com:8443/v1",
+            "http://api.example.com/v1", "https://user@api.example.com/v1",
+            "https://api.example.com/v1?route=other", "https://api.example.com/v1#other"
+        ] {
+            let metadata = ProviderCatalogCapabilityResolver.metadata(
+                forRemoteID: "vision", kind: .openAI, baseURL: URL(string: address)!,
+                modelProtocol: .openAIResponses, catalog: catalog
+            )
+            #expect(metadata == nil)
+        }
+    }
+
+    @Test("Unrecognized model identifiers retain existing protocol defaults")
+    func unknownModel() throws {
+        let metadata = ProviderCatalogCapabilityResolver.metadata(
+            forRemoteID: "vision-new-unverified", kind: .openAI,
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            modelProtocol: .openAIResponses, catalog: try index()
+        )
+        #expect(metadata == nil)
+        #expect(!ProviderCatalogCapabilityResolver.capabilities(for: metadata, base: [.text, .tools]).contains(.vision))
+    }
+
+    @Test("Ambiguous provider identities do not silently choose the first catalog row")
+    func ambiguousIdentity() throws {
+        let catalog = try index([
+            metadataEntry("one", name: "One", models: ["vision"], modelMetadata: ["vision": catalogMetadata(input: ["image"], output: ["text"])]),
+            metadataEntry("two", name: "Two", models: ["vision"], modelMetadata: ["vision": catalogMetadata(input: ["image"], output: ["text"])])
+        ])
+        let metadata = ProviderCatalogCapabilityResolver.metadata(
+            forRemoteID: "vision", kind: .custom,
+            baseURL: URL(string: "https://api.example.com/v1")!,
+            modelProtocol: .openAIChatCompletions, catalog: catalog
+        )
+        #expect(metadata == nil)
+    }
+
+    @Test("Different protocol and authentication families stay unknown")
+    func protocolFamily() throws {
+        let catalog = try index()
+        for (kind, wire) in [(ProviderKind.anthropic, ModelProtocol.anthropicMessages), (.openAI, .anthropicMessages)] {
+            let metadata = ProviderCatalogCapabilityResolver.metadata(
+                forRemoteID: "vision", kind: kind,
+                baseURL: URL(string: "https://api.example.com/v1")!,
+                modelProtocol: wire, catalog: catalog
+            )
+            #expect(metadata == nil)
+        }
+    }
+
+    @Test("Generation references and audio inputs are not visual understanding")
+    func modalityExclusions() throws {
+        let catalog = try index()
+        for remoteID in ["text", "generate"] {
+            let metadata = ProviderCatalogCapabilityResolver.metadata(
+                forRemoteID: remoteID, kind: .openAI,
+                baseURL: URL(string: "https://api.example.com/v1")!,
+                modelProtocol: .openAIResponses, catalog: catalog
+            )
+            #expect(metadata != nil)
+            #expect(!ProviderCatalogCapabilityResolver.capabilities(for: metadata, base: [.text, .tools]).contains(.vision))
+        }
+    }
+}

@@ -19,7 +19,6 @@ public actor LocalShellService {
         public var defaultMaxOutputBytes: Int
         public var maxOutputBytes: Int
         public var maximumStdinBytes: Int
-        public var maximumCommandBytes: Int
 
         public init(
             defaultTimeout: TimeInterval = 10,
@@ -28,8 +27,7 @@ public actor LocalShellService {
             gateWaitTimeout: TimeInterval = 5,
             defaultMaxOutputBytes: Int = 64 * 1024,
             maxOutputBytes: Int = 256 * 1024,
-            maximumStdinBytes: Int = 256 * 1024,
-            maximumCommandBytes: Int = 16 * 1024
+            maximumStdinBytes: Int = 256 * 1024
         ) {
             self.defaultTimeout = defaultTimeout
             self.maxTimeout = maxTimeout
@@ -38,7 +36,6 @@ public actor LocalShellService {
             self.defaultMaxOutputBytes = defaultMaxOutputBytes
             self.maxOutputBytes = maxOutputBytes
             self.maximumStdinBytes = maximumStdinBytes
-            self.maximumCommandBytes = maximumCommandBytes
         }
     }
 

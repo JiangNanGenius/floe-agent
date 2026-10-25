@@ -97,6 +97,47 @@ struct RunLifecycleRetentionTests {
         }
     }
 
+    @Test("Hub review refusals are removed only with their exact conversation owner")
+    func hubReviewChoicesFollowOwnerDeletion() async throws {
+        let db = try await database()
+        let doomed = UUID(), survivor = UUID()
+        try await insertConversation(db, id: doomed)
+        try await insertConversation(db, id: survivor)
+        let settings = SQLiteSettingsStore(database: db)
+        let prefix = "skills.hub.reviewChoice."
+        let owned = prefix + doomed.uuidString + "." + UUID().uuidString + ".example"
+        let kept = prefix + survivor.uuidString + "." + UUID().uuidString + ".example"
+        let boundary = prefix + doomed.uuidString + "-other.example"
+        for key in [owned, kept, boundary] { try await settings.setValue("false", forKey: key) }
+        try await SQLiteConversationStore(database: db).deleteConversation(id: doomed)
+        #expect(try await settings.value(forKey: owned) == nil)
+        #expect(try await settings.value(forKey: kept) == "false")
+        #expect(try await settings.value(forKey: boundary) == "false")
+        #expect(try await SQLiteConversationStore(database: db).conversation(id: survivor) != nil)
+    }
+
+    @Test("A failed conversation deletion rolls back its Hub review choices")
+    func failedDeletionPreservesHubReviewChoice() async throws {
+        let db = try await database()
+        let owner = UUID()
+        try await insertConversation(db, id: owner)
+        let settings = SQLiteSettingsStore(database: db)
+        let key = "skills.hub.reviewChoice." + owner.uuidString + "." + UUID().uuidString + ".example"
+        try await settings.setValue("false", forKey: key)
+        try await db.writer { database in
+            try database.execute(sql: """
+                CREATE TRIGGER refuse_review_owner_delete BEFORE DELETE ON conversations
+                BEGIN SELECT RAISE(ABORT, 'synthetic deletion failure'); END;
+                """)
+        }
+        var failed = false
+        do { try await SQLiteConversationStore(database: db).deleteConversation(id: owner) }
+        catch { failed = true }
+        #expect(failed)
+        #expect(try await settings.value(forKey: key) == "false")
+        #expect(try await SQLiteConversationStore(database: db).conversation(id: owner) != nil)
+    }
+
     @Test("Deleting a conversation removes its owned lifecycle rows and keeps other owners' rows")
     func deleteConversationPurgesOwnedLifecycle() async throws {
         let db = try await database()

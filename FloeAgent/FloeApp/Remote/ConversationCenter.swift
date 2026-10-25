@@ -1587,11 +1587,16 @@ final class ConversationCenter: ObservableObject {
 
     /// Single-record list refresh: swap the re-read conversation into the
     /// sorted list (or insert when new). Cheap counterpart to full reload().
+    /// The same durable owner becomes ordinary history after an atomic promotion.
+    func authoringConversationBecameVisible(_ conversationID: UUID) async {
+        await refreshConversationInList(conversationID)
+    }
+
     private func refreshConversationInList(_ conversationID: UUID) async {
         // Temporary conversations never enter the saved list projection.
         guard !isTemporaryConversation(conversationID) else { return }
         guard let fresh = try? await environment.conversationStore.conversation(id: conversationID) else { return }
-        guard fresh.purpose == .ordinary else {
+        guard fresh.purpose == .ordinary, fresh.visibility == .normal else {
             conversations.removeAll { $0.id == conversationID }
             return
         }
@@ -1641,6 +1646,98 @@ final class ConversationCenter: ObservableObject {
                 logger.info(
                     "launchRecoveryInterrupted run=\(run.id.uuidString) conversation=\(run.conversationID.uuidString) previousState=\(run.state)"
                 )
+        }
+        await reconcilePendingToolCaptureCleanup()
+    }
+
+    /// Reattempts capture-directory removals whose conversation deletion
+    /// already committed but whose exact directory removal failed — or whose
+    /// deletion happened while the capture root was unavailable. This rides
+    /// the existing process-latched launch reconciliation pass (no timer and
+    /// no global sweep): a request only exists for a task whose deletion was
+    /// confirmed, is checked against actual conversation absence, and is
+    /// cancelled (without touching live bytes) when the task still exists.
+    /// Cold launch merges BOTH durable sources: the SQLite cleanup intents
+    /// (they exist exactly for a missing/unavailable root at deletion time)
+    /// and the capture root's own retry tombstones.
+    private func reconcilePendingToolCaptureCleanup() async {
+        let logger = FloeLogger(category: .persistence)
+        let intentStore = ToolCaptureCleanupRequestStore(database: environment.database)
+        let requestIDs: [UUID]
+        do {
+            requestIDs = try await intentStore.pendingConversationIDs()
+        } catch {
+            // A SQL read failure is unknown, not proof the queue is empty.
+            // The rows are durable; the next launch reattempts. Never claim
+            // a clean drain here.
+            logger.warning(
+                "toolResultCaptureCleanupIntentsUnread reason=read-failed")
+            return
+        }
+        // A missing root cannot prove that an earlier durable capture is
+        // gone, and nothing can be purged through it. Absence may only be
+        // confirmed at a real durable root: keep every intent and tombstone
+        // for the next launch instead of substituting a fresh RAM store.
+        guard let root = Self.toolResultCaptureRoot() else {
+            if !requestIDs.isEmpty {
+                logger.warning(
+                    "toolResultCaptureCleanupDeferred reason=root-unavailable requests=\(requestIDs.count)")
+            }
+            return
+        }
+        let store = ToolResultCaptureStore.shared(durableRoot: root)
+        let tombstoneIDs = await store.pendingPurgeConversationIDs()
+        var pending: [UUID] = []
+        var seen: Set<UUID> = []
+        for conversationID in requestIDs + tombstoneIDs where seen.insert(conversationID).inserted {
+            pending.append(conversationID)
+        }
+        guard !pending.isEmpty else { return }
+        for conversationID in pending {
+            let exists: Bool
+            do {
+                // A read failure is unknown, not proof of deletion: keep the
+                // request AND the tombstone for the next launch instead of
+                // deleting bytes that may still belong to a live task.
+                exists = try await environment.conversationStore.conversation(id: conversationID) != nil
+            } catch {
+                logger.warning(
+                    "toolResultCaptureCleanupRetrySkipped conversation=\(conversationID.uuidString) reason=read-failed")
+                continue
+            }
+            if exists {
+                _ = await store.cancelPendingPurge(conversationID: conversationID)
+                do {
+                    // Stale request: the task still exists, so the deletion
+                    // intent was rolled back. Only the request row is
+                    // removed — live capture bytes are never touched.
+                    _ = try await intentStore.acknowledge(conversationID: conversationID)
+                } catch {
+                    logger.warning(
+                        "toolResultCaptureCleanupIntentAckFailed conversation=\(conversationID.uuidString) reason=write-failed")
+                }
+                continue
+            }
+            let outcome = await store.retryPendingPurge(conversationID: conversationID)
+            guard outcome.succeeded else {
+                logger.error("toolResultCaptureCleanupRetryFailed conversation=\(conversationID.uuidString)")
+                continue
+            }
+            do {
+                try environment.skillAuthoring.removeOwnedSnapshots(ownerID: conversationID)
+                try environment.skillsCenter.removeHubReadSnapshots(ownerID: conversationID)
+            } catch {
+                logger.warning("authoringSnapshotCleanupDeferred conversation=\(conversationID.uuidString)")
+                continue
+            }
+            // Acknowledgment follows both actual owned directory removals.
+            // Failure keeps the SQLite request for idempotent reconciliation.
+            do {
+                _ = try await intentStore.acknowledge(conversationID: conversationID)
+                logger.info("toolResultCaptureCleanupRetryCompleted conversation=\(conversationID.uuidString)")
+            } catch {
+                logger.error("toolResultCaptureCleanupRetryAckFailed conversation=\(conversationID.uuidString)")
+            }
         }
     }
 
@@ -3748,6 +3845,11 @@ final class ConversationCenter: ObservableObject {
             // Service-owned store roots for the typed mutable-target
             // contract (media project records); see the local above.
             serviceStorePaths: serviceStorePaths,
+            // Bounded captured tool results (compaction paging). One shared
+            // app-process store per canonical root; a temporary run's config
+            // still carries the root, but the runtime resolves a nil-root
+            // RAM-only store for it and never opens this directory.
+            toolResultCaptureRoot: Self.toolResultCaptureRoot(),
             // Required background work keeps this run nonterminal until it
             // resolves. The projection reads durable dependency rows (never
             // a live in-memory job shadow store) and self-heals a dependency
@@ -3824,6 +3926,22 @@ final class ConversationCenter: ObservableObject {
                 )
             }
         }
+        // Native authoring format/source context is private to the exact
+        // reserved attempt, not a technical prompt in the user's transcript.
+        // A matching attempt with missing/corrupt input fails before provider
+        // I/O; later ordinary runs receive no stale authoring instructions.
+        let authoringInstructions: String?
+        if isTemporary {
+            authoringInstructions = nil
+        } else {
+            let authoring = try await SQLiteSkillAuthoringStore(database: environment.database)
+                .record(id: conversationID)
+            authoringInstructions = try SkillAuthoringInputSnapshot.instructions(
+                conversationID: conversationID, runID: runID,
+                providerID: provider.id, modelID: model.id,
+                expectedAttempt: authoring?.attempt?.token
+            )
+        }
         return ConversationRunService(
             configuration: configuration,
             adapter: providerAdapter(for: provider, ownerRunID: runID),
@@ -3856,6 +3974,7 @@ final class ConversationCenter: ObservableObject {
                 availableToolNames: allowedToolNames,
                 skillInstructions: [
                     skills.instructions,
+                    authoringInstructions,
                     notesContext,
                     runSurface == .ordinary || isTemporary
                         ? AppleCapabilityPreferences.skillInstructions() : nil
@@ -4305,6 +4424,10 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface = .ordinary,
         canvasContext: CanvasRunContextSeed? = nil,
         isGoalContinuation: Bool = false,
+        /// Trusted feature-owned attempt identity persisted before launch.
+        /// Nil retains ordinary/temporary chat's existing ID allocation.
+        newRunID: UUID? = nil,
+        executionEnvironmentID: String? = nil,
         startOrigin: ContinuedProcessingStartOrigin
     ) async throws -> StartedConversationRun {
         guard !compactingConversations.contains(conversationID) else {
@@ -4325,6 +4448,9 @@ final class ConversationCenter: ObservableObject {
         // session afterwards. Store authority rides the session, which
         // forwards after Keep and closes at End.
         let launchIsTemporary = isTemporaryConversation(conversationID)
+        guard !launchIsTemporary || (newRunID == nil && executionEnvironmentID == nil) else {
+            throw FloeError.validationFailed("A feature-owned launch cannot use temporary chat")
+        }
         // Temporary chat is text-only at the ACTUAL launch boundary, not
         // only in the UI: refuse any staged attachment before import, store
         // or provider effects, without deleting the user's staged files.
@@ -4337,6 +4463,9 @@ final class ConversationCenter: ObservableObject {
         // how the UI decided to send.
         if !launchIsTemporary, !isGoalContinuation,
            let waiting = await awaitingDependencyRun(conversationID: conversationID) {
+            guard newRunID == nil || newRunID == waiting.id else {
+                throw FloeError.validationFailed("A different run is still waiting in this conversation")
+            }
             FloeLogger(category: .app).info(
                 "startRunResumesAwaitingDependency conversation=\(conversationID.uuidString) run=\(waiting.id.uuidString)")
             return try await resumeRunWithInput(waiting, content: trimmed, attachments: attachments)
@@ -4366,7 +4495,7 @@ final class ConversationCenter: ObservableObject {
         guard launchFence.isValid(launchToken) else {
             throw FloeError.validationFailed("Conversation ended during launch")
         }
-        let runID = UUID()
+        let runID = newRunID ?? UUID()
         let prepared = try await prepareRunLaunch(RunLaunchRequest(
             conversationID: conversationID,
             runID: runID,
@@ -4460,7 +4589,8 @@ final class ConversationCenter: ObservableObject {
             executionMode: executionMode,
             runSurface: runSurface,
             shouldGenerateTitle: false,
-            startOrigin: startOrigin
+            startOrigin: startOrigin,
+            executionEnvironmentID: executionEnvironmentID
         )
     }
 
@@ -6789,6 +6919,9 @@ final class ConversationCenter: ObservableObject {
     }
 
     private func stopRunsAndDelete(conversationIDs: Set<UUID>) async throws {
+        for id in conversationIDs {
+            try await environment.skillAuthoring.prepareForOwnerDeletion(ownerID: id)
+        }
         // Per-conversation durable run IDs, captured before any cascade: the
         // exact S3-D cleanup tombstone for this deletion names only these
         // runs' `RunOutputs/<runUUID>` trees.
@@ -6862,7 +6995,25 @@ final class ConversationCenter: ObservableObject {
         // Any cleanup failure keeps the request (bootstrap retry) and is
         // surfaced visibly at the end instead of being swallowed.
         var runOutputCleanupFailureCount = 0
+        var captureCleanupFailureCount = 0
+        // Resolve once for this deletion pass. If storage is unavailable,
+        // active runtime stores can still be fenced, but we cannot claim that
+        // historical durable captures were removed through a fresh RAM store.
+        let captureStore = Self.toolResultCaptureRoot().map {
+            ToolResultCaptureStore.shared(durableRoot: $0)
+        }
+        // Durable cleanup intent lives in SQLite, independent of the capture
+        // root: an unavailable root can no longer reduce this deletion to a
+        // failure count that evaporates on the next cold launch.
+        let captureIntents = ToolCaptureCleanupRequestStore(database: environment.database)
         for id in conversationIDs {
+            // Persist the tool-capture cleanup intent BEFORE the first
+            // mutation for this conversation and before the DB cascade —
+            // the same contract as the RunOutputs queue. An enqueue failure
+            // throws here and the deletion for this id never starts, so a
+            // confirmed deletion can never rely on a file tombstone that
+            // the (possibly unavailable) root could not carry.
+            try await captureIntents.enqueue(conversationID: id)
             let ownerLabel = try await environment.conversationStore.conversation(id: id)?.title
                 ?? FloeL10n.l("remote.conversation_center.deleted_tasks")
             try await environment.intelligenceStore.preserveMemoriesBeforeConversationDeletion(
@@ -6877,6 +7028,59 @@ final class ConversationCenter: ObservableObject {
                 try await environment.conversationStore.deleteConversation(id: id)
             }
             environment.browserCenter.discard(conversationID: id)
+            environment.skillsCenter.discardHubReview(conversationID: id)
+            // Captured tool results are optional task-owned retention. The
+            // DB deletion is confirmed and every writer was joined above, so
+            // no settlement can still be produced. The store fences the
+            // conversation first (a late write can never recreate a deleted
+            // task's directory), then removes RAM and the exact owned
+            // directory. A removal failure keeps the directory, persists a
+            // retry tombstone drained by the launch reconciliation pass, and
+            // is counted here instead of being ignored.
+            var captureCleanupIncomplete = captureStore == nil
+            for service in services where service.conversationID == id {
+                let runtimeOutcome = await service.purgeRetainedToolResults(conversationID: id)
+                if !runtimeOutcome.succeeded {
+                    captureCleanupIncomplete = true
+                    FloeLogger(category: .persistence).warning(
+                        "toolResultCaptureRuntimePurgeFailed conversation=\(id.uuidString) retry=\(runtimeOutcome.retryScheduled)")
+                }
+            }
+            if let captureStore {
+                let captureOutcome = await captureStore.purge(conversationID: id)
+                if !captureOutcome.succeeded {
+                    captureCleanupIncomplete = true
+                    FloeLogger(category: .persistence).error(
+                        "toolResultCaptureCleanupFailed conversation=\(id.uuidString) retry=\(captureOutcome.retryScheduled)")
+                }
+            } else {
+                FloeLogger(category: .persistence).error(
+                    "toolResultCaptureCleanupIncomplete conversation=\(id.uuidString) reason=root-unavailable")
+            }
+            do {
+                try environment.skillAuthoring.removeOwnedSnapshots(ownerID: id)
+                try environment.skillsCenter.removeHubReadSnapshots(ownerID: id)
+            } catch {
+                captureCleanupIncomplete = true
+                FloeLogger(category: .persistence).warning(
+                    "authoringSnapshotCleanupDeferred conversation=\(id.uuidString)")
+            }
+            if captureCleanupIncomplete {
+                // The durable request stays: cold launch merges it with the
+                // tombstones. Unavailable root and purge/ack failures all
+                // keep this retry intent alive.
+                captureCleanupFailureCount += 1
+            } else {
+                do {
+                    // Only a fully successful purge clears the request, and
+                    // an ack failure keeps it (counted, never swallowed).
+                    _ = try await captureIntents.acknowledge(conversationID: id)
+                } catch {
+                    captureCleanupFailureCount += 1
+                    FloeLogger(category: .persistence).error(
+                        "toolResultCaptureCleanupIntentAckFailed conversation=\(id.uuidString) reason=write-failed")
+                }
+            }
             if !cleanupSucceeded {
                 // The conversation is gone but its snapshots could not be
                 // removed: the persisted request survives and the launch
@@ -6904,6 +7108,28 @@ final class ConversationCenter: ObservableObject {
                 FloeL10n.l(
                     "remote.conversation_center.run_output_cleanup_failed_partial",
                     runOutputCleanupFailureCount))
+        }
+        if captureCleanupFailureCount > 0 {
+            // Deletion committed; its SQLite intent retains outstanding cleanup
+            // even when the artifact root could not persist a file tombstone.
+            throw FloeError.storageCorrupted(
+                FloeL10n.l("remote.conversation_center.tool_result_cleanup_failed_partial"))
+        }
+    }
+
+    /// App-owned durable root for bounded captured tool results. A missing
+    /// Application Support directory is a real fallback, not a durability
+    /// promise: nil makes the runtime keep captures in RAM, and
+    /// `tools.readResult` reports that provenance explicitly. Creation and
+    /// deletion inside the root are owned and reported by the store actor.
+    static func toolResultCaptureRoot() -> URL? {
+        do {
+            return try FloeArtifactStore.root()
+                .appendingPathComponent("ToolResultCaptures", isDirectory: true)
+        } catch {
+            FloeLogger(category: .persistence).warning(
+                "toolResultCaptureRootUnavailable errorType=\(String(describing: type(of: error)))")
+            return nil
         }
     }
 

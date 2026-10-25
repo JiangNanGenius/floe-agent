@@ -10,6 +10,10 @@ Model code runs through `exec.shell` in the task-owned Linux environment. Use in
 
 Local execution resolves task/environment ownership through `LocalShellService` / `ShellSessionCenter`, then uses `LinuxGuestShellBackend` and the shared guest lifecycle. Cancellation and timeouts confirm the guest command group has stopped before returning; captured output remains bounded and is sanitized through the existing output path. An unconfirmed stop is not reported as successful. Remote SSH retains its own execution and review path.
 
+`exec.shell` 的命令和脚本不再设置固定字节上限，长脚本也应使用同一入口，并保留工作目录、环境变量、标准输入和真实退出码。输入长度、执行时限与输出容量是独立约束：取消命令长度限制不扩大执行权限，也不取消输出截断或任务取消。`timeoutSeconds` 与 `timeout` 表示同一执行时限；同时提供不同值时明确拒绝，不静默改用默认值。耗时工作继续通过 `jobs.submit` 执行。
+
+`exec.shell` command and script text has no fixed byte ceiling. Large scripts use the same entry point and preserve cwd, environment, stdin and actual exit status. Command length, execution timeout and captured-output size are separate contracts: removing the command ceiling neither widens authority nor disables bounded output or cancellation. `timeoutSeconds` aliases `timeout`; conflicting values are rejected rather than silently falling back to the default. Long-running work continues to use `jobs.submit`.
+
 ## 历史原生执行实现 / Historical native execution implementation
 
 以下保留旧架构与验收记录，**不作为现行工具、权限、包安装或 Linux 命令行为说明**。其中的 Native 后端、命令替代器、mini-root 与 App 内解释器描述不能用于推荐当前执行方式。现行 Linux 细节见 [Linux backend](FLOE_LINUX_GUEST_BACKEND.md) 及上节。

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "platform": "android",
+  "minimumAppVersion": "0.1.0",
+  "guides": {
+    "floe-pdf": {"source": "floe-pdf", "version": "1.3.1"},
+    "floe-office": {"source": "floe-office", "version": "1.5.0"},
+    "floe-network": {"source": "floe-network", "version": "1.1.3"},
+    "floe-video": {"source": "floe-video", "version": "1.0.1"}
+  }
+}

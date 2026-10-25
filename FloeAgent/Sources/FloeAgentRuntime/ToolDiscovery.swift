@@ -82,7 +82,12 @@ enum ToolDiscovery {
     /// outside its ceiling. The dispatcher still searches only its filtered,
     /// live catalog; this wording never changes admission or execution policy.
     static func runtimeDescriptors(scopedConversation: Bool, publicWebOnly: Bool) -> [ToolCatalog.Descriptor] {
-        guard scopedConversation || publicWebOnly else { return [descriptor, listDescriptor] }
+        // Captured-result paging is runtime metadata over this task's own
+        // captures (post-redaction), never a new authority: it stays offered
+        // in a scoped/temporary conversation too, where retention is RAM-only.
+        guard scopedConversation || publicWebOnly else {
+            return [descriptor, listDescriptor, ToolResultPagingTool.descriptor]
+        }
         let scope = publicWebOnly
             ? "this temporary conversation's allowed public web tools"
             : "this conversation's allowed public web tools and reads of its bound attached files"
@@ -90,7 +95,7 @@ enum ToolDiscovery {
         search.toolDescription = "Find definitions for currently available tools within \(scope). Search by exact tool name or capability. This runtime metadata helper only loads permitted schemas; it never executes tools, grants permission or enables an unavailable provider. A forbidden name or capability cannot be unlocked by searching."
         var list = listDescriptor
         list.toolDescription = "List metadata for currently available tools within \(scope). This runtime metadata helper does not execute tools or grant permission. Use tools.search to load a permitted definition; schemaLoaded=false means deferred, not denied. Follow nextAfterName until absent."
-        return [search, list]
+        return [search, list, ToolResultPagingTool.descriptor]
     }
 
     static func group(_ name: String) -> String { ToolCapabilityGroups.group(name) }
@@ -194,6 +199,68 @@ enum ToolDiscovery {
             + selected.filter { !ToolRoutingPolicy.isNativeMediaTool($0.name) }
     }
 
+    /// Tools whose canonical name (or a known alias) is an EXACT token of one
+    /// query. An exact-name search must give the model the complete callable
+    /// schema, not a 160-character teaser: the model may then call the tool
+    /// immediately, and the schema is also loaded for the next request.
+    static func exactNameMatches(_ queries: [String], descriptors: [ToolCatalog.Descriptor]) -> [ToolCatalog.Descriptor] {
+        let descriptors = descriptors.filter { !RetiredExecutionTools.contains($0.name) }
+        var result: [ToolCatalog.Descriptor] = []
+        var seen = Set<String>()
+        for query in queries {
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !trimmed.isEmpty else { continue }
+            let tokens = trimmed
+                .split(whereSeparator: { $0.isWhitespace || "，,;；/".contains($0) })
+                .map(String.init)
+            for descriptor in descriptors where !seen.contains(descriptor.name) {
+                let aliases = ToolAliasTable.aliases(of: descriptor.name)
+                let exact = tokens.contains(descriptor.name.lowercased())
+                    || aliases.contains(where: { tokens.contains($0.lowercased()) })
+                    || tokens.contains(where: { token in
+                        let canonical = ToolAliasTable.canonical(token)
+                        return canonical.lowercased() == descriptor.name.lowercased()
+                            || canonicalSpelling(token, among: descriptors).lowercased() == descriptor.name.lowercased()
+                    })
+                if exact {
+                    seen.insert(descriptor.name)
+                    result.append(descriptor)
+                }
+            }
+        }
+        return result
+    }
+
+    /// Complete callable schema text for exact-name matches. Bounded per tool
+    /// and in total; an oversized definition says so instead of being
+    /// silently cut into an invalid schema.
+    static func exactSchemaSection(
+        _ descriptors: [ToolCatalog.Descriptor],
+        wireSafeNames: Bool,
+        perToolBytes: Int = 24 * 1024,
+        totalBytes: Int = 48 * 1024
+    ) -> String {
+        guard !descriptors.isEmpty else { return "" }
+        var sections: [String] = []
+        var used = 0
+        for descriptor in descriptors {
+            let name = wireSpelling(descriptor.name, wireSafe: wireSafeNames)
+            var section = "Complete schema for \(name) (callable now; also loaded for later requests):\n"
+                + descriptor.toolDescription + "\nparametersJSON: " + descriptor.parametersJSON
+            if section.utf8.count > perToolBytes {
+                section = ToolResultCaptureStore.utf8Prefix(section, maxBytes: perToolBytes)
+                    + "\n[schema truncated for display at \(perToolBytes) bytes; call the tool with the documented arguments and the runtime will validate them]"
+            }
+            if used + section.utf8.count > totalBytes {
+                sections.append("More exact schemas were requested than this result can carry; search the remaining names one at a time.")
+                break
+            }
+            used += section.utf8.count
+            sections.append(section)
+        }
+        return sections.joined(separator: "\n\n")
+    }
+
     /// Primary guest entry points, used only for a media task no offered native
     /// tool matches. The fallback is appended after any native candidates, is
     /// derived strictly from the offered descriptors, and never invents a
@@ -229,6 +296,9 @@ enum ToolDiscovery {
         }
         if names.contains("task.schedule") {
             lines.append("Scheduled tasks use \(n("task.schedule")) (list/create/update/enable/disable/delete/runNow/history). The model, project, environment and permission binding are frozen from THIS task at creation and revalidated when the task runs; the tool never grants permissions and never widens this task's ceiling. `interval` is an absolute duration, `afterSuccess` is bound to one concrete upstream run and fires at most once after it succeeds, and daily/weekly times stay anchored to the device calendar timezone (missed times coalesce to the most recent one). A due task may run late or be reported as pending — never claim it ran without the real run/occurrence state.")
+        }
+        if names.contains(ToolResultPagingTool.name) {
+            lines.append("After context compaction hides part of an earlier tool output, use \(n(ToolResultPagingTool.name)) to page the captured result by call id (omit callID to list this task's retained results). It never re-runs the tool and states honestly when nothing was retained.")
         }
         if names.contains("skill.list") { lines.append("Use \(n("skill.list")) for the complete installed guide inventory.") }
         if names.isSuperset(of: ["skill.search", "skill.read"]) {

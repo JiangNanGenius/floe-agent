@@ -317,7 +317,7 @@ struct AgentRuntimeChildDispatchTests {
                 allowedToolNames: allowedToolNames,
                 workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
             ),
-            adapter: MockAdapter(),
+            adapter: ActiveParentTestAdapter(),
             policy: FullControlPolicy(grant: .init(hostID: UUID(), expiresAt: nil)),
             executor: executor,
             auditSink: MockAuditSink(),
@@ -380,200 +380,220 @@ struct AgentRuntimeChildDispatchTests {
 
     @Test("a child can never invoke delegate, even when the model emits it")
     func nestedDelegateIsDenied() async throws {
-        let executor = CapturingExecutor(descriptors: mutatingDescriptors())
-        let runtime = makeRuntime(executor: executor)
-        let call = try TestFixtures.toolCall(id: "nested-1", toolName: "delegate", arguments: #"{"task":"go"}"#)
-        let result = await runtime.dispatchChildTool(
-            call,
-            identity: await identity(runtime),
-            childContext: childContext(
-                conversationID: conversationID,
-                allowedToolNames: ["test.write", "test.echo", "delegate"],
-                workspaceRootURL: nil
+        try await ActiveParentTestScope.withScope {
+            let executor = CapturingExecutor(descriptors: mutatingDescriptors())
+            let runtime = makeRuntime(executor: executor)
+            try await ActiveParentTestScope.activate(runtime)
+            let call = try TestFixtures.toolCall(id: "nested-1", toolName: "delegate", arguments: #"{"task":"go"}"#)
+            let result = await runtime.dispatchChildTool(
+                call,
+                identity: await identity(runtime),
+                childContext: childContext(
+                    conversationID: conversationID,
+                    allowedToolNames: ["test.write", "test.echo", "delegate"],
+                    workspaceRootURL: nil
+                )
             )
-        )
-        #expect(result.status == .denied)
-        #expect(result.outputSummary.contains("main-run only"))
-        #expect(executor.entries.isEmpty)
+            #expect(result.status == .denied)
+            #expect(result.outputSummary.contains("main-run only"))
+            #expect(executor.entries.isEmpty)
+
+        }
     }
 
     @Test("a child call outside the effective ceiling is denied before the executor")
     func ceilingIsEnforced() async throws {
-        let executor = CapturingExecutor(descriptors: mutatingDescriptors())
-        let runtime = makeRuntime(executor: executor, allowedToolNames: ["test.echo"])
-        let call = try TestFixtures.toolCall(id: "over-1", toolName: "test.write", arguments: #"{"path":"a.txt"}"#)
-        let result = await runtime.dispatchChildTool(
-            call,
-            identity: await identity(runtime),
-            childContext: childContext(
-                conversationID: conversationID,
-                allowedToolNames: ["test.echo"],
-                workspaceRootURL: nil
+        try await ActiveParentTestScope.withScope {
+            let executor = CapturingExecutor(descriptors: mutatingDescriptors())
+            let runtime = makeRuntime(executor: executor, allowedToolNames: ["test.echo"])
+            try await ActiveParentTestScope.activate(runtime)
+            let call = try TestFixtures.toolCall(id: "over-1", toolName: "test.write", arguments: #"{"path":"a.txt"}"#)
+            let result = await runtime.dispatchChildTool(
+                call,
+                identity: await identity(runtime),
+                childContext: childContext(
+                    conversationID: conversationID,
+                    allowedToolNames: ["test.echo"],
+                    workspaceRootURL: nil
+                )
             )
-        )
-        #expect(result.status == .denied)
-        #expect(executor.entries.isEmpty)
+            #expect(result.status == .denied)
+            #expect(executor.entries.isEmpty)
+
+        }
     }
 
     @Test("a cross-run or nested identity is refused")
     func foreignIdentityRefused() async throws {
-        let executor = CapturingExecutor(descriptors: mutatingDescriptors())
-        let runtime = makeRuntime(executor: executor)
-        let call = try TestFixtures.toolCall(id: "x", toolName: "test.echo", arguments: "{}")
-        let foreign = ChildExecutionIdentity(
-            parentRunID: UUID(),
-            rootTaskID: conversationID,
-            delegateCallID: "other"
-        )
-        let crossRun = await runtime.dispatchChildTool(
-            call, identity: foreign,
-            childContext: childContext(conversationID: conversationID, allowedToolNames: ["test.echo"], workspaceRootURL: nil)
-        )
-        #expect(crossRun.status == .denied)
-        #expect(crossRun.outputSummary.contains("different run"))
+        try await ActiveParentTestScope.withScope {
+            let executor = CapturingExecutor(descriptors: mutatingDescriptors())
+            let runtime = makeRuntime(executor: executor)
+            try await ActiveParentTestScope.activate(runtime)
+            let call = try TestFixtures.toolCall(id: "x", toolName: "test.echo", arguments: "{}")
+            let foreign = ChildExecutionIdentity(
+                parentRunID: UUID(),
+                rootTaskID: conversationID,
+                delegateCallID: "other"
+            )
+            let crossRun = await runtime.dispatchChildTool(
+                call, identity: foreign,
+                childContext: childContext(conversationID: conversationID, allowedToolNames: ["test.echo"], workspaceRootURL: nil)
+            )
+            #expect(crossRun.status == .denied)
+            #expect(crossRun.outputSummary.contains("different run"))
 
-        let nested = ChildExecutionIdentity(
-            parentRunID: await runtime.runID,
-            rootTaskID: conversationID,
-            delegateCallID: "nested",
-            depth: 2
-        )
-        let nestedResult = await runtime.dispatchChildTool(
-            call, identity: nested,
-            childContext: childContext(conversationID: conversationID, allowedToolNames: ["test.echo"], workspaceRootURL: nil)
-        )
-        #expect(nestedResult.status == .denied)
-        #expect(nestedResult.outputSummary.contains("Nested delegation"))
-        #expect(executor.entries.isEmpty)
+            let nested = ChildExecutionIdentity(
+                parentRunID: await runtime.runID,
+                rootTaskID: conversationID,
+                delegateCallID: "nested",
+                depth: 2
+            )
+            let nestedResult = await runtime.dispatchChildTool(
+                call, identity: nested,
+                childContext: childContext(conversationID: conversationID, allowedToolNames: ["test.echo"], workspaceRootURL: nil)
+            )
+            #expect(nestedResult.status == .denied)
+            #expect(nestedResult.outputSummary.contains("Nested delegation"))
+            #expect(executor.entries.isEmpty)
+
+        }
     }
 
     // MARK: - Canonical execution + authority
 
     @Test("an approved mutating child call executes with grant, identity and runtime authority")
     func approvedChildCallExecutes() async throws {
-        let executor = CapturingExecutor(descriptors: mutatingDescriptors())
-        let runtime = makeRuntime(executor: executor)
-        let call = try TestFixtures.toolCall(
-            id: "write-1", toolName: "test.write",
-            arguments: #"{"path":"notes/a.md","text":"one"}"#
-        )
-        let result = await runtime.dispatchChildTool(
-            call,
-            identity: await identity(runtime),
-            childContext: childContext(
-                conversationID: conversationID,
-                allowedToolNames: ["test.write", "test.echo", "delegate"],
-                workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+        try await ActiveParentTestScope.withScope {
+            let executor = CapturingExecutor(descriptors: mutatingDescriptors())
+            let runtime = makeRuntime(executor: executor)
+            try await ActiveParentTestScope.activate(runtime)
+            let call = try TestFixtures.toolCall(
+                id: "write-1", toolName: "test.write",
+                arguments: #"{"path":"notes/a.md","text":"one"}"#
             )
-        )
-        #expect(result.status == .ok, "status=\(result.status.rawValue) output=\(result.outputSummary)")
-        let entry = try #require(executor.entries.first)
-        #expect(entry.context.approvalGrantID != nil)
-        #expect(entry.context.childExecution?.identity.delegateCallID == "call-delegate")
-        #expect(entry.context.runtimeAuthority?.toolName == "test.write")
-        #expect(entry.context.runtimeAuthority?.operationID == "write-1")
-        #expect(entry.context.runtimeAuthority?.approvalGrantID == entry.context.approvalGrantID)
+            let result = await runtime.dispatchChildTool(
+                call,
+                identity: await identity(runtime),
+                childContext: childContext(
+                    conversationID: conversationID,
+                    allowedToolNames: ["test.write", "test.echo", "delegate"],
+                    workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                )
+            )
+            #expect(result.status == .ok, "status=\(result.status.rawValue) output=\(result.outputSummary)")
+            let entry = try #require(executor.entries.first)
+            #expect(entry.context.approvalGrantID != nil)
+            #expect(entry.context.childExecution?.identity.delegateCallID == "call-delegate")
+            #expect(entry.context.runtimeAuthority?.toolName == "test.write")
+            #expect(entry.context.runtimeAuthority?.operationID == "write-1")
+            #expect(entry.context.runtimeAuthority?.approvalGrantID == entry.context.approvalGrantID)
+
+        }
     }
 
     @Test("runtime authority binds the concrete target, call, payload and task")
     func authorityBindsConcreteOperation() async throws {
-        let executor = CapturingExecutor(descriptors: mutatingDescriptors())
-        let runtime = makeRuntime(executor: executor)
-        let call = try TestFixtures.toolCall(
-            id: "write-2", toolName: "workspace.writeFile",
-            arguments: #"{"path":"notes/a.md","text":"one","expectedRevision":"rev-7"}"#
-        )
-        _ = await runtime.dispatchChildTool(
-            call,
-            identity: await identity(runtime),
-            childContext: childContext(
-                conversationID: conversationID,
-                allowedToolNames: ["workspace.writeFile", "test.echo", "delegate"],
-                workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+        try await ActiveParentTestScope.withScope {
+            let executor = CapturingExecutor(descriptors: mutatingDescriptors())
+            let runtime = makeRuntime(executor: executor)
+            try await ActiveParentTestScope.activate(runtime)
+            let call = try TestFixtures.toolCall(
+                id: "write-2", toolName: "workspace.writeFile",
+                arguments: #"{"path":"notes/a.md","text":"one","expectedRevision":"rev-7"}"#
             )
-        )
-        let entry = try #require(executor.entries.first)
-        let context = entry.context
-        let token = try #require(context.runtimeAuthority)
+            _ = await runtime.dispatchChildTool(
+                call,
+                identity: await identity(runtime),
+                childContext: childContext(
+                    conversationID: conversationID,
+                    allowedToolNames: ["workspace.writeFile", "test.echo", "delegate"],
+                    workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+                )
+            )
+            let entry = try #require(executor.entries.first)
+            let context = entry.context
+            let token = try #require(context.runtimeAuthority)
 
-        let binding = context.runtimeAuthorityBinding(
-            toolName: "workspace.writeFile",
-            operation: "apply",
-            canonicalTarget: RuntimeAuthorityDigest.canonicalTarget(
-                for: call,
-                descriptor: executor.descriptor(named: call.toolName),
-                workspaceRootURL: context.workspaceRootURL
-            ),
-            baseRevision: RuntimeAuthorityDigest.baseRevision(in: call.argumentsJSON),
-            payloadDigest: RuntimeAuthorityDigest.payloadDigest(call.argumentsJSON)
-        )
-        #expect(await RuntimeAuthorityStore.shared.validate(token, binding: binding) == .valid)
-        #expect(binding.canonicalTarget.hasSuffix("notes/a.md"))
-        #expect(binding.baseRevision == "rev-7")
-        #expect(binding.taskID == conversationID)
+            let binding = context.runtimeAuthorityBinding(
+                toolName: "workspace.writeFile",
+                operation: "apply",
+                canonicalTarget: RuntimeAuthorityDigest.canonicalTarget(
+                    for: call,
+                    descriptor: executor.descriptor(named: call.toolName),
+                    workspaceRootURL: context.workspaceRootURL
+                ),
+                baseRevision: RuntimeAuthorityDigest.baseRevision(in: call.argumentsJSON),
+                payloadDigest: RuntimeAuthorityDigest.payloadDigest(call.argumentsJSON)
+            )
+            #expect(await RuntimeAuthorityStore.shared.validate(token, binding: binding) == .valid)
+            #expect(binding.canonicalTarget.hasSuffix("notes/a.md"))
+            #expect(binding.baseRevision == "rev-7")
+            #expect(binding.taskID == conversationID)
 
-        // Cross-target replay with identical content/SHA is refused.
-        let otherTarget = context.runtimeAuthorityBinding(
-            toolName: "workspace.writeFile",
-            operation: "apply",
-            canonicalTarget: "file:/tmp/elsewhere/a.md",
-            baseRevision: binding.baseRevision,
-            payloadDigest: binding.payloadDigest
-        )
-        if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: otherTarget) {
-        } else {
-            Issue.record("expected a cross-target mismatch")
-        }
-
-        // Altered command on the same target/base is refused.
-        let alteredPayload = RuntimeAuthorityDigest.payloadDigest(
-            Data(#"{"path":"notes/a.md","text":"two","expectedRevision":"rev-7"}"#.utf8)
-        )
-        let altered = context.runtimeAuthorityBinding(
-            toolName: "workspace.writeFile",
-            operation: "apply",
-            canonicalTarget: binding.canonicalTarget,
-            baseRevision: binding.baseRevision,
-            payloadDigest: alteredPayload
-        )
-        if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: altered) {
-        } else {
-            Issue.record("expected an altered-command mismatch")
-        }
-
-        // Wrong task / operation / approved call replay is refused.
-        for wrong in [
-            context.runtimeAuthorityBinding(
-                toolName: "workspace.writeFile", operation: "export",
-                canonicalTarget: binding.canonicalTarget,
-                baseRevision: binding.baseRevision, payloadDigest: binding.payloadDigest
-            ),
-            RuntimeAuthorityBinding(
-                runID: binding.runID, taskID: UUID(),
-                environmentBinding: binding.environmentBinding,
-                canonicalTarget: binding.canonicalTarget, toolName: binding.toolName,
-                operation: binding.operation, operationID: binding.operationID,
-                idempotencyKey: binding.idempotencyKey, baseRevision: binding.baseRevision,
-                payloadDigest: binding.payloadDigest
-            ),
-            RuntimeAuthorityBinding(
-                runID: binding.runID, taskID: binding.taskID,
-                environmentBinding: binding.environmentBinding,
-                canonicalTarget: binding.canonicalTarget, toolName: binding.toolName,
-                operation: binding.operation, operationID: "other-call",
-                idempotencyKey: binding.idempotencyKey, baseRevision: binding.baseRevision,
+            // Cross-target replay with identical content/SHA is refused.
+            let otherTarget = context.runtimeAuthorityBinding(
+                toolName: "workspace.writeFile",
+                operation: "apply",
+                canonicalTarget: "file:/tmp/elsewhere/a.md",
+                baseRevision: binding.baseRevision,
                 payloadDigest: binding.payloadDigest
             )
-        ] {
-            if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: wrong) {
+            if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: otherTarget) {
             } else {
-                Issue.record("expected a mismatch for a replayed binding")
+                Issue.record("expected a cross-target mismatch")
             }
-        }
 
-        // A successful consume is single-use.
-        #expect(await RuntimeAuthorityStore.shared.consume(token, binding: binding) == .valid)
-        #expect(await RuntimeAuthorityStore.shared.consume(token, binding: binding) == .alreadyConsumed)
+            // Altered command on the same target/base is refused.
+            let alteredPayload = RuntimeAuthorityDigest.payloadDigest(
+                Data(#"{"path":"notes/a.md","text":"two","expectedRevision":"rev-7"}"#.utf8)
+            )
+            let altered = context.runtimeAuthorityBinding(
+                toolName: "workspace.writeFile",
+                operation: "apply",
+                canonicalTarget: binding.canonicalTarget,
+                baseRevision: binding.baseRevision,
+                payloadDigest: alteredPayload
+            )
+            if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: altered) {
+            } else {
+                Issue.record("expected an altered-command mismatch")
+            }
+
+            // Wrong task / operation / approved call replay is refused.
+            for wrong in [
+                context.runtimeAuthorityBinding(
+                    toolName: "workspace.writeFile", operation: "export",
+                    canonicalTarget: binding.canonicalTarget,
+                    baseRevision: binding.baseRevision, payloadDigest: binding.payloadDigest
+                ),
+                RuntimeAuthorityBinding(
+                    runID: binding.runID, taskID: UUID(),
+                    environmentBinding: binding.environmentBinding,
+                    canonicalTarget: binding.canonicalTarget, toolName: binding.toolName,
+                    operation: binding.operation, operationID: binding.operationID,
+                    idempotencyKey: binding.idempotencyKey, baseRevision: binding.baseRevision,
+                    payloadDigest: binding.payloadDigest
+                ),
+                RuntimeAuthorityBinding(
+                    runID: binding.runID, taskID: binding.taskID,
+                    environmentBinding: binding.environmentBinding,
+                    canonicalTarget: binding.canonicalTarget, toolName: binding.toolName,
+                    operation: binding.operation, operationID: "other-call",
+                    idempotencyKey: binding.idempotencyKey, baseRevision: binding.baseRevision,
+                    payloadDigest: binding.payloadDigest
+                )
+            ] {
+                if case .mismatch = await RuntimeAuthorityStore.shared.validate(token, binding: wrong) {
+                } else {
+                    Issue.record("expected a mismatch for a replayed binding")
+                }
+            }
+
+            // A successful consume is single-use.
+            #expect(await RuntimeAuthorityStore.shared.consume(token, binding: binding) == .valid)
+            #expect(await RuntimeAuthorityStore.shared.consume(token, binding: binding) == .alreadyConsumed)
+
+        }
     }
 
     @Test("a child executing without the canonical dispatcher falls back to a fail-closed read-only ceiling")
@@ -615,43 +635,47 @@ struct AgentRuntimeChildDispatchTests {
 
     @Test("two concurrent child writes to the same file serialize on the canonical lease")
     func sameFileChildWritesSerialize() async throws {
-        let gate = GatedExecutorGate()
-        let executor = GatedExecutor(descriptors: mutatingDescriptors(), gate: gate)
-        let runtime = makeRuntime(executor: executor, allowedToolNames: ["workspace.writeFile"])
-        let first = try TestFixtures.toolCall(
-            id: "w-a", toolName: "workspace.writeFile", arguments: #"{"path":"shared/a.md","text":"one"}"#
-        )
-        let second = try TestFixtures.toolCall(
-            id: "w-b", toolName: "workspace.writeFile", arguments: #"{"path":"shared/a.md","text":"two"}"#
-        )
-        let partial = childContext(
-            conversationID: conversationID,
-            allowedToolNames: ["workspace.writeFile"],
-            workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
-        )
-        let firstTask = Task {
-            await runtime.dispatchChildTool(first, identity: await identity(runtime, delegateCallID: "d1"), childContext: partial)
-        }
-        // Wait until the first call really entered the executor and parked.
-        var waited = 0
-        while executor.executedOrder.isEmpty, waited < 200 {
-            try await Task.sleep(nanoseconds: 20_000_000)
-            waited += 1
-        }
-        #expect(executor.executedOrder == ["w-a"])
+        try await ActiveParentTestScope.withScope {
+            let gate = GatedExecutorGate()
+            let executor = GatedExecutor(descriptors: mutatingDescriptors(), gate: gate)
+            let runtime = makeRuntime(executor: executor, allowedToolNames: ["workspace.writeFile"])
+            try await ActiveParentTestScope.activate(runtime)
+            let first = try TestFixtures.toolCall(
+                id: "w-a", toolName: "workspace.writeFile", arguments: #"{"path":"shared/a.md","text":"one"}"#
+            )
+            let second = try TestFixtures.toolCall(
+                id: "w-b", toolName: "workspace.writeFile", arguments: #"{"path":"shared/a.md","text":"two"}"#
+            )
+            let partial = childContext(
+                conversationID: conversationID,
+                allowedToolNames: ["workspace.writeFile"],
+                workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            )
+            let firstTask = Task {
+                await runtime.dispatchChildTool(first, identity: await identity(runtime, delegateCallID: "d1"), childContext: partial)
+            }
+            // Wait until the first call really entered the executor and parked.
+            var waited = 0
+            while executor.executedOrder.isEmpty, waited < 200 {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                waited += 1
+            }
+            #expect(executor.executedOrder == ["w-a"])
 
-        let secondTask = Task {
-            await runtime.dispatchChildTool(second, identity: await identity(runtime, delegateCallID: "d2"), childContext: partial)
+            let secondTask = Task {
+                await runtime.dispatchChildTool(second, identity: await identity(runtime, delegateCallID: "d2"), childContext: partial)
+            }
+            try await Task.sleep(nanoseconds: 250_000_000)
+            // The second sibling must be blocked behind the same-file lease.
+            #expect(executor.executedOrder == ["w-a"])
+            await gate.open()
+            let firstResult = await firstTask.value
+            let secondResult = await secondTask.value
+            #expect(firstResult.status == .ok, "first=\(firstResult.outputSummary)")
+            #expect(secondResult.status == .ok, "second=\(secondResult.outputSummary)")
+            #expect(executor.executedOrder == ["w-a", "w-b"])
+
         }
-        try await Task.sleep(nanoseconds: 250_000_000)
-        // The second sibling must be blocked behind the same-file lease.
-        #expect(executor.executedOrder == ["w-a"])
-        await gate.open()
-        let firstResult = await firstTask.value
-        let secondResult = await secondTask.value
-        #expect(firstResult.status == .ok, "first=\(firstResult.outputSummary)")
-        #expect(secondResult.status == .ok, "second=\(secondResult.outputSummary)")
-        #expect(executor.executedOrder == ["w-a", "w-b"])
     }
 
     // MARK: - End-to-end delegated write through the canonical chain
@@ -897,47 +921,51 @@ struct AgentRuntimeChildDispatchTests {
 
     @Test("two concurrent child writes to different files really run concurrently")
     func distinctFileChildWritesRun() async throws {
-        let gate = GatedExecutorGate()
-        let executor = GatedExecutor(descriptors: mutatingDescriptors(), gate: gate)
-        let runtime = makeRuntime(executor: executor, allowedToolNames: ["workspace.writeFile"])
-        let first = try TestFixtures.toolCall(
-            id: "w-c", toolName: "workspace.writeFile", arguments: #"{"path":"shared/c.md","text":"one"}"#
-        )
-        let second = try TestFixtures.toolCall(
-            id: "w-d", toolName: "workspace.writeFile", arguments: #"{"path":"shared/d.md","text":"two"}"#
-        )
-        let partial = childContext(
-            conversationID: conversationID,
-            allowedToolNames: ["workspace.writeFile"],
-            workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
-        )
-        let firstTask = Task {
-            await runtime.dispatchChildTool(first, identity: await identity(runtime, delegateCallID: "d3"), childContext: partial)
+        try await ActiveParentTestScope.withScope {
+            let gate = GatedExecutorGate()
+            let executor = GatedExecutor(descriptors: mutatingDescriptors(), gate: gate)
+            let runtime = makeRuntime(executor: executor, allowedToolNames: ["workspace.writeFile"])
+            try await ActiveParentTestScope.activate(runtime)
+            let first = try TestFixtures.toolCall(
+                id: "w-c", toolName: "workspace.writeFile", arguments: #"{"path":"shared/c.md","text":"one"}"#
+            )
+            let second = try TestFixtures.toolCall(
+                id: "w-d", toolName: "workspace.writeFile", arguments: #"{"path":"shared/d.md","text":"two"}"#
+            )
+            let partial = childContext(
+                conversationID: conversationID,
+                allowedToolNames: ["workspace.writeFile"],
+                workspaceRootURL: URL(fileURLWithPath: NSTemporaryDirectory())
+            )
+            let firstTask = Task {
+                await runtime.dispatchChildTool(first, identity: await identity(runtime, delegateCallID: "d3"), childContext: partial)
+            }
+            var waited = 0
+            while executor.executedOrder.isEmpty, waited < 200 {
+                try await Task.sleep(nanoseconds: 20_000_000)
+                waited += 1
+            }
+            #expect(executor.executedOrder == ["w-c"])
+            // Disjoint canonical files must not block behind the first call, even
+            // though it is still parked inside the executor.
+            let secondTask = Task {
+                await runtime.dispatchChildTool(second, identity: await identity(runtime, delegateCallID: "d4"), childContext: partial)
+            }
+            var enteredSecond = false
+            waited = 0
+            while !enteredSecond, waited < 100 {
+                enteredSecond = executor.executedOrder.count == 2
+                if !enteredSecond { try await Task.sleep(nanoseconds: 20_000_000) }
+                waited += 1
+            }
+            #expect(executor.executedOrder == ["w-c", "w-d"])
+            await gate.open()
+            let firstResult = await firstTask.value
+            let secondResult = await secondTask.value
+            #expect(firstResult.status == .ok)
+            #expect(secondResult.status == .ok)
+
         }
-        var waited = 0
-        while executor.executedOrder.isEmpty, waited < 200 {
-            try await Task.sleep(nanoseconds: 20_000_000)
-            waited += 1
-        }
-        #expect(executor.executedOrder == ["w-c"])
-        // Disjoint canonical files must not block behind the first call, even
-        // though it is still parked inside the executor.
-        let secondTask = Task {
-            await runtime.dispatchChildTool(second, identity: await identity(runtime, delegateCallID: "d4"), childContext: partial)
-        }
-        var enteredSecond = false
-        waited = 0
-        while !enteredSecond, waited < 100 {
-            enteredSecond = executor.executedOrder.count == 2
-            if !enteredSecond { try await Task.sleep(nanoseconds: 20_000_000) }
-            waited += 1
-        }
-        #expect(executor.executedOrder == ["w-c", "w-d"])
-        await gate.open()
-        let firstResult = await firstTask.value
-        let secondResult = await secondTask.value
-        #expect(firstResult.status == .ok)
-        #expect(secondResult.status == .ok)
     }
 }
 

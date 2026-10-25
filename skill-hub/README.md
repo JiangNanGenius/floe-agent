@@ -11,6 +11,33 @@ be edited or replaced by file imports; online updates still require the reviewed
 signed catalog, and explicit rollback remains a separate action.
 Custom instructions must use a distinct nonreserved skill ID.
 
+## Platform catalogs / 平台目录
+
+iOS keeps `skill-hub/catalog.json` and `catalog.sig`. Android uses
+`skill-hub/android/catalog.json` and `catalog.sig`, with a separate immutable
+`android/packages/` namespace. Both use the pinned Ed25519 trust root; the
+catalog signature authenticates each ZIP's digest. Existing iOS archives and
+signatures are never rewritten to add Android support.
+
+`android/guides.json` explicitly authors Android variants of the four
+script-free guides. Their guide text is shared; their manifests declare
+`android` and generic `linux`, without declaring iOS support. This is not
+evidence that a native tool, model or binary runs on every architecture.
+Scripted packages need separately authored and qualified runtime metadata.
+The client must retain actual tool-availability checks. An unbound trusted
+Android App version remains unavailable rather than using an invented value.
+
+`python3 skill-hub/build_android.py --check-staged` validates sources and any
+released Android feed without writing. `build_android.py` signs with the
+existing Actions secret; `--check` requires the actual signed candidate and
+archive bytes to match. The existing publication workflows build and verify
+both channels, then commit their artifacts together. A new endpoint becomes
+usable only after that signed commit is published and independently read back.
+
+iOS 与 Android 使用各自目录和不可变安装包路径。普通指南复用正文，平台声明
+分别维护；依赖脚本或二进制的内容不能仅靠改平台名称就标记为兼容。新增渠道
+必须完成签名、发布和回读，未发布的目录不算用户已经可用。
+
 `sources/` is the source of truth. Each skill has `SKILL.md`, `floe.json`, and
 publication-only `release.json` (name, description, minimumAppVersion, bilingual
 releaseNotes). `release.json` is not included in the installable ZIP.
@@ -68,3 +95,9 @@ not a third-party marketplace, payment system or native plugin loader.
 `floe-video` and the media model catalog are under integration. Their source descriptions are not proof that the App has connected every runner, model download or background-job path. The 33 model records include three exclusions (AMT, E2FGVI and GPEN); all remaining candidates still require resource, license and device qualification; see [compatibility](../docs/FLOE_1_7_COMPATIBILITY.md).
 
 Skill content changes require a version increment and brief bilingual change notes, then regeneration and signature verification through this hub's publication workflow. Do not hand-edit signed archives/catalogs or advertise unconnected tools as available.
+
+### Android-only publication / 仅发布 Android 目录
+
+Run the `skill-hub.yml` workflow with `publish_android=true` to sign and publish only `skill-hub/android/`. `publish=true` retains the full iOS/content publication route and also publishes Android. The Android-only route verifies that its commit does not change the legacy iOS or content feeds.
+
+在 `skill-hub.yml` 中选择 `publish_android=true`，只签名发布 `skill-hub/android/`。`publish=true` 继续完整发布 iOS／内容目录，并同时发布 Android。仅 Android 的流程会校验提交未修改旧 iOS 和内容目录。

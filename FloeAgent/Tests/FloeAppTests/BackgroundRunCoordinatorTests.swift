@@ -689,6 +689,413 @@ struct BackgroundRunCoordinatorTests {
     #endif
 }
 
+#if DEBUG
+// Background-location eligibility must follow the runtime authority, never the
+// display cache or the durable permission. These regressions drive the ACTUAL
+// coordinator decisions through its DEBUG runtime-probe seam (a stand-in for
+// `guestIsRunning`), so they cover the stale-surface defect that the pure
+// argument-filtering tests missed as well as the read-ordering and
+// stop-during-refresh fences.
+@Suite("FloeApp.BackgroundRunCoordinator.LocationAuthority", .serialized)
+@MainActor
+struct BackgroundRunCoordinatorLocationAuthorityTests {
+
+    @Test("A display entry and the durable permission never grant eligibility without a live guest")
+    func displayCacheAndPermissionAreNotAuthority() async {
+        let slot = makeSlot(liveGuest: false)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        // The durable "allow background running" preference alone is not work.
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        // A display entry left behind by an earlier run is not authority: the
+        // runtime owns no guest for this environment (the reported "no server,
+        // no background task, no other active feature" state).
+        await coordinator.refreshLinuxSurfaceEntries(environmentIDs: [environmentID])
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) != nil)
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        coordinator.reconcileLocationAssistForTesting()
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        // The authoritative reconcile purges the stale display entry as well,
+        // so the floating surface cannot keep rendering a dead VM.
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    @Test("Only a live permitted guest is eligible work, and a runtime stop clears the assist")
+    func livePermittedGuestFollowsRuntimeAuthority() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxBackgroundSurfaceSnapshot().entries.map(\.environmentID) == [environmentID])
+
+        // The guest stops outside the coordinator — an engine stop from the
+        // environment card, a deleted environment, the heavy-runtime arbiter or
+        // a crash. None of those paths calls a coordinator stop callback while
+        // the app is idle in the foreground, so the authority read at the next
+        // lifecycle trigger is what ends the assist. A paused guest is simply
+        // not running and stops counting the same way.
+        slot.authority.setRunning(false, environmentID: environmentID)
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxBackgroundSurfaceSnapshot().entries.isEmpty)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    @Test("A stopped guest never clears an ordinary run's assist, and the final finish does")
+    func ordinaryRunIsIndependentOfLinuxAuthority() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+        let runID = UUID()
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: runID,
+            title: "Weather lookup",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // The last permitted guest stops while the ordinary task still runs:
+        // the run alone keeps real local execution eligible.
+        slot.authority.setRunning(false, environmentID: environmentID)
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // The final task finish is the no-work transition.
+        coordinator.didFinish(runID: runID, succeeded: true, message: nil)
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        await releaseWorkRecords(slot, runID: runID)
+    }
+
+    @Test("An explicit stop clears now and a late live snapshot cannot restore eligibility")
+    func explicitStopRejectsLateAuthoritySnapshot() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // Hold an authority read that already observed the live guest, then
+        // stop the guest and report the stop while that read is suspended: its
+        // answer is already stale when it returns.
+        slot.authority.holdNextReads(1)
+        let inFlightReconcile = Task { await coordinator.reconcileLinuxBackgroundHold() }
+        await slot.authority.waitForHeldReads(1)
+        slot.authority.setRunning(false, environmentID: environmentID)
+        await coordinator.linuxEnvironmentDidStop(
+            environmentID: environmentID,
+            title: "Test environment"
+        )
+        // The stop path itself re-pushes the honest answer (no timer, no later
+        // UI update is required).
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        slot.authority.releaseHeldRead(0)
+        await inFlightReconcile.value
+        // The stale snapshot was discarded instead of resurrecting the guest.
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    @Test("The last run finish re-verifies cached live guests without any manual reconcile")
+    func lastRunFinishReverifiesCachedAuthority() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+        let runID = UUID()
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        coordinator.didStart(
+            conversationID: UUID(),
+            runID: runID,
+            title: "Weather lookup",
+            origin: .explicitUserAction,
+            publishesContent: true
+        )
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+        let readsBeforeFinish = slot.authority.readCount
+
+        // The guest stops with no coordinator callback and no scene change. The
+        // last-run finish is a real terminal trigger: it must re-read the
+        // runtime authority and clear the cached live id, not leave the assist
+        // armed until some future transition.
+        slot.authority.setRunning(false, environmentID: environmentID)
+        coordinator.didFinish(runID: runID, succeeded: true, message: nil)
+        await slot.authority.waitForReads(readsBeforeFinish + 1)
+        let settled = await waitForCoordinatorState {
+            !coordinator.locationAssistWorkEligibleForTesting
+                && coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil
+        }
+        #expect(settled)
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot, runID: runID)
+    }
+
+    @Test("Overlapping authority reads finish out of order without resurrecting a stopped guest")
+    func outOfOrderAuthorityReadsAreFenced() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // Two reads overlap. The first observes the live guest and is held;
+        // the second observes the stopped guest and applies first.
+        slot.authority.holdNextReads(2)
+        let first = Task { await coordinator.reconcileLinuxBackgroundHold() }
+        await slot.authority.waitForHeldReads(1)
+        slot.authority.setRunning(false, environmentID: environmentID)
+        let second = Task { await coordinator.reconcileLinuxBackgroundHold() }
+        await slot.authority.waitForHeldReads(2)
+        slot.authority.releaseHeldRead(1)
+        await second.value
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        // The older read now returns `running`; it must be discarded rather
+        // than overwriting the newer stopped answer.
+        slot.authority.releaseHeldRead(0)
+        await first.value
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    @Test("A stop during the awaited surface refresh is never applied")
+    func stopDuringSurfaceRefreshIsFenced() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        let barrier = SurfaceRefreshBarrier()
+        coordinator.linuxSurfaceRefreshBarrierForTesting = { await barrier.pause() }
+        let reconcile = Task { await coordinator.reconcileLinuxBackgroundHold() }
+        await barrier.waitUntilEntered()
+
+        // The authority snapshot was accepted before the surface refresh began.
+        // The guest now stops and the explicit stop route lands while that
+        // refresh is still awaiting.
+        slot.authority.setRunning(false, environmentID: environmentID)
+        await coordinator.linuxEnvironmentDidStop(
+            environmentID: environmentID,
+            title: "Test environment"
+        )
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+
+        barrier.release()
+        await reconcile.value
+        // The pre-stop snapshot is not applied, and the entry the refresh
+        // re-created for the stopped guest is evicted again.
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    @Test("The runtime-ended hook clears eligibility and the display cache immediately")
+    func runtimeEndedHookClearsEligibilityImmediately() async {
+        let slot = makeSlot(liveGuest: true)
+        defer { restorePreferences(slot) }
+        let coordinator = slot.coordinator
+        let environmentID = slot.environmentID
+
+        await coordinator.reconcileLinuxBackgroundHold()
+        #expect(coordinator.locationAssistWorkEligibleForTesting)
+
+        // This is the entry point a direct engine stop / delete / arbiter
+        // release must call after its physical stop resolves (those call sites
+        // are outside this lane; see HANDOFF). Invoking it here verifies the
+        // coordinator contract, not that the external call site is wired.
+        slot.authority.setRunning(false, environmentID: environmentID)
+        coordinator.linuxEnvironmentRuntimeEnded(environmentID: environmentID)
+        #expect(!coordinator.locationAssistWorkEligibleForTesting)
+        #expect(coordinator.linuxEnvironmentRuntimeSnapshot(environmentID: environmentID) == nil)
+        await releaseWorkRecords(slot)
+    }
+
+    // MARK: - Fixture
+
+    private struct Slot {
+        /// Strong reference for the whole test: the coordinator stores its
+        /// environment unowned, so the fixture must keep it alive.
+        let environment: AppEnvironment
+        let environmentID: String
+        let authority: LocationAuthorityProbe
+        let coordinator: BackgroundRunCoordinator
+        let priorPreferences: Data?
+    }
+
+    /// A unique environment with the durable preference enabled and a
+    /// coordinator loaded from those preferences. The runtime probe is the
+    /// coordinator's DEBUG seam, so the production decision code runs without
+    /// touching the shared Linux backend.
+    private func makeSlot(liveGuest: Bool) -> Slot {
+        let environmentID = "env-\(UUID().uuidString.lowercased())"
+        let priorPreferences = UserDefaults.standard.data(
+            forKey: LinuxBackgroundRunPreferences.defaultsKey
+        )
+        LinuxBackgroundRunPreferences.save([
+            environmentID: LinuxBackgroundRunPreference(
+                environmentID: environmentID,
+                isEnabled: true
+            )
+        ])
+        let environment = AppEnvironment.preview()
+        let coordinator = BackgroundRunCoordinator(environment: environment)
+        let authority = LocationAuthorityProbe()
+        if liveGuest {
+            authority.setRunning(true, environmentID: environmentID)
+        }
+        coordinator.linuxLiveGuestEnvironmentIDsOverrideForTesting = { enabled in
+            await authority.eligibleEnvironmentIDs(from: enabled)
+        }
+        return Slot(
+            environment: environment,
+            environmentID: environmentID,
+            authority: authority,
+            coordinator: coordinator,
+            priorPreferences: priorPreferences
+        )
+    }
+
+    private func restorePreferences(_ slot: Slot) {
+        if let prior = slot.priorPreferences {
+            UserDefaults.standard.set(prior, forKey: LinuxBackgroundRunPreferences.defaultsKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: LinuxBackgroundRunPreferences.defaultsKey)
+        }
+    }
+
+    private func releaseWorkRecords(_ slot: Slot, runID: UUID? = nil) async {
+        await BackgroundWorkRegistry.shared.remove(
+            id: BackgroundWorkSnapshot.stableID(for: slot.environmentID)
+        )
+        if let runID {
+            await BackgroundWorkRegistry.shared.remove(id: runID)
+        }
+    }
+
+    /// Cooperative wait for a coordinator-owned async route to settle. The
+    /// bounded yield budget only stops an arrangement failure from hanging the
+    /// hosted suite; the assertion is the real state, never the wait.
+    private func waitForCoordinatorState(
+        _ condition: @MainActor () -> Bool
+    ) async -> Bool {
+        for _ in 0..<20_000 {
+            if condition() { return true }
+            await Task.yield()
+        }
+        return condition()
+    }
+}
+
+/// Live guest truth for the coordinator's authoritative read. The production
+/// probe is the runtime owner's `guestIsRunning`; this stands in through the
+/// coordinator's DEBUG seam so tests can control liveness, hold reads, and
+/// release them in a chosen order.
+@MainActor
+private final class LocationAuthorityProbe {
+    private var runningEnvironmentIDs: Set<String> = []
+    private(set) var readCount = 0
+    /// Reads that must be held (suspended) before returning their snapshot.
+    private var readsToHold = 0
+    private var heldReads: [(snapshot: [String], resume: CheckedContinuation<Void, Never>)] = []
+
+    func setRunning(_ running: Bool, environmentID: String) {
+        if running {
+            runningEnvironmentIDs.insert(environmentID)
+        } else {
+            runningEnvironmentIDs.remove(environmentID)
+        }
+    }
+
+    func holdNextReads(_ count: Int) {
+        readsToHold = count
+    }
+
+    /// Cooperative bounded wait for reads to arrive; the assertion in the test
+    /// is the coordinator state, never the wait itself.
+    func waitForHeldReads(_ count: Int) async {
+        for _ in 0..<20_000 {
+            if heldReads.count >= count { return }
+            await Task.yield()
+        }
+    }
+
+    func releaseHeldRead(_ index: Int) {
+        guard heldReads.indices.contains(index) else { return }
+        let held = heldReads.remove(at: index)
+        held.resume.resume()
+    }
+
+    func waitForReads(_ count: Int) async {
+        for _ in 0..<20_000 {
+            if readCount >= count { return }
+            await Task.yield()
+        }
+    }
+
+    func eligibleEnvironmentIDs(from enabled: [String]) async -> [String] {
+        readCount += 1
+        let snapshot = enabled.filter { runningEnvironmentIDs.contains($0) }
+        guard readsToHold > 0 else { return snapshot }
+        readsToHold -= 1
+        await withCheckedContinuation { continuation in
+            heldReads.append((snapshot, continuation))
+        }
+        return snapshot
+    }
+}
+
+/// Deterministic barrier inside the coordinator's awaited surface refresh.
+@MainActor
+private final class SurfaceRefreshBarrier {
+    private var entered = false
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    func pause() async {
+        entered = true
+        await withCheckedContinuation { releaseWaiter = $0 }
+    }
+
+    func waitUntilEntered() async {
+        for _ in 0..<20_000 {
+            if entered { return }
+            await Task.yield()
+        }
+    }
+
+    func release() {
+        releaseWaiter?.resume()
+        releaseWaiter = nil
+    }
+}
+#endif
+
 /// Synchronous notification observer capture. `NotificationCenter.post` is
 /// synchronous, so no waiting is required after `route`.
 private final class CapturedNotification: @unchecked Sendable {

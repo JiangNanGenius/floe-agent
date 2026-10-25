@@ -64,6 +64,8 @@ targets:
       - path: FloeApp
         excludes:
           - Resources/Capabilities
+          - Resources/MCPTemplates
+          - Resources/Impeccable
           - Resources/Audio
           - Resources/PDFiumLicenses
           - Resources/LibArchiveLicenses
@@ -81,6 +83,12 @@ targets:
           # app bundle (one manifest per bundle root).
           - Resources/PrivacyManifests
       - path: FloeWidgets/FloeSystemAlarmControlIntents.swift
+      - path: FloeApp/Resources/MCPTemplates
+        type: folder
+        buildPhase: resources
+      - path: FloeApp/Resources/Impeccable
+        type: folder
+        buildPhase: resources
       - path: FloeApp/Resources/Capabilities
         type: folder
         buildPhase: resources
@@ -384,8 +392,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.58"
-        CURRENT_PROJECT_VERSION: "299"
+        MARKETING_VERSION: "1.7.59"
+        CURRENT_PROJECT_VERSION: "300"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -466,8 +474,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.58"
-        CURRENT_PROJECT_VERSION: "299"
+        MARKETING_VERSION: "1.7.59"
+        CURRENT_PROJECT_VERSION: "300"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -517,8 +525,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.58"
-        CURRENT_PROJECT_VERSION: "299"
+        MARKETING_VERSION: "1.7.59"
+        CURRENT_PROJECT_VERSION: "300"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -561,8 +569,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.58"
-        CURRENT_PROJECT_VERSION: "299"
+        MARKETING_VERSION: "1.7.59"
+        CURRENT_PROJECT_VERSION: "300"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -614,8 +622,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.58"
-        CURRENT_PROJECT_VERSION: "299"
+        MARKETING_VERSION: "1.7.59"
+        CURRENT_PROJECT_VERSION: "300"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -675,7 +683,16 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
+      - path: Tests/FloeAppTests/TaskLiveActivityTests.swift
+      - path: Tests/FloeAppTests/MCPServiceTemplateTests.swift
+      - path: Tests/FloeAppTests/BrowserImpeccableCaptureTests.swift
+      - path: Tests/FloePersistenceTests/SkillAuthoringStoreTests.swift
+      - path: Tests/FloePersistenceTests/ToolCaptureCleanupRequestStoreTests.swift
+      - path: Tests/FloeAppTests/MCPServiceCreationTests.swift
+      - path: Tests/FloeAppTests/SkillAuthoringPackageTests.swift
+      - path: Tests/FloeAppTests/SkillAuthoringFlowTests.swift
       - path: Tests/FloeAppTests/LocationServicesCenterTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestTransientOwnershipTests.swift
       - path: Tests/FloeAppTests/PiPAudioServiceTests.swift
       - path: Tests/FloeAppTests/PiPAudioPreferencesTests.swift
       - path: Tests/FloeAppTests/PiPAudioBackendAppTests.swift
@@ -713,6 +730,25 @@ targets:
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
+      - path: Tests/FloeSkillsTests/TraditionalSkillTests.swift
+      - path: Tests/FloeSkillsTests/SkillCreateToolTests.swift
+      - path: Tests/FloeExecutionTests/LocalShellLargeScriptTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolResultCaptureTests.swift
+      - path: Tests/FloeAgentRuntimeTests/SharedEnvironmentConcurrencyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ChildToolDiscoveryTests.swift
+      - path: Tests/FloeAgentRuntimeTests/AgentRuntimeChildDispatchTests.swift
+      - path: Tests/FloePersistenceTests/SkillSourceTrackingTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ChildResultPagingIsolationTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ActiveParentTestFixture.swift
+      - path: Tests/FloePersistenceTests/V53ConversationVisibilityTests.swift
+      - path: Tests/FloeSkillsTests/GitHubDirectoryUpdateTests.swift
+      - path: Tests/FloeSkillsTests/SkillWorkspaceInstallToolTests.swift
+      - path: Tests/FloeSkillsTests/SkillHubTransportBudgetTests.swift
+      - path: Tests/FloeSkillsTests/SkillHubToolContractTests.swift
+      - path: Tests/FloeSkillsTests/CuratedSkillHubTests.swift
+      - path: Tests/FloeSkillsTests/Fixtures/CuratedSkillHub
+        type: folder
+        buildPhase: resources
       - path: Tests/FloeAppTests/VoiceConversationTests.swift
       - path: Tests/FloeAppTests/VoiceEndpointCoordinationTests.swift
       - path: Tests/FloeAppTests/VoicePlaybackIntentTests.swift

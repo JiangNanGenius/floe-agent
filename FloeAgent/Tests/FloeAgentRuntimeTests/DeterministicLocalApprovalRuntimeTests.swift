@@ -81,7 +81,7 @@ struct DeterministicLocalApprovalRuntimeTests {
     }
 
     private func makeRuntime(
-        adapter: MockAdapter,
+        adapter: any ProviderAdapter,
         executor: any ToolExecutor,
         policy: any ApprovalPolicy,
         workspaceRoot: URL?,
@@ -120,7 +120,7 @@ struct DeterministicLocalApprovalRuntimeTests {
         stores: [String: String] = [:]
     ) -> FloeAgentRuntime {
         makeRuntime(
-            adapter: MockAdapter(),
+            adapter: ActiveParentTestAdapter(),
             executor: executor,
             policy: policy,
             workspaceRoot: workspaceRoot,
@@ -265,7 +265,8 @@ struct DeterministicLocalApprovalRuntimeTests {
         tools: Set<String>,
         workspaceRoot: URL,
         delegateCallID: String
-    ) async -> ToolResult {
+    ) async throws -> ToolResult {
+        try await ActiveParentTestScope.activate(runtime)
         let identity = ChildExecutionIdentity(
             parentRunID: await runtime.runID,
             rootTaskID: UUID(),
@@ -376,126 +377,132 @@ struct DeterministicLocalApprovalRuntimeTests {
 
     @Test("A delegated child's resolved document edit uses the same canonical carve-out")
     func childDocumentEditExecutes() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree
-        )
-        let result = await dispatchAsChild(
-            runtime,
-            call: try documentCall(id: "child-doc"),
-            tools: ["document.office.edit"],
-            workspaceRoot: tree,
-            delegateCallID: "d1"
-        )
-        #expect(result.status == .ok, "child document edit executed: \(result.outputSummary)")
-        let entry = try #require(executor.entries.first)
-        #expect(entry.context.childExecution != nil, "The child context carries its runtime identity")
-        #expect(entry.context.approvalGrantID != nil)
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree
+            )
+            let result = try await dispatchAsChild(
+                runtime,
+                call: try documentCall(id: "child-doc"),
+                tools: ["document.office.edit"],
+                workspaceRoot: tree,
+                delegateCallID: "d1"
+            )
+            #expect(result.status == .ok, "child document edit executed: \(result.outputSummary)")
+            let entry = try #require(executor.entries.first)
+            #expect(entry.context.childExecution != nil, "The child context carries its runtime identity")
+            #expect(entry.context.approvalGrantID != nil)
+
+        }
     }
 
     @Test("A delegated child cannot widen the carve-out: repository, nested repo and redirect")
     func childUnresolvedExtentsStayReviewed() async throws {
-        // (a) the workspace root itself is a repository
-        let repoTree = try makeTree(gitDirectory: true)
-        defer { cleanup(repoTree) }
-        let repoExecutor = CapturingExecutor(descriptors: descriptors())
-        let repoBackend = DenyBackend()
-        let repoRuntime = makeRuntime(
-            executor: repoExecutor,
-            policy: AutomaticApprovalPolicy(backend: repoBackend),
-            workspaceRoot: repoTree
-        )
-        let repoResult = await dispatchAsChild(
-            repoRuntime,
-            call: try documentCall(id: "child-repo"),
-            tools: ["document.office.edit"],
-            workspaceRoot: repoTree,
-            delegateCallID: "d2"
-        )
-        #expect(repoResult.status == .denied)
-        #expect(repoExecutor.entries.isEmpty)
-        #expect(repoBackend.toolNames == ["document.office.edit"], "The reviewing policy really saw the call")
+        try await ActiveParentTestScope.withScope {
+            // (a) the workspace root itself is a repository
+            let repoTree = try makeTree(gitDirectory: true)
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: repoTree) }
+            let repoExecutor = CapturingExecutor(descriptors: descriptors())
+            let repoBackend = DenyBackend()
+            let repoRuntime = makeRuntime(
+                executor: repoExecutor,
+                policy: AutomaticApprovalPolicy(backend: repoBackend),
+                workspaceRoot: repoTree
+            )
+            let repoResult = try await dispatchAsChild(
+                repoRuntime,
+                call: try documentCall(id: "child-repo"),
+                tools: ["document.office.edit"],
+                workspaceRoot: repoTree,
+                delegateCallID: "d2"
+            )
+            #expect(repoResult.status == .denied)
+            #expect(repoExecutor.entries.isEmpty)
+            #expect(repoBackend.toolNames == ["document.office.edit"], "The reviewing policy really saw the call")
 
-        // (b) a repository nested inside an otherwise plain workspace: the
-        // document target is inside it
-        let outer = try makeTree()
-        defer { cleanup(outer) }
-        let nestedRepo = try makeNestedRepository(inside: outer)
-        let nestedExecutor = CapturingExecutor(descriptors: descriptors())
-        let nestedBackend = DenyBackend()
-        let nestedRuntime = makeRuntime(
-            executor: nestedExecutor,
-            policy: AutomaticApprovalPolicy(backend: nestedBackend),
-            workspaceRoot: outer
-        )
-        let nestedCall = try ToolCall(
-            id: "child-nested",
-            toolName: "document.office.edit",
-            argumentsJSON: Data(
-                #"{"action":"apply","proposal_id":"p","path":"nested/report.docx"}"#.utf8
-            ),
-            scope: .local
-        )
-        let nestedResult = await dispatchAsChild(
-            nestedRuntime,
-            call: nestedCall,
-            tools: ["document.office.edit"],
-            workspaceRoot: outer,
-            delegateCallID: "d3"
-        )
-        #expect(nestedResult.status == .denied)
-        #expect(nestedExecutor.entries.isEmpty)
+            // (b) a repository nested inside an otherwise plain workspace: the
+            // document target is inside it
+            let outer = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: outer) }
+            let nestedRepo = try makeNestedRepository(inside: outer)
+            let nestedExecutor = CapturingExecutor(descriptors: descriptors())
+            let nestedBackend = DenyBackend()
+            let nestedRuntime = makeRuntime(
+                executor: nestedExecutor,
+                policy: AutomaticApprovalPolicy(backend: nestedBackend),
+                workspaceRoot: outer
+            )
+            let nestedCall = try ToolCall(
+                id: "child-nested",
+                toolName: "document.office.edit",
+                argumentsJSON: Data(
+                    #"{"action":"apply","proposal_id":"p","path":"nested/report.docx"}"#.utf8
+                ),
+                scope: .local
+            )
+            let nestedResult = try await dispatchAsChild(
+                nestedRuntime,
+                call: nestedCall,
+                tools: ["document.office.edit"],
+                workspaceRoot: outer,
+                delegateCallID: "d3"
+            )
+            #expect(nestedResult.status == .denied)
+            #expect(nestedExecutor.entries.isEmpty)
 
-        // (c) a redirected output INSIDE a repository is a repository write
-        let repoRedirect = try documentCall(
-            id: "child-out",
-            extra: #","output":"\#(nestedRepo.appendingPathComponent("out.docx").path)""#
-        )
-        let redirectExecutor = CapturingExecutor(descriptors: descriptors())
-        let redirectBackend = DenyBackend()
-        let redirectRuntime = makeRuntime(
-            executor: redirectExecutor,
-            policy: AutomaticApprovalPolicy(backend: redirectBackend),
-            workspaceRoot: outer
-        )
-        let redirectResult = await dispatchAsChild(
-            redirectRuntime,
-            call: repoRedirect,
-            tools: ["document.office.edit"],
-            workspaceRoot: outer,
-            delegateCallID: "d4"
-        )
-        #expect(redirectResult.status == .denied)
-        #expect(redirectExecutor.entries.isEmpty)
+            // (c) a redirected output INSIDE a repository is a repository write
+            let repoRedirect = try documentCall(
+                id: "child-out",
+                extra: #","output":"\#(nestedRepo.appendingPathComponent("out.docx").path)""#
+            )
+            let redirectExecutor = CapturingExecutor(descriptors: descriptors())
+            let redirectBackend = DenyBackend()
+            let redirectRuntime = makeRuntime(
+                executor: redirectExecutor,
+                policy: AutomaticApprovalPolicy(backend: redirectBackend),
+                workspaceRoot: outer
+            )
+            let redirectResult = try await dispatchAsChild(
+                redirectRuntime,
+                call: repoRedirect,
+                tools: ["document.office.edit"],
+                workspaceRoot: outer,
+                delegateCallID: "d4"
+            )
+            #expect(redirectResult.status == .denied)
+            #expect(redirectExecutor.entries.isEmpty)
 
-        // (d) an unresolved family under the EXISTING policy stays reviewed:
-        // a media.project draft whose declared record cannot be pinned because
-        // the runtime configuration carries no resolved store root. (A PDF
-        // edit is a poor probe here: the pre-existing automatic policy
-        // deterministically exempts it, so it would never reach the reviewer.)
-        let unresolvedMedia = try mediaProjectCall(
-            id: "child-unresolved", projectID: UUID(), action: "propose"
-        )
-        let unresolvedExecutor = CapturingExecutor(descriptors: descriptors())
-        let unresolvedBackend = DenyBackend()
-        let unresolvedRuntime = makeRuntime(
-            executor: unresolvedExecutor,
-            policy: AutomaticApprovalPolicy(backend: unresolvedBackend),
-            workspaceRoot: outer
-        )
-        let unresolvedResult = await dispatchAsChild(
-            unresolvedRuntime,
-            call: unresolvedMedia,
-            tools: ["media.project"],
-            workspaceRoot: outer,
-            delegateCallID: "d4b"
-        )
-        #expect(unresolvedResult.status == .denied)
-        #expect(unresolvedExecutor.entries.isEmpty)
+            // (d) an unresolved family under the EXISTING policy stays reviewed:
+            // a media.project draft whose declared record cannot be pinned because
+            // the runtime configuration carries no resolved store root. (A PDF
+            // edit is a poor probe here: the pre-existing automatic policy
+            // deterministically exempts it, so it would never reach the reviewer.)
+            let unresolvedMedia = try mediaProjectCall(
+                id: "child-unresolved", projectID: UUID(), action: "propose"
+            )
+            let unresolvedExecutor = CapturingExecutor(descriptors: descriptors())
+            let unresolvedBackend = DenyBackend()
+            let unresolvedRuntime = makeRuntime(
+                executor: unresolvedExecutor,
+                policy: AutomaticApprovalPolicy(backend: unresolvedBackend),
+                workspaceRoot: outer
+            )
+            let unresolvedResult = try await dispatchAsChild(
+                unresolvedRuntime,
+                call: unresolvedMedia,
+                tools: ["media.project"],
+                workspaceRoot: outer,
+                delegateCallID: "d4b"
+            )
+            #expect(unresolvedResult.status == .denied)
+            #expect(unresolvedExecutor.entries.isEmpty)
+
+        }
     }
 
     // MARK: - Typed-contract families through the real runtime
@@ -588,174 +595,183 @@ struct DeterministicLocalApprovalRuntimeTests {
 
     @Test("media.project resolves the app-owned store record from the runtime configuration")
     func mediaProjectStoreBindingIsRuntimeOwned() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let store = try makeTree()
-        defer { cleanup(store) }
-        let projectID = UUID()
-        let call = try mediaProjectCall(projectID: projectID)
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let store = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: store) }
+            let projectID = UUID()
+            let call = try mediaProjectCall(projectID: projectID)
 
-        // Positive: the trusted store root travels in the frozen
-        // configuration; the call executes with runtime authority.
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree,
-            stores: [TypedMutationContract.mediaProjectStoreKey: store.path]
-        )
-        let result = await dispatchAsChild(
-            runtime,
-            call: call,
-            tools: ["media.project"],
-            workspaceRoot: tree,
-            delegateCallID: "mp1"
-        )
-        #expect(result.status == .ok, "media.project apply executed: \(result.outputSummary)")
-        #expect(executor.entries.count == 1)
-        #expect(executor.entries.first?.context.runtimeAuthority != nil)
+            // Positive: the trusted store root travels in the frozen
+            // configuration; the call executes with runtime authority.
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree,
+                stores: [TypedMutationContract.mediaProjectStoreKey: store.path]
+            )
+            let result = try await dispatchAsChild(
+                runtime,
+                call: call,
+                tools: ["media.project"],
+                workspaceRoot: tree,
+                delegateCallID: "mp1"
+            )
+            #expect(result.status == .ok, "media.project apply executed: \(result.outputSummary)")
+            #expect(executor.entries.count == 1)
+            #expect(executor.entries.first?.context.runtimeAuthority != nil)
 
-        // Negative: without the store root the record cannot be pinned, so
-        // the call keeps the reviewing policy.
-        let deniedExecutor = CapturingExecutor(descriptors: descriptors())
-        let backend = DenyBackend()
-        let deniedRuntime = makeRuntime(
-            executor: deniedExecutor,
-            policy: AutomaticApprovalPolicy(backend: backend),
-            workspaceRoot: tree
-        )
-        let denied = await dispatchAsChild(
-            deniedRuntime,
-            call: try mediaProjectCall(id: "mp2", projectID: projectID),
-            tools: ["media.project"],
-            workspaceRoot: tree,
-            delegateCallID: "mp2"
-        )
-        #expect(denied.status == .denied)
-        #expect(deniedExecutor.entries.isEmpty)
-        #expect(backend.toolNames == ["media.project"])
+            // Negative: without the store root the record cannot be pinned, so
+            // the call keeps the reviewing policy.
+            let deniedExecutor = CapturingExecutor(descriptors: descriptors())
+            let backend = DenyBackend()
+            let deniedRuntime = makeRuntime(
+                executor: deniedExecutor,
+                policy: AutomaticApprovalPolicy(backend: backend),
+                workspaceRoot: tree
+            )
+            let denied = try await dispatchAsChild(
+                deniedRuntime,
+                call: try mediaProjectCall(id: "mp2", projectID: projectID),
+                tools: ["media.project"],
+                workspaceRoot: tree,
+                delegateCallID: "mp2"
+            )
+            #expect(denied.status == .denied)
+            #expect(deniedExecutor.entries.isEmpty)
+            #expect(backend.toolNames == ["media.project"])
+
+        }
     }
 
     @Test("A media export is classified at its REAL Workbench/Exports target, not a workspace-root bait")
     func mediaExportTargetFollowsConsumer() async throws {
-        let projectIDForExport = UUID()
-        let store = try makeTree()
-        defer { cleanup(store) }
-        let stores = [TypedMutationContract.mediaProjectStoreKey: store.path]
+        try await ActiveParentTestScope.withScope {
+            let projectIDForExport = UUID()
+            let store = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: store) }
+            let stores = [TypedMutationContract.mediaProjectStoreKey: store.path]
 
-        func exportCall(_ id: String, fileName: String) throws -> ToolCall {
-            try ToolCall(
-                id: id,
-                toolName: "media.project",
-                argumentsJSON: Data(
-                    #"{"action":"export","project_id":"\#(projectIDForExport.uuidString)","export":{"kind":"image","file_name":"\#(fileName)","format":"png"}}"#.utf8
-                ),
-                scope: .local
+            func exportCall(_ id: String, fileName: String) throws -> ToolCall {
+                try ToolCall(
+                    id: id,
+                    toolName: "media.project",
+                    argumentsJSON: Data(
+                        #"{"action":"export","project_id":"\#(projectIDForExport.uuidString)","export":{"kind":"image","file_name":"\#(fileName)","format":"png"}}"#.utf8
+                    ),
+                    scope: .local
+                )
+            }
+
+            // A nested repository INSIDE Workbench covers the REAL output path
+            // `Workbench/Exports/clip.png`; a root-bait target (`clip.png`) would
+            // have missed it and let the export through. The card stays.
+            let repoTree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: repoTree) }
+            try FileManager.default.createDirectory(
+                at: repoTree.appendingPathComponent("Workbench", isDirectory: true),
+                withIntermediateDirectories: true
             )
+            try FileManager.default.createDirectory(
+                at: repoTree.appendingPathComponent("Workbench/.git", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            let deniedExecutor = CapturingExecutor(descriptors: descriptors())
+            let deniedBackend = DenyBackend()
+            let deniedRuntime = makeRuntime(
+                executor: deniedExecutor,
+                policy: AutomaticApprovalPolicy(backend: deniedBackend),
+                workspaceRoot: repoTree,
+                stores: stores
+            )
+            let denied = try await dispatchAsChild(
+                deniedRuntime,
+                call: try exportCall("exp-repo", fileName: "clip"),
+                tools: ["media.project"],
+                workspaceRoot: repoTree,
+                delegateCallID: "exp-repo"
+            )
+            #expect(denied.status == .denied,
+                    "the real Workbench/Exports target inside the nested repo must keep the card")
+            #expect(deniedExecutor.entries.isEmpty)
+            #expect(deniedBackend.toolNames == ["media.project"])
+
+            // A repository elsewhere under the same workspace does NOT cover the
+            // export directory: the same call executes without review.
+            let plainTree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: plainTree) }
+            try FileManager.default.createDirectory(
+                at: plainTree.appendingPathComponent("repo", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            try FileManager.default.createDirectory(
+                at: plainTree.appendingPathComponent("repo/.git", isDirectory: true),
+                withIntermediateDirectories: true
+            )
+            let allowedExecutor = CapturingExecutor(descriptors: descriptors())
+            let allowedRuntime = makeRuntime(
+                executor: allowedExecutor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: plainTree,
+                stores: stores
+            )
+            let allowed = try await dispatchAsChild(
+                allowedRuntime,
+                call: try exportCall("exp-plain", fileName: "clip"),
+                tools: ["media.project"],
+                workspaceRoot: plainTree,
+                delegateCallID: "exp-plain"
+            )
+            #expect(allowed.status == .ok, "media export executed: \(allowed.outputSummary)")
+            #expect(allowedExecutor.entries.count == 1)
+
+            // An invalid basename (`out.png` is rejected by the real schema) fails
+            // closed: the policy never claims a path the tool would refuse.
+            let invalidExecutor = CapturingExecutor(descriptors: descriptors())
+            let invalidBackend = DenyBackend()
+            let invalidRuntime = makeRuntime(
+                executor: invalidExecutor,
+                policy: AutomaticApprovalPolicy(backend: invalidBackend),
+                workspaceRoot: plainTree,
+                stores: stores
+            )
+            let invalid = try await dispatchAsChild(
+                invalidRuntime,
+                call: try exportCall("exp-invalid", fileName: "out.png"),
+                tools: ["media.project"],
+                workspaceRoot: plainTree,
+                delegateCallID: "exp-invalid"
+            )
+            #expect(invalid.status == .denied, "an invalid export basename must fail closed")
+            #expect(invalidExecutor.entries.isEmpty)
+
         }
-
-        // A nested repository INSIDE Workbench covers the REAL output path
-        // `Workbench/Exports/clip.png`; a root-bait target (`clip.png`) would
-        // have missed it and let the export through. The card stays.
-        let repoTree = try makeTree()
-        defer { cleanup(repoTree) }
-        try FileManager.default.createDirectory(
-            at: repoTree.appendingPathComponent("Workbench", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: repoTree.appendingPathComponent("Workbench/.git", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        let deniedExecutor = CapturingExecutor(descriptors: descriptors())
-        let deniedBackend = DenyBackend()
-        let deniedRuntime = makeRuntime(
-            executor: deniedExecutor,
-            policy: AutomaticApprovalPolicy(backend: deniedBackend),
-            workspaceRoot: repoTree,
-            stores: stores
-        )
-        let denied = await dispatchAsChild(
-            deniedRuntime,
-            call: try exportCall("exp-repo", fileName: "clip"),
-            tools: ["media.project"],
-            workspaceRoot: repoTree,
-            delegateCallID: "exp-repo"
-        )
-        #expect(denied.status == .denied,
-                "the real Workbench/Exports target inside the nested repo must keep the card")
-        #expect(deniedExecutor.entries.isEmpty)
-        #expect(deniedBackend.toolNames == ["media.project"])
-
-        // A repository elsewhere under the same workspace does NOT cover the
-        // export directory: the same call executes without review.
-        let plainTree = try makeTree()
-        defer { cleanup(plainTree) }
-        try FileManager.default.createDirectory(
-            at: plainTree.appendingPathComponent("repo", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.createDirectory(
-            at: plainTree.appendingPathComponent("repo/.git", isDirectory: true),
-            withIntermediateDirectories: true
-        )
-        let allowedExecutor = CapturingExecutor(descriptors: descriptors())
-        let allowedRuntime = makeRuntime(
-            executor: allowedExecutor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: plainTree,
-            stores: stores
-        )
-        let allowed = await dispatchAsChild(
-            allowedRuntime,
-            call: try exportCall("exp-plain", fileName: "clip"),
-            tools: ["media.project"],
-            workspaceRoot: plainTree,
-            delegateCallID: "exp-plain"
-        )
-        #expect(allowed.status == .ok, "media export executed: \(allowed.outputSummary)")
-        #expect(allowedExecutor.entries.count == 1)
-
-        // An invalid basename (`out.png` is rejected by the real schema) fails
-        // closed: the policy never claims a path the tool would refuse.
-        let invalidExecutor = CapturingExecutor(descriptors: descriptors())
-        let invalidBackend = DenyBackend()
-        let invalidRuntime = makeRuntime(
-            executor: invalidExecutor,
-            policy: AutomaticApprovalPolicy(backend: invalidBackend),
-            workspaceRoot: plainTree,
-            stores: stores
-        )
-        let invalid = await dispatchAsChild(
-            invalidRuntime,
-            call: try exportCall("exp-invalid", fileName: "out.png"),
-            tools: ["media.project"],
-            workspaceRoot: plainTree,
-            delegateCallID: "exp-invalid"
-        )
-        #expect(invalid.status == .denied, "an invalid export basename must fail closed")
-        #expect(invalidExecutor.entries.isEmpty)
     }
 
     @Test("A video output outside a repository executes; a model argument cannot forge the guest binding")
     func videoOutputExecutesWithoutApproval() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree
-        )
-        let result = await dispatchAsChild(
-            runtime,
-            call: try videoEditCall(),
-            tools: ["video.edit"],
-            workspaceRoot: tree,
-            delegateCallID: "v1"
-        )
-        #expect(result.status == .ok, "video edit executed: \(result.outputSummary)")
-        #expect(executor.entries.count == 1)
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree
+            )
+            let result = try await dispatchAsChild(
+                runtime,
+                call: try videoEditCall(),
+                tools: ["video.edit"],
+                workspaceRoot: tree,
+                delegateCallID: "v1"
+            )
+            #expect(result.status == .ok, "video edit executed: \(result.outputSummary)")
+            #expect(executor.entries.count == 1)
+
+        }
     }
 
     @Test("Default-ask ordinary flow runs without approval cards: create, propose, apply, export, cad/media propose")
@@ -871,205 +887,220 @@ struct DeterministicLocalApprovalRuntimeTests {
 
     @Test("Audited reads/drafts never card, even on a repository document; the commit still does")
     func readAndDraftDoNotCardButCommitDoes() async throws {
-        // The workspace root IS a repository: inspecting/drafting its content
-        // writes no code, so those steps must not card; the actual commit
-        // (automatic copied output inside the repository) must.
-        let repo = try makeTree(gitDirectory: true)
-        defer { cleanup(repo) }
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let backend = DenyBackend()
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: AutomaticApprovalPolicy(backend: backend),
-            workspaceRoot: repo
-        )
-        for (id, json) in [
-            ("repo-read", #"{"action":"read","path":"report.docx"}"#),
-            ("repo-query", #"{"action":"query","path":"report.docx"}"#),
-            ("repo-preview", #"{"action":"preview","proposal_id":"p"}"#),
-            ("repo-propose", #"{"action":"propose","path":"report.docx","expected_sha256":"x"}"#)
-        ] {
-            let status = await dispatchAsChild(
+        try await ActiveParentTestScope.withScope {
+            // The workspace root IS a repository: inspecting/drafting its content
+            // writes no code, so those steps must not card; the actual commit
+            // (automatic copied output inside the repository) must.
+            let repo = try makeTree(gitDirectory: true)
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: repo) }
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let backend = DenyBackend()
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: AutomaticApprovalPolicy(backend: backend),
+                workspaceRoot: repo
+            )
+            for (id, json) in [
+                ("repo-read", #"{"action":"read","path":"report.docx"}"#),
+                ("repo-query", #"{"action":"query","path":"report.docx"}"#),
+                ("repo-preview", #"{"action":"preview","proposal_id":"p"}"#),
+                ("repo-propose", #"{"action":"propose","path":"report.docx","expected_sha256":"x"}"#)
+            ] {
+                let status = try await dispatchAsChild(
+                    runtime,
+                    call: try ToolCall(
+                        id: id, toolName: "document.office.edit",
+                        argumentsJSON: Data(json.utf8), scope: .local
+                    ),
+                    tools: ["document.office.edit"],
+                    workspaceRoot: repo,
+                    delegateCallID: "read-\(id)"
+                )
+                #expect(status.status == .ok, "\(id) must execute without a card: \(status.outputSummary)")
+            }
+            // A model-authored safe flag on a write action changes nothing: the
+            // repository commit still reaches the reviewing policy.
+            let denied = try await dispatchAsChild(
                 runtime,
                 call: try ToolCall(
-                    id: id, toolName: "document.office.edit",
-                    argumentsJSON: Data(json.utf8), scope: .local
+                    id: "repo-apply", toolName: "document.office.edit",
+                    argumentsJSON: Data(#"{"action":"apply","path":"report.docx","proposal_id":"p","readOnly":true}"#.utf8),
+                    scope: .local
                 ),
                 tools: ["document.office.edit"],
                 workspaceRoot: repo,
-                delegateCallID: "read-\(id)"
+                delegateCallID: "repo-apply"
             )
-            #expect(status.status == .ok, "\(id) must execute without a card: \(status.outputSummary)")
+            #expect(denied.status == .denied, "the repository commit must still wait for the human card")
+            #expect(backend.toolNames == ["document.office.edit"], "only the commit reached the reviewing policy")
+            #expect(executor.entries.count == 4, "only the four non-mutating steps executed")
+            #expect(executor.entries.allSatisfy { $0.context.approvalGrantID != nil })
+
         }
-        // A model-authored safe flag on a write action changes nothing: the
-        // repository commit still reaches the reviewing policy.
-        let denied = await dispatchAsChild(
-            runtime,
-            call: try ToolCall(
-                id: "repo-apply", toolName: "document.office.edit",
-                argumentsJSON: Data(#"{"action":"apply","path":"report.docx","proposal_id":"p","readOnly":true}"#.utf8),
-                scope: .local
-            ),
-            tools: ["document.office.edit"],
-            workspaceRoot: repo,
-            delegateCallID: "repo-apply"
-        )
-        #expect(denied.status == .denied, "the repository commit must still wait for the human card")
-        #expect(backend.toolNames == ["document.office.edit"], "only the commit reached the reviewing policy")
-        #expect(executor.entries.count == 4, "only the four non-mutating steps executed")
-        #expect(executor.entries.allSatisfy { $0.context.approvalGrantID != nil })
     }
 
     @Test("A media draft needs the resolved store root; propose without it keeps the review")
     func mediaDraftRequiresResolvedStore() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let store = try makeTree()
-        defer { cleanup(store) }
-        let projectID = UUID()
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let store = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: store) }
+            let projectID = UUID()
 
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree,
-            stores: [TypedMutationContract.mediaProjectStoreKey: store.path]
-        )
-        let result = await dispatchAsChild(
-            runtime,
-            call: try mediaProjectCall(id: "mp-propose", projectID: projectID, action: "propose"),
-            tools: ["media.project"],
-            workspaceRoot: tree,
-            delegateCallID: "mp-propose"
-        )
-        #expect(result.status == .ok, "propose with the resolved store executes: \(result.outputSummary)")
-        #expect(executor.entries.count == 1)
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree,
+                stores: [TypedMutationContract.mediaProjectStoreKey: store.path]
+            )
+            let result = try await dispatchAsChild(
+                runtime,
+                call: try mediaProjectCall(id: "mp-propose", projectID: projectID, action: "propose"),
+                tools: ["media.project"],
+                workspaceRoot: tree,
+                delegateCallID: "mp-propose"
+            )
+            #expect(result.status == .ok, "propose with the resolved store executes: \(result.outputSummary)")
+            #expect(executor.entries.count == 1)
 
-        // Without the store root the draft's declared record cannot be pinned:
-        // the reviewing policy decides (fail closed).
-        let deniedExecutor = CapturingExecutor(descriptors: descriptors())
-        let backend = DenyBackend()
-        let deniedRuntime = makeRuntime(
-            executor: deniedExecutor,
-            policy: AutomaticApprovalPolicy(backend: backend),
-            workspaceRoot: tree
-        )
-        let denied = await dispatchAsChild(
-            deniedRuntime,
-            call: try mediaProjectCall(id: "mp-propose-2", projectID: projectID, action: "propose"),
-            tools: ["media.project"],
-            workspaceRoot: tree,
-            delegateCallID: "mp-propose-2"
-        )
-        #expect(denied.status == .denied)
-        #expect(deniedExecutor.entries.isEmpty)
-        #expect(backend.toolNames == ["media.project"], "the reviewing policy really saw the draft")
+            // Without the store root the draft's declared record cannot be pinned:
+            // the reviewing policy decides (fail closed).
+            let deniedExecutor = CapturingExecutor(descriptors: descriptors())
+            let backend = DenyBackend()
+            let deniedRuntime = makeRuntime(
+                executor: deniedExecutor,
+                policy: AutomaticApprovalPolicy(backend: backend),
+                workspaceRoot: tree
+            )
+            let denied = try await dispatchAsChild(
+                deniedRuntime,
+                call: try mediaProjectCall(id: "mp-propose-2", projectID: projectID, action: "propose"),
+                tools: ["media.project"],
+                workspaceRoot: tree,
+                delegateCallID: "mp-propose-2"
+            )
+            #expect(denied.status == .denied)
+            #expect(deniedExecutor.entries.isEmpty)
+            #expect(backend.toolNames == ["media.project"], "the reviewing policy really saw the draft")
+
+        }
     }
 
     @Test("A delegated child's PDF edit uses the same canonical carve-out")
     func childPDFEditExecutes() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree
-        )
-        let result = await dispatchAsChild(
-            runtime,
-            call: try pdfEditCall(id: "child-pdf"),
-            tools: ["document.pdf.edit"],
-            workspaceRoot: tree,
-            delegateCallID: "d8"
-        )
-        #expect(result.status == .ok, "child PDF edit executed: \(result.outputSummary)")
-        let entry = try #require(executor.entries.first)
-        #expect(entry.context.childExecution != nil)
-        #expect(entry.context.approvalGrantID != nil)
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree
+            )
+            let result = try await dispatchAsChild(
+                runtime,
+                call: try pdfEditCall(id: "child-pdf"),
+                tools: ["document.pdf.edit"],
+                workspaceRoot: tree,
+                delegateCallID: "d8"
+            )
+            #expect(result.status == .ok, "child PDF edit executed: \(result.outputSummary)")
+            let entry = try #require(executor.entries.first)
+            #expect(entry.context.childExecution != nil)
+            #expect(entry.context.approvalGrantID != nil)
+
+        }
     }
 
     @Test("The local guest binding is runtime-owned; the same call stays reviewed without it")
     func guestBindingIsRuntimeOwned() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let call = try shellCall(id: "child-sh")
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let call = try shellCall(id: "child-sh")
 
-        let guestExecutor = CapturingExecutor(descriptors: descriptors())
-        let guestRuntime = makeRuntime(
-            executor: guestExecutor,
-            policy: HumanApprovalPolicy(),
-            workspaceRoot: tree,
-            localGuest: true
-        )
-        let guestResult = await dispatchAsChild(
-            guestRuntime,
-            call: call,
-            tools: ["exec.shell"],
-            workspaceRoot: tree,
-            delegateCallID: "d5"
-        )
-        #expect(guestResult.status == .ok, "guest read-only command executed: \(guestResult.outputSummary)")
-        #expect(guestExecutor.entries.count == 1)
+            let guestExecutor = CapturingExecutor(descriptors: descriptors())
+            let guestRuntime = makeRuntime(
+                executor: guestExecutor,
+                policy: HumanApprovalPolicy(),
+                workspaceRoot: tree,
+                localGuest: true
+            )
+            let guestResult = try await dispatchAsChild(
+                guestRuntime,
+                call: call,
+                tools: ["exec.shell"],
+                workspaceRoot: tree,
+                delegateCallID: "d5"
+            )
+            #expect(guestResult.status == .ok, "guest read-only command executed: \(guestResult.outputSummary)")
+            #expect(guestExecutor.entries.count == 1)
 
-        let nativeExecutor = CapturingExecutor(descriptors: descriptors())
-        let backend = DenyBackend()
-        let nativeRuntime = makeRuntime(
-            executor: nativeExecutor,
-            policy: AutomaticApprovalPolicy(backend: backend),
-            workspaceRoot: tree,
-            localGuest: false
-        )
-        let nativeResult = await dispatchAsChild(
-            nativeRuntime,
-            call: call,
-            tools: ["exec.shell"],
-            workspaceRoot: tree,
-            delegateCallID: "d6"
-        )
-        #expect(nativeResult.status == .denied)
-        #expect(nativeExecutor.entries.isEmpty)
-        #expect(backend.toolNames == ["exec.shell"], "Without the guest binding the policy decides")
+            let nativeExecutor = CapturingExecutor(descriptors: descriptors())
+            let backend = DenyBackend()
+            let nativeRuntime = makeRuntime(
+                executor: nativeExecutor,
+                policy: AutomaticApprovalPolicy(backend: backend),
+                workspaceRoot: tree,
+                localGuest: false
+            )
+            let nativeResult = try await dispatchAsChild(
+                nativeRuntime,
+                call: call,
+                tools: ["exec.shell"],
+                workspaceRoot: tree,
+                delegateCallID: "d6"
+            )
+            #expect(nativeResult.status == .denied)
+            #expect(nativeExecutor.entries.isEmpty)
+            #expect(backend.toolNames == ["exec.shell"], "Without the guest binding the policy decides")
+
+        }
     }
 
     @Test("Guest carve-outs do not widen: destructive and ambiguous commands stay reviewed")
     func guestCarveOutDoesNotWiden() async throws {
-        let tree = try makeTree()
-        defer { cleanup(tree) }
-        let executor = CapturingExecutor(descriptors: descriptors())
-        let runtime = makeRuntime(
-            executor: executor,
-            policy: AutomaticApprovalPolicy(backend: DenyBackend()),
-            workspaceRoot: tree,
-            localGuest: true
-        )
-        // First: the read-only command is exempt and executes.
-        let safeResult = await dispatchAsChild(
-            runtime,
-            call: try shellCall(id: "safe-1"),
-            tools: ["exec.shell"],
-            workspaceRoot: tree,
-            delegateCallID: "d7"
-        )
-        #expect(safeResult.status == .ok)
-
-        // Later commands are re-decided: a destructive command and an
-        // ambiguous write-flavoured diagnostic are NOT covered by the earlier
-        // allow and reach the reviewing policy.
-        for (id, command) in [
-            ("destructive-1", "rm -rf build"),
-            ("ambiguous-1", "sed -n 'w out' input"),
-            ("date-mutation", "date -s 2020-01-01")
-        ] {
-            let result = await dispatchAsChild(
+        try await ActiveParentTestScope.withScope {
+            let tree = try makeTree()
+            try ActiveParentTestScope.afterStop { try? FileManager.default.removeItem(at: tree) }
+            let executor = CapturingExecutor(descriptors: descriptors())
+            let runtime = makeRuntime(
+                executor: executor,
+                policy: AutomaticApprovalPolicy(backend: DenyBackend()),
+                workspaceRoot: tree,
+                localGuest: true
+            )
+            // First: the read-only command is exempt and executes.
+            let safeResult = try await dispatchAsChild(
                 runtime,
-                call: try shellCall(id: id, command: command),
+                call: try shellCall(id: "safe-1"),
                 tools: ["exec.shell"],
                 workspaceRoot: tree,
                 delegateCallID: "d7"
             )
-            #expect(result.status == .denied, "\(command) must stay reviewed")
+            #expect(safeResult.status == .ok)
+
+            // Later commands are re-decided: a destructive command and an
+            // ambiguous write-flavoured diagnostic are NOT covered by the earlier
+            // allow and reach the reviewing policy.
+            for (id, command) in [
+                ("destructive-1", "rm -rf build"),
+                ("ambiguous-1", "sed -n 'w out' input"),
+                ("date-mutation", "date -s 2020-01-01")
+            ] {
+                let result = try await dispatchAsChild(
+                    runtime,
+                    call: try shellCall(id: id, command: command),
+                    tools: ["exec.shell"],
+                    workspaceRoot: tree,
+                    delegateCallID: "d7"
+                )
+                #expect(result.status == .denied, "\(command) must stay reviewed")
+            }
+            #expect(executor.entries.count == 1, "Only the read-only command executed")
+
         }
-        #expect(executor.entries.count == 1, "Only the read-only command executed")
     }
 }

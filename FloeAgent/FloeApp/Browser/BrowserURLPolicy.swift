@@ -28,16 +28,13 @@ enum BrowserURLPolicy {
         previewLock.withLock { _ = previewPrefixes.remove(prefix) }
     }
 
-    static func validate(_ value: String, conversationID: UUID? = nil, allowRegisteredServices: Bool = false) throws -> URL {
+    /// Argument syntax only. This does not authorize a navigation or a
+    /// registered service; execution must call validate with the real owner.
+    static func parseNavigationURL(_ value: String) throws -> URL {
         guard let url = URL(string: value),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              let host = url.host?.lowercased(), !host.isEmpty
-        else {
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host?.lowercased(), !host.isEmpty else {
             throw BrowserPolicyError.blocked("Only http and https URLs are allowed")
-        }
-        guard !isPrivate(host) || isAuthorizedPreview(url, conversationID: conversationID, allowRegisteredServices: allowRegisteredServices) else {
-            throw BrowserPolicyError.blocked("Loopback and private-network navigation is blocked")
         }
         guard url.user == nil, url.password == nil else {
             throw BrowserPolicyError.blocked("Credentials in URLs are not allowed")
@@ -45,9 +42,20 @@ enum BrowserURLPolicy {
         return url
     }
 
-    private static func isAuthorizedPreview(_ url: URL, conversationID: UUID?, allowRegisteredServices: Bool) -> Bool {
-        if url.scheme == "http", url.host == "127.0.0.1", let port = url.port,
-           previewLock.withLock({ serviceOrigins.values.contains(where: { $0.origin == "http://127.0.0.1:\(port)" && (allowRegisteredServices || $0.conversationID == conversationID) }) }) { return true }
+    static func validate(_ value: String, conversationID: UUID? = nil) throws -> URL {
+        let url = try parseNavigationURL(value)
+        guard let host = url.host?.lowercased(),
+              !isPrivate(host) || isAuthorizedPreview(url, conversationID: conversationID) else {
+            throw BrowserPolicyError.blocked("Loopback and private-network navigation is blocked")
+        }
+        return url
+    }
+
+    private static func isAuthorizedPreview(_ url: URL, conversationID: UUID?) -> Bool {
+        if let conversationID, url.scheme == "http", url.host == "127.0.0.1", let port = url.port,
+           previewLock.withLock({ serviceOrigins.values.contains(where: {
+               $0.origin == "http://127.0.0.1:\(port)" && $0.conversationID == conversationID
+           }) }) { return true }
         guard let prefix = previewPrefix(for: url) else { return false }
         return previewLock.withLock { previewPrefixes.contains(prefix) }
     }

@@ -82,7 +82,7 @@ public enum LocalModelToolPolicy {
     /// management in particular.
     public static let curatedCeilingNames: Set<String> = [
         // Discovery meta-tools (enumerate/load within the ceiling only).
-        "tools.list", "tools.search",
+        "tools.list", "tools.search", "tools.readResult",
         // Web retrieval — present only when a provider is actually configured.
         "web.search", "web.searchAI", "web.fetch",
         // Workspace read/lookup chain.

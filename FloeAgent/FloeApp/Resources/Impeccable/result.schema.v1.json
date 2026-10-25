@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://floe-agent.com/schemas/impeccable/result.v1.json",
+  "title": "Floe Impeccable scan result v1",
+  "type": "object",
+  "required": [
+    "contract",
+    "contractVersion",
+    "status",
+    "verdict",
+    "engine",
+    "coverage"
+  ],
+  "properties": {
+    "contract": {
+      "const": "floe.impeccable.snapshot"
+    },
+    "contractVersion": {
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "needs-facts",
+        "inconclusive",
+        "failed"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "clean",
+        "findings",
+        "inconclusive",
+        "none"
+      ]
+    },
+    "engine": {
+      "type": "object",
+      "properties": {
+        "binary": {
+          "type": "string"
+        },
+        "upstreamEngineVersion": {
+          "type": "string"
+        },
+        "upstreamCommit": {
+          "type": "string"
+        },
+        "floeAdapterVersion": {
+          "type": "string"
+        },
+        "engineId": {
+          "type": "string"
+        },
+        "targetTriple": {
+          "type": "string"
+        }
+      }
+    },
+    "identity": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "identityCheck": {
+      "type": "object",
+      "properties": {
+        "state": {
+          "enum": [
+            "verified",
+            "absent",
+            "mismatch",
+            "superseded"
+          ]
+        },
+        "mismatches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "properties": {
+        "snapshotBytes": {
+          "type": "integer"
+        },
+        "elements": {
+          "type": "integer"
+        },
+        "rounds": {
+          "type": "integer"
+        },
+        "hitTestsAsked": {
+          "type": "integer"
+        },
+        "hitTestsAnswered": {
+          "type": "integer"
+        },
+        "exceeded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "passes",
+        "uncoveredRequired"
+      ],
+      "properties": {
+        "passes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "state"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "requiredForCleanVerdict": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "detail": {
+                "type": [
+                  "object",
+                  "array",
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "uncoveredRequired": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unknownStyleProps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "needs": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "hitTests": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        "hitTestsBits": {
+          "type": "array"
+        },
+        "scrollProbes": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          }
+        },
+        "round": {
+          "type": "integer"
+        }
+      }
+    },
+    "findings": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "groups": {
+          "type": "array"
+        },
+        "pageLevel": {
+          "type": "array"
+        },
+        "counts": {
+          "type": "object"
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object"
+    },
+    "error": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

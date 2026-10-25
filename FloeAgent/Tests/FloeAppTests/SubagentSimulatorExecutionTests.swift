@@ -62,6 +62,34 @@ private struct UnusedProviderAdapter: ProviderAdapter {
     func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
 }
 
+/// Holds a real parent run open while the test exercises its child dispatcher.
+/// The initial event crosses the real provider boundary; cancellation joins
+/// the producer instead of leaving an idle-runtime fixture or a leaked task.
+private struct QualificationHoldingProviderAdapter: ProviderAdapter {
+    let protocolKind: ModelProtocol = .openAIChatCompletions
+    let hold: CancellationToken
+
+    func stream(request: ProviderStreamRequest, credentials: ProviderCredentials)
+        -> AsyncThrowingStream<AgentEvent, Error> {
+        let hold = hold
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Guest qualification parent is active."))
+            let producer = Task {
+                while !hold.isCancelled && !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
+                if !Task.isCancelled {
+                    continuation.yield(.completed(.init(stopReason: .endTurn)))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in producer.cancel() }
+        }
+    }
+
+    func listModels(provider: ProviderProfile, credentials: ProviderCredentials) async throws -> [ModelProfile] { [] }
+}
+
 /// One scripted provider stream per call, in order. Used to drive the REAL
 /// child loop with deterministic turns; the test labels this as a scripted
 /// provider because no model inference happens. Each `stream` call records the
@@ -349,6 +377,112 @@ struct SubagentSimulatorExecutionTests {
             unameResult.outputSummary.contains("6.18.56"),
             "App did not boot the qualified kernel: \(unameResult.outputSummary)")
         print("FLOE_REALVM_UNAME=\(unameResult.outputSummary)")
+    }
+
+    // A large command must traverse the real tool, ownership routing and Linux
+    // transport. A recording backend alone cannot catch framing or ARG_MAX
+    // failures. This reuses the existing opt-in VM host and its owned cleanup.
+    @Test(
+        "large Unicode shell script preserves cwd, environment, stdin and exit code in the real guest",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_REALVM_QUALIFICATION"] == "1")
+    )
+    func largeShellScriptEndToEnd() async throws {
+        let root = try makeWorkspaceRoot()
+        var ownedEnvironmentID = ""
+        let services = FloePlatformServices.shared
+        let parentHold = CancellationToken()
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        func cleanup() async {
+            if let ownedRuntime { await ownedRuntime.cancel() }
+            parentHold.cancel()
+            if let parentTask {
+                parentTask.cancel()
+                do { try await parentTask.value }
+                catch is CancellationError { }
+                catch let error as FloeError where error == .cancelled { }
+                catch { Issue.record("Large-shell parent cleanup failed: \(error)") }
+            }
+            if !ownedEnvironmentID.isEmpty {
+                do {
+                    try await services.stopEnvironment(id: ownedEnvironmentID)
+                    try await services.deleteEnvironment(id: ownedEnvironmentID)
+                } catch {
+                    Issue.record("Large-shell qualification cleanup failed: \(error)")
+                    return
+                }
+            }
+            do { try FileManager.default.removeItem(at: root) }
+            catch { Issue.record("Large-shell workspace cleanup failed: \(error)") }
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: root.appendingPathComponent("nested"), withIntermediateDirectories: true)
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            let runID = UUID(), conversationID = UUID()
+            let ceiling: Set<String> = ["exec.shell"]
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: parentHold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify large guest scripts") }
+            let parentIsActive = await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }
+            try #require(parentIsActive, "Parent must be active before child execution")
+            let context = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            let identity = ChildExecutionIdentity(
+                parentRunID: runID, rootTaskID: conversationID,
+                delegateCallID: "large-shell-qualification")
+            try await requireQualifiedKernel(runtime: runtime, identity: identity, context: context)
+
+            let input = "中文 English 日本語"
+            let comment = "# large script 中文 日本語 " + String(repeating: "x", count: 180) + "\n"
+            // Over 1 MiB: exceeds both the former 16 KiB tool limit and a
+            // typical shell argument/framing ceiling; never sent as host code.
+            let script = String(repeating: comment, count: 6_000) + """
+            IFS= read -r input
+            printf '%s|%s' "$input" "$FLOE_LARGE_SCRIPT_TEST" > result.txt
+            pwd
+            sha256sum result.txt
+            """
+            #expect(script.utf8.count > 1_048_576)
+            let expected = Data((input + "|environment-kept").utf8)
+            let call = try toolCall(id: "large-script", toolName: "exec.shell",
+                arguments: Self.json([
+                    "command": script, "cwd": "nested",
+                    "env": ["FLOE_LARGE_SCRIPT_TEST": "environment-kept"],
+                    "stdin": input + "\n", "timeoutSeconds": 60,
+                    "maxOutputBytes": 4096
+                ]))
+            let result = await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+            try #require(result.status == .ok, "Large guest script failed: \(result.outputSummary)")
+            #expect(result.outputSummary.contains("/nested"))
+            #expect(result.outputSummary.contains(FloeDigest.sha256Hex(expected)))
+            #expect(try Data(contentsOf: root.appendingPathComponent("nested/result.txt")) == expected)
+
+            let failureCall = try toolCall(id: "large-script-failure", toolName: "exec.shell",
+                arguments: Self.json([
+                    "command": String(repeating: comment, count: 200) + "exit 7\n",
+                    "timeout": 60
+                ]))
+            let failure = await runtime.dispatchChildTool(
+                failureCall, identity: identity, childContext: context)
+            #expect(failure.status != .ok)
+            #expect(failure.outputSummary.contains("exit=7"), failure.outputSummary)
+            print("FLOE_REALVM_LARGE_SCRIPT_BYTES=\(script.utf8.count)")
+            print("FLOE_REALVM_LARGE_SCRIPT_SHA256=\(FloeDigest.sha256Hex(expected))")
+            await cleanup()
+        } catch {
+            Issue.record("Large-shell real guest execution threw: \(error)")
+            await cleanup()
+        }
     }
 
     // MARK: - Base child guest execution

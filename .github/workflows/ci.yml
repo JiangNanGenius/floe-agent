@@ -265,13 +265,17 @@ jobs:
       - name: Build and sign official ZIP catalog
         env:
           FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
-        run: python skill-hub/build.py
-      - run: python skill-hub/build.py --check
+        run: |
+          python skill-hub/build.py
+          python skill-hub/build_android.py
+      - run: |
+          python skill-hub/build.py --check
+          python skill-hub/build_android.py --check
       - name: Commit generated artifacts to the selected branch
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add capability-hub/catalog.json capability-hub/catalog.sig FloeAgent/FloeApp/Resources/Capabilities skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
+          git add capability-hub/catalog.json capability-hub/catalog.sig FloeAgent/FloeApp/Resources/Capabilities skill-hub/catalog.json skill-hub/catalog.sig skill-hub/packages skill-hub/android FloeAgent/Sources/FloeSkills/OfficialBundledSkills.generated.swift FloeAgent/Sources/FloeSkills/OfficialSkillHubKeys.generated.swift
           if ! git diff --cached --quiet; then
             git commit -m 'build: publish signed official skills / 发布官方签名技能包'
             git push origin HEAD

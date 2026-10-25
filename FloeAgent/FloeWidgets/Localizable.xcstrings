@@ -17,6 +17,38 @@
         }
       }
     },
+    "liveactivity.active_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld active"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 项进行中"
+          }
+        }
+      }
+    },
+    "liveactivity.none": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No active tasks"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暂无进行中任务"
+          }
+        }
+      }
+    },
     "widget.alarm.pause": {
       "localizations": {
         "en": {

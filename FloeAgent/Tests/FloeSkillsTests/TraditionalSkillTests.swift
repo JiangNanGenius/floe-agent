@@ -11,6 +11,65 @@ import Testing
 
 @Suite("Traditional skill packages")
 struct TraditionalSkillTests {
+    @Test("Upstream reference directory and legal files retain their exact bytes")
+    func referenceAndLicenseArePreserved() throws {
+        let root = try Self.makePackage(files: [
+            "reference/design.md": "Original upstream guidance\n",
+            "LICENSE": "Original license\n",
+            "NOTICE.txt": "Original notice\n"
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = try SkillPackageValidator().validate(packageAt: root, requireManifest: false)
+        #expect(Set(package.files.map(\.relativePath)).isSuperset(of: ["reference/design.md", "LICENSE", "NOTICE.txt"]))
+        #expect(try String(contentsOf: root.appendingPathComponent("LICENSE"), encoding: .utf8) == "Original license\n")
+    }
+
+    @Test("Script paths share one normalization and containment contract")
+    func scriptPathNormalization() throws {
+        let root = try Self.makePackage()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        for path in ["audit.py", "scripts/audit.py", "scripts/nested/audit.py"] {
+            let target = try SkillScriptPath.destination(for: path, in: scripts)
+            #expect(target.pathExtension == "py")
+            #expect(target.pathComponents.contains("scripts"))
+        }
+        #expect(try SkillScriptPath.relativeToScripts("audit.py") == SkillScriptPath.relativeToScripts("scripts/audit.py"))
+        for path in ["../audit.py", "scripts/../audit.py", "/audit.py", "scripts//audit.py", "scripts/./audit.py", "audit.sh", "a\\b.py", "x\0.py"] {
+            #expect(throws: (any Error).self) { try SkillScriptPath.destination(for: path, in: scripts) }
+        }
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: scripts.appendingPathComponent("escape"), withDestinationURL: outside)
+        #expect(throws: (any Error).self) { try SkillScriptPath.destination(for: "escape/audit.py", in: scripts) }
+    }
+
+    @Test("Runtime declarations distinguish host platform from guest architecture")
+    func runtimeDeclarationAssessment() throws {
+        let root = try Self.makePackage(files: ["scripts/run.sh": "echo ok\n"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        var manifest = SkillManifest(id: "legacy-helper", version: "1.0.0",
+            capabilities: ["execution.remote"], tools: ["exec.shell"], platforms: ["ios", "android", "linux"], scriptRuntime: .remote,
+            runtime: .init(os: ["linux"], architectures: ["riscv64"]))
+        let file = root.appendingPathComponent("floe.json")
+        try JSONEncoder().encode(manifest).write(to: file)
+        let package = try SkillPackageValidator().validate(packageAt: root)
+        var runtime = SkillRuntimeEnvironment(platform: .iOS, supportedCapabilities: [.remoteExecution],
+            registeredTools: ["exec.shell"], supportsJavaScriptCore: false, hasRemoteExecutionHost: false,
+            runtimeOS: "linux", runtimeArchitecture: "riscv64")
+        #expect(SkillCompatibility.evaluate(package, in: runtime).declaredRuntime == .declaredCompatible)
+        runtime.platform = .android
+        runtime.runtimeArchitecture = "arm64"
+        let mismatch = SkillCompatibility.evaluate(package, in: runtime)
+        #expect(mismatch.declaredRuntime == .incompatible)
+        #expect(mismatch.problems.isEmpty) // Readable guidance is retained.
+        runtime.runtimeArchitecture = nil
+        #expect(SkillCompatibility.evaluate(package, in: runtime).declaredRuntime == .unverified)
+        manifest.runtime = .init(os: ["linux"], architectures: ["not-a-cpu"])
+        try JSONEncoder().encode(manifest).write(to: file)
+        #expect(throws: SkillValidationError.self) { try SkillPackageValidator().validate(packageAt: root) }
+    }
 
     static func makePackage(
         id: String = "legacy-helper",
@@ -65,7 +124,7 @@ struct TraditionalSkillTests {
         #expect(package.manifest.tools == ["exec.shell"])
     }
 
-    @Test("Pure Python uses the task Linux shell; unknown types fail closed")
+    @Test("Task helpers preserve supporting files without claiming an interpreter exists")
     func pythonAndUnknownTypes() throws {
         let pythonRoot = try Self.makePackage(files: [
             "scripts/analyze.py": "print('ok')"
@@ -81,12 +140,21 @@ struct TraditionalSkillTests {
 
 
         let unknownRoot = try Self.makePackage(files: [
-            "scripts/tool.rb": "puts 'hi'"
+            "scripts/tool.rb": "puts 'hi'",
+            "scripts/tool": "#!/bin/sh\necho ok\n",
+            "scripts/VERSION": "1.0.0\n",
+            "scripts/metadata.json": "{}",
+            "scripts/tool.cmd": "@echo off\n"
         ])
         defer { try? FileManager.default.removeItem(at: unknownRoot) }
-        #expect(throws: SkillValidationError.unsupportedFile("scripts/*.rb")) {
-            try SkillPackageValidator().validate(packageAt: unknownRoot, requireManifest: false)
-        }
+        let helpers = try SkillPackageValidator().validate(packageAt: unknownRoot, requireManifest: false)
+        #expect(helpers.files.count == 6)
+        #expect(helpers.manifest.scriptRuntime == .remote)
+        #expect(SkillCompatibility.evaluate(helpers, in: SkillRuntimeEnvironment(platform: .iOS,
+            supportedCapabilities: [.remoteExecution], registeredTools: ["exec.shell"],
+            supportsJavaScriptCore: false, hasRemoteExecutionHost: false)).declaredRuntime == .unverified)
+        try Data([0x4D, 0x5A, 0, 0]).write(to: unknownRoot.appendingPathComponent("scripts/native-helper"))
+        #expect(throws: SkillValidationError.self) { try SkillPackageValidator().validate(packageAt: unknownRoot, requireManifest: false) }
     }
 
     @Test("A sidecar manifest validates identity without entering the canonical digest")

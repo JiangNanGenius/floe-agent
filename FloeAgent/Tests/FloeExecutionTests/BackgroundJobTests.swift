@@ -182,6 +182,20 @@ struct BackgroundJobTests {
         #expect(try await store.job(id: orphaned.id)?.state == .interrupted)
     }
 
+    @Test("Background Shell accepts long bodies without widening other job targets")
+    func longShellSubmissionValidation() async throws {
+        let (db, _, _) = try await fixture()
+        let service = BackgroundJobService(store: BackgroundJobStore(database: db), registry: ToolRunnerRegistry())
+        let tool = JobsSubmitTool(service: service)
+        let payload = String(decoding: try JSONSerialization.data(withJSONObject:
+            ["command": String(repeating: "# 中文長脚本\n", count: 100_000)]), as: UTF8.self)
+        #expect(payload.utf8.count > 1_048_576)
+        try tool.validate(.init(tool: "exec.shell", arguments: payload))
+        #expect(throws: (any Error).self) {
+            try tool.validate(.init(tool: "web.fetch", arguments: payload))
+        }
+    }
+
     @Test("Submit validates target allowlist and JSON object arguments")
     func submitValidation() async throws {
         let (db, _, run) = try await fixture()

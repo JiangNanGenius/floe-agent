@@ -47,6 +47,22 @@ struct BackgroundExecutionSettingsView: View {
                 ))
                 .disabled(!statusPiPEnabled)
                 .accessibilityIdentifier("background.screenFeedback.toggle")
+
+                // Independent of every other switch: it changes nothing else
+                // and requires no PiP, location or server capability.
+                Toggle("background.features.live_activity", isOn: Binding(
+                    get: { center.backgroundExecutionOptions.taskLiveActivityEnabled },
+                    set: { value in Task { await setTaskLiveActivityEnabled(value) } }
+                ))
+                .accessibilityIdentifier("background.liveActivity.toggle")
+
+                if center.backgroundExecutionOptions.taskLiveActivityEnabled,
+                   TaskLiveActivityCoordinator.isSupported,
+                   !TaskLiveActivityCoordinator.areSystemLiveActivitiesEnabled {
+                    Text("background.live_activity.system_disabled")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -95,6 +111,15 @@ struct BackgroundExecutionSettingsView: View {
             await center.loadBackgroundExecution()
             locationService.refreshAuthorizationStatus()
         }
+    }
+
+    /// Persists the independent choice through the existing atomic options
+    /// object; no other capability is touched.
+    private func setTaskLiveActivityEnabled(_ enabled: Bool) async {
+        var options = center.backgroundExecutionOptions
+        guard options.taskLiveActivityEnabled != enabled else { return }
+        options.setTaskLiveActivityEnabled(enabled)
+        await center.setBackgroundExecutionOptions(options)
     }
 
     private var locationStatus: String {

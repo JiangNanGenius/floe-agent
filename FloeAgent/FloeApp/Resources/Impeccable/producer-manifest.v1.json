@@ -1,0 +1,50 @@
+{
+  "contract": "floe.impeccable.snapshot",
+  "contractVersion": 1,
+  "files": {
+    "UPSTREAM-LICENSE.txt": "02bb8c3b4e70190e3986c0404ad2fd8d639b4f534252d82379cc1b502b6d1812",
+    "capture-limits.v1.json": "9d87ebb75cc14bedf783f1dbe0ddb8137a4422e36de2e957e0148b4ecfc1e821",
+    "contract-snapshot-contract.v1.json": "baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3",
+    "facts.schema.v1.json": "b681b550d1f7fb31303db0f0b78c633ae3cb2b11e4f303aa583e77fe92762a8f",
+    "identity.schema.v1.json": "568933906c53398437ef884710e356f141d0f98baab1253805656614515ee907",
+    "impeccable-producer.v1.js": "5bfbcee7edd70d40ee562eeefabe416c62d2f4ab8b9a48de5be7afebceb8a89f",
+    "pseudo-props.v1.json": "a8893e759b862f23e97762d5e0743cfd67fc5463a08496e63889d1e7d57e70c1",
+    "result.schema.v1.json": "8a9db66d3725e6cd01eb332e0abb2388512d5cd61aba6c319577681f01d57bff",
+    "snapshot.schema.v1.json": "a0463585e7b167175d22482fcf4085131eeea38484efa9e73602f78d6402ff94",
+    "state-pseudos.v1.json": "537fff1d492181b2aa1878952c00acef64fcb3670b451d4624cd8fd3412b8fe1",
+    "style-props.v1.json": "6bcf54a6df96cf37e5be3f1f76948dd1d8913d611c9a705a7fdf50e309a53f95"
+  },
+  "frozenContract": {
+    "contractDir": "engines/impeccable/contract",
+    "digestEvidence": "evidence/contract-SHA256SUMS.txt (32 files); validate_fixtures.py 61/61 exit 0",
+    "handoff": "Local/Private/skill-hub-20261026/impeccable/EARLY-HANDOFF-CONTRACT.md",
+    "hubHead": "156214d364baa8b575e1755a74d223d7b4ce34a7",
+    "hubRepo": "Local/Private/floe-skill-hub"
+  },
+  "producerScript": {
+    "adapterSha256": "4ce19da85104ee82820d624db562799f41ecfb9d9362779276bb4873dedfa791",
+    "file": "impeccable-producer.v1.js",
+    "fileBytes": 55565,
+    "fileSha256": "5bfbcee7edd70d40ee562eeefabe416c62d2f4ab8b9a48de5be7afebceb8a89f",
+    "nativeDispatchLine": "return globalThis.__floeImpeccable.dispatch(floeOp, floeArgs);",
+    "runBytesNote": "identity.producer.scriptDigest binds sha256(file bytes + newline + nativeDispatchLine). The dispatch line is a fixed Swift constant (BrowserImpeccableProducer.swift), never model- or page-supplied.",
+    "runBytesSha256": "34b245bc46bb50047dfe3f7a3b420137498a099a7b82b2734fca8e088176e5f9",
+    "upstreamPrefix": {
+      "bytes": 40591,
+      "path": "browser-bundle/15-snapshot.js",
+      "sha256": "b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0",
+      "verbatim": true
+    }
+  },
+  "schemaStatus": "frozen-v1",
+  "upstream": {
+    "commit": "4fc2f83e1c8710dba772bfd4523d0efab57737b6",
+    "engineValidation": "pending in H3 lane; not claimed here",
+    "engineVersion": "0.1.17",
+    "license": "Apache-2.0 (see UPSTREAM-LICENSE.txt)",
+    "packageVersion": "4.7.1",
+    "pinAuthority": "floe-skill-hub docs/UPSTREAM-PINS.json (reviewBaselineDate 2026-10-26)",
+    "project": "pbakaus/impeccable",
+    "tree": "1363fadfb2141db1cf22b4ba171d6fc4dbf5cd72"
+  }
+}

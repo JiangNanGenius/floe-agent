@@ -10,16 +10,21 @@ import UniformTypeIdentifiers
 
 struct SkillsView: View {
     @EnvironmentObject private var environment: AppEnvironment
+    @EnvironmentObject private var router: AppRouter
     @ObservedObject var center: SkillsCenter
     @ObservedObject private var updates: SkillUpdateCoordinator
     @ObservedObject private var mcpCenter: MCPSettingsCenter
     @State private var showingInstalled = false
     @State private var searchText = ""
-    @State private var showingCreator = false
-    @State private var showingFinder = false
+    @EnvironmentObject private var authoring: SkillAuthoringCoordinator
     @State private var pendingRemoval: PersistedSkill?
     @State private var updatingSkill: PersistedSkill?
-    @State private var showingFolderImporter = false
+    private enum MCPHubSheet: String, Identifiable {
+        case connect, create
+        var id: String { rawValue }
+    }
+    @State private var mcpSheet: MCPHubSheet?
+    @State private var discoveryDetailID: String?
     /// Shared scripted auto-update policy; the same defaults value is managed
     /// by Settings → Content updates. Never a second copy.
     @AppStorage(ContentUpdateCenter.scriptedAutoInstallDefaultsKey)
@@ -52,114 +57,190 @@ struct SkillsView: View {
         }
     }
 
-    var body: some View {
-        List {
-            Picker("plugins.title", selection: $showingInstalled) {
-                Text("plugins.discover").tag(false)
-                Text("plugins.installed").tag(true)
-            }.pickerStyle(.segmented)
-            if !showingInstalled {
-                Section("plugins.official") {
-                    ForEach(DomainSkillLibrary.all.filter { $0.exposed && (searchText.isEmpty || $0.name.localizedStandardContains(searchText) || $0.description.localizedStandardContains(searchText)) }, id: \.id) { definition in
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text(definition.name).font(.headline).accessibilityIdentifier("plugins.card.\(definition.id)")
-                                Spacer()
-                                SkillOriginPill(origin: .official)
-                                Text("v\(center.installed.contains(where: { $0.id == definition.id }) ? (center.catalogPackages[definition.id]?.version ?? definition.version) : definition.version)").font(.caption).foregroundStyle(.secondary)
-                            }
-                            Text(pluginSummary(definition)).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
-                            if let installed = center.installed.first(where: { $0.id == definition.id }) {
-                                if let version = center.availableVersion(for: installed) {
-                                    Button(FloeL10n.l("skills.skills_view.update_to_v", version)) { center.startUpdating(installed) }
-                                        .disabled(!center.canCheckUpdates)
-                                } else if installed.status == "enabled" {
-                                    Label("plugins.ready", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.secondary)
-                                } else {
-                                    Button("plugins.enable") { Task { await center.setEnabled(true, skill: installed) } }
-                                }
-                            } else {
-                                Button("action.install") { Task { await center.installOfficialSkill(id: definition.id) } }
-                            }
-                        }.padding(.vertical, 4)
-                    }
-                }
-                Section {
-                    Button("plugins.import", systemImage: "square.and.arrow.down") { showingFinder = true }
-                    Button("skills.import_folder", systemImage: "folder") { showingFolderImporter = true }
-                    Button("skills.creator", systemImage: "plus") { showingCreator = true }
-                }
-                Section {
-                    Toggle("skills.auto_scripted_updates.label", isOn: $autoScriptedUpdates)
-                        .accessibilityIdentifier("skills.auto_scripted_updates")
-                } header: {
-                    Text("skills.auto_scripted_updates.title")
-                } footer: {
-                    Text("skills.auto_scripted_updates.footer")
-                }
+    private var discoveryItems: [SkillHubDisplayItem] {
+        let legacy = DomainSkillLibrary.all.filter(\.exposed).map { definition in
+            let installed = center.installed.first { $0.id == definition.id }
+            let action: SkillHubDisplayItem.Action
+            if let installed {
+                if center.availableVersion(for: installed) != nil { action = .update }
+                else { action = installed.status == "enabled" ? .added : .enable }
+            } else { action = .get }
+            let category: SkillHubCategory = switch definition.id {
+            case "floe-network": .development
+            case "floe-video": .design
+            default: .office
             }
-            Section("connectors.title") {
+            let symbol: String = switch definition.id {
+            case "floe-pdf": "doc.richtext"
+            case "floe-network": "network"
+            case "floe-video": "film"
+            default: "doc.text"
+            }
+            return SkillHubDisplayItem(
+                id: definition.id, title: definition.name,
+                summary: pluginSummary(definition), category: category,
+                systemImage: symbol, action: action,
+                actionEnabled: !center.isWorking && !updates.isRunning
+            )
+        }
+        let curated = center.curatedCards.map { card -> SkillHubDisplayItem in
+            let entry = card.entry
+            let category: SkillHubCategory = switch entry.category {
+            case .officeDocuments: .office
+            case .writingCommunication: .writing
+            case .webDevelopment: .development
+            case .researchData: .research
+            case .designCreation: .design
+            case .productRequirements: .product
+            case .productivityOrganization: .productivity
+            }
+            let installed = center.installed.first { $0.id == entry.id }
+            let action: SkillHubDisplayItem.Action
+            if let installed {
+                if center.availableVersion(for: installed) != nil { action = .update }
+                else { action = installed.status == "enabled" ? .added : .enable }
+            } else { action = card.showsInstallAction ? .get : .unavailable }
+            return SkillHubDisplayItem(id: entry.id,
+                title: entry.name.value(preferredLanguages: Locale.preferredLanguages),
+                summary: entry.description.value(preferredLanguages: Locale.preferredLanguages),
+                category: category, systemImage: "puzzlepiece.extension", action: action,
+                actionEnabled: card.showsInstallAction && !center.isWorking && !updates.isRunning)
+        }
+        let curatedIDs = Set(curated.map(\.id))
+        return legacy.filter { !curatedIDs.contains($0.id) } + curated
+    }
+
+    private func performStoreAction(_ id: String) {
+        if let skill = center.installed.first(where: { $0.id == id }) {
+            if center.availableVersion(for: skill) != nil { center.startUpdating(skill) }
+            else if skill.status != "enabled" { Task { await center.setEnabled(true, skill: skill) } }
+            else { updatingSkill = skill }
+        } else if center.curatedCards.contains(where: { $0.entry.id == id }) {
+            Task { await center.prepareCuratedInstallation(id: id) }
+        } else { Task { await center.installOfficialSkill(id: id) } }
+    }
+
+    private var connectorActions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("skills.hub.connections").font(.title2.bold())
+            VStack(spacing: 0) {
+                Button("skills.hub.connect_mcp", systemImage: "network") { mcpSheet = .connect }
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .accessibilityIdentifier("skills.mcp.connect")
+                Divider()
+                Button("skills.hub.create_mcp_service", systemImage: "plus.app") { mcpSheet = .create }
+                    .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+                    .accessibilityIdentifier("skills.mcp.create")
+                Divider()
                 NavigationLink {
                     ConnectorsView(sourceControl: environment.sourceControlCenter, mcpCenter: mcpCenter)
                 } label: {
-                    Label {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("connectors.manage")
-                            Text("connectors.summary")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        Image(systemName: "network")
-                    }
+                    Label("connectors.manage", systemImage: "point.3.connected.trianglepath.dotted")
+                        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                 }
                 .accessibilityIdentifier("skills.connectors")
             }
-            if showingInstalled {
-                if visibleInstalled.isEmpty {
-                    ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
-                } else {
-                    ForEach(visibleInstalled) { skill in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(skill.name).font(.headline)
-                                    HStack(spacing: 6) {
-                                        Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
-                                        SkillOriginPill(origin: center.origin(of: skill))
-                                            .accessibilityIdentifier("skills.origin.\(skill.id)")
+            .padding(.horizontal, 16)
+            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("plugins.title", selection: $showingInstalled) {
+                Text("plugins.discover").tag(false)
+                Text("plugins.installed").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 20).padding(.vertical, 10)
+            if !authoring.shelfRecords.isEmpty {
+                VStack(spacing: 12) { SkillAuthoringRows(coordinator: authoring) }
+                    .padding(.horizontal, 20).padding(.vertical, 10)
+            }
+            if !showingInstalled {
+                SkillHubDiscoveryView(
+                    items: discoveryItems, query: searchText,
+                    onSelect: { discoveryDetailID = $0 }, onGet: performStoreAction,
+                    connections: { connectorActions }
+                )
+            } else {
+                List {
+                    if visibleInstalled.isEmpty && mcpCenter.servers.isEmpty {
+                        ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
+                    } else {
+                        ForEach(visibleInstalled) { skill in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Button { updatingSkill = skill } label: {
+                                            Text(skill.name).font(.headline).foregroundStyle(.primary)
+                                        }
+                                        .buttonStyle(.borderless)
+                                        .disabled(center.isWorking || updates.isRunning)
+                                        .accessibilityIdentifier("skills.details.\(skill.id)")
+                                        HStack(spacing: 6) {
+                                            Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+                                            SkillOriginPill(origin: center.origin(of: skill))
+                                                .accessibilityIdentifier("skills.origin.\(skill.id)")
+                                        }
                                     }
+                                    Spacer()
+                                    updateAction(for: skill)
+                                    Toggle("skills.enabled", isOn: Binding(
+                                        get: { skill.status == "enabled" },
+                                        set: { value in Task { await center.setEnabled(value, skill: skill) } }
+                                    )).labelsHidden().frame(minWidth: 44, minHeight: 44)
+                                        .disabled(center.isWorking || updates.isRunning)
                                 }
-                                Spacer()
-                                updateAction(for: skill)
-                                Toggle("skills.enabled", isOn: Binding(
-                                    get: { skill.status == "enabled" },
-                                    set: { value in Task { await center.setEnabled(value, skill: skill) } }
-                                )).labelsHidden().frame(minWidth: 44, minHeight: 44)
-                                    .disabled(center.isWorking || updates.isRunning)
+                                if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
+                                    Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                                updateStatus(for: skill)
                             }
-                            if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
-                                Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .contextMenu {
+                                Button("skills.update.details", systemImage: "info.circle") { updatingSkill = skill }
+                                    .disabled(updates.isRunning || center.isWorking)
+                                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
+                                    Button("action.delete", systemImage: "trash", role: .destructive) { pendingRemoval = skill }
+                                        .disabled(updates.isRunning || center.isWorking)
+                                }
                             }
-                            updateStatus(for: skill)
-                        }
-                        .contextMenu {
-                            Button("skills.update.details", systemImage: "info.circle") { updatingSkill = skill }
-                                .disabled(updates.isRunning || center.isWorking)
-                        }
-                        .swipeActions {
-                            if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
-                                Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                            .swipeActions {
+                                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
+                                    Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                                        .disabled(updates.isRunning || center.isWorking)
+                                }
                             }
                         }
+                    }
+                    if !mcpCenter.servers.isEmpty {
+                        Section("connectors.mcp.title") {
+                            ForEach(mcpCenter.servers.filter {
+                                searchText.isEmpty || $0.displayName.localizedStandardContains(searchText)
+                            }) { server in
+                                NavigationLink {
+                                    MCPServersView(center: mcpCenter)
+                                } label: {
+                                    Label(server.displayName, systemImage: "network")
+                                }
+                            }
+                        }
+                    }
+                    Section {
+                        NavigationLink {
+                            ConnectorsView(sourceControl: environment.sourceControlCenter, mcpCenter: mcpCenter)
+                        } label: { Label("connectors.manage", systemImage: "network") }
+                        Toggle("skills.auto_scripted_updates.label", isOn: $autoScriptedUpdates)
+                            .accessibilityIdentifier("skills.auto_scripted_updates")
                     }
                 }
             }
             if let error = center.catalogError {
-                Text(error).foregroundStyle(.secondary).font(.footnote)
+                Text(error).foregroundStyle(.secondary).font(.footnote).padding(.horizontal)
             }
             if let error = center.errorMessage {
-                Text(error).foregroundStyle(.red).font(.footnote)
+                Text(error).foregroundStyle(.red).font(.footnote).padding(.horizontal)
             }
         }
         .overlay { if center.isWorking && !updates.isRunning { ProgressView().controlSize(.large) } }
@@ -167,6 +248,17 @@ struct SkillsView: View {
         .searchable(text: $searchText, prompt: "plugins.search")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Button("plugins.import", systemImage: "square.and.arrow.down") {
+                        Task { await authoring.open(kind: .importing) }
+                    }
+                    Button("skills.creator", systemImage: "plus") {
+                        Task { await authoring.open(kind: .creation) }
+                    }
+                    Button("skills.hub.connect_mcp", systemImage: "network") { mcpSheet = .connect }
+                    Button("skills.mcp.creation.title", systemImage: "plus.app") { mcpSheet = .create }
+                } label: { Label("skills.hub.add", systemImage: "plus") }
+                .accessibilityIdentifier("skills.add")
                 Button { center.startCheckingUpdates() } label: {
                     if updates.isRunning { ProgressView() }
                     else { Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath") }
@@ -181,24 +273,58 @@ struct SkillsView: View {
                     .accessibilityIdentifier("skills.updates.update_all")
             }
         }
-        .fileImporter(
-            isPresented: $showingFolderImporter,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await importTraditionalFolder(url) }
-            }
+        .task {
+            await authoring.reload(); await center.load()
+            await center.refreshOfficialCatalog(); await center.refreshCuratedCatalog()
         }
-        .task { await center.load(); await center.refreshOfficialCatalog() }
         .refreshable { await center.load(); center.startCheckingUpdates() }
         .onChange(of: updates.reviewSkillID) { _, id in
             if let id, let skill = center.installed.first(where: { $0.id == id }) { updatingSkill = skill }
         }
-        .sheet(isPresented: $showingCreator) { SkillCreatorSheet(center: center) }
-        .sheet(isPresented: $showingFinder) { SkillFinderSheet(center: center) }
+        .navigationDestination(item: $discoveryDetailID) { id in
+            if let item = discoveryItems.first(where: { $0.id == id }) {
+                let definition = DomainSkillLibrary.all.first { $0.id == id }
+                let curated = center.curatedCards.first { $0.entry.id == id }?.entry
+                Form {
+                    Section {
+                        Label(item.title, systemImage: item.systemImage).font(.title2.bold())
+                        Text(item.summary)
+                        Button(item.action.title) { performStoreAction(id) }
+                            .disabled(!item.actionEnabled)
+                    }
+                    Section("skills.hub.about") {
+                        LabeledContent("skills.hub.publisher", value: curated == nil ? "Floe" : CuratedSkillHub.publisher)
+                        LabeledContent("skills.hub.version", value: curated?.version ?? center.catalogPackages[id]?.version ?? definition?.version ?? "")
+                        if let upstream = curated?.upstream {
+                            LabeledContent("skills.hub.source", value: upstream.repository)
+                            LabeledContent("skills.hub.license", value: upstream.repositoryLicense)
+                        }
+                        if let publication = center.curatedPublication, curated != nil {
+                            LabeledContent("skills.hub.publication", value: String(publication.publicationCommit.prefix(12)))
+                        }
+                        if let skill = center.installed.first(where: { $0.id == id }) {
+                            Button("skills.update.details") { updatingSkill = skill }
+                        }
+                    }
+                }
+                .navigationTitle(item.title)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .sheet(item: $mcpSheet) { destination in
+            switch destination {
+            case .connect:
+                MCPServerEditor(center: mcpCenter, server: nil)
+            case .create:
+                MCPServiceCreationView(
+                    coordinator: environment.mcpServiceCreationCoordinator,
+                    backend: environment.mcpServiceCreationBackend,
+                    openTask: { id in mcpSheet = nil; router.openConversation(id) }
+                )
+            }
+        }
         .sheet(item: $updatingSkill) { skill in SkillGitHubUpgradeSheet(center: center, skill: skill) }
-        .sheet(item: $center.pendingInstallation) { pending in
+        .sheet(item: $center.pendingInstallation, onDismiss: { Task { await center.cancelPendingInstallation() } }) { pending in
             SkillInstallReviewSheet(center: center, pending: pending)
         }
         .alert("skills.remove.title", isPresented: Binding(
@@ -331,6 +457,7 @@ private struct SkillGitHubUpgradeSheet: View {
     let skill: PersistedSkill
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingRollback = false
+    @State private var confirmingRemoval = false
     /// A detail sheet can only review its own row's staged candidate.
     private var candidate: SkillUpgradeCandidate? {
         guard center.pendingUpgrade?.snapshot.package.manifest.id == skill.id else { return nil }
@@ -364,6 +491,12 @@ private struct SkillGitHubUpgradeSheet: View {
                 }
                 DisclosureGroup("skills.update.details") {
                     Text(skill.sourceURL ?? "App / local").font(.caption).textSelection(.enabled)
+                    if center.origin(of: skill) != .internalCreated,
+                       !OfficialSkillHub.skillIDs.contains(skill.id) {
+                        NavigationLink("skills.source.edit") {
+                            SkillUpdateSourceEditor(center: center, skill: skill)
+                        }
+                    }
                     if let candidate {
                         LabeledContent("Commit", value: candidate.commit)
                         if let notes = candidate.releaseNotes[Locale.current.language.languageCode?.identifier == "zh" ? "zh-Hans" : "en"] {
@@ -380,8 +513,16 @@ private struct SkillGitHubUpgradeSheet: View {
                             }
                         }
                     }
-                    Button("skills.update.rollback", role: .destructive) { confirmingRollback = true }
+                    if center.rollbackEligibleDigests[skill.id] == skill.rewrittenDigest {
+                        Button("skills.update.rollback", role: .destructive) { confirmingRollback = true }
+                    }
                 }.textInputAutocapitalization(.never).autocorrectionDisabled()
+                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
+                    Section {
+                        Button("action.delete", role: .destructive) { confirmingRemoval = true }
+                            .disabled(center.updates.isRunning)
+                    }
+                }
                 if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
             }
             .disabled(center.isWorking)
@@ -390,6 +531,15 @@ private struct SkillGitHubUpgradeSheet: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { if candidate != nil { center.cancelUpgrade() }; dismiss() }.disabled(center.isWorking) } }
             .confirmationDialog("skills.skills_view.restore_previous_content_and_grants", isPresented: $confirmingRollback) {
                 Button("skills.skills_view.roll_back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
+            }
+            .confirmationDialog("skills.remove.title", isPresented: $confirmingRemoval) {
+                Button("action.delete", role: .destructive) {
+                    if candidate != nil { center.cancelUpgrade() }
+                    Task {
+                        await center.remove(skill)
+                        if center.errorMessage == nil { dismiss() }
+                    }
+                }
             }
             .interactiveDismissDisabled(center.isWorking)
             .onDisappear { if !center.isWorking && candidate != nil { center.cancelUpgrade() } }
@@ -400,6 +550,49 @@ private struct SkillGitHubUpgradeSheet: View {
         guard let data else { return "(absent)" }
         guard let text = String(data: data, encoding: .utf8) else { return "Binary resource: \(data.count) bytes" }
         return text
+    }
+}
+
+private struct SkillUpdateSourceEditor: View {
+    @ObservedObject var center: SkillsCenter
+    let skill: PersistedSkill
+    @Environment(\.dismiss) private var dismiss
+    @State private var owner = ""
+    @State private var repository = ""
+    @State private var ref = ""
+    @State private var path = ""
+    @State private var inputError: String?
+
+    var body: some View {
+        Form {
+            TextField("skills.source.owner", text: $owner)
+            TextField("skills.source.repository", text: $repository)
+            TextField("skills.source.ref", text: $ref)
+            TextField("skills.source.path", text: $path)
+            if let error = inputError ?? center.errorMessage { Text(error).foregroundStyle(.red) }
+        }
+        .textInputAutocapitalization(.never).autocorrectionDisabled()
+        .navigationTitle("skills.source.edit")
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("action.save") {
+                    do {
+                        let source = try GitHubSkillSource(owner: owner, repository: repository, ref: ref, path: path)
+                        inputError = nil
+                        Task {
+                            await center.configureUpdateSource(skill: skill, source: source)
+                            if center.errorMessage == nil { dismiss() }
+                        }
+                    } catch { inputError = FloeL10n.l("skills.source.invalid") }
+                }
+                .disabled(owner.isEmpty || repository.isEmpty || ref.isEmpty || path.isEmpty || center.isWorking || center.updates.isRunning)
+            }
+        }
+        .onAppear {
+            if let source = center.updateSource(for: center.installed.first(where: { $0.id == skill.id }) ?? skill) {
+                owner = source.owner; repository = source.repository; ref = source.ref; path = source.path
+            }
+        }
     }
 }
 
@@ -921,7 +1114,8 @@ private struct SkillInstallReviewSheet: View {
                 }
                 if pending.containsScripts {
                     Section("skills.skills_view.python_scripts_audited_at_install") {
-                        ForEach(pending.files.keys.filter { $0.hasPrefix("scripts/") }.sorted(), id: \.self) {
+                        ForEach((pending.snapshot.map { Array($0.files.keys) } ?? Array(pending.files.keys))
+                            .filter { $0.hasPrefix("scripts/") }.sorted(), id: \.self) {
                             Label($0, systemImage: "doc.text")
                                 .font(FloeTheme.Typography.evidence)
                         }
@@ -946,7 +1140,7 @@ private struct SkillInstallReviewSheet: View {
             .navigationTitle("skills.review.title")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("action.cancel") { center.cancelPendingInstallation(); dismiss() }
+                    Button("action.cancel") { Task { await center.cancelPendingInstallation(); dismiss() } }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.install") { Task { await center.confirmPendingInstallation(); dismiss() } }
@@ -999,10 +1193,12 @@ private struct SkillFinderSheet: View {
                 } footer: {
                     Text("skills.finder.footer")
                 }
-                Picker("skills.finder.model", selection: $rewriteModelID) {
+                if SkillBulkUpdatePlan.githubReference(url) == nil {
+                  Picker("skills.finder.model", selection: $rewriteModelID) {
                     ForEach(center.rewriteModels) { model in
                         Text(model.displayName).tag(Optional(model.id))
                     }
+                }
                 }
             }
             .navigationTitle("skills.finder")
@@ -1011,7 +1207,7 @@ private struct SkillFinderSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.install") {
                         Task { await center.installFromFinder(urlText: url, rewriteModelID: rewriteModelID); if center.errorMessage == nil { dismiss() } }
-                    }.disabled(url.isEmpty || rewriteModelID == nil || center.isWorking)
+                    }.disabled(url.isEmpty || (SkillBulkUpdatePlan.githubReference(url) == nil && rewriteModelID == nil) || center.isWorking)
                 }
             }
             .onAppear { if rewriteModelID == nil { rewriteModelID = center.defaultRewriteModelID ?? center.rewriteModels.first?.id } }

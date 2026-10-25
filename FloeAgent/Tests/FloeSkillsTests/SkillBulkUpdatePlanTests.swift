@@ -57,9 +57,16 @@ struct SkillBulkUpdatePlanTests {
         #expect(source.path == "packages/example/SKILL.md")
     }
 
-    @Test("Only actual unambiguous GitHub blob sources are candidates", arguments: [
+    @Test("GitHub directory references retain the reviewed subdirectory")
+    func directorySource() throws {
+        let source = try #require(SkillBulkUpdatePlan.githubReference("https://github.com/owner/repo/tree/main/skills/example"))
+        #expect(source.ref == "main")
+        #expect(source.path == "skills/example")
+    }
+
+    @Test("Only actual unambiguous GitHub file or directory sources are candidates", arguments: [
         "floe-creator://local/example", "file:///tmp/SKILL.md", "https://github.com/owner/repo",
-        "https://github.com/owner/repo/tree/main/example", "https://github.com/owner/repo/blob/main",
+        "https://github.com/owner/repo/blob/main",
         "https://github.com.evil.test/owner/repo/blob/main/SKILL.md",
         "https://user:secret@github.com/owner/repo/blob/main/SKILL.md",
         "https://github.com/owner/repo/blob/main/SKILL.md?token=value",

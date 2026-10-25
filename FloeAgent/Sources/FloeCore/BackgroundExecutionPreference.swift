@@ -25,15 +25,21 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
     public var enhancedBackgroundEnabled: Bool
     public var pictureInPictureEnabled: Bool
     public var screenFeedbackEnabled: Bool
+    /// Independent Lock Screen / Dynamic Island presentation of tasks that are
+    /// actually running. Off unless the user turns it on: it is never implied
+    /// by another capability and never changes one.
+    public var taskLiveActivityEnabled: Bool
 
     public init(
         enhancedBackgroundEnabled: Bool = true,
         pictureInPictureEnabled: Bool = false,
-        screenFeedbackEnabled: Bool = false
+        screenFeedbackEnabled: Bool = false,
+        taskLiveActivityEnabled: Bool = false
     ) {
         self.enhancedBackgroundEnabled = enhancedBackgroundEnabled
         self.pictureInPictureEnabled = pictureInPictureEnabled || screenFeedbackEnabled
         self.screenFeedbackEnabled = screenFeedbackEnabled
+        self.taskLiveActivityEnabled = taskLiveActivityEnabled
     }
 
     public init(legacy: BackgroundExecutionPreference) {
@@ -43,13 +49,47 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
         )
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case enhancedBackgroundEnabled
+        case pictureInPictureEnabled
+        case screenFeedbackEnabled
+        case taskLiveActivityEnabled
+    }
+
+    /// Decoding migration: an object stored before a key existed keeps every
+    /// choice it does contain and takes the shipping default for the missing
+    /// one. A required-key decode would fail the whole object, silently
+    /// discarding the user's other background choices.
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        enhancedBackgroundEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .enhancedBackgroundEnabled
+        ) ?? true
+        pictureInPictureEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .pictureInPictureEnabled
+        ) ?? false
+        screenFeedbackEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .screenFeedbackEnabled
+        ) ?? false
+        taskLiveActivityEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .taskLiveActivityEnabled
+        ) ?? false
+    }
+
     /// Apply after decoding or direct property updates before persistence/use.
     public var normalized: Self {
         Self(
             enhancedBackgroundEnabled: enhancedBackgroundEnabled,
             pictureInPictureEnabled: pictureInPictureEnabled,
-            screenFeedbackEnabled: screenFeedbackEnabled
+            screenFeedbackEnabled: screenFeedbackEnabled,
+            taskLiveActivityEnabled: taskLiveActivityEnabled
         )
+    }
+
+    /// Independent switch: no other capability is enabled, disabled or
+    /// downgraded by this choice.
+    public mutating func setTaskLiveActivityEnabled(_ enabled: Bool) {
+        taskLiveActivityEnabled = enabled
     }
 
     public mutating func setPictureInPictureEnabled(_ enabled: Bool) {

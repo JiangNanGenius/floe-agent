@@ -63,7 +63,7 @@ public enum SkillBulkUpdatePlan {
               parts.query == nil, parts.fragment == nil,
               !parts.percentEncodedPath.contains("%") else { return nil }
         let path = parts.path.split(separator: "/", omittingEmptySubsequences: false)
-        guard path.count >= 6, path[0].isEmpty, path[3] == "blob",
+        guard path.count >= 6, path[0].isEmpty, ["blob", "tree"].contains(path[3]),
               path.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
         return .init(owner: String(path[1]), repository: String(path[2]), ref: String(path[4]),
                      path: path.dropFirst(5).joined(separator: "/"))

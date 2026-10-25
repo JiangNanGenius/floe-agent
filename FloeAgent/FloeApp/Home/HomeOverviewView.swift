@@ -18,6 +18,7 @@ import FloePersistence
 struct HomeOverviewView: View {
     @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: HomeLaunchpadViewModel
+    @EnvironmentObject private var authoring: SkillAuthoringCoordinator
     @EnvironmentObject private var router: AppRouter
     @State private var searchText = ""
     @State private var schedules: [TaskScheduleRecord] = []
@@ -42,6 +43,9 @@ struct HomeOverviewView: View {
 
     var body: some View {
         List {
+            if !authoring.taskCenterRecords.isEmpty {
+                Section { SkillAuthoringRows(coordinator: authoring, taskCenter: true) }
+            }
             if !runningTasks.isEmpty {
                 Section("home.home_overview_view.running") {
                     ForEach(runningTasks) { conversation in
@@ -274,8 +278,11 @@ struct HomeOverviewView: View {
                 .accessibilityIdentifier("workbench.overview.new_task")
             }
         }
-        .task { await load() }
-        .refreshable { await load() }
+        .task { await authoring.reload(); await load() }
+        .refreshable { await authoring.reload(); await load() }
+        .onChange(of: authoring.records.filter(\.isPromoted).map(\.id)) { _, _ in
+            Task { await load() }
+        }
         .onChange(of: scenePhase) { _, phase in
             // Foreground re-entry refreshes THIS inline list too (stale
             // fires, terminals and lost auxiliary writes received while
@@ -379,6 +386,7 @@ struct HomeOverviewView: View {
             && completedTasks.isEmpty
             && schedules.isEmpty
             && cleanupReminders.isEmpty
+            && authoring.taskCenterRecords.isEmpty
     }
 
     private var filteredConversations: [ConversationRecord] {

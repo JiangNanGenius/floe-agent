@@ -173,6 +173,115 @@ struct BrowserTaskSessionTests {
         try page(try await run(registry, "browser.observe", "{\"tabID\":\"\(tab)\"}", as: context))
     }
 
+    @Test("Design arguments never alter default semantic observation or create a session on validation failure")
+    func designProfileValidationIsIsolated() async throws {
+        let center = makeCenter()
+        let registry = makeRegistry(center)
+        let owner = UUID()
+        let ctx = context(for: owner)
+        for args in [
+            #"{"profile":"semantic","captureID":"00000000-0000-0000-0000-000000000001"}"#,
+            #"{"profile":"design","cursor":0}"#,
+            #"{"profile":"design","designAction":"facts"}"#,
+            #"{"profile":"design","designAction":"capture","needsFile":"needs.json"}"#
+        ] {
+            await #expect(throws: (any Error).self) { _ = try await run(registry, "browser.observe", args, as: ctx) }
+        }
+        #expect(center.session(for: owner) == nil)
+    }
+
+    @Test("Native WebKit design capture redacts output, measures facts and releases exact task files without running an engine")
+    func designCaptureUsesActualWebKitAndTaskWorkspace() async throws {
+        let center = makeCenter()
+        let owner = UUID()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("design-tool-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { center.discard(conversationID: owner); try? FileManager.default.removeItem(at: root) }
+        let registry = makeRegistry(center)
+        var ctx = context(for: owner)
+        ctx.workspaceRootURL = root
+        // This is a native measurement fixture, not evidence of guest execution.
+        ctx.environmentID = "native-measurement-fixture"
+        _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+        let session = try #require(center.session(for: owner))
+        let tab = try #require(session.activeTabID)
+        try await load("""
+            <!doctype html><html><body style="margin:0">
+            <h1>Design fixture</h1><input id="credential" type="password" value="synthetic-secret-9264">
+            <p>Measured page</p></body></html>
+            """, tab: tab, in: session, registry: registry, context: ctx)
+        let baseline = try await observe(tab: tab, registry: registry, context: ctx)
+        let explicitSemantic = try page(try await run(registry, "browser.observe", #"{"profile":"semantic"}"#, as: ctx))
+        #expect(nodesText(baseline) == nodesText(explicitSemantic))
+        let summary = try await run(registry, "browser.observe", #"{"profile":"design"}"#, as: ctx)
+        let result = try object(summary)
+        #expect(result["engineRun"] as? Bool == false)
+        #expect(!summary.contains(root.path))
+        #expect(!summary.contains("synthetic-secret-9264"))
+        let capture = try #require(result["capture"] as? [String: Any])
+        let id = try #require(capture["captureId"] as? String)
+        let relative = try #require(capture["relativeSnapshotFile"] as? String)
+        #expect(relative.hasPrefix("Impeccable/" + owner.uuidString + "/"))
+        let snapshot = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+        #expect(!snapshot.contains("synthetic-secret-9264"))
+        let webView = try #require(session.tabs.first(where: { $0.id == tab })?.webView)
+        #expect(try await webView.evaluateJavaScript("document.getElementById('credential').value") as? String == "synthetic-secret-9264")
+
+        var foreignRun = ctx
+        foreignRun.runID = UUID()
+        await #expect(throws: (any Error).self) {
+            _ = try await run(registry, "browser.observe", #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: foreignRun)
+        }
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path))
+
+        let needs: [String: Any] = ["round": 1, "hitTests": [[10.0, 10.0]],
+            "hitTestsBits": [[String(10.0.bitPattern), String(10.0.bitPattern)]], "scrollProbes": []]
+        try JSONSerialization.data(withJSONObject: needs).write(to: root.appendingPathComponent("needs.json"), options: .atomic)
+        let factsResult = try object(try await run(registry, "browser.observe",
+            #"{"profile":"design","designAction":"facts","captureID":"\#(id)","needsFile":"needs.json"}"#, as: ctx))
+        let factsPath = try #require(factsResult["relativeFactsFile"] as? String)
+        let facts = try object(String(decoding: Data(contentsOf: root.appendingPathComponent(factsPath)), as: UTF8.self))
+        #expect(facts["taskId"] as? String == owner.uuidString)
+        #expect(facts["captureId"] as? String == id)
+        _ = try await run(registry, "browser.observe",
+            #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: ctx)
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).deletingLastPathComponent().path))
+    }
+
+    @Test("Design capture refuses temporary use and missing task workspace bindings")
+    func designCaptureKeepsTemporaryAndWorkspaceCeilings() async throws {
+        let center = makeCenter()
+        let registry = makeRegistry(center)
+        let owner = UUID()
+        defer { center.discard(conversationID: owner) }
+        await #expect(throws: (any Error).self) {
+            _ = try await run(registry, "browser.observe", #"{"profile":"design"}"#, as: context(for: owner, temporary: true))
+        }
+        #expect(center.session(for: owner) == nil)
+        await #expect(throws: (any Error).self) {
+            _ = try await run(registry, "browser.observe", #"{"profile":"design"}"#, as: context(for: owner))
+        }
+    }
+
+    @Test("Foreign managed-service navigation is refused before creating a task browser")
+    func foreignServiceCannotPassToolPreflightIntoAnotherSession() async throws {
+        let center = makeCenter()
+        let registry = makeRegistry(center)
+        let owner = UUID(), other = UUID(), service = UUID()
+        let url = URL(string: "http://127.0.0.1:53429/")!
+        BrowserURLPolicy.authorizeService(url, owner: service, conversationID: owner)
+        defer { BrowserURLPolicy.revokeService(owner: service); center.discard(conversationID: other) }
+        #expect(try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner) == url)
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString) }
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString, conversationID: other) }
+        await #expect(throws: (any Error).self) {
+            _ = try await run(registry, "browser.navigate", #"{"url":"http://127.0.0.1:53429/"}"#, as: context(for: other))
+        }
+        #expect(center.session(for: other) == nil)
+        BrowserURLPolicy.revokeService(owner: service)
+        #expect(throws: BrowserPolicyError.self) { try BrowserURLPolicy.validate(url.absoluteString, conversationID: owner) }
+    }
+
     // MARK: - Two independent owners
 
     @Test("Distinct trusted tasks execute in independent sessions while the visible panel stays on its owner")

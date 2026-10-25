@@ -4,8 +4,8 @@ import FloeCore
 /// Shared validation for tool, editor and terminal entry points.
 public enum ShellInputValidation {
     public static func validate(command: String, cwd: String, environment: [String: String], stdin: String? = nil) throws {
-        guard command.utf8.count <= 16 * 1024, !command.contains("\0") else {
-            throw FloeError.validationFailed("Shell command exceeds 16 KiB or contains NUL")
+        guard !command.contains("\0") else {
+            throw FloeError.validationFailed("Shell command contains NUL")
         }
         guard !cwd.hasPrefix("/"), !cwd.hasPrefix("~"), !cwd.contains("\0"),
               !cwd.split(separator: "/").contains("..") else {

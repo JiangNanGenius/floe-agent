@@ -1,0 +1,1297 @@
+// --- browser-bundle/15-snapshot.js ---
+// The page snapshot producer and the live-page IO the rules cannot do from
+// a snapshot. Pure measurement: what the probe in 10-probe.js reads on
+// demand, this reads once and serializes, so the WASM core can run where
+// the page's Content-Security-Policy keeps WebAssembly out (the extension's
+// offscreen document; see crates/core/src/browser/snapshot.rs for the
+// consumer and the field contract). Nothing in here decides anything about
+// a design: no thresholds, no rule names, no snippet strings.
+//
+// Exposed as `__impeccableSnapshot`:
+//   capture(options)        -> { json, elements, stats } | { error }
+//   answer(needs, elements) -> facts for the core (`hitTests` -> `hits`)
+//   idOf(el, elements)      -> the element's snapshot id (0 when absent)
+//   visualIO(elements)      -> the IO half of the visual-contrast pass
+//                              (image loads, canvas pixel reads) over live
+//                              Elements, keyed by snapshot id
+//   STYLE_PROPS / PSEUDO_PROPS / STATE_PSEUDOS (the capture contract)
+
+// Computed-style properties the rules read. Mirrors STYLE_PROPS in
+// crates/core/src/browser/snapshot.rs (cargo xtask bundle checks the two
+// lists agree).
+const __SNAP_STYLE_PROPS = [
+  "animationComposition", "animationDelay", "animationDirection", "animationDuration", "animationFillMode",
+  "animationIterationCount", "animationName", "animationPlayState", "animationTimeline", "animationTimingFunction",
+  "aspectRatio", "backdropFilter", "backfaceVisibility", "background", "backgroundClip",
+  "backgroundColor", "backgroundImage", "backgroundPosition", "backgroundRepeat", "backgroundSize",
+  "blockSize", "borderBottomColor", "borderBottomWidth", "borderBottomStyle",
+  "borderLeftColor", "borderLeftWidth", "borderLeftStyle", "borderRadius",
+  "borderRightColor", "borderRightWidth", "borderRightStyle",
+  "borderTopColor", "borderTopWidth", "borderTopStyle", "bottom", "boxShadow",
+  "clip", "clip-path", "clipPath", "color", "colorScheme", "contain", "content",
+  "contentVisibility", "cssFloat", "cursor", "direction", "display", "filter", "flexWrap", "float",
+  "fontFamily", "fontFeatureSettings", "fontSize", "fontStretch",
+  "fontStyle", "fontVariant", "fontVariantCaps", "fontWeight", "height",
+  "hyphens", "inlineSize", "inset", "insetBlock", "insetBlockEnd",
+  "insetBlockStart", "insetInline", "insetInlineEnd", "insetInlineStart",
+  "isolation", "left", "letterSpacing", "lineHeight", "marginBottom", "marginLeft",
+  "marginRight", "marginTop", "maskImage", "maxHeight", "maxWidth", "minHeight", "minWidth",
+  "mixBlendMode", "objectFit", "objectPosition", "opacity", "order", "outline",
+  "outlineColor", "outlineOffset", "outlineStyle", "outlineWidth", "overflow",
+  "overflowClipMargin", "overflowX", "overflowY", "paddingBottom", "paddingLeft", "paddingRight",
+  "paddingTop", "perspective", "pointerEvents", "position", "right", "rotate",
+  "scale", "textAlign",
+  "textDecoration", "textDecorationLine", "textIndent", "textOverflow",
+  "textShadow", "textTransform", "textWrap", "textWrapStyle", "top", "transform", "transitionDuration",
+  "transitionProperty", "transitionTimingFunction", "translate", "unicodeBidi",
+  "verticalAlign",
+  "visibility", "webkitBackgroundClip", "webkitClipPath", "webkitHyphens",
+  "webkitLineClamp", "webkitMaskImage", "webkitTextFillColor",
+  "webkitTextStrokeColor", "webkitTextStrokeWidth", "whiteSpace", "width", "willChange", "wordBreak",
+  "wordSpacing", "zIndex",
+];
+// `::before` / `::after` properties, recorded where `content` is set.
+const __SNAP_PSEUDO_PROPS = [
+  "content", "position", "opacity", "display", "width", "height", "top",
+  "right", "bottom", "left", "backgroundColor", "backgroundImage",
+  "background", "borderRadius", "transform", "visibility", "zIndex",
+  "translate", "scale", "rotate", "filter", "fontSize", "maskImage",
+];
+// Pseudo-class states recorded per element (`el.matches(':name')`), so the
+// snapshot selector engine can answer `:checked` / `:disabled` / ... the way
+// the live DOM would. Mirrors STATE_PSEUDOS in crates/core/src/browser/selector.rs.
+const __SNAP_STATE_PSEUDOS = [
+  "hover", "active", "focus", "focus-within", "focus-visible", "target",
+  "target-within", "checked", "indeterminate", "disabled", "required",
+  "invalid", "user-invalid", "user-valid", "in-range", "out-of-range",
+  "placeholder-shown", "default", "open", "autofill", "-webkit-autofill",
+  "popover-open", "modal", "fullscreen", "-webkit-full-screen",
+  "picture-in-picture", "playing", "buffering", "seeking", "muted",
+  "volume-locked",
+];
+const __SNAP_NS = { "http://www.w3.org/1999/xhtml": 0, "http://www.w3.org/2000/svg": 1, "http://www.w3.org/1998/Math/MathML": 2 };
+const __SNAP_DEFAULT_MAX_ELEMENTS = 30000;
+const __SNAP_DEFAULT_MAX_BYTES = 48 * 1024 * 1024;
+
+function __snapRect4(r) { return [r.x, r.y, r.width, r.height]; }
+function __snapNum(v) { return typeof v === 'number' ? v : null; }
+
+// The client rects of `node`'s own non-blank text nodes (same walk as
+// 10-probe.js#__collectTextRects with `deep` off). Each element records only
+// its own, so a line that rendered is recorded exactly once in a snapshot.
+function __snapTextRects(node, out) {
+  for (const child of node.childNodes) {
+    if (child.nodeType !== 3) continue;
+    if (!(child.textContent || '').trim()) continue;
+    const range = document.createRange();
+    range.selectNodeContents(child);
+    for (const rect of range.getClientRects()) {
+      if (rect.width >= 1 && rect.height >= 1) out.push(rect);
+    }
+    range.detach?.();
+  }
+  return out;
+}
+
+// The prose blocks `straggler` reads, upper-cased as `tagName` is. Mirrors
+// STRAGGLER_TAGS in crates/core/src/browser/line_breaks.rs: the capture
+// measures the last two words only where the rule will read them.
+const __SNAP_LAST_WORD_TAGS = new Set(['P', 'LI', 'DD', 'BLOCKQUOTE', 'FIGCAPTION']);
+// renders_no_text in crates/foundation/src/browser/dom.rs, as
+// 10-probe.js#__rendersNoText reads it. Copied, not shared: the extension's
+// snapshot piece ships without 10-probe.js.
+const __SNAP_NO_TEXT_TAGS = new Set(['style', 'script', 'noscript', 'template']);
+const __SNAP_NO_CONTAINMENT_DISPLAYS = new Set([
+  'inline', 'inline flow', 'contents', 'table-row', 'table-row-group',
+  'table-header-group', 'table-footer-group', 'table-column',
+  'table-column-group', 'ruby', 'ruby-base', 'ruby-text',
+  'ruby-base-container', 'ruby-text-container',
+]);
+function __snapRendersNoText(el) {
+  if (__SNAP_NO_TEXT_TAGS.has(String(el.localName || '').toLowerCase())) return true;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none') return true;
+  return String(cs.contentVisibility || '').toLowerCase() === 'hidden'
+    && !__SNAP_NO_CONTAINMENT_DISPLAYS.has(String(cs.display || '').toLowerCase().trim());
+}
+
+// Dom::last_word_rects: the rects of the word before the last and of the
+// last word of `el`'s rendered text, each the lowest of that word's client
+// rects (a hyphenated word ends on its lower line). The text and the words
+// are the ones the Rust side reads (`words` in line_breaks.rs): text nodes
+// in document order, skipping subtrees `rendersNoText` says set no text,
+// split on white space, soft hyphens and zero-width spaces dropped. A word
+// may run across text nodes (`fil<em>ls.</em>`), so a Range spans them.
+// `null` when the text holds fewer than two words. The walk runs backward
+// from the last text node and stops at the space before the second word, so
+// a long block (or each `li` of a nested list) reads only its tail.
+function __snapLastWordRects(el, rendersNoText) {
+  function* textNodesBackward(node) {
+    for (let child = node.lastChild; child; child = child.previousSibling) {
+      if (child.nodeType === 3) yield child;
+      else if (child.nodeType === 1 && !rendersNoText(child)) yield* textNodesBackward(child);
+    }
+  }
+  // Rust's char::is_whitespace: JS \s less U+FEFF, plus U+0085.
+  const space = c => c === '\u0085' || (c !== '\uFEFF' && /\s/.test(c));
+  const ink = c => !space(c) && c !== '\u00AD' && c !== '\u200B';
+  // [node, offset] of each word's first and last inked character, last
+  // word first.
+  const words = [];
+  let end = null, start = null;
+  scan: for (const node of textNodesBackward(el)) {
+    const data = node.data;
+    for (let i = data.length - 1; i >= 0; i--) {
+      const c = data[i];
+      if (space(c)) {
+        if (end) { words.push([start, end]); end = start = null; if (words.length === 2) break scan; }
+      } else if (ink(c)) {
+        if (!end) end = [node, i + 1];
+        start = [node, i];
+      } else if (end) {
+        start = [node, i];
+      }
+    }
+  }
+  if (end && words.length < 2) words.push([start, end]);
+  if (words.length < 2) return null;
+  const lowest = ([s, e]) => {
+    const range = document.createRange();
+    range.setStart(s[0], s[1]);
+    range.setEnd(e[0], e[1]);
+    let best = null;
+    for (const r of range.getClientRects()) {
+      if (r.width >= 1 && r.height >= 1 && (!best || r.top >= best.top)) best = r;
+    }
+    range.detach?.();
+    return best;
+  };
+  const last = lowest(words[0]);
+  const before = lowest(words[1]);
+  return last && before ? [before, last] : null;
+}
+
+// getDirectTextRect(el) over rects already collected: their union, as
+// 10-probe.js#direct_text_rect builds it.
+function __snapDirectTextRectOf(rects) {
+  if (rects.length === 0) return null;
+  const left = Math.min(...rects.map(r => r.left));
+  const top = Math.min(...rects.map(r => r.top));
+  const right = Math.max(...rects.map(r => r.right));
+  const bottom = Math.max(...rects.map(r => r.bottom));
+  return [left, top, right - left, bottom - top];
+}
+
+// ─── Linked stylesheet corpus (JS: injected/index.mjs #709) ────────────────
+
+// JS: injected/index.mjs#pseudoElementHostSelector
+function __snapPseudoElementHostSelector(selector) {
+  const raw = String(selector || '');
+  const legacyNames = new Set(['before', 'after', 'first-letter', 'first-line']);
+  const isNameChar = char => /[a-zA-Z0-9_-]/.test(char || '');
+  const consumeFunction = (start) => {
+    let depth = 0;
+    let quote = '';
+    for (let i = start; i < raw.length; i += 1) {
+      const char = raw[i];
+      if (char === '\\') { i += 1; continue; }
+      if (quote) { if (char === quote) quote = ''; continue; }
+      if (char === '"' || char === "'") { quote = char; continue; }
+      if (char === '(') depth += 1;
+      if (char === ')' && --depth === 0) return i + 1;
+    }
+    return raw.length;
+  };
+
+  let output = '';
+  let found = false;
+  for (let i = 0; i < raw.length;) {
+    const char = raw[i];
+    if (char === '\\') {
+      output += raw.slice(i, Math.min(raw.length, i + 2));
+      i += 2;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      const quote = char;
+      const start = i;
+      i += 1;
+      while (i < raw.length) {
+        if (raw[i] === '\\') { i += 2; continue; }
+        const value = raw[i];
+        i += 1;
+        if (value === quote) break;
+      }
+      output += raw.slice(start, i);
+      continue;
+    }
+    if (char !== ':') { output += char; i += 1; continue; }
+
+    let end = i + 1;
+    let isPseudoElement = false;
+    if (raw[end] === ':') {
+      end += 1;
+      const nameStart = end;
+      while (isNameChar(raw[end])) end += 1;
+      isPseudoElement = end > nameStart;
+    } else {
+      const nameStart = end;
+      while (isNameChar(raw[end])) end += 1;
+      isPseudoElement = legacyNames.has(raw.slice(nameStart, end).toLowerCase());
+    }
+    if (!isPseudoElement) { output += char; i += 1; continue; }
+    if (raw[end] === '(') end = consumeFunction(end);
+    found = true;
+    if (!output || /[\s>+~,]/.test(output[output.length - 1])) output += '*';
+    i = end;
+  }
+  if (!found) return null;
+  return output.trim().replace(/,\s*(?=,|$)/g, '');
+}
+
+// JS: injected/index.mjs#selectorNodesForLiveDom
+function __snapSelectorNodesForLiveDom(root, selector) {
+  const raw = String(selector || '').trim();
+  if (!raw) return null;
+  const fallback = __snapPseudoElementHostSelector(raw);
+  if (fallback == null) {
+    // An empty result from a valid full selector is authoritative. In
+    // particular, do not broaden inactive :hover/:focus/:not() rules to
+    // their host element by stripping pseudo-classes.
+    try { return Array.from(root.querySelectorAll(raw)); }
+    catch { return null; }
+  }
+  // Resolve pseudo-elements to their originating live elements. An attached
+  // pseudo-element (`.card::before`) belongs to the element before it, while
+  // a hostless pseudo-element after a combinator (`main > ::before`) belongs
+  // to a matching element at that position (`main > *`).
+  if (!fallback || /^[,\s]*$/.test(fallback)) return null;
+  try { return Array.from(root.querySelectorAll(fallback)); }
+  catch { return null; }
+}
+
+let __snapContainerProbeSequence = 0;
+
+function __snapIsContainerCssRule(rule) {
+  return rule?.constructor?.name === 'CSSContainerRule'
+    || /^\s*@container\b/i.test(rule?.cssText || '');
+}
+
+function __snapStyleRuleAppliesToLiveMatches(rule, matches) {
+  const style = rule?.style;
+  if (!style || !matches?.length || typeof getComputedStyle !== 'function') return false;
+  const sequence = ++__snapContainerProbeSequence;
+  const property = `--impeccable-container-probe-${sequence}-${Math.random().toString(36).slice(2)}`;
+  const value = `impeccable-container-active-${sequence}`;
+  const previousValue = style.getPropertyValue(property);
+  const previousPriority = style.getPropertyPriority(property);
+  try { style.setProperty(property, value, 'important'); }
+  catch { return false; }
+
+  const pseudoElements = [...new Set(
+    String(rule.selectorText || '').match(/::[a-zA-Z-]+(?:\([^)]*\))?/g) || [],
+  )];
+  try {
+    return matches.some(el => [null, ...pseudoElements].some(pseudo => {
+      try {
+        const computed = pseudo ? getComputedStyle(el, pseudo) : getComputedStyle(el);
+        return computed.getPropertyValue(property).trim() === value;
+      } catch { return false; }
+    }));
+  } finally {
+    if (previousValue) style.setProperty(property, previousValue, previousPriority);
+    else style.removeProperty(property);
+  }
+}
+
+function __snapConditionalCssRuleIsActive(rule) {
+  const type = Number(rule?.type);
+  const constructorName = rule?.constructor?.name || '';
+  if (constructorName === 'CSSMediaRule' || type === 4) {
+    const condition = rule.conditionText || rule.media?.mediaText || '';
+    if (!condition || typeof matchMedia !== 'function') return true;
+    try { return matchMedia(condition).matches; }
+    catch { return true; }
+  }
+  if (constructorName === 'CSSSupportsRule' || type === 12) {
+    const condition = rule.conditionText || '';
+    if (!condition || typeof CSS === 'undefined' || typeof CSS.supports !== 'function') return true;
+    try { return CSS.supports(condition); }
+    catch { return true; }
+  }
+  return true;
+}
+
+function __snapSplitCssCommaList(value) {
+  const parts = [];
+  let current = '';
+  let quote = '';
+  let escaped = false;
+  for (const char of String(value || '')) {
+    if (escaped) { current += char; escaped = false; continue; }
+    if (char === '\\') { current += char; escaped = true; continue; }
+    if (quote) { current += char; if (char === quote) quote = ''; continue; }
+    if (char === '"' || char === "'") { quote = char; current += char; continue; }
+    if (char === ',') { parts.push(current); current = ''; continue; }
+    current += char;
+  }
+  parts.push(current);
+  return parts;
+}
+
+function __snapNormalizeAnimationName(value) {
+  const name = String(value || '').trim();
+  if (name.length >= 2 && name[0] === name[name.length - 1] && (name[0] === '"' || name[0] === "'")) {
+    return name.slice(1, -1);
+  }
+  return name;
+}
+
+function __snapAnimationNamesDeclaredByRule(rule) {
+  const style = rule?.style;
+  if (!style) return [];
+  let value = '';
+  try {
+    value = style.animationName
+      || style.getPropertyValue?.('animation-name')
+      || style.webkitAnimationName
+      || style.getPropertyValue?.('-webkit-animation-name')
+      || '';
+  } catch { return []; }
+  return __snapSplitCssCommaList(value)
+    .map(__snapNormalizeAnimationName)
+    .filter(name => name && name.toLowerCase() !== 'none');
+}
+
+function __snapKeyframesRuleName(rule, cssText) {
+  const constructorName = rule?.constructor?.name || '';
+  const type = Number(rule?.type);
+  const isKeyframes = constructorName === 'CSSKeyframesRule'
+    || constructorName === 'WebKitCSSKeyframesRule'
+    || type === 7
+    || /^\s*@(?:-webkit-)?keyframes\b/i.test(cssText);
+  if (!isKeyframes) return '';
+  const match = String(cssText || '').match(/^\s*@(?:-webkit-)?keyframes\s+([^\s{]+)/i);
+  return __snapNormalizeAnimationName(rule?.name || match?.[1] || '');
+}
+
+function __snapCssPropertyName(property) {
+  if (property.startsWith('--')) return property;
+  return property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`);
+}
+
+function __snapResolvedAnimationKeyframes(candidateNames) {
+  if (typeof document.getAnimations !== 'function') return null;
+  let animations;
+  try { animations = document.getAnimations(); }
+  catch { return null; }
+
+  const resolved = new Map();
+  const metadata = new Set(['offset', 'computedOffset', 'easing', 'composite']);
+  for (const animation of animations) {
+    const name = __snapNormalizeAnimationName(animation?.animationName || '');
+    if (!name || !candidateNames.has(name) || resolved.has(name)) continue;
+    let frames;
+    try { frames = animation.effect?.getKeyframes?.() || []; }
+    catch { continue; }
+    const blocks = [];
+    for (const frame of frames) {
+      const rawOffset = Number.isFinite(frame.computedOffset) ? frame.computedOffset : frame.offset;
+      if (!Number.isFinite(rawOffset)) continue;
+      const offset = Math.round(rawOffset * 1000000) / 10000;
+      const declarations = Object.entries(frame)
+        .filter(([property, value]) => !metadata.has(property) && value != null && value !== '')
+        .map(([property, value]) => `${__snapCssPropertyName(property)}: ${value};`);
+      const easing = String(frame.easing || '').trim();
+      if (easing && easing.toLowerCase() !== 'linear') {
+        declarations.push(`animation-timing-function: ${easing};`);
+      }
+      if (declarations.length === 0) continue;
+      blocks.push(`${offset}% { ${declarations.join(' ')} }`);
+    }
+    if (blocks.length > 0) resolved.set(name, `@keyframes ${name} { ${blocks.join(' ')} }`);
+  }
+  return resolved;
+}
+
+// Read CSS that is absent from document.outerHTML. Inline <style> blocks are
+// already present in the HTML pattern corpus, so limit this walk to linked
+// stylesheets. Flatten grouping rules so each declaration keeps its selector,
+// and admit only selector rules that target the live DOM. That prevents
+// unused utilities from feeding both selector-scoped and page-level checks.
+// Same-origin CSS and readable CORS sheets participate; browser security
+// exceptions for cross-origin sheets are expected and skipped.
+// JS: injected/index.mjs#linkedStylesheetText
+function __snapLinkedStylesheetText() {
+  const parts = [];
+  const seen = new Set();
+  const animationNames = new Set();
+  const keyframeCandidates = new Map();
+  const appendRules = (rules, requiresAppliedMatch = false) => {
+    for (const rule of rules) {
+      if (rule.styleSheet) { appendSheet(rule.styleSheet); continue; }
+      const cssText = rule.cssText || '';
+      if (rule.selectorText) {
+        const matches = __snapSelectorNodesForLiveDom(document, rule.selectorText);
+        // Only declarations with a resolvable live host enter the corpus.
+        // Unresolvable selectors are uncertain, not evidence that a pattern
+        // rendered, and retaining them would leak unused CSS into findings.
+        if (
+          matches?.length > 0
+          && (!requiresAppliedMatch || __snapStyleRuleAppliesToLiveMatches(rule, matches))
+        ) {
+          parts.push(cssText);
+          for (const name of __snapAnimationNamesDeclaredByRule(rule)) animationNames.add(name);
+        }
+        continue;
+      }
+      let nested = [];
+      let hasNestedRules = false;
+      try {
+        const ruleList = rule.cssRules;
+        hasNestedRules = ruleList != null;
+        nested = Array.from(ruleList || []);
+      } catch { continue; }
+      const keyframesName = __snapKeyframesRuleName(rule, cssText);
+      if (keyframesName) {
+        // Keyframes do not merge: when a name is defined more than once, the
+        // later effective definition replaces the earlier one.
+        keyframeCandidates.set(keyframesName, { name: keyframesName, cssText });
+        continue;
+      }
+      if (hasNestedRules) {
+        if (!__snapConditionalCssRuleIsActive(rule)) continue;
+        appendRules(nested, requiresAppliedMatch || __snapIsContainerCssRule(rule));
+        continue;
+      }
+      // Other selector-less leaf at-rules cannot be tied to a rendered node.
+    }
+  };
+  const appendSheet = (sheet) => {
+    if (!sheet || seen.has(sheet)) return;
+    seen.add(sheet);
+    let rules;
+    try { rules = Array.from(sheet.cssRules || sheet.rules || []); }
+    catch { return; }
+    appendRules(rules);
+  };
+  let sheets;
+  try { sheets = Array.from(document.styleSheets || []); }
+  catch { return ''; }
+  for (const sheet of sheets) {
+    const owner = sheet.ownerNode;
+    if (owner?.tagName?.toLowerCase() !== 'link') continue;
+    if (!/\bstylesheet\b/i.test(owner.getAttribute?.('rel') || '')) continue;
+    appendSheet(sheet);
+  }
+  // Motion checks need the effective body of a live animation's keyframes.
+  // Let the browser resolve duplicate names across source order, imports,
+  // conditional groups, and cascade layers, then serialize those computed
+  // frames back into the pattern corpus. Browsers also make container-nested
+  // keyframes globally available, so lexical grouping is not a reliable
+  // activity signal. When the Web Animations API is unavailable, fall back to
+  // the last source-order definition referenced by a retained linked rule.
+  const resolvedKeyframes = __snapResolvedAnimationKeyframes(new Set(keyframeCandidates.keys()));
+  if (resolvedKeyframes) {
+    parts.push(...resolvedKeyframes.values());
+  } else {
+    for (const candidate of keyframeCandidates.values()) {
+      if (!animationNames.has(candidate.name)) continue;
+      parts.push(candidate.cssText);
+    }
+  }
+  return parts.join('\n');
+}
+
+// Every @keyframes rule, in document.styleSheets order (nested rules walked
+// breadth-first like 10-probe.js keyframes()); first rule per name wins.
+// `keysOut`, when given, receives `[name, [keyText, ...]]` per rule, one
+// selector per recorded frame, so a reader knows which offsets each frame
+// sets.
+function __snapKeyframes(keysOut) {
+  const out = [];
+  const seen = new Set();
+  for (const sheet of document.styleSheets) {
+    let rules;
+    try { rules = sheet.cssRules || sheet.rules; } catch { continue; }
+    if (!rules) continue;
+    const stack = [...rules];
+    while (stack.length) {
+      const rule = stack.shift();
+      if (rule.cssRules && rule.type !== 7) { stack.push(...rule.cssRules); continue; }
+      if (rule.type !== 7 || seen.has(rule.name)) continue;
+      seen.add(rule.name);
+      const frames = [];
+      const keys = [];
+      for (const frame of rule.cssRules || []) {
+        const fs = frame.style;
+        if (!fs) continue;
+        const decls = [];
+        for (let i = 0; i < fs.length; i++) {
+          const prop = fs[i];
+          decls.push([prop, fs.getPropertyValue(prop)]);
+        }
+        frames.push(decls);
+        keys.push(String(frame.keyText || ''));
+      }
+      out.push([rule.name, frames]);
+      if (keysOut) keysOut.push([rule.name, keys]);
+    }
+  }
+  return out;
+}
+
+// The properties every running animation and transition animates, per
+// target element id: `getAnimations()` entries that are running or still
+// pending, on an element rather than a pseudo-element. The document's list
+// leaves out targets inside shadow trees, so each captured shadow root adds
+// its own. `null` when the Web Animations API is missing or throws, which the
+// core reads as unknown.
+function __snapRunningAnimations(ids, shadowRoots = []) {
+  if (typeof document.getAnimations !== 'function') return null;
+  let animations;
+  try {
+    animations = document.getAnimations();
+    for (const root of shadowRoots) {
+      if (typeof root.getAnimations === 'function') animations = animations.concat(root.getAnimations());
+    }
+  }
+  catch { return null; }
+  const metadata = new Set(['offset', 'computedOffset', 'easing', 'composite']);
+  const out = new Map();
+  for (const animation of animations) {
+    let effect;
+    try {
+      if (animation.playState !== 'running' && !animation.pending) continue;
+      effect = animation.effect;
+    } catch { continue; }
+    if (!effect || effect.pseudoElement) continue;
+    const id = ids.get(effect.target);
+    if (!id) continue;
+    let props = out.get(id);
+    if (!props) { props = []; out.set(id, props); }
+    const add = (property) => {
+      const name = __snapCssPropertyName(String(property));
+      if (name && !props.includes(name)) props.push(name);
+    };
+    if (typeof animation.transitionProperty === 'string') add(animation.transitionProperty);
+    let frames = [];
+    try { frames = effect.getKeyframes?.() || []; }
+    catch { frames = []; }
+    for (const frame of frames) {
+      for (const property of Object.keys(frame)) {
+        if (!metadata.has(property)) add(property);
+      }
+    }
+  }
+  return out;
+}
+
+// Which recorded pseudo-class states each element carries: one query per
+// state (cheap), instead of N x states `matches` calls. A document query
+// does not reach into shadow trees, so each captured shadow root is asked
+// too: a disabled or checked control inside a web component has its state.
+function __snapStates(ids, shadowRoots = []) {
+  const states = new Map();
+  const scopes = [document, ...shadowRoots];
+  const record = (selector, name) => {
+    for (const scope of scopes) {
+      let list;
+      try { list = scope.querySelectorAll(selector); } catch { return; }
+      for (const el of list) {
+        const id = ids.get(el);
+        if (!id) continue;
+        let arr = states.get(id);
+        if (!arr) { arr = []; states.set(id, arr); }
+        arr.push(name);
+      }
+    }
+  };
+  for (const name of __SNAP_STATE_PSEUDOS) record(':' + name, name);
+  // Custom elements without a definition (`:defined` is the common case;
+  // record its complement). An engine without `:defined` throws, and the
+  // state is not recorded.
+  record(':not(:defined)', 'undefined');
+  return states;
+}
+
+// The drawable IO both adapters share: fetch an image for sampling (the
+// 800ms budget and the CORS opt-in for cross-origin URLs are load policy,
+// not rule logic), draw a drawable to a cached canvas, read one pixel.
+function __createDrawableIO() {
+  const images = new Map();      // src -> Promise<Image|null>
+  const rasters = new WeakMap(); // drawable -> { ctx, plan } | { ctx: null, error }
+  return {
+    loadImageEl(src) {
+      if (!src) return Promise.resolve(null);
+      if (images.has(src)) return images.get(src);
+      const promise = new Promise(resolve => {
+        const img = new Image();
+        let settled = false;
+        const finish = value => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(value);
+        };
+        const timer = setTimeout(() => finish(null), 800);
+        try {
+          const absolute = new URL(src, location.href);
+          if (absolute.origin !== location.origin && absolute.protocol !== 'data:' && absolute.protocol !== 'blob:') {
+            img.crossOrigin = 'anonymous';
+          }
+        } catch {
+          // Let the browser resolve unusual URLs itself.
+        }
+        img.onload = () => finish(img);
+        img.onerror = () => finish(null);
+        img.src = src;
+      });
+      images.set(src, promise);
+      return promise;
+    },
+    // Draw `drawable` to a canvas of plan.width x plan.height (cached per
+    // drawable, failures included) and read the pixel at (px, py).
+    // -> { data: [r, g, b, a] } | { error: message } | { noContext: true }
+    readPixel(drawable, plan, px, py) {
+      let cached = rasters.get(drawable);
+      if (!cached) {
+        const canvas = document.createElement('canvas');
+        canvas.width = plan.width;
+        canvas.height = plan.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (!ctx) return { noContext: true };
+        try {
+          ctx.drawImage(drawable, 0, 0, canvas.width, canvas.height);
+          cached = { ctx, plan };
+        } catch (err) {
+          cached = { ctx: null, error: err?.message || '' };
+        }
+        rasters.set(drawable, cached);
+      }
+      if (!cached.ctx) return { error: cached.error || '' };
+      try {
+        const data = cached.ctx.getImageData(px, py, 1, 1).data;
+        return { data: [data[0], data[1], data[2], data[3]] };
+      } catch (err) {
+        return { error: err?.message || '' };
+      }
+    },
+  };
+}
+
+const __impeccableSnapshot = {
+  STYLE_PROPS: __SNAP_STYLE_PROPS,
+  PSEUDO_PROPS: __SNAP_PSEUDO_PROPS,
+  STATE_PSEUDOS: __SNAP_STATE_PSEUDOS,
+
+  // Serialize the page. `options.maxElements` / `options.maxBytes` are the
+  // guards (defaults 30k elements / 48 MB); `options.exclude(el)` skips a
+  // subtree (the extension passes its own overlay nodes, exactly the nodes
+  // the rules skip through their `.impeccable-*` selectors anyway).
+  capture(options = {}) {
+    const t0 = performance.now();
+    const maxElements = options.maxElements || __SNAP_DEFAULT_MAX_ELEMENTS;
+    const maxBytes = options.maxBytes || __SNAP_DEFAULT_MAX_BYTES;
+    const root = document.documentElement;
+    if (!root) return { error: 'no document element' };
+
+    // 1. Walk in document order, assign ids.
+    const elements = [null];
+    const ids = new WeakMap();
+    const stack = [root];
+    while (stack.length) {
+      const el = stack.pop();
+      if (options.exclude && options.exclude(el)) continue;
+      const id = elements.length;
+      elements.push(el);
+      ids.set(el, id);
+      if (elements.length > maxElements) {
+        return { error: `page has more than ${maxElements} elements` };
+      }
+      const kids = el.children;
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+    }
+
+    // 1b. Open shadow trees, after every light-DOM element so light ids do
+    // not move. Their top-level nodes are nobody's child (`sh` names the
+    // host), so the core's document walks never reach them; the flat-tree
+    // walk the contrast surface reads does, through `as` and `ts`.
+    // Shadow trees are extra: a page whose light DOM fits the element budget
+    // still captures when its shadow trees do not. A tree that would cross
+    // the budget is dropped whole, and so is every tree after it.
+    const shadowHosts = new Map();
+    const shadowRoots = [];
+    shadowWalk: for (let i = 1; i < elements.length; i++) {
+      const host = elements[i];
+      let root = null;
+      try { root = host.shadowRoot; } catch { root = null; }
+      if (!root) continue;
+      const hostId = i;
+      const mark = elements.length;
+      const shadowStack = [];
+      const tops = root.children;
+      for (let k = tops.length - 1; k >= 0; k--) shadowStack.push(tops[k]);
+      while (shadowStack.length) {
+        const el = shadowStack.pop();
+        if (options.exclude && options.exclude(el)) continue;
+        if (elements.length >= maxElements) {
+          for (const dropped of elements.splice(mark)) ids.delete(dropped);
+          break shadowWalk;
+        }
+        ids.set(el, elements.length);
+        elements.push(el);
+        const kids = el.children;
+        for (let k = kids.length - 1; k >= 0; k--) shadowStack.push(kids[k]);
+      }
+      for (let k = 0; k < tops.length; k++) shadowHosts.set(tops[k], hostId);
+      shadowRoots.push(root);
+    }
+
+    // 2. Intern style values.
+    const strings = [];
+    const stringIndex = new Map();
+    const intern = (v) => {
+      const s = v == null ? '' : String(v);
+      let i = stringIndex.get(s);
+      if (i === undefined) { i = strings.length; strings.push(s); stringIndex.set(s, i); }
+      return i;
+    };
+
+    const states = __snapStates(ids, shadowRoots);
+    const animated = __snapRunningAnimations(ids, shadowRoots);
+    const els = new Array(elements.length - 1);
+    for (let id = 1; id < elements.length; id++) {
+      const el = elements[id];
+      const rec = { t: el.tagName };
+      const tag = rec.t;
+      const nsUri = el.namespaceURI || '';
+      const ns = __SNAP_NS[nsUri];
+      if (ns === undefined) { rec.n = 3; rec.nu = nsUri; } else if (ns !== 0) { rec.n = ns; }
+      const parent = el.parentElement;
+      if (parent) rec.p = ids.get(parent) || 0;
+      const shadowHost = shadowHosts.get(el);
+      if (shadowHost) rec.sh = shadowHost;
+      const slot = el.assignedSlot;
+      if (slot) {
+        const slotId = ids.get(slot);
+        if (slotId) rec.as = slotId;
+      }
+      // childNodes: element ids, text data, CDATA as [data].
+      const c = [];
+      for (const n of el.childNodes) {
+        if (n.nodeType === 1) {
+          const cid = ids.get(n);
+          if (cid) c.push(cid);
+        } else if (n.nodeType === 3) {
+          const data = n.textContent || '';
+          c.push(data);
+          if (rec.ts === undefined && data.trim() && n.assignedSlot) {
+            const slotId = ids.get(n.assignedSlot);
+            if (slotId) rec.ts = slotId;
+          }
+        } else if (n.nodeType === 4) {
+          c.push([n.textContent || '']);
+        }
+      }
+      rec.c = c;
+      const names = el.getAttributeNames();
+      if (names.length) rec.a = names.map(name => [name, el.getAttribute(name)]);
+      const cs = getComputedStyle(el);
+      rec.s = __SNAP_STYLE_PROPS.map(p => intern(cs[p]));
+      for (const [key, pseudo] of [['b', '::before'], ['f', '::after']]) {
+        let ps;
+        try { ps = getComputedStyle(el, pseudo); } catch { continue; }
+        if (!ps) continue;
+        const content = ps.content;
+        if (content == null || content === '' || content === 'none') continue;
+        rec[key] = __SNAP_PSEUDO_PROPS.map(p => intern(ps[p]));
+      }
+      if ((tag === 'INPUT' || tag === 'TEXTAREA') && el.getAttribute('placeholder')) {
+        let ps;
+        try { ps = getComputedStyle(el, '::placeholder'); } catch { ps = null; }
+        if (ps) rec.ph = intern(ps.color);
+      }
+      if (typeof el.getBoundingClientRect === 'function') rec.r = __snapRect4(el.getBoundingClientRect());
+      rec.m = [
+        __snapNum(el.clientWidth), __snapNum(el.clientHeight), __snapNum(el.clientLeft),
+        __snapNum(el.scrollWidth), __snapNum(el.scrollLeft),
+        __snapNum(el.offsetWidth), __snapNum(el.offsetHeight),
+        __snapNum(el.scrollHeight),
+      ];
+      rec.v = typeof el.checkVisibility === 'function'
+        ? (el.checkVisibility({ checkOpacity: false, checkVisibilityCSS: true }) ? 1 : 0)
+        : -1;
+      // The element's OWN text rects, unmerged (`dl`), and their union
+      // (`d`, the long-standing field). Own and not the subtree's: every
+      // ancestor would otherwise carry a copy of every line under it, which
+      // on a deep text-heavy page multiplies the snapshot by its depth and
+      // can push it past the byte cap. The consumer walks the tree and
+      // assembles an element's lines from the rects its descendants each
+      // recorded once (`SnapshotDom::text_line_rects`).
+      const own = __snapTextRects(el, []);
+      const dtr = __snapDirectTextRectOf(own);
+      if (dtr) rec.d = dtr;
+      if (own.length) rec.dl = own.map(r => [r.x, r.y, r.width, r.height]);
+      if (__SNAP_LAST_WORD_TAGS.has(tag)) {
+        const lw = __snapLastWordRects(el, __snapRendersNoText);
+        if (lw) rec.lw = lw.map(__snapRect4);
+      }
+      if (el.isContentEditable) rec.e = true;
+      if (el.hidden) rec.h = true;
+      if (typeof el.id !== 'string') rec.i = true;
+      if (typeof el.className !== 'string') rec.k = true;
+      const st = states.get(id);
+      if (st) rec.st = st;
+      const an = animated && animated.get(id);
+      if (an && an.length) rec.an = an;
+      if (tag === 'IMG' || tag === 'VIDEO' || tag === 'CANVAS' || tag === 'PICTURE') {
+        rec.md = {
+          nw: el.naturalWidth || 0, nh: el.naturalHeight || 0,
+          vw: el.videoWidth || 0, vh: el.videoHeight || 0,
+          w: typeof el.width === 'number' ? el.width : 0,
+          h: typeof el.height === 'number' ? el.height : 0,
+          cur: el.currentSrc || '', src: typeof el.src === 'string' ? el.src : '',
+        };
+        // `complete` separates an image whose fetch failed from one the
+        // browser has not requested yet; both have a naturalWidth of 0.
+        if (tag === 'IMG' && typeof el.complete === 'boolean') rec.md.cp = el.complete;
+        // `readyState` 2 or more: a frame is decoded, so the video paints a
+        // picture even where its poster failed or is still loading.
+        if (tag === 'VIDEO' && typeof el.readyState === 'number') rec.md.rs = el.readyState;
+      }
+      els[id - 1] = rec;
+    }
+
+    // 3. Document-level facts.
+    const docClone = root.cloneNode(true);
+    for (const node of docClone.querySelectorAll('[id^="impeccable-live-"]')) node.remove();
+    const body = document.body;
+    let bodyInnerText = null;
+    if (body) {
+      const v = body.innerText;
+      bodyInnerText = typeof v === 'string' ? v : null;
+    }
+    const keyframeKeys = [];
+    const snapshot = {
+      v: 1,
+      textLines: true,
+      hostname: location.hostname,
+      quirks: document.compatMode === 'BackCompat',
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      html: docClone.outerHTML,
+      keyframes: __snapKeyframes(keyframeKeys),
+      keyframeKeys,
+      linkedCss: __snapLinkedStylesheetText(),
+      styleProps: __SNAP_STYLE_PROPS,
+      pseudoProps: __SNAP_PSEUDO_PROPS,
+      strings,
+      els,
+      documentElement: ids.get(root) || 0,
+      body: body ? (ids.get(body) || 0) : 0,
+      bodyInnerText,
+      hits: options.hits || [],
+    };
+    if (animated) snapshot.anim = true;
+    snapshot.shadow = true;
+    const json = JSON.stringify(snapshot);
+    if (json.length > maxBytes) {
+      return { error: `snapshot is ${json.length} bytes (limit ${maxBytes})` };
+    }
+    return {
+      json,
+      elements,
+      ids,
+      stats: { elements: elements.length - 1, bytes: json.length, ms: performance.now() - t0 },
+    };
+  },
+
+  idOf(el, capture) {
+    if (!el || !capture) return 0;
+    return capture.ids.get(el) || 0;
+  },
+
+  // Answer the core's pending questions from the live page.
+  answer(needs, capture) {
+    const facts = { hits: [] };
+    for (const [x, y] of (needs && needs.hitTests) || []) {
+      const top = document.elementFromPoint(x, y);
+      const stack = typeof document.elementsFromPoint === 'function' ? document.elementsFromPoint(x, y) : [];
+      facts.hits.push({
+        x, y,
+        top: this.idOf(top, capture),
+        stack: [...stack].map(el => this.idOf(el, capture)).filter(Boolean),
+      });
+    }
+    return facts;
+  },
+
+  // The IO half of the visual-contrast pass over live Elements: image
+  // loading and canvas pixel reads (see createVisualContrast in
+  // 35-visual.js for the adapter contract). Refs are snapshot ids for page
+  // elements and `{ url }` for separately loaded images.
+  visualIO(capture) {
+    const io = __createDrawableIO();
+    const loadedByUrl = new Map();
+    const drawableOf = (ref) => {
+      if (ref && typeof ref === 'object' && ref.url) return loadedByUrl.get(ref.url) || null;
+      return capture.elements[ref] || null;
+    };
+    return {
+      // -> { ref: { url }, w, h } | null   (w = naturalWidth || width)
+      async loadImage(src) {
+        const img = await io.loadImageEl(src);
+        if (!img) return null;
+        loadedByUrl.set(src, img);
+        return { ref: { url: src }, w: img.naturalWidth || img.width || 0, h: img.naturalHeight || img.height || 0 };
+      },
+      // -> { data: [r, g, b, a] } | { error: message } | { noContext: true }
+      readPixel(ref, plan, px, py) {
+        const drawable = drawableOf(ref);
+        if (!drawable) return { error: 'drawable unavailable' };
+        return io.readPixel(drawable, plan, px, py);
+      },
+    };
+  },
+};
+// ==== Floe A2 native producer adapter (fixed, audited) =====================
+// Appended verbatim to the pinned upstream producer
+// (browser-bundle/15-snapshot.js @ 4fc2f83e1c8710dba772bfd4523d0efab57737b6,
+// sha256 b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0).
+// Contract: floe.impeccable.snapshot v1 (frozen). This adapter is the only
+// Floe-authored JavaScript; it is a fixed, reviewed file shipped in the app
+// bundle. Nothing here evaluates model-, page- or network-supplied code, and
+// `__impeccableSnapshot.visualIO` is never reachable from this surface: the
+// v1 native capture has no pixel source (pixel-contrast stays uncovered).
+//
+// Surface (isolated content world only):
+//   dispatch('capture', args) -> snapshot + redaction
+//   dispatch('answer',  args) -> hit-test facts or fence
+//   dispatch('probe',   args) -> read-only current view + run state (no DOM
+//                                measurement, no mutation, no evaluation)
+(() => {
+  'use strict';
+  const stateKey = '__floeImpeccableState';
+  if (!globalThis[stateKey]) globalThis[stateKey] = { runs: new Map() };
+  const state = globalThis[stateKey];
+  const MAX_RETAINED_RUNS = 4;
+
+  const FORM_TAGS = new Set(['INPUT', 'TEXTAREA', 'SELECT']);
+  const URL_ATTRS = new Set(['href', 'src', 'action', 'data', 'poster', 'xlink:href', 'srcset']);
+  // Deterministic, audited credential-name policy (floe.impeccable.redaction.v1):
+  // any attribute name containing one of these tokens, and any URL-valued
+  // attribute whose query carries such a parameter name, is a credential
+  // bearer. 'value' on form controls is handled per control type.
+  const CRED_NAME_TOKENS = [
+    'token', 'secret', 'password', 'passwd', 'apikey', 'api-key', 'api_key',
+    'credential', 'authorization', 'bearer', 'authtoken', 'auth-token',
+    'auth_token', 'accesstoken', 'access-token', 'access_token', 'accesskey',
+    'access-key', 'access_key', 'privatekey', 'private-key', 'private_key',
+    'sessionid', 'session-id', 'session_id',
+  ];
+  const URL_PARAM_RE = /[?&][^=&#]*(?:token|secret|password|passwd|api[-_]?key|auth|credential|bearer|access[-_]?key|access[-_]?token|private[-_]?key|session)[^=&#]*=/i;
+  const isCredName = (lower) => CRED_NAME_TOKENS.some((t) => lower.includes(t));
+
+  const currentView = () => ({
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    scrollX: window.scrollX,
+    scrollY: window.scrollY,
+  });
+
+  const newCounts = () => ({ passwordInputs: 0, formValues: 0, credentialAttributeNames: new Set(), textRuns: 0 });
+  const mergeCounts = (into, from) => {
+    into.passwordInputs += from.passwordInputs;
+    into.formValues += from.formValues;
+    into.textRuns += from.textRuns;
+    for (const n of from.credentialAttributeNames) into.credentialAttributeNames.add(n);
+  };
+
+  // ---- Redaction inside the isolated world, before any bytes leave it ----
+  // Values are replaced with the empty string; columns and element order are
+  // never touched (the 138/23/31 parity ordering is preserved exactly).
+
+  const redactStructure = (obj, elements) => {
+    const counts = newCounts();
+    const els = Array.isArray(obj.els) ? obj.els : [];
+    for (let i = 0; i < els.length; i++) {
+      const rec = els[i];
+      if (!rec || typeof rec !== 'object') continue;
+      const tag = String(rec.t || '').toUpperCase();
+      const el = elements ? elements[i + 1] : null;
+      let isPassword = false;
+      if (tag === 'INPUT') {
+        const typeProp = el && typeof el.type === 'string' ? el.type.toLowerCase() : '';
+        const acProp = el && typeof el.autocomplete === 'string' ? el.autocomplete.toLowerCase() : '';
+        let typeAttr = '';
+        if (Array.isArray(rec.a)) {
+          for (const pair of rec.a) {
+            if (Array.isArray(pair) && String(pair[0]).toLowerCase() === 'type') typeAttr = String(pair[1] == null ? '' : pair[1]).toLowerCase();
+          }
+        }
+        isPassword = typeProp === 'password' || typeAttr === 'password'
+          || acProp === 'current-password' || acProp === 'new-password';
+      }
+      if (Array.isArray(rec.a)) {
+        for (const pair of rec.a) {
+          if (!Array.isArray(pair)) continue;
+          const lower = String(pair[0]).toLowerCase();
+          const val = pair[1];
+          if (typeof val !== 'string' || val.length === 0) continue;
+          if (lower === 'value' && FORM_TAGS.has(tag)) {
+            if (isPassword) counts.passwordInputs += 1; else counts.formValues += 1;
+            pair[1] = '';
+            continue;
+          }
+          if (URL_ATTRS.has(lower) && URL_PARAM_RE.test(val)) {
+            counts.credentialAttributeNames.add(lower);
+            pair[1] = '';
+            continue;
+          }
+          if (isCredName(lower)) {
+            counts.credentialAttributeNames.add(lower);
+            pair[1] = '';
+          }
+        }
+      }
+      if (tag === 'TEXTAREA' && Array.isArray(rec.c)) {
+        let touched = false;
+        rec.c = rec.c.map((entry) => {
+          if (typeof entry === 'string' && entry.length > 0) {
+            touched = true;
+            if (entry.trim().length > 0) counts.textRuns += 1;
+            return '';
+          }
+          return entry;
+        });
+        if (touched) {
+          const ac = el && typeof el.autocomplete === 'string' ? el.autocomplete.toLowerCase() : '';
+          if (ac === 'current-password' || ac === 'new-password') counts.passwordInputs += 1;
+          else counts.formValues += 1;
+        }
+      }
+      if (rec.md && typeof rec.md === 'object') {
+        for (const key of ['cur', 'src']) {
+          const v = rec.md[key];
+          if (typeof v === 'string' && v.length > 0 && URL_PARAM_RE.test(v)) {
+            rec.md[key] = '';
+            counts.credentialAttributeNames.add('md.' + key);
+          }
+        }
+      }
+    }
+    return counts;
+  };
+
+  const cheapHtmlProbe = (html) =>
+    /<(?:input|textarea|select)\b/i.test(html) || URL_PARAM_RE.test(html)
+    || CRED_NAME_TOKENS.some((t) => html.toLowerCase().includes(t));
+
+  const redactHtml = (html) => {
+    const counts = newCounts();
+    let parsed = null;
+    try { parsed = new DOMParser().parseFromString(html, 'text/html'); } catch (_) { parsed = null; }
+    if (!parsed || !parsed.documentElement) return null;
+    for (const el of parsed.querySelectorAll('*')) {
+      const tag = String(el.tagName || '').toUpperCase();
+      let isPassword = false;
+      if (tag === 'INPUT') {
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        const ac = (el.getAttribute('autocomplete') || '').toLowerCase();
+        isPassword = type === 'password' || ac === 'current-password' || ac === 'new-password';
+      }
+      for (const name of el.getAttributeNames()) {
+        const lower = name.toLowerCase();
+        const val = el.getAttribute(name);
+        if (typeof val !== 'string' || val.length === 0) continue;
+        if (lower === 'value' && FORM_TAGS.has(tag)) {
+          if (isPassword) counts.passwordInputs += 1; else counts.formValues += 1;
+          el.setAttribute(name, '');
+          continue;
+        }
+        if (URL_ATTRS.has(lower) && URL_PARAM_RE.test(val)) {
+          counts.credentialAttributeNames.add(lower);
+          el.setAttribute(name, '');
+          continue;
+        }
+        if (isCredName(lower)) {
+          counts.credentialAttributeNames.add(lower);
+          el.setAttribute(name, '');
+        }
+      }
+      if (tag === 'TEXTAREA') {
+        let touched = false;
+        for (const child of Array.from(el.childNodes)) {
+          if (child.nodeType === 3 && (child.textContent || '').length > 0) {
+            touched = true;
+            if (child.textContent.trim().length > 0) counts.textRuns += 1;
+            child.textContent = '';
+          }
+        }
+        if (touched) counts.formValues += 1;
+      }
+    }
+    return { html: parsed.documentElement.outerHTML, counts };
+  };
+
+  // ---- capture ----
+
+  const runCapture = (args) => {
+    const captureId = String(args && args.captureId || '');
+    const documentId = String(args && args.documentId || '');
+    const contractVersion = Number(args && args.contractVersion) || 0;
+    const maxElements = Number(args && args.maxElements) || 30000;
+    const maxBytes = Number(args && args.maxBytes) || (48 * 1024 * 1024);
+    if (!captureId || !documentId || contractVersion !== 1) {
+      return { error: 'capture-binding-missing' };
+    }
+    if (__SNAP_STYLE_PROPS.length !== 138 || __SNAP_PSEUDO_PROPS.length !== 23 || __SNAP_STATE_PSEUDOS.length !== 31) {
+      return { error: 'producer-column-parity-broken' };
+    }
+    // The recorded view is the identity the native side must bind to: it is
+    // measured here, in the same synchronous measurement, not by the host.
+    const view = currentView();
+    const cap = __impeccableSnapshot.capture({ maxElements, maxBytes });
+    if (cap.error) return { error: String(cap.error) };
+    let obj = null;
+    try { obj = JSON.parse(cap.json); } catch (_) { return { error: 'snapshot-parse' }; }
+    if (!obj || typeof obj !== 'object') return { error: 'snapshot-parse' };
+    const counts = redactStructure(obj, cap.elements);
+    if (typeof obj.html === 'string' && obj.html.length > 0 && cheapHtmlProbe(obj.html)) {
+      const red = redactHtml(obj.html);
+      if (!red) return { error: 'snapshot-html-redaction-failed' };
+      obj.html = red.html;
+      mergeCounts(counts, red.counts);
+    }
+    const redaction = {
+      policy: 'floe.impeccable.redaction.v1',
+      applied: true,
+      passwordInputs: counts.passwordInputs,
+      formValues: counts.formValues,
+      credentialAttributes: Array.from(counts.credentialAttributeNames).sort(),
+      textRuns: counts.textRuns,
+    };
+    obj.floe = { captureId, documentId, contractVersion: 1, redaction };
+    let out = null;
+    try { out = JSON.stringify(obj); } catch (_) { return { error: 'snapshot-serialize' }; }
+    if (typeof out !== 'string') return { error: 'snapshot-serialize' };
+    if (out.length > maxBytes) return { error: `snapshot is ${out.length} bytes (limit ${maxBytes})` };
+    state.runs.set(captureId, {
+      capture: cap,
+      documentId,
+      view,
+      hostname: typeof location.hostname === 'string' ? location.hostname : '',
+    });
+    while (state.runs.size > MAX_RETAINED_RUNS) {
+      const oldest = state.runs.keys().next().value;
+      const dropped = state.runs.get(oldest);
+      if (dropped && dropped.capture) dropped.capture.ids = null;
+      state.runs.delete(oldest);
+    }
+    return {
+      ok: true,
+      snapshotJson: out,
+      stats: cap.stats,
+      redaction,
+      view,
+      hostname: typeof location.hostname === 'string' ? location.hostname : '',
+    };
+  };
+
+  // ---- Needs answers (hit-test fixpoint) ----
+  // Answering is fenced-or-refused atomically: the recorded viewport/scroll is
+  // re-read in this same synchronous call. Any movement since the capture (or
+  // a replaced world/document) refuses the answer; no point is ever measured
+  // on a page that moved, and no fact is invented for a point that cannot be
+  // observed. scrollProbes are never answered by v1 (that would move the
+  // page); the native side leaves them unanswered and says so.
+
+  const runAnswer = (args) => {
+    const captureId = String(args && args.captureId || '');
+    const expect = args && args.expect;
+    const points = args && args.points;
+    const run = state.runs.get(captureId);
+    if (!run) return { rejected: 'no-such-capture' };
+    if (expect && expect.documentId && expect.documentId !== run.documentId) {
+      return { rejected: 'document-changed' };
+    }
+    const now = currentView();
+    if (now.innerWidth !== run.view.innerWidth || now.innerHeight !== run.view.innerHeight
+        || now.scrollX !== run.view.scrollX || now.scrollY !== run.view.scrollY) {
+      return { fenced: true, reason: 'viewport-or-scroll-changed', recorded: run.view, current: now };
+    }
+    const hits = [];
+    const list = Array.isArray(points) ? points : [];
+    for (const point of list) {
+      if (!Array.isArray(point) || point.length !== 2) {
+        hits.push({ x: 0, y: 0, top: 0, stack: [], unanswerable: true, reason: 'malformed-point' });
+        continue;
+      }
+      const x = Number(point[0]);
+      const y = Number(point[1]);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        hits.push({ x: 0, y: 0, top: 0, stack: [], unanswerable: true, reason: 'non-finite-point' });
+        continue;
+      }
+      let top = 0;
+      let stack = [];
+      try {
+        const t = document.elementFromPoint(x, y);
+        top = __impeccableSnapshot.idOf(t, run.capture);
+        if (typeof document.elementsFromPoint === 'function') {
+          stack = Array.from(document.elementsFromPoint(x, y))
+            .map((el) => __impeccableSnapshot.idOf(el, run.capture))
+            .filter((id) => Number.isInteger(id) && id > 0);
+        }
+      } catch (_) { top = 0; stack = []; }
+      if (top === 0 && stack.length === 0) {
+        hits.push({ x, y, top: 0, stack: [], unanswerable: true, reason: 'no-captured-element-at-point' });
+      } else {
+        hits.push({ x, y, top, stack });
+      }
+    }
+    return { ok: true, hits };
+  };
+
+  // ---- Read-only current-view probe ----
+  // Native invokes this at result ingress (and may invoke it any time a
+  // capture must prove currency) to re-measure the *current* CSS
+  // viewport/scroll inside the same isolated world and to prove this world
+  // still holds the capture run. It measures no DOM element, moves nothing,
+  // stores nothing and evaluates nothing: window view metrics plus the run
+  // map's own record for the asked captureId. Native refuses a late result
+  // whenever this probe cannot prove the page is exactly as captured; native
+  // never infers CSS coordinates from raw native points under zoom.
+
+  const runProbe = (args) => {
+    const captureId = String(args && args.captureId || '');
+    const run = captureId ? state.runs.get(captureId) : null;
+    return {
+      ok: true,
+      holdsCapture: Boolean(run),
+      recordedDocumentId: run ? String(run.documentId || '') : '',
+      view: currentView(),
+      hostname: typeof location.hostname === 'string' ? location.hostname : '',
+    };
+  };
+
+  globalThis.__floeImpeccable = {
+    version: 'floe.a2.v1',
+    styleProps: __SNAP_STYLE_PROPS,
+    pseudoProps: __SNAP_PSEUDO_PROPS,
+    statePseudos: __SNAP_STATE_PSEUDOS,
+    // The only dispatch surface. Native appends the fixed single line
+    // `return globalThis.__floeImpeccable.dispatch(floeOp, floeArgs);`
+    // (constants in BrowserImpeccableProducer.swift; both digests pinned).
+    // There is no other entry point and no evaluation of supplied code.
+    dispatch(op, args) {
+      if (op === 'capture') return runCapture(args);
+      if (op === 'answer') return runAnswer(args);
+      if (op === 'probe') return runProbe(args);
+      return { error: 'unknown-operation' };
+    },
+  };
+})();

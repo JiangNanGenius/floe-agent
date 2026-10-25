@@ -1,0 +1,46 @@
+{
+  "contract": "floe.impeccable.snapshot",
+  "contractVersion": 1,
+  "count": 31,
+  "statePseudos": [
+    "hover",
+    "active",
+    "focus",
+    "focus-within",
+    "focus-visible",
+    "target",
+    "target-within",
+    "checked",
+    "indeterminate",
+    "disabled",
+    "required",
+    "invalid",
+    "user-invalid",
+    "user-valid",
+    "in-range",
+    "out-of-range",
+    "placeholder-shown",
+    "default",
+    "open",
+    "autofill",
+    "-webkit-autofill",
+    "popover-open",
+    "modal",
+    "fullscreen",
+    "-webkit-full-screen",
+    "picture-in-picture",
+    "playing",
+    "buffering",
+    "seeking",
+    "muted",
+    "volume-locked"
+  ],
+  "extra": [
+    "undefined (recorded for a custom element without a definition)"
+  ],
+  "provenance": {
+    "crates/foundation/src/browser/snapshot.rs": "3f8fc2efedfaa8bd6d3f39d0bb6169738caf229d6aa2b348e60da04fc82666d5",
+    "browser-bundle/15-snapshot.js": "b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0",
+    "ENGINE_VERSION": "bd270b0ddecef6c53cde260e7964048b1186147606e6643d2ccb8cf04e167bd1"
+  }
+}

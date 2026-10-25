@@ -278,5 +278,8 @@ struct FloeWidgetBundle: WidgetBundle {
     var body: some Widget {
         FloeWidget()
         FloeSystemAlarmLiveActivityWidget()
+        #if os(iOS) && canImport(ActivityKit) && !targetEnvironment(macCatalyst)
+        FloeTaskLiveActivityWidget()
+        #endif
     }
 }
