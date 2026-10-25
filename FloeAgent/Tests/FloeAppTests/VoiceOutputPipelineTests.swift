@@ -179,11 +179,11 @@ struct VoiceOutputPipelineTests {
         #expect(rig.log.completed.map(\.text) == ["一。"])
         #expect(rig.coordinator.completedSpokenText == "一。")
 
-        rig.stack.stepPlayed(frames: 168)
+        rig.stack.stepPlayed(frames: 84)
         await rig.settle()
         #expect(rig.log.completed.count == 2)
 
-        rig.stack.stepPlayed(frames: 252)
+        rig.stack.stepPlayed(frames: 84)
         await rig.settle(30)
         #expect(rig.log.completed.count == 3)
         #expect(rig.driving.receipts.last?.status == .completed)
