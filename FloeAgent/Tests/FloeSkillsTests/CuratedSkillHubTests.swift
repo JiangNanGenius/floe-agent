@@ -266,12 +266,12 @@ struct CuratedSkillHubTests {
     @Test("Compiled production trust is the official identity only; fixture bytes fail under it")
     func productionTrustBoundary() throws {
         #expect(CuratedSkillHub.productionTrustedKeys == OfficialSkillHub.trustedKeys)
-        #expect(CuratedSkillHub.productionTrustedKeys.keys == Set([CuratedSkillHub.productionKeyID]))
+        #expect(Set(CuratedSkillHub.productionTrustedKeys.keys) == Set([CuratedSkillHub.productionKeyID]))
         #expect(CuratedSkillHub.productionTrustedKeys[CuratedSkillHub.productionKeyID]?.count == 32)
         // A fixture envelope presented to production trust is a trust-shape
         // violation before crypto: the fixture identity can never verify a
         // production feed, and no fetched data can add it to the map.
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(
                 bytes: curatedFixture("catalog.json"),
                 signature: curatedFixture("catalog.sig"),
@@ -287,31 +287,31 @@ struct CuratedSkillHubTests {
         // Payload tampering (one flipped byte) with the ORIGINAL envelope.
         var tamperedCatalog = catalog
         tamperedCatalog[8] ^= 0x01
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: tamperedCatalog, signature: signature, channel: .ios, mode: mode) },
             case: "signature", containing: "exact")
         // Envelope signature character change (still valid base64, wrong proof).
         let tamperedSignature = try mutate(signature, "\"signature\":\"yXIPdoQ5DZMj", to: "\"signature\":\"yXIPdoQ5DZMh")
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: catalog, signature: tamperedSignature, channel: .ios, mode: mode) },
             case: "signature")
         // Missing signature material.
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: catalog, signature: Data(), channel: .ios, mode: mode) },
             case: "signature")
         // Envelope with an extra key violates the exact {keyID,signature} shape.
         let bloated = try mutate(signature, "{\"keyID\":", to: "{\"surprise\":1,\"keyID\":")
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: catalog, signature: bloated, channel: .ios, mode: mode) },
             case: "signature")
         // Fixture payload presented with the PRODUCTION keyID: passes the
         // trust-shape gate and must fail crypto under the compiled official key.
         let officialKeyed = try mutate(signature, "\"keyID\":\"fixture-only-2026-10\"", to: "\"keyID\":\"official-2026-09\"")
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: catalog, signature: officialKeyed, channel: .ios, mode: .production) },
             case: "signature")
         // Official keyID under the fixture test policy is a trust-shape violation.
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: catalog, signature: officialKeyed, channel: .ios, mode: mode) },
             case: "trust")
         // The fixture policy's trust map is hard-wired to the fixture keyID;
@@ -322,12 +322,12 @@ struct CuratedSkillHubTests {
 
     @Test("Malformed test-only trust material fails closed")
     func trustConfiguration() throws {
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { _ = try CuratedSkillHub.trustedKeys(for: .fixtureTestOnly(fixturePublicKey: Data(repeating: 0, count: 31))) },
             case: "trust")
         // Correct keyID in the envelope but WRONG key material: crypto fails.
         let wrongKey = Curve25519.Signing.PrivateKey().publicKey.rawRepresentation
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(
                 bytes: curatedFixture("catalog.json"),
                 signature: curatedFixture("catalog.sig"),
@@ -415,7 +415,7 @@ struct CuratedSkillHubTests {
         #expect(package.id == "floe-pdf")
         // The same genuine bytes fail closed in the curated client purely on
         // the schemaVersion-3 contract gate.
-        expectCuratedFailure(
+        try expectCuratedFailure(
             { try CuratedSkillHub.verifiedFeed(bytes: legacy, signature: legacySignature, channel: .ios, mode: .production) },
             case: "feed", containing: "schemaVersion must be 3")
     }
@@ -512,7 +512,7 @@ struct CuratedSkillHubTests {
         let y = String(repeating: "e", count: 40)
         let empty = HubTransport(files: [:], commits: [y])
         let (emptyResolve, emptyFetch) = makeClosures(empty)
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.loadPublication(
                 channel: .ios, mode: fixtureMode(), ref: "main", resolve: emptyResolve, fetch: emptyFetch) },
             case: "unavailable")
@@ -521,7 +521,7 @@ struct CuratedSkillHubTests {
         partial.removeValue(forKey: "catalog.sig")
         let partialTransport = HubTransport(files: partial, commits: [y])
         let (partialResolve, partialFetch) = makeClosures(partialTransport)
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.loadPublication(
                 channel: .ios, mode: fixtureMode(), ref: "main", resolve: partialResolve, fetch: partialFetch) },
             case: "unavailable")
@@ -532,7 +532,7 @@ struct CuratedSkillHubTests {
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "not-in-feed", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "offer")
         #expect(!FileManager.default.fileExists(atPath: root.path))
@@ -556,7 +556,7 @@ struct CuratedSkillHubTests {
                 == .unavailable(reason: "no install offer for this candidate"))
         #expect(cards.first { $0.entry.id == "fixture-script" }?.showsInstallAction == false)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-script", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "offer")
         #expect(!FileManager.default.fileExists(atPath: root.path))
@@ -569,7 +569,7 @@ struct CuratedSkillHubTests {
         #expect(CuratedSkillHub.offerState(for: reviewed, mode: publication.mode, appVersion: "1.0.0")
                 == .incompatibleApp(minimumAppVersion: "1.7.0"))
         let oldRoot = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.0.0", at: oldRoot, fetch: fetch) },
             case: "compatibility")
         // Localized search model.
@@ -596,7 +596,7 @@ struct CuratedSkillHubTests {
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "archive")
         #expect(!FileManager.default.fileExists(atPath: root.path))
@@ -612,16 +612,16 @@ struct CuratedSkillHubTests {
             files: [
                 "catalog.json": catalog,
                 "catalog.sig": try signedEnvelope(over: catalog),
-                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
-                "reviews/fixture-reviewed/1.0.0.review.json": curatedFixture("reviews/fixture-reviewed/1.0.0.review.json"),
-                "reviews/fixture-reviewed/1.0.0.review.json.sig": curatedFixture("reviews/fixture-reviewed/1.0.0.review.json.sig"),
+                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": try curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
+                "reviews/fixture-reviewed/1.0.0.review.json": try curatedFixture("reviews/fixture-reviewed/1.0.0.review.json"),
+                "reviews/fixture-reviewed/1.0.0.review.json.sig": try curatedFixture("reviews/fixture-reviewed/1.0.0.review.json.sig"),
             ],
             commits: [String(repeating: "2", count: 40)])
         let (resolve, fetch) = makeClosures(transport)
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "digest")
         #expect(!FileManager.default.fileExists(atPath: root.path))
@@ -637,14 +637,14 @@ struct CuratedSkillHubTests {
             files: [
                 "catalog.json": catalog,
                 "catalog.sig": try signedEnvelope(over: catalog),
-                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
+                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": try curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
             ],
             commits: [String(repeating: "3", count: 40)])
         let (resolve, fetch) = makeClosures(transport)
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "archive")
 
@@ -682,7 +682,7 @@ struct CuratedSkillHubTests {
                 files: [
                     "catalog.json": catalog,
                     "catalog.sig": try signedEnvelope(over: catalog),
-                    "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
+                    "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": try curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
                     "reviews/fixture-reviewed/1.0.0.review.json": record,
                     "reviews/fixture-reviewed/1.0.0.review.json.sig": try signedEnvelope(over: record),
                 ],
@@ -691,7 +691,7 @@ struct CuratedSkillHubTests {
             let publication = try await CuratedSkillHub.loadPublication(
                 channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
             let root = stagingRoot()
-            await expectCuratedFailureAsync(
+            try await expectCuratedFailureAsync(
                 { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
                 case: "review", containing: fragment)
             #expect(!FileManager.default.fileExists(atPath: root.path))
@@ -704,7 +704,7 @@ struct CuratedSkillHubTests {
             files: [
                 "catalog.json": try curatedFixture("catalog.json"),
                 "catalog.sig": try curatedFixture("catalog.sig"),
-                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
+                "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": try curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
                 "reviews/fixture-reviewed/1.0.0.review.json": record,
                 "reviews/fixture-reviewed/1.0.0.review.json.sig": try signedEnvelope(over: record),
             ],
@@ -713,7 +713,7 @@ struct CuratedSkillHubTests {
         let publication = try await CuratedSkillHub.loadPublication(
             channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
         let root = stagingRoot()
-        await expectCuratedFailureAsync(
+        try await expectCuratedFailureAsync(
             { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
             case: "digest")
     }
@@ -737,16 +737,16 @@ struct CuratedSkillHubTests {
                 files: [
                     "catalog.json": mutated,
                     "catalog.sig": try signedEnvelope(over: mutated),
-                    "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
-                    "reviews/fixture-reviewed/1.0.0.review.json": curatedFixture("reviews/fixture-reviewed/1.0.0.review.json"),
-                    "reviews/fixture-reviewed/1.0.0.review.json.sig": curatedFixture("reviews/fixture-reviewed/1.0.0.review.json.sig"),
+                    "packages/fixture-reviewed/1.0.0/fixture-reviewed.zip": try curatedFixture("packages/fixture-reviewed/1.0.0/fixture-reviewed.zip"),
+                    "reviews/fixture-reviewed/1.0.0.review.json": try curatedFixture("reviews/fixture-reviewed/1.0.0.review.json"),
+                    "reviews/fixture-reviewed/1.0.0.review.json.sig": try curatedFixture("reviews/fixture-reviewed/1.0.0.review.json.sig"),
                 ],
                 commits: [String(repeating: "6", count: 40)])
             let (resolve, fetch) = makeClosures(transport)
             let publication = try await CuratedSkillHub.loadPublication(
                 channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
             let root = stagingRoot()
-            await expectCuratedFailureAsync(
+            try await expectCuratedFailureAsync(
                 { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
                 case: "review", containing: fragment)
             try? FileManager.default.removeItem(at: root)
@@ -794,7 +794,7 @@ struct CuratedSkillHubTests {
             let publication = try await CuratedSkillHub.loadPublication(
                 channel: .ios, mode: fixtureMode(), ref: "main", resolve: resolve, fetch: fetch)
             let root = stagingRoot()
-            await expectCuratedFailureAsync(
+            try await expectCuratedFailureAsync(
                 { _ = try await CuratedSkillHub.stage(publication, entryID: "fixture-reviewed", appVersion: "1.7.58", at: root, fetch: fetch) },
                 case: "archive")
             #expect(!FileManager.default.fileExists(atPath: root.path))

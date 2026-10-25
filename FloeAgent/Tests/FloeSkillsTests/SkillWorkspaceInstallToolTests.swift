@@ -43,8 +43,8 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Resolution confines the package to the run's workspace")
     func directoryContainment() throws {
-        let workspace = try makeTemporaryDirectory("workspace")
-        let outside = try makeTemporaryDirectory("outside")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("workspace")
+        let outside = try makeSkillWorkspaceInstallTemporaryDirectory("outside")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: outside)
@@ -98,7 +98,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("A traditional package plans its complete inventory and derived sidecar")
     func traditionalPlan() throws {
-        let workspace = try makeTemporaryDirectory("traditional")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("traditional")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let packageRoot = try writeFiles(traditionalFiles, under: workspace, directory: "skills/demo")
 
@@ -140,7 +140,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Source binding stays a portable external identity")
     func sourceBindingEncoding() throws {
-        let workspace = try makeTemporaryDirectory("source-binding")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("source-binding")
         defer { try? FileManager.default.removeItem(at: workspace) }
         _ = try writeFiles(
             ["SKILL.md": skillMarkdown(name: "spaced-skill")],
@@ -169,7 +169,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Dependency declarations come from the reviewed manifest")
     func dependencyDeclarations() throws {
-        let workspace = try makeTemporaryDirectory("dependencies")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("dependencies")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let manifest = SkillManifest(
             id: "dependent-skill",
@@ -214,7 +214,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("A packaged manifest keeps its identity, version and declarations")
     func packagedPlan() throws {
-        let workspace = try makeTemporaryDirectory("packaged")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("packaged")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let files = [
             "SKILL.md": skillMarkdown(name: "packaged-skill"),
@@ -238,7 +238,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Reserved built-in and official identifiers are refused")
     func reservedIdentifiers() throws {
-        let workspace = try makeTemporaryDirectory("reserved")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("reserved")
         defer { try? FileManager.default.removeItem(at: workspace) }
         for id in ["floe-pdf", "floe-office", "floe-network", "floe-video", "floe-remote", "floe-files-vcs"] {
             let directory = "skills/\(id)"
@@ -316,7 +316,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Tool requires an approved task workspace and a visible directory")
     func authorizationBoundary() async throws {
-        let workspace = try makeTemporaryDirectory("authorize")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("authorize")
         defer { try? FileManager.default.removeItem(at: workspace) }
         _ = try writeFiles(traditionalFiles, under: workspace, directory: "skills/demo")
         let recorder = PlanRecorder()
@@ -348,7 +348,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Tool installs through the injected bridge and reports the verified receipt")
     func installMapping() async throws {
-        let workspace = try makeTemporaryDirectory("install")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("install")
         defer { try? FileManager.default.removeItem(at: workspace) }
         _ = try writeFiles(traditionalFiles, under: workspace, directory: "skills/demo")
         let recorder = PlanRecorder()
@@ -380,7 +380,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Tool reports a replacement with its exact previous digest")
     func replacementMapping() async throws {
-        let workspace = try makeTemporaryDirectory("replace")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("replace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         _ = try writeFiles(traditionalFiles, under: workspace, directory: "skills/demo")
         let current = String(repeating: "b", count: 64)
@@ -400,7 +400,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("A bridge commit that differs from the reviewed plan is refused")
     func commitIntegrity() async throws {
-        let workspace = try makeTemporaryDirectory("integrity")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("integrity")
         defer { try? FileManager.default.removeItem(at: workspace) }
         _ = try writeFiles(traditionalFiles, under: workspace, directory: "skills/demo")
         let arguments = SkillWorkspaceInstallTool.Arguments(directory: "skills/demo")
@@ -425,7 +425,7 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Package and installer failures stay a normal bounded failed result")
     func failureMapping() async throws {
-        let workspace = try makeTemporaryDirectory("failure")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("failure")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let tool = SkillWorkspaceInstallTool(installer: SuccessfulInstaller(recorder: nil))
 
@@ -465,8 +465,8 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Inventory and receipts stay bounded and honest")
     func boundedReceipt() throws {
-        let workspace = try makeTemporaryDirectory("bounded")
-        let stagingParent = try makeTemporaryDirectory("bounded-staging")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("bounded")
+        let stagingParent = try makeSkillWorkspaceInstallTemporaryDirectory("bounded-staging")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: stagingParent)
@@ -503,8 +503,8 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Staging copies the complete package and binds the reviewed digest")
     func stagingCopy() throws {
-        let workspace = try makeTemporaryDirectory("staging")
-        let stagingParent = try makeTemporaryDirectory("staging-parent")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("staging")
+        let stagingParent = try makeSkillWorkspaceInstallTemporaryDirectory("staging-parent")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: stagingParent)
@@ -535,8 +535,8 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("Staging refuses changed or unsafe bytes and cleans up its container")
     func stagingFailures() throws {
-        let workspace = try makeTemporaryDirectory("staging-failure")
-        let stagingParent = try makeTemporaryDirectory("staging-failure-parent")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("staging-failure")
+        let stagingParent = try makeSkillWorkspaceInstallTemporaryDirectory("staging-failure-parent")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: stagingParent)
@@ -556,7 +556,7 @@ struct SkillWorkspaceInstallToolTests {
         }
         #expect(try FileManager.default.contentsOfDirectory(atPath: stagingParent.path).isEmpty)
 
-        let outside = try makeTemporaryDirectory("staging-outside")
+        let outside = try makeSkillWorkspaceInstallTemporaryDirectory("staging-outside")
         defer { try? FileManager.default.removeItem(at: outside) }
         try FileManager.default.createSymbolicLink(
             at: packageRoot.appendingPathComponent("assets/escape.txt"),
@@ -579,9 +579,9 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("A component swapped for a link after planning cannot escape the workspace")
     func stagingRejectsSwappedComponent() throws {
-        let workspace = try makeTemporaryDirectory("swapped")
-        let stagingParent = try makeTemporaryDirectory("swapped-staging")
-        let outside = try makeTemporaryDirectory("swapped-outside")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("swapped")
+        let stagingParent = try makeSkillWorkspaceInstallTemporaryDirectory("swapped-staging")
+        let outside = try makeSkillWorkspaceInstallTemporaryDirectory("swapped-outside")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: stagingParent)
@@ -606,9 +606,9 @@ struct SkillWorkspaceInstallToolTests {
 
     @Test("The existing install transaction accepts the plan and installs every file")
     func existingInstallTransaction() async throws {
-        let workspace = try makeTemporaryDirectory("transaction")
-        let stagingParent = try makeTemporaryDirectory("transaction-staging")
-        let installedRoot = try makeTemporaryDirectory("transaction-installed")
+        let workspace = try makeSkillWorkspaceInstallTemporaryDirectory("transaction")
+        let stagingParent = try makeSkillWorkspaceInstallTemporaryDirectory("transaction-staging")
+        let installedRoot = try makeSkillWorkspaceInstallTemporaryDirectory("transaction-installed")
         defer {
             try? FileManager.default.removeItem(at: workspace)
             try? FileManager.default.removeItem(at: stagingParent)
@@ -718,7 +718,7 @@ private func skillMarkdown(name: String) -> String {
     "---\nname: \(name)\ndescription: Reusable demo workflow\n---\n# \(name)\nUse this workflow.\n"
 }
 
-private func makeTemporaryDirectory(_ label: String) throws -> URL {
+private func makeSkillWorkspaceInstallTemporaryDirectory(_ label: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("floe-workspace-\(label)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

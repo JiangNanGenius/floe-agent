@@ -1600,7 +1600,7 @@ struct BrowserImpeccableCaptureTests {
         // Nothing was ever written through the substituted link (the empty
         // scaffolding directories the failed capture created are removed
         // with the temporary target; no staged file may exist).
-        let hostileSubpaths = fileManager.subpathsOfDirectory(atPath: hostileTarget.path, errorHandler: nil) ?? []
+        let hostileSubpaths = try fileManager.subpathsOfDirectory(atPath: hostileTarget.path)
         #expect(!hostileSubpaths.contains { $0.hasSuffix(".v1.json") })
 
         // Missing and non-directory roots are rejected before any work.
@@ -1690,6 +1690,8 @@ struct BrowserImpeccableCaptureTests {
             _ = try await task.value
         } catch let error as ImpeccableCaptureError {
             if case .superseded = error { superseded = true }
+        } catch {
+            Issue.record("Unexpected callback error: \(error)")
         }
         #expect(superseded)
         // A real callback landing afterwards must be ignored, not a second resume.
