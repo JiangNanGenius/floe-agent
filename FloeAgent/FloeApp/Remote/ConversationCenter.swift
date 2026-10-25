@@ -3307,7 +3307,7 @@ final class ConversationCenter: ObservableObject {
         /// and reuse the frozen choice, re-clamped for a re-selected target,
         /// without a new request.
         automaticReasoningEffortIngress: AutomaticReasoningEffortIngress = .continuation
-    ) async -> ConversationRunService {
+    ) async throws -> ConversationRunService {
         // Temporary conversations run through the SAME runtime with RAM-only
         // stores, no workspace lease, no personalization/memory recall, and a
         // strict read-only tool ceiling — never a parallel runtime.
@@ -5981,31 +5981,44 @@ final class ConversationCenter: ObservableObject {
                 }
                 return .failure(error)
             }
-            let service = await self.runService(
-                for: conversationID,
-                provider: provider,
-                model: model,
-                runID: runID,
-                executionMode: executionMode,
-                runSurface: runSurface,
-                workspaceID: prepared.workspace.id,
-                memoryQuery: goal,
-                // Launch-frozen authority: a Keep that raced the pipeline
-                // keeps this run's restricted temporary privacy/context
-                // while the adopted stores forward; subsequent NEW ordinary
-                // turns derive their own fresh identity.
-                temporaryAuthority: isTemporary,
-                environmentBindingOverride: executionEnvironmentID,
-                conversationHistory: recoveredToolEvidence
-                    + (isTemporary ? [] : self.designBindingContext(conversationID: conversationID))
-                    + assembled.filter { $0.id != prepared.userMessage.id }
-                    + visual.context,
-                currentUserImages: visual.images,
-                currentUserAttachments: prepared.attachments,
-                // This is a newly launched round: the only ingress allowed to
-                // submit the one bounded auxiliary decision.
-                automaticReasoningEffortIngress: .freshRound
-            )
+            let service: ConversationRunService
+            do {
+                service = try await self.runService(
+                    for: conversationID,
+                    provider: provider,
+                    model: model,
+                    runID: runID,
+                    executionMode: executionMode,
+                    runSurface: runSurface,
+                    workspaceID: prepared.workspace.id,
+                    memoryQuery: goal,
+                    // Launch-frozen authority: a Keep that raced the pipeline
+                    // keeps this run's restricted temporary privacy/context
+                    // while the adopted stores forward; subsequent NEW ordinary
+                    // turns derive their own fresh identity.
+                    temporaryAuthority: isTemporary,
+                    environmentBindingOverride: executionEnvironmentID,
+                    conversationHistory: recoveredToolEvidence
+                        + (isTemporary ? [] : self.designBindingContext(conversationID: conversationID))
+                        + assembled.filter { $0.id != prepared.userMessage.id }
+                        + visual.context,
+                    currentUserImages: visual.images,
+                    currentUserAttachments: prepared.attachments,
+                    // This is a newly launched round: the only ingress allowed to
+                    // submit the one bounded auxiliary decision.
+                    automaticReasoningEffortIngress: .freshRound
+                )
+            } catch {
+                await self.finishDeferredLaunchFailure(
+                    runID: runID, conversationID: conversationID, error: error
+                )
+                if usesResidentLocalModel {
+                    await self.environment.localModelRuntime.releaseForTask(
+                        taskID: runID, reason: "launchFailed"
+                    )
+                }
+                return .failure(error)
+            }
             // The automatic-effort decision above can suspend the launch for
             // up to its bounded deadline. Re-validate the whole launch
             // authority AFTER that await: a Stop (task cancellation), an
@@ -7371,23 +7384,36 @@ final class ConversationCenter: ObservableObject {
         let runSurface: AgentRunSurface = CanvasAgentIdentity.isCanvasConversation(
             historicalConversation
         ) ? .canvas : .ordinary
-        let service = await runService(
-            for: record.conversationID,
-            provider: provider,
-            model: model,
-            runID: record.id,
-            executionMode: mode,
-            runSurface: runSurface,
-            workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
-            memoryQuery: record.goal,
-            conversationHistory: history + resumedVisual.context,
-            currentUserImages: resumedVisual.images,
-            // Resume/retry is the SAME round: reuse the frozen abstract
-            // choice (re-clamped for a re-selected model) and never submit a
-            // second auxiliary request, even when the round started manual/
-            // unsupported or the model changed inside the original run.
-            automaticReasoningEffortIngress: .continuation
-        )
+        let service: ConversationRunService
+        do {
+            service = try await runService(
+                for: record.conversationID,
+                provider: provider,
+                model: model,
+                runID: record.id,
+                executionMode: mode,
+                runSurface: runSurface,
+                workspaceID: environment.workspaceCenter.workspaceID(for: record.conversationID),
+                memoryQuery: record.goal,
+                conversationHistory: history + resumedVisual.context,
+                currentUserImages: resumedVisual.images,
+                // Resume/retry is the SAME round: reuse the frozen abstract
+                // choice (re-clamped for a re-selected model) and never submit a
+                // second auxiliary request, even when the round started manual/
+                // unsupported or the model changed inside the original run.
+                automaticReasoningEffortIngress: .continuation
+            )
+        } catch {
+            await finishDeferredLaunchFailure(
+                runID: record.id, conversationID: record.conversationID, error: error
+            )
+            if usesResidentLocalModel {
+                await environment.localModelRuntime.releaseForTask(
+                    taskID: record.id, reason: "resumeFailed"
+                )
+            }
+            throw error
+        }
         try await routedRunStore.updateRunState(id: record.id, state: "preparing", endedAt: nil)
         _ = try? await routedRunStore.appendEvent(
             runID: record.id,
