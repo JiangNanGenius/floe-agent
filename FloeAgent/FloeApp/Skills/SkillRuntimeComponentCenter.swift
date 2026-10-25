@@ -1007,7 +1007,7 @@ actor SkillRuntimeComponentCenter {
             limits: SkillValidationLimits()
         ) else { return false }
         return SkillWorkspaceResourceStager.verify(
-            stagedRoot: URL(fileURLWithPath: hostRoot), bundle: bundle
+            stagedRoot: hostRoot, bundle: bundle
         )
     }
 
