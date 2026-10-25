@@ -8,7 +8,7 @@ import FloeCore
 import FloeTools
 
 public struct LocalShellTool: AgentTool {
-    public struct Arguments: Decodable, Sendable {
+    public struct Arguments: Codable, Sendable {
         /// Command string. Pipelines, redirections and globs are supported
         /// by the backend shell. Command length has no application-level cap:
         /// large bodies are staged as a script file inside the guest.

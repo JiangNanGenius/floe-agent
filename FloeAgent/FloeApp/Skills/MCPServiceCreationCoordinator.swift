@@ -3,6 +3,7 @@ import Foundation
 import SwiftUI
 import FloeCore
 import FloePersistence
+import FloeSecurity
 
 struct MCPServiceCreationDraft: Codable, Hashable, Sendable {
     var name = ""
