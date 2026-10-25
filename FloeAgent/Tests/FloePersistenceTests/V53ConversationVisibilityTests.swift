@@ -56,7 +56,7 @@ struct V53ConversationVisibilityTests {
         }
         V53ConversationVisibility.register(into: &migrator)
         try migrator.migrate(queue)
-        try queue.read { db in
+        try queue.read { (db: Database) throws -> Void in
             #expect(try Int.fetchOne(db, sql: "SELECT rootpage FROM sqlite_master WHERE type='table' AND name='conversations'") == oldRoot)
             #expect(try Int.fetchOne(db, sql: "SELECT count(*) FROM conversations WHERE visibility='normal'") == 2)
             #expect(try String.fetchOne(db, sql: "SELECT content FROM messages WHERE id='message'") == "Keep this content")
@@ -98,7 +98,7 @@ struct V53ConversationVisibilityTests {
         var migrator = original
         V53ConversationVisibility.register(into: &migrator)
         #expect(throws: (any Error).self) { try migrator.migrate(queue) }
-        try queue.read { db in
+        try queue.read { (db: Database) throws -> Void in
             #expect(!(try db.columns(in: "conversations")).contains { $0.name == "visibility" })
             #expect(try Int.fetchOne(db, sql: "PRAGMA user_version") == 52)
             #expect(try String.fetchOne(db, sql: "SELECT content FROM messages WHERE id='message'") == "Keep this content")
