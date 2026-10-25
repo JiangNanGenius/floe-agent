@@ -143,11 +143,16 @@ private func stage(
 private actor ShareMapProbe {
     private(set) var requests: [String] = []
     let map: LinuxGuestPathMap?
+    let boundEnvironmentID: String?
 
-    init(map: LinuxGuestPathMap?) { self.map = map }
+    init(map: LinuxGuestPathMap?, boundEnvironmentID: String? = nil) {
+        self.map = map
+        self.boundEnvironmentID = boundEnvironmentID
+    }
 
     func lookup(_ environmentID: String) -> LinuxGuestPathMap? {
         requests.append(environmentID)
+        guard boundEnvironmentID == nil || environmentID == boundEnvironmentID else { return nil }
         return map
     }
 }
@@ -712,7 +717,7 @@ private func makeSkillReadRouteFixture() async throws -> SkillReadRouteFixture {
     let installRoot = sandbox.appendingPathComponent("Skills", isDirectory: true)
     let workspace = sandbox.appendingPathComponent("workspace", isDirectory: true)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-    let probe = ShareMapProbe(map: makeWorkspaceShareMap(exporting: workspace))
+    let probe = ShareMapProbe(map: makeWorkspaceShareMap(exporting: workspace), boundEnvironmentID: "env-route")
     let stager = SkillWorkspaceResourceStager { environmentID in await probe.lookup(environmentID) }
     let center = SkillsCenter(environment: environment, installationRoot: installRoot, resourceStager: stager)
     let created = try await center.createSkill(.init(
@@ -826,6 +831,7 @@ struct SkillReadProductionResourceRouteTests {
         #expect(foreignRow.resources?.staged == false)
         #expect(foreignRow.resources?.guestRoot == nil)
         #expect(foreignRow.resources?.reason == SkillStageReason.noShareMap)
+        #expect(await fixture.probe.requests == ["env-other"])
         #expect(foreignRow.resources?.pinnedSHA256 == foreignRow.digest)
         #expect(foreignRow.markdown?.contains("staged=false") == true)
         #expect(!FileManager.default.fileExists(
