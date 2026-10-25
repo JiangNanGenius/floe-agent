@@ -78,6 +78,7 @@
 		12D1B8672C30F207ADCC6FCF /* WorkbenchAIReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CB790C64F8C073F710D9710 /* WorkbenchAIReviewTests.swift */; };
 		131883EF576FB38898339EF9 /* BackgroundWorkNotificationRouteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FFA3A3475A213FE9530542F /* BackgroundWorkNotificationRouteTests.swift */; };
 		132595EBE06B3EF4B0FF19B9 /* NotesConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE381238D15F160207D2422 /* NotesConflictReviewView.swift */; };
+		134B81440020053931F35B3B /* RoutingShellTimeoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 316C72FC6DD716183AE9B362 /* RoutingShellTimeoutTests.swift */; };
 		13C10A9C67F1481DD0E9C875 /* MediaAuthorityPayloadParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AE00AE8C48A57678150940A /* MediaAuthorityPayloadParityTests.swift */; };
 		1435E19532A43E99363BB0FF /* SidebarCollapseGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = D469D627A123A3676681A3F3 /* SidebarCollapseGesture.swift */; };
 		144C0751E522D91EB3EAD196 /* ThreadDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17F136474D0FB91E6F810317 /* ThreadDetailView.swift */; };
@@ -1197,6 +1198,7 @@
 		3041BDC9EDFAE2D2785E5788 /* SubagentSimulatorExecutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentSimulatorExecutionTests.swift; sourceTree = "<group>"; };
 		30E546884B42CDF2BB96931B /* UserMessageBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserMessageBubble.swift; sourceTree = "<group>"; };
 		3140A589CB280EA648135829 /* office-native-real-budget.xlsx */ = {isa = PBXFileReference; path = "office-native-real-budget.xlsx"; sourceTree = "<group>"; };
+		316C72FC6DD716183AE9B362 /* RoutingShellTimeoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingShellTimeoutTests.swift; sourceTree = "<group>"; };
 		316DA0723AA58D762AD5EF3E /* floe-sim-qual.pptx */ = {isa = PBXFileReference; path = "floe-sim-qual.pptx"; sourceTree = "<group>"; };
 		3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeJobPolicyTests.swift; sourceTree = "<group>"; };
 		31D98DFED3D114A699F77361 /* AssistantMessageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AssistantMessageView.swift; sourceTree = "<group>"; };
@@ -2443,6 +2445,7 @@
 				05F5CCEB4F6F572ECFBBF480 /* PluginUpdatePermissionPersistenceTests.swift */,
 				83ED634632BADFEE2FE81B74 /* ProfessionalSearchPolicyTests.swift */,
 				BC8899594213A82039751EF6 /* ProviderSaveRegressionTests.swift */,
+				316C72FC6DD716183AE9B362 /* RoutingShellTimeoutTests.swift */,
 				D2D21D729BA43C8204E7EF79 /* RunOutputDeletionLifecycleTests.swift */,
 				0070B3BA44775D2F0AE6435C /* RunOutputFileViewTests.swift */,
 				CF1CA2FC02248FE6E61833DB /* SelectedScheduleTerminalRecoveryTests.swift */,
@@ -4770,6 +4773,7 @@
 				113909FA859E11085847DD02 /* QRCodeGenerateToolTests.swift in Sources */,
 				4A812D9D0082904ECFCB9984 /* RARFixtures.generated.swift in Sources */,
 				AD09F21466C778C43633A947 /* RemoteImageInspectToolTests.swift in Sources */,
+				134B81440020053931F35B3B /* RoutingShellTimeoutTests.swift in Sources */,
 				14A6406145B5D7927EEBBB81 /* RunLifecycleRetentionTests.swift in Sources */,
 				5A6BDECC546611A6A6FE558C /* RunOutputDeletionLifecycleTests.swift in Sources */,
 				243F61A4BA353C207E514EE0 /* RunOutputFileViewTests.swift in Sources */,

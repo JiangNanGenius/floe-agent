@@ -880,8 +880,8 @@ final class AppEnvironment: ObservableObject {
         )
         self.linuxGuestLifecycle = linuxGuestLifecycle
 
-        // exec.shell routes per request: Linux environments run in their
-        // guest, every other environment keeps the ios_system substrate.
+        // exec.shell requires the request's owned Linux environment;
+        // an unavailable guest never falls back to the host substrate.
         let shellBackend = RoutingLocalShellBackend(
             native: nativeShellBackend,
             guests: linuxGuests,

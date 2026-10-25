@@ -556,6 +556,17 @@ public final class ShellGuestRunShapeCenter: @unchecked Sendable {
 public protocol LocalShellBackend: Sendable {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome
 
+    /// The timeout this backend will actually enforce for one run, given the
+    /// service-normalized value. Synchronous and read-only so the tool
+    /// receipt and the journal can name the same deadline the command truly
+    /// receives. The default is identity: backends without a stricter
+    /// documented floor (the native and generic engines) keep the service
+    /// value unchanged, so no existing non-Linux behavior moves. Backends
+    /// with a documented minimum (the Linux guest runner,
+    /// `LinuxGuestLimits.clampedTimeout`) override this so a backend-side
+    /// floor is never mistaken for the caller's own value.
+    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval
+
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult
     func closeSession(sessionID: String) async
@@ -566,6 +577,10 @@ public protocol LocalShellBackend: Sendable {
 public extension LocalShellBackend {
     func signalSession(sessionID: String, signal: ShellSignal) async {}
     func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
+
+    /// Identity default: the service-normalized timeout is what the backend
+    /// enforces. Linux overrides this with its real documented clamp.
+    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval { requested }
 }
 
 /// Honest failure when the app has not injected a shell engine (for example

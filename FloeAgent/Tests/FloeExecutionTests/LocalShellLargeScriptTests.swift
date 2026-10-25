@@ -14,7 +14,8 @@
 //    unrelated user files in the staging directory are never touched;
 //  * `timeoutSeconds` works as a documented alias, equal duplicates pass,
 //    disagreements fail loudly, and the receipt names requested/effective/
-//    clamp reason (foreground 120 / background 600 unchanged).
+//    clamp reason (foreground 120 / background 600 unchanged; a sub-floor
+//    request floors to the Linux guest's documented 1-second minimum).
 
 import Foundation
 import XCTest
@@ -172,6 +173,11 @@ final class LocalShellLargeScriptTests: XCTestCase {
         let fixture = try makeFixture(runner: runner)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         runner.workspaceRoot = fixture.root
+        // The recording runner stands in for a real guest /bin/sh: both
+        // scripted bodies end with `exit 7`, so arm the fake with that exit
+        // status BEFORE the first execution. Setting it after the inline run
+        // made the first assertion observe the fake's default 0.
+        runner.exitCode = 7
 
         let inlineBody = makeScript(bytes: 20 * 1024)
         let inline = try await fixture.tool.execute(
@@ -185,7 +191,6 @@ final class LocalShellLargeScriptTests: XCTestCase {
         XCTAssertTrue(runner.recorded[0].argv[2].hasSuffix(inlineBody))
         XCTAssertTrue(stagingEntries(in: fixture.root).isEmpty)
 
-        runner.exitCode = 7
         let hugeBody = makeScript(bytes: 2 * 1024 * 1024)
         let staged = try await fixture.tool.execute(
             .init(command: hugeBody, timeout: 60),
@@ -278,7 +283,14 @@ final class LocalShellLargeScriptTests: XCTestCase {
             .init(command: "printf ok", timeout: 0.01),
             context: makeContext(fixture.root)
         )
-        XCTAssertEqual(runner.recorded.last?.timeout ?? 0, 0.05, accuracy: 0.001)
+        // The Linux guest runner documents a 1-second minimum command
+        // timeout (LinuxGuestLimits.clampedTimeout, LinuxGuestService.swift):
+        // the service's generic 0.05 floor applies first, then the backend
+        // clamps to its real floor — that clamped value is the deadline the
+        // command actually receives and the receipt must name it.
+        XCTAssertEqual(runner.recorded.last?.timeout ?? 0, 1, accuracy: 0.001)
+        XCTAssertTrue(floored.summary.contains("timeoutRequestedSeconds=0.01"))
+        XCTAssertTrue(floored.summary.contains("effectiveTimeoutSeconds=1.0"))
         XCTAssertTrue(floored.summary.contains("timeoutClamp=minimumFloor"))
     }
 

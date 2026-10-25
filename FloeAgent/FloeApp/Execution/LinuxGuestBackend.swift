@@ -619,6 +619,10 @@ struct RoutingLocalShellBackend: LocalShellBackend {
         self.prepareLinux = prepareLinux
     }
 
+    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval {
+        guestBackend.normalizedRunTimeout(requested)
+    }
+
     /// Activates the guest; when the failure is an unqualified image and a
     /// preparation handler exists, prepares Linux once and retries.
     ///

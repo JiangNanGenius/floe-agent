@@ -36,6 +36,16 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         self.limits = limits
     }
 
+    /// The guest runner documents a 1-second minimum command timeout and a
+    /// 1800-second maximum (`LinuxGuestLimits.clampedTimeout`,
+    /// LinuxGuestService.swift): reporting that real clamp here keeps the
+    /// exec.shell receipt honest about the deadline the command actually
+    /// received, instead of claiming the service's generic 0.05 floor that
+    /// the guest would immediately override.
+    public func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval {
+        limits.clampedTimeout(requested)
+    }
+
     public func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         guard let environmentID = request.toolEnvironment?.id else {
             return .failed(message: "Linux shell execution requires an environment id")

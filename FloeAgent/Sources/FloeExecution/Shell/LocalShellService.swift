@@ -69,11 +69,17 @@ public actor LocalShellService {
         self.rootProvider = rootProvider
     }
 
-    /// Clamps requested limits to the compiled ceilings. Exposed for tests.
+    /// Clamps requested limits to the compiled ceilings, then lets the
+    /// backend apply its own documented timeout floor (the Linux guest
+    /// runner enforces a 1-second minimum; generic backends keep the service
+    /// value unchanged). The result is the deadline the command actually
+    /// receives, so the tool receipt and this service never disagree with the
+    /// backend. Exposed for tests.
     public nonisolated func normalizedTimeout(_ requested: TimeInterval?, isBackground: Bool) -> TimeInterval {
         let ceiling = isBackground ? configuration.backgroundTimeout : configuration.maxTimeout
         let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? configuration.defaultTimeout
-        return max(0.05, min(value, ceiling))
+        let serviceValue = max(0.05, min(value, ceiling))
+        return backend.normalizedRunTimeout(serviceValue)
     }
 
     public nonisolated func normalizedOutputCap(_ requested: Int?) -> Int {
