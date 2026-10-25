@@ -754,7 +754,7 @@ struct MCPRemoteToolSourceTests {
             frozenEffectiveCatalogNames: [WebSearchTool.name]
         )
         let output = try await tool.execute(
-            WebSearchTool.Arguments(query: "学术文献：人工智能 近三年", source: "professional"),
+            try JSONDecoder().decode(WebSearchTool.Arguments.self, from: Data(#"{"query":"学术文献：人工智能 近三年","source":"professional"}"#.utf8)),
             context: context
         )
         #expect(output.summary.count <= 4096)
@@ -767,7 +767,7 @@ struct MCPRemoteToolSourceTests {
         MCPStubURLProtocol.prepare([.init(status: 500, headers: ["Content-Type": "application/json"], body: Data("synthetic failure".utf8))])
         await #expect(throws: (any Error).self) {
             try await tool.execute(
-                WebSearchTool.Arguments(query: "股票金融：000001.SZ 行情", source: "professional"),
+                try JSONDecoder().decode(WebSearchTool.Arguments.self, from: Data(#"{"query":"股票金融：000001.SZ 行情","source":"professional"}"#.utf8)),
                 context: context
             )
         }
