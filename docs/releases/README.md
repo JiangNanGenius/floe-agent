@@ -4,14 +4,14 @@
 
 | 目录 | 内容 | 数量 |
 | --- | --- | ---: |
-| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 146 |
-| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 184 |
+| [notes/](notes/) | 双语发布说明与逐 Build 改动 | 148 |
+| [testflight/](testflight/) | TestFlight 交付记录及中英文测试说明 JSON | 186 |
 | [verification/](verification/) | 历史发布核验与代码审计 | 11 |
 | [beta/](beta/) | 早期 1.7 beta 候选记录 | 13 |
 | [builds/](builds/) | 专项构建记录 | 2 |
-| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 51 |
+| [repairs/](repairs/) | 按 Build／版本编号的修复与反馈记录 | 53 |
 
-最近交付：[1.7.56（297）修复与交付记录](repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)、[双语发布说明](notes/RELEASE_NOTES_1.7.56_BUILD_297.md)。内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release／同次 Feather 已独立核验；[296 记录](repairs/FLOE_CONTINUOUS_VOICE_BUILD296_20261025.md)及更早文档保留各自的原始状态。
+最近交付：[1.7.57（298）修复与交付记录](repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)、[双语发布说明](notes/RELEASE_NOTES_1.7.57_BUILD_298.md)。内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release／同次 Feather 已独立核验；[297 记录](repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)及更早文档保留各自的原始状态。
 
 [历史版本导览](HISTORY.md)保留此前文档索引中的逐版状态与原始结论。`docs/evidence/`、`docs/qualification/` 和 `docs/validation/` 继续保存对应证据，不与说明文件混放。
 

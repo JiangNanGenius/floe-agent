@@ -3,6 +3,14 @@
 
 文档更新时间 / Document updated: 2026-10-25. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
 
+## 1.7.57（298）内部与无签名已交付，公测待审 / Delivered; external review pending
+
+语音结束判断、暂停与恢复、中心图标及工具记录滚动加载已更新，专业数据集统一到搜索入口。完整 Swift 6 编译、259 项相关测试（0 失败、0 跳过）和设备归档通过；模拟器图标最大间隔 67 ms，真机听感与打断质量仍单独判断。[298 修复与交付记录](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)。
+
+Floe QA 已独立确认 `VALID`、未过期、`IN_BETA_TESTING`；publictest1 只提交一次，重开后为“正在等待审核”。[稳定无签名 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.57)与同次 Feather 已独立核验。授权 iPad 已实际启动 298，两类 Skill 的正式安装与调用继续验收。
+
+Build 298 passed all 259 focused tests, full Swift 6 compilation and the device archive. Internal and verified unsigned/Feather delivery are available; external review is pending. The authorized iPad launched 298. Physical speech quality and real Skill installation retain their separate evidence boundaries.
+
 ## 1.7.56（297）内部与无签名已交付，公测待审 / Delivered; external review pending
 
 连续语音共享播放路径已修复转换器重复创建、实际输出帧数记账和失败重试分类。完整 Swift 6 编译、83 项相关测试（0 失败、0 跳过）与设备归档通过；真机听感、语音界面帧率和麦克风打断效果不以模拟器结果替代。[297 修复与交付记录](releases/repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)。
