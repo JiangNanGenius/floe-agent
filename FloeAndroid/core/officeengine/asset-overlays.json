@@ -530,7 +530,7 @@
       "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
       "reason": "Change only the visible product name, vendor label and branding URL/theme placeholder values; retain the upstream MPL-2.0 notice and all behaviour.",
       "source": "dist/cool.html",
-      "sha256": "6b419d62ca207d080defb3f32e0c09ad607d40017dc52a15e01b5028339c1f42"
+      "sha256": "880708fefbc06e72bf339097e7a396f8d340fa0aa6a92c912c10dc7279720a35"
     },
     {
       "operation": "add",
@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "1e3566c3180b2cffbbefd59b2d667734232d0fb02bcce0d67c192234c1443bd5"
+      "sha256": "038b866921bd332651b27ae24525cec42378a7ff77cbc3fe9895f18e3916a7e1"
     },
     {
       "operation": "replace",
@@ -1027,6 +1027,14 @@
       "destination": "dexopt/baseline.profm",
       "originalSha256": "f8c282adfc398d10de006357c847d0765d445f6c4772b233d365cf8512abde33",
       "reason": "Producer APK dex optimization profile describes upstream DEX, not Floe DEX. AGP emits the Floe profile at the same reserved APK path."
+    },
+    {
+      "operation": "add",
+      "destination": "dist/floe-impress-pcw-fix.js",
+      "originalSha256": null,
+      "reason": "Fix the actual phone-only PPTX NotFoundError captured on the Samsung API33 device with candidate07: the bundled ImpressTileLayer._putPCWInsideFlex re-inserts #presentation-controls-wrapper into #document-container's parent (#document-and-notes) using #main-document-content's first child as reference, a node that is not a child of that parent, so the very first landscape evaluation of onResizeImpress after initialize() moved the wrapper outside the flex throws before any paint while desktop/tablet never take the small-screen branch. This narrow self-authored MPL-2.0 script is referenced by the overlaid dist/cool.html deferred after bundle.js and restores the upstream-intended placement with a structurally valid DOM move (detach from the wrapper's actual parent, then insert as the first child of #main-document-content). No desktop forcing, no error swallowing, no readiness or actual-render gate change; the shipped bundle.js and unbundled dist/src remain byte-identical upstream files.",
+      "source": "dist/floe-impress-pcw-fix.js",
+      "sha256": "32390bba3efab8fed6ed70e7b1589dafa7fa2966a0609a8195d83db1b1838a0f"
     }
   ],
   "sourceAccess": {

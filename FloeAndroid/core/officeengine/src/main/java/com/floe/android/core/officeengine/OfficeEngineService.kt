@@ -484,7 +484,7 @@ class OfficeEngineService : Service() {
 
         override fun onJsError(message: String) {
             Log.e(TAG, "Office page reported an error (generation $generation)")
-            notifyNotice("jsError", message.take(240))
+            notifyNotice("jsError", message.take(3072))
         }
 
         override fun onJsDebug(message: String) {

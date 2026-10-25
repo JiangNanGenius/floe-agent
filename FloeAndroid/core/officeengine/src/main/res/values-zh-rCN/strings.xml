@@ -30,4 +30,5 @@
     <string name="office_notices_link_unavailable">无法打开链接。请在浏览器访问此页显示的源码地址。</string>
     <string name="office_notices_back">返回</string>
     <string name="office_notice_awaiting_render">文档预览显示较慢，请稍候。</string>
+    <string name="office_viewer_details">技术详情</string>
 </resources>

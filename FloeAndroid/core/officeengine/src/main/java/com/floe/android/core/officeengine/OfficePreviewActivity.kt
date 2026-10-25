@@ -12,6 +12,8 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -451,10 +453,26 @@ private fun OfficeViewerScreen(
 ) {
     val state = progress?.state ?: OfficeViewerState.IDLE
     var showInfo by remember { mutableStateOf(false) }
+    var showDetails by remember { mutableStateOf(false) }
+    FloeActionSheet(visible = showDetails, onDismiss = { showDetails = false }, maxCardWidth = 560.dp) {
+        Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            FloeText(stringResource(R.string.office_viewer_details), style = Floe.typography.toolbarTitle)
+            // Diagnostic text stays local and is visible only after an explicit action.
+            FloeText(noticeDetail.orEmpty().take(3072), style = Floe.typography.metadata)
+            FloeCapsuleButton(stringResource(R.string.office_viewer_done), onClick = { showDetails = false })
+        }
+    }
     FloeActionSheet(visible = showInfo, onDismiss = { showInfo = false }, maxCardWidth = 420.dp) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FloeText(stringResource(R.string.office_viewer_readonly_cd), style = Floe.typography.toolbarTitle)
             FloeText(stringResource(R.string.office_viewer_preview_info), color = Floe.colors.secondaryLabel)
+            if (noticeKey == "jsError" && !noticeDetail.isNullOrBlank()) {
+                FloeCapsuleButton(stringResource(R.string.office_viewer_details), onClick = {
+                    showInfo = false
+                    showDetails = true
+                })
+            }
             FloeCapsuleButton(stringResource(R.string.office_viewer_notices), onClick = {
                 showInfo = false
                 onOpenNotices()

@@ -30,4 +30,5 @@
     <string name="office_notices_link_unavailable">This link could not be opened. Please use a browser to access the source URL shown on this page.</string>
     <string name="office_notices_back">Back</string>
     <string name="office_notice_awaiting_render">The preview is taking longer to display. Please wait a moment.</string>
+    <string name="office_viewer_details">Technical details</string>
 </resources>

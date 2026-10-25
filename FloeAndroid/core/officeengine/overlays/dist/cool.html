@@ -1112,5 +1112,9 @@
 <!-- This is for a mobile app so the script files are in the same folder -->
   
   <script src="bundle.js" defer></script>
+  <!-- Floe narrow Impress mobile DOM-placement repair (floe-impress-pcw-fix.js):
+       deferred AFTER bundle.js so window.L.ImpressTileLayer exists, and before
+       any websocket status message can initialize the tile layer. -->
+  <script src="floe-impress-pcw-fix.js" defer></script>
 
 </body></html>

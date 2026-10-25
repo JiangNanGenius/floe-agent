@@ -14,7 +14,7 @@ module:
      module build source (``build.gradle.kts``, manifest, resources), the
      observer tests, the staging tool and its README (public build recipe),
      the public producer manifest + payload pins (all 14 native library
-     hashes, the deliberate official-libc++ exclusion), the 142-entry asset
+     hashes, the deliberate official-libc++ exclusion), the 143-entry asset
      overlay manifest with every actual overlay file it binds, the bilingual
      notices page, the public-safe notice/source index, and PROVENANCE.md;
   3. rendered README.md / MANIFEST.json binding everything to the FINAL
@@ -68,8 +68,8 @@ Fail-closed bindings (enforced, never downgraded to warnings):
   with each other (manifest digest == pin, per-library hashes, anchor asset
   hashes, every overlay original/new hash, the notice-page digest, the
   source index's own digest via the overlay add entry — no cycle because
-  the index never self-embeds its hash, and the 141-record index must match
-  the 142 overlay entries minus its own record);
+  the index never self-embeds its hash, and the 142-record index must match
+  the 143 overlay entries minus its own record);
 * the overlay ``sourceAccess`` and ``floeCorrespondingSource`` blocks must
   name exactly ``android/v<release-version>`` and this release's public
   archive URL; the deliberate ``libc++_shared.so`` exclusion is preserved:
