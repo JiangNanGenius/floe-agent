@@ -199,7 +199,7 @@ struct SkillAuthoringPackageStorage: Sendable {
             try data.write(to: target, options: .withoutOverwriting)
         }
         let package = try SkillPackageValidator().validate(packageAt: packageRoot,
-            manifestOverride: manifestOverride, requireManifest: false)
+            requireManifest: false, manifestOverride: manifestOverride)
         let value = SkillAuthoringPackageDescriptor(ownerID: ownerID, snapshotID: snapshotID,
             origin: origin, createdAt: Date(), parentSnapshotID: parentSnapshotID,
             sourceURL: sourceURL, gitHubBinding: gitHubBinding, digest: package.canonicalSHA256,
