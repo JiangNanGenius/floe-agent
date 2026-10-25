@@ -591,7 +591,7 @@ struct ImpeccableFacts: Codable, Sendable, Equatable {
                 rejections.append("facts rejected: point \(index) top id outside the capture")
             }
             if hit.stack.contains(where: { $0 <= 0 || $0 > elementCount }) {
-                rejections.append("facts rejected: point \(index) stack contains a zero or foreign id")
+                rejections.append("facts rejected: point \(index) stack references an id outside the capture (zero or foreign)")
             }
             if (hit.unanswerable ?? false) == false && hit.top == 0 && hit.stack.isEmpty {
                 rejections.append("facts rejected: point \(index) answers nothing without unanswerable + reason")
@@ -905,9 +905,14 @@ struct ImpeccableResultDocument: Sendable {
             if let total = (findings["counts"] as? [String: Any])?["total"] as? NSNumber {
                 findingCount = max(0, total.intValue)
             } else {
+                // Fallback only when the engine omitted `counts.total`: the
+                // frozen engine shape is `groups[] = {el, findings: […]}`
+                // (contract expected goldens, upstream `CollectResult`) —
+                // counting any other key would silently report zero findings
+                // for a real result document.
                 let groups = (findings["groups"] as? [Any] ?? []).reduce(0) { sum, entry in
                     guard let group = entry as? [String: Any] else { return sum }
-                    return sum + ((group["items"] as? [Any])?.count ?? 0)
+                    return sum + ((group["findings"] as? [Any])?.count ?? 0)
                 }
                 let pageLevel = (findings["pageLevel"] as? [Any])?.count ?? 0
                 findingCount = groups + pageLevel

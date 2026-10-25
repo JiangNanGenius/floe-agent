@@ -25,11 +25,19 @@ ancestor with the same engine version and is **not** the build pin.
 ## Files
 
 - `impeccable-producer.v1.js` — the fixed native measurement producer.
-  - Bytes `0…40590` are the **verbatim** upstream `browser-bundle/15-snapshot.js`
-    (sha256 `b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0`,
-    equal to the contract `provenance.pinnedSourceDigests` entry).
-  - The appended Floe adapter (sha256 of the adapter part
-     `4ce19da85104ee82820d624db562799f41ecfb9d9362779276bb4873dedfa791`) adds: the
+  - The first **40,591 bytes** (indices `0…40590` inclusive) are the
+    **complete, verbatim** upstream `browser-bundle/15-snapshot.js`: the pinned
+    upstream file is itself exactly 40,591 bytes, so the embedded prefix and the
+    full upstream file are byte-identical, and sha256
+    `b97e055fa25eaba1186cee5174899be13efcfc82ab6c133e9306ed5791d3aef0` is the
+    full-file digest of both (equal to the contract
+    `provenance.pinnedSourceDigests` entry). The loader
+    `pinnedUpstreamPrefixBytes = 40_591` and `producer-manifest.v1.json`
+    (`upstreamPrefix.bytes: 40591`) use the same count; the loader re-hashes
+    these bytes on every load.
+  - The appended Floe adapter — the remaining 14,974 bytes (sha256 of the
+    adapter part
+     `4ce19da85104ee82820d624db562799f41ecfb9d9362779276bb4873dedfa791`) — adds: the
      frozen-v1 redaction policy executed **inside the isolated content world before
      any bytes leave it** (password inputs, form control values, credential-bearing
      attribute names, token-bearing URL values; per-category counts), the optional

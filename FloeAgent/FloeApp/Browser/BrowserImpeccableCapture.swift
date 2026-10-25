@@ -911,13 +911,19 @@ final class BrowserImpeccableCaptureService {
             throw ImpeccableCaptureError.identityRejected(["redaction receipt in the snapshot disagrees with the producer envelope"])
         }
 
+        // The native-issued identity carries the FULL wire binding, including
+        // the real captureId minted above. The pre-wire `binding` placeholder
+        // (captureId "") must never reach the identity: issuing it would make
+        // the identity's own §6 ingress scan reject every real capture
+        // ("required binding absent") and would stage an identity file the
+        // engine could never echo back validly.
         let identity = ImpeccableIdentity(
-            taskId: binding.taskId,
-            sessionId: binding.sessionId,
-            tabId: binding.tabId,
-            documentId: binding.documentId,
-            captureId: binding.captureId,
-            documentGeneration: binding.documentGeneration,
+            taskId: wireBinding.taskId,
+            sessionId: wireBinding.sessionId,
+            tabId: wireBinding.tabId,
+            documentId: wireBinding.documentId,
+            captureId: wireBinding.captureId,
+            documentGeneration: wireBinding.documentGeneration,
             url: nativeURL,
             hostname: ingress.hostname,
             viewport: ImpeccableSize(width: ingress.innerWidth, height: ingress.innerHeight),

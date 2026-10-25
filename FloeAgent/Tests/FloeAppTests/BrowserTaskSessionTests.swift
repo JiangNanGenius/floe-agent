@@ -8,7 +8,7 @@
 // They are not executed in the code-first S5–S7 stage. Run them at the unified
 // freeze together with the existing BrowserProtocol suites.
 
-#if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit)
+#if canImport(SwiftUI) && canImport(WebKit) && canImport(UIKit) && DEBUG
 import Foundation
 import Testing
 import WebKit
@@ -17,6 +17,7 @@ import UIKit
 import FloeCore
 import FloeModels
 import FloeTools
+import FloeEnvironments
 @testable import FloeApp
 
 @Suite("FloeApp.BrowserTaskIsolation", .serialized)
@@ -200,52 +201,92 @@ struct BrowserTaskSessionTests {
         let registry = makeRegistry(center)
         var ctx = context(for: owner)
         ctx.workspaceRootURL = root
-        // This is a native measurement fixture, not evidence of guest execution.
-        ctx.environmentID = "native-measurement-fixture"
-        _ = try await run(registry, "browser.tabs", "{}", as: ctx)
-        let session = try #require(center.session(for: owner))
-        let tab = try #require(session.activeTabID)
-        try await load("""
-            <!doctype html><html><body style="margin:0">
-            <h1>Design fixture</h1><input id="credential" type="password" value="synthetic-secret-9264">
-            <p>Measured page</p></body></html>
-            """, tab: tab, in: session, registry: registry, context: ctx)
-        let baseline = try await observe(tab: tab, registry: registry, context: ctx)
-        let explicitSemantic = try page(try await run(registry, "browser.observe", #"{"profile":"semantic"}"#, as: ctx))
-        #expect(nodesText(baseline) == nodesText(explicitSemantic))
-        let summary = try await run(registry, "browser.observe", #"{"profile":"design"}"#, as: ctx)
-        let result = try object(summary)
-        #expect(result["engineRun"] as? Bool == false)
-        #expect(!summary.contains(root.path))
-        #expect(!summary.contains("synthetic-secret-9264"))
-        let capture = try #require(result["capture"] as? [String: Any])
-        let id = try #require(capture["captureId"] as? String)
-        let relative = try #require(capture["relativeSnapshotFile"] as? String)
-        #expect(relative.hasPrefix("Impeccable/" + owner.uuidString + "/"))
-        let snapshot = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
-        #expect(!snapshot.contains("synthetic-secret-9264"))
-        let webView = try #require(session.tabs.first(where: { $0.id == tab })?.webView)
-        #expect(try await webView.evaluateJavaScript("document.getElementById('credential').value") as? String == "synthetic-secret-9264")
-
-        var foreignRun = ctx
-        foreignRun.runID = UUID()
-        await #expect(throws: (any Error).self) {
-            _ = try await run(registry, "browser.observe", #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: foreignRun)
+        // Tool execution resolves its environment through the process-wide
+        // routing the real app factory installs; build the preview factory so
+        // this test installs exactly the routing it exercises instead of
+        // depending on another test's global setup (production-chain-test
+        // precedent). Register this run's OWN session container through the
+        // production run-binding path: registry metadata only — no VM boot, no
+        // guest start — owned by exactly this conversation and this workspace
+        // root; never an unregistered label, a guessed id or a first-
+        // environment fallback. This stays a native measurement fixture, not
+        // evidence of guest execution.
+        let appEnvironment = AppEnvironment.preview()
+        let bound = await ConversationCenter.ensureRunEnvironmentBinding(
+            registry: appEnvironment.environmentRegistry,
+            conversationID: owner,
+            taskRoot: root)
+        let boundEnvironmentID = try #require(
+            bound,
+            "the preview environment must register this task's own session container")
+        ctx.environmentID = boundEnvironmentID
+        // Cleanup only this test's own descriptor after the joined work (each
+        // tool lease finishes inside its own execution): the session container
+        // and this workspace's project container, mirroring the production-
+        // chain teardown. Nothing else in the registry is touched.
+        let ownedRegistry = appEnvironment.environmentRegistry
+        let registeredWorkspaceID = FloeDigest.sha256Hex(Data(
+            root.resolvingSymlinksInPath().standardizedFileURL.path.utf8))
+        func removeOwnedContainers() async {
+            do { _ = try await ownedRegistry.remove(id: boundEnvironmentID) }
+            catch { Issue.record("Owned browser fixture session cleanup failed: \(error)") }
+            let projectContainers = await ownedRegistry
+                .containersOwned(by: registeredWorkspaceID)
+            if let project = projectContainers.first(where: { $0.kind == .project }) {
+                do { _ = try await ownedRegistry.remove(id: project.id) }
+                catch { Issue.record("Owned browser fixture project cleanup failed: \(error)") }
+            }
         }
-        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path))
+        do {
+            _ = try await run(registry, "browser.tabs", "{}", as: ctx)
+            let session = try #require(center.session(for: owner))
+            let tab = try #require(session.activeTabID)
+            try await load("""
+                <!doctype html><html><body style="margin:0">
+                <h1>Design fixture</h1><input id="credential" type="password" value="synthetic-secret-9264">
+                <p>Measured page</p></body></html>
+                """, tab: tab, in: session, registry: registry, context: ctx)
+            let baseline = try await observe(tab: tab, registry: registry, context: ctx)
+            let explicitSemantic = try page(try await run(registry, "browser.observe", #"{"profile":"semantic"}"#, as: ctx))
+            #expect(nodesText(baseline) == nodesText(explicitSemantic))
+            let summary = try await run(registry, "browser.observe", #"{"profile":"design"}"#, as: ctx)
+            let result = try object(summary)
+            #expect(result["engineRun"] as? Bool == false)
+            #expect(!summary.contains(root.path))
+            #expect(!summary.contains("synthetic-secret-9264"))
+            let capture = try #require(result["capture"] as? [String: Any])
+            let id = try #require(capture["captureId"] as? String)
+            let relative = try #require(capture["relativeSnapshotFile"] as? String)
+            #expect(relative.hasPrefix("Impeccable/" + owner.uuidString + "/"))
+            let snapshot = try String(contentsOf: root.appendingPathComponent(relative), encoding: .utf8)
+            #expect(!snapshot.contains("synthetic-secret-9264"))
+            let webView = try #require(session.tabs.first(where: { $0.id == tab })?.webView)
+            #expect(try await webView.evaluateJavaScript("document.getElementById('credential').value") as? String == "synthetic-secret-9264")
 
-        let needs: [String: Any] = ["round": 1, "hitTests": [[10.0, 10.0]],
-            "hitTestsBits": [[String(10.0.bitPattern), String(10.0.bitPattern)]], "scrollProbes": []]
-        try JSONSerialization.data(withJSONObject: needs).write(to: root.appendingPathComponent("needs.json"), options: .atomic)
-        let factsResult = try object(try await run(registry, "browser.observe",
-            #"{"profile":"design","designAction":"facts","captureID":"\#(id)","needsFile":"needs.json"}"#, as: ctx))
-        let factsPath = try #require(factsResult["relativeFactsFile"] as? String)
-        let facts = try object(String(decoding: Data(contentsOf: root.appendingPathComponent(factsPath)), as: UTF8.self))
-        #expect(facts["taskId"] as? String == owner.uuidString)
-        #expect(facts["captureId"] as? String == id)
-        _ = try await run(registry, "browser.observe",
-            #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: ctx)
-        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).deletingLastPathComponent().path))
+            var foreignRun = ctx
+            foreignRun.runID = UUID()
+            await #expect(throws: (any Error).self) {
+                _ = try await run(registry, "browser.observe", #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: foreignRun)
+            }
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).path))
+
+            let needs: [String: Any] = ["round": 1, "hitTests": [[10.0, 10.0]],
+                "hitTestsBits": [[String(10.0.bitPattern), String(10.0.bitPattern)]], "scrollProbes": []]
+            try JSONSerialization.data(withJSONObject: needs).write(to: root.appendingPathComponent("needs.json"), options: .atomic)
+            let factsResult = try object(try await run(registry, "browser.observe",
+                #"{"profile":"design","designAction":"facts","captureID":"\#(id)","needsFile":"needs.json"}"#, as: ctx))
+            let factsPath = try #require(factsResult["relativeFactsFile"] as? String)
+            let facts = try object(String(decoding: Data(contentsOf: root.appendingPathComponent(factsPath)), as: UTF8.self))
+            #expect(facts["taskId"] as? String == owner.uuidString)
+            #expect(facts["captureId"] as? String == id)
+            _ = try await run(registry, "browser.observe",
+                #"{"profile":"design","designAction":"release","captureID":"\#(id)"}"#, as: ctx)
+            #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent(relative).deletingLastPathComponent().path))
+        } catch {
+            await removeOwnedContainers()
+            throw error
+        }
+        await removeOwnedContainers()
     }
 
     @Test("Design capture refuses temporary use and missing task workspace bindings")

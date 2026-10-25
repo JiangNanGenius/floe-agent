@@ -1004,6 +1004,36 @@ struct BrowserImpeccableCaptureTests {
         #expect(failedDocument.engineExit == .failure)
     }
 
+    @Test("Fallback finding counts read the engine's real groups[].findings shape")
+    func findingsFallbackCountsRealEngineShape() throws {
+        // The frozen goldens carry `findings.groups[] = {el, findings: […]}`
+        // (contract expected/…/positive-round2.result.v1.json). With no
+        // `counts.total`, the parse fallback must count that real shape plus
+        // `pageLevel` — any other key would silently report zero findings for
+        // a real engine result document.
+        let document = try ImpeccableResultDocument.parse(from: resultJSON(
+            status: "complete", verdict: "findings",
+            extras: ["findings": [
+                "groups": [
+                    ["el": 6, "findings": [["type": "tiny-text", "detail": "9px body text"]]] as [String: Any],
+                    ["el": 9, "findings": [["type": "low-contrast"], ["type": "touch-target"]]] as [String: Any],
+                ],
+                "pageLevel": [["type": "horizontal-overflow"]],
+            ] as [String: Any]]
+        ))
+        #expect(document.findingCount == 4)
+        // `counts.total` remains the primary source whenever it is present.
+        let withCounts = try ImpeccableResultDocument.parse(from: resultJSON(
+            status: "complete", verdict: "findings",
+            extras: ["findings": [
+                "groups": [["el": 6, "findings": [["type": "tiny-text"]]] as [String: Any]],
+                "pageLevel": [] as [Any],
+                "counts": ["total": 7],
+            ] as [String: Any]]
+        ))
+        #expect(withCounts.findingCount == 7)
+    }
+
     @Test("A malformed result is never a pass")
     func malformedResultFails() {
         #expect(throws: ImpeccableCaptureError.self) {
