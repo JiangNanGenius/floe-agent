@@ -24,9 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.floe.android.design.Floe
+import com.floe.android.design.FloeActionSheet
 import com.floe.android.design.FloeLayout
-import com.floe.android.design.FloePageSheet
-import com.floe.android.design.FloeSheetPlacement
 import com.floe.android.design.FloeUnavailableView
 import com.floe.android.design.FloeIcons
 import com.floe.android.feature.ide.api.IdeHost
@@ -101,7 +100,7 @@ public fun FloeIdeWorkspace(
                     onToggle = presenter::toggleTreeExpansion,
                     onOpenFile = { path -> presenter.openFile(path) },
                     onOpenHit = { hit -> presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH) },
-                    onRefresh = presenter::loadTreeRoot,
+                    onRefresh = presenter::refreshTreeKeepingExpansion,
                     modifier = Modifier.width(FloeLayout.SidebarIdealWidth).fillMaxSize(),
                 )
                 com.floe.android.design.FloeVerticalDivider()
@@ -116,10 +115,14 @@ public fun FloeIdeWorkspace(
                 onBack = onBack,
                 showTreeButton = true,
             )
-            FloePageSheet(
+            // Bounded secondary picker (2026-10-25 evidence: the old
+            // full-window bottom sheet filled the whole tablet): the tree is
+            // clamped to a card on wide windows and keeps the bottom-sheet
+            // idiom on compact ones.
+            FloeActionSheet(
                 visible = compactTreeOpen,
                 onDismiss = { compactTreeOpen = false },
-                placement = FloeSheetPlacement.BOTTOM,
+                maxCardWidth = 460.dp,
             ) {
                 IdeFileTreePanel(
                     state = state.tree,
@@ -133,7 +136,7 @@ public fun FloeIdeWorkspace(
                         compactTreeOpen = false
                         presenter.openFile(hit.relativePath, com.floe.android.feature.ide.api.IdeOpenReason.SEARCH)
                     },
-                    onRefresh = presenter::loadTreeRoot,
+                    onRefresh = presenter::refreshTreeKeepingExpansion,
                     modifier = Modifier.fillMaxSize(),
                 )
             }
@@ -176,6 +179,12 @@ private fun BottomAccessoryOverlay(
     presenter: IdePresenter,
     accessory: IdeBottomAccessory,
 ) {
+    // While the accessory is open, system Back dismisses the PANE first —
+    // it never closes the owning editor presentation. (The host-owned
+    // session behind the pane survives either way; this only fixes the
+    // navigation intent, per the 2026-10-25 wiring review.) Registered
+    // deeper than the workspace-root BackHandler, so it wins while shown.
+    BackHandler(onBack = { presenter.toggleBottomPane(false) })
     val colors = Floe.colors
     Box(
         modifier = Modifier

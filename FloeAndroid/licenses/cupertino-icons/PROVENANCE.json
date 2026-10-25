@@ -1,0 +1,411 @@
+{
+ "component": "Cupertino Icons font 2.0.0 — source-derived ImageVector glyph data (font binary not shipped; development-time input only)",
+ "license": "MIT (Copyright (c) 2016 Vladimir Kharlampidi) for the glyph artwork/font; full text at LICENSE and app/src/main/assets/legal/cupertino-icons/LICENSE",
+ "pubArchive": {
+  "name": "cupertino_icons",
+  "version": "2.0.0",
+  "url": "https://pub.dev/api/archives/cupertino_icons-2.0.0.tar.gz",
+  "sha256": "b7cc2390aac296c083bea762859413eb1cf5b630c70e0c7e4d831018f762a8b2",
+  "bytes": 2602507
+ },
+ "fontFile": {
+  "path": "upstream/CupertinoIcons.ttf (from assets/CupertinoIcons.ttf in the archive)",
+  "sha256": "67c44fe9183b002e79dde7f6977e2988661c9a3e4a3c5fce968787efdbed823c",
+  "bytes": 257628,
+  "unitsPerEm": 512,
+  "ascent": 454,
+  "descent": -74,
+  "glyphCount": 1257
+ },
+ "codepointNames": {
+  "file": "upstream/flutter-3.35.0-icons.dart",
+  "origin": "flutter/flutter tag 3.35.0 packages/flutter/lib/src/cupertino/icons.dart",
+  "sha256": "903e47d2459d68350a5298a57c35a122c43bf07f116e5faba562e1a384cb90a2",
+  "constants": 1322,
+  "license": "BSD-3-Clause, The Flutter Authors (separate from the glyph artwork MIT)",
+  "licenseFile": "upstream/Flutter-BSD-LICENSE",
+  "licenseFileSha256": "a598db94b6290ffbe10b5ecf911057b6a943351c727fdda9e5f2891d68700a20",
+  "fileSha256": "903e47d2459d68350a5298a57c35a122c43bf07f116e5faba562e1a384cb90a2"
+ },
+ "generator": {
+  "script": "tools/icons/generate_floe_glyphs.py",
+  "roles": "tools/icons/roles.json",
+  "tool": "fontTools 4.60.1 (wheel sha256 906306ac7afe2156fcf0042173d6ebbb05416af70f6b370967b47f8f00103bbb), development-time sys.path only, no project dependency added",
+  "transform": {
+   "globalScaleK": 0.916,
+   "viewport": "24x24",
+   "placement": "per-glyph ink center at (12,12), Y flipped, uniform K across all glyphs",
+   "medianInkHeightEm": 0.793,
+   "maxInkWidthEm": 1.0
+  }
+ },
+ "output": {
+  "file": "core/designsystem/src/main/kotlin/com/floe/android/design/FloeGlyphs.kt",
+  "sha256": "4fae98e31b68d1e659973d3a218bda7d6da759fed20d260a08632bf5b9844945",
+  "glyphCount": 45
+ },
+ "glyphMap": [
+  {
+   "floeVal": "NewTask",
+   "ios": "square.and.pencil",
+   "cupertinoKey": "square_pencil",
+   "codepoint": "0xf417",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "BookPages",
+   "ios": "book.pages",
+   "cupertinoKey": "book",
+   "codepoint": "0xf3e7",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Creative",
+   "ios": "rectangle.and.pencil.and.ellipsis",
+   "cupertinoKey": "pencil_ellipsis_rectangle",
+   "codepoint": "0xf73c",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Gearshape",
+   "ios": "gearshape",
+   "cupertinoKey": "gear_alt",
+   "codepoint": "0xf43c",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "SidebarToggle",
+   "ios": "sidebar.left",
+   "cupertinoKey": "sidebar_left",
+   "codepoint": "0xf7d6",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Bubble",
+   "ios": "bubble.left",
+   "cupertinoKey": "bubble_left",
+   "codepoint": "0xf5a3",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Folder",
+   "ios": "folder",
+   "cupertinoKey": "folder",
+   "codepoint": "0xf434",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Plus",
+   "ios": "plus",
+   "cupertinoKey": "plus",
+   "codepoint": "0xf489",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChevronForward",
+   "ios": "chevron.right",
+   "cupertinoKey": "chevron_right",
+   "codepoint": "0xf3d3",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChevronBack",
+   "ios": "chevron.left",
+   "cupertinoKey": "chevron_left",
+   "codepoint": "0xf3d2",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChevronDown",
+   "ios": "chevron.down",
+   "cupertinoKey": "chevron_down",
+   "codepoint": "0xf5d5",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChevronUp",
+   "ios": "chevron.up",
+   "cupertinoKey": "chevron_up",
+   "codepoint": "0xf5e5",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChevronUpDown",
+   "ios": "chevron.up.chevron.down",
+   "cupertinoKey": "chevron_up_chevron_down",
+   "codepoint": "0xf5e6",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Paperclip",
+   "ios": "paperclip",
+   "cupertinoKey": "paperclip",
+   "codepoint": "0xf732",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Mic",
+   "ios": "mic.fill",
+   "cupertinoKey": "mic_fill",
+   "codepoint": "0xf461",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ArrowUp",
+   "ios": "arrow.up",
+   "cupertinoKey": "arrow_up",
+   "codepoint": "0xf366",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "StopSquare",
+   "ios": "stop.fill",
+   "cupertinoKey": "stop_fill",
+   "codepoint": "0xf82b",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Gauge",
+   "ios": "gauge",
+   "cupertinoKey": "gauge",
+   "codepoint": "0xf686",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Wand",
+   "ios": "wand.and.stars",
+   "cupertinoKey": "wand_stars",
+   "codepoint": "0xf892",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "DeviceLocal",
+   "ios": "desktopcomputer",
+   "cupertinoKey": "desktopcomputer",
+   "codepoint": "0xf625",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ShieldCheck",
+   "ios": "checkmark.shield",
+   "cupertinoKey": "checkmark_shield",
+   "codepoint": "0xf5cd",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ShieldAlert",
+   "ios": "exclamationmark.shield",
+   "cupertinoKey": "exclamationmark_shield",
+   "codepoint": "0xf65c",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Xmark",
+   "ios": "xmark",
+   "cupertinoKey": "xmark",
+   "codepoint": "0xf404",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Checkmark",
+   "ios": "checkmark",
+   "cupertinoKey": "checkmark",
+   "codepoint": "0xf3fd",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Clock",
+   "ios": "clock",
+   "cupertinoKey": "clock",
+   "codepoint": "0xf4be",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "PlayRuns",
+   "ios": "play.rectangle",
+   "cupertinoKey": "play_rectangle",
+   "codepoint": "0xf771",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "InfoCircle",
+   "ios": "info.circle",
+   "cupertinoKey": "info_circle",
+   "codepoint": "0xf44c",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Eye",
+   "ios": "eye",
+   "cupertinoKey": "eye",
+   "codepoint": "0xf424",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "EyeSlash",
+   "ios": "eye.slash",
+   "cupertinoKey": "eye_slash",
+   "codepoint": "0xf662",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Antenna",
+   "ios": "antenna.radiowaves.left.and.right",
+   "cupertinoKey": "antenna_radiowaves_left_right",
+   "codepoint": "0xf4dc",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Refresh",
+   "ios": "arrow.clockwise",
+   "cupertinoKey": "arrow_clockwise",
+   "codepoint": "0xf49a",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "WarningTriangle",
+   "ios": "exclamationmark.triangle",
+   "cupertinoKey": "exclamationmark_triangle",
+   "codepoint": "0xf660",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "CheckCircle",
+   "ios": "checkmark.circle",
+   "cupertinoKey": "checkmark_circle",
+   "codepoint": "0xf3fe",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "XOctagon",
+   "ios": "xmark.octagon",
+   "cupertinoKey": "xmark_octagon",
+   "codepoint": "0xf8a2",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Magnifier",
+   "ios": "magnifyingglass",
+   "cupertinoKey": "search",
+   "codepoint": "0xf4a5",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "PlusCircle",
+   "ios": "plus.circle",
+   "cupertinoKey": "plus_circled",
+   "codepoint": "0xf48a",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Trash",
+   "ios": "trash",
+   "cupertinoKey": "trash",
+   "codepoint": "0xf4c4",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Pencil",
+   "ios": "pencil",
+   "cupertinoKey": "pencil",
+   "codepoint": "0xf37e",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ChatRole",
+   "ios": "bubble.left.and.bubble.right",
+   "cupertinoKey": "bubble_left_bubble_right",
+   "codepoint": "0xf5a4",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "ImageRole",
+   "ios": "photo.on.rectangle.angled",
+   "cupertinoKey": "photo_on_rectangle",
+   "codepoint": "0xf76a",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "Photo",
+   "ios": "photo",
+   "cupertinoKey": "photo",
+   "codepoint": "0xf767",
+   "addedForMappingFix": false
+  },
+  {
+   "floeVal": "PersonCircleCheck",
+   "ios": "person.crop.circle.badge.checkmark",
+   "cupertinoKey": "person_crop_circle_badge_checkmark",
+   "codepoint": "0xf748",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "HandRaised",
+   "ios": "hand.raised",
+   "cupertinoKey": "hand_raised",
+   "codepoint": "0xf6b1",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "ChartBar",
+   "ios": "chart.bar",
+   "cupertinoKey": "chart_bar",
+   "codepoint": "0xf5c5",
+   "addedForMappingFix": true
+  },
+  {
+   "floeVal": "Ellipsis",
+   "ios": "ellipsis",
+   "cupertinoKey": "ellipsis",
+   "codepoint": "0xf46a",
+   "addedForMappingFix": false
+  }
+ ],
+ "handDrawnFallbackKept": [
+  {
+   "floeVal": "Checklist",
+   "ios": "checklist",
+   "reason": "no 'checklist' composite in CupertinoIcons 2.0.0; hand-drawn double-check list already carries the role"
+  },
+  {
+   "floeVal": "Puzzle",
+   "ios": "puzzlepiece.extension",
+   "reason": "no puzzlepiece glyph in 2.0.0"
+  },
+  {
+   "floeVal": "Chip",
+   "ios": "cpu",
+   "reason": "no cpu glyph in 2.0.0"
+  },
+  {
+   "floeVal": "Stethoscope",
+   "ios": "stethoscope",
+   "reason": "no stethoscope glyph in 2.0.0"
+  },
+  {
+   "floeVal": "Terminal",
+   "ios": "terminal",
+   "reason": "no terminal glyph in 2.0.0"
+  },
+  {
+   "floeVal": "PlanList",
+   "ios": "list.bullet.clipboard",
+   "reason": "Main review: 'list_bullet_below_rectangle' is a rectangle with rows underneath, not the clipboard affordance — keep hand-drawn clipboard glyph"
+  },
+  {
+   "floeVal": "Key",
+   "ios": "key.fill",
+   "reason": "no standalone key glyph in 2.0.0 (keyboard only)"
+  },
+  {
+   "floeVal": "Target",
+   "ios": "target",
+   "reason": "Main review: concentric bullseye is the accurate SF target affordance; Cupertino 'scope' crosshair is a mismatch — keep hand-drawn"
+  },
+  {
+   "floeVal": "VideoPlus",
+   "ios": "video.badge.plus",
+   "reason": "Main review: plain videocam loses the plus badge — keep the specific hand-drawn video.badge.plus glyph"
+  }
+ ]
+}

@@ -701,8 +701,15 @@ class ConversationOrdinaryPathTest {
         assertTrue(awaitCondition { exchange.commandsOf("run.queue").isNotEmpty() })
         val queueEnvelope = exchange.commandsOf("run.queue").first()
         val queuePayload = queueEnvelope["payload"]!!.jsonObject
-        assertEquals(setOf("content", "mode", "selectedModelID"), queuePayload.keys)
+        // G04R2 queue-input repair: the composer's REAL execution mode is
+        // part of the additive queue grammar (the durable row owns it and
+        // the native terminal drain launches exactly this mode).
+        assertEquals(
+            setOf("content", "mode", "selectedModelID", "executionMode"),
+            queuePayload.keys,
+        )
         assertEquals("queue", queuePayload["mode"]!!.jsonPrimitive.content)
+        assertEquals("agent", queuePayload["executionMode"]!!.jsonPrimitive.content)
         assertEquals(
             "conversation.${conversationId.uppercase()}",
             queueEnvelope["revision"]!!.jsonObject["resourceID"]!!.jsonPrimitive.content,
@@ -745,14 +752,30 @@ class ConversationOrdinaryPathTest {
     @Test
     fun pendingInputMutationsUseRowVersionsAndQueueRevision() = runBlocking {
         val script = LocalScript().apply {
+            // Queue-content contract: run.input.edit dispatches only for a
+            // row whose CURRENT version has a proven-complete body, so the
+            // producer-shaped snapshot row carries the whole short text with
+            // native completeness proof (`preview` + `previewComplete:true`).
             pendingInputsJson =
                 """[{"inputID":"44444444-4444-4444-8444-444444444444","position":0,""" +
-                    """"status":"queued","mode":"queue","inputVersion":"2026-10-20T01:02:04.000Z"}]"""
+                    """"status":"queued","mode":"queue","inputVersion":"2026-10-20T01:02:04.000Z",""" +
+                    """"preview":"queued original","previewComplete":true,"contentBytes":15}]"""
         }
         val exchange = buildExchange(script)
         val host = readyHost(script, exchange)
         val holder = loadedHolder(host)
         val session = ConversationSessionToken(conversationId, holder.session.sessionEpoch)
+        // Production guard: run.input.edit dispatches only for a row whose
+        // CURRENT version already projects a proven-complete body, published
+        // asynchronously from the typed run.snapshot page after the session
+        // load. The editor flow must see that proof before the guard runs.
+        val editEntry = host.conversations.entryFor(conversationId)!!
+        assertTrue(
+            "queue row must project a proven-complete body before editing",
+            awaitCondition {
+                editEntry.builder.provenBodyVersion("44444444-4444-4444-8444-444444444444") != null
+            },
+        )
         assertTrue(host.conversations.editPendingInput(session, "44444444-4444-4444-8444-444444444444", "edited"))
         assertTrue(awaitCondition { exchange.commandsOf("run.input.edit").isNotEmpty() })
         val edit = exchange.commandsOf("run.input.edit").first()
@@ -785,6 +808,50 @@ class ConversationOrdinaryPathTest {
             "pendingQueue.${conversationId.uppercase()}",
             reorder["revision"]!!.jsonObject["resourceID"]!!.jsonPrimitive.content,
         )
+        host.stop()
+    }
+
+    /**
+     * G04R2 queue-input repair regression: the DURABLE `run.input.edit` /
+     * `run.input.remove` envelope CAS is the pending-input ROW revision
+     * (`pendingInput.<UPPER uuid>/<inputVersion>` re-read from the fresh
+     * snapshot) — the exact pair the native `mutateInput` proves. The
+     * former conversation-row revision could never satisfy the native row
+     * CAS, so every durable edit/remove was rejected after the optimistic
+     * sheet close: the real queued-Save no-op (device evidence
+     * c03-q-native-{edited,saved,reopen}.xml).
+     */
+    @Test
+    fun pendingInputDurableDispatchUsesRowEnvelopeRevision() = runBlocking {
+        val inputId = "44444444-4444-4444-8444-444444444444"
+        val script = LocalScript().apply {
+            // Same complete-current-version body proof as the durable edit
+            // contract above: preview travels whole, previewComplete proves it.
+            pendingInputsJson =
+                """[{"inputID":"$inputId","position":0,""" +
+                    """"status":"queued","mode":"queue","inputVersion":"2026-10-20T01:02:04.000Z",""" +
+                    """"preview":"queued original","previewComplete":true,"contentBytes":15}]"""
+        }
+        val exchange = buildExchange(script)
+        val host = readyHost(script, exchange)
+        val holder = loadedHolder(host)
+        val session = ConversationSessionToken(conversationId, holder.session.sessionEpoch)
+        val expectedResource = "pendingInput.${inputId.uppercase()}"
+        val durableEntry = host.conversations.entryFor(conversationId)!!
+        assertTrue(
+            "queue row must project a proven-complete body before editing",
+            awaitCondition { durableEntry.builder.provenBodyVersion(inputId) != null },
+        )
+        assertTrue(host.conversations.editPendingInput(session, inputId, "edited"))
+        assertTrue(awaitCondition { exchange.commandsOf("run.input.edit").isNotEmpty() })
+        val editRevision = exchange.commandsOf("run.input.edit").first()["revision"]!!.jsonObject
+        assertEquals(expectedResource, editRevision["resourceID"]!!.jsonPrimitive.content)
+        assertEquals("2026-10-20T01:02:04.000Z", editRevision["version"]!!.jsonPrimitive.content)
+        assertTrue(host.conversations.removePendingInput(session, inputId))
+        assertTrue(awaitCondition { exchange.commandsOf("run.input.remove").isNotEmpty() })
+        val removeRevision = exchange.commandsOf("run.input.remove").first()["revision"]!!.jsonObject
+        assertEquals(expectedResource, removeRevision["resourceID"]!!.jsonPrimitive.content)
+        assertEquals("2026-10-20T01:02:04.000Z", removeRevision["version"]!!.jsonPrimitive.content)
         host.stop()
     }
 

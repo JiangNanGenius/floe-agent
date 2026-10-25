@@ -112,6 +112,23 @@
 //    are preserved) — and the readiness ingress verifies claimed mapping
 //    receipts through `lookupTerminalReceipt(matchingDigest:)` (reads the
 //    terminal index bytes back; never a flag).
+// 7. G04-R2 UI operation-scoped admission (Main contract 2026-10-25): the real
+//    interactive terminal / LSP lane owns NO model Run. It mints through the
+//    ORIGINAL receipt path instead: `G04TerminalDomain.open` /
+//    `G04LanguageServer.start` register the ALREADY-CREATED
+//    `beginG04WorkspaceOperation` lease (`registerWorkspaceOperation`) under
+//    the accepted epoch with the native-issued UI interaction identity, and
+//    `floe_linux_workspace_binding_for_operation(epoch, operationID, runID,
+//    grantID)` mints ONLY against that registration — re-checking the REAL
+//    registry token (`RuntimeOwnedWorkRegistry.isAttached`) plus the domain's
+//    own `validateG04WorkspaceOperation` (retirement/global/delete fences,
+//    lease-map membership, cancellation) and the ORIGINAL persisted
+//    conversation-ownership workspace row. No Run is fabricated, borrowed or
+//    inferred; the ordinary run mint and the durable-job mint are unchanged.
+//    A live registration never expires by clock: its lifetime is exactly the
+//    real lease (retire clears the exact operationID mapping; saturation
+//    reclaims only proven-dead entries). Every session transaction re-checks
+//    the live lease through `revalidateRun`'s operation branch.
 
 import Foundation
 import FloeCore
@@ -198,10 +215,34 @@ public enum LinuxWorkspaceAuthority {
         let workspaceID: UUID
         let toolCallID: String?
         let jobID: UUID?
+        let operationID: UUID?
         let rootEpoch: UInt64
         let workspaceRootPath: String
         let mintedAt: Date
     }
+
+    /// G04-R2 UI operation registrations (Main contract 2026-10-25). This is
+    /// NOT a second source of ownership truth: it maps the native-issued
+    /// operationID to the ORIGINAL `G04WorkspaceOwnedOperation` value the
+    /// trusted host obtained from `beginG04WorkspaceOperation` under the
+    /// accepted epoch. Every mint/open/currency check re-validates THAT
+    /// operation through the real registry token and the domain's own
+    /// `validateG04WorkspaceOperation`; the conversation identity used to
+    /// resolve the workspace comes ONLY from here, never from the wire.
+    /// Lifetime follows the real lease: entries are removed by the owning
+    /// action's exact retire paths; the table never time-expires a live
+    /// registration. On saturation only PROVEN-DEAD entries (registry token
+    /// no longer attached, or belonging to a different generation than the
+    /// accepted epoch — states no authority check could ever pass again) are
+    /// reclaimed; if none are, a new registration is REFUSED (the UI action
+    /// gets an honest refusal, nothing is silently evicted).
+    private struct OperationRegistration: Sendable {
+        let conversationID: UUID
+        let uiRunID: UUID
+        let operation: G04WorkspaceOwnedOperation
+    }
+    nonisolated(unsafe) private static var operationRegistrations: [String: OperationRegistration] = [:]
+    private static let maximumOperationRegistrations = 64
 
     // MARK: Install
 
@@ -265,6 +306,7 @@ public enum LinuxWorkspaceAuthority {
         proofSecret = nil
         externalGate = nil
         mintedGrants.removeAll()
+        operationRegistrations.removeAll()
         lock.unlock()
         WorkspaceTransferEngine.shared.resetInstallationForTesting()
     }
@@ -437,6 +479,32 @@ public enum LinuxWorkspaceAuthority {
         // grant epoch (same accepted Root, same owner).
         guard let composition = G02RuntimeComposition.shared.installedComposition,
               composition.epoch == binding.rootEpoch else { return false }
+        if binding.operationID != nil {
+            // G04-R2 operation-scoped UI grant: currency is the ORIGINAL live
+            // lease — never run activity and never a stored flag. The
+            // registration identity must equal the binding (same UI run, same
+            // conversation), the registry token must still be attached, the
+            // domain validator must still pass (no retirement/global/delete
+            // fence, lease-map membership, no cancellation), and the ORIGINAL
+            // conversation-ownership row must still resolve to the bound
+            // workspace. A stop/retire/settled UI action revokes every
+            // in-flight transaction here, exactly like job settlement revokes
+            // a durable grant.
+            guard let operationText = binding.operationID?.uuidString,
+                  let registration = operationRegistration(operationText),
+                  registration.uiRunID == binding.runID,
+                  registration.conversationID == binding.conversationID,
+                  revalidateOperationLease(registration.operation, epoch: binding.rootEpoch) else {
+                return false
+            }
+            let conversationOwnershipOK: Bool = bridge { () -> Bool? in
+                guard let conversationID = binding.conversationID,
+                      let resolved = try? await composition.cluster.workspaceStore.workspaceID(conversationID: conversationID),
+                      resolved == binding.workspaceID else { return false }
+                return true
+            } ?? false
+            return conversationOwnershipOK
+        }
         if binding.jobID != nil {
             // Durable-job grant: ORIGINAL live ownership instead of the
             // parent-run activity test. A terminal parent alone never
@@ -549,6 +617,121 @@ public enum LinuxWorkspaceAuthority {
                                  requireRunActive: false)
     }
 
+    // MARK: - UI operation-scoped grant support (G04-R2, Main contract 2026-10-25)
+    //
+    // The real interactive terminal / LSP lane is an APPLICATION-private
+    // workspace execution under an explicit user action; it owns a REAL
+    // conversation lease (`beginG04WorkspaceOperation` → attached
+    // RuntimeOwnedWorkRegistry token) but NO persisted model Run. Rather than
+    // fabricating a run (the ordinary mint correctly requires one) the host
+    // registers the exact live operation and mints/open against THAT:
+    //  * registration only under the accepted epoch, installed authority and
+    //    the original token epoch, with the SAME step's UI interaction identity;
+    //  * every mint, open and currency re-check runs the ORIGINAL lease
+    //    authorities (registry attach + domain `validateG04WorkspaceOperation`);
+    //  * the workspace identity is re-derived ONLY from the registered
+    //    conversation through the ORIGINAL persisted ownership row;
+    //  * an ended/stopped/cancelled/delete-guarded/retired/generation-fenced
+    //    lease, a foreign UI identity or a changed epoch mints nothing
+    //    (bindingUnavailable) and revokes live sessions (revalidateRun).
+
+    /// Register the REAL operation lease for one UI grant. Trusted in-process
+    /// host lanes only (`G04TerminalDomain.open`, `G04LanguageServer.start`),
+    /// immediately after the receipt exists and before `shell.start`. Returns
+    /// false (the action then refuses honestly) when the authority is not
+    /// installed, the epoch is not current, the token belongs to another
+    /// generation, or the table is saturated by STILL-LIVE leases (only
+    /// proven-dead entries are reclaimed; active work is never evicted).
+    static func registerWorkspaceOperation(_ operation: G04WorkspaceOwnedOperation,
+                                           epoch: UInt64, uiRunID: UUID) -> Bool {
+        guard epoch > 0, G02NativeRootEpoch.readback() == epoch,
+              operation.token.epoch == epoch, isInstalled,
+              currentProofSecret() != nil else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        if operationRegistrations.count >= maximumOperationRegistrations {
+            let liveEpoch = G02NativeRootEpoch.readback()
+            operationRegistrations = operationRegistrations.filter { _, registration in
+                registration.operation.token.epoch == liveEpoch
+                    && RuntimeOwnedWorkRegistry.shared.isAttached(registration.operation.token)
+            }
+            if operationRegistrations.count >= maximumOperationRegistrations { return false }
+        }
+        operationRegistrations[operation.operationID.uuidString] =
+            OperationRegistration(conversationID: operation.conversationID,
+                                  uiRunID: uiRunID, operation: operation)
+        return true
+    }
+
+    /// Remove the EXACT operation mapping. Called by the owning UI action on
+    /// every terminal transition (open failure, failed/immediate-exit start,
+    /// stop, exit, fault, retirement sweep, LSP close). Idempotent; removing
+    /// an already-gone mapping is a no-op (never touches another operation).
+    static func retireWorkspaceOperation(operationID: UUID) {
+        lock.lock()
+        operationRegistrations.removeValue(forKey: operationID.uuidString)
+        lock.unlock()
+    }
+
+    /// Copy-out under the existing lock (no callback work while held). The
+    /// registration TYPE stays private to this file; only the enum's own
+    /// mint/currency members and the trusted register/retire entry points
+    /// touch it.
+    private static func operationRegistration(_ key: String) -> OperationRegistration? {
+        lock.lock()
+        defer { lock.unlock() }
+        return operationRegistrations[key]
+    }
+
+    /// The ORIGINAL live-lease truth for a registered operation: the registry
+    /// token must still be attached for this generation (sync), and the
+    /// domain's own validator — retirement fence, global fence, per-task
+    /// delete guard, lease-map membership, cancellation — must still answer
+    /// true. A timeout is a refusal (bridge semantics); nothing is inferred.
+    static func revalidateOperationLease(_ operation: G04WorkspaceOwnedOperation,
+                                         epoch: UInt64) -> Bool {
+        guard operation.token.epoch == epoch,
+              RuntimeOwnedWorkRegistry.shared.isAttached(operation.token),
+              let (domain, _) = RunDomainFacade.current(epoch: epoch) else { return false }
+        let live: Bool = bridge(timeoutSeconds: 4.0) { () -> Bool? in
+            await domain.validateG04WorkspaceOperation(operation)
+        } ?? false
+        return live
+    }
+
+    /// The ONE operation resolution route the mint and `session_open` share:
+    /// registration existence + UI identity equality + the live-lease
+    /// validation above + the ORIGINAL conversation-ownership workspace
+    /// resolution. Returns nil (never a partial) on any deviation, so a
+    /// cross-task wire echo, a revoked lease or a missing ownership row all
+    /// take the exact same refusal path as an unresolvable run did before.
+    static func resolveForOperationGrant(operationID: UUID, runID: UUID,
+                                         expectedEpoch: UInt64) -> GrantResolution? {
+        guard let registration = operationRegistration(operationID.uuidString),
+              registration.uiRunID == runID,
+              registration.operation.conversationID == registration.conversationID,
+              revalidateOperationLease(registration.operation, epoch: expectedEpoch),
+              let resolved = bridge(timeoutSeconds: 4.0, { () -> (workspaceID: UUID, conversationID: UUID, rootURL: URL)? in
+                  await LinuxWorkspaceAuthority.resolveWorkspace(conversationID: registration.conversationID)
+              }) else { return nil }
+        return GrantResolution(binding: resolved, jobRow: nil)
+    }
+
+    /// UI terminal/LSP grant mint. The conversation identity comes ONLY from
+    /// the trusted registration; the payload runID must equal the UI
+    /// interaction identity registered in the SAME open step.
+    static func mintBindingForOperation(operationID: UUID, runID: UUID,
+                                        grantID: String) -> WorkspaceGrantBinding? {
+        guard let proofSecret = currentProofSecret(), isInstalled,
+              let currentEpoch = G02NativeRootEpoch.readback(),
+              currentEpoch > 0, currentEpoch <= UInt64(Int64.max),
+              let resolved = resolveForOperationGrant(operationID: operationID, runID: runID,
+                                                      expectedEpoch: currentEpoch) else { return nil }
+        return finishMint(runID: runID, grantID: grantID, toolCallID: nil, jobID: nil,
+                          operationID: operationID, resolved: resolved.binding,
+                          proofSecret: proofSecret, epoch: currentEpoch)
+    }
+
     /// The ORIGINAL durable processor call identity the owning service
     /// freezes for a job row (`BackgroundJobService.start`'s ToolContext).
     /// One grammar, delegated to `JobProcessorIdentity.callID` (whose
@@ -657,12 +840,14 @@ public enum LinuxWorkspaceAuthority {
     }
 
     private static func finishMint(runID: UUID, grantID: String, toolCallID: String?, jobID: UUID?,
+                                   operationID: UUID? = nil,
                                    resolved: (workspaceID: UUID, conversationID: UUID, rootURL: URL),
                                    proofSecret: WorkspaceGrantProof, epoch: UInt64) -> WorkspaceGrantBinding? {
         let projectID = LinuxShellProjectMapping.projectID(forCanonicalCoreWorkspaceRoot: resolved.rootURL)
         let binding = WorkspaceGrantBinding(
             projectID: projectID, runID: runID, conversationID: resolved.conversationID,
             workspaceID: resolved.workspaceID, toolCallID: toolCallID, jobID: jobID,
+            operationID: operationID,
             rootEpoch: epoch, grantID: grantID,
             workspaceRootPath: resolved.rootURL.path,
             workspaceFingerprint: fingerprint(of: resolved.rootURL.path),
@@ -670,6 +855,7 @@ public enum LinuxWorkspaceAuthority {
                                        conversationID: resolved.conversationID,
                                        workspaceID: resolved.workspaceID,
                                        toolCallID: toolCallID, jobID: jobID,
+                                       operationID: operationID,
                                        rootEpoch: epoch,
                                        grantID: grantID, workspaceRootPath: resolved.rootURL.path,
                                        budgetsJSON: WorkspaceGrantProof.canonicalBudgets(.defaults)),
@@ -680,6 +866,7 @@ public enum LinuxWorkspaceAuthority {
                                             conversationID: resolved.conversationID,
                                             workspaceID: resolved.workspaceID,
                                             toolCallID: toolCallID, jobID: jobID,
+                                            operationID: operationID,
                                             rootEpoch: epoch,
                                             workspaceRootPath: resolved.rootURL.path,
                                             mintedAt: Date())
@@ -699,6 +886,7 @@ public enum LinuxWorkspaceAuthority {
               mint.workspaceID == binding.workspaceID,
               mint.toolCallID == binding.toolCallID,
               mint.jobID == binding.jobID,
+              mint.operationID == binding.operationID,
               mint.rootEpoch == binding.rootEpoch,
               mint.workspaceRootPath == binding.workspaceRootPath else {
             return false
@@ -835,6 +1023,47 @@ public func floe_linux_workspace_binding_for_call(_ rootEpoch: UInt64, _ runID: 
     return workspaceReply(object, buffer: outBuffer, capacity: capacity)
 }
 
+/// G04-R2 UI operation-scoped mint (trusted Kotlin host only; NEVER a model
+/// dispatch). The real interactive terminal / LSP action owns an ORIGINAL
+/// `beginG04WorkspaceOperation` conversation lease but NO persisted model
+/// Run, so it mints against the registered live operation instead:
+/// `operationID` is the native-issued identity of that lease and `runID`
+/// MUST equal the UI interaction identity registered with it in the SAME
+/// open step. The mint re-validates the REAL registry token + the domain
+/// validator (lease ended / stopped / cancelled / delete-guarded / retired /
+/// generation-fenced → refusal), re-derives the workspace ONLY from the
+/// registered conversation's ORIGINAL ownership row, and stamps the
+/// operation scope into the HMAC-bound grant. Every failure is the SAME
+/// closed `bindingUnavailable` shape as an unresolvable run — no new
+/// vocabulary, no fallback, no fabricated ownership.
+@_cdecl("floe_linux_workspace_binding_for_operation")
+public func floe_linux_workspace_binding_for_operation(_ rootEpoch: UInt64,
+                                                       _ operationID: UnsafePointer<CChar>?,
+                                                       _ runID: UnsafePointer<CChar>?,
+                                                       _ grantID: UnsafePointer<CChar>?,
+                                                       _ outBuffer: UnsafeMutablePointer<CChar>?,
+                                                       _ capacity: Int32) -> Int32 {
+    guard rootEpoch > 0,
+          let opText = workspaceCString(operationID, maximum: 64), let opUUID = workspaceUUID(opText),
+          let runText = workspaceCString(runID, maximum: 64), let runUUID = workspaceUUID(runText),
+          let grantText = workspaceCString(grantID, maximum: 64),
+          grantText.range(of: "^[0-9a-f]{16,64}$", options: .regularExpression) != nil
+    else {
+        return workspaceError("invalidArguments", buffer: outBuffer, capacity: capacity)
+    }
+    guard G02NativeRootEpoch.readback() == rootEpoch else {
+        return workspaceError("epochNotCurrent", buffer: outBuffer, capacity: capacity)
+    }
+    guard let binding = LinuxWorkspaceAuthority.mintBindingForOperation(operationID: opUUID,
+                                                                        runID: runUUID,
+                                                                        grantID: grantText) else {
+        return workspaceError("bindingUnavailable", buffer: outBuffer, capacity: capacity)
+    }
+    var object = binding.dictionaryValue
+    object["ok"] = true
+    return workspaceReply(object, buffer: outBuffer, capacity: capacity)
+}
+
 /// Open the native session for a minted grant JSON. The Core path is
 /// RE-DERIVED here from the ORIGINAL stores; the JSON never carries it and
 /// the engine receives the authoritative value only after revalidation.
@@ -882,11 +1111,23 @@ public func floe_linux_workspace_session_open(_ bindingJson: UnsafePointer<CChar
     }
     // Same resolution route as the mint: ordinary grants need an active
     // parent; job grants need the ORIGINAL live processor + frozen row
-    // binding instead (a terminal parent alone opens fine).
+    // binding instead (a terminal parent alone opens fine); G04-R2
+    // operation-scoped UI grants re-run the EXACT mint-side registration +
+    // live-lease + ORIGINAL ownership resolution (a lease that ended between
+    // mint and open opens NOTHING).
     let jobID = (dictionary["jobID"] as? String).flatMap(UUID.init(uuidString:))
-    guard let resolution = LinuxWorkspaceAuthority.resolveForGrant(runID: runID, jobID: jobID,
-                                                                   requireRunActive: jobID == nil,
-                                                                   expectedEpoch: epochNumber.uint64Value),
+    let operationID = (dictionary["operationID"] as? String).flatMap(UUID.init(uuidString:))
+    let resolution: LinuxWorkspaceAuthority.GrantResolution?
+    if let operationID {
+        resolution = LinuxWorkspaceAuthority.resolveForOperationGrant(operationID: operationID,
+                                                                      runID: runID,
+                                                                      expectedEpoch: epochNumber.uint64Value)
+    } else {
+        resolution = LinuxWorkspaceAuthority.resolveForGrant(runID: runID, jobID: jobID,
+                                                             requireRunActive: jobID == nil,
+                                                             expectedEpoch: epochNumber.uint64Value)
+    }
+    guard let resolution = resolution,
           // STRICT original parse; `workspaceRootPath` is attached ONLY from
           // the store-re-derived resolution (never from the wire JSON), and
           // the parsed identities must equal what the ORIGINAL stores say

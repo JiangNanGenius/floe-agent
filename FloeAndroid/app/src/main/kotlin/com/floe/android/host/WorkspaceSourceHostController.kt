@@ -376,8 +376,12 @@ internal class WorkspaceSourceHostController(
             mutate { it.copy(pending = null) }
             return when (val accepted = accept) {
                 is PickAcceptResult.Accepted -> {
-                    val derivedDocument = accepted.uri.uriString.substringAfterLast('/')
-                        .takeIf { marker -> marker != accepted.uri.uriString }
+                    // Identity rule: the PLATFORM decodes the document id
+                    // (a tree-SCOPED child keeps its CHILD id, never the
+                    // tree root's). The old raw-segment guess stored
+                    // percent-encoded ids like "primary%3ADownload%2Fsample.py"
+                    // straight into durable stage rows — repair 2026-10-25.
+                    val derivedDocument = backend()?.documentIdOf(accepted.uri)
                     mutate {
                         it.copy(
                             accepted = WorkspaceSourceAcceptedPick(
@@ -465,7 +469,7 @@ internal class WorkspaceSourceHostController(
                         }
                     }
                     return@guardedRun when (val outer = scan) {
-                        is SafOutcome.Failure -> WorkspaceSourceBrowseOutcome(mapFailure(outer.failure))
+                        is SafOutcome.Failure -> WorkspaceSourceBrowseOutcome(mapFailure(outer.failure, outer.detail))
                         is SafOutcome.Success -> WorkspaceSourceBrowseOutcome(
                             result("ok"),
                             outer.value.documents.map { document ->
@@ -588,7 +592,7 @@ internal class WorkspaceSourceHostController(
                     ?: return result("failed", "provider target unresolved")
                 val meta = gatewayOutcome { cancel -> service.operations.metadata(target, cancel) }
                 val document = when (meta) {
-                    is SafOutcome.Failure -> return mapFailure(meta.failure)
+                    is SafOutcome.Failure -> return mapFailure(meta.failure, meta.detail)
                     is SafOutcome.Success -> meta.value
                 }
                 if (document.capabilities.virtual && typedAcceptMime == null) {
@@ -621,7 +625,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 if (stageRefusal != 0) return mapStatus(stageRefusal)
-                if (pump is SafOutcome.Failure) return mapFailure(pump.failure)
+                if (pump is SafOutcome.Failure) return mapFailure(pump.failure, pump.detail)
                 // The commit + bind hop runs OUTSIDE the gateway executor so a
                 // long native hash/verify never starves mailbox ticket IO.
                 val finish = SourceHostReply.call { buffer ->
@@ -721,7 +725,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 val prepared: PreparedSave = when (preparedOutcome) {
-                    is SafOutcome.Failure -> return mapFailure(preparedOutcome.failure)
+                    is SafOutcome.Failure -> return mapFailure(preparedOutcome.failure, preparedOutcome.detail)
                     is SafOutcome.Success -> preparedOutcome.value
                 }
                 if (prepared.state == PreparedState.SOURCE_CHANGED) {
@@ -746,7 +750,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 if (backupRefusal != 0) return mapStatus(backupRefusal)
-                if (backupPump is SafOutcome.Failure) return mapFailure(backupPump.failure)
+                if (backupPump is SafOutcome.Failure) return mapFailure(backupPump.failure, backupPump.detail)
                 val backupFinish = SourceHostReply.call { buffer ->
                     runCatching { channel.stageFinish(backupTicket, buffer) }.getOrDefault(-599)
                 }
@@ -793,7 +797,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 if (freshRefusal != 0) return mapStatus(freshRefusal)
-                if (freshPump is SafOutcome.Failure) return mapFailure(freshPump.failure)
+                if (freshPump is SafOutcome.Failure) return mapFailure(freshPump.failure, freshPump.detail)
                 val claimReply = SourceHostReply.call { buffer ->
                     runCatching { channel.saveClaim(saveTicket, freshTicket, buffer) }.getOrDefault(-599)
                 }
@@ -808,7 +812,7 @@ internal class WorkspaceSourceHostController(
                 // hash) decides the durable terminal.
                 replacementFile = File(recoveryRoot, "replacement-$recoveryID.bin")
                 val pulled = pullEgressToFile(saveTicket, replacementFile)
-                if (pulled is SafOutcome.Failure) return mapFailure(pulled.failure)
+                if (pulled is SafOutcome.Failure) return mapFailure(pulled.failure, pulled.detail)
                 if (sha256OfFile(replacementFile) != snapshotSha) {
                     return result("conflict", "replacement transfer file does not match the native snapshot")
                 }
@@ -1010,7 +1014,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 if (writeRefusal != 0) return mapStatus(writeRefusal)
-                if (write is SafOutcome.Failure) return mapFailure(write.failure)
+                if (write is SafOutcome.Failure) return mapFailure(write.failure, write.detail)
                 verifyTicket = runCatching {
                     channel.stageOpen(nativeEpoch, taskID, workspaceID, "export-verify",
                                       "", accepted.uri, accepted.documentId ?: "", "")
@@ -1079,7 +1083,7 @@ internal class WorkspaceSourceHostController(
                 val snapshotSha = info.text("sha256")
                 val snapshotBytes = info.number("bytes") ?: return result("failed", "snapshot facts missing")
                 val pulled = pullEgressToFile(egressTicket, transferFile)
-                if (pulled is SafOutcome.Failure) return mapFailure(pulled.failure)
+                if (pulled is SafOutcome.Failure) return mapFailure(pulled.failure, pulled.detail)
                 if (sha256OfFile(transferFile) != snapshotSha) {
                     return result("ioFailed", "export transfer file does not match the native snapshot")
                 }
@@ -1100,7 +1104,7 @@ internal class WorkspaceSourceHostController(
                     }
                 }
                 val created = when (export) {
-                    is SafOutcome.Failure -> return mapFailure(export.failure)
+                    is SafOutcome.Failure -> return mapFailure(export.failure, export.detail)
                     is SafOutcome.Success -> export.value
                 }
                 if (!created.readbackVerified || created.destinationReadbackSha256 != snapshotSha) {
@@ -1337,7 +1341,7 @@ internal class WorkspaceSourceHostController(
             }
             if (refusal != 0) return mapStatus(refusal)
             return when (pump) {
-                is SafOutcome.Failure -> mapFailure(pump.failure)
+                is SafOutcome.Failure -> mapFailure(pump.failure, pump.detail)
                 is SafOutcome.Success -> result("ok")
             }
         }
@@ -1415,7 +1419,7 @@ internal class WorkspaceSourceHostController(
 
         // ---- result/token mapping (UI-facing typed outcomes) --------------
 
-        private fun mapFailure(failure: SafFailure): WorkspaceSourceResult = when (failure) {
+        private fun mapFailure(failure: SafFailure, faultDetail: String? = null): WorkspaceSourceResult = when (failure) {
             SafFailure.Revoked -> result("revoked",
                 "the system no longer holds this grant — re-pick to restore access")
             SafFailure.GrantMissing -> result("grantMissing",
@@ -1435,7 +1439,35 @@ internal class WorkspaceSourceHostController(
             is SafFailure.SizeLimitExceeded -> result("sizeLimit",
                 "the file exceeds the 1 GiB provider copy budget")
             is SafFailure.Io -> result("ioFailed", failure.detail)
-            is SafFailure.Failed -> result("failed", failure.detail)
+            is SafFailure.Failed -> {
+                // The ordinary UI copy (outcomeText) stays unchanged. The
+                // Details/diagnostic line may additionally carry a closed
+                // `<stage>.<ExceptionClass>` token produced by the Android
+                // backend — and NOTHING else: any raw provider message that
+                // does not match this exact grammar is dropped here, so URIs,
+                // headers, bodies or credentials can never reach the view
+                // (repair 2026-10-25).
+                val diagnostic = closedFaultDiagnostic(faultDetail)
+                result("failed", diagnostic?.let { token -> "${failure.detail} [diagnostic:$token]" }
+                    ?: failure.detail)
+            }
+        }
+
+        /** Accepts ONLY the closed token grammar `^[a-z][A-Za-z0-9]{0,23}\.[A-Z][A-Za-z0-9_]{0,63}$`. */
+        private fun closedFaultDiagnostic(detail: String?): String? {
+            val token = detail?.trim().orEmpty()
+            val dot = token.indexOf('.')
+            if (dot < 1 || dot != token.lastIndexOf('.') || dot == token.lastIndex) return null
+            val stage = token.substring(0, dot)
+            val clazz = token.substring(dot + 1)
+            if (stage.length !in 1..24 || clazz.length !in 1..64) return null
+            if (!stage[0].isLetter() || stage[0] !in 'a'..'z' ||
+                !stage.all { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' }
+            ) return null
+            if (clazz[0] !in 'A'..'Z' ||
+                !clazz.all { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '0'..'9' || ch == '_' }
+            ) return null
+            return token
         }
 
         private fun mapReply(reply: SourceHostReply): WorkspaceSourceResult {

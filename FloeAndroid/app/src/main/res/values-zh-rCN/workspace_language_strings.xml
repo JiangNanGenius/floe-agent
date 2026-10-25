@@ -16,6 +16,7 @@
     <string name="workspace_language_state_ready">已就绪</string>
     <string name="workspace_language_state_missing">未安装</string>
     <string name="workspace_language_state_failed">启动出错</string>
+    <string name="workspace_language_state_busy">运行环境正忙，请先关闭终端或停止程序，再重试。</string>
     <string name="workspace_language_state_released">未在运行</string>
     <string name="workspace_language_retry">重试</string>
     <string name="workspace_language_missing_hint">请先在 Linux 环境中安装对应语言服务，然后重试。</string>

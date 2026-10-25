@@ -62,6 +62,7 @@
     <string name="ide_status_plain">纯文本</string>
     <string name="ide_status_line_col">行 %1$d，列 %2$d</string>
     <string name="ide_status_saved">已保存</string>
+    <string name="ide_status_recovery">有修改待恢复</string>
     <string name="ide_status_unsaved">未保存</string>
     <string name="ide_status_pending_n">还有 %1$d 处修改未确认</string>
     <string name="ide_status_read_only">只读</string>

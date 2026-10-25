@@ -1305,15 +1305,40 @@ class ConversationFlowHolder(
 
     fun openPendingInputEditor(inputId: String) {
         if (retired) return
+        val state = snapshot.value ?: return
+        val input = state.pendingInputs.firstOrNull { it.id == inputId } ?: return
         editingPendingInputId.value = inputId
+        // Queue-content hydration (G04R2): the sheet may only become
+        // editable for a PROVEN body — the row's COMPLETE slot (native
+        // short-row proof or an already-published read) or a published
+        // Ready. Everything else starts/awaits the bounded detail read;
+        // the unread original is never shown as an empty editable.
+        val proven = input.bodyState == PendingInputBodyStateUi.COMPLETE ||
+            state.pendingInputBodies[inputId] is PendingInputBodyUi.Ready
+        if (!proven) {
+            host.requestPendingInputBody(session, inputId)
+        }
     }
 
     fun closePendingInputEditor() { editingPendingInputId.value = null }
 
-    /** ⇄ editPendingInput: the trimmed content replaces the queued row. */
+    /** ⇄ editPendingInput: the trimmed content replaces the queued row —
+     * but ONLY when the projected slot is a PROVEN complete body (or a
+     * published Ready read at the row's current CAS version). A blank or
+     * bounded-preview editor NEVER overwrites the unread original; the
+     * host additionally re-proves the CAS against a fresh snapshot before
+     * the envelope leaves the App. */
     fun editPendingInput(inputId: String, content: String): ConversationFlowResult {
         val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
-        if (state.pendingInputs.none { it.id == inputId }) return ConversationFlowResult.Stale
+        val input = state.pendingInputs.firstOrNull { it.id == inputId }
+            ?: return ConversationFlowResult.Stale
+        val body = state.pendingInputBodies[inputId]
+        val provenComplete = input.bodyState == PendingInputBodyStateUi.COMPLETE &&
+            (input.inputVersion == null || body == null ||
+                (body is PendingInputBodyUi.Ready && body.inputVersion == input.inputVersion))
+        if (!provenComplete && body !is PendingInputBodyUi.Ready) {
+            return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
+        }
         val trimmed = content.trim()
         if (trimmed.isEmpty()) return rejected(ConversationRejectedReason.INPUT_INSUFFICIENT)
         return if (host.editPendingInput(session, inputId, trimmed)) {
@@ -1774,6 +1799,16 @@ class ConversationFlowHolder(
 
     fun dismissActionError() { actionError = null }
     fun dismissAttachmentError() { attachmentError = null }
+
+    /** The host surfaces a typed queue-mutation refusal on the thread error
+     * banner. The pending-input editor sheet closes optimistically when the
+     * dispatch is queued, so an honest refusal (stale CAS, row changed,
+     * native rejection) must stay visible after the sheet is gone; the
+     * durable row keeps its original body on every refusal. */
+    fun noteHostActionError(message: String) {
+        if (retired) return
+        actionError = message
+    }
 
     /* --------------------------------- scrolling --------------------------------- */
 

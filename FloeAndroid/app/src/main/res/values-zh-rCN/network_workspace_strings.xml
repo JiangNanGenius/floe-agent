@@ -78,4 +78,5 @@
     <string name="network_workspace_error_journal">上一次保存仍有待核对的记录，请先“核对”再保存。</string>
     <string name="network_workspace_error_busy">此工作区正在进行另一项传输。</string>
     <string name="network_workspace_error_generic">操作未完成，你可以重试。</string>
+    <string name="network_workspace_short_title">网络文件</string>
 </resources>

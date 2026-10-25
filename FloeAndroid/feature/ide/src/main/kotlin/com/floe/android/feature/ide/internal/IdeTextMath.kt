@@ -9,6 +9,16 @@ package com.floe.android.feature.ide.internal
  */
 internal object IdeTextMath {
 
+    /** Delete events arrive after Sora shortened its buffer, but their range
+     * belongs to the presenter's pre-edit mirror. Never clamp to the new size:
+     * deleting EOF would become a no-op and silently restore deleted text. */
+    fun deletionRange(beforeLength: Int, start: Int, deletedLength: Int):
+        com.floe.android.feature.ide.api.IdeUtf16Range? {
+        if (beforeLength < 0 || deletedLength <= 0 || start < 0 ||
+            deletedLength > beforeLength || start > beforeLength - deletedLength) return null
+        return com.floe.android.feature.ide.api.IdeUtf16Range(start, start + deletedLength)
+    }
+
     /** True when [index] falls strictly between the halves of a surrogate pair. */
     fun insideSurrogatePair(text: CharSequence, index: Int): Boolean {
         if (index <= 0 || index >= text.length) return false

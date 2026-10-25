@@ -106,6 +106,38 @@ object TerminalInputEncoder {
     }
 
     /**
+     * A hardware key event's produced unicode character -> UTF-8 PTY bytes.
+     *
+     * ACTUAL AOSP contract (verified against frameworks/base
+     * `KeyEvent.getUnicodeChar(metaState)` -> `KeyCharacterMap.get(keyCode,
+     * metaState)`): the answer is 0 when the key types nothing, otherwise a
+     * Unicode scalar, and the ONLY extra flag is bit 0x80000000
+     * (`KeyCharacterMap.COMBINING_ACCENT`) marking a "dead key" accent that
+     * must be combined with another key and never be sent alone. There is
+     * no other high-half-word flag: everything through U+10FFFF is a valid
+     * printable scalar — Latin-1, CJK, and the SUPPLEMENTARY planes
+     * (U+1F600, U+20000, U+10070 …), encoded here as lossless UTF-8.
+     * Isolated surrogates (0xD800–0xDFFF) cannot encode, and every control
+     * character stays on the [encodeKey] keycode path. Termux upstream does
+     * the same: KeyHandler tables first, then `getUnicodeChar` for text.
+     *
+     * (Review correction: an earlier draft rejected everything ≥0x10000 as
+     * "flag composites", which wrongly refused valid supplementary-plane
+     * scalars; the only real flag is COMBINING_ACCENT above bit 30.)
+     */
+    fun encodeUnicodeChar(unicodeChar: Int): ByteArray? {
+        // 0 = nothing typed; COMBINING_ACCENT (bit 31) makes the value
+        // negative: a dead-key accent alone is never printable text.
+        if (unicodeChar <= 0) return null
+        // Beyond the Unicode range, or an isolated surrogate half.
+        if (unicodeChar > 0x10FFFF || unicodeChar in 0xD800..0xDFFF) return null
+        // Controls (incl. DEL 0x7F and C1) belong to the keycode/control
+        // mapping, never a raw "character".
+        if (Character.isISOControl(unicodeChar)) return null
+        return String(Character.toChars(unicodeChar)).toByteArray(Charsets.UTF_8)
+    }
+
+    /**
      * Physical key event -> bytes using the reused Termux KeyHandler tables
      * with the emulator's CURRENT application-mode flags.
      */
@@ -123,5 +155,75 @@ object TerminalInputEncoder {
             cursorKeysApplication = cursorKeysApplication,
             keypadApplication = keypadApplication,
         )
+    }
+
+    /**
+     * HARDWARE key event -> PTY bytes. `adb shell input text`, an external
+     * keyboard and injected physical keys all arrive here as key events
+     * (not IME commits): without the unicode fallback printable characters
+     * fell through to the focused view and were retained in the hidden
+     * EditText instead of reaching the PTY.
+     *
+     * The whole decision is factored into the pure [encodePhysicalKey]
+     * core; this overload reads the platform event exactly the way the
+     * core documents (`getUnicodeChar(metaState)` applies the current
+     * shift/alt/dead layouting and is the ONLY producer of the
+     * COMBINING_ACCENT-flagged value).
+     */
+    fun encodePhysicalKeyEvent(
+        event: android.view.KeyEvent,
+        cursorKeysApplication: Boolean,
+        keypadApplication: Boolean,
+    ): ByteArray? {
+        if (event.action != android.view.KeyEvent.ACTION_DOWN) return null
+        return encodePhysicalKey(
+            keyCode = event.keyCode,
+            ctrlDown = event.isCtrlPressed,
+            altDown = event.isAltPressed,
+            shiftDown = event.isShiftPressed,
+            unicodeChar = event.getUnicodeChar(event.metaState),
+            cursorKeysApplication = cursorKeysApplication,
+            keypadApplication = keypadApplication,
+        )
+    }
+
+    /**
+     * PURE hardware-key decision (unit-testable without a framework
+     * KeyEvent):
+     *  * Android system BACK is NEVER a PTY byte: it keeps its platform
+     *    meaning inside the pane (close the IME / navigate back). The
+     *    vendored KeyHandler maps KEYCODE_BACK to ESC for legacy phone
+     *    keyboards, and the dedicated hardware KEYCODE_ESCAPE still sends
+     *    PTY ESC through [encodeKey].
+     *  * KeyHandler/control combos first, unchanged ([encodeKey]).
+     *  * Ctrl combos that [encodeKey] does not own stay refused — the
+     *    unicode fallback never fabricates a plain char under Ctrl.
+     *  * Alt + printable reuses the xterm "meta sends ESC" form
+     *    ([withAlt]) — exactly how KeyHandler's alt special keys behave —
+     *    instead of dropping legitimate Alt letters.
+     *  * Everything else falls back to the produced printable scalar.
+     */
+    fun encodePhysicalKey(
+        keyCode: Int,
+        ctrlDown: Boolean,
+        altDown: Boolean,
+        shiftDown: Boolean,
+        unicodeChar: Int,
+        cursorKeysApplication: Boolean,
+        keypadApplication: Boolean,
+    ): ByteArray? {
+        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) return null
+        val mapped = encodeKey(
+            keyCode = keyCode,
+            ctrlDown = ctrlDown,
+            altDown = altDown,
+            shiftDown = shiftDown,
+            cursorKeysApplication = cursorKeysApplication,
+            keypadApplication = keypadApplication,
+        )
+        if (mapped != null) return mapped
+        if (ctrlDown) return null
+        val printable = encodeUnicodeChar(unicodeChar) ?: return null
+        return if (altDown) withAlt(printable) else printable
     }
 }

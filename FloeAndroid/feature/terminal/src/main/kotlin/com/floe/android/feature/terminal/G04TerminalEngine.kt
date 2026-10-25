@@ -180,6 +180,15 @@ class G04TerminalEngine(
     fun encodeKeyEvent(event: KeyEvent): ByteArray? =
         TerminalInputEncoder.encodeKeyEvent(event, cursorKeysApplication(), keypadApplication())
 
+    /** Hardware key bytes: KeyHandler tables first, then the event's
+     * printable unicode character (external keyboards / injected events);
+     * Android system BACK stays platform-owned and the dedicated ESCAPE
+     * key sends PTY ESC (see TerminalInputEncoder.encodePhysicalKey). */
+    fun encodePhysicalKeyEvent(event: KeyEvent): ByteArray? =
+        TerminalInputEncoder.encodePhysicalKeyEvent(
+            event, cursorKeysApplication(), keypadApplication(),
+        )
+
     private fun clampColumns(value: Int) = value.coerceIn(MinimumColumns, MaximumColumns)
     private fun clampRows(value: Int) = value.coerceIn(MinimumRows, MaximumRows)
 }

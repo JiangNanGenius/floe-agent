@@ -46,6 +46,25 @@ class TerminalImeProxy(
 
         override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection =
             Connection(this, true, sink)
+
+        /** HARDWARE keys. An external keyboard and injected physical key
+         * events (including `adb shell input text`) are dispatched to the
+         * FOCUSED view — this proxy — not through the InputConnection.
+         * Route them through the terminal sink first (special keys via the
+         * reused KeyHandler tables, printable keys via the event's unicode
+         * char); only an unowned event may reach the default EditText
+         * handling, so the editable can never retain typed commands.
+         *
+         * Android system BACK is platform-owned: it must close the IME /
+         * navigate back, never become PTY ESC (the dedicated hardware
+         * KEYCODE_ESCAPE is what sends ESC). Both its DOWN and its UP
+         * bypass the sink entirely, so the platform back/long-press
+         * tracking keeps its complete event pair. */
+        override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+            if (event.keyCode == KeyEvent.KEYCODE_BACK) return super.dispatchKeyEvent(event)
+            if (this@TerminalImeProxy.dispatchKeyEvent(event)) return true
+            return super.dispatchKeyEvent(event)
+        }
     }
 
     private class Connection(
@@ -132,8 +151,25 @@ class TerminalImeProxy(
         manager?.hideSoftInputFromWindow(editText.windowToken, 0)
     }
 
+    /** keyCode whose hardware DOWN the terminal actually owned (0 = none),
+     * so the matching UP is consumed only as its pair. Without this an
+     * unowned key's UP would be swallowed here and break the platform's
+     * long-press/back tracking that needs the complete unhandled pair. */
+    private var hardwareDownCode = 0
+
     fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val handled = sink.keyEvent(event)
+        val handled = when (event.action) {
+            KeyEvent.ACTION_DOWN ->
+                sink.keyEvent(event).also { hardwareDownCode = if (it) event.keyCode else 0 }
+            KeyEvent.ACTION_MULTIPLE ->
+                // Batch-injected text (characters payload, no DOWN/UP pair).
+                sink.keyEvent(event)
+            else ->
+                if (event.keyCode == hardwareDownCode && hardwareDownCode != 0) {
+                    hardwareDownCode = 0
+                    true
+                } else false
+        }
         if (handled) editText.setText("")
         return handled
     }

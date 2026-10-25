@@ -457,6 +457,18 @@ enum RunSnapshotWireBuilder {
             conversationID: record.conversationID) {
             for item in pending.prefix(RunDomainLimits.maximumPendingInputItems) {
                 if item.status == .queued { queuedIDs.append(item.id) }
+                // Queue-content truthfulness (G04R2 repair): the preview is
+                // an explicitly-labelled bounded excerpt of the REAL row —
+                // never a blank slot and never presented as full editable
+                // content. `previewComplete` is proven by equality with the
+                // actual row text (a truncated preview is ALWAYS different:
+                // `bounded` only cuts when it appends its marker), and
+                // `contentBytes` is the durable UTF-8 length the consumer
+                // shows with the preview label. `executionMode` mirrors the
+                // ORIGINAL row vocabulary so the trusted browser-handoff
+                // presentation needs no guessed default. The FULL editable
+                // body stays on the `conversation.get.detail` read lane.
+                let preview = bounded(item.content, maxBytes: 512)
                 inputItems.append(.object([
                     "inputID": .string(item.id.uuidString),
                     "position": .integer(Int64(item.position)),
@@ -466,7 +478,10 @@ enum RunSnapshotWireBuilder {
                     "consumedRunID": item.consumedRunID.map { .string($0.uuidString) } ?? .null,
                     "updatedAt": .string(RunWireDate.encode(item.updatedAt)),
                     "inputVersion": .string(RunWireRevision.inputVersion(updatedAt: item.updatedAt)),
-                    "preview": .string(bounded(item.content, maxBytes: 512)),
+                    "preview": .string(preview),
+                    "previewComplete": .boolean(preview == item.content),
+                    "contentBytes": .integer(Int64(item.content.utf8.count)),
+                    "executionMode": .string(item.executionMode),
                 ]))
             }
             fields["pendingInputs"] = .array(inputItems)

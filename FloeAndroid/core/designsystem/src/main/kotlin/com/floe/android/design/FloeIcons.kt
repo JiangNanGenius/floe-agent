@@ -8,18 +8,30 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.unit.dp
 
 /**
- * Floe glyph family: source-authored geometric outline icons on a 24x24 grid,
- * uniform 1.8 stroke, round caps and joins. They cover the semantic roles of
- * the iOS shell without copying SF Symbol path data or shipping the extended
- * Material icon catalog. Tint through [IconGlyph] (ColorFilter.tint).
+ * Floe glyph family for the iOS-shaped shell.
+ *
+ * Most glyphs are single-fill outlines generated from the MIT-licensed
+ * `CupertinoIcons.ttf` (Flutter third_party `cupertino_icons` 2.0.0), which is
+ * handcrafted to preserve the SF Symbols style. The generated path data lives
+ * in [FloeGlyphPaths] (see that header for the pinned archive/font/tool hashes);
+ * the font binary itself is not shipped or depended on at runtime, and the
+ * upstream MIT text is bundled at `assets/legal/cupertino-icons/LICENSE`.
+ * A small set of roles has no glyph in the pinned family (see
+ * `licenses/cupertino-icons/PROVENANCE.json`) and keeps
+ * the original source-authored geometric outline style (24x24 grid, 1.8
+ * stroke, round caps and joins). No Apple-proprietary font or glyph asset is
+ * copied. Tint semantics are unchanged through [IconGlyph]
+ * (ColorFilter.tint); default 24dp boxes and public value names are stable.
  */
 object FloeIcons {
 
     private val strokeColor = SolidColor(Color.Black)
+    private val fillColor = SolidColor(Color.Black)
 
     private fun icon(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =
         ImageVector.Builder(
@@ -42,7 +54,19 @@ object FloeIcons {
         )
     }
 
-    /* ---- geometric primitives (Bézier approximations, no arcTo) ---- */
+    /** Fill a generated CupertinoIcons-derived outline (nonzero winding). */
+    private fun ImageVector.Builder.glyph(key: String) {
+        addPath(
+            pathData = PathParser().parsePathString(FloeGlyphPaths.all.getValue(key)).toNodes(),
+            fill = fillColor,
+            pathFillType = PathFillType.NonZero,
+        )
+    }
+
+    private fun glyphIcon(name: String, key: String): ImageVector =
+        icon(name) { glyph(key) }
+
+    /* ---- geometric primitives (fallback family only) ---- */
 
     private fun PathBuilder.rrect(x0: Float, y0: Float, x1: Float, y1: Float, r: Float) {
         val k = r * 0.5523f
@@ -67,60 +91,12 @@ object FloeIcons {
         close()
     }
 
-    /** Polyline; closes the subpath when asked. */
-    private fun PathBuilder.poly(vararg pts: Pair<Float, Float>, closeIt: Boolean = false) {
-        moveTo(pts.first().first, pts.first().second)
-        pts.drop(1).forEach { lineTo(it.first, it.second) }
-        if (closeIt) close()
-    }
-
-    private fun polar(cx: Float, cy: Float, angle: Float, radius: Float): Pair<Float, Float> =
-        Pair(cx + kotlin.math.cos(angle) * radius, cy + kotlin.math.sin(angle) * radius)
-
-    /**
-     * True toothed gear outline: eight trapezoidal teeth on a root circle plus
-     * the hub circle. The previous glyph drew a slotted circle with eight rays,
-     * which read as a sun rather than the iPad `gearshape` (finish review F07).
-     */
-    private fun PathBuilder.gearOutline(cx: Float, cy: Float, teeth: Int, outer: Float, root: Float) {
-        val step = (Math.PI * 2.0 / teeth).toFloat()
-        val tipHalf = step * 0.15f
-        val baseHalf = step * 0.30f
-        for (i in 0 until teeth) {
-            val angle = -Math.PI.toFloat() / 2f + i * step
-            val p1 = polar(cx, cy, angle - baseHalf, root)
-            val p2 = polar(cx, cy, angle - tipHalf, outer)
-            val p3 = polar(cx, cy, angle + tipHalf, outer)
-            val p4 = polar(cx, cy, angle + baseHalf, root)
-            if (i == 0) moveTo(p1.first, p1.second) else lineTo(p1.first, p1.second)
-            lineTo(p2.first, p2.second)
-            lineTo(p3.first, p3.second)
-            lineTo(p4.first, p4.second)
-        }
-        close()
-    }
-
     /* ------------------------------ glyphs ------------------------------ */
 
-    /** square.and.pencil — New Task. */
-    val NewTask = icon("floe.new_task") {
-        stroke {
-            moveTo(10f, 3.5f); lineTo(7.6f, 3.5f)
-            curveTo(5.3f, 3.5f, 3.5f, 5.3f, 3.5f, 7.6f)
-            lineTo(3.5f, 16.4f)
-            curveTo(3.5f, 18.7f, 5.3f, 20.5f, 7.6f, 20.5f)
-            lineTo(16.4f, 20.5f)
-            curveTo(18.7f, 20.5f, 20.5f, 18.7f, 20.5f, 16.4f)
-            lineTo(20.5f, 14f)
-        }
-        stroke { moveTo(13.2f, 11.1f); lineTo(18.9f, 5.4f) }
-        stroke { moveTo(12f, 12.3f); lineTo(11.2f, 14.9f); lineTo(13.8f, 14.1f) }
-        stroke {
-            moveTo(17.8f, 4.3f); lineTo(19.9f, 2.6f); lineTo(21.4f, 4.2f); lineTo(19.9f, 6.5f); lineTo(17.8f, 4.3f)
-        }
-    }
+    /** iOS square.and.pencil — New Task (Cupertino "square_pencil" U+F417). */
+    val NewTask: ImageVector = glyphIcon("floe.new_task", "square_pencil")
 
-    /** checklist — Task Center. */
+    /** checklist — Task Center. Hand-drawn fallback (no 2.0.0 checklist glyph). */
     val Checklist = icon("floe.checklist") {
         stroke { moveTo(3.5f, 6.6f); lineTo(5f, 8.1f); lineTo(7.8f, 5f) }
         stroke { moveTo(10.8f, 6.6f); lineTo(20.5f, 6.6f) }
@@ -130,42 +106,13 @@ object FloeIcons {
         stroke { circle(15.9f, 11.9f, 1.7f) }
     }
 
-    /** book.pages — Notes. */
-    val BookPages = icon("floe.book_pages") {
-        stroke {
-            moveTo(12f, 6.2f)
-            curveTo(10.2f, 4.6f, 6.8f, 4.4f, 4.2f, 5.1f)
-            lineTo(4.2f, 18.2f)
-            curveTo(6.8f, 17.5f, 10.2f, 17.7f, 12f, 19.3f)
-        }
-        stroke {
-            moveTo(12f, 6.2f)
-            curveTo(13.8f, 4.6f, 17.2f, 4.4f, 19.8f, 5.1f)
-            lineTo(19.8f, 18.2f)
-            curveTo(17.2f, 17.5f, 13.8f, 17.7f, 12f, 19.3f)
-        }
-        stroke { moveTo(12f, 6.2f); lineTo(12f, 19.3f) }
-    }
+    /** iOS book.pages role — Notes (Cupertino "book" U+F3E7, closest single glyph). */
+    val BookPages: ImageVector = glyphIcon("floe.book_pages", "book")
 
-    /** rectangle.and.pencil.and.ellipsis — Creative mode. */
-    val Creative = icon("floe.creative") {
-        stroke {
-            moveTo(9.5f, 3.8f); lineTo(6f, 3.8f)
-            curveTo(4.6f, 3.8f, 3.5f, 4.9f, 3.5f, 6.3f)
-            lineTo(3.5f, 17.5f)
-            curveTo(3.5f, 18.9f, 4.6f, 20f, 6f, 20f)
-            lineTo(17.5f, 20f)
-            curveTo(18.9f, 20f, 20f, 18.9f, 20f, 17.5f)
-            lineTo(20f, 13.5f)
-        }
-        stroke { circle(7.3f, 11.9f, 0.9f) }
-        stroke { circle(11f, 11.9f, 0.9f) }
-        stroke { circle(14.7f, 11.9f, 0.9f) }
-        stroke { moveTo(15.5f, 7.5f); lineTo(20.5f, 2.5f) }
-        stroke { moveTo(14.4f, 8.6f); lineTo(13.9f, 10.1f); lineTo(15.4f, 9.6f) }
-    }
+    /** iOS rectangle.and.pencil.and.ellipsis — Creative (Cupertino "pencil_ellipsis_rectangle"). */
+    val Creative: ImageVector = glyphIcon("floe.creative", "pencil_ellipsis_rectangle")
 
-    /** puzzlepiece.extension — Plugins. */
+    /** puzzlepiece.extension — Plugins. Hand-drawn fallback (no 2.0.0 puzzle glyph). */
     val Puzzle = icon("floe.puzzle") {
         stroke {
             moveTo(4f, 8.8f); lineTo(9.2f, 8.8f)
@@ -180,90 +127,52 @@ object FloeIcons {
         }
     }
 
-    /** gearshape — Settings (real toothed outline, source-authored). */
-    val Gearshape = icon("floe.gearshape") {
-        stroke { gearOutline(12f, 12f, teeth = 8, outer = 9.2f, root = 7.0f) }
-        stroke { circle(12f, 12f, 3.0f) }
-    }
+    /** iOS gearshape — Settings (Cupertino "gear_alt" U+F43C; Main-previewed variant). */
+    val Gearshape: ImageVector = glyphIcon("floe.gearshape", "gear_alt")
 
-    /** sidebar.left — collapse/expand the task list. */
-    val SidebarToggle = icon("floe.sidebar") {
-        stroke { rrect(3.5f, 4f, 19f, 20f, 2.5f) }
-        stroke { moveTo(9.6f, 4.2f); lineTo(9.6f, 19.8f) }
-    }
+    /** iOS sidebar.left — collapse/expand the task list (Cupertino "sidebar_left"). */
+    val SidebarToggle: ImageVector = glyphIcon("floe.sidebar", "sidebar_left")
 
-    /** bubble.left — conversations / temporary chat. */
-    val Bubble = icon("floe.bubble") {
-        stroke {
-            moveTo(12.5f, 4.2f)
-            curveTo(7.4f, 4.2f, 3.6f, 7.1f, 3.6f, 10.7f)
-            curveTo(3.6f, 12.8f, 5f, 14.6f, 7.1f, 15.7f)
-            lineTo(6.5f, 19.4f)
-            lineTo(10.6f, 17.1f)
-            curveTo(11.2f, 17.2f, 11.9f, 17.2f, 12.5f, 17.2f)
-            curveTo(17.6f, 17.2f, 21.4f, 14.3f, 21.4f, 10.7f)
-            curveTo(21.4f, 7.1f, 17.6f, 4.2f, 12.5f, 4.2f)
-        }
-    }
+    /** iOS bubble.left — conversations / temporary chat (Cupertino "bubble_left"). */
+    val Bubble: ImageVector = glyphIcon("floe.bubble", "bubble_left")
 
-    /** folder — workspace rows. */
-    val Folder = icon("floe.folder") {
-        stroke {
-            moveTo(3.8f, 9.4f)
-            lineTo(3.8f, 6.6f)
-            curveTo(3.8f, 5.7f, 4.5f, 5f, 5.4f, 5f)
-            lineTo(8.9f, 5f)
-            lineTo(10.9f, 7.2f)
-            lineTo(18.6f, 7.2f)
-            curveTo(19.5f, 7.2f, 20.2f, 7.9f, 20.2f, 8.8f)
-            lineTo(20.2f, 17.4f)
-            curveTo(20.2f, 18.3f, 19.5f, 19f, 18.6f, 19f)
-            lineTo(5.4f, 19f)
-            curveTo(4.5f, 19f, 3.8f, 18.3f, 3.8f, 17.4f)
-            close()
-        }
-    }
+    /** iOS folder — workspace rows (Cupertino "folder" U+F434). */
+    val Folder: ImageVector = glyphIcon("floe.folder", "folder")
 
-    val Plus = icon("floe.plus") { stroke { moveTo(12f, 5f); lineTo(12f, 19f); moveTo(5f, 12f); lineTo(19f, 12f) } }
-    val ChevronForward = icon("floe.chevron_forward") { stroke { moveTo(9f, 5f); lineTo(16f, 12f); lineTo(9f, 19f) } }
-    val ChevronDown = icon("floe.chevron_down") { stroke { moveTo(5.5f, 9f); lineTo(12f, 15.5f); lineTo(18.5f, 9f) } }
-    val ChevronBack = icon("floe.chevron_back") { stroke { moveTo(15f, 5f); lineTo(8f, 12f); lineTo(15f, 19f) } }
-    val ChevronUp = icon("floe.chevron_up") { stroke { moveTo(5.5f, 15f); lineTo(12f, 8.5f); lineTo(18.5f, 15f) } }
+    /** iOS plus (Cupertino "plus"). */
+    val Plus: ImageVector = glyphIcon("floe.plus", "plus")
 
-    /** paperclip — composer attachment. */
-    val Paperclip = icon("floe.paperclip") {
-        stroke {
-            moveTo(15.6f, 4.6f)
-            lineTo(7.9f, 12.3f)
-            curveTo(6.4f, 13.8f, 6.4f, 16.1f, 7.9f, 17.6f)
-            curveTo(9.4f, 19.1f, 11.7f, 19.1f, 13.2f, 17.6f)
-            lineTo(19.7f, 11.1f)
-            curveTo(21f, 9.8f, 21f, 7.7f, 19.7f, 6.4f)
-        }
-    }
+    /** iOS ellipsis.circle chrome pair — compact More toolbar trigger. The
+     *  dots glyph is the pinned Cupertino "ellipsis" outline; the enclosing
+     *  circle comes from FloeCircleButton (iOS: FileInspectorView.swift:320
+     *  workspaceActions, FilePreviewView.swift:841 file.preview.more). */
+    val Ellipsis: ImageVector = glyphIcon("floe.ellipsis", "ellipsis")
 
-    /** mic — voice input affordance. */
-    val Mic = icon("floe.mic") {
-        stroke {
-            rrect(9.4f, 3.2f, 14.6f, 14f, 2.6f)
-        }
-        stroke {
-            moveTo(6.2f, 11.4f)
-            curveTo(6.2f, 14.6f, 8.8f, 16.9f, 12f, 16.9f)
-            curveTo(15.2f, 16.9f, 17.8f, 14.6f, 17.8f, 11.4f)
-        }
-        stroke { moveTo(12f, 16.9f); lineTo(12f, 20.8f) }
-    }
+    /** iOS chevron.right (Cupertino "chevron_right"). */
+    val ChevronForward: ImageVector = glyphIcon("floe.chevron_forward", "chevron_right")
 
-    /** arrow.up — send. */
-    val ArrowUp = icon("floe.arrow_up") {
-        stroke { moveTo(12f, 19.2f); lineTo(12f, 5f); moveTo(5.8f, 11.2f); lineTo(12f, 5f); lineTo(18.2f, 11.2f) }
-    }
+    /** iOS chevron.down (Cupertino "chevron_down"). */
+    val ChevronDown: ImageVector = glyphIcon("floe.chevron_down", "chevron_down")
 
-    /** stop — running stop. */
-    val StopSquare = icon("floe.stop") { stroke { rrect(6.4f, 6.4f, 17.6f, 17.6f, 2.6f) } }
+    /** iOS chevron.left (Cupertino "chevron_left"). */
+    val ChevronBack: ImageVector = glyphIcon("floe.chevron_back", "chevron_left")
 
-    /** cpu — model chip. */
+    /** iOS chevron.up (Cupertino "chevron_up"). */
+    val ChevronUp: ImageVector = glyphIcon("floe.chevron_up", "chevron_up")
+
+    /** iOS paperclip — composer attachment (Cupertino "paperclip" U+F732). */
+    val Paperclip: ImageVector = glyphIcon("floe.paperclip", "paperclip")
+
+    /** iOS mic.fill — voice input affordance is filled on iOS (Cupertino "mic_fill"). */
+    val Mic: ImageVector = glyphIcon("floe.mic", "mic_fill")
+
+    /** iOS arrow.up — send (Cupertino "arrow_up"). */
+    val ArrowUp: ImageVector = glyphIcon("floe.arrow_up", "arrow_up")
+
+    /** iOS stop.fill — running stop, filled square role (Cupertino "stop_fill"). */
+    val StopSquare: ImageVector = glyphIcon("floe.stop", "stop_fill")
+
+    /** cpu — model chip. Hand-drawn fallback (no 2.0.0 cpu glyph). */
     val Chip = icon("floe.chip") {
         stroke { rrect(6.8f, 6.8f, 17.2f, 17.2f, 1.6f) }
         stroke { circle(12f, 12f, 2.4f) }
@@ -279,26 +188,14 @@ object FloeIcons {
         }
     }
 
-    /** gauge — reasoning "automatic". */
-    val Gauge = icon("floe.gauge") {
-        stroke {
-            moveTo(3.8f, 15.5f)
-            curveTo(3.8f, 10.3f, 7.4f, 6.6f, 12f, 6.6f)
-            curveTo(16.6f, 6.6f, 20.2f, 10.3f, 20.2f, 15.5f)
-        }
-        stroke { moveTo(12f, 15.5f); lineTo(15.6f, 10.6f) }
-        stroke { circle(12f, 15.5f, 0.9f) }
-    }
+    /** iOS gauge — reasoning "automatic" (Cupertino "gauge"). */
+    val Gauge: ImageVector = glyphIcon("floe.gauge", "gauge")
 
-    /** wand.and.sparkles — agent mode. */
-    val Wand = icon("floe.wand") {
-        stroke { moveTo(4.5f, 19.5f); lineTo(13.5f, 10.5f) }
-        stroke { moveTo(12.4f, 7.2f); lineTo(16.8f, 11.6f); moveTo(16.8f, 7.2f); lineTo(12.4f, 11.6f) }
-        stroke { moveTo(19f, 3f); lineTo(19f, 5.6f); moveTo(17.7f, 4.3f); lineTo(20.3f, 4.3f) }
-        stroke { moveTo(6.5f, 4.5f); lineTo(6.5f, 6.5f); moveTo(5.5f, 5.5f); lineTo(7.5f, 5.5f) }
-    }
+    /** iOS wand.and.stars — agent mode (Cupertino "wand_stars"). */
+    val Wand: ImageVector = glyphIcon("floe.wand", "wand_stars")
 
-    /** list.bullet.clipboard — plan mode. */
+    /** list.bullet.clipboard — plan mode. Kept hand-drawn: no 2.0.0 clipboard-bullet
+     *  composite; "list_bullet_below_rectangle" reads as rows-under-rectangle (Main review). */
     val PlanList = icon("floe.plan_list") {
         stroke { rrect(5.5f, 4.4f, 18.5f, 20f, 2f) }
         stroke { moveTo(8.5f, 3.6f); lineTo(12.5f, 3.6f) }
@@ -306,43 +203,24 @@ object FloeIcons {
         stroke { moveTo(8.5f, 14f); lineTo(15.5f, 14f) }
     }
 
-    /** target — goal mode. */
+    /** target — goal mode. Kept hand-drawn: concentric bullseye matches SF target;
+     *  the 2.0.0 "scope" crosshair is a different affordance (Main review). */
     val Target = icon("floe.target") {
         stroke { circle(12f, 12f, 7.8f) }
         stroke { circle(12f, 12f, 4.2f) }
         stroke { circle(12f, 12f, 0.4f) }
     }
 
-    /** desktopcomputer — execution target "This device". */
-    val DeviceLocal = icon("floe.device_local") {
-        stroke { rrect(3.5f, 5f, 20.5f, 15.5f, 1.8f) }
-        stroke { moveTo(9f, 19.5f); lineTo(15f, 19.5f); moveTo(12f, 15.5f); lineTo(12f, 19.5f) }
-    }
+    /** iOS desktopcomputer — execution target "This device" (Cupertino "desktopcomputer"). */
+    val DeviceLocal: ImageVector = glyphIcon("floe.device_local", "desktopcomputer")
 
-    /** checkmark.shield — approval mode chip. */
-    val ShieldCheck = icon("floe.shield_check") {
-        stroke {
-            moveTo(12f, 3.2f); lineTo(19.2f, 5.9f); lineTo(19.2f, 11f)
-            curveTo(19.2f, 15.7f, 16f, 19.2f, 12f, 20.6f)
-            curveTo(8f, 19.2f, 4.8f, 15.7f, 4.8f, 11f)
-            lineTo(4.8f, 5.9f); close()
-        }
-        stroke { moveTo(9.4f, 11.6f); lineTo(11.4f, 13.6f); lineTo(15f, 9.4f) }
-    }
+    /** iOS checkmark.shield — approval mode chip and permissions (Cupertino "checkmark_shield"). */
+    val ShieldCheck: ImageVector = glyphIcon("floe.shield_check", "checkmark_shield")
 
-    /** exclamationmark.shield — pending approval card. */
-    val ShieldAlert = icon("floe.shield_alert") {
-        stroke {
-            moveTo(12f, 3.2f); lineTo(19.2f, 5.9f); lineTo(19.2f, 11f)
-            curveTo(19.2f, 15.7f, 16f, 19.2f, 12f, 20.6f)
-            curveTo(8f, 19.2f, 4.8f, 15.7f, 4.8f, 11f)
-            lineTo(4.8f, 5.9f); close()
-        }
-        stroke { moveTo(12f, 8.4f); lineTo(12f, 12.6f) }
-        stroke { circle(12f, 15.6f, 0.7f) }
-    }
+    /** iOS exclamationmark.shield — pending approval card (Cupertino "exclamationmark_shield"). */
+    val ShieldAlert: ImageVector = glyphIcon("floe.shield_alert", "exclamationmark_shield")
 
-    /** stethoscope — diagnostics. */
+    /** stethoscope — diagnostics. Hand-drawn fallback (no 2.0.0 stethoscope glyph). */
     val Stethoscope = icon("floe.stethoscope") {
         stroke {
             moveTo(5.5f, 3.2f); lineTo(5.5f, 8.5f)
@@ -359,29 +237,22 @@ object FloeIcons {
         stroke { circle(17.1f, 10.5f, 2.4f) }
     }
 
-    val Xmark = icon("floe.xmark") { stroke { moveTo(6f, 6f); lineTo(18f, 18f); moveTo(18f, 6f); lineTo(6f, 18f) } }
-    val Checkmark = icon("floe.checkmark") { stroke { moveTo(4.5f, 12.8f); lineTo(9.4f, 17.7f); lineTo(19.5f, 6.6f) } }
+    /** iOS xmark (Cupertino "xmark"). */
+    val Xmark: ImageVector = glyphIcon("floe.xmark", "xmark")
 
-    /** clock — scheduled section. */
-    val Clock = icon("floe.clock") {
-        stroke { circle(12f, 12f, 8f) }
-        stroke { moveTo(12f, 7.6f); lineTo(12f, 12f); lineTo(15.2f, 13.9f) }
-    }
+    /** iOS checkmark (Cupertino "checkmark"). */
+    val Checkmark: ImageVector = glyphIcon("floe.checkmark", "checkmark")
 
-    /** play.rectangle — runs. */
-    val PlayRuns = icon("floe.play_runs") {
-        stroke { rrect(4.2f, 4.2f, 19.8f, 19.8f, 2.4f) }
-        stroke { poly(Pair(10f, 9f), Pair(15f, 12f), Pair(10f, 15f), closeIt = true) }
-    }
+    /** iOS clock — scheduled section (Cupertino "clock"). */
+    val Clock: ImageVector = glyphIcon("floe.clock", "clock")
 
-    /** info.circle — honest availability dialogs. */
-    val InfoCircle = icon("floe.info_circle") {
-        stroke { circle(12f, 12f, 8f) }
-        stroke { moveTo(12f, 11f); lineTo(12f, 16f) }
-        stroke { circle(12f, 8.2f, 0.7f) }
-    }
+    /** iOS play.rectangle — runs (Cupertino "play_rectangle"). */
+    val PlayRuns: ImageVector = glyphIcon("floe.play_runs", "play_rectangle")
 
-    /** terminal — execution environment placeholder. */
+    /** iOS info.circle — honest availability dialogs (Cupertino "info_circle"). */
+    val InfoCircle: ImageVector = glyphIcon("floe.info_circle", "info_circle")
+
+    /** terminal — execution environment. Hand-drawn fallback (no 2.0.0 terminal glyph). */
     val Terminal = icon("floe.terminal") {
         stroke { rrect(4.2f, 4.2f, 19.8f, 19.8f, 2.4f) }
         stroke { moveTo(7.5f, 9f); lineTo(11f, 12f); lineTo(7.5f, 15f) }
@@ -390,170 +261,57 @@ object FloeIcons {
 
     /* ---- provider / model configuration glyphs (G02 presentation flow) ---- */
 
-    /** eye — reveal the session-typed secret (never fetches a stored key). */
-    val Eye = icon("floe.eye") {
-        stroke {
-            moveTo(3.6f, 12f)
-            curveTo(6.2f, 7.6f, 17.8f, 7.6f, 20.4f, 12f)
-            curveTo(17.8f, 16.4f, 6.2f, 16.4f, 3.6f, 12f)
-            close()
-        }
-        stroke { circle(12f, 12f, 2.6f) }
-    }
+    /** iOS eye — reveal the session-typed secret, never fetches a stored key (Cupertino "eye"). */
+    val Eye: ImageVector = glyphIcon("floe.eye", "eye")
 
-    /** eye.slash — hide the revealed field again. */
-    val EyeSlash = icon("floe.eye_slash") {
-        stroke {
-            moveTo(3.6f, 12f)
-            curveTo(6.2f, 7.6f, 17.8f, 7.6f, 20.4f, 12f)
-            curveTo(18.9f, 14.4f, 15.8f, 15.7f, 12.4f, 15.9f)
-        }
-        stroke {
-            moveTo(12f, 14.6f)
-            curveTo(8f, 14.6f, 4.7f, 12f, 3.6f, 12f)
-        }
-        stroke { moveTo(5.6f, 4.8f); lineTo(18.4f, 19.2f) }
-    }
+    /** iOS eye.slash — hide the revealed field again (Cupertino "eye_slash"). */
+    val EyeSlash: ImageVector = glyphIcon("floe.eye_slash", "eye_slash")
 
-    /** chevron.up.chevron.down — chooser affordance on a value field. */
-    val ChevronUpDown = icon("floe.chevron_up_down") {
-        stroke { moveTo(7.5f, 9.5f); lineTo(12f, 5.5f); lineTo(16.5f, 9.5f) }
-        stroke { moveTo(7.5f, 14.5f); lineTo(12f, 18.5f); lineTo(16.5f, 14.5f) }
-    }
+    /** iOS chevron.up.chevron.down — chooser affordance (Cupertino "chevron_up_chevron_down"). */
+    val ChevronUpDown: ImageVector = glyphIcon("floe.chevron_up_down", "chevron_up_chevron_down")
 
-    /** key — credential state badge (waiting for configuration). */
+    /** key — credential state badge. Hand-drawn fallback (no 2.0.0 key glyph). */
     val Key = icon("floe.key") {
         stroke { circle(8f, 8.4f, 3.6f) }
         stroke { moveTo(10.7f, 11.1f); lineTo(19.2f, 19.6f) }
         stroke { moveTo(15.6f, 16f); lineTo(17.8f, 13.8f) }
     }
 
-    /** antenna.radiowaves.left.and.right — provider empty-state glyph. */
-    val Antenna = icon("floe.antenna") {
-        stroke { circle(12f, 13.5f, 1.1f) }
-        stroke { moveTo(12f, 15f); lineTo(12f, 20.2f) }
-        stroke {
-            moveTo(8.6f, 10.1f)
-            curveTo(6.9f, 11.8f, 6.9f, 15.2f, 8.6f, 16.9f)
-        }
-        stroke {
-            moveTo(15.4f, 10.1f)
-            curveTo(17.1f, 11.8f, 17.1f, 15.2f, 15.4f, 16.9f)
-        }
-        stroke {
-            moveTo(6f, 7.5f)
-            curveTo(3.2f, 10.3f, 3.2f, 16.7f, 6f, 19.5f)
-        }
-        stroke {
-            moveTo(18f, 7.5f)
-            curveTo(20.8f, 10.3f, 20.8f, 16.7f, 18f, 19.5f)
-        }
-    }
+    /** iOS antenna.radiowaves.left.and.right — providers (Cupertino "antenna_radiowaves_left_right"). */
+    val Antenna: ImageVector = glyphIcon("floe.antenna", "antenna_radiowaves_left_right")
 
-    /** arrow.clockwise — explicit refresh (catalog / model discovery). */
-    val Refresh = icon("floe.refresh") {
-        stroke {
-            moveTo(19f, 12f)
-            curveTo(19f, 15.9f, 15.9f, 19f, 12f, 19f)
-            curveTo(8.1f, 19f, 5f, 15.9f, 5f, 12f)
-            curveTo(5f, 8.1f, 8.1f, 5f, 12f, 5f)
-            curveTo(14.6f, 5f, 16.9f, 6.4f, 18.2f, 8.5f)
-        }
-        stroke { moveTo(19.4f, 4.6f); lineTo(18.6f, 8.9f); lineTo(14.3f, 8.1f) }
-    }
+    /** iOS arrow.clockwise — explicit refresh (Cupertino "arrow_clockwise"). */
+    val Refresh: ImageVector = glyphIcon("floe.refresh", "arrow_clockwise")
 
-    /** exclamationmark.triangle — pending/validation warning. */
-    val WarningTriangle = icon("floe.warning_triangle") {
-        stroke {
-            moveTo(12f, 4f)
-            lineTo(20.4f, 19f)
-            lineTo(3.6f, 19f)
-            close()
-        }
-        stroke { moveTo(12f, 10f); lineTo(12f, 14f) }
-        stroke { circle(12f, 16.8f, 0.6f) }
-    }
+    /** iOS exclamationmark.triangle — pending/validation warning (Cupertino "exclamationmark_triangle"). */
+    val WarningTriangle: ImageVector = glyphIcon("floe.warning_triangle", "exclamationmark_triangle")
 
-    /** checkmark.circle — verified/connected success (confirmed only). */
-    val CheckCircle = icon("floe.check_circle") {
-        stroke { circle(12f, 12f, 8f) }
-        stroke { moveTo(8.4f, 12.3f); lineTo(11f, 14.9f); lineTo(15.8f, 9.6f) }
-    }
+    /** iOS checkmark.circle — verified/connected success, confirmed only (Cupertino "checkmark_circle"). */
+    val CheckCircle: ImageVector = glyphIcon("floe.check_circle", "checkmark_circle")
 
-    /** xmark.octagon — failed connection test marker. */
-    val XOctagon = icon("floe.x_octagon") {
-        stroke {
-            moveTo(8.2f, 3.8f); lineTo(15.8f, 3.8f)
-            lineTo(20.2f, 8.2f); lineTo(20.2f, 15.8f)
-            lineTo(15.8f, 20.2f); lineTo(8.2f, 20.2f)
-            lineTo(3.8f, 15.8f); lineTo(3.8f, 8.2f)
-            close()
-        }
-        stroke { moveTo(9.4f, 9.4f); lineTo(14.6f, 14.6f) }
-        stroke { moveTo(14.6f, 9.4f); lineTo(9.4f, 14.6f) }
-    }
+    /** iOS xmark.octagon — failed connection test marker (Cupertino "xmark_octagon"). */
+    val XOctagon: ImageVector = glyphIcon("floe.x_octagon", "xmark_octagon")
 
-    /** magnifyingglass — search affordance label (fields draw their own). */
-    val Magnifier = icon("floe.magnifier") {
-        stroke { circle(10.6f, 10.6f, 5.6f) }
-        stroke { moveTo(14.8f, 14.8f); lineTo(19.6f, 19.6f) }
-    }
+    /** iOS magnifyingglass — search affordance (Cupertino "search", same glyph). */
+    val Magnifier: ImageVector = glyphIcon("floe.magnifier", "search")
 
-    /** plus.circle — stage a candidate model. */
-    val PlusCircle = icon("floe.plus_circle") {
-        stroke { circle(12f, 12f, 8f) }
-        stroke { moveTo(12f, 8.6f); lineTo(12f, 15.4f) }
-        stroke { moveTo(8.6f, 12f); lineTo(15.4f, 12f) }
-    }
+    /** iOS plus.circle — stage a candidate model (Cupertino "plus_circled"). */
+    val PlusCircle: ImageVector = glyphIcon("floe.plus_circle", "plus_circled")
 
-    /** trash — delete provider (overflow menu, destructive). */
-    val Trash = icon("floe.trash") {
-        stroke { moveTo(4.6f, 7f); lineTo(19.4f, 7f) }
-        stroke { moveTo(9.6f, 7f); lineTo(9.6f, 4.6f); lineTo(14.4f, 4.6f); lineTo(14.4f, 7f) }
-        stroke { moveTo(6.6f, 7f); lineTo(7.6f, 20f); lineTo(16.4f, 20f); lineTo(17.4f, 7f) }
-        stroke { moveTo(10.4f, 10.4f); lineTo(10.4f, 16.8f) }
-        stroke { moveTo(13.6f, 10.4f); lineTo(13.6f, 16.8f) }
-    }
+    /** iOS trash — delete provider, destructive overflow action (Cupertino "trash"). */
+    val Trash: ImageVector = glyphIcon("floe.trash", "trash")
 
-    /** pencil — edit provider. */
-    val Pencil = icon("floe.pencil") {
-        stroke { moveTo(4.6f, 19.4f); lineTo(6.2f, 15.2f); lineTo(15.6f, 5.8f) }
-        stroke { moveTo(13.8f, 4f); lineTo(20f, 10.2f) }
-        stroke { moveTo(6.2f, 15.2f); lineTo(10.4f, 19.4f); lineTo(4.6f, 19.4f); close() }
-    }
+    /** iOS pencil — edit provider (Cupertino "pencil"). */
+    val Pencil: ImageVector = glyphIcon("floe.pencil", "pencil")
 
-    /** bubble.left.and.text.bubble.right — chat model service role. */
-    val ChatRole = icon("floe.chat_role") {
-        stroke {
-            moveTo(9.4f, 5f)
-            curveTo(5.9f, 5f, 3.2f, 7f, 3.2f, 9.5f)
-            curveTo(3.2f, 11.3f, 4.5f, 12.9f, 6.4f, 13.8f)
-            lineTo(6f, 16.4f)
-            lineTo(8.9f, 14.9f)
-            curveTo(9.1f, 14.9f, 9.2f, 14.9f, 9.4f, 14.9f)
-        }
-        stroke {
-            moveTo(15.2f, 9.1f)
-            curveTo(18.6f, 9.1f, 20.8f, 11f, 20.8f, 13.3f)
-            curveTo(20.8f, 15.6f, 18.6f, 17.5f, 15.2f, 17.5f)
-            curveTo(14.3f, 17.5f, 13.4f, 17.4f, 12.6f, 17.1f)
-            lineTo(9.9f, 18.6f)
-            lineTo(10.5f, 16.1f)
-            curveTo(9.5f, 15.3f, 9f, 14.3f, 9f, 13.3f)
-        }
-    }
+    /** iOS bubble.left.and.bubble.right — chat model service role (Cupertino "bubble_left_bubble_right"). */
+    val ChatRole: ImageVector = glyphIcon("floe.chat_role", "bubble_left_bubble_right")
 
-    /** photo.on.rectangle.angled — image generation/editing service role. */
-    val ImageRole = icon("floe.image_role") {
-        stroke { rrect(3.4f, 7.4f, 17.4f, 19f, 1.8f) }
-        stroke {
-            moveTo(7.8f, 4.6f); lineTo(19.8f, 6.4f); lineTo(17.4f, 15.6f)
-        }
-        stroke { circle(7.4f, 11f, 1.1f) }
-        stroke { moveTo(10.6f, 16.6f); lineTo(13f, 13.6f); lineTo(15.4f, 16.6f) }
-    }
+    /** iOS photo.on.rectangle role — image service (Cupertino "photo_on_rectangle"). */
+    val ImageRole: ImageVector = glyphIcon("floe.image_role", "photo_on_rectangle")
 
-    /** video.badge.plus — video generation service role. */
+    /** video.badge.plus — video service role. Kept hand-drawn: the 2.0.0 set has no
+     *  video-plus composite and a plain videocam would lose the badge (Main review). */
     val VideoPlus = icon("floe.video_plus") {
         stroke { rrect(3.4f, 5.4f, 20.6f, 18.6f, 2.2f) }
         stroke { circle(8.4f, 12f, 2.6f) }
@@ -561,10 +319,20 @@ object FloeIcons {
         stroke { moveTo(15.7f, 9.6f); lineTo(15.7f, 14.4f) }
     }
 
-    /** photo — per-model verified vision badge. */
-    val Photo = icon("floe.photo") {
-        stroke { rrect(3.4f, 6.2f, 20.6f, 17.8f, 2f) }
-        stroke { circle(8f, 10f, 1.2f) }
-        stroke { moveTo(10.2f, 15.6f); lineTo(13.4f, 11.8f); lineTo(17f, 15.6f) }
-    }
+    /** iOS photo — per-model verified vision badge (Cupertino "photo"). */
+    val Photo: ImageVector = glyphIcon("floe.photo", "photo")
+
+    /* ---- settings-category glyphs correcting earlier semantic substitutes ---- */
+
+    /** iOS person.crop.circle.badge.checkmark — Settings "Memories/Personalization"
+     *  (was FloeIcons.BookPages, which is the Notes glyph). Cupertino "person_crop_circle_badge_checkmark". */
+    val PersonCircleCheck: ImageVector = glyphIcon("floe.person_circle_check", "person_crop_circle_badge_checkmark")
+
+    /** iOS hand.raised — Settings "Privacy" (was FloeIcons.ShieldCheck, which is the
+     *  iOS permissions glyph). Cupertino "hand_raised". */
+    val HandRaised: ImageVector = glyphIcon("floe.hand_raised", "hand_raised")
+
+    /** iOS chart.bar — Settings "Usage" (was FloeIcons.Gauge, which is the reasoning
+     *  "automatic" chip). Cupertino "chart_bar". */
+    val ChartBar: ImageVector = glyphIcon("floe.chart_bar", "chart_bar")
 }

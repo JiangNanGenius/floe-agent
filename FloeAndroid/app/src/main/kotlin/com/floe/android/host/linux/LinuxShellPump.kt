@@ -306,6 +306,14 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
         val host = payload.remove("host") as? JSONObject
         val callID = host?.optString("toolCallID")?.takeIf { it.isNotEmpty() }
         require(callID == null || callID.length <= 256)
+        // G04-R2 UI operation lease identity: trusted host metadata from the
+        // same private `host` object (already stripped before the runtime
+        // wire). A durable/parent claim and a UI operation lease are mutually
+        // exclusive at the pump; a malformed shape refuses before minting,
+        // exactly like the existing callID length require (outside the try).
+        val operationID = host?.optString("operationID")?.takeIf { it.isNotEmpty() }
+        require(operationID == null || operationID.length <= 64)
+        require(callID == null || operationID == null)
         val owned = OwnedSession(UUID.randomUUID().toString(), acceptedEpoch, runID, callID)
         var possiblyAdmitted = false
         var handedToWatcher = false
@@ -320,11 +328,15 @@ class LinuxShellPump(context: Context, private val scope: CoroutineScope) {
             RuntimeExecutionTrace.mark(Stage.PUMP_GRANT)
             val grant = CoreWorkspaceGrant.create(context, acceptedEpoch, payload.getString("runID"),
                 trustedCallID = callID?.takeIf { it.startsWith("jobs.") },
+                trustedOperationID = operationID,
                 isOwned = WorkspaceOwnershipProbe {
                     // Cleanup/writeback remains owned during a stop request.
                     // Current real FGS protection separately gates process execution.
                     epoch.get() == acceptedEpoch && work[owned.controlID] === owned && !owned.lease.isClosed
-                }, authority = CoreWorkspaceNativeAuthority()) ?: error("Owned workspace unavailable")
+                }, authority = CoreWorkspaceNativeAuthority(),
+                refusalObserver = { token ->
+                    android.util.Log.i("FloeLinuxStart", "WORKSPACE_REFUSAL:$token")
+                }) ?: error("Owned workspace unavailable")
             owned.workspaceGrant = grant
             // Failed-start receipt binding identity, captured at mint (the
             // grant object itself is nulled by finish before the claim is

@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.isActive
@@ -70,6 +71,17 @@ data class TerminalCompletionItem(
     val kind: Int,
     val detail: String,
     val documentation: String,
+)
+
+/** The LATEST typed PTY input refusal for one conversation. A host-side
+ * fact reported through the pane's status strip (message) and its opened
+ * details (code) — never a fabricated native phase or fault. [count] is
+ * the number of consecutive same-code refusals since the last clear (a
+ * successful fresh open or close). */
+data class TerminalInputIssue(
+    val conversationID: String,
+    val code: String,
+    val count: Int,
 )
 
 data class TerminalCompletionSnapshot(
@@ -152,6 +164,14 @@ data class TerminalLanguageCapabilities(
  */
 internal class G04TerminalHostController(
     private val scope: CoroutineScope,
+    private val outputDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.Main,
+    /** PTY-input lane drain dispatcher (IO in production; injectable so
+     * the focused host tests can pump one serialized drain deterministically). */
+    private val inputDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO,
+    /** Test seam for the lane's actual submit step (see [enqueuePtyInput]);
+     * production keeps the real mailbox admission. */
+    private val inputSinkOverride:
+        (suspend (conversationID: String, sessionToken: String, bytes: ByteArray) -> Unit)? = null,
     private val currentNativeEpoch: () -> Long?,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
@@ -167,6 +187,30 @@ internal class G04TerminalHostController(
     private val completions = ConcurrentHashMap<String, CompletableDeferred<TerminalCompletionSnapshot?>>()
 
     private val sessionTokens = ConcurrentHashMap<String, String>()          // conversationID -> token
+    /** Registered run-open intents keyed by the EXACT requestID `runDraft`
+     * submitted: the service-owned binding route for an accepted Run's
+     * sessionToken (device evidence 2026-10-25: native answers the reply —
+     * then the first output — before any host binding existed, because
+     * only `attachOrOpen` assigned tokens, so accepted Run output had no
+     * reverse-binding owner and every page was dropped). An intent is
+     * consumed by its matching actionReply and cleared by the submitting
+     * call's timeout/cancel/fence; a late reply from a retired world never
+     * binds. */
+    private val pendingRunOpens = ConcurrentHashMap<String, PendingRunOpen>()
+
+    /** One owned run-open intent: the conversation, the Root generation
+     * that admitted the submit, and the EXACT conversation binding captured
+     * at registration. The binding is claimed with a per-conversation CAS
+     * against that captured predecessor, so an accepted Run can replace its
+     * own stale predecessor while any newer open/reset/stop that moved the
+     * binding fences this reply — never the cached snapshot mirror. Binding
+     * is honored only while that exact generation is still the live one —
+     * no epoch-0 or unbound fallback. */
+    internal data class PendingRunOpen(
+        val conversationID: String,
+        val epoch: Long,
+        val previousToken: String?,
+    )
     private val outputListeners = ConcurrentHashMap<String, MutableSet<(ByteArray) -> Unit>>() // token -> listeners
     private val engines = ConcurrentHashMap<String, G04TerminalEngine>()
     private val snapshots = ConcurrentHashMap<String, TerminalSessionSnapshot>()
@@ -175,6 +219,10 @@ internal class G04TerminalHostController(
         bound = false, qualified = false, workspaceAttached = false, capabilitiesKnown = false)
     @Volatile private var onTerminalStatus: ((TerminalSessionSnapshot) -> Unit)? = null
     private val sessionWatchers = ConcurrentHashMap<String, MutableSet<(TerminalSessionSnapshot) -> Unit>>()
+    /** Latest typed input refusal per conversation + its pane watchers
+     * (the same watcher idiom as [sessionWatchers]). */
+    private val inputIssues = ConcurrentHashMap<String, TerminalInputIssue>()
+    private val inputIssueWatchers = ConcurrentHashMap<String, MutableSet<(TerminalInputIssue?) -> Unit>>()
     @Volatile private var onDiagnostics: ((TerminalDiagnosticsSnapshot) -> Unit)? = null
     private val diagnosticListeners = java.util.concurrent.CopyOnWriteArraySet<(TerminalDiagnosticsSnapshot) -> Unit>()
     @Volatile private var onLanguageStatus: ((TerminalLanguageStatus) -> Unit)? = null
@@ -198,6 +246,37 @@ internal class G04TerminalHostController(
     }
 
     fun currentSnapshot(conversationID: String): TerminalSessionSnapshot? = snapshots[conversationID]
+
+    /** Pane-scoped observation of the conversation's LATEST typed input
+     * refusal (null once cleared by a fresh open/close). Same watcher idiom
+     * as [watchSessions]: registration is the only view-scoped resource;
+     * detaching never touches the session. */
+    fun watchInputIssues(conversationID: String, watcher: (TerminalInputIssue?) -> Unit): () -> Unit {
+        val set = inputIssueWatchers.getOrPut(conversationID) { java.util.concurrent.CopyOnWriteArraySet() }
+        set.add(watcher)
+        inputIssues[conversationID]?.let { watcher(it) }
+        return { set.remove(watcher); if (set.isEmpty()) inputIssueWatchers.remove(conversationID) }
+    }
+
+    /** Records one typed refusal: latest-code + consecutive-count truth for
+     * the pane, watcher fan-out, and the bounded WARN log. A host-side fact
+     * — never invents a native phase or fault. */
+    private fun reportInputIssue(conversationID: String, code: String) {
+        val issue = inputIssues.compute(conversationID) { _, old ->
+            if (old != null && old.code == code) old.copy(count = old.count + 1)
+            else TerminalInputIssue(conversationID, code, 1)
+        } ?: return
+        inputIssueWatchers[conversationID]?.forEach { it(issue) }
+        inputIssueReporter("pty input refused conversation=$conversationID code=$code")
+    }
+
+    /** Clears the surfaced refusal when the session truth moves on (a
+     * fresh open bound a new token, or an accepted close ended it): the old
+     * generation's input facts no longer describe the live session. */
+    internal fun clearInputIssue(conversationID: String) {
+        inputIssues.remove(conversationID)
+        inputIssueWatchers[conversationID]?.forEach { it(null) }
+    }
 
     fun setDiagnosticsListener(listener: ((TerminalDiagnosticsSnapshot) -> Unit)?) { onDiagnostics = listener }
     fun addDiagnosticsListener(listener: (TerminalDiagnosticsSnapshot) -> Unit): () -> Unit {
@@ -266,13 +345,44 @@ internal class G04TerminalHostController(
     /** False means the old generation remains owned/pending; never replaced
      * or declared stopped merely because a wait expired. */
     suspend fun stopAndJoin(expectedEpoch: Long, waitMillis: Long): Boolean = starts.withLock {
-        if (boundEpoch != expectedEpoch) return@withLock boundEpoch == 0L
+        if (boundEpoch != expectedEpoch && boundEpoch != 0L) return@withLock false
+        // Stopped ownership is proven INDEPENDENTLY of the reader's
+        // boundEpoch: the reader's finally zeroes boundEpoch BEFORE any
+        // lane join, so boundEpoch==0 alone must never answer true while
+        // owned lane workers are still retained. A true answer always
+        // means the reader AND every owned input worker have provably
+        // finished for this controller.
         stopped.set(true)
-        val joined = withTimeoutOrNull(waitMillis) { reader?.join(); true } ?: false
-        if (!joined) return@withLock false
-        reader = null
+        if (boundEpoch == expectedEpoch && expectedEpoch != 0L) {
+            val joined = withTimeoutOrNull(waitMillis) { reader?.join(); true } ?: false
+            if (!joined) return@withLock false
+            reader = null
+        }
+        if (!ensureLanesJoined(waitMillis)) return@withLock false
         fencePending()
         true
+    }
+
+    /** Stops AND joins every owned input lane worker. Idempotent: a retry
+     * after a timed-out join re-joins the RETAINED workers instead of
+     * abandoning them, closed channels keep refusing later offers
+     * truthfully, and the registry entries are removed ONLY after their
+     * worker provably finished — under the same lock [enqueuePtyInput]
+     * uses for creation, so no worker can be created after the stop
+     * snapshot. The lock is never held across suspension. */
+    private suspend fun ensureLanesJoined(waitMillis: Long): Boolean {
+        val lanes = synchronized(inputLanesLock) { inputLanes.values.toList() }
+        if (lanes.isEmpty()) return true
+        val done = withTimeoutOrNull(waitMillis) {
+            lanes.forEach { it.terminate() }
+            true
+        } ?: false
+        if (done) {
+            synchronized(inputLanesLock) {
+                lanes.forEach { inputLanes.remove(it.conversationID, it) }
+            }
+        }
+        return done
     }
 
     private fun fencePending() {
@@ -282,6 +392,10 @@ internal class G04TerminalHostController(
         val pendingCompletions = completions.values.toList()
         completions.clear()
         pendingCompletions.forEach { it.complete(null) }
+        // Run-open intents never survive a fence: an actionReply arriving
+        // after this point can no longer claim an owned binding (the same
+        // honest local-waiter refusal the replies/completions get).
+        pendingRunOpens.clear()
         availability = availability.copy(bound = false, capabilitiesKnown = false)
     }
 
@@ -362,15 +476,7 @@ internal class G04TerminalHostController(
         engines.getOrPut(conversationID) {
             G04TerminalEngine(columns, rows, host = object : TerminalEngineHost {
                 override fun writeToPty(bytes: ByteArray) {
-                    val token = sessionTokens[conversationID] ?: return
-                    scope.launch(Dispatchers.IO) {
-                        submit(buildJsonObject {
-                            put("action", "terminalInput")
-                            put("sessionToken", token)
-                            put("data", Base64.getEncoder().encodeToString(bytes))
-                            put("requestID", UUID.randomUUID().toString())
-                        }, timeoutMillis = 6_000)
-                    }
+                    enqueuePtyInput(conversationID, bytes)
                 }
                 override fun log(level: String, message: String) {
                     android.util.Log.println(logPriority(level), "FloeTerminal", message.take(2048))
@@ -378,23 +484,210 @@ internal class G04TerminalHostController(
             })
         }
 
+    /* ---------------- PTY input: one bounded ORDERED lane per conversation ---------------- */
+
+    /** One admitted input page. The bytes are an IMMUTABLE COPY taken at
+     * offer time (callers may reuse their arrays) and [admittedEpoch] pins
+     * the Root generation that admitted it — queued input from an old
+     * world can never enter a new one. */
+    private data class PtyInputItem(
+        val sessionToken: String,
+        val bytes: ByteArray,
+        val admittedEpoch: Long,
+    )
+
+    /** conversationID -> its serialized input lane (the same service-owned,
+     * per-conversation lifetime as [engines]; lanes are stopped and joined
+     * with the generation in [stopAndJoin]). */
+    private val inputLanes = ConcurrentHashMap<String, TerminalInputLane>()
+
+    /** Bounded WARN log seam for input refusals. The USER-VISIBLE truth is
+     * recorded unconditionally by [reportInputIssue] (latest typed refusal
+     * + watcher fan-out); this reporter is the diagnostic log line only.
+     * Internal so the focused JVM tests can observe refusals without an
+     * Android log. */
+    internal var inputIssueReporter: (String) -> Unit = { message ->
+        android.util.Log.println(android.util.Log.WARN, "FloeTerminal", message.take(2048))
+    }
+
+    /** Ensures the conversation's service-owned engine exists at an owned
+     * binding boundary (a Run accepted before any pane mounted must not
+     * drop its bytes). Production keeps the real bounded [engineFor]
+     * registry — controller-owned, independent of view lifetime, reuse
+     * preserves the existing transcript/reset policy. Internal var so the
+     * focused JVM tests can observe the boundary without constructing the
+     * vendored emulator (the same seam idiom as [inputIssueReporter]). */
+    internal var engineEnsurer: (String) -> Unit = { conversationID ->
+        engineFor(conversationID)
+    }
+
+    /** The lane's actual production drain: ONE ordered terminalInput
+     * action through the ORIGINAL submit/ack path (the reviewed
+     * [submit] helper: registered requestID future, bounded wait, real
+     * reply) — mailbox admission order IS PTY input order and the session
+     * authority stays in Swift Core. A non-Success answer is reported
+     * truthfully through [inputIssueReporter] with the actual refusal
+     * code (hostUnbound/saturated/timedOut/…), never as a silent success. */
+    private val inputSink: suspend (String, String, ByteArray) -> Unit =
+        inputSinkOverride ?: { conversationID, sessionToken, bytes ->
+            val reply = submit(buildJsonObject {
+                put("action", "terminalInput")
+                put("sessionToken", sessionToken)
+                put("data", Base64.getEncoder().encodeToString(bytes))
+                put("requestID", UUID.randomUUID().toString())
+            }, timeoutMillis = 6_000)
+            if (reply !is TerminalActionReply.Success) {
+                reportInputIssue(conversationID, inputRefusalCode(reply))
+            }
+        }
+
+    private fun inputRefusalCode(reply: TerminalActionReply): String = when (reply) {
+        TerminalActionReply.TimedOut -> "timedOut"
+        is TerminalActionReply.Refused -> reply.code
+        else -> "refused"
+    }
+
+    /** Bounded serialized PTY input lane. One `scope.launch(Dispatchers.IO)`
+     * PER keystroke could reorder at JNI admission (two IO workers racing
+     * into `submitAction`) and flood the mailbox's in-flight window with
+     * unbounded parallel submits — the contract is REAL ORDERED PTY input.
+     * Every keystroke therefore enqueues into one bounded channel (both a
+     * packet cap AND a byte budget — item count alone is not boundedness)
+     * and drains one item at a time in EXACT arrival order on a single
+     * owned worker whose [Job] handle the controller keeps, so a Root stop
+     * closes the channel and JOINS the worker before declaring the
+     * generation stopped. Each drain re-checks, IMMEDIATELY before the
+     * native submit: the item's admitted epoch still equals the bound
+     * epoch AND the runtime's live epoch, the host is not stopping, and
+     * the exact token is still bound to the conversation. Every refusal is
+     * truthful (reported, never silently dropped); cancellation flows with
+     * the app-owned [scope]. */
+    private inner class TerminalInputLane(val conversationID: String) {
+        private val channel = Channel<PtyInputItem>(capacity = InputLaneCapacity)
+        private var closed = false
+        private var queuedCount = 0
+        private var queuedBytes = 0L
+
+        private val consumer: Job = scope.launch(inputDispatcher) {
+            for (item in channel) {
+                // NOTE: `this` inside the launch lambda is the CoroutineScope
+                // receiver — the lane lock must be qualified explicitly so
+                // offer() and the drain share ONE monitor.
+                synchronized(this@TerminalInputLane) {
+                    queuedCount -= 1
+                    queuedBytes -= item.bytes.size
+                }
+                // Exact fences immediately before the native submit.
+                val refusal = when {
+                    item.admittedEpoch != boundEpoch -> "inputGenerationStale"
+                    currentNativeEpoch() != item.admittedEpoch -> "inputGenerationStale"
+                    stopped.get() -> "hostUnbound"
+                    sessionTokens[conversationID] != item.sessionToken -> "inputTokenRetired"
+                    else -> null
+                }
+                if (refusal != null) {
+                    reportInputIssue(conversationID, refusal)
+                    continue
+                }
+                inputSink(conversationID, item.sessionToken, item.bytes)
+            }
+        }
+
+        /** Admits one item; returns null when queued, otherwise a truthful
+         * refusal code. Reservations (packet count AND byte budget) are
+         * taken under the lane lock before the channel offer, and released
+         * on a closed-channel race, so the lane can never exceed either
+         * bound. */
+        fun offer(token: String, bytes: ByteArray, admittedEpoch: Long): String? {
+            val item = PtyInputItem(token, bytes.copyOf(), admittedEpoch)
+            val admitted = synchronized(this) {
+                when {
+                    closed -> null
+                    queuedCount >= InputLaneCapacity -> "inputLaneOverflow"
+                    queuedBytes + item.bytes.size > InputLaneByteBudget -> "inputLaneByteBudget"
+                    else -> {
+                        queuedCount += 1
+                        queuedBytes += item.bytes.size
+                        ""
+                    }
+                }
+            }
+            if (admitted == null) return "inputLaneStopped"
+            if (admitted.isNotEmpty()) return admitted
+            val send = channel.trySend(item)
+            if (send.isSuccess) return null
+            synchronized(this) {
+                queuedCount -= 1
+                queuedBytes -= item.bytes.size
+            }
+            return if (send.exceptionOrNull() is kotlinx.coroutines.channels.ClosedSendChannelException) {
+                "inputLaneStopped"
+            } else {
+                "inputLaneOverflow"
+            }
+        }
+
+        /** Stops this owned worker: close the channel (truthful refusals
+         * for later offers) and JOIN the worker. Used by [stopAndJoin];
+         * bounded there — on timeout the lane RETAINS its closed channel
+         * and live worker (ownership is never fabricated away). */
+        suspend fun terminate() {
+            synchronized(this) { closed = true }
+            channel.close()
+            consumer.join()
+        }
+    }
+
+    /** Guards lane creation against the stop path: [ensureLanesJoined]
+     * snapshots/removes under this lock and [enqueuePtyInput] re-checks
+     * [stopped] under it, so a worker can never be created after the stop
+     * snapshot — a truthful stop always means no lane worker outlives the
+     * generation. */
+    private val inputLanesLock = Any()
+
+    /** Single entry point for EVERY byte the UI wants to send to the PTY
+     * (hardware keys, IME commits, emulator keyboard responses): admit
+     * with the CURRENT token and the CURRENT live generation on the
+     * caller thread, then let the conversation's serialized lane drain it
+     * in order under its own fences. Every refusal is typed, recorded for
+     * the pane and logged — never silent. */
+    private fun enqueuePtyInput(conversationID: String, bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        val admittedEpoch = boundEpoch
+        if (admittedEpoch == 0L || currentNativeEpoch() != admittedEpoch || stopped.get()) {
+            reportInputIssue(conversationID, "hostUnbound")
+            return
+        }
+        val token = sessionTokens[conversationID]
+        if (token == null) {
+            reportInputIssue(conversationID, "sessionUnknown")
+            return
+        }
+        // Atomic creation, coordinated with stopAndJoin: the stopped
+        // re-check runs under the SAME lock the stop uses to snapshot and
+        // remove lanes, so no worker is created after a stop began.
+        val lane = synchronized(inputLanesLock) {
+            if (stopped.get()) null
+            else inputLanes.computeIfAbsent(conversationID) { TerminalInputLane(it) }
+        }
+        if (lane == null) {
+            reportInputIssue(conversationID, "hostUnbound")
+            return
+        }
+        lane.offer(token, bytes, admittedEpoch)?.let { refusal ->
+            reportInputIssue(conversationID, refusal)
+        }
+    }
+
     private fun logPriority(level: String): Int = when (level) {
         "error" -> android.util.Log.ERROR; "warn" -> android.util.Log.WARN
         "info" -> android.util.Log.INFO; else -> android.util.Log.DEBUG
     }
 
-    /** Transport handed to the view: writes + true native resize. */
+    /** Transport handed to the view: ordered writes + true native resize. */
     fun transportFor(conversationID: String): TerminalTransport = object : TerminalTransport {
         override fun write(bytes: ByteArray) {
-            val token = sessionTokens[conversationID] ?: return
-            scope.launch(Dispatchers.IO) {
-                submit(buildJsonObject {
-                    put("action", "terminalInput")
-                    put("sessionToken", token)
-                    put("data", Base64.getEncoder().encodeToString(bytes))
-                    put("requestID", UUID.randomUUID().toString())
-                }, timeoutMillis = 6_000)
-            }
+            enqueuePtyInput(conversationID, bytes)
         }
 
         override fun resize(columns: Int, rows: Int) {
@@ -414,7 +707,8 @@ internal class G04TerminalHostController(
      * existing live session is NEVER restarted here (startIfNeeded
      * semantics from the original iOS owner). */
     suspend fun attachOrOpen(conversationID: String, workspaceID: String?,
-                             columns: Int, rows: Int): TerminalSessionSnapshot? {
+                             columns: Int, rows: Int,
+                             onRefusal: (TerminalActionReply) -> Unit = {}): TerminalSessionSnapshot? {
         val token = sessionTokens[conversationID]
         if (token != null && snapshots[conversationID]?.phase?.isLive() == true) {
             val requestID = UUID.randomUUID().toString()
@@ -423,6 +717,7 @@ internal class G04TerminalHostController(
             }, timeoutMillis = 10_000)
             return snapshots[conversationID]
         }
+        val openingEpoch = boundEpoch
         val requestID = UUID.randomUUID().toString()
         val reply = submit(buildJsonObject {
             put("action", "terminalOpen")
@@ -430,17 +725,37 @@ internal class G04TerminalHostController(
             workspaceID?.let { put("workspaceID", it) }
             put("columns", columns); put("rows", rows); put("requestID", requestID)
         }, timeoutMillis = 165_000)
+        if (boundEpoch != openingEpoch || (openingEpoch != 0L && stopped.get())) return null
         if (reply is TerminalActionReply.Success) {
             val newToken = reply.fields["sessionToken"]?.jsonPrimitive?.contentOrNull
             if (newToken != null) {
                 sessionTokens[conversationID] = newToken
+                // A fresh session bound: the previous generation's typed
+                // input refusals no longer describe the live truth.
+                clearInputIssue(conversationID)
                 // Seed the view state; the native terminalStatus event for
                 // this session arrives immediately and replaces it with the
                 // authoritative phase (never a silent fake "running").
-                snapshots.putIfAbsent(conversationID, TerminalSessionSnapshot(
-                    conversationID, newToken, TerminalSessionPhase.STARTING, "interactive", "",
-                    null, null, null, 0))
+                // A stale snapshot of the PREVIOUS token must not survive a
+                // fresh open: replace it, but never downgrade the NEW
+                // token's already-arrived authoritative status.
+                val existing = snapshots[conversationID]
+                if (existing == null || existing.sessionToken != newToken) {
+                    snapshots[conversationID] = TerminalSessionSnapshot(
+                        conversationID, newToken, TerminalSessionPhase.STARTING, "interactive", "",
+                        null, null, null, 0)
+                }
+            } else {
+                onRefusal(TerminalActionReply.Refused("invalidReply", null))
             }
+        } else {
+            onRefusal(reply)
+            // Nothing is live for this opening. Returning the previous
+            // (settled) snapshot here kept callers convinced a start was
+            // in flight forever: the pane then showed a blank live-style
+            // pane with no guidance and no retry. Honest answer: null.
+            val current = snapshots[conversationID]
+            if (current == null || !current.phase.isLive()) return null
         }
         return snapshots[conversationID]
     }
@@ -456,6 +771,8 @@ internal class G04TerminalHostController(
         // the captured handle for reconciliation; never remove a replacement.
         if (reply is TerminalActionReply.Success) {
             sessionTokens.remove(conversationID, token)
+            // The session truth moved on: stop surfacing its input refusals.
+            clearInputIssue(conversationID)
         }
         return reply
     }
@@ -481,9 +798,153 @@ internal class G04TerminalHostController(
         }, timeoutMillis = 6_000)
     }
 
+    /** Routes one raw PTY output page to its actual display owners.
+     *
+     * The SERVICE-OWNED engine of the conversation bound to this token is
+     * fed, so the emulator screen survives pane reconstruction and — the
+     * blank-output failure this repairs — a `terminalOutput` event is
+     * never acked with no consumer at all. Registered listeners are
+     * OBSERVERS (the engine feed is not duplicated per observer). All
+     * deliveries run on [outputDispatcher] (Main in production): the
+     * reused emulator is single-threaded, and pages keep mailbox order on
+     * one serialized dispatcher.
+     *
+     * Ownership fences (review items 2): a page must have an admitted LIVE
+     * Root generation (bound epoch > 0 matching `currentNativeEpoch()`) and
+     * an exact conversation-token reverse-binding at admission — an epoch-0
+     * "unbound" page is dropped, never delivered through a test-shaped hole.
+     * The SAME predicate is re-validated at apply time on the serialized
+     * dispatcher (where the pane's open/close mutations also run) BEFORE
+     * the engine and AGAINST EACH OBSERVER (bytes queued before a
+     * reset/stop can never touch a replacement session, and an observer
+     * removed by a preceding observer is skipped). The engine feed runs
+     * FIRST: it is the authoritative owner and one throwing or
+     * unregistering observer can no longer starve it (cancellation still
+     * propagates as structured cancellation). No double-feed: observers are
+     * observers. */
+    internal fun deliverTerminalOutput(sessionToken: String, payload: ByteArray) {
+        if (payload.isEmpty()) return
+        val admittedEpoch = boundEpoch
+        if (admittedEpoch == 0L || currentNativeEpoch() != admittedEpoch) return
+        val conversationID = sessionTokens.entries.firstOrNull { it.value == sessionToken }?.key
+            ?: return
+        scope.launch(outputDispatcher) {
+            if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) return@launch
+            engines[conversationID]?.feed(payload)
+            val listeners = outputListeners[sessionToken]?.toList() ?: return@launch
+            for (listener in listeners) {
+                if (!deliveryOwnershipLive(admittedEpoch, conversationID, sessionToken)) {
+                    return@launch
+                }
+                // Still-registered only: a preceding observer may have
+                // disposed this one synchronously.
+                if (outputListeners[sessionToken]?.contains(listener) != true) continue
+                try {
+                    listener(payload)
+                } catch (cancel: kotlinx.coroutines.CancellationException) {
+                    throw cancel
+                } catch (_: Throwable) {
+                    // Observer delivery is view-scoped best effort; the
+                    // authoritative engine feed already ran above.
+                }
+            }
+        }
+    }
+
+    /** The exact live-ownership predicate a terminalOutput delivery must
+     * satisfy at admission AND at every apply step: same bound Root
+     * generation still confirmed by the runtime authority, host not
+     * stopping, and the page's token STILL bound to its conversation. */
+    private fun deliveryOwnershipLive(
+        admittedEpoch: Long,
+        conversationID: String,
+        sessionToken: String,
+    ): Boolean = boundEpoch == admittedEpoch && currentNativeEpoch() == admittedEpoch &&
+        !stopped.get() && sessionTokens[conversationID] == sessionToken
+
+    /** Binds a native-committed Run sessionToken from an accepted,
+     * REGISTERED run-open reply onto its owning conversation. This is the
+     * ONLY route a Run token enters [sessionTokens] — no inference from
+     * unbound output, no unbound/epoch-0 fallback: the admitting Root
+     * generation must still be the live one (the same predicate shape as
+     * [deliveryOwnershipLive]).
+     *
+     * Ownership is a per-conversation CAS against the binding captured at
+     * registration (never the cached snapshot mirror, which can lag native
+     * slot release behind an awaited finish/status): while the binding has
+     * NOT moved, the accepted Run is authoritative and replaces its own
+     * stale predecessor; a binding that DID move (a newer open/reset/stop,
+     * or a newer accepted Run) fences this late reply — an old Run can
+     * never steal a newer binding, and an accepted current Run's valid
+     * binding is never discarded. On claim it mirrors `attachOrOpen`'s
+     * fresh-open duties: the service-owned engine is ensured at this owned
+     * boundary (independent of any view lifetime, so a Run before the pane
+     * was ever mounted cannot drop its bytes), the previous generation's
+     * typed-input refusals are cleared, and the projection is seeded for
+     * the new token exactly once — never downgrading an already-arrived
+     * authoritative status for it. */
+    private fun bindRunOpenReply(intent: PendingRunOpen, sessionToken: String?) {
+        if (sessionToken.isNullOrEmpty()) return
+        if (intent.epoch == 0L || stopped.get() || boundEpoch != intent.epoch ||
+            currentNativeEpoch() != intent.epoch) {
+            return
+        }
+        var claimed = false
+        sessionTokens.compute(intent.conversationID) { _, current ->
+            if (current != intent.previousToken) {
+                // The conversation's binding moved on after this Run was
+                // submitted: this reply is stale — fence it, keep the newer
+                // binding untouched.
+                current
+            } else {
+                claimed = true
+                sessionToken
+            }
+        }
+        if (!claimed) return
+        // The service-owned transcript buffer must exist at the binding
+        // boundary itself: deliverTerminalOutput feeds engines[conversation],
+        // and a Run accepted before any pane mounted would otherwise drop
+        // every page even with a perfect binding. Production path is the
+        // real bounded [engineFor] registry (reuse keeps transcript/reset
+        // policy exactly as the pane-driven creation).
+        engineEnsurer(intent.conversationID)
+        // A fresh session bound: the previous generation's typed input
+        // refusals no longer describe the live truth.
+        clearInputIssue(intent.conversationID)
+        val existing = snapshots[intent.conversationID]
+        if (existing == null || existing.sessionToken != sessionToken) {
+            snapshots[intent.conversationID] = TerminalSessionSnapshot(
+                intent.conversationID, sessionToken, TerminalSessionPhase.STARTING, "run", "",
+                null, null, null, 0)
+        }
+    }
+
+    /** True once the conversation's projected session is actually settled:
+     * no snapshot at all, or a phase that is not live (CLOSED/EXITED/
+     * STOPPED/FAULT). `terminalClose` answers before native settlement, so
+     * a reopen must observe this instead of racing the retiring operation
+     * lease. Bounded: on timeout it reports the LAST observed truth and
+     * never fabricates a settlement. */
+    suspend fun awaitSessionSettled(conversationID: String, timeoutMillis: Long): Boolean {
+        var waited = 0L
+        while (waited < timeoutMillis) {
+            val snap = snapshots[conversationID]
+            if (snap == null || !snap.phase.isLive()) return true
+            delay(50)
+            waited += 50
+        }
+        val last = snapshots[conversationID]
+        return last == null || !last.phase.isLive()
+    }
+
     /** Registers an output listener for one session token; delivered FIFO
-     * on the Main dispatcher. Returns the unregister hook (pane-owned,
-     * disposed with the view — the ONLY view-scoped resource). */
+     * on the serialized output dispatcher (Main) ONLY while the observer
+     * is still registered and the token still owns live delivery (see
+     * [deliverTerminalOutput]). Returns the unregister hook (pane-owned,
+     * disposed with the view — the ONLY view-scoped resource). Observers
+     * only: the service-owned engine is fed by [deliverTerminalOutput],
+     * so no listener may also feed it (double-render). */
     fun addOutputListener(sessionToken: String, listener: (ByteArray) -> Unit): () -> Unit {
         val listeners = outputListeners.getOrPut(sessionToken) {
             java.util.concurrent.CopyOnWriteArraySet()
@@ -495,14 +956,40 @@ internal class G04TerminalHostController(
     /* ---------------- run + LSP (Main mounts these into the IDE extras) ---------------- */
 
     suspend fun runDraft(conversationID: String, workspaceID: String?,
-                         relativePath: String, language: String): TerminalActionReply =
-        submit(buildJsonObject {
-            put("action", "runDraft")
-            put("conversationID", conversationID)
-            workspaceID?.let { put("workspaceID", it) }
-            put("relativePath", relativePath); put("language", language)
-            put("requestID", UUID.randomUUID().toString())
-        }, timeoutMillis = 30_000)
+                         relativePath: String, language: String): TerminalActionReply {
+        val requestID = UUID.randomUUID().toString()
+        // Register the owned run-open intent BEFORE submit: native emits the
+        // accepted Run's actionReply (carrying its sessionToken) BEFORE the
+        // first output/status, and the reply handler can bind that token only
+        // against this registered request/conversation/Root-epoch ownership.
+        // Only a live generation may register — an epoch-0 or stopping host
+        // creates no intent, so no unbound/epoch-0 fallback route exists.
+        val admittedEpoch = boundEpoch
+        val registered = admittedEpoch != 0L && !stopped.get() &&
+            currentNativeEpoch() == admittedEpoch
+        if (registered) {
+            // Capture the EXACT current binding: the accepted reply may only
+            // claim the conversation with a CAS against this predecessor, so
+            // any newer open/reset/stop that moves the binding fences this
+            // Run's late reply instead of letting it steal the conversation.
+            pendingRunOpens[requestID] = PendingRunOpen(
+                conversationID, admittedEpoch, sessionTokens[conversationID])
+        }
+        try {
+            return submit(buildJsonObject {
+                put("action", "runDraft")
+                put("conversationID", conversationID)
+                workspaceID?.let { put("workspaceID", it) }
+                put("relativePath", relativePath); put("language", language)
+                put("requestID", requestID)
+            }, timeoutMillis = 30_000)
+        } finally {
+            // Timeout/cancel/refusal clears the intent: a late native reply
+            // for a request this host no longer waits on must never bind an
+            // unobserved session retroactively.
+            if (registered) pendingRunOpens.remove(requestID)
+        }
+    }
 
     suspend fun ensureLanguageServer(conversationID: String, workspaceID: String?,
                                      language: String): TerminalActionReply =
@@ -646,8 +1133,7 @@ internal class G04TerminalHostController(
             "terminalOutput" -> {
                 val token = descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull ?: return true
                 val payload = TerminalNative.payload(event) ?: return true
-                val listeners = outputListeners[token]?.toList() ?: return true
-                scope.launch(Dispatchers.Main) { listeners.forEach { it(payload) } }
+                deliverTerminalOutput(token, payload)
                 return true
             }
             "terminalStatus" -> {
@@ -667,7 +1153,34 @@ internal class G04TerminalHostController(
                     if (snapshot.conversationID.isNotEmpty()) {
                         snapshots[snapshot.conversationID] = snapshot
                         if (snapshot.phase == TerminalSessionPhase.CLOSED) {
-                            sessionTokens.entries.removeAll { it.value == snapshot.sessionToken }
+                            // Retirement is ORDERED after accepted output: the
+                            // reader admits terminalOutput pages onto the same
+                            // serialized output dispatcher in mailbox order, so
+                            // enqueuing the removal behind them lets an
+                            // immediate-exit Run's final bytes reach their real
+                            // owner instead of being stripped by a synchronous
+                            // removal that raced the queued applies (device
+                            // evidence 2026-10-25). The apply carries its OWN
+                            // fences: the captured Root generation must still be
+                            // the live bound one (an old-Root queued control can
+                            // never remove a new-Root binding, even if a token
+                            // string were reused), and the removal is an exact
+                            // per-conversation CAS against the very binding this
+                            // status describes — a replacement token or another
+                            // conversation is never erased. The CLOSED snapshot
+                            // itself is still applied synchronously above, so
+                            // every phase reader stays truthful immediately, and
+                            // pages admitted AFTER this removal still fail
+                            // deliveryOwnershipLive.
+                            val retirementEpoch = boundEpoch
+                            scope.launch(outputDispatcher) {
+                                if (retirementEpoch == 0L || stopped.get() ||
+                                    boundEpoch != retirementEpoch ||
+                                    currentNativeEpoch() != retirementEpoch) {
+                                    return@launch
+                                }
+                                sessionTokens.remove(snapshot.conversationID, snapshot.sessionToken)
+                            }
                         }
                     }
                     onTerminalStatus?.invoke(snapshot)
@@ -684,6 +1197,23 @@ internal class G04TerminalHostController(
                 // A refusal for a fenced completion also releases the
                 // completion waiter (one release; success path removes it).
                 if (!ok) completions.remove(requestID)?.complete(null)
+                // Service-owned run binding: an accepted Run's sessionToken
+                // binds ONLY while this reply's waiter is still the
+                // registered request owner — the `replies.remove(requestID)`
+                // above is that atomic ownership transfer, so a non-null
+                // [future] proves runDraft's timeout/cancel cleanup has NOT
+                // released the request yet. A reply that outlives its waiter
+                // consumes the intent without binding: a late native session
+                // is never retroactively claimed as host-owned. Binding runs
+                // SYNCHRONOUSLY here — before the waiter resumes and before
+                // native's subsequent terminalOutput/terminalStatus events
+                // reach this reader loop. A refused reply never binds
+                // (never fabricated).
+                pendingRunOpens.remove(requestID)?.let { intent ->
+                    if (ok && future != null) {
+                        bindRunOpenReply(intent, descriptor["sessionToken"]?.jsonPrimitive?.contentOrNull)
+                    }
+                }
                 if (future != null) {
                     if (ok) future.complete(TerminalActionReply.Success(descriptor))
                     else future.complete(TerminalActionReply.Refused(
@@ -793,6 +1323,16 @@ internal class G04TerminalHostController(
 /** Host-side outer budget for a fenced completion answer (native applies
  * its own shorter 10 s request deadline plus $/cancelRequest). */
 private const val G04LanguageServerCompletionBudgetMillis = 15_000L
+
+/** Bounded PTY input lane: at most this many queued packets AND at most
+ * this many queued payload bytes per conversation (an item COUNT alone is
+ * not boundedness — each ByteArray is arbitrary). Beyond either limit the
+ * lane refuses truthfully through inputIssueReporter instead of growing
+ * unbounded or dropping silently. 256 KiB covers the worst realistic
+ * burst (fast typing, long IME commits and pastes); the native mailbox
+ * still applies its own payload limits (-106/-107) as the authority. */
+private const val InputLaneCapacity = 128
+private const val InputLaneByteBudget = 262_144L
 
 /* ---------------- tiny JSON helpers (bounded, never invented) ---------------- */
 

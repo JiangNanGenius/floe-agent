@@ -205,12 +205,25 @@ final class TestSecretGateway: AndroidSecretGateway, @unchecked Sendable {
     private let lock = NSLock()
     private var store: [String: Data] = [:]
     var failReads = false
+    /// C05 queue-retirement regressions (job-7cb6799042f94ec7): a
+    /// deterministic read-count gate. When set, reads AFTER the Nth fail —
+    /// used to land the start pipeline's step-8 `serviceAssemblyFailed`
+    /// refusal (the credentials resolve) while the step-4 admission
+    /// resolve still succeeds, with no sleeps and no races. Default nil
+    /// keeps every existing suite byte-identical.
+    var failReadsAfter: Int?
+    private var _readCount = 0
+    var readCount: Int { lock.lock(); defer { lock.unlock() }; return _readCount }
     func seed(reference: String, value: String) {
         lock.lock(); store[reference] = Data(value.utf8); lock.unlock()
     }
     func read(reference: String) async throws -> Data? {
         try withScopedLock(lock) {
+            _readCount += 1
             if failReads { throw FloeError.internalError("fixture read failure") }
+            if let limit = failReadsAfter, _readCount > limit {
+                throw FloeError.internalError("fixture read failure (past read \(limit))")
+            }
             return store[reference]
         }
     }

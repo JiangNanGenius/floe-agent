@@ -5,6 +5,13 @@ import FloeTools
 import FloeWorkspace
 
 struct G04WorkspaceOwnedOperation: Sendable {
+    /// Native-issued identity of THIS operation lease (G04-R2): the trusted
+    /// UI lanes register it with the workspace authority so a grant can be
+    /// minted against the REAL lease instead of a persisted model Run. The
+    /// ownerID's trailing component is exactly this identity, so the registry
+    /// shape, attach/detach discipline and every existing consumer are
+    /// unchanged; nothing else interprets it.
+    let operationID: UUID
     let conversationID: UUID
     let token: RuntimeOwnedWorkToken
     let cancellation: CancellationToken
@@ -17,10 +24,12 @@ extension FacadeRunDomain {
         -> G04WorkspaceOwnedOperation? {
         guard expectedEpoch == epoch, !retirementFenced, globalFence == nil,
               deleteGuards[conversationID] == nil else { return nil }
-        let ownerID = conversationID.uuidString + ":workspace:" + UUID().uuidString
+        let operationID = UUID()
+        let ownerID = conversationID.uuidString + ":workspace:" + operationID.uuidString
         guard case .attached(let token) = RuntimeOwnedWorkRegistry.shared.attach(
             epoch: epoch, kind: .conversation, ownerID: ownerID) else { return nil }
-        let operation = G04WorkspaceOwnedOperation(conversationID: conversationID, token: token,
+        let operation = G04WorkspaceOwnedOperation(operationID: operationID,
+                                                   conversationID: conversationID, token: token,
                                                    cancellation: CancellationToken())
         workspaceOperationLeases[conversationID, default: [:]][token.receipt] = operation
         return operation

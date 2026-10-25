@@ -1,9 +1,9 @@
 {
   "schema": "floe.android.goal-code-ledger/1",
   "goal": "G04",
-  "subgoal": "G04-R1",
-  "updatedAt": "2026-10-24T10:40:23.801541+00:00",
-  "phase": "G04_R1_code_and_component_checks_verified_R2_App_pending",
+  "subgoal": "G04-R2",
+  "updatedAt": "2026-10-25T05:26:14.156193+00:00",
+  "phase": "G04_R2_actual_App_integration_active_release_pending",
   "baselinePolicy": "Original feature-baseline/work-packages status digests remain frozen historical fixture inputs. This ledger records current G04 contributions using existing IDs; no new feature/work-package IDs or shifted goal ownership.",
   "sourceBaseline": "3fd597b537590b4e6c11c0a25f413361a66b42b6",
   "originalWorkPackageCount": 85,
@@ -120,7 +120,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_task_workspace_io",
+        "scope": "Actual task-owned file CRUD and readback; full environment-layer matrix reused/deferred, not all-layer App pass.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "WSF-FILE-OPS-SAF",
@@ -134,7 +139,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Actual picker/save/import/cancel/persistent grant; release shared grant correctly refused, not revoke success.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "WSF-REVISION-CONFLICT",
@@ -148,7 +158,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Natural guest exit0 -> native CAS41/21; local-only fork/autodismiss/fresh tree/reopen exact.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "WSF-SAFE-EXTRACT",
@@ -162,7 +177,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_evidence_only",
+        "scope": "No R2 actual-App extraction witness; retain capability and later matrix.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "WSF-EXPORT",
@@ -176,7 +196,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Actual system CreateDocument SaveAs325B and reopen/import exact BOM7CRLF.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "WSF-NETWORK-MOUNT",
@@ -190,7 +215,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_webdav_actual_pass",
+        "scope": "Actual synthetic WebDAV PUT200/GET206 exact325B; SMB matrix not asserted.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-TREE-EDIT",
@@ -204,7 +234,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "actual_previous_basics_pass_current_file_open_blocked",
+        "scope": "Previous real CRUD/edit/save/reopen retained; C06 ordinary new Python open crashes during completion initialization. Guarded input/selection source and relevant13JVM tests pass; final runtime retake pending.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-SEARCH-REPLACE",
@@ -218,7 +253,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_find_actual_replace_unexercised",
+        "scope": "Existing actual Find/query/next UI reused; no blanket replace claim.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-UNDO-DRAFT",
@@ -232,7 +272,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Native Undo/Redo and dirty-draft branch barrier retain exact body.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-ENCODING-LINES",
@@ -246,7 +291,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Actual Unicode/BOM/7CRLF edited/saved/imported and exact325B readback.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-DIFF",
@@ -260,7 +310,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_only_editor_diff",
+        "scope": "Actual Git diff is separate evidence; editor diff button not yet an actual witness.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-RUN-LOG-PREVIEW",
@@ -274,7 +329,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "actual_preview_pass_run_output_blocked",
+        "scope": "Saved preview rendered and owner shutdown passed; free-slot GUI Run output binding missing.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-TERMINAL-EMBED",
@@ -288,7 +348,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "standalone_actual_pass_embedded_blocked",
+        "scope": "Real terminal controls proven; IDE optional accessory omitted by App host.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "IDE-LANG-SUPPORT",
@@ -302,7 +367,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "actual_backend_seen_completion_acceptance_blocked",
+        "scope": "Real Python backend and candidate observed on previous candidate; Tab triggered ANR. Bounded-scrolling source fix has a new initialization crash; final actual completion acceptance pending.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "GIT-DIFF-STAGE-COMMIT",
@@ -315,7 +385,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_local_actual_pass",
+        "scope": "Synthetic local diff/stage/commit/history/branch and dirty editor gate.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "GIT-PUSH-CONFLICT",
@@ -328,7 +403,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_only_remote_unexercised",
+        "scope": "No remote account write/authorization inferred; later user-driven integration.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "GH-ACTIONS-STATUS",
@@ -341,7 +421,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "actual_unconfigured_boundary_only",
+        "scope": "Actions entry visibly requires configuration; real account/status/dispatch not exercised.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "GH-ARTIFACT-DOWNLOAD",
@@ -354,7 +439,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_only_remote_unexercised",
+        "scope": "No actual remote Actions artifact or account use implied.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "GIT-CRED-STORE",
@@ -367,7 +457,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G02",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "prior_credential_boundary_reuse_no_new_git_grant",
+        "scope": "Preserve G02 storage/upgrade boundary; no new Git credential authorization/read.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "BRW-NAV-OBSERVE",
@@ -379,7 +474,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_owned_local_actual_pass",
+        "scope": "Controlled owned-localhost render/navigation/address refusal; not general web-account matrix.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "BRW-ACT-DOWNLOAD",
@@ -391,7 +491,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_only_actions_download_unexercised",
+        "scope": "No R2 actual download/action matrix witness; existing capability retained.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "BRW-HANDOFF",
@@ -403,7 +508,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_owned_page_actual_pass",
+        "scope": "Takeover/return preserves own preview page; no personal-account grant.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "BRW-LOGIN-POLICY",
@@ -415,7 +525,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "component_policy_only_no_remote_login",
+        "scope": "Policy boundary retained; no real remote login claimed.",
+        "notFullMatrix": true
+      }
     },
     {
       "id": "BRW-LOCAL-PREVIEW",
@@ -427,7 +542,12 @@
       "compiledThisBatch": true,
       "appVerifiedThisBatch": false,
       "implementationGoal": "G04",
-      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2."
+      "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
+      "r2AppAcceptance": {
+        "state": "representative_actual_pass",
+        "scope": "Actual saved HTML render/HTTP200, normal task deletion closes owned socket without killing App.",
+        "notFullMatrix": true
+      }
     }
   ],
   "sourceHandoffs": [
@@ -490,7 +610,7 @@
   ],
   "notYetStarted": [],
   "verification": "Current Mainsource35/0 (Network17 Facade10 SourceHost8); parentBrowser67/0 Git81/0 CoreSwiftTesting104/0 LSP25/0 TerminalDomain8/0; AppSource16+Network9 andunchangedTerminal8; IDE54/SAF70/Browser28 accepted. Actual Swift6.4.1 AndroidARM64 Core10 object/link passed96.878s/2211stableinputentries; binary+symbols+16KiB+180JNIimports verified. No wholeApp/device/visual/newAPKclaim.",
-  "progressReference": "../../docs/FLOE_ANDROID_PROGRESS.zh-CN.md#2026-10-24g04-r1源码批次进行中",
+  "progressReference": "../../docs/FLOE_ANDROID_PROGRESS.zh-CN.md",
   "appIntegration": {
     "workspaceFiles": "source-implemented: exact ordinary-task native binding, Sora IdeHost, create/mkdir/move/copy/delete modal actions; not Android-compiled",
     "ideTransactions": "single native edit inflight, ACK revision chaining, dependent commands fenced, rejected tail retained, callback detach and native projection refresh guarded",
@@ -558,5 +678,41 @@
     "app": "Full/Play Kotlin/resources and current25Source/Network JVM qualified; unchangedTerminal8 reused",
     "AppAndVisualAcceptance": "pending_G04_R2",
     "legacyProbeLimit": "Early isolatedarchivehost123 had1IDEzhcatalogenvcase/3asserts failed; allarchive/mount/codec/RAR casespassed. R2checksactualAppbilingualcopy, nofulllegacyhostpassclaim."
+  },
+  "qualificationScope": "Original sourceHandoffs/appIntegration/currentIntegrationBatch/currentComponentQualification retain G04-R1 historical component evidence. Current R2 actual acceptance is recorded separately; not a whole-product or complete hardware/visual matrix claim.",
+  "currentR2Qualification": {
+    "candidate": "0.1.0-alpha.10 versionCode12 candidate06; signed and installed on reused API37/16KiB tablet",
+    "kotlin": {
+      "tests": 120,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "fullPlayProductionCompile": true,
+      "scope": "IDE and terminal-controller changed boundary; not Android View lifecycle coverage"
+    },
+    "native": {
+      "queueRunHostTests": 31,
+      "androidARM64ObjectLink": true,
+      "sourceInputs": 2212,
+      "stableInputs": true
+    },
+    "actualQueue": "Actual ordinary approval -> exec0 -> exact235B user message once -> automatic second reply. Active queue row remains until navigation; refresh fix pending, not an automatic-retirement pass.",
+    "actualIde": "Previous encoded bytes/conflict/local-only keep-both results retained. Current new Python file open crashes in completion initialization before typing; patched actual completion/input/run checks pending.",
+    "remaining": [
+      "Fix actual queue projection and completion initialization",
+      "Batch changed checks and one saved signed APK",
+      "Actual tablet IDE/queue retakes and same-artifact Samsung representative upgrade",
+      "Exact-source push and immutable Android prerelease with real asset download/hash read-back",
+      "Owned device/fixture/cache cleanup and final original-scope audit"
+    ],
+    "publication": false,
+    "paidAppModelCalls": 0,
+    "wholeG04Complete": false,
+    "nextSourceCohort": {
+      "editorOpen": "Count-before-height guard integrated, pendingnewAPKactualopen/Tab",
+      "icons": "44Cupertinovectors+9accuratefallbacks;50existingAPI/orderretained+3newsemanticvalues; privatehandoff hashintegrated14files; compile/Apppending",
+      "native": "Core05 unchanged; queuepublicationfix remainsprivate/inprogress, NOT partofthiscohort",
+      "intermediateRelease": "QualifiedAlpha10 maypublish with explicitknownqueuedisplaylimit; originalG04R2remainsACTIVE untilqueuefix/finalactualqualification/cleanup. No goal scope removed."
+    }
   }
 }

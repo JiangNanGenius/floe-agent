@@ -676,8 +676,24 @@ private fun PendingInputQueueSection(holder: ConversationFlowHolder) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    // Queue-content truthfulness (G04R2): the marker
+                    // vocabulary resolves to localized copy, a bounded
+                    // excerpt is EXPLICITLY labelled, and an unread row is
+                    // never a silently blank slot. The full editor binds
+                    // only a proven-complete body (sheet logic below).
+                    val projected = PendingInputQueueLogic.displayText(input)
+                    val display = when (projected) {
+                        PendingInputQueueLogic.BROWSER_HANDED_BACK ->
+                            stringResource(R.string.queue_browser_handoff_body)
+                        PendingInputQueueLogic.BODY_UNREAD ->
+                            stringResource(R.string.queue_body_unread)
+                        else -> projected +
+                            if (input.bodyState == PendingInputBodyStateUi.PREVIEW)
+                                stringResource(R.string.queue_content_preview_suffix)
+                            else ""
+                    }
                     FloeText(
-                        PendingInputQueueLogic.displayText(input),
+                        display,
                         style = Floe.typography.body,
                         color = Floe.colors.label,
                         maxLines = 2,

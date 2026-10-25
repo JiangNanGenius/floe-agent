@@ -65,6 +65,7 @@
     <string name="ide_status_plain">Plain text</string>
     <string name="ide_status_line_col">Line %1$d, Col %2$d</string>
     <string name="ide_status_saved">Saved</string>
+    <string name="ide_status_recovery">Edits need recovery</string>
     <string name="ide_status_unsaved">Unsaved</string>
     <string name="ide_status_pending_n">%1$d edits not confirmed yet</string>
     <string name="ide_status_read_only">Read-only</string>

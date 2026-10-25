@@ -13,6 +13,11 @@ internal class CoreWorkspaceNativeAuthority : WorkspaceNativeAuthority {
         if (toolCallID == null) LinuxWorkspaceNative.binding(rootEpoch, runID, grantID)
         else LinuxWorkspaceNative.bindingForCall(rootEpoch, runID, toolCallID, grantID)
 
+    // G04-R2 UI operation lease: nullable native reply pass-through, same rule
+    // as binding/bindingForCall. A null/uncertain reply never replays.
+    override fun bindingForOperation(rootEpoch: Long, operationID: String, runID: String, grantID: String): ByteArray? =
+        LinuxWorkspaceNative.bindingForOperation(rootEpoch, operationID, runID, grantID)
+
     private fun known(value: ByteArray?): ByteArray = value ?: throw WorkspaceBridgeException("nativeReplyUnknown")
     override fun openSession(bindingJson: ByteArray): ByteArray = known(LinuxWorkspaceNative.openSession(bindingJson))
     override fun baselineBegin(sessionKey: String): ByteArray = known(LinuxWorkspaceNative.baselineBegin(sessionKey))

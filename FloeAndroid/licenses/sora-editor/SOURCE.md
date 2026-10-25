@@ -9,3 +9,13 @@
 - Sources JAR SHA-256: `71dc680e5b5aeeecb8fa32fbb6cd354dce19deb97b7ea7e70ece845bfb705156`.
 
 This dependency supplies the native editor widget. Floe's presentation module uses its public APIs; document ownership, revisions and saves remain in the shared workspace services. Exact resolved artifacts still require the Gradle lock and checksum verification step. Distribution must retain the corresponding source and rebuild information for the actual shipped graph.
+
+## Floe completion surface adaptation
+
+`feature/ide/src/main/kotlin/com/floe/android/feature/ide/sora/FloeCompletionSurface.kt`
+adapts the pinned editor's default completion layout chrome and popup placement. It
+retains the upstream copyright and LGPL-2.1-or-later notice. The layout uses bounded
+list positioning and places candidates above the caret when space below is too
+small; it uses public editor APIs and leaves the published upstream AAR unchanged.
+The adaptation source and build configuration are distributed in the Floe source
+repository at the exact release commit.

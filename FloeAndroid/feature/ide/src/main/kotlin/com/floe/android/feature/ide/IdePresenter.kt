@@ -71,6 +71,9 @@ public class IdePresenter(
         var headProjection: String? = null
         val deferredCommands = ArrayDeque<IdeCommandRequest>()
         var pendingAdoption: IdeDocumentSnapshot? = null
+        // Whether the deferred adoption snapshot carries a caret-authoritative
+        // native selection (see [adoptLocked]); a stale-flush echo does not.
+        var pendingAdoptionAuthoritative = true
         var composing: Boolean = false
         var assembly: Assembly? = null
         var rejectedText: String? = null
@@ -82,6 +85,12 @@ public class IdePresenter(
         var completionRequestId: String? = null
         var completion: IdeCompletionSnapshot? = null
         var lastSentSelection: IdeTextSelection? = null
+        // Ordering stamps for selection ownership: the latest local caret
+        // report wins over older native selection echoes unless a
+        // caret-authoritative adoption happened after it (see
+        // [restoreSelectionFor]).
+        var lastReportStamp = 0L
+        var lastCaretAdoptStamp = 0L
         var lastVisibleLine: Int = -1
         var lastSyncWasFull: Boolean = true
         var diagnostics: List<IdeDiagnostic> = emptyList()
@@ -142,11 +151,22 @@ public class IdePresenter(
     private var editorSelectionVersion = 0
     private var editorResetVersion = 0
     private var diagnosticsVersion = 0
+    private var completionVersion = 0
     private var generationCounter = 0L
+    // Single monotonic source ordering local selection reports against
+    // caret-authoritative native adoptions (never exposed; ordering only).
+    private var selectionStamp = 0L
     private var detachReceiver: (() -> Unit)? = null
 
     private val commandKinds = HashMap<String, CmdKind>()
     private val commandDocs = HashMap<String, String>()
+    // The exact conflict captured when the user accepted a resolution. A
+    // resolve reply may clear or adopt only while its captured conflict is
+    // still the current one: a newer SAVE conflict on the SAME document, a
+    // re-click or an explicit dismissal invalidates the old intent
+    // (device-proven 2026-10-25 CAS2: the same docID alone is not a
+    // conflict identity).
+    private val conflictResolutions = HashMap<String, IdeConflictPayload>()
 
     private val _state: MutableStateFlow<IdeViewState>
     public val state: StateFlow<IdeViewState>
@@ -245,6 +265,7 @@ public class IdePresenter(
     public fun release() {
         synchronized(lock) {
             released = true
+            conflictResolutions.clear()
             detachReceiver?.invoke(); detachReceiver = null
         }
     }
@@ -257,6 +278,7 @@ public class IdePresenter(
             if (!inputAdmissionOpen && !maintenance) {
                 val kind = commandKinds.remove(command.requestId)
                 commandDocs.remove(command.requestId)
+                conflictResolutions.remove(command.requestId)
                 if (kind == CmdKind.SAVE) saveInFlight = false
                 if (kind in setOf(CmdKind.FIND, CmdKind.REPLACE_CURRENT, CmdKind.REPLACE_ALL)) findInFlight = false
                 _state.value = buildState()
@@ -269,6 +291,7 @@ public class IdePresenter(
                 setOf(CmdKind.FIND, CmdKind.DIFF, CmdKind.SELECTION, CmdKind.COMPLETION, CmdKind.ACTIVATE)) {
                 val kind = commandKinds.remove(command.requestId)
                 commandDocs.remove(command.requestId)
+                conflictResolutions.remove(command.requestId)
                 if (kind == CmdKind.SAVE) saveInFlight = false
                 _state.value = buildState()
                 return
@@ -283,6 +306,7 @@ public class IdePresenter(
                         doc.deferredCommands.remove(previous)
                         commandKinds.remove(previous.requestId)
                         commandDocs.remove(previous.requestId)
+                        conflictResolutions.remove(previous.requestId)
                     }
                 }
                 if (doc.deferredCommands.size >= 64) {
@@ -324,11 +348,18 @@ public class IdePresenter(
                 // invalidates their ranges and preserves the local tail.
                 if (doc.snapshot?.revision == snapshot.revision &&
                     doc.snapshot?.generation == snapshot.generation) return
+                // A background reload may publish a new lineage before the
+                // in-flight edit answers. Keep the projection when its base
+                // body is unchanged; only the actual head reply may retry it.
+                // Retrying on a snapshot alone could duplicate an edit whose
+                // native application is still in flight.
+                if (snapshot.text != null && snapshot.text == doc.snapshot?.text) return
                 flushPendingLocked(doc)
                 saveRejectedTailLocked(doc, snapshot)
             }
             if (doc.composing && doc.key.documentId == activeDocumentId) {
                 doc.pendingAdoption = snapshot
+                doc.pendingAdoptionAuthoritative = true
             } else {
                 adoptLocked(doc, snapshot)
                 if (doc.key.documentId == activeDocumentId) editorResetVersion++
@@ -380,6 +411,10 @@ public class IdePresenter(
             if (completions.revision != doc.snapshot?.revision) return
             if (completions.requestId != doc.completionRequestId) return
             doc.completion = completions
+            // Fresh host (LSP) items arrived asynchronously AFTER Sora's own
+            // insert-triggered completion pass: bump the version so the view
+            // can re-run it and the late answer becomes visible.
+            completionVersion++
             _state.value = buildState()
         }
     }
@@ -448,6 +483,27 @@ public class IdePresenter(
 
     public fun loadTreeRoot() {
         sendTree(null)
+    }
+
+    /**
+     * Full tree re-read after a REAL workspace CRUD (create/rename/move/copy/
+     * delete, and the panel's Refresh control). Reloading only the root left
+     * cached children of EXPANDED folders stale — a moved file stayed visible
+     * under its old folder until a process restart (device evidence 2026-10-25:
+     * g04-ops/copy.py → moved.py succeeded natively, the expanded folder still
+     * listed copy.py even after Refresh). This re-reads the root AND every
+     * currently expanded directory, keeping the expansion state; a directory
+     * whose re-read fails converges honestly through the existing per-parent
+     * error path (child cache + expansion dropped). The re-read is a bounded
+     * host query per visible expanded path — never a full recursive walk.
+     */
+    public fun refreshTreeKeepingExpansion() {
+        val expanded: List<String> = synchronized(lock) {
+            if (released) return
+            expandedPaths.toList()
+        }
+        sendTree(null)
+        expanded.forEach { parent -> sendTree(parent) }
     }
 
     public fun toggleTreeExpansion(relativePath: String) {
@@ -657,7 +713,8 @@ public class IdePresenter(
             if (!composing) {
                 doc.pendingAdoption?.let {
                     doc.pendingAdoption = null
-                    adoptLocked(doc, it)
+                    adoptLocked(doc, it, authoritativeCaret = doc.pendingAdoptionAuthoritative)
+                    doc.pendingAdoptionAuthoritative = true
                     if (doc.key.documentId == activeDocumentId) editorResetVersion++
                 }
             }
@@ -702,6 +759,7 @@ public class IdePresenter(
             val doc = docs[documentId] ?: return
             changed = doc.lastSentSelection != selection || doc.lastVisibleLine != firstVisibleLine
             doc.lastSentSelection = selection
+            doc.lastReportStamp = ++selectionStamp
             doc.lastVisibleLine = firstVisibleLine
             key = doc.key
             caretLineColumnLocked(doc, selection.startUtf16)
@@ -744,6 +802,37 @@ public class IdePresenter(
     /** Current mirror length only when the full projection is assembled. */
     public fun mirrorLengthFor(documentId: String): Int? =
         synchronized(lock) { docs[documentId]?.takeIf { it.mirrorReady }?.mirror?.length }
+
+    /**
+     * Selection to restore after a full editor resync. The snapshot's
+     * selection is a native echo that can lag arbitrarily behind the
+     * renderer's own last report (edit acknowledgements copy the snapshot
+     * and preserve the old field; selection acknowledgements never refresh
+     * it). Re-asserting that stale echo over the live caret re-selected a
+     * rolled-back range whose next keystroke silently replaced whole
+     * adopted bodies, and resurfaced as a stale "N selected" header on
+     * every view reconstruction. The latest local report therefore wins
+     * unless a caret-authoritative native adoption (open/reopen/undo/
+     * replace/resolve/external push) happened AFTER it. Result is clamped
+     * to the current projection; null means "leave the caret alone".
+     */
+    public fun restoreSelectionFor(documentId: String): IdeTextSelection? = synchronized(lock) {
+        if (released || !attached || documentId != activeDocumentId) return@synchronized null
+        val doc = docs[documentId] ?: return@synchronized null
+        val snapshot = doc.snapshot ?: return@synchronized null
+        val limit = when {
+            doc.mirrorReady -> doc.mirror.length
+            snapshot.text != null -> snapshot.text.length
+            else -> return@synchronized null
+        }
+        val local = doc.lastSentSelection?.takeIf { doc.lastReportStamp > doc.lastCaretAdoptStamp }
+        val chosen = local ?: snapshot.selection
+            ?: snapshot.caretUtf16?.let { IdeTextSelection(it, it) }
+            ?: return@synchronized null
+        val start = chosen.startUtf16.coerceIn(0, limit)
+        val end = chosen.endUtf16.coerceIn(start, limit)
+        IdeTextSelection(start, end)
+    }
 
     public fun activeDocumentKey(): IdeDocumentKey? = synchronized(lock) { docs[activeDocumentId]?.key }
 
@@ -972,8 +1061,11 @@ public class IdePresenter(
         val payload = synchronized(lock) { conflictState } ?: return
         val request = newRequest("conflict")
         synchronized(lock) {
+            if (conflictState !== payload) return
+            conflictResolutions.clear() // Only the latest user choice may adopt a reply.
             commandKinds[request] = CmdKind.RESOLVE_CONFLICT
             commandDocs[request] = payload.documentKey.documentId
+            conflictResolutions[request] = payload
         }
         dispatchCommand(
             IdeCommandRequest.ResolveConflict(
@@ -984,6 +1076,7 @@ public class IdePresenter(
 
     public fun dismissConflict() {
         synchronized(lock) {
+            conflictResolutions.clear()
             conflictState = null
             _state.value = buildState()
         }
@@ -1054,6 +1147,7 @@ public class IdePresenter(
             // caret movement for the lifetime of the editor.
             val kind = commandKinds.remove(id)
             commandDocs.remove(id)
+            conflictResolutions.remove(id)
             if (kind == CmdKind.SAVE) saveInFlight = false
             return
         }
@@ -1069,6 +1163,7 @@ public class IdePresenter(
         val snapshot = doc.snapshot ?: return
         val acceptedText = doc.headProjection ?: snapshot.text
         doc.snapshot = snapshot.copy(revision = outcome.newRevision, text = acceptedText,
+            capabilities = outcome.capabilities ?: snapshot.capabilities,
             contentRef = if (acceptedText == null) snapshot.contentRef else null,
             sizeBytes = acceptedText?.toByteArray(Charsets.UTF_8)?.size?.toLong() ?: snapshot.sizeBytes)
         val next = doc.pending.entries.firstOrNull()
@@ -1094,21 +1189,94 @@ public class IdePresenter(
     }
 
     private fun onTxnStaleLocked(reply: IdeCommandReply, outcome: IdeReplyOutcome.StaleRevision) {
-        val doc = reply.documentKey?.let { docs[it.documentId] } ?: return
+        val id = reply.requestId ?: return
+        val replyKey = reply.documentKey ?: return
+        val doc = docs[replyKey.documentId] ?: return
+        if (replyKey != doc.key || outcome.current.key != doc.key) return
+        if (outcome.current.generation < (doc.snapshot?.generation ?: return)) return
+        val head = doc.pending.entries.firstOrNull()
+        if (head?.key == id) {
+            // A stale answer can retry only the exact current edit attempt.
+            // Old attempts, foreign snapshots and replies from a superseded
+            // document generation never acquire a new edit owner.
+            val txn = head.value
+            if (txn.owner != reply.owner || txn.documentKey != doc.key ||
+                txn.generation != doc.snapshot?.generation) return
+            if (rebaseIdenticalBodyLocked(doc, outcome.current)) return
+        } else {
+            // A command already in flight may answer while the user starts
+            // typing. Settle that command's bookkeeping, but never use its
+            // stale reply as permission to resubmit an unrelated edit head.
+            val kind = commandKinds[id] ?: return
+            if (commandDocs[id] != doc.key.documentId) return
+            commandKinds.remove(id)
+            commandDocs.remove(id)
+            conflictResolutions.remove(id)
+            if (kind == CmdKind.SAVE) saveInFlight = false
+            if (kind in setOf(CmdKind.FIND, CmdKind.REPLACE_CURRENT, CmdKind.REPLACE_ALL)) findInFlight = false
+            if (head != null && outcome.current.text != null &&
+                outcome.current.text == doc.snapshot?.text) return
+        }
         flushPendingLocked(doc)
         saveRejectedTailLocked(doc, outcome.current)
         if (doc.composing && doc.key.documentId == activeDocumentId) {
             doc.pendingAdoption = outcome.current
+            doc.pendingAdoptionAuthoritative = false
         } else {
-            adoptLocked(doc, outcome.current)
+            adoptLocked(doc, outcome.current, authoritativeCaret = false)
             if (doc.key.documentId == activeDocumentId) editorResetVersion++
         }
+    }
+
+    /**
+     * A stale reply can carry a native body BYTE-IDENTICAL to the base the
+     * in-flight chain was built on: the opaque revision/generation lineage
+     * moved (header-only resync, out-of-band revision mint, reload-minted
+     * generation) while the document content did not. Nothing diverged, so
+     * rolling back live keystrokes and rewinding the editor would destroy
+     * real user input for a phantom conflict. Re-stamp the user's own
+     * unacknowledged edits onto the fresh lineage and resubmit the head
+     * instead. Native still CAS-gates every application and a genuinely
+     * changed (or still-streamed, incomparable) body keeps the full
+     * flush/reject/recoverable-tail path. No acknowledgement is fabricated
+     * here: the same user edit is submitted as a new request attempt and
+     * must earn a real Acknowledged reply on the new lineage.
+     */
+    private fun rebaseIdenticalBodyLocked(doc: Doc, current: IdeDocumentSnapshot): Boolean {
+        if (doc.pending.isEmpty() || !doc.mirrorReady || current.readOnly) return false
+        val base = doc.snapshot?.text ?: return false
+        val fresh = current.text ?: return false
+        if (fresh != base) return false
+        val head = doc.pending.values.first()
+        if (head.range.startUtf16 < 0 || head.range.endUtf16 > fresh.length) return false
+        if (current.revision == head.expectedRevision && current.generation == head.generation) return false
+        // A rejected request was not acknowledged. Give its retry a fresh
+        // attempt ID so a duplicated old stale/ack cannot settle this attempt.
+        val reHead = head.copy(transactionId = newRequest("rebase"),
+            generation = current.generation, expectedRevision = current.revision)
+        val restamped = LinkedHashMap<String, IdeEditTransaction>(doc.pending.size)
+        for ((index, entry) in doc.pending.entries.withIndex()) {
+            val txn = if (index == 0) reHead else entry.value.copy(generation = current.generation)
+            restamped[txn.transactionId] = txn
+        }
+        doc.snapshot = current
+        doc.pending.clear()
+        doc.pending.putAll(restamped)
+        // Restore the head invariant: the complete projection after the one
+        // dispatched edit, computed against the byte-identical fresh base.
+        doc.headProjection = fresh.replaceRange(
+            reHead.range.startUtf16, reHead.range.endUtf16, reHead.replacement)
+        host.submitEdit(reHead)
+        return true
     }
 
     private fun onFailedLocked(reply: IdeCommandReply, outcome: IdeReplyOutcome.Failed) {
         val id = reply.requestId ?: return
         val kind = commandKinds.remove(id)
         val docId = commandDocs.remove(id)
+        // Retire only THIS request's resolution record: a late failed reply
+        // never clears the current conflict or a newer intent.
+        conflictResolutions.remove(id)
         val doc = reply.documentKey?.let { docs[it.documentId] } ?: docId?.let { docs[it] }
         if (id in docs.values.flatMap { it.pending.keys }) {
             // Rejected transaction: every later queued range was computed on
@@ -1176,7 +1344,10 @@ public class IdePresenter(
             CmdKind.RUN, CmdKind.PREVIEW, CmdKind.CLOSE, CmdKind.ACTIVATE, CmdKind.UNDO,
             CmdKind.REDO, CmdKind.SELECTION, CmdKind.COMPLETION,
             -> {
-                if (kind == CmdKind.UNDO || kind == CmdKind.REDO) {
+                // A refused RUN is a user-visible truth (the single Linux
+                // slot can be honestly occupied by a language server or the
+                // terminal): never a silent no-op (device-proven 2026-10-25).
+                if (kind == CmdKind.UNDO || kind == CmdKind.REDO || kind == CmdKind.RUN) {
                     syncErrorMessage = failureText(outcome.code, outcome.message)
                 }
             }
@@ -1202,6 +1373,7 @@ public class IdePresenter(
         for (command in doc.deferredCommands) {
             if (commandKinds.remove(command.requestId) == CmdKind.SAVE) saveInFlight = false
             commandDocs.remove(command.requestId)
+            conflictResolutions.remove(command.requestId)
         }
         doc.deferredCommands.clear()
         findInFlight = false
@@ -1219,8 +1391,17 @@ public class IdePresenter(
         doc.rejectedText = desired
     }
 
-    private fun adoptLocked(doc: Doc, snapshot: IdeDocumentSnapshot) {
+    /**
+     * Adopt native snapshot truth into the projection. [authoritativeCaret]
+     * marks whether the snapshot's selection describes a caret the NATIVE
+     * side moved on purpose (open/reopen/undo/replace/resolve/external
+     * push). A stale-flush adoption's selection is only native's memory of
+     * this renderer's own older report, so it must not outrank the latest
+     * local caret (see [restoreSelectionFor]).
+     */
+    private fun adoptLocked(doc: Doc, snapshot: IdeDocumentSnapshot, authoritativeCaret: Boolean = true) {
         doc.snapshot = snapshot
+        if (authoritativeCaret) doc.lastCaretAdoptStamp = ++selectionStamp
         if (snapshot.text != null) {
             doc.mirror.setLength(0)
             doc.mirror.append(snapshot.text)
@@ -1265,6 +1446,7 @@ public class IdePresenter(
                 val save = payload.save ?: return
                 saveInFlight = false
                 if (save.conflict != null) {
+                    conflictResolutions.clear() // A new occurrence invalidates even an equal payload.
                     conflictState = save.conflict
                 } else {
                     syncErrorMessage = null
@@ -1273,9 +1455,52 @@ public class IdePresenter(
             }
             IdeCommandPayload.Kind.SNAPSHOT -> {
                 val s = payload.snapshot ?: return
+                if (!accept(s.key)) return
+                if (kind == CmdKind.RESOLVE_CONFLICT) {
+                    val resolution = id?.let { conflictResolutions.remove(it) }
+                    if (resolution == null || conflictState != resolution) {
+                        // A reply for an intent the UI already replaced (newer
+                        // SAVE conflict on this document, re-click or explicit
+                        // dismissal): it must neither dismiss the current
+                        // modal nor adopt its stale body over the current
+                        // draft. A native fork minted under a DIFFERENT
+                        // document is real inventory regardless, so the
+                        // bounded tree refresh stays valid — it touches no
+                        // modal and no draft.
+                        if (s.key.documentId != docId) refreshTreeKeepingExpansion()
+                        return
+                    }
+                    // THIS resolve's own accepted snapshot: the request still
+                    // describes the CURRENT conflict, so the modal it
+                    // represented truly settled (native fork minted a new
+                    // docID / USE_REMOTE re-opened a fresh document /
+                    // KEEP_LOCAL re-adopted the reviewed draft). Failed and
+                    // stale outcomes never reach this branch, and the
+                    // captured-payload fence keeps a late same-document reply
+                    // from clearing another conflict (device-proven
+                    // 2026-10-25: a successful fork left the old modal up;
+                    // the same docID alone left a NEW modal dismissable).
+                    conflictState = null
+                    if (s.key.documentId != docId) {
+                        // Inventory changed (the fork's new copy exists):
+                        // refresh the cached tree through the EXISTING
+                        // bounded path so the new file appears without a
+                        // manual refresh; sendTree keeps its own fences.
+                        refreshTreeKeepingExpansion()
+                    }
+                }
                 val target = docs.getOrPut(s.key.documentId) { Doc(s.key) }
+                if (target.pending.isNotEmpty()) {
+                    if (kind == CmdKind.OPEN && s.text != null && s.text == target.snapshot?.text) return
+                    // An explicit native action (undo/replace/resolve) owns
+                    // its result, while edits typed during that action remain
+                    // recoverable rather than disappearing on adoption.
+                    flushPendingLocked(target)
+                    saveRejectedTailLocked(target, s)
+                }
                 if (target.composing && s.key.documentId == activeDocumentId) {
                     target.pendingAdoption = s
+                    target.pendingAdoptionAuthoritative = true
                 } else {
                     adoptLocked(target, s)
                     if (s.key.documentId == activeDocumentId) editorResetVersion++
@@ -1452,6 +1677,7 @@ public class IdePresenter(
             diff = diffState,
             diagnostics = activeDoc?.diagnostics ?: emptyList(),
             diagnosticsVersion = diagnosticsVersion,
+            completionVersion = completionVersion,
             tree = IdeTreeState(
                 rows = treeRows,
                 searchQuery = searchQuery,

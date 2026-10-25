@@ -993,8 +993,11 @@ class ProviderHostController internal constructor(
                         }
                     }
                 }
-                is HostOperationOutcome.Rejected ->
-                    onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, outcome.code)
+                is HostOperationOutcome.Rejected -> {
+                    logProviderRefusal(outcome.code, outcome.reason)
+                    onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT,
+                        providerFailureCopy(outcome.code, outcome.reason))
+                }
                 is HostOperationOutcome.Failed -> {
                     // Closed parse/binding identifiers only; no draft or credential data.
                     val diagnosticReasons = setOf(
@@ -1008,10 +1011,12 @@ class ProviderHostController internal constructor(
                         "candidate.nonSecretHeaders", "candidate.syncEnabled", "candidate.serviceRole",
                         "candidate.selectedModels", "candidate.modelSetRef", "candidate.defaultModelID",
                     )
-                    if (outcome.reason in diagnosticReasons || outcome.reason.startsWith("providerValidation[")) runCatching {
+                    logProviderRefusal(outcome.code, outcome.reason)
+                    if (outcome.reason in diagnosticReasons) runCatching {
                         android.util.Log.w("FloeProviders", "save_refused:${outcome.reason}")
                     }
-                    onSaveFailed(identity, SaveFailurePhaseUi.LOCAL_COMMIT, outcome.code)
+                    onSaveFailed(identity, SaveFailurePhaseUi.LOCAL_COMMIT,
+                        providerFailureCopy(outcome.code, outcome.reason))
                 }
                 HostOperationOutcome.Cancelled ->
                     onSaveFailed(identity, SaveFailurePhaseUi.PREFLIGHT, "cancelled")
@@ -1165,13 +1170,17 @@ class ProviderHostController internal constructor(
                     }
                 }
                 is HostOperationOutcome.Rejected -> if (!discovery) {
+                    logProviderRefusal(outcome.code, outcome.reason)
                     publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Failed(outcome.code))
+                        it.copy(testState = ConnectionTestUi.Failed(
+                            providerFailureCopy(outcome.code, outcome.reason)))
                     }
                 }
                 is HostOperationOutcome.Failed -> if (!discovery) {
+                    logProviderRefusal(outcome.code, outcome.reason)
                     publishEditor(identity) {
-                        it.copy(testState = ConnectionTestUi.Failed(outcome.code))
+                        it.copy(testState = ConnectionTestUi.Failed(
+                            providerFailureCopy(outcome.code, outcome.reason)))
                     }
                 }
                 HostOperationOutcome.Cancelled -> if (!discovery) {
@@ -1272,13 +1281,19 @@ class ProviderHostController internal constructor(
                         } else {
                             val status = payload?.let { ProviderWire.statusOf(it) }
                             val failure = payload?.let { ProviderWire.failureOf(it) }
+                            val refusalReason = payload?.let { ProviderWire.reasonOf(it) }
+                            if (status != "connected" && failure != null) {
+                                logProviderRefusal(failure, refusalReason)
+                            }
                             publishEditor(identity) {
                                 if (status == "connected") {
                                     it.copy(testState = ConnectionTestUi.Succeeded(
                                         payload?.let { value -> ProviderWire.discoveredCount(value) } ?: 0))
                                 } else {
                                     it.copy(testState = ConnectionTestUi.Failed(
-                                        failure ?: probeUnavailableCopy()))
+                                        failure?.let { code ->
+                                            providerFailureCopy(code, refusalReason)
+                                        } ?: probeUnavailableCopy()))
                                 }
                             }
                         }
@@ -1320,6 +1335,65 @@ class ProviderHostController internal constructor(
         runCatching {
             host.appContext.getString(com.floe.android.R.string.providers_save_details_too_large)
         }.getOrElse { "This provider's name or headers are too large to save. Shorten them and try again." }
+
+    /**
+     * Maps a CLOSED native probe/save refusal into actionable ordinary-UI
+     * copy. Today only the observed envelope-refusal family is remapped:
+     * plain-HTTP endpoints require the local/private opt-in, and native
+     * refuses them typed BEFORE any request (Main G04-R2 actual-UI proof:
+     * the raw closed identifier `invalidEnvelope` surfaced while the opt-in
+     * switch was off; turning the switch on connected and saved unchanged).
+     * Other codes retain their existing behavior. Diagnostic logs contain
+     * only the code and a constant category, never arbitrary reason text.
+     */
+    internal fun providerFailureCopy(code: String, reason: String?): String = when {
+        code != "invalidEnvelope" -> code
+        reason?.contains("plainHTTPRequiresAcknowledgement") == true -> plainHttpAckCopy()
+        reason?.contains("plainHTTPRequiresPrivateNetwork") == true -> plainHttpPrivateCopy()
+        else -> settingsInvalidCopy()
+    }
+
+    private fun plainHttpAckCopy(): String = runCatching {
+        host.appContext.getString(
+            com.floe.android.feature.providers.R.string.providers_error_plain_http_ack,
+        )
+    }.getOrElse {
+        "This endpoint uses plain HTTP. Turn on Allow plain HTTP " +
+            "(local/private only), or use an HTTPS address."
+    }
+
+    private fun plainHttpPrivateCopy(): String = runCatching {
+        host.appContext.getString(
+            com.floe.android.feature.providers.R.string.providers_error_plain_http_private,
+        )
+    }.getOrElse {
+        "Plain HTTP is only allowed for localhost or private-network addresses. " +
+            "Use a local or private address, or switch to HTTPS."
+    }
+
+    private fun settingsInvalidCopy(): String = runCatching {
+        host.appContext.getString(
+            com.floe.android.feature.providers.R.string.providers_error_settings_invalid,
+        )
+    }.getOrElse {
+        "Couldn't use these provider settings. Check the endpoint, protocol, " +
+            "name and headers, then try again."
+    }
+
+    /** A matching prefix cannot prove that the remaining text is safe to log. */
+    private fun logProviderRefusal(code: String, reason: String?) {
+        if (code != "invalidEnvelope") return
+        val category = when {
+            reason?.contains("plainHTTPRequiresAcknowledgement") == true ->
+                "plainHTTPRequiresAcknowledgement"
+            reason?.contains("plainHTTPRequiresPrivateNetwork") == true ->
+                "plainHTTPRequiresPrivateNetwork"
+            else -> "invalidProviderSettings"
+        }
+        runCatching {
+            android.util.Log.w("FloeProviders", "provider_refused:$code:$category")
+        }
+    }
 
     override fun cancelConnectionTest(identity: ProviderEditorIdentity) {
         inFlightTests.remove(identity.editorId)
@@ -2354,6 +2428,11 @@ internal object ProviderWire {
     /** Redacted typed failure identifier (never a raw provider body or key). */
     fun failureOf(payload: JsonObject): String? =
         payload.string("errorCode") ?: payload.string("failureReason")
+
+    /** Closed native diagnostic reason for a settled draft-probe refusal
+     * (`draftValidation.<problem>` / `candidate.<field>` / …). Diagnostic
+     * only: identifiers minted from closed enums, never secret material. */
+    fun reasonOf(payload: JsonObject): String? = payload.string("reason")
 
     fun decodeDiscoveredModels(value: JsonElement): List<ModelDraftRowUi> {
         val array = (value as? JsonObject)?.get("discoveredModels") as? JsonArray

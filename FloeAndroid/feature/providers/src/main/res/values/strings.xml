@@ -47,6 +47,9 @@
     <string name="providers_headers_placeholder">Header: value (one per line)</string>
     <string name="providers_headers_hint">Non-secret headers only. Secrets never go here.</string>
     <string name="providers_allow_plain_http">Allow plain HTTP (local/private only)</string>
+    <string name="providers_error_plain_http_ack">This endpoint uses plain HTTP. Turn on Allow plain HTTP (local/private only), or use an HTTPS address.</string>
+    <string name="providers_error_plain_http_private">Plain HTTP is only allowed for localhost or private-network addresses. Use a local or private address, or switch to HTTPS.</string>
+    <string name="providers_error_settings_invalid">Couldn\'t use these provider settings. Check the endpoint, protocol, name and headers, then try again.</string>
     <string name="providers_credentials">Credentials</string>
     <string name="providers_api_key">API key</string>
     <string name="providers_api_key_hint">Your API key is stored securely on this device.</string>

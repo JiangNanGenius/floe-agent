@@ -16,6 +16,7 @@
     <string name="workspace_language_state_ready">Ready</string>
     <string name="workspace_language_state_missing">Not installed</string>
     <string name="workspace_language_state_failed">Stopped with an error</string>
+    <string name="workspace_language_state_busy">Runtime busy. Close the terminal or stop the program, then retry.</string>
     <string name="workspace_language_state_released">Not running</string>
     <string name="workspace_language_retry">Retry</string>
     <string name="workspace_language_missing_hint">Install this language server in the Linux environment first, then retry.</string>

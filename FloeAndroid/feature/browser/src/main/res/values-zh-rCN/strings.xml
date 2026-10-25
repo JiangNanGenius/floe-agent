@@ -15,6 +15,7 @@
     <string name="browser_back_cd">后退</string>
     <string name="browser_forward_cd">前进</string>
     <string name="browser_address_placeholder">搜索或输入网址</string>
+    <string name="browser_go_cd">前往</string>
     <string name="browser_local_preview_badge">本地预览</string>
     <string name="browser_reload_cd">重新载入</string>
     <string name="browser_retry_cd">重试</string>
@@ -22,4 +23,6 @@
     <string name="browser_temporary_unbound">临时任务不能打开持久浏览器。</string>
     <string name="browser_ephemeral_limitation">当前 Android WebView 不支持无痕/独立档案；登录状态使用共享浏览器存储。</string>
     <string name="browser_ocr_limitation">本机文字识别不可用；视觉点击将按原生截图要求提示返回。</string>
+    <string name="browser_private_navigation_blocked">无法直接打开此本地地址。查看本地文件请使用工作区预览。</string>
+    <string name="browser_failure_details">详情</string>
 </resources>

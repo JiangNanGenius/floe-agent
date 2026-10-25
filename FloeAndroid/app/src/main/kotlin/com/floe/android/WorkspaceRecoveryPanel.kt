@@ -43,7 +43,7 @@ internal fun WorkspaceRecoveryPanel(
         preview = null; discard = null; saved = null; failure = null
         if (visible) refresh() else rows = emptyList()
     }
-    FloePageSheet(visible = visible, onDismiss = onDismiss) {
+    FloeActionSheet(visible = visible, onDismiss = onDismiss, maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             FloeText(stringResource(R.string.workspace_recovery_title), style = Floe.typography.toolbarTitle)
@@ -61,8 +61,10 @@ internal fun WorkspaceRecoveryPanel(
                 FloeText(row.projection.relativePath)
                 if (row.projection.composing) FloeText(stringResource(R.string.workspace_recovery_composing), color = Floe.colors.secondaryLabel)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_preview), onClick = { preview = row }, enabled = !busy)
-                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_copy), enabled = !busy && !row.projection.composing, onClick = {
+                    // Weighted siblings: an unweighted FloeCapsuleButton fills
+                    // the whole row and collapses its neighbors off-screen.
+                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_preview), onClick = { preview = row }, enabled = !busy, modifier = Modifier.weight(1f))
+                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_copy), enabled = !busy && !row.projection.composing, modifier = Modifier.weight(1f), onClick = {
                         busy = true; failure = null
                         scope.launch {
                             try {
@@ -75,13 +77,13 @@ internal fun WorkspaceRecoveryPanel(
                             } finally { busy = false }
                         }
                     })
-                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_discard), onClick = { discard = row }, enabled = !busy)
+                    FloeCapsuleButton(stringResource(R.string.workspace_recovery_discard), onClick = { discard = row }, enabled = !busy, modifier = Modifier.weight(1f))
                 }
             }
         }
     }
-    FloePageSheet(visible = visible && preview != null, onDismiss = { preview = null }) {
-        val row = preview ?: return@FloePageSheet
+    FloeActionSheet(visible = visible && preview != null, onDismiss = { preview = null }, maxCardWidth = 640.dp) {
+        val row = preview ?: return@FloeActionSheet
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             FloeText(row.projection.relativePath, style = Floe.typography.toolbarTitle)
@@ -90,8 +92,8 @@ internal fun WorkspaceRecoveryPanel(
             SelectionContainer { FloeText(row.projection.text.take(4096)) }
         }
     }
-    FloePageSheet(visible = visible && discard != null, onDismiss = { discard = null }) {
-        val row = discard ?: return@FloePageSheet
+    FloeActionSheet(visible = visible && discard != null, onDismiss = { discard = null }) {
+        val row = discard ?: return@FloeActionSheet
         Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             FloeText(stringResource(R.string.workspace_recovery_discard_confirmation))
             FloeText(row.projection.relativePath, color = Floe.colors.secondaryLabel)

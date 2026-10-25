@@ -190,6 +190,12 @@ public struct ShellOpenRequest: Sendable {
     /// trusted session-open caller (`ToolContext.conversationID` threaded
     /// through `ShellSessionCenter.open`). Never inferred from session text.
     public var conversationID: UUID?
+    /// G04-R2 (Main contract 2026-10-25): native-issued identity of the LIVE
+    /// conversation workspace-operation lease that authorizes THIS UI open
+    /// (interactive terminal / LSP only). Trusted session-open caller only —
+    /// never a model value, never inferred from session text. nil keeps the
+    /// ORIGINAL grant route byte-for-byte for every other open.
+    public var workspaceOperationID: UUID?
     /// UI terminals surface an installation card instead of downloading during open.
     public var prepareLinuxIfMissing: Bool
 
@@ -205,6 +211,7 @@ public struct ShellOpenRequest: Sendable {
         runID: UUID? = nil,
         toolEnvironment: ToolEnvironment? = nil,
         conversationID: UUID? = nil,
+        workspaceOperationID: UUID? = nil,
         prepareLinuxIfMissing: Bool = true
     ) {
         self.command = command
@@ -218,6 +225,7 @@ public struct ShellOpenRequest: Sendable {
         self.runID = runID
         self.toolEnvironment = toolEnvironment
         self.conversationID = conversationID
+        self.workspaceOperationID = workspaceOperationID
         self.prepareLinuxIfMissing = prepareLinuxIfMissing
     }
 }

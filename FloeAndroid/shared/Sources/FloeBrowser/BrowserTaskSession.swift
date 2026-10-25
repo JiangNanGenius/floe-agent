@@ -227,7 +227,23 @@ public actor BrowserTaskSession {
     }
 
     public func navigateFromAddressBar() async {
+        await navigateFromAddressBar(draft: nil)
+    }
+
+    /// Commit the address bar. With a [draft] (the draft-carrying G04 commit
+    /// op) the exact text is applied, the editing flag cleared, the candidate
+    /// captured and the policy validated BEFORE the first suspension: actor
+    /// interleaving (an older keystroke-echo Task) can still happen after
+    /// that point, but it can never change the target THIS commit navigates
+    /// to. A nil draft keeps the exact legacy semantics (editing state is
+    /// untouched and the stored addressText is used, as when the UI cleared
+    /// editing through a separate `setEditingAddress` call).
+    public func navigateFromAddressBar(draft: String?) async {
         guard !isReleased else { return }
+        if let draft {
+            addressText = draft
+            isEditingAddress = false
+        }
         if let currentURL = activeTabSurface?.url, let url = URL(string: currentURL),
            Self.isLocalPreview(url),
            addressText == currentURL {
@@ -235,9 +251,36 @@ public actor BrowserTaskSession {
             return
         }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
-        guard let url = try? policy.validate(candidate, conversationID: conversationID) else { return }
+        // The policy itself is unchanged; only its SILENCE is fixed. The
+        // original `try?` dead-ends left the user staring at a blank tab
+        // with no way to tell "blocked" from "nothing happened".
+        let url: URL
+        do {
+            url = try policy.validate(candidate, conversationID: conversationID)
+        } catch {
+            surfaceState = .failed(error.localizedDescription)
+            return
+        }
         guard let activeTabID else { return }
-        try? await renderer.navigate(tabID: activeTabID, url: url)
+        do {
+            try await renderer.navigate(tabID: activeTabID, url: url)
+            // Accepted navigation: clear a stale blocked/failure banner so
+            // the lifecycle pump owns the state from loadStarted onward.
+            if case .failed = surfaceState { surfaceState = .loading }
+        } catch let error as BrowserRendererError {
+            switch error {
+            case .released, .unavailable:
+                break // the lifecycle/release owner already reports this honestly
+            case .failed(let reason):
+                surfaceState = .failed(reason) // platform fact, like the loadFailed ingress
+            case .timedOut:
+                // Reuses the existing browser_load_failed sentence; no new
+                // copy framework is introduced in this flow.
+                surfaceState = .failed("The page could not be loaded.")
+            }
+        } catch {
+            surfaceState = .failed("The page could not be loaded.")
+        }
     }
 
     public func reloadActiveTab() async {

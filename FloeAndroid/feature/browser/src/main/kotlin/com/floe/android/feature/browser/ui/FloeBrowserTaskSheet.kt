@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 package com.floe.android.feature.browser.ui
 
+import android.os.SystemClock
 import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.compose.foundation.clickable
@@ -26,12 +27,18 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -40,6 +47,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.floe.android.design.Floe
 import com.floe.android.design.FloeCircleButton
+import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeDivider
 import com.floe.android.design.FloeIcons
 import com.floe.android.design.FloePageSheet
@@ -303,6 +311,17 @@ private fun BrowserAddressRow(
     projection: BrowserProjectionSnapshot,
 ) {
     var text by remember(projection.activeTabId) { mutableStateOf(projection.addressText) }
+    // One physical Enter can arrive BOTH as a raw hardware key event and as
+    // an IME Go action on some devices; this short window makes a single
+    // Enter (or a repeated tap) commit exactly once through the owned
+    // native call — it never replaces the native commit path.
+    var lastCommitElapsed by remember { mutableLongStateOf(0L) }
+    fun commitDraft() {
+        val now = SystemClock.elapsedRealtime()
+        if (text.isBlank() || now - lastCommitElapsed < 350L) return
+        lastCommitElapsed = now
+        service.navigateFromAddressBar(draft = text)
+    }
     // Follow native truth whenever the session is not locally editing. Commit
     // sends the text to Swift, which applies URL policy + preview-reload
     // rules and answers through the projection; nothing is decided here.
@@ -358,12 +377,25 @@ private fun BrowserAddressRow(
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                 keyboardActions = KeyboardActions(
                     onGo = {
-                        service.setEditingAddress(false)
-                        service.navigateFromAddressBar()
+                        commitDraft()
                     },
                 ),
                 cursorBrush = SolidColor(Floe.colors.accent),
-                modifier = Modifier.fillMaxWidth().clickable { service.setEditingAddress(true) },
+                modifier = Modifier.fillMaxWidth()
+                    .clickable { service.setEditingAddress(true) }
+                    .onPreviewKeyEvent { event ->
+                        if (event.key == Key.Enter && event.type == KeyEventType.KeyUp) {
+                            // Hardware keyboards deliver Enter as key events
+                            // only; the soft IME action never passes through
+                            // this handler, so the two paths cannot double
+                            // dispatch (and commitDraft de-duplicates if a
+                            // device sends both).
+                            commitDraft()
+                            true
+                        } else {
+                            false
+                        }
+                    },
             )
         }
         if (projection.isDisplayingLocalPreview) {
@@ -375,6 +407,13 @@ private fun BrowserAddressRow(
                 maxLines = 1,
             )
         }
+        Spacer(Modifier.width(8.dp))
+        FloeCircleButton(
+            icon = FloeBrowserIcons.Go,
+            contentDescription = stringResource(R.string.browser_go_cd),
+            onClick = { commitDraft() },
+            enabled = text.isNotBlank(),
+        )
         Spacer(Modifier.width(8.dp))
         FloeCircleButton(
             icon = FloeBrowserIcons.Retry,
@@ -445,13 +484,30 @@ private fun BrowserSurfaceArea(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
+                var detailsExpanded by remember(projection.surfaceStateDetail) { mutableStateOf(false) }
+                val detail = projection.surfaceStateDetail
                 FloeText(
-                    text = projection.surfaceStateDetail ?: stringResource(R.string.browser_load_failed),
+                    text = if (detail == "Loopback and private-network navigation is blocked") {
+                        stringResource(R.string.browser_private_navigation_blocked)
+                    } else {
+                        stringResource(R.string.browser_load_failed)
+                    },
                     style = Floe.typography.section,
                     color = Floe.colors.label,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (!detail.isNullOrBlank() &&
+                    detail != "The page could not be loaded." &&
+                    detail != "Loopback and private-network navigation is blocked") {
+                    Spacer(Modifier.height(12.dp))
+                    FloeCapsuleButton(stringResource(R.string.browser_failure_details),
+                        onClick = { detailsExpanded = !detailsExpanded })
+                    if (detailsExpanded) {
+                        FloeText(detail.take(2048), style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel)
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 FloeCircleButton(
                     icon = FloeBrowserIcons.Retry,

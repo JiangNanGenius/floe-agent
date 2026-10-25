@@ -61,14 +61,19 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Weighted siblings: unweighted capsule buttons fill and collapse
+            // their row partners at the 420dp inspector width (evidence 2026-10-25).
             FloeCapsuleButton(stringResource(R.string.git_workspace_refresh),
-                onClick = { host.workspaceGit.refresh(taskID) }, enabled = !busy)
+                onClick = { host.workspaceGit.refresh(taskID) }, enabled = !busy,
+                modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.git_workspace_menu),
-                onClick = { menu = true }, enabled = !busy)
+                onClick = { menu = true }, enabled = !busy,
+                modifier = Modifier.weight(1f))
             // The durable Actions flow belongs to the same saved task; it
             // opens as a wide secondary page over the inspector.
             FloeCapsuleButton(stringResource(R.string.git_workspace_actions),
-                onClick = { cloudOpen = true }, enabled = !busy)
+                onClick = { cloudOpen = true }, enabled = !busy,
+                modifier = Modifier.weight(1f))
         }
         if (busy) FloeActivityIndicator()
         state?.error?.let { code ->
@@ -94,8 +99,10 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
             snapshot.stringField("remoteURL")?.let { FloeText(it, color = Floe.colors.secondaryLabel) }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FloeCapsuleButton(stringResource(R.string.git_workspace_stage_all), enabled = !busy,
+                    modifier = Modifier.weight(1f),
                     onClick = { host.workspaceGit.perform(taskID, "stage", buildJsonObject { put("paths", JsonArray(emptyList())) }) })
                 FloeCapsuleButton(stringResource(R.string.git_workspace_commit), enabled = !busy,
+                    modifier = Modifier.weight(1f),
                     onClick = { choose(GitSheetAction.COMMIT) })
             }
             val changes = (snapshot["changes"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
@@ -109,12 +116,15 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
                     style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FloeCapsuleButton(stringResource(if (staged) R.string.git_workspace_unstage else R.string.git_workspace_stage), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { host.workspaceGit.perform(taskID, if (staged) "unstage" else "stage",
                             buildJsonObject { put("paths", JsonArray(listOf(JsonPrimitive(path)))) }) })
                     FloeCapsuleButton(stringResource(R.string.git_workspace_diff), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { host.workspaceGit.perform(taskID, if (staged) "diffStaged" else "diff",
                             buildJsonObject { put("path", path) }) })
                     FloeCapsuleButton(stringResource(R.string.git_workspace_discard), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { choose(GitSheetAction.DISCARD, path) })
                 }
             }
@@ -129,7 +139,7 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
             }
         }
     }
-    FloePageSheet(visible = menu, onDismiss = { menu = false }) {
+    FloeActionSheet(visible = menu, onDismiss = { menu = false }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             FloeText(stringResource(R.string.git_workspace_menu), style = Floe.typography.toolbarTitle)
@@ -138,8 +148,8 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
             }
         }
     }
-    FloePageSheet(visible = action != null, onDismiss = { action = null }) {
-        val chosen = action ?: return@FloePageSheet
+    FloeActionSheet(visible = action != null, onDismiss = { action = null }) {
+        val chosen = action ?: return@FloeActionSheet
         val primaryLabel = when (chosen) {
             GitSheetAction.COMMIT -> R.string.git_workspace_message
             GitSheetAction.CLONE -> R.string.git_workspace_remote_url
@@ -188,17 +198,20 @@ internal fun WorkspaceGitPane(host: RuntimeHost?, taskID: String?) {
             FloeCapsuleButton(stringResource(R.string.cancel), onClick = { action = null })
         }
     }
-    FloePageSheet(visible = cloudOpen, onDismiss = { cloudOpen = false }) {
+    FloeActionSheet(visible = cloudOpen, onDismiss = { cloudOpen = false }, maxCardWidth = 720.dp) {
         Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween) {
-                FloeText(stringResource(R.string.git_workspace_actions), style = Floe.typography.toolbarTitle)
-                FloeCapsuleButton(stringResource(R.string.git_workspace_actions_close), onClick = { cloudOpen = false })
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FloeText(stringResource(R.string.git_workspace_actions), style = Floe.typography.toolbarTitle,
+                    modifier = Modifier.weight(1f))
+                FloeCapsuleButton(stringResource(R.string.git_workspace_actions_close), onClick = { cloudOpen = false },
+                    modifier = Modifier.weight(1f))
             }
             WorkspaceActionsPane(host, taskID)
         }
     }
-    FloePageSheet(visible = state?.diff != null, onDismiss = { host.workspaceGit.dismissDiff(taskID) }) {
+    FloeActionSheet(visible = state?.diff != null, onDismiss = { host.workspaceGit.dismissDiff(taskID) },
+        maxCardWidth = 720.dp) {
         SelectionContainer {
             FloeText(state?.diff.orEmpty(), Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
                 style = Floe.typography.body.copy(fontFamily = FontFamily.Monospace))

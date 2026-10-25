@@ -45,6 +45,16 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
     /// ownership on every currency check).
     public var toolCallID: String?
     public var jobID: UUID?
+    /// G04-R2 UI operation scope (Main contract 2026-10-25): the ORIGINAL
+    /// native-issued identity of the LIVE `beginG04WorkspaceOperation`
+    /// conversation lease this grant was minted under (interactive terminal /
+    /// LSP lanes only). Ordinary in-run and durable-job grants carry nil and
+    /// keep their exact historical proof bytes. A grant with this scope is
+    /// re-validated against the REAL registry token + the domain's own
+    /// `validateG04WorkspaceOperation` on every currency check: the lease
+    /// ending, a stop/cancel, a delete/retirement fence or an epoch change
+    /// revokes it, exactly like job settlement revokes a job grant.
+    public var operationID: UUID?
     /// The accepted native root epoch at mint time (strictly positive).
     public var rootEpoch: UInt64
     /// Opaque grant lifetime id (host-generated; ties binder to session).
@@ -59,7 +69,7 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
     public var budgets: WorkspaceTransferBudgets
 
     public init(projectID: UUID, runID: UUID, conversationID: UUID?, workspaceID: UUID,
-                toolCallID: String? = nil, jobID: UUID? = nil,
+                toolCallID: String? = nil, jobID: UUID? = nil, operationID: UUID? = nil,
                 rootEpoch: UInt64, grantID: String, workspaceRootPath: String,
                 workspaceFingerprint: String, proof: String, budgets: WorkspaceTransferBudgets) {
         self.projectID = projectID
@@ -68,6 +78,7 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
         self.workspaceID = workspaceID
         self.toolCallID = toolCallID
         self.jobID = jobID
+        self.operationID = operationID
         self.rootEpoch = rootEpoch
         self.grantID = grantID
         self.workspaceRootPath = workspaceRootPath
@@ -91,6 +102,7 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
         object["conversationID"] = conversationID?.uuidString
         object["toolCallID"] = toolCallID
         object["jobID"] = jobID?.uuidString
+        object["operationID"] = operationID?.uuidString
         return object
     }
 
@@ -100,7 +112,7 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
     /// Nil on ANY shape deviation — a malformed or widened object is a
     /// refusal, never a partial binding.
     public static func from(dictionary: [String: Any], workspaceRootPath: String) -> WorkspaceGrantBinding? {
-        let optionalKeys: Set<String> = ["conversationID", "toolCallID", "jobID"]
+        let optionalKeys: Set<String> = ["conversationID", "toolCallID", "jobID", "operationID"]
         let requiredKeys: Set<String> = ["version", "projectID", "runID", "workspaceID", "rootEpoch",
                                          "grantID", "workspaceFingerprint", "proof", "budgets"]
         let keys = Set(dictionary.keys)
@@ -145,8 +157,20 @@ public struct WorkspaceGrantBinding: Sendable, Equatable {
             toolCallID = call
             jobID = parsedJob
         }
+        // Operation scope (G04-R2 UI terminal/LSP): canonical UUID ONLY, and
+        // mutually exclusive with the durable-job scope — a binding carrying
+        // both scopes is a widened object, refused like any other shape
+        // deviation. Ordinary grants never see this member.
+        var operationID: UUID?
+        if dictionary["operationID"] != nil {
+            guard !hasCall, let parsed = WorkspaceStrict.canonicalUUID(dictionary["operationID"]) else {
+                return nil
+            }
+            operationID = parsed
+        }
         return WorkspaceGrantBinding(projectID: projectID, runID: runID, conversationID: conversationID,
                                      workspaceID: workspaceID, toolCallID: toolCallID, jobID: jobID,
+                                     operationID: operationID,
                                      rootEpoch: UInt64(epoch), grantID: grantID,
                                      workspaceRootPath: workspaceRootPath, workspaceFingerprint: fingerprint,
                                      proof: proof, budgets: budgets)
@@ -241,7 +265,7 @@ public struct WorkspaceGrantProof {
     /// no identity/path string can re-shape the message into a different
     /// field layout (paths cannot contain NUL; identities are canonical).
     public func message(projectID: UUID, runID: UUID, conversationID: UUID?, workspaceID: UUID,
-                        toolCallID: String?, jobID: UUID?,
+                        toolCallID: String?, jobID: UUID?, operationID: UUID? = nil,
                         rootEpoch: UInt64, grantID: String, workspaceRootPath: String,
                         budgetsJSON: String) -> Data {
         var text = "FloeWorkspaceGrant.v1"
@@ -251,6 +275,9 @@ public struct WorkspaceGrantProof {
         text += "\u{00}w=" + workspaceID.uuidString
         text += "\u{00}t=" + (toolCallID ?? "-")
         text += "\u{00}j=" + (jobID?.uuidString ?? "-")
+        // G04-R2 operation scope: appended ONLY when present, so every
+        // ordinary/job grant message stays byte-for-byte the historical one.
+        if let operationID { text += "\u{00}o=" + operationID.uuidString }
         text += "\u{00}e=\(rootEpoch)"
         text += "\u{00}g=" + grantID
         text += "\u{00}b=" + budgetsJSON
@@ -259,12 +286,13 @@ public struct WorkspaceGrantProof {
     }
 
     public func compute(projectID: UUID, runID: UUID, conversationID: UUID?, workspaceID: UUID,
-                        toolCallID: String? = nil, jobID: UUID? = nil,
+                        toolCallID: String? = nil, jobID: UUID? = nil, operationID: UUID? = nil,
                         rootEpoch: UInt64, grantID: String, workspaceRootPath: String,
                         budgetsJSON: String) -> String {
         let mac = HMAC<SHA256>.authenticationCode(
             for: message(projectID: projectID, runID: runID, conversationID: conversationID,
                          workspaceID: workspaceID, toolCallID: toolCallID, jobID: jobID,
+                         operationID: operationID,
                          rootEpoch: rootEpoch, grantID: grantID,
                          workspaceRootPath: workspaceRootPath, budgetsJSON: budgetsJSON),
             using: key)
@@ -288,6 +316,7 @@ public struct WorkspaceGrantProof {
         let expected = compute(projectID: binding.projectID, runID: binding.runID,
                                conversationID: binding.conversationID, workspaceID: binding.workspaceID,
                                toolCallID: binding.toolCallID, jobID: binding.jobID,
+                               operationID: binding.operationID,
                                rootEpoch: binding.rootEpoch,
                                grantID: binding.grantID, workspaceRootPath: binding.workspaceRootPath,
                                budgetsJSON: Self.canonicalBudgets(binding.budgets))

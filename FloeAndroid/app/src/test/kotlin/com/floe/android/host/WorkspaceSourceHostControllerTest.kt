@@ -9,6 +9,8 @@ import com.floe.android.safgateway.PickKind
 import com.floe.android.safgateway.ProbeFlag
 import com.floe.android.safgateway.ReadOpen
 import com.floe.android.safgateway.SafAccessFlag
+import com.floe.android.safgateway.SafBackendFault
+import com.floe.android.safgateway.SafBackendFaultException
 import com.floe.android.safgateway.SafCancelToken
 import com.floe.android.safgateway.SafCapabilities
 import com.floe.android.safgateway.SafDocument
@@ -45,6 +47,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 /**
@@ -82,6 +85,9 @@ class WorkspaceSourceHostControllerTest {
     private inner class FakeChannel : WorkspaceSourceChannel {
         val calls = CopyOnWriteArrayList<String>()
         val stages = ConcurrentHashMap<Long, Pair<String, ByteArrayOutputStream>>()
+        /** The sourceDocumentID each stageOpen carried — pins durable identity
+         * truth through the native hop (provider IO repair 2026-10-25). */
+        val stageDocumentIds = ConcurrentHashMap<Long, String>()
         val stageChunkSizes = ConcurrentHashMap<Long, MutableList<Int>>()
         val snapshots = ConcurrentHashMap<Long, ByteArray>()
         /** The bytes native hashed at stage_finish. Kept as test evidence
@@ -110,6 +116,7 @@ class WorkspaceSourceHostControllerTest {
             calls.add("stageOpen:$purpose")
             val ticket = tickets.incrementAndGet().toLong()
             stages[ticket] = purpose to ByteArrayOutputStream()
+            stageDocumentIds[ticket] = sourceDocumentID
             stageChunkSizes[ticket] = mutableListOf()
             return ticket
         }
@@ -285,6 +292,12 @@ class WorkspaceSourceHostControllerTest {
         var releaseCalls = 0
         var writeCapability = true
         var probeGranted = true
+        /** Scripted platform identity decodes: URI -> the exact DECODED
+         * document id the provider would report (null when the platform
+         * refuses). Mirrors the AndroidSafBackend.documentIdOf contract. */
+        val decodedDocumentIds = ConcurrentHashMap<String, String>()
+        var faultOnOpenWrite: Throwable? = null
+        var faultOnOpenRead: Throwable? = null
 
         private fun refFor(uri: String): SafDocumentRef = SafDocumentRef(null, null, null, SafUriRef(uri))
 
@@ -326,6 +339,8 @@ class WorkspaceSourceHostControllerTest {
         override fun documentUriFor(tree: SafUriRef, documentId: String): SafUriRef? =
             SafUriRef(tree.uriString + "/document/" + documentId)
 
+        override fun documentIdOf(uri: SafUriRef): String? = decodedDocumentIds[uri.uriString]
+
         override fun probeAccess(uri: SafUriRef, needsRead: Boolean, needsWrite: Boolean): AccessProbe =
             if (probeGranted) AccessProbe(ProbeFlag.GRANTED, ProbeFlag.GRANTED)
             else AccessProbe(ProbeFlag.DENIED, ProbeFlag.DENIED)
@@ -348,6 +363,7 @@ class WorkspaceSourceHostControllerTest {
 
         override fun openRead(ref: SafDocumentRef, mimeFilter: String?,
                               cancel: SafCancelToken): ReadOpen {
+            faultOnOpenRead?.let { throw it }
             val bytes = content[ref.uri.uriString] ?: return ReadOpen.NotFound
             return ReadOpen.Opened(chunking(bytes), bytes.size.toLong())
         }
@@ -357,6 +373,7 @@ class WorkspaceSourceHostControllerTest {
          * genuinely reflects the write. */
         var wtOpens = 0
         override fun openWriteTruncate(ref: SafDocumentRef, cancel: SafCancelToken): WriteOpen {
+            faultOnOpenWrite?.let { throw it }
             wtOpens += 1
             val sink = ByteArrayOutputStream()
             val uri = ref.uri.uriString
@@ -807,5 +824,161 @@ class WorkspaceSourceHostControllerTest {
         assertEquals("ok", first.getCompleted().status)
         channel.chunkDelayMillis = 0
         assertFalse(lane.state.value.busy)
+    }
+
+    // ------------------------------------------------------------------
+    // 7. save-as: egress down + native verify, platform identity decode,
+    //    and the CLOSED backend-fault diagnostic route (provider IO repair
+    //    2026-10-25). AUTHORED, NOT RUN — Main's composed batch executes it.
+    // ------------------------------------------------------------------
+
+    private fun acceptSaveTargetPick(lane: WorkspaceSourceHostController.Lane, uri: String): WorkspaceSourceResult {
+        val issued = lane.requestPick(
+            PickKind.CREATE_DOCUMENT, PickPurpose.SAVE_TARGET,
+            mimeTypes = listOf("text/plain"), suggestedName = "sample.py",
+        )!!
+        return lane.onPickerResult(issued, uri, FLAG_READ or FLAG_WRITE or FLAG_PERSISTABLE)
+    }
+
+    @Test
+    fun pickerDocumentIdComesFromPlatformDecodeNotRawSegment() = runBlocking {
+        // A tree-SCOPED child URI must carry the CHILD's platform id (the
+        // decoded form), never the percent-encoded raw segment and never the
+        // tree ROOT's id — AndroidSafBackend.documentIdOf answers
+        // isDocumentUri FIRST precisely for this (Main steer 2026-10-25).
+        val scopedChild = "content://com.android.externalstorage.documents/tree/primary%3A/document/primary%3ADownload%2Fsample.py"
+        backend.decodedDocumentIds[scopedChild] = "primary:Download/sample.py"
+        backend.decodedDocumentIds["content://com.android.externalstorage.documents/tree/primary%3A"] = "primary:"
+        channel.egressContent = "print(\"G04 start\")\n".toByteArray()
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptSaveTargetPick(lane, scopedChild).status)
+        val pick = lane.state.value.accepted!!
+        assertEquals("primary:Download/sample.py", pick.documentId) // CHILD id, not "primary:" and not "%3A" garbage
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals(outcome.detail, "ok", outcome.status)
+        // The same child identity rode the native export-verify hop.
+        val verifyTicket = channel.stages.keys.single { channel.stages.getValue(it).first == "export-verify" }
+        assertEquals("primary:Download/sample.py", channel.stageDocumentIds[verifyTicket])
+        assertArrayEquals(channel.egressContent, backend.content.getValue(scopedChild))
+        assertTrue(channel.calls.contains("egressVerify"))
+        assertFalse(channel.calls.contains("stageAbort")) // verify consumed, nothing leaked
+    }
+
+    @Test
+    fun pickerWithoutPlatformDecodeStoresHonestNullNotEncodedGuess() = runBlocking {
+        val scopedChild = "content://p/tree/primary%3A/document/primary%3ADownload%2Fx.py"
+        // No decode-table entry: an unavailable platform answer is stored as
+        // an honest absence — never a raw-segment guess like "primary%3A...".
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptSaveTargetPick(lane, scopedChild).status)
+        assertNull(lane.state.value.accepted!!.documentId)
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals(outcome.detail, "ok", outcome.status)
+        val verifyTicket = channel.stages.keys.single { channel.stages.getValue(it).first == "export-verify" }
+        assertEquals("", channel.stageDocumentIds[verifyTicket]) // stageOpen received "" — no poisoned id
+    }
+
+    @Test
+    fun saveAsWriteFaultCarriesClosedStageAndClassDiagnostic() = runBlocking {
+        val newDoc = "content://com.floe.testprovider/tree/1/document/new-write-fault"
+        channel.egressContent = "x".toByteArray()
+        backend.faultOnOpenWrite = SafBackendFaultException(
+            SafBackendFault.FAILED, "openWrite.ProviderSocketException",
+        )
+        val lane = laneFor(controller())
+        acceptSaveTargetPick(lane, newDoc)
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals("failed", outcome.status)
+        // The closed token names exactly WHERE (openWrite) and WHICH class
+        // failed — the stage previously invisible behind "provider failure".
+        assertEquals("provider failure [diagnostic:openWrite.ProviderSocketException]", outcome.detail)
+        // The ladder stopped BEFORE the read-back hop; the egress ticket closed.
+        assertFalse(channel.calls.contains("stageOpen:export-verify"))
+        assertTrue(channel.calls.contains("egressClose"))
+        assertNull(backend.content[newDoc]) // nothing written, nothing promoted
+        assertFalse(lane.state.value.busy)
+    }
+
+    @Test
+    fun saveAsReadbackFaultKeepsCreatedDocumentAndNamesReadbackStage() = runBlocking {
+        val newDoc = "content://com.floe.testprovider/tree/1/document/new-readback-fault"
+        val written = "print(\"G04 start\")\n".toByteArray()
+        channel.egressContent = written
+        backend.faultOnOpenRead = SafBackendFaultException(
+            SafBackendFault.FAILED, "openRead.RemoteUriException",
+        )
+        val lane = laneFor(controller())
+        acceptSaveTargetPick(lane, newDoc)
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals("failed", outcome.status)
+        assertEquals("provider failure [diagnostic:openRead.RemoteUriException]", outcome.detail)
+        // The write ACTUALLY settled; the created document keeps its bytes.
+        // A read-back failure is never turned into a delete or a success.
+        assertArrayEquals(written, backend.content.getValue(newDoc))
+        assertFalse(channel.calls.contains("egressVerify")) // native verify never ran
+        assertTrue(channel.calls.contains("stageAbort"))    // live verify stage aborted
+        assertTrue(channel.calls.contains("egressClose"))
+    }
+
+    @Test
+    fun saveAsBackendFaultDetailWithoutClosedGrammarLeaksNothing() = runBlocking {
+        val newDoc = "content://com.floe.testprovider/tree/1/document/new-raw-fault"
+        channel.egressContent = "x".toByteArray()
+        backend.faultOnOpenWrite = SafBackendFaultException(
+            SafBackendFault.FAILED,
+            "open failed: content://com.example/private?token=leak header Secret",
+        )
+        val lane = laneFor(controller())
+        acceptSaveTargetPick(lane, newDoc)
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals("failed", outcome.status)
+        assertEquals("provider failure", outcome.detail) // closed UI text ONLY
+        assertFalse(outcome.detail.contains("content://"))
+        assertFalse(outcome.detail.contains("token"))
+        assertFalse(outcome.detail.contains("Secret"))
+    }
+
+    @Test
+    fun saveAsWithDirectDocumentUriPreservesGrantedRefExact() = runBlocking {
+        // CREATE_DOCUMENT results are DIRECT /document/ URIs with no tree
+        // anchor. The lane must keep the granted URI byte-exact through the
+        // write, verify hop and read-back metadata — no tree-scoped synthesis
+        // is ever invented for a direct pick (AndroidSafBackend
+        // mapQueriedDocument fix, Main review 2026-10-25: the old mapRow
+        // forced EVERY direct import / save-as read-back through
+        // buildDocumentUriUsingTree, whose IAE surfaced as "provider failure").
+        val direct = "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fsample.py"
+        backend.decodedDocumentIds[direct] = "primary:Download/sample.py"
+        channel.egressContent = "print(\"G04 start\")\n".toByteArray()
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptSaveTargetPick(lane, direct).status)
+        val pick = lane.state.value.accepted!!
+        assertEquals(direct, pick.uri)
+        assertNull(pick.treeAnchor)
+        assertEquals("primary:Download/sample.py", pick.documentId)
+        val outcome = lane.saveAsAccepted("sample.py")
+        assertEquals(outcome.detail, "ok", outcome.status)
+        assertEquals(direct, outcome.facts["created"]) // EXACT granted URI published back
+        assertArrayEquals(channel.egressContent, backend.content.getValue(direct))
+        val verifyTicket = channel.stages.keys.single { channel.stages.getValue(it).first == "export-verify" }
+        assertEquals("primary:Download/sample.py", channel.stageDocumentIds[verifyTicket])
+    }
+
+    @Test
+    fun importReadsMetadataAndBytesOfDirectDocumentUri() = runBlocking {
+        // The actual G04 unicode fixture shape: a direct OPEN_DOCUMENT URI.
+        // Import queries metadata on the EXACT granted URI (never a
+        // synthesized tree-scoped one) and streams every byte.
+        val direct = "content://com.android.externalstorage.documents/document/primary%3AG04%2Fg04-unicode.py.bin"
+        val bytes = ByteArray(4096) { (it % 97).toByte() }
+        backend.content[direct] = bytes
+        backend.decodedDocumentIds[direct] = "primary:G04/g04-unicode.py.bin"
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptImportPick(lane, direct).status)
+        assertEquals("primary:G04/g04-unicode.py.bin", lane.state.value.accepted!!.documentId)
+        val outcome = lane.importAcceptedToWorkspace("Imported/g04-unicode.py.bin")
+        assertEquals(outcome.detail, "ok", outcome.status)
+        val stage = channel.finishedStageBodies.values.first { it.first == "import" }
+        assertArrayEquals(bytes, stage.second)
     }
 }

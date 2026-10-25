@@ -6,6 +6,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -102,10 +103,14 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             FloeText(stringResource(R.string.git_actions_connected_as,
                 account.stringField("login") ?: ""), color = Floe.colors.secondaryLabel)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Weighted siblings keep every action reachable (420dp
+                // inspector evidence 2026-10-25).
                 FloeCapsuleButton(stringResource(R.string.git_actions_refresh), enabled = !busy,
+                    modifier = Modifier.weight(1f),
                     onClick = { host.workspaceActions.load(taskID, connection = true) })
                 if (repoParts != null) {
                     FloeCapsuleButton(stringResource(R.string.git_actions_registered_workflows), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { host.workspaceActions.loadWorkflows(taskID, repoParts.first, repoParts.second) })
                 }
             }
@@ -128,8 +133,9 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             FloeSectionHeader(stringResource(R.string.git_actions_workflow))
             (state?.workflows ?: emptyList()).forEach { workflow ->
                 val path = workflow.stringField("path") ?: return@forEach
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     FloeCapsuleButton(label = workflow.stringField("name")?.take(40) ?: path, enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { workflowPath = path; selectedTemplate = null })
                     if (workflowPath == path) FloeBadgePill(stringResource(R.string.git_actions_workflow),
                         tone = FloeBadgeTone.ACCENT)
@@ -142,10 +148,12 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf("build", "lintTest").forEach { value ->
-                    FloeCapsuleButton(value, enabled = !busy, onClick = { role = value })
+                    FloeCapsuleButton(value, enabled = !busy, modifier = Modifier.weight(1f),
+                        onClick = { role = value })
                 }
                 listOf("linux", "macOS").forEach { value ->
-                    FloeCapsuleButton(value, enabled = !busy, onClick = { platform = value })
+                    FloeCapsuleButton(value, enabled = !busy, modifier = Modifier.weight(1f),
+                        onClick = { platform = value })
                 }
             }
             FloeCapsuleButton(stringResource(R.string.git_actions_load_templates), enabled = !busy,
@@ -154,12 +162,14 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
                 val id = template.stringField("id") ?: return@forEach
                 val path = template.stringField("workflowPath") ?: return@forEach
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FloeCapsuleButton(id, enabled = !busy,
+                    FloeCapsuleButton(id, enabled = !busy, modifier = Modifier.weight(1f),
                         onClick = { workflowPath = path; selectedTemplate = template })
                     FloeCapsuleButton(stringResource(R.string.git_actions_review_template), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { selectedTemplate = template; yamlOpen = true })
                     if (repoParts != null) {
                         FloeCapsuleButton(stringResource(R.string.git_actions_install_template), enabled = !busy,
+                            modifier = Modifier.weight(1f),
                             onClick = { host.workspaceActions.installTemplate(taskID,
                                 repoParts.first, repoParts.second, id) })
                     }
@@ -239,8 +249,10 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             }
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 FloeCapsuleButton(stringResource(R.string.git_actions_refresh_run), enabled = !busy,
+                    modifier = Modifier.weight(1f),
                     onClick = { host.workspaceActions.refreshRecord(taskID, id) })
                 FloeCapsuleButton(stringResource(R.string.git_actions_run_details), enabled = !busy,
+                    modifier = Modifier.weight(1f),
                     onClick = {
                         host.workspaceActions.openRecord(taskID, id)
                         host.workspaceActions.loadDetailJobs(taskID, record)
@@ -249,10 +261,12 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
                 val stopPending = record["cancelRequestedAt"]?.let { it.toString() != "null" } == true
                 if (!stopPending && record.stringField("state") !in TERMINAL_STATES) {
                     FloeCapsuleButton(stringResource(R.string.git_actions_cancel_run), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = { host.workspaceActions.cancelRecord(taskID, id) })
                 }
                 if (record.stringField("state") == "error" && lastIntent != null) {
                     FloeCapsuleButton(stringResource(R.string.git_actions_retry_run), enabled = !busy,
+                        modifier = Modifier.weight(1f),
                         onClick = {
                             pendingRetry = lastIntent
                             host.workspaceActions.previewSnapshot(taskID, ".")
@@ -272,7 +286,8 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
     }
     // Template YAML review (bounded, verbatim).
-    FloePageSheet(visible = yamlOpen && selectedTemplate != null, onDismiss = { yamlOpen = false }) {
+    FloeActionSheet(visible = yamlOpen && selectedTemplate != null, onDismiss = { yamlOpen = false },
+        maxCardWidth = 640.dp) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             FloeText(stringResource(R.string.git_actions_review_template), style = Floe.typography.toolbarTitle)
@@ -284,7 +299,8 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
         }
     }
     // Record detail: jobs + bounded logs + artifacts + verified downloads.
-    FloePageSheet(visible = detailOpen, onDismiss = { detailOpen = false; host.workspaceActions.closeDetail(taskID) }) {
+    FloeActionSheet(visible = detailOpen, onDismiss = { detailOpen = false; host.workspaceActions.closeDetail(taskID) },
+        maxCardWidth = 720.dp) {
         val detail = state?.detail
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -293,13 +309,15 @@ internal fun WorkspaceActionsPane(host: RuntimeHost?, taskID: String?) {
             val recordID = record?.stringField("id")
             (state?.detailJobs ?: emptyList()).forEach { job ->
                 val jobID = (job["id"] as? JsonPrimitive)?.longOrNull ?: return@forEach
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FloeText(job.stringField("name")?.take(60) ?: "", maxLines = 2)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FloeText(job.stringField("name")?.take(60) ?: "", maxLines = 2,
+                        modifier = Modifier.weight(1f))
                     FloeBadgePill(stateLabel(normalizeState(job.stringField("status"),
                         job.stringField("conclusion"))), tone = stateTone(normalizeState(job.stringField("status"),
                         job.stringField("conclusion"))))
                     if (recordID != null) {
                         FloeCapsuleButton(stringResource(R.string.git_actions_logs), enabled = !busy,
+                            modifier = Modifier.weight(1f),
                             onClick = { host.workspaceActions.loadDetailLog(taskID, recordID, jobID) })
                     }
                 }
@@ -442,7 +460,7 @@ private fun FloePageSheetList(title: String, rows: List<String>, selected: Strin
                               enabled: Boolean, onPick: (String) -> Unit) {
     var open by remember { mutableStateOf(false) }
     FloeCapsuleButton(title, enabled = enabled, onClick = { open = true })
-    FloePageSheet(visible = open, onDismiss = { open = false }) {
+    FloeActionSheet(visible = open, onDismiss = { open = false }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             FloeText(title, style = Floe.typography.toolbarTitle)

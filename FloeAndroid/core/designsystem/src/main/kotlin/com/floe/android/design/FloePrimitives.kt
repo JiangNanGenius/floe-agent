@@ -372,6 +372,17 @@ fun io.github.robinpcrd.cupertino.section.SectionScope.FloeSwitchRow(
     caption: String? = null,
 ) {
     SectionItem(
+        // Native settings semantics: the whole row toggles (Android
+        // SwitchPreference / iOS cell parity). Before this, only the switch
+        // itself responded and tapping the title silently did nothing — the
+        // G04-R2 provider HTTP opt-in trap. The switch keeps its own hit
+        // target; the row modifier does not add a second state change per
+        // tap because child pointer input consumes the event first.
+        modifier = Modifier.toggleable(
+            value = checked,
+            role = Role.Switch,
+            onValueChange = onCheckedChange,
+        ),
         title = {
             Column {
                 FloeText(title, style = Floe.typography.body)

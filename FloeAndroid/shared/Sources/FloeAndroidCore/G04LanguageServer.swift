@@ -579,6 +579,15 @@ public final class G04CenterLspTransport: G04LspSessionTransport, @unchecked Sen
             throw G04LspCode.retired
         }
         let ownerRunID = UUID()   // native-issued interaction identity (NOT a model run)
+        // G04-R2: same operation-owned admission as the interactive terminal
+        // (Main contract 2026-10-25) — the grant mints ONLY against this
+        // REAL registered lease; refusal is honest and pre-dispatch.
+        let operationGrantID = receipt.operationID
+        guard LinuxWorkspaceAuthority.registerWorkspaceOperation(receipt, epoch: epoch,
+                                                                 uiRunID: ownerRunID) else {
+            await runDomain.endG04WorkspaceOperation(receipt)
+            throw G04LspCode.retired
+        }
         do {
             let result = try await components.sessions.open(
                 command: command, cwd: ".", environment: [:],
@@ -586,13 +595,15 @@ public final class G04CenterLspTransport: G04LspSessionTransport, @unchecked Sen
                 runID: ownerRunID, rootURL: workspaceRootURL,
                 cancellation: receipt.cancellation,
                 forTerminal: true, toolEnvironment: nil, clientSessionID: nil,
-                conversationID: conversationID)
+                conversationID: conversationID,
+                workspaceOperationID: operationGrantID)
             let session = Opened(sessionToken: result.sessionID, ownerRunID: ownerRunID,
                                  receipt: receipt, cancellation: receipt.cancellation)
             g04LspLocked(stateLock) { opened = session }
             if let raw = result.terminalOutput, !raw.isEmpty { initialBacklog.append(raw) }
             return result.sessionID
         } catch {
+            LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: operationGrantID)
             await runDomain.endG04WorkspaceOperation(receipt)
             throw G04LspCode.transportFailed
         }
@@ -678,6 +689,8 @@ public final class G04CenterLspTransport: G04LspSessionTransport, @unchecked Sen
         if let (runDomain, _) = RunDomainFacade.current(epoch: epoch) {
             await runDomain.endG04WorkspaceOperation(session.receipt)
         }
+        // G04-R2: clear the exact operation mapping when the real lease ends.
+        LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: session.receipt.operationID)
     }
 }
 

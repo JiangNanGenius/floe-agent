@@ -9,12 +9,17 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -69,42 +74,66 @@ fun FloeInspectorPane(
     BackHandler(onBack = onDismiss)
     val colors = Floe.colors
     var environmentVisible by remember(route.conversationId) { mutableStateOf(false) }
-    Column(modifier.fillMaxSize().background(colors.readingSurface)) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(FloeLayout.ToolbarHeight + 4.dp)
-                .padding(horizontal = 10.dp),
-        ) {
-            FloeText(
-                inspectorTitle(route.content),
-                style = Floe.typography.toolbarTitle,
-                color = colors.label,
-                modifier = Modifier.align(Alignment.CenterStart),
-            )
-            FloeCircleButton(
-                icon = FloeIcons.Xmark,
-                contentDescription = stringResource(R.string.close),
-                onClick = onDismiss,
-                visualSize = 34.dp,
-                iconSize = 15.dp,
-                modifier = Modifier.align(Alignment.CenterEnd),
-            )
+    // Safe-area ownership (2026-10-25 device evidence: the IDE status strip
+    // drew at y1555-1585 inside the 64px navigation-bar region). The outer
+    // shell only consumes the STATUS-BAR top inset (FloeShell statusBarsPadding);
+    // the inspector column therefore owns its own BOTTOM safe area, exactly
+    // like the composer (FloeComposer windowInsetsPadding safeDrawing Bottom)
+    // and the sidebar's bottom controls. The surface keeps painting edge to
+    // edge (background before the padding); only content/hit areas are lifted,
+    // so nothing is double-padded and the gesture pill never overlaps a row.
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(colors.readingSurface)
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
+    ) {
+        // Workspace Files owns its single-row header (title + New + More +
+        // close) so the compact command controls share the existing toolbar
+        // height instead of stacking a second mostly-empty strip beneath this
+        // generic header (user objection with device evidence 2026-10-25).
+        // Every other tab keeps the shared chrome below unchanged; the pane
+        // reproduces this exact geometry and always-visible Close.
+        if (route.content != InspectorContent.WORKSPACE_FILES) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(FloeLayout.ToolbarHeight + 4.dp)
+                    .padding(horizontal = 10.dp),
+            ) {
+                FloeText(
+                    inspectorTitle(route.content),
+                    style = Floe.typography.toolbarTitle,
+                    color = colors.label,
+                    modifier = Modifier.align(Alignment.CenterStart),
+                )
+                FloeCircleButton(
+                    icon = FloeIcons.Xmark,
+                    contentDescription = stringResource(R.string.close),
+                    onClick = onDismiss,
+                    visualSize = 34.dp,
+                    iconSize = 15.dp,
+                    modifier = Modifier.align(Alignment.CenterEnd),
+                )
+            }
         }
-        com.floe.android.design.FloePageSheet(
+        com.floe.android.design.FloeActionSheet(
             visible = environmentVisible, onDismiss = { environmentVisible = false },
+            maxCardWidth = 640.dp,
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp)) {
                 com.floe.android.host.linux.LocalRuntimeSettingsCard()
             }
         }
-        FloeDivider()
+        if (route.content != InspectorContent.WORKSPACE_FILES) {
+            FloeDivider()
+        }
         val conversations = runtimeHost?.conversations
         when (route.content) {
             InspectorContent.PROGRESS -> TaskProgressPane(conversations, route.conversationId)
             InspectorContent.CHILD_AGENTS -> ChildAgentsPane(conversations, route.conversationId)
             InspectorContent.PERMISSIONS -> TaskPermissionsPane(conversations, route.conversationId)
-            InspectorContent.WORKSPACE_FILES -> WorkspaceFilesPane(runtimeHost, route.conversationId, onDismiss)
+            InspectorContent.WORKSPACE_FILES -> WorkspaceFilesPane(runtimeHost, route.conversationId, inspectorTitle(route.content), onDismiss)
             InspectorContent.CHANGES -> WorkspaceGitPane(runtimeHost, route.conversationId)
             InspectorContent.BROWSER -> {
                 val taskID = route.conversationId

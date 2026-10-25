@@ -366,6 +366,29 @@ final class G04LanguageServerTests: XCTestCase {
         XCTAssertEqual(sink.events(type: "lspFramingFault").last?["code"] as? String, "toolMissing")
     }
 
+    func testSaturatedStartBecomesTypedUnavailableAndTerminal() async throws {
+        // A live terminal owns the single engine slot: the center transport
+        // refuses the language-server start BEFORE dispatch with the typed
+        // .saturated code (device-observed 2026-10-25 09:06 Retry failure).
+        // The session must surface exactly that typed state — never a fake
+        // starting/ready lie, never a generic error — answer the host's
+        // ensure with the same code, and stay REPLACEable by the next
+        // explicit ensure once the slot frees.
+        let transport = FakeLspTransport()
+        transport.startError = G04LspCode.saturated
+        let sink = RecordingLspSink()
+        let session = makeSession(transport, FakeAuthority(), sink)
+        await session.ensureStarted(requestID: "ensure-1")
+        let status = try XCTUnwrap(sink.events(type: "lspStatus").last)
+        XCTAssertEqual(status["state"] as? String, "unavailable")
+        XCTAssertEqual(status["code"] as? String, "saturated")
+        XCTAssertEqual(sink.reply(requestID: "ensure-1")?["ok"] as? Bool, false)
+        XCTAssertEqual(sink.reply(requestID: "ensure-1")?["code"] as? String, "saturated")
+        let isTerminal = await session.isTerminal
+        XCTAssertTrue(isTerminal, "a saturated refusal must stay replaceable on the next ensure")
+        XCTAssertFalse(transport.closed, "start refused before dispatch: nothing was ever opened to close")
+    }
+
     func testRevisionFencesAndVersionedSync() async throws {
         let transport = FakeLspTransport()
         let authority = FakeAuthority()

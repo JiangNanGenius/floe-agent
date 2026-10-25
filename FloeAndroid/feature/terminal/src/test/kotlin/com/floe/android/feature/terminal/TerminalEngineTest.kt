@@ -52,10 +52,10 @@ class TerminalEngineTest {
     fun cursorAndControlSequences() {
         val engine = engine()
         engine.feed(bytes("ABCDEFGH"))
-        engine.feed(bytes("\r\x1B[3C")) // CR then cursor right 3
+        engine.feed(bytes("\r\u001B[3C")) // CR then cursor right 3
         assertEquals(3, engine.cursorColumn())
         assertEquals(0, engine.cursorRow())
-        engine.feed(bytes("\x1B[2;3H")) // absolute position row2 col3 (1-based)
+        engine.feed(bytes("\u001B[2;3H")) // absolute position row2 col3 (1-based)
         assertEquals(1, engine.cursorRow())
         assertEquals(2, engine.cursorColumn())
     }
@@ -63,7 +63,7 @@ class TerminalEngineTest {
     @Test
     fun ansiColorsAndBoldMapToStyles() {
         val engine = engine()
-        engine.feed(bytes("\x1B[1;31mRED\x1B[0m normal"))
+        engine.feed(bytes("\u001B[1;31mRED\u001B[0m normal"))
         // RED occupies row 0 columns 0..2; those cells must carry bold +
         // red foreground style bits, while the following plain cells reset.
         val redStyle = engine.emulatorForRender().getScreen().getStyleAt(0, 0)
@@ -91,7 +91,12 @@ class TerminalEngineTest {
     @Test
     fun scrollbackTranscriptRows() {
         val engine = engine(columns = 20, rows = 3)
-        for (line in 1..10) {
+        // rows=3 clamps to MinimumRows=5: the first rows-1 linefeeds only
+        // move the cursor and every later linefeed pushes exactly one real
+        // row into the transcript, so ten fed rows accumulate just 6. Feed
+        // past the clamped viewport (transcript = fed - (rows - 1) = 9) and
+        // keep the original >=7 contract verbatim.
+        for (line in 1..(engine.rows + 8)) {
             engine.feed(bytes("line$line\r\n"))
         }
         assertTrue("transcript must accumulate", engine.activeTranscriptRows() >= 7)
@@ -114,7 +119,7 @@ class TerminalEngineTest {
         val engine = engine(host = host)
         // Cursor position report request: the reused emulator must WRITE
         // the response bytes back through the host (external PTY proof).
-        engine.feed(bytes("\x1B[6n"))
+        engine.feed(bytes("\u001B[6n"))
         assertTrue("DA1 request also answers; expect at least one ordered write",
             host.ptyWrites.isNotEmpty())
         val merged = host.ptyWrites.fold(ByteArray(0)) { acc, part -> acc + part }
@@ -126,7 +131,7 @@ class TerminalEngineTest {
     fun bracketedPasteHonorsDecset2004() {
         val host = RecordingHost()
         val engine = engine(host = host)
-        engine.feed(bytes("\x1B[?2004h"))
+        engine.feed(bytes("\u001B[?2004h"))
         host.ptyWrites.clear()
         engine.pasteText("one\r\ntwo")
         val merged = String(host.ptyWrites.fold(ByteArray(0)) { a, b -> a + b }, Charsets.UTF_8)
@@ -145,15 +150,19 @@ class TerminalEngineTest {
 
     @Test
     fun controlKeyEncodings() {
-        assertEquals(0x03, TerminalInputEncoder.interrupt()[0])
-        assertEquals(0x04, TerminalInputEncoder.endOfFile()[0])
-        assertEquals(0x7F, TerminalInputEncoder.backspace()[0])
+        // Encoders return ByteArray elements (boxed Byte on the JVM): compare
+        // against Byte literals so the exact ETX/EOT/DEL proof asserts byte
+        // equality instead of failing on Integer vs Byte boxing. Values are
+        // unchanged.
+        assertEquals(0x03.toByte(), TerminalInputEncoder.interrupt()[0])
+        assertEquals(0x04.toByte(), TerminalInputEncoder.endOfFile()[0])
+        assertEquals(0x7F.toByte(), TerminalInputEncoder.backspace()[0])
         val ctrlC = TerminalInputEncoder.encodeKey(
             KeyEvent.KEYCODE_C, ctrlDown = true, altDown = false, shiftDown = false,
             cursorKeysApplication = false, keypadApplication = false)
-        assertEquals(0x03, ctrlC!![0])
+        assertEquals(0x03.toByte(), ctrlC!![0])
         val alt = TerminalInputEncoder.withAlt(byteArrayOf('x'.code.toByte()))
-        assertEquals(0x1B, alt[0])
+        assertEquals(0x1B.toByte(), alt[0])
         assertEquals('x'.code.toByte(), alt[1])
     }
 
@@ -173,10 +182,10 @@ class TerminalEngineTest {
     fun mouseTrackingModeObservedFromParser() {
         val engine = engine()
         assertFalse(engine.mouseTrackingActive())
-        engine.feed(bytes("\x1B[?1000h"))
+        engine.feed(bytes("\u001B[?1000h"))
         assertTrue("button tracking DECSET must be visible to the renderer",
             engine.mouseTrackingActive())
-        engine.feed(bytes("\x1B[?1000l"))
+        engine.feed(bytes("\u001B[?1000l"))
         assertFalse(engine.mouseTrackingActive())
     }
 
@@ -184,9 +193,9 @@ class TerminalEngineTest {
     fun alternateBufferSwitchIsVisible() {
         val engine = engine()
         assertFalse(engine.emulatorForRender().isAlternateBufferActive)
-        engine.feed(bytes("\x1B[?1049h"))
+        engine.feed(bytes("\u001B[?1049h"))
         assertTrue(engine.emulatorForRender().isAlternateBufferActive)
-        engine.feed(bytes("\x1B[?1049l"))
+        engine.feed(bytes("\u001B[?1049l"))
         assertFalse(engine.emulatorForRender().isAlternateBufferActive)
     }
 
@@ -204,7 +213,7 @@ class TerminalEngineTest {
             override fun onProgramClipboardCopy(text: String) {}
             override fun requestProgramClipboardPaste(): String? = null
         }
-        engine.feed(bytes("\x1B]0;Floe Task\u0007"))
+        engine.feed(bytes("\u001B]0;Floe Task\u0007"))
         engine.feed(bytes("\u0007"))
         assertEquals("Floe Task", engine.title())
         assertEquals("Floe Task", title)

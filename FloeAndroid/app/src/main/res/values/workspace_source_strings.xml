@@ -19,7 +19,7 @@
     <string name="workspace_source_recovery_pending">Waiting on a provider recovery. Release stays disabled until it is reconciled.</string>
     <string name="workspace_source_repick_required">The provider session for this file expired. Re-pick it to restore access.</string>
     <string name="workspace_source_transient">This pick is session-only: access ends when the app stops until you pick again.</string>
-    <string name="workspace_source_tree_limits">Android does not offer private or system-restricted folders (including app storage, Downloads and removable volumes) in these pickers.</string>
+    <string name="workspace_source_tree_limits">Choose an available file or folder in the system picker. Some protected folders cannot be selected.</string>
     <string name="workspace_source_import_title">Import from Files</string>
     <string name="workspace_source_target_path">Path in workspace</string>
     <string name="workspace_source_display_name">File name</string>
@@ -68,4 +68,5 @@
     <string name="workspace_source_provider_offline">The provider is offline. The workspace journal keeps this item pending — reconcile restores it when the provider returns.</string>
     <string name="workspace_source_revoke_retained">Kept: other parts of Floe still use this access, so nothing was released.</string>
     <string name="workspace_source_failed">The operation did not complete. Your workspace files are intact. Try again.</string>
+    <string name="workspace_source_error_details">Details</string>
 </resources>

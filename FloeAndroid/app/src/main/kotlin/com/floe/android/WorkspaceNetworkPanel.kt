@@ -76,10 +76,13 @@ internal fun WorkspaceNetworkPanel(
             FloeText(stringResource(R.string.network_workspace_title),
                 style = Floe.typography.toolbarTitle, color = Floe.colors.label,
                 modifier = Modifier.weight(1f))
+            // Weighted siblings: unweighted capsule buttons fill and collapse
+            // their row partners (420dp inspector evidence, 2026-10-25).
             FloeCapsuleButton(stringResource(R.string.network_workspace_refresh),
-                onClick = { lane.refresh() }, enabled = !state.busy)
+                onClick = { lane.refresh() }, enabled = !state.busy, modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.network_workspace_add), prominent = true,
-                onClick = { editing = NetworkMountDraftModel() }, enabled = !state.busy)
+                onClick = { editing = NetworkMountDraftModel() }, enabled = !state.busy,
+                modifier = Modifier.weight(1f))
         }
         if (!state.runtimeAvailable) {
             FloeText(stringResource(R.string.network_workspace_runtime_unavailable),
@@ -115,7 +118,7 @@ internal fun WorkspaceNetworkPanel(
                             style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                     }
                     FloeCapsuleButton(stringResource(R.string.network_workspace_save),
-                        enabled = !state.busy,
+                        enabled = !state.busy, modifier = Modifier.weight(1f),
                         onClick = { lane.startSave(source.id, endpointForSource(state, source.id)) })
                 }
             }
@@ -138,19 +141,22 @@ internal fun WorkspaceNetworkPanel(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (operation.isLive) {
                             FloeCapsuleButton(stringResource(R.string.network_workspace_cancel_request),
+                                modifier = Modifier.weight(1f),
                                 onClick = { lane.cancelOperation(operation.id) })
                         }
                         operation.recoverableRecoveryID?.let { recoveryID ->
                             FloeCapsuleButton(stringResource(R.string.network_workspace_reconcile),
-                                enabled = !state.busy,
+                                enabled = !state.busy, modifier = Modifier.weight(1f),
                                 onClick = { lane.startReconcile(recoveryID, endpointForMount(state, operation.mountID)) })
                         }
                         if (operation.state == "completed" && operation.result["logicalPath"] != null) {
                             FloeCapsuleButton(stringResource(R.string.network_workspace_open),
+                                modifier = Modifier.weight(1f),
                                 onClick = { onOpenWorkspaceFile(operation.result.getValue("logicalPath")) })
                         }
                         if (!operation.isLive) {
                             FloeCapsuleButton(stringResource(R.string.network_workspace_dismiss),
+                                modifier = Modifier.weight(1f),
                                 onClick = { lane.dismissOperation(operation.id) })
                         }
                     }
@@ -184,7 +190,7 @@ internal fun WorkspaceNetworkPanel(
     // ---- add / edit sheet ----
     val draft = editing
     if (draft != null) {
-        FloePageSheet(visible = true, onDismiss = { if (!state.busy) editing = null }) {
+        FloeActionSheet(visible = true, onDismiss = { if (!state.busy) editing = null }, maxCardWidth = 640.dp) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 FloeText(stringResource(if (draft.mountID == null) R.string.network_workspace_add
@@ -221,9 +227,11 @@ internal fun WorkspaceNetworkPanel(
                     style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FloeCapsuleButton(stringResource(R.string.cancel),
-                        onClick = { editing = null }, enabled = !state.busy)
+                        onClick = { editing = null }, enabled = !state.busy,
+                        modifier = Modifier.weight(1f))
                     FloeCapsuleButton(stringResource(R.string.network_workspace_connect), prominent = true,
                         enabled = !state.busy && draft.endpoint.isNotBlank(),
+                        modifier = Modifier.weight(1f),
                         onClick = {
                             val passwordChars =
                                 if (draft.clearCredential || draft.password.isNullOrEmpty()) null
@@ -239,7 +247,7 @@ internal fun WorkspaceNetworkPanel(
     // ---- browse sheet ----
     val mounted = browseMount
     if (mounted != null) {
-        FloePageSheet(visible = true, onDismiss = { if (!state.busy) browseMount = null }) {
+        FloeActionSheet(visible = true, onDismiss = { if (!state.busy) browseMount = null }, maxCardWidth = 640.dp) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 FloeText("${mounted.name} · ${if (state.browse?.path.isNullOrEmpty()) "/" else state.browse?.path}",
@@ -270,11 +278,11 @@ internal fun WorkspaceNetworkPanel(
                             }
                             if (entry.isDirectory) {
                                 FloeCapsuleButton(stringResource(R.string.network_workspace_open),
-                                    enabled = !state.busy,
+                                    enabled = !state.busy, modifier = Modifier.weight(1f),
                                     onClick = { lane.browse(mounted.id, entry.path, mounted.endpoint) })
                             } else {
                                 FloeCapsuleButton(stringResource(R.string.network_workspace_import),
-                                    enabled = !state.busy,
+                                    enabled = !state.busy, modifier = Modifier.weight(1f),
                                     onClick = {
                                         val target = defaultImportPath(mounted.name, entry.path)
                                         lane.startImport(mounted.id, entry.path, target, false,
@@ -288,6 +296,7 @@ internal fun WorkspaceNetworkPanel(
                         FloeCapsuleButton(
                             stringResource(R.string.network_workspace_import_folder),
                             enabled = !state.busy,
+                            modifier = Modifier.fillMaxWidth(),
                             onClick = {
                                 lane.startImport(mounted.id, browse.path,
                                     defaultImportPath(mounted.name, browse.path), true, false,
@@ -337,16 +346,17 @@ private fun NetworkMountRowView(mount: NetworkMountRow, busy: Boolean,
                 style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            // Weighted siblings so all five mount actions stay reachable.
             FloeCapsuleButton(stringResource(R.string.network_workspace_browse),
-                onClick = onBrowse, enabled = !busy)
+                onClick = onBrowse, enabled = !busy, modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.network_workspace_connect),
-                onClick = onConnect, enabled = !busy)
+                onClick = onConnect, enabled = !busy, modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.network_workspace_disconnect),
-                onClick = onDisconnect, enabled = !busy)
+                onClick = onDisconnect, enabled = !busy, modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.network_workspace_edit),
-                onClick = onEdit, enabled = !busy)
+                onClick = onEdit, enabled = !busy, modifier = Modifier.weight(1f))
             FloeCapsuleButton(stringResource(R.string.network_workspace_remove),
-                onClick = onRemove, enabled = !busy)
+                onClick = onRemove, enabled = !busy, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -367,8 +377,12 @@ private fun NetworkExportSection(state: NetworkWorkspaceHostController.NetworkLa
             style = Floe.typography.metadata, color = Floe.colors.secondaryLabel)
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             state.mounts.forEach { mount ->
+                // Weighted chips keep EVERY mount selectable; an unweighted
+                // fillMaxWidth button collapsed all later mounts to zero
+                // width in the 420dp inspector (evidence 2026-10-25).
                 FloeCapsuleButton(mount.name, enabled = !busy,
                     prominent = mount.id == mountID,
+                    modifier = Modifier.weight(1f),
                     onClick = { mountID = mount.id })
             }
         }
