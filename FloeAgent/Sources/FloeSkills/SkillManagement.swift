@@ -3,6 +3,29 @@ import Crypto
 import FloeCore
 import FloeTools
 
+/// Bounded availability of a skill's bundled files in the task's workspace.
+/// Never carries a host path: an exact read may prepare a task-owned cache
+/// tree and report the PORTABLE guest root, or report an honest reason why
+/// that is unavailable. Either way no execution, network or tool permission
+/// is granted, and the pinned digest/file count stay visible even when the
+/// Markdown footer is paginated away.
+public struct SkillResourceAvailability: Codable, Sendable, Equatable {
+    public var staged: Bool
+    /// Portable guest root of the staged bundle, e.g.
+    /// `/workspace/.floe/skills/<id>@<digest>`; nil when unavailable.
+    public var guestRoot: String?
+    public var pinnedSHA256: String
+    public var fileCount: Int
+    /// Honest short reason when `staged` is false; nil when staged.
+    public var reason: String?
+
+    public init(staged: Bool, guestRoot: String?, pinnedSHA256: String, fileCount: Int, reason: String?) {
+        self.staged = staged; self.guestRoot = guestRoot
+        self.pinnedSHA256 = pinnedSHA256; self.fileCount = fileCount
+        self.reason = reason
+    }
+}
+
 public struct ManagedSkill: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
@@ -17,31 +40,62 @@ public struct ManagedSkill: Codable, Sendable, Equatable {
     public var requiredToolNames: [String]?
     public var nextOffset: Int?
     public var totalCharacters: Int?
-    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil) {
+    /// BUNDLED-RESOURCE DELIVERY for an exact read. Optional so discovery,
+    /// list and every manager that does not implement staging keep the exact
+    /// previous response shape; populated only by the read context overload.
+    public var resources: SkillResourceAvailability?
+    public init(id: String, name: String, version: String, enabled: Bool, digest: String, markdown: String? = nil, requiredToolNames: [String]? = nil, currentDigest: String? = nil, description: String? = nil, resources: SkillResourceAvailability? = nil) {
         self.id = id; self.name = name; self.version = version
         self.description = description
         self.enabled = enabled; self.digest = digest; self.markdown = markdown
         self.requiredToolNames = requiredToolNames
         self.currentDigest = currentDigest
+        self.resources = resources
     }
 
-    /// Discovery must not expose instruction bodies even if a manager supplies them.
+    /// Discovery must not expose instruction bodies or staged resource state
+    /// even if a manager supplies them.
     var discoveryMetadata: ManagedSkill {
         var row = self
         row.markdown = nil; row.nextOffset = nil; row.totalCharacters = nil
+        row.resources = nil
         row.description = description.map { String($0.prefix(1_024)) }
         return row
+    }
+}
+
+/// Explicit task binding for one exact read. Only the execution context the
+/// run already owns is carried: the frozen `environmentID`, the run's
+/// workspace root (the directory the existing workspace share exports) and
+/// the tool-call cancellation token. Nothing here grants execution or access;
+/// a manager may use it only to prepare a task-owned resource cache.
+public struct SkillResourceContext: Sendable {
+    public var environmentID: String?
+    public var workspaceRootURL: URL?
+    public var cancellation: CancellationToken
+
+    public init(environmentID: String?, workspaceRootURL: URL?, cancellation: CancellationToken) {
+        self.environmentID = environmentID
+        self.workspaceRootURL = workspaceRootURL
+        self.cancellation = cancellation
     }
 }
 
 public protocol SkillManaging: Sendable {
     func read(id: String?) async throws -> [ManagedSkill]
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill]
+    /// Exact-id read with the run's execution binding. A manager that does not
+    /// implement resource delivery silently keeps the previous behavior; the
+    /// production wrapper MUST override this to pass the context through.
+    func read(id: String, runID: UUID, resourceContext: SkillResourceContext) async throws -> [ManagedSkill]
     func manage(_ request: SkillManageTool.Arguments) async throws -> String
 }
 
 public extension SkillManaging {
     func read(id: String?, runID: UUID) async throws -> [ManagedSkill] { try await read(id: id) }
+    func read(id: String, runID: UUID, resourceContext: SkillResourceContext) async throws -> [ManagedSkill] {
+        try await read(id: id, runID: runID)
+    }
 }
 
 /// Metadata discovery does not read/activate instructions or execute scripts.
@@ -118,7 +172,7 @@ public struct SkillReadTool: AgentTool {
         public init(id: String? = nil, offset: Int? = nil, limit: Int? = nil) { self.id = id; self.offset = offset; self.limit = limit }
     }
     public static let name = "skill.read"
-    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. Reading loads available tool schemas; it never executes scripts or grants permissions. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest."
+    public static let toolDescription = "List installed skill metadata, or read one exact skill ID with pinned Markdown, audited scripts and digest. If nextOffset is present, keep reading that id and offset until complete before applying the instructions or running a script. An exact read inside a task bound to a local Linux environment also stages the pinned bundle (scripts plus sibling assets/references/agents) into the task workspace and reports the portable guest root in resources; upstream `$CODEX_HOME/skills/<id>/` paths resolve under that root, and the guest can list the real files it contains. Staging runs nothing and grants no execution, network or tool permission; scripts still run only through the normal exec.shell approval flow. Reading loads available tool schemas; it never executes scripts. Task snapshots keep the reviewed version across upgrades and recovery. For skill.manage use currentDigest (or the metadata list digest), not an older pinned execution digest."
     public static let parametersJSON = #"{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":32768}},"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
@@ -133,7 +187,21 @@ public struct SkillReadTool: AgentTool {
     }
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try validate(args); try context.cancellation.throwIfCancelled()
-        var rows = try await manager.read(id: args.id, runID: context.runID)
+        var rows: [ManagedSkill]
+        if let id = args.id {
+            // Exact reads carry the run's frozen local-execution binding so the
+            // manager can prepare the task-owned resource cache. A temporary
+            // (RAM-only) chat carries NO binding: the manager reports an honest
+            // unavailable resource status and stages nothing. List/"all" reads
+            // never stage at all (branch below).
+            rows = try await manager.read(id: id, runID: context.runID, resourceContext: SkillResourceContext(
+                environmentID: context.temporaryReadOnly ? nil : context.environmentID,
+                workspaceRootURL: context.temporaryReadOnly ? nil : context.workspaceRootURL,
+                cancellation: context.cancellation
+            ))
+        } else {
+            rows = try await manager.read(id: args.id, runID: context.runID)
+        }
         for index in rows.indices {
             guard let markdown = rows[index].markdown else { continue }
             let total = markdown.count, offset = args.offset ?? 0, limit = args.limit ?? 32_768

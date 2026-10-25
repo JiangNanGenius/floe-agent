@@ -20,6 +20,53 @@ private struct DiscoverySkillFixture: SkillManaging {
     }
 }
 
+/// Records exactly what the exact-read resource overload receives, so the
+/// production wrapper cannot silently drop the run binding through the
+/// protocol's legacy default.
+private actor ContextAwareSkillFixture: SkillManaging {
+    struct Recorded: Sendable, Equatable {
+        let environmentID: String?
+        let workspaceRoot: String?
+        let runID: UUID
+    }
+
+    private(set) var contextReads = 0
+    private(set) var legacyRunReads = 0
+    private(set) var lastContext: Recorded?
+    let guestRoot = "/workspace/.floe/skills/example@" + String(repeating: "a", count: 64)
+    let markdown: String
+
+    init(markdown: String = "body") { self.markdown = markdown }
+
+    func read(id: String?) async throws -> [ManagedSkill] {
+        [.init(id: "example", name: "Example", version: "1.0.0", enabled: true,
+               digest: String(repeating: "a", count: 64), markdown: id == nil ? nil : markdown)]
+    }
+
+    func read(id: String?, runID: UUID) async throws -> [ManagedSkill] {
+        legacyRunReads += 1
+        return try await read(id: id)
+    }
+
+    func read(id: String, runID: UUID, resourceContext: SkillResourceContext) async throws -> [ManagedSkill] {
+        contextReads += 1
+        lastContext = Recorded(
+            environmentID: resourceContext.environmentID,
+            workspaceRoot: resourceContext.workspaceRootURL?.path,
+            runID: runID
+        )
+        var rows = try await read(id: id)
+        rows[0].resources = SkillResourceAvailability(
+            staged: true, guestRoot: guestRoot,
+            pinnedSHA256: String(repeating: "a", count: 64),
+            fileCount: 3, reason: nil
+        )
+        return rows
+    }
+
+    func manage(_ request: SkillManageTool.Arguments) async throws -> String { "applied" }
+}
+
 @Suite("Skill management contracts")
 struct SkillManagementTests {
     @Test func thirdPartyDescriptionsMatchIndependentQueriesWithoutLeakingInstructions() async throws {
@@ -70,6 +117,91 @@ struct SkillManagementTests {
     @Test func previousMetadataStillDecodesWithoutDescription() throws {
         let data = Data(#"{"id":"old","name":"Old","version":"1","enabled":true,"digest":"a"}"#.utf8)
         #expect(try JSONDecoder().decode(ManagedSkill.self, from: data).description == nil)
+        // Previous invocations never carried resource availability; decoding
+        // must stay compatible and default to nil.
+        #expect(try JSONDecoder().decode(ManagedSkill.self, from: data).resources == nil)
+    }
+
+    @Test func exactReadCarriesRunBindingWhileListAndSearchNeverStage() async throws {
+        let fixture = ContextAwareSkillFixture()
+        let runID = UUID()
+        let workspace = URL(fileURLWithPath: "/tmp/floe-skill-workspace", isDirectory: true)
+        let tool = SkillReadTool(manager: fixture)
+        let context = ToolContext(runID: runID, workspaceRootURL: workspace,
+                                  cancellation: CancellationToken(), environmentID: "env-local-1")
+
+        // List and search must keep the legacy, staging-free path.
+        let list = try await tool.execute(.init(), context: context)
+        let listRows = try JSONDecoder().decode([ManagedSkill].self, from: Data(list.summary.utf8))
+        #expect(listRows.first?.resources == nil)
+        _ = try await SkillSearchTool(manager: fixture).execute(.init(queries: ["example"]), context: context)
+        #expect(await fixture.contextReads == 0)
+
+        let detail = try await tool.execute(.init(id: "example"), context: context)
+        #expect(await fixture.contextReads == 1)
+        let recorded = try #require(await fixture.lastContext)
+        #expect(recorded.environmentID == "env-local-1")
+        #expect(recorded.workspaceRoot == workspace.path)
+        #expect(recorded.runID == runID)
+        let row = try #require(try JSONDecoder().decode([ManagedSkill].self, from: Data(detail.summary.utf8)).first)
+        #expect(row.resources?.staged == true)
+        #expect(row.resources?.guestRoot == fixture.guestRoot)
+        #expect(row.resources?.fileCount == 3)
+        #expect(row.resources?.reason == nil)
+    }
+
+    @Test func temporaryChatExactReadCarriesNoEnvironmentBinding() async throws {
+        // Temporary chats are RAM-only: the exact read may not be bound to a
+        // workspace, so the manager reports an honest unavailable status.
+        let fixture = ContextAwareSkillFixture()
+        let tool = SkillReadTool(manager: fixture)
+        let context = ToolContext(runID: UUID(), workspaceRootURL: URL(fileURLWithPath: "/tmp/ws"),
+                                  cancellation: CancellationToken(), environmentID: "env-local",
+                                  temporaryReadOnly: true)
+        _ = try await tool.execute(.init(id: "example"), context: context)
+        let recorded = try #require(await fixture.lastContext)
+        #expect(recorded.environmentID == nil)
+        #expect(recorded.workspaceRoot == nil)
+    }
+
+    @Test func managersWithoutStagingKeepTheExactPreviousReadShape() async throws {
+        // The protocol default delegates the context overload to the legacy
+        // read, so a manager with no resource delivery keeps working and can
+        // never fabricate a guest path.
+        let tool = SkillReadTool(manager: ManagedSkillFixture())
+        let context = ToolContext(runID: UUID(), workspaceRootURL: URL(fileURLWithPath: "/tmp/ws"),
+                                  cancellation: CancellationToken(), environmentID: "env-local")
+        let detail = try await tool.execute(.init(id: "example"), context: context)
+        let row = try #require(try JSONDecoder().decode([ManagedSkill].self, from: Data(detail.summary.utf8)).first)
+        #expect(row.markdown == "body")
+        #expect(row.resources == nil)
+    }
+
+    @Test func resourceStatusStaysBoundedAndVisibleAcrossPagination() async throws {
+        let fixture = ContextAwareSkillFixture(markdown: String(repeating: "x", count: 10_000))
+        let tool = SkillReadTool(manager: fixture)
+        let context = ToolContext(runID: UUID(), workspaceRootURL: URL(fileURLWithPath: "/tmp/ws"),
+                                  cancellation: CancellationToken(), environmentID: "env-local")
+        let first = try await tool.execute(.init(id: "example", offset: 0, limit: 100), context: context)
+        let firstRow = try #require(try JSONDecoder().decode([ManagedSkill].self, from: Data(first.summary.utf8)).first)
+        #expect(firstRow.markdown?.count == 100)
+        #expect(firstRow.nextOffset == 100)
+        // The portable root survives pagination outside the paginated Markdown.
+        #expect(firstRow.resources?.guestRoot == fixture.guestRoot)
+        let last = try await tool.execute(.init(id: "example", offset: 9_900, limit: 100), context: context)
+        let lastRow = try #require(try JSONDecoder().decode([ManagedSkill].self, from: Data(last.summary.utf8)).first)
+        #expect(lastRow.nextOffset == nil)
+        #expect(lastRow.resources?.guestRoot == fixture.guestRoot)
+
+        // Metadata stays compact: no per-file paths or hashes are duplicated
+        // into every paginated read. `reason` is absent while staged because
+        // the encoder omits nil optionals.
+        let object = try #require(try JSONSerialization.jsonObject(with: Data(first.summary.utf8)) as? [[String: Any]])
+        let resources = try #require(object.first?["resources"] as? [String: Any])
+        #expect(Set(resources.keys) == ["staged", "guestRoot", "pinnedSHA256", "fileCount"])
+        #expect(SkillReadTool.toolDescription.contains("guest root"))
+        #expect(SkillReadTool.toolDescription.contains("$CODEX_HOME/skills/"))
+        #expect(!SkillReadTool.isSideEffecting)
     }
     @Test func explicitListNeverReturnsInstructionsOrMutates() async throws {
         let manager = ManagedSkillFixture()

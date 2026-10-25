@@ -205,7 +205,21 @@ final class AppEnvironment: ObservableObject {
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
-    private lazy var _skillsCenter = SkillsCenter(environment: self)
+    /// Skill bundle delivery uses the SAME descriptor-time share table the
+    /// guest boots with, so an exact read that happens BEFORE the task's first
+    /// exec.shell still stages into the workspace the later first boot mounts.
+    /// No guest needs to be running and no new share or permission is added; a
+    /// host without the local Linux service simply reports resources as
+    /// unavailable.
+    private lazy var _skillsCenter: SkillsCenter = {
+        let guestService = linuxGuestService
+        return SkillsCenter(
+            environment: self,
+            resourceStager: SkillWorkspaceResourceStager { environmentID in
+                await guestService?.linuxGuestPathMap(environmentID: environmentID)
+            }
+        )
+    }()
     private lazy var _contentUpdateCenter = ContentUpdateCenter(environment: self)
     private lazy var _memoryCenter = MemoryCenter(environment: self)
     private lazy var _memoryDreamService = MemoryDreamService(environment: self)

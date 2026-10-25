@@ -500,6 +500,10 @@ final class SkillsCenter: ObservableObject {
 
     private unowned let environment: AppEnvironment
     private let installationRoot: URL
+    /// Delivers installed bundle bytes into the bound task workspace. Nil in
+    /// hosts/tests that have no local Linux environment wiring; exact reads
+    /// then keep the historical Markdown-only behavior.
+    private let resourceStager: SkillWorkspaceResourceStager?
     private var packageMutationInProgress = false
     private var builtinSeedTask: Task<Void, Never>?
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
@@ -523,8 +527,9 @@ final class SkillsCenter: ObservableObject {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment, installationRoot: URL? = nil) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil) {
         self.environment = environment
+        self.resourceStager = resourceStager
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -852,7 +857,11 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
-    func readSkills(id: String?, runID: UUID? = nil) async throws -> [ManagedSkill] {
+    /// List reads return metadata only. An exact read may additionally deliver
+    /// the pinned bundle into the task workspace when the tool supplied the
+    /// run's execution binding; staging never executes anything, never grants
+    /// permission and fails closed with an honest `resources` status.
+    func readSkills(id: String?, runID: UUID? = nil, resourceContext: SkillResourceContext? = nil) async throws -> [ManagedSkill] {
         await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }
@@ -865,19 +874,55 @@ final class SkillsCenter: ObservableObject {
             }
         }
         let pythonManifest = id == "floe-python" ? await environment.localPythonProbe.runtimeManifest() : nil
-        return try rows.map { row in
+        var results: [ManagedSkill] = []
+        for row in rows {
             let snapshot = try snapshot(for: row, runID: runID)
             let manifest = snapshot.package.manifest
             let builtin = DomainSkillLibrary.all.first { $0.id == row.id }
             var markdown = String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self)
             if let pythonManifest { markdown += "\n## Current build runtime probe\n\(pythonManifest)\n" }
-            if id != nil {
-                for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
-                    markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's Linux environment. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
+            // Bundle delivery: only this exact-read path with the run's
+            // execution binding may prepare the task-owned resource cache.
+            // The `id == nil` return above guarantees list reads never stage.
+            var resources: SkillResourceAvailability?
+            var stagedRoot: String?
+            if let resourceContext, let resourceStager {
+                let outcome = await resourceStager.stage(snapshot: snapshot, in: resourceContext)
+                markdown += SkillWorkspaceResourceStager.resourceFooter(
+                    id: manifest.id,
+                    pinnedSHA256: snapshot.package.canonicalSHA256,
+                    declaredFiles: snapshot.package.files,
+                    outcome: outcome
+                )
+                switch outcome {
+                case .staged(let staged):
+                    stagedRoot = staged.guestRoot
+                    resources = SkillResourceAvailability(
+                        staged: true, guestRoot: staged.guestRoot,
+                        pinnedSHA256: staged.pinnedSHA256,
+                        fileCount: staged.fileCount, reason: nil
+                    )
+                case .unavailable(let reason):
+                    resources = SkillResourceAvailability(
+                        staged: false, guestRoot: nil,
+                        pinnedSHA256: snapshot.package.canonicalSHA256,
+                        fileCount: snapshot.package.files.count, reason: reason
+                    )
                 }
             }
-            return ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version, enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: id == nil ? nil : markdown, requiredToolNames: id == nil ? nil : Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(), currentDigest: row.rewrittenDigest, description: snapshot.package.metadata.description)
+            for path in snapshot.files.keys.sorted() where path.hasPrefix("scripts/") && path.hasSuffix(".py") {
+                markdown += "\n### Audited source: \(path)\nRun this source with python3 through exec.shell in the task's Linux environment. Preserve the source and follow its argument or JSON-stdin interface; no inputJSON variable is injected automatically.\n```python\n\(String(decoding: snapshot.files[path]!, as: UTF8.self))\n```\n"
+                if let stagedRoot {
+                    markdown += "Staged copy: \(stagedRoot)/\(path) (the same pinned bytes; the pasted source above remains the fallback).\n"
+                }
+            }
+            results.append(ManagedSkill(id: row.id, name: builtin?.name ?? row.name, version: manifest.version,
+                enabled: row.status == "enabled", digest: snapshot.package.canonicalSHA256, markdown: markdown,
+                requiredToolNames: Array(Set(manifest.tools + (builtin?.automaticallyLoadedToolNames ?? []))).sorted(),
+                currentDigest: row.rewrittenDigest, description: snapshot.package.metadata.description,
+                resources: resources))
         }
+        return results
     }
 
     func manageSkill(_ request: SkillManageTool.Arguments) async throws -> String {
