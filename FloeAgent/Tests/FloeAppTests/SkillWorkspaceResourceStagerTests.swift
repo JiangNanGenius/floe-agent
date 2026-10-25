@@ -89,7 +89,7 @@ private func makeBundleFixture(
     )
 }
 
-private func makeTemporaryDirectory(_ label: String) throws -> URL {
+private func makeSkillResourceTemporaryDirectory(_ label: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("floe-\(label)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -172,7 +172,7 @@ private actor StageEntryGate {
 struct SkillWorkspaceResourceStagerTests {
     @Test func stagesSiblingBundleAndReturnsPortableGuestRoot() async throws {
         let fixture = try makeBundleFixture()
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
         let stager = SkillWorkspaceResourceStager { _ in makeWorkspaceShareMap(exporting: workspace) }
@@ -214,7 +214,7 @@ struct SkillWorkspaceResourceStagerTests {
         // guest is a precondition, so the later first boot mounts the staged
         // files that were written here.
         let fixture = try makeBundleFixture()
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
         let probe = ShareMapProbe(map: makeWorkspaceShareMap(exporting: workspace))
@@ -230,7 +230,7 @@ struct SkillWorkspaceResourceStagerTests {
 
     @Test func reuseRequiresByteVerificationNotTheMarkerAlone() async throws {
         let fixture = try makeBundleFixture()
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
         let stager = SkillWorkspaceResourceStager { _ in makeWorkspaceShareMap(exporting: workspace) }
@@ -259,7 +259,7 @@ struct SkillWorkspaceResourceStagerTests {
 
     @Test func symlinksAndReservedConflictsFailClosedWithoutEscaping() async throws {
         let fixture = try makeBundleFixture()
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
         let stager = SkillWorkspaceResourceStager { _ in makeWorkspaceShareMap(exporting: workspace) }
@@ -275,8 +275,8 @@ struct SkillWorkspaceResourceStagerTests {
         #expect(unavailableReason(blocked) == SkillStageReason.pathBlocked)
 
         // A planted link at the reserved component cannot redirect writes.
-        let victim = try makeTemporaryDirectory("victim")
-        let linkedWorkspace = try makeTemporaryDirectory("linked-workspace")
+        let victim = try makeSkillResourceTemporaryDirectory("victim")
+        let linkedWorkspace = try makeSkillResourceTemporaryDirectory("linked-workspace")
         defer { try? FileManager.default.removeItem(at: victim) }
         defer { try? FileManager.default.removeItem(at: linkedWorkspace) }
         try FileManager.default.createSymbolicLink(
@@ -292,7 +292,7 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func markerSymlinksAreNeverFollowedAndExternalEntriesStayUntouched() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let victim = try makeTemporaryDirectory("marker-victim")
+        let victim = try makeSkillResourceTemporaryDirectory("marker-victim")
         defer { try? FileManager.default.removeItem(at: victim) }
         let sentinel = victim.appendingPathComponent("sentinel.txt")
         let sentinelBytes = Data("external sentinel bytes".utf8)
@@ -300,7 +300,7 @@ struct SkillWorkspaceResourceStagerTests {
 
         // Case 1: the whole `.markers` directory is a planted symlink. Neither
         // the create route nor the reuse route may write through it.
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let reserved = workspace.appendingPathComponent(".floe/skills", isDirectory: true)
         try FileManager.default.createDirectory(at: reserved, withIntermediateDirectories: true)
@@ -319,7 +319,7 @@ struct SkillWorkspaceResourceStagerTests {
 
         // Case 2: the marker entry itself is a planted symlink to a foreign
         // file. It is neither read nor replaced.
-        let secondWorkspace = try makeTemporaryDirectory("workspace")
+        let secondWorkspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: secondWorkspace) }
         let secondReserved = secondWorkspace.appendingPathComponent(".floe/skills", isDirectory: true)
         let secondMarkers = secondReserved.appendingPathComponent(".markers", isDirectory: true)
@@ -338,9 +338,9 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func unboundOrForeignContextsNeverReturnAGuestPath() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
-        let other = try makeTemporaryDirectory("other-workspace")
-        let layer = try makeTemporaryDirectory("layer")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
+        let other = try makeSkillResourceTemporaryDirectory("other-workspace")
+        let layer = try makeSkillResourceTemporaryDirectory("layer")
         defer { try? FileManager.default.removeItem(at: workspace) }
         defer { try? FileManager.default.removeItem(at: other) }
         defer { try? FileManager.default.removeItem(at: layer) }
@@ -387,7 +387,7 @@ struct SkillWorkspaceResourceStagerTests {
         // every later IO, so no reserved tree appears at all.
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let map = makeWorkspaceShareMap(exporting: workspace)
         let gate = StageEntryGate()
@@ -413,7 +413,7 @@ struct SkillWorkspaceResourceStagerTests {
         // the lookup must not hand the caller that path.
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let map = makeWorkspaceShareMap(exporting: workspace)
         let first = await stage(
@@ -446,7 +446,7 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func pinningLimitsRejectBeforeAnyWorkspaceWrite() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let stager = SkillWorkspaceResourceStager(
             limits: SkillValidationLimits(maximumFileBytes: 8),
@@ -532,14 +532,14 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func pinnedRevisionsStayIndependentAcrossUpgradeAndResume() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let stager = SkillWorkspaceResourceStager { _ in makeWorkspaceShareMap(exporting: workspace) }
         let firstOutcome = await stage(stager, fixture, environmentID: "env", workspace: workspace)
         let first = try #require(stagedBundle(firstOutcome))
 
         // Reviewed upgrade: a new revision gets its own content-addressed tree.
-        let upgradedRoot = try makeTemporaryDirectory("upgraded")
+        let upgradedRoot = try makeSkillResourceTemporaryDirectory("upgraded")
         defer { try? FileManager.default.removeItem(at: upgradedRoot) }
         let upgradedPackage = upgradedRoot.appendingPathComponent("package", isDirectory: true)
         try FileManager.default.copyItem(at: fixture.packageRoot, to: upgradedPackage)
@@ -570,7 +570,7 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func concurrentStagingPublishesOneVerifiedTreePerPinnedDigest() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let map = makeWorkspaceShareMap(exporting: workspace)
         let firstStager = SkillWorkspaceResourceStager { _ in map }
@@ -597,7 +597,7 @@ struct SkillWorkspaceResourceStagerTests {
     @Test func retentionKeepsPinnedTreesAndRemovesOnlyProvenStagingTemps() async throws {
         let fixture = try makeBundleFixture()
         defer { try? FileManager.default.removeItem(at: fixture.packageRoot) }
-        let workspace = try makeTemporaryDirectory("workspace")
+        let workspace = try makeSkillResourceTemporaryDirectory("workspace")
         defer { try? FileManager.default.removeItem(at: workspace) }
         let reserved = workspace.appendingPathComponent(".floe/skills", isDirectory: true)
         let markers = reserved.appendingPathComponent(".markers", isDirectory: true)
@@ -655,7 +655,7 @@ struct SkillWorkspaceResourceStagerTests {
             SkillWorkspaceResourceStager.stagingPrefix + "dead", hoursOld: 30)
         let foreignCase = try plantStaging(
             SkillWorkspaceResourceStager.stagingPrefix + UUID().uuidString.lowercased(), hoursOld: 30)
-        let victim = try makeTemporaryDirectory("staging-victim")
+        let victim = try makeSkillResourceTemporaryDirectory("staging-victim")
         defer { try? FileManager.default.removeItem(at: victim) }
         let linkedTemp = reserved.appendingPathComponent(
             SkillWorkspaceResourceStager.stagingPrefix + UUID().uuidString)
@@ -708,7 +708,7 @@ private struct SkillReadRouteFixture {
 private func makeSkillReadRouteFixture() async throws -> SkillReadRouteFixture {
     let environment = AppEnvironment.preview()
     try await environment.database.migrate()
-    let sandbox = try makeTemporaryDirectory("skill-read-route")
+    let sandbox = try makeSkillResourceTemporaryDirectory("skill-read-route")
     let installRoot = sandbox.appendingPathComponent("Skills", isDirectory: true)
     let workspace = sandbox.appendingPathComponent("workspace", isDirectory: true)
     try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
