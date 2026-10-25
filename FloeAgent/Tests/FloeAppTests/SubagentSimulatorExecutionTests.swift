@@ -3951,4 +3951,1452 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+
+// ============================================================================
+// ==== Seven deep-skill guest qualification (job-5eb16a3dab9b4702) ==========
+// ============================================================================
+// Skill Hub seven-deep guest qualification - PRIVATE PROPOSAL.
+//
+// Append-only content for FloeAgent/Tests/FloeAppTests/SubagentSimulatorExecutionTests.swift,
+// rebased onto the current full file at 8210968f (Main's applied guest-harness
+// repairs: launched-App-graph bootGuest, Python/MCP sameApp, 127.0.0.1 guest
+// loopback, chmod-before-probe, no-findings fixtures, new Impeccable transport
+// pin). This block preserves every existing helper, transport pin and test
+// above; it touches nothing. Real App-host qualification of the seven READY
+// deep-adaptation packages in the frozen qualification transport (hub
+// sourceCommit 6014c06882201c61a99219745b5a9c0a0fedb8c9):
+// exploratory-data-analysis, statistical-analysis, scientific-visualization,
+// markitdown and literature-review (H4 data five), canvas-design and
+// algorithmic-art (H5 visual two). The five existing guest tests above (wheel
+// transport + sympy/citation, webapp-testing 14 cases, MCP node-http,
+// Impeccable engine, Impeccable native capture loop) are intentionally NOT
+// duplicated here.
+//
+// Opt-in, fail-closed (a plain disabled run is reported as disabled, never a
+// pass - the existing real-guest policy in this file):
+//   * FLOE_SKILLHUB_DATAFIVE_GUEST_QUALIFICATION=1 + FLOE_SKILLHUB_SEVEN_TRANSPORT_ZIP
+//   * FLOE_SKILLHUB_CANVAS_GUEST_QUALIFICATION=1     + FLOE_SKILLHUB_SEVEN_TRANSPORT_ZIP
+//   * FLOE_SKILLHUB_ART_GUEST_QUALIFICATION=1        + FLOE_SKILLHUB_SEVEN_TRANSPORT_ZIP
+//
+// Single shared App graph: these tests reuse the corrected bootGuest(root:)
+// and appQualificationEnvironment(); they never call AppEnvironment.live()
+// and never re-bootstrap shared bindings. Everything executes through the
+// REAL production chain already used above: bootGuest -> makeRuntime ->
+// active parent -> requireQualifiedKernel (6.18.56) -> dispatchChildTool
+// (exec.shell / document.convert / document.pdf.convert / browser.*), the
+// production BackgroundJobService.submit for exec.localService static
+// serving, and the proven signed-guest apt provisioning pattern from
+// LocalLinuxStaticServiceRealVMTests. No host interpreter, no chat-time
+// pip/uv/npm, no fake guest, no model inference, no new tool or environment
+// subsystem, no p5.js parity claim, no riscv64 Chromium/Playwright.
+// ============================================================================
+// MARK: - Seven deep pinned transport + native fixtures (file scope, private)
+
+/// Guest-side (stdlib-only) artifact-truth audit for the self-contained
+/// canvas-design poster HTML, executed INSIDE the Linux guest: the embedded
+/// @font-face base64 payloads must hash-equal the coverage registry, the OFL
+/// notices and the declared-size export control must be present, and no
+/// resource-bearing field may reference an external URL (license URLs are
+/// inert disclosure text only).
+private let sevenDeepPosterTruthScript = """
+import base64, hashlib, json, re
+from pathlib import Path
+html = Path('poster-out/hero.html').read_text(encoding='utf-8')
+cov = json.loads(Path('poster-out/hero.coverage.json').read_text(encoding='utf-8'))
+expected = sorted(f['sha256'] for f in cov['fontsUsed'])
+faces = re.search(r'<style id="faces"[^>]*>(.*?)</style>', html, re.S)
+assert faces, 'id="faces" style block missing'
+payloads = re.findall(r'url\\(data:font/ttf;base64,([A-Za-z0-9+/=]+)\\)', faces.group(1))
+assert payloads, 'no embedded @font-face payloads found'
+actual = sorted(hashlib.sha256(base64.b64decode(p)).hexdigest() for p in payloads)
+assert actual == expected, 'embedded font hashes != coverage registry'
+assert '<details class="notices">' in html, 'license notices disclosure missing'
+assert 'id="export-png"' in html and 'Export PNG 3508×4961' in html, 'declared-size export control missing'
+assert 'artifact-notices' in html, 'artifact notices JSON missing'
+for bad in ('src="http', "src='http", 'url(http', '<script src', '<link '):
+    assert bad not in html, 'external resource field present: ' + bad
+print('ARTIFACT_TRUTH_OK fonts=%d' % len(actual))
+"""
+
+/// Pinned qualification-transport identity for all seven packages.
+private enum SevenDeepInputs {
+    static let transportZipSHA256 =
+        "acc468eb493d10f8916b3d272b295e8964538f238bae25f440a14dce8ba004df"
+    static let transportZipBytes = 1_558_241
+    static let sourceCommit = "6014c06882201c61a99219745b5a9c0a0fedb8c9"
+
+    /// Inner package pins from the transport SOURCE-MANIFEST (id -> sha256).
+    static let packageSHA256: [String: String] = [
+        "exploratory-data-analysis":
+            "fce043d8b3157a868e4018be9b8f0ebbe79f12d8a3a624d2567f69dd250a8768",
+        "statistical-analysis":
+            "523456f5cd40b3d80629b49b404acdf455462951eb3c37df177372c018d8ebf4",
+        "scientific-visualization":
+            "eade5f2230682cb9fb528f0d12b77fbe5892b1ab960f3cfce31515ffb5622e90",
+        "markitdown":
+            "bd95560d5590d92b105fb07136b775923c4f25245b9d1ae3556cfdbbaab1db1b",
+        "literature-review":
+            "230b64a8b411dc34820557c79ad98dcb5114a2c39db16340c47fd72554925054",
+        "canvas-design":
+            "0b52ea004b75d8ba7575c54307dac5b76122d2ad2be7d710a61ff4fc2f55153d",
+        "algorithmic-art":
+            "0db4c668d6adb238a3f38789af14066dc4c447e5957a17dd254bc3d3a3dc346a",
+    ]
+
+    /// Runbook-pinned signed guest apt identities for the H4 data five.
+    static let dataFiveAptPackages = [
+        "python3-numpy", "python3-pandas", "python3-scipy", "python3-statsmodels",
+        "python3-matplotlib", "python3-pil", "python3-pypdf", "python3-openpyxl",
+        "python3-pdfminer", "fonts-noto-cjk",
+    ]
+
+    static func requireTransportZip() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["FLOE_SKILLHUB_SEVEN_TRANSPORT_ZIP"] ?? ""
+        guard !path.isEmpty else {
+            throw FloeError.validationFailed(
+                "Seven-deep qualification requires FLOE_SKILLHUB_SEVEN_TRANSPORT_ZIP")
+        }
+        let url = URL(fileURLWithPath: path)
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true, values.fileSize == transportZipBytes else {
+            throw FloeError.validationFailed(
+                "Seven-deep transport zip size is \(String(describing: values.fileSize)), expected \(transportZipBytes)")
+        }
+        let digest = FloeDigest.sha256Hex(try Data(contentsOf: url))
+        guard digest == transportZipSHA256 else {
+            throw FloeError.validationFailed("Seven-deep transport zip sha256 mismatch: \(digest)")
+        }
+        return url
+    }
+}
+
+/// Synthetic first-party native acceptance fixtures for the markitdown
+/// package (provenance + digests:
+/// skill-hub-20261026/data-five/evidence/native-fixtures/README.md; embedded
+/// here so the test stays hermetic). sample.docx and sample_native.pdf carry
+/// extractable markers; scanned_stub.pdf has NO text operations and must be
+/// refused by document.pdf.convert with the OCR-required message.
+private enum MarkitdownNativeFixtures {
+    static let sampleDocxSHA256 =
+        "8bdeabe8d9fcd78be3b7c4cf5726a4699d7f571f64fa925e1a38fb70282c78d5"
+    static let sampleDocxBase64 =
+        "UEsDBBQAAAAIAGM8Wl0XmADX6wAAALIBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH1QyU4DMQy98xWRr2gmAweEUKc9sByBQ/kAK/HMRM2mOC3t3+NpoQdUONpvs99itQ9e7aiwS7GHm7YDRdEk6+LYw8f6pbkHxRWjRZ8i9XAghtXyarE+ZGIl4sg9TLXmB63ZTBSQ25QpCjKkErDKWEad0WxwJH3bdXfapFgp1qbOHiBmTzTg1lf1vJf96ZJCnkE9nphzWA+Ys3cGq+B6F+2vmOY7ohXlkcOTy3wtBNCXI2bo74Qf4ZuUU5wl9Y6lvmIQmv5MxWqbzDaItP3f58KlaRicobN+dsslGWKW1oNvz0hAF88f6GPlyy9QSwMEFAAAAAgAYzxaXT+t/vqvAAAALAEAAAsAAABfcmVscy8ucmVsc43POw7CMAwA0J1TRN5pWgaEUEMXhNQVlQNEiZtWNB/F4dPbk4EBKgZG/57tunnaid0x0uidgKoogaFTXo/OCLh0p/UOGCXptJy8QwEzEjSHVX3GSaY8Q8MYiGXEkYAhpbDnnNSAVlLhA7pc6X20MuUwGh6kukqDfFOWWx4/DVigrNUCYqsrYN0c8B/c9/2o8OjVzaJLP3YsOrIso8Ek4OGj5vqdLjILPJ/Dv548vABQSwMEFAAAAAgAYzxaXUXD3yA4AQAAtQEAABEAAAB3b3JkL2RvY3VtZW50LnhtbIWQvU7DMBSFd57C8gQDdcsAKGrSBVUsSEjAAxjnto2If2S7SbshJMSCgKFiYClDJwRs/Ent00BCmXgFnNDCgsRi+8r3fOfeU2/0eIwS0CaSwse1ShUjEEyGkWj7eG+3ubyOkbFUhDSWAnzcB4MbwUI99ULJuhyERY4gjJf6uGOt8ggxrAOcmopUINxfS2pOrSt1m6RSh0pLBsY4Ax6TlWp1lXAaCRw45L4M+yVbFZXa1uW1Y/sxoNRLaOzjTaDFbDVMgjr56SkPGzRjCUhQGyWAKGOg3OAMUCvq2a6Got+WKv2t/bWa6TfmKzEpZpkgQ7ly9gYSEGhxbanyP+bt+S6/PMnvH6YXk8/xVX49zsbn08kt2qL6IJSpQNnZ8H0w/Lg5zQeP2eglO356PTz6C0xmoRSPeeDBF1BLAQIUAxQAAAAIAGM8Wl0XmADX6wAAALIBAAATAAAAAAAAAAAAAACAAQAAAABbQ29udGVudF9UeXBlc10ueG1sUEsBAhQDFAAAAAgAYzxaXT+t/vqvAAAALAEAAAsAAAAAAAAAAAAAAIABHAEAAF9yZWxzLy5yZWxzUEsBAhQDFAAAAAgAYzxaXUXD3yA4AQAAtQEAABEAAAAAAAAAAAAAAIAB9AEAAHdvcmQvZG9jdW1lbnQueG1sUEsFBgAAAAADAAMAuQAAAFsDAAAAAA=="
+
+    static let sampleNativePDFSHA256 =
+        "fd1aa5a62931f917bd0aca91e5b096e9a65a403b8792edb752f3d46bcac3e553"
+    static let sampleNativePDFBase64 =
+        "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA5NSA+PgpzdHJlYW0KQlQKL0YxIDE4IFRmCjcyIDcyMCBUZAoyMCBUTAooRmxvZSBuYXRpdmUgYWNjZXB0YW5jZSBmaXh0dXJlIDcpIFRqCihleHRyYWN0YWJsZSB0ZXh0IHBhZ2UpICcKRVQKZW5kc3RyZWFtCmVuZG9iago1IDAgb2JqCjw8IC9UeXBlIC9Gb250IC9TdWJ0eXBlIC9UeXBlMSAvQmFzZUZvbnQgL0hlbHZldGljYSA+PgplbmRvYmoKeHJlZgowIDYKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAowMDAwMDAwMjQxIDAwMDAwIG4gCjAwMDAwMDAzODYgMDAwMDAgbiAKdHJhaWxlcgo8PCAvU2l6ZSA2IC9Sb290IDEgMCBSID4+CnN0YXJ0eHJlZgo0NTYKJSVFT0YK"
+
+    static let scannedStubPDFSHA256 =
+        "49567e9841ba9fa48a127403b4264d1eb7a45b7e14bed61cd5490e5002560ba2"
+    static let scannedStubPDFBase64 =
+        "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAzMSA+PgpzdHJlYW0KQlQKL0YxIDE4IFRmCjcyIDcyMCBUZAoyMCBUTApFVAplbmRzdHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNlRm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4gCjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDMyMiAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjM5MgolJUVPRgo="
+
+    static func stageAll(to root: URL, into manifest: inout [SkillHubStagedFile]) throws {
+        try stage(base64: sampleDocxBase64, sha256: sampleDocxSHA256,
+                  to: root, path: "native-fixtures/sample.docx", into: &manifest)
+        try stage(base64: sampleNativePDFBase64, sha256: sampleNativePDFSHA256,
+                  to: root, path: "native-fixtures/sample_native.pdf", into: &manifest)
+        try stage(base64: scannedStubPDFBase64, sha256: scannedStubPDFSHA256,
+                  to: root, path: "native-fixtures/scanned_stub.pdf", into: &manifest)
+    }
+
+    private static func stage(
+        base64: String, sha256 expected: String, to root: URL, path: String,
+        into manifest: inout [SkillHubStagedFile]
+    ) throws {
+        guard let bytes = Data(base64Encoded: base64) else {
+            throw FloeError.validationFailed("Embedded fixture is not valid base64: \(path)")
+        }
+        guard FloeDigest.sha256Hex(bytes) == expected else {
+            throw FloeError.validationFailed("Embedded fixture sha256 mismatch: \(path)")
+        }
+        try SkillHubStager.stageBytes(bytes, to: root, path: path, into: &manifest)
+    }
+}
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Seven deep browser/screenshot helpers
+
+    /// Projection of a `browser.screenshot` result: the on-device OCR regions
+    /// (real rendered glyphs vs tofu boxes), the viewport size and the
+    /// retained screenshot artifact descriptor.
+    fileprivate struct SevenDeepScreenshot: Decodable {
+        struct Region: Decodable { let reference: String; let text: String }
+        struct Page: Decodable {
+            let visualTextRegions: [Region]?
+            let viewportWidth: Double?
+            let viewportHeight: Double?
+            let screenshotArtifact: SkillHubBrowserResult.Page.Artifact?
+        }
+        let page: Page?
+    }
+
+    fileprivate func sevenDeepDecodeScreenshot(_ result: ToolResult) throws -> SevenDeepScreenshot {
+        guard let start = result.outputSummary.firstIndex(of: "{"),
+              let end = result.outputSummary.lastIndex(of: "}"), start < end,
+              let data = result.outputSummary[start...end].data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(SevenDeepScreenshot.self, from: data) else {
+            throw FloeError.validationFailed(
+                "Screenshot result is not decodable JSON: \(result.outputSummary.prefix(400))")
+        }
+        return decoded
+    }
+
+    /// Reads the pixel size from a PNG's IHDR (stdlib parse, host-side
+    /// evidence labeling only — never a guest-execution stand-in).
+    fileprivate func sevenDeepPNGSize(_ bytes: Data) throws -> (width: Int, height: Int) {
+        let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        guard bytes.starts(with: signature), bytes.count > 24 else {
+            throw FloeError.validationFailed("Artifact is not a PNG (\(bytes.count) bytes)")
+        }
+        let width = bytes[16..<20].reduce(0) { ($0 << 8) | Int($1) }
+        let height = bytes[20..<24].reduce(0) { ($0 << 8) | Int($1) }
+        guard width > 0, height > 0 else {
+            throw FloeError.validationFailed("PNG IHDR has non-positive dimensions")
+        }
+        return (width, height)
+    }
+
+
+    /// Fixed read-only acceptance instrumentation of this task's actual WebKit
+    /// canvas. Navigation and controls still use the public browser tool chain;
+    /// no JavaScript execution surface is added to the model or production app.
+    fileprivate func sevenDeepCanvasReadback(
+        app: AppEnvironment, conversationID: UUID, tabID: UUID, root: URL, tag: String
+    ) async throws -> String {
+        guard let session = app.browserCenter.session(for: conversationID),
+              let tab = session.tabs.first(where: { $0.id == tabID }) else {
+            throw FloeError.notFound("Owned art browser tab is unavailable")
+        }
+        let encoded: String = try await withCheckedThrowingContinuation { continuation in
+            tab.webView.evaluateJavaScript(
+                #"document.getElementById('art-canvas').toDataURL('image/png')"#
+            ) { value, error in
+                if let error { continuation.resume(throwing: error) }
+                else if let value = value as? String { continuation.resume(returning: value) }
+                else { continuation.resume(throwing: FloeError.validationFailed("Canvas readback is not a PNG data URL")) }
+            }
+        }
+        let prefix = "data:image/png;base64,"
+        guard encoded.hasPrefix(prefix),
+              let bytes = Data(base64Encoded: String(encoded.dropFirst(prefix.count))) else {
+            throw FloeError.validationFailed("Canvas readback is not valid PNG bytes")
+        }
+        let size = try sevenDeepPNGSize(bytes)
+        try #require(size.width == 1200 && size.height == 1200,
+                     "Canvas pixel dimensions differ from the declared 1200x1200")
+        let file = root.appendingPathComponent("art-out/observed-\(tag).png")
+        try bytes.write(to: file, options: .atomic)
+        return FloeDigest.sha256Hex(bytes)
+    }
+
+    // MARK: - Seven deep shared helpers
+
+    /// Reads one guest-written JSON output back from the mounted workspace.
+    fileprivate func sevenDeepJSON(_ root: URL, _ relative: String) throws -> [String: Any] {
+        let data = try Data(contentsOf: root.appendingPathComponent(relative))
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw FloeError.validationFailed("Seven-deep output is not a JSON object: \(relative)")
+        }
+        return object
+    }
+
+    /// Every shipped verifier records `{checks: [{name,status,...}]}`; a
+    /// required-capability run must have every check `pass` — a missing or
+    /// skipped layer is a failure, never a silent substitute.
+    fileprivate func sevenDeepRequireAllChecksPass(_ report: [String: Any], label: String) throws -> Int {
+        guard let ok = report["ok"] as? Bool, ok else {
+            throw FloeError.validationFailed("\(label) verify report ok != true: \(report)")
+        }
+        guard let checks = report["checks"] as? [[String: Any]] else {
+            throw FloeError.validationFailed("\(label) verify report has no checks array")
+        }
+        guard !checks.isEmpty else {
+            throw FloeError.validationFailed("\(label) verify report has no executed checks")
+        }
+        for check in checks {
+            guard (check["status"] as? String) == "pass",
+                  let name = check["name"] as? String else {
+                throw FloeError.validationFailed("\(label) check not pass: \(check)")
+            }
+            _ = name
+        }
+        return checks.count
+    }
+
+    /// Stages the transport zip and proves byte-exact guest unpack by
+    /// re-hashing the transport plus every pinned inner package INSIDE the
+    /// guest. Returns nothing; throws on any digest mismatch.
+    fileprivate func sevenDeepStageAndRehash(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext
+    ) async throws -> String {
+        var command = """
+        set -e
+        PYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/seven-deep.zip transport/unpacked
+        sha256sum transport/seven-deep.zip
+        """
+        for id in SevenDeepInputs.packageSHA256.keys.sorted() {
+            command += "\nsha256sum transport/unpacked/packages/\(id)/1.0.0/\(id).zip"
+        }
+        let result = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context,
+            tag: "seven-stage", command: command, timeout: 300)
+        try #require(result.status == .ok, "Seven-deep guest staging failed: \(result.outputSummary)")
+        try #require(result.outputSummary.contains(SevenDeepInputs.transportZipSHA256),
+                     "Guest transport re-hash mismatch: \(result.outputSummary)")
+        for (id, pin) in SevenDeepInputs.packageSHA256 {
+            try #require(result.outputSummary.contains(pin),
+                         "Guest re-hash missing \(id) digest \(pin): \(result.outputSummary)")
+        }
+        return result.outputSummary
+    }
+
+    /// Signed-guest apt provisioning exactly as proven by
+    /// LocalLinuxStaticServiceRealVMTests: policy probe, one conditional
+    /// index update, simulation, install at the proven 600 s guest budget,
+    /// then an independent dpkg/apt consistency verification. A missing
+    /// candidate or a broken dependency state stays a failure with the
+    /// original apt output retained — never a stdlib-only green substitute.
+    fileprivate func sevenDeepProvisionApt(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        jobs: BackgroundJobService, runID: UUID, environmentID: String,
+        root: URL, jobIDs: inout [UUID]
+    ) async throws -> String {
+        let packages = SevenDeepInputs.dataFiveAptPackages
+        let joined = packages.joined(separator: " ")
+        let pyList = packages.map { "'\($0)'" }.joined(separator: ", ")
+        let probe = """
+        set -e
+        python3 -u - <<'PY'
+        import subprocess
+        missing=[]
+        for package in (\(pyList)):
+            result=subprocess.run(['apt-cache','policy',package],text=True,capture_output=True)
+            print('APT_POLICY',package,'exit',result.returncode,flush=True)
+            print(result.stdout,flush=True)
+            if result.stderr: print(result.stderr,flush=True)
+            assert result.returncode==0,'apt-cache failed'
+            candidate=next((line.split(':',1)[1].strip() for line in result.stdout.splitlines() if line.strip().startswith('Candidate:')),None)
+            if not candidate or candidate=='(none)': missing.append(package)
+            else: print('APT_CANDIDATE',package,candidate,flush=True)
+        print('APT_NEEDS_INDEX_UPDATE' if missing else 'APT_CANDIDATES_READY',*missing,flush=True)
+        PY
+        """
+        let policy = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context,
+            tag: "apt-policy", command: probe, timeout: 180)
+        try #require(policy.status == .ok, "apt policy probe failed: \(policy.outputSummary)")
+        var output = policy.outputSummary
+        if policy.outputSummary.contains("APT_NEEDS_INDEX_UPDATE") {
+            let updateID = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "seven-apt-update",
+                command: "apt-get -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update",
+                timeout: 600)
+            jobIDs.append(updateID)
+            let update = try await skillHubWaitTerminal(jobs, id: updateID, seconds: 660)
+            try #require(update.state == .completed,
+                         "apt index update failed: \(update.resultSummary ?? update.lastError ?? update.state.rawValue)")
+            output += "\n" + (update.resultSummary ?? "")
+            let rechecked = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context,
+                tag: "apt-policy-2", command: probe, timeout: 180)
+            try #require(rechecked.status == .ok
+                            && rechecked.outputSummary.contains("APT_CANDIDATES_READY"),
+                         "Signed guest repository has no candidates after update: \(rechecked.outputSummary)")
+            output += "\n" + rechecked.outputSummary
+        }
+        let simulate = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context, tag: "apt-simulate",
+            command: "apt-get -s --no-install-recommends install \(joined)", timeout: 180)
+        try #require(simulate.status == .ok, "apt simulate failed: \(simulate.outputSummary)")
+        output += "\n" + simulate.outputSummary
+        let installID = try await skillHubSubmitShell(
+            jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+            name: "seven-apt-install",
+            command: "env DEBIAN_FRONTEND=noninteractive apt-get -y --no-install-recommends -o APT::Get::AllowUnauthenticated=false -o Acquire::AllowInsecureRepositories=false -o Acquire::AllowDowngradeToInsecureRepositories=false -o Acquire::Retries=0 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 install \(joined)",
+            timeout: 600)
+        jobIDs.append(installID)
+        let install = try await skillHubWaitTerminal(jobs, id: installID, seconds: 660)
+        try #require(install.state == .completed,
+                     "apt install failed: \(install.resultSummary ?? install.lastError ?? install.state.rawValue)")
+        output += "\n" + (install.resultSummary ?? "")
+        let verifyList = packages.map { "'\($0)'" }.joined(separator: ", ")
+        let verify = """
+        set -e
+        python3 -u - <<'PY'
+        import subprocess
+        audit=subprocess.run(['dpkg','--audit'],text=True,capture_output=True)
+        print('DPKG_AUDIT_EXIT',audit.returncode,flush=True)
+        if audit.stdout: print(audit.stdout,flush=True)
+        if audit.stderr: print(audit.stderr,flush=True)
+        assert audit.returncode==0 and not audit.stdout.strip(),'dpkg reports incomplete package configuration'
+        check=subprocess.run(['apt-get','check'],text=True,capture_output=True)
+        print('APT_DEPENDENCY_CHECK_EXIT',check.returncode,flush=True)
+        print(check.stdout,flush=True)
+        if check.stderr: print(check.stderr,flush=True)
+        assert check.returncode==0,'apt dependency consistency failed'
+        for package in (\(verifyList)):
+            result=subprocess.run(['dpkg-query','-W','-f=${db:Status-Status}|${Version}|${Architecture}',package],text=True,capture_output=True)
+            print('CONFIGURED_PACKAGE',package,result.returncode,result.stdout.strip(),flush=True)
+            if result.stderr: print(result.stderr,flush=True)
+            fields=result.stdout.strip().split('|')
+            assert result.returncode==0 and len(fields)==3 and fields[0]=='installed' and fields[1] and fields[2] in ('riscv64','all'),package
+        print('APT_REAL_CONFIGURATION_VERIFIED',flush=True)
+        PY
+        """
+        let verified = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context,
+            tag: "apt-verify", command: verify, timeout: 180)
+        try #require(verified.status == .ok
+                        && verified.outputSummary.contains("APT_REAL_CONFIGURATION_VERIFIED"),
+                     "apt install verification failed: \(verified.outputSummary)")
+        output += "\n" + verified.outputSummary
+        return output
+    }
+}
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test 4a: H4 data five real guest + native qualification
+
+    /// Real TinyEMU guest qualification of the five H4 data packages from the
+    /// frozen seven-deep transport: signed-guest apt provisioning of the
+    /// runbook-pinned layer, per-package verify goldens (`--require-optional`
+    /// / `--require-layer` / `--require-cjk` — a missing layer is a failure,
+    /// never a stdlib-only green substitute), real fixture workloads with
+    /// cross-engine consistency, spec/input sha256 reproducibility records and
+    /// honest encrypted-PDF refusal routed to the native unlock surface; then
+    /// the markitdown native acceptance (document.convert DOCX markers,
+    /// document.pdf.convert extractable-PDF marker, scanned-stub OCR-required
+    /// refusal with no invented text and no output file) and the
+    /// literature-review native PDF export (document.convert DOCX +
+    /// document.pdf.convert PDF, source preserved). All seven inner package
+    /// digests are re-hashed inside the guest before any execution.
+    @Test(
+        "Skill Hub seven-deep: data five (EDA, statistical, scientific-visualization, markitdown, literature-review) real guest goldens/workloads + markitdown native conversion/OCR refusal + literature native PDF export",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_DATAFIVE_GUEST_QUALIFICATION"] == "1")
+    )
+    func skillHubDataFiveGuestAndNativeQualification() async throws {
+        let zip = try SevenDeepInputs.requireTransportZip()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "skill-hub-seven-deep-datafive-not-model-not-ui",
+            "transportZip": zip.path,
+            "sourceCommit": SevenDeepInputs.sourceCommit,
+        ]
+        var manifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/seven-deep.zip", into: &manifest)
+        try MarkitdownNativeFixtures.stageAll(to: root, into: &manifest)
+        try SkillHubStager.writeManifest(manifest, at: root)
+
+        let ceiling: Set<String> = ["exec.shell", "document.convert", "document.pdf.convert"]
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var recordsCreated = false
+        let app = try await appQualificationEnvironment()
+        let runID = UUID()
+        let conversationUUID = UUID()
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationUUID, delegateCallID: "skillhub-datafive")
+        func finish() async {
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationUUID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationUUID, runID: runID,
+                title: "Seven-deep data five qualification",
+                goal: "H4 five packages real guest verify and workloads plus native conversion; no model")
+            recordsCreated = true
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationUUID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task {
+                try await runtime.start(goal: "Qualify the seven deep data five packages in the real guest")
+            }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before seven-deep child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationUUID)
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: childContext)
+
+            // Byte-exact staging proof: guest re-hash of transport + all pins.
+            evidence["guestStage"] = String(try await sevenDeepStageAndRehash(
+                runtime: runtime, identity: fixedIdentity, context: childContext).prefix(1_000))
+
+            // Signed-guest apt provisioning of the pinned runbook identities.
+            let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+            evidence["aptProvision"] = String(try await sevenDeepProvisionApt(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                jobs: jobs, runID: runID, environmentID: environmentID,
+                root: root, jobIDs: &jobIDs).prefix(1_500))
+            print("FLOE_SEVEN_DEEP_APT packages=\(SevenDeepInputs.dataFiveAptPackages.count) state=verified")
+
+            let base = "transport/unpacked"
+
+            // ---- 1. exploratory-data-analysis: required optional numpy+pandas ----
+            let edaVerify = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "eda-verify",
+                command: "cd \(base)/exploratory-data-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/eda_verify.py --require-optional --output verify-eda.json; echo EDA_VERIFY_RC=$?",
+                timeout: 300)
+            try #require(edaVerify.status == .ok && edaVerify.outputSummary.contains("EDA_VERIFY_RC=0"),
+                         "eda_verify failed: \(edaVerify.outputSummary)")
+            let edaReport = try sevenDeepJSON(root, "\(base)/exploratory-data-analysis/verify-eda.json")
+            let edaChecks = try sevenDeepRequireAllChecksPass(edaReport, label: "eda_verify")
+            let edaPins = try #require(edaReport["declared_optional_pins"] as? [String: String],
+                                       "eda declared_optional_pins missing")
+            try #require(edaPins["numpy"] == "2.2.4" && edaPins["pandas"] == "2.2.3",
+                         "eda pins mismatch: \(edaPins)")
+            let edaCheckList = try #require(edaReport["checks"] as? [[String: Any]])
+            let numpyLayer = try #require(edaCheckList.first { $0["name"] as? String == "numpy_layer_versions" },
+                                          "numpy_layer_versions check missing")
+            let numpyDetail = try #require(numpyLayer["detail"] as? [String: Any])
+            try #require(numpyDetail["pin_matches_base_version"] as? Bool == true,
+                         "numpy pin does not match the declared base version: \(numpyDetail)")
+            let edaWorkload = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "eda-workload",
+                command: "cd \(base)/exploratory-data-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/eda_analyzer.py assets/fixtures/profile_fixture.csv --root . --missing-token NA --output eda.json && PYTHONDONTWRITEBYTECODE=1 python3 scripts/pandas_profile.py assets/fixtures/profile_fixture.csv --root . --missing-token NA --output pandas.json && echo EDA_WORKLOAD_OK",
+                timeout: 300)
+            try #require(edaWorkload.status == .ok && edaWorkload.outputSummary.contains("EDA_WORKLOAD_OK"),
+                         "eda real workload failed: \(edaWorkload.outputSummary)")
+            let pandasReport = try sevenDeepJSON(root, "\(base)/exploratory-data-analysis/pandas.json")
+            let crossEngine = try #require(pandasReport["cross_engine_check"] as? [String: Any],
+                                           "pandas cross_engine_check missing")
+            try #require(crossEngine["consistent"] as? Bool == true,
+                         "pandas/stdlib cross-engine profile inconsistency: \(crossEngine)")
+            evidence["eda"] = "checks=\(edaChecks) pins ok cross_engine consistent"
+            print("FLOE_SEVEN_EDA checks=\(edaChecks) numpy=2.2.4 pandas=2.2.3 cross_engine=consistent")
+
+            // ---- 2. statistical-analysis: golden battery + reproducibility ----
+            let statsVerify = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "stats-verify",
+                command: "cd \(base)/statistical-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/stats_verify.py --require-layer --output verify-stats.json; echo STATS_VERIFY_RC=$?",
+                timeout: 300)
+            try #require(statsVerify.status == .ok && statsVerify.outputSummary.contains("STATS_VERIFY_RC=0"),
+                         "stats_verify failed: \(statsVerify.outputSummary)")
+            let statsReport = try sevenDeepJSON(root, "\(base)/statistical-analysis/verify-stats.json")
+            let statsChecks = try sevenDeepRequireAllChecksPass(statsReport, label: "stats_verify")
+            try #require(statsChecks == 9, "stats_verify must run exactly 9 checks, got \(statsChecks)")
+            let specData = try Data(contentsOf: root.appendingPathComponent(
+                "\(base)/statistical-analysis/assets/fixtures/groups_spec.json"))
+            let inputData = try Data(contentsOf: root.appendingPathComponent(
+                "\(base)/statistical-analysis/assets/fixtures/groups_fixture.csv"))
+            let specSHA = FloeDigest.sha256Hex(specData)
+            let inputSHA = FloeDigest.sha256Hex(inputData)
+            let statsRun = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "stats-run",
+                command: "cd \(base)/statistical-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/stats_run.py assets/fixtures/groups_fixture.csv --spec assets/fixtures/groups_spec.json --output stats-results.json --report stats-report.md; echo STATS_RUN_RC=$?",
+                timeout: 300)
+            try #require(statsRun.status == .ok && statsRun.outputSummary.contains("STATS_RUN_RC=0"),
+                         "stats_run failed: \(statsRun.outputSummary)")
+            let statsResults = try sevenDeepJSON(root, "\(base)/statistical-analysis/stats-results.json")
+            let repro = try #require(statsResults["reproducibility"] as? [String: Any],
+                                     "stats reproducibility record missing")
+            try #require(repro["spec_sha256"] as? String == specSHA,
+                         "stats spec sha256 mismatch: \(repro)")
+            try #require(repro["input_sha256"] as? String == inputSHA,
+                         "stats input sha256 mismatch: \(repro)")
+            let engines = try #require(repro["engine_versions"] as? [String: Any],
+                                       "stats engine_versions missing")
+            try #require(!(engines["scipy"] is NSNull) && (engines["scipy"] as? String) != nil,
+                         "scipy engine version not recorded: \(engines)")
+            try #require(!(engines["statsmodels"] is NSNull) && (engines["statsmodels"] as? String) != nil,
+                         "statsmodels engine version not recorded: \(engines)")
+            let statsMarkdown = try Data(contentsOf: root.appendingPathComponent(
+                "\(base)/statistical-analysis/stats-report.md"))
+            try #require(statsMarkdown.count > 100, "stats report.md missing or empty")
+            evidence["stats"] = "checks=9 spec_sha+input_sha bound scipy+statsmodels recorded"
+            print("FLOE_SEVEN_STATS checks=9 reproducibility=sha-bound engines=scipy,statsmodels")
+
+            // ---- 3. scientific-visualization: layer+CJK goldens + real export ----
+            let vizVerify = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "viz-verify",
+                command: "cd \(base)/scientific-visualization && PYTHONDONTWRITEBYTECODE=1 python3 scripts/viz_verify.py --require-layer --require-cjk --output verify-viz.json; echo VIZ_VERIFY_RC=$?",
+                timeout: 300)
+            try #require(vizVerify.status == .ok && vizVerify.outputSummary.contains("VIZ_VERIFY_RC=0"),
+                         "viz_verify failed: \(vizVerify.outputSummary)")
+            let vizReport = try sevenDeepJSON(root, "\(base)/scientific-visualization/verify-viz.json")
+            _ = try sevenDeepRequireAllChecksPass(vizReport, label: "viz_verify")
+            let vizChecks = try #require(vizReport["checks"] as? [[String: Any]])
+            let cjkProbe = try #require(vizChecks.first { $0["name"] as? String == "cjk_font_probe" },
+                                       "cjk_font_probe check missing")
+            let cjkDetail = try #require(cjkProbe["detail"] as? [String: Any])
+            let cjkFonts = try #require(cjkDetail["cjk_fonts_discovered"] as? [String],
+                                        "cjk_fonts_discovered missing: \(cjkDetail)")
+            try #require(!cjkFonts.isEmpty,
+                         "no CJK font discovered even though fonts-noto-cjk is provisioned")
+            let vizExport = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "viz-export",
+                command: "cd \(base)/scientific-visualization && PYTHONDONTWRITEBYTECODE=1 python3 scripts/figure_export.py --demo outputs/export-smoke --formats pdf,png,svg --dpi 300 --manifest && PYTHONDONTWRITEBYTECODE=1 python3 scripts/image_metadata.py outputs/export-smoke.png --format png --min-dpi 300 && PYTHONDONTWRITEBYTECODE=1 python3 scripts/palette_audit.py --palette okabe_ito_on_white --background FFFFFF --role graphical && echo VIZ_EXPORT_OK",
+                timeout: 300)
+            try #require(vizExport.status == .ok && vizExport.outputSummary.contains("VIZ_EXPORT_OK"),
+                         "viz real export workload failed: \(vizExport.outputSummary)")
+            for artifact in ["outputs/export-smoke.png", "outputs/export-smoke.svg",
+                             "outputs/export-smoke.pdf"] {
+                let url = root.appendingPathComponent("\(base)/scientific-visualization/\(artifact)")
+                try #require(FileManager.default.fileExists(atPath: url.path),
+                             "viz export artifact missing: \(artifact)")
+            }
+            evidence["viz"] = "layer+cjk pass cjk_fonts=\(cjkFonts.count) export png/svg/pdf dpi300"
+            print("FLOE_SEVEN_VIZ cjk_fonts=\(cjkFonts.first ?? "?") exports=png,svg,pdf dpi=300")
+
+            // ---- 4. markitdown: guest layer goldens + xlsx/pdf + honest refusal ----
+            let mdVerify = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "md-verify",
+                command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_verify.py --require-layer --output verify-md.json; echo MD_VERIFY_RC=$?",
+                timeout: 300)
+            try #require(mdVerify.status == .ok && mdVerify.outputSummary.contains("MD_VERIFY_RC=0"),
+                         "md_verify failed: \(mdVerify.outputSummary)")
+            let mdReport = try sevenDeepJSON(root, "\(base)/markitdown/verify-md.json")
+            _ = try sevenDeepRequireAllChecksPass(mdReport, label: "md_verify")
+            for fixture in ["sample.xlsx", "sample.pdf"] {
+                let stem = fixture.replacingOccurrences(of: ".", with: "-")
+                let convert = try await skillHubShell(
+                    runtime: runtime, identity: fixedIdentity, context: childContext,
+                    tag: "md-convert-\(stem)",
+                    command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_convert.py assets/fixtures/\(fixture) --root . --output out-\(stem).md --receipt receipt-\(stem).json; echo MD_CONVERT_RC=$?",
+                    timeout: 300)
+                try #require(convert.status == .ok
+                                && convert.outputSummary.contains("MD_CONVERT_RC=0"),
+                             "md_convert \(fixture) failed: \(convert.outputSummary)")
+                let receipt = try sevenDeepJSON(root, "\(base)/markitdown/receipt-\(stem).json")
+                let inner = try #require(receipt["receipt"] as? [String: Any],
+                                         "md receipt missing for \(fixture)")
+                try #require(inner["status"] as? String == "converted",
+                             "md receipt status != converted for \(fixture): \(inner)")
+                try #require(inner["source_preserved"] as? Bool == true,
+                             "md source not preserved for \(fixture): \(inner)")
+            }
+            // Protected PDFs are refused by the guest and routed to the native
+            // unlock surface — never bypassed, never empty/invented text.
+            let mdEncrypted = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "md-encrypted",
+                command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_convert.py assets/fixtures/encrypted.pdf --root . --output out-encrypted.md --receipt receipt-encrypted.json; echo MD_ENCRYPT_RC=$?",
+                timeout: 300)
+            try #require(mdEncrypted.status == .ok
+                            && mdEncrypted.outputSummary.contains("MD_ENCRYPT_RC=1"),
+                         "encrypted.pdf must fail closed in the guest: \(mdEncrypted.outputSummary)")
+            let encReceipt = try sevenDeepJSON(root, "\(base)/markitdown/receipt-encrypted.json")
+            let encInner = try #require(encReceipt["receipt"] as? [String: Any])
+            let encError = try #require(encInner["error"] as? String)
+            try #require(encError.contains("encrypted/protected") && encError.contains("document.pdf.unlock"),
+                         "encrypted refusal message mismatch: \(encError)")
+            evidence["markitdownGuest"] = "verify pass xlsx+pdf converted source_preserved encrypted refused"
+            print("FLOE_SEVEN_MARKITDOWN_GUEST xlsx=ok pdf=ok encrypted=refused->native-unlock")
+
+            // ---- 5. literature-review: stdlib goldens + offline citation taxonomy ----
+            let litVerify = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-verify",
+                command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/lit_verify.py --output verify-lit.json; echo LIT_VERIFY_RC=$?",
+                timeout: 300)
+            try #require(litVerify.status == .ok && litVerify.outputSummary.contains("LIT_VERIFY_RC=0"),
+                         "lit_verify failed: \(litVerify.outputSummary)")
+            let litReport = try sevenDeepJSON(root, "\(base)/literature-review/verify-lit.json")
+            _ = try sevenDeepRequireAllChecksPass(litReport, label: "lit_verify")
+            // Offline taxonomy against the bundled synthetic records: 5 DOIs
+            // registered, the record-less 0005 honestly inconclusive (exit 1).
+            let litOffline = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-offline",
+                command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_citations.py assets/fixtures/review_fixture.md --offline-dir assets/fixtures/crossref -o lit-offline-report.json; echo LIT_OFFLINE_RC=$?",
+                timeout: 300)
+            try #require(litOffline.status == .ok
+                            && litOffline.outputSummary.contains("LIT_OFFLINE_RC=1"),
+                         "offline citation run must exit 1 (one unresolved synthetic DOI): \(litOffline.outputSummary)")
+            let litCitation = try sevenDeepJSON(root, "\(base)/literature-review/lit-offline-report.json")
+            try #require(litCitation["mode"] as? String == "offline", "mode != offline")
+            let verified = try #require(litCitation["verified"] as? [String])
+            try #require(verified.contains("10.99999/floe-synthetic-0001")
+                            && verified.contains("10.99999/floe-synthetic-0004")
+                            && verified.contains("10.99999/old(1998)style"),
+                         "offline verified taxonomy mismatch: \(verified)")
+            let failed = try #require(litCitation["failed"] as? [String])
+            try #require(failed.contains("10.99999/floe-synthetic-0005"),
+                         "record-less DOI 0005 must stay unresolved: \(failed)")
+            let litMetadata = try #require(litCitation["metadata"] as? [String: Any])
+            let meta1 = try #require(litMetadata["10.99999/floe-synthetic-0001"] as? [String: Any])
+            try #require(meta1["status"] as? String == "registered"
+                            && meta1["mode"] as? String == "offline"
+                            && meta1["metadata_status"] as? String == "retrieved",
+                         "synthetic record taxonomy mismatch: \(meta1)")
+            // The real online-acceptance DOI has no offline record: it must be
+            // reported unavailable with no invented title (2026-10-26 probe
+            // truth: Handle registered, Crossref 404).
+            let litTruth = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-truth",
+                command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_citations.py assets/fixtures/online_acceptance.md --offline-dir assets/fixtures/crossref -o lit-truth-report.json; echo LIT_TRUTH_RC=$?",
+                timeout: 300)
+            try #require(litTruth.status == .ok && litTruth.outputSummary.contains("LIT_TRUTH_RC=1"),
+                         "truth citation run must exit 1: \(litTruth.outputSummary)")
+            let truthReport = try sevenDeepJSON(root, "\(base)/literature-review/lit-truth-report.json")
+            try #require((truthReport["verified"] as? [String])?.isEmpty == true,
+                         "unavailable DOI must never verify: \(truthReport)")
+            let truthErrors = try #require(truthReport["errors"] as? [String: Any])
+            let truthMeta = try #require(truthErrors["10.48550/arXiv.2609.00065"] as? [String: Any])
+            try #require(truthMeta["status"] as? String == "inconclusive"
+                            && truthMeta["offline_record"] as? String == "missing",
+                         "truth DOI classification mismatch: \(truthMeta)")
+            try #require(truthMeta["title"] == nil, "unavailable DOI must never carry an invented title")
+            evidence["literature"] = "verify pass offline 5 registered 0005 inconclusive truth unavailable"
+            print("FLOE_SEVEN_LITERATURE offline_taxonomy=5+1 truth=unavailable-no-title")
+
+            // ---- 6. markitdown native acceptance (synthetic fixtures) ----
+            let native1 = try toolCall(id: "native-docx", toolName: "document.convert",
+                arguments: try Self.json([
+                    "inputPath": "native-fixtures/sample.docx",
+                    "outputPath": "native-fixtures/sample-docx.md",
+                    "format": "markdown",
+                ]))
+            let native1Result = await runtime.dispatchChildTool(
+                native1, identity: fixedIdentity, childContext: childContext)
+            try #require(native1Result.status == .ok,
+                         "native document.convert sample.docx failed: \(native1Result.outputSummary)")
+            let docxMarkdown = try String(contentsOf: root.appendingPathComponent(
+                "native-fixtures/sample-docx.md"), encoding: .utf8)
+            try #require(docxMarkdown.contains("Floe native acceptance fixture")
+                            && docxMarkdown.contains("Document conversion sample seven (7).")
+                            && docxMarkdown.contains("中文段落：格式转 Markdown 原生验收夹具。"),
+                         "native DOCX markdown markers missing: \(docxMarkdown.prefix(300))")
+            try #require(FloeDigest.sha256Hex(try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/sample.docx"))) == MarkitdownNativeFixtures.sampleDocxSHA256,
+                         "sample.docx source changed during conversion")
+
+            let native2 = try toolCall(id: "native-pdf", toolName: "document.pdf.convert",
+                arguments: try Self.json([
+                    "inputPath": "native-fixtures/sample_native.pdf",
+                    "outputPath": "native-fixtures/sample-native.md",
+                    "format": "markdown",
+                ]))
+            let native2Result = await runtime.dispatchChildTool(
+                native2, identity: fixedIdentity, childContext: childContext)
+            try #require(native2Result.status == .ok,
+                         "native document.pdf.convert sample_native.pdf failed: \(native2Result.outputSummary)")
+            let pdfMarkdown = try String(contentsOf: root.appendingPathComponent(
+                "native-fixtures/sample-native.md"), encoding: .utf8)
+            try #require(pdfMarkdown.contains("Floe native acceptance fixture 7"),
+                         "native PDF markdown marker missing: \(pdfMarkdown.prefix(300))")
+            try #require(FloeDigest.sha256Hex(try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/sample_native.pdf"))) == MarkitdownNativeFixtures.sampleNativePDFSHA256,
+                         "sample_native.pdf source changed during conversion")
+
+            // Scanned stub: explicit OCR-required failure, never empty/invented
+            // text, and no output file is written.
+            let native3 = try toolCall(id: "native-scan", toolName: "document.pdf.convert",
+                arguments: try Self.json([
+                    "inputPath": "native-fixtures/scanned_stub.pdf",
+                    "outputPath": "native-fixtures/scanned-stub.md",
+                    "format": "markdown",
+                ]))
+            let native3Result = await runtime.dispatchChildTool(
+                native3, identity: fixedIdentity, childContext: childContext)
+            try #require(native3Result.status != .ok,
+                         "scanned_stub.pdf must fail with the OCR-required refusal: \(native3Result.outputSummary)")
+            try #require(native3Result.outputSummary.lowercased().contains("ocr"),
+                         "scanned refusal must name the OCR workflow: \(native3Result.outputSummary)")
+            try #require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(
+                "native-fixtures/scanned-stub.md").path),
+                         "scanned conversion must not write an output file")
+            try #require(FloeDigest.sha256Hex(try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/scanned_stub.pdf"))) == MarkitdownNativeFixtures.scannedStubPDFSHA256,
+                         "scanned_stub.pdf source changed")
+            evidence["markitdownNative"] = "docx markers pdf marker scanned OCR-refused sources unchanged"
+            print("FLOE_SEVEN_MARKITDOWN_NATIVE docx=ok pdf=ok scanned=ocr-refused")
+
+            // ---- 7. literature-review native PDF export (truthful delivery) ----
+            try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-review-copy",
+                command: "cp \(base)/literature-review/assets/fixtures/review_fixture.md native-fixtures/review.md && echo LIT_REVIEW_COPIED",
+                timeout: 60)
+            let reviewSHA = FloeDigest.sha256Hex(try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/review.md")))
+            let litDocx = try toolCall(id: "lit-docx", toolName: "document.convert",
+                arguments: try Self.json([
+                    "inputPath": "native-fixtures/review.md",
+                    "outputPath": "native-fixtures/review.docx",
+                    "format": "docx",
+                ]))
+            let litDocxResult = await runtime.dispatchChildTool(
+                litDocx, identity: fixedIdentity, childContext: childContext)
+            try #require(litDocxResult.status == .ok,
+                         "literature document.convert review.md failed: \(litDocxResult.outputSummary)")
+            try #require(FileManager.default.fileExists(atPath: root.appendingPathComponent(
+                "native-fixtures/review.docx").path), "review.docx missing")
+            let litPdf = try toolCall(id: "lit-pdf", toolName: "document.pdf.convert",
+                arguments: try Self.json([
+                    "inputPath": "native-fixtures/review.md",
+                    "outputPath": "native-fixtures/review.pdf",
+                    "format": "pdf",
+                ]))
+            let litPdfResult = await runtime.dispatchChildTool(
+                litPdf, identity: fixedIdentity, childContext: childContext)
+            try #require(litPdfResult.status == .ok,
+                         "literature document.pdf.convert review.md failed: \(litPdfResult.outputSummary)")
+            let reviewPDF = try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/review.pdf"))
+            try #require(reviewPDF.count > 500 && reviewPDF.starts(with: [0x25, 0x50, 0x44, 0x46]),
+                         "review.pdf is not a real PDF: \(reviewPDF.count) bytes")
+            try #require(FloeDigest.sha256Hex(try Data(contentsOf: root.appendingPathComponent(
+                "native-fixtures/review.md"))) == reviewSHA, "review.md source changed during export")
+            evidence["literatureNative"] = "docx+pdf exported review.pdf=\(reviewPDF.count)B source preserved"
+            print("FLOE_SEVEN_LITERATURE_NATIVE review.pdf=\(reviewPDF.count)B source=preserved")
+
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "seven-deep-datafive")
+            Issue.record("Seven-deep data five qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test 4b: canvas-design real guest + native browser qualification
+
+    /// Real TinyEMU guest qualification of the canvas-design package: the
+    /// full poster pipeline from the visual-two runbook — py_compile, the
+    /// check-only report (canvasPx + metricBasis/artifactPolicy/notices), the
+    /// hero poster (3508x4961, 5 licensed fonts with sha256 coverage), the CJK
+    /// poster (exactly 22 fallback chars through the declared device stack),
+    /// the `--require-embedded` useful-failure (exit 4), guest determinism
+    /// (byte-identical svg/html), the closure-corrected 2x2 PNG -> PDF golden
+    /// (verified pixels [2,2], pagePt [0.48,0.48], MediaBox readback) plus the
+    /// overwrite guard (exit 3), and the self-containment artifact truth
+    /// (embedded @font-face payloads hash-equal the coverage registry, OFL
+    /// notices present, zero external resource-bearing fields). The native
+    /// half serves the real guest output through exec.localService (static)
+    /// and proves, through the App's real browser tools: the declared-size
+    /// chrome and Export PNG button, an on-device OCR screenshot whose text
+    /// contains the actual CJK glyphs (tofu boxes cannot OCR to 静默几何 /
+    /// 结构即语言), and the truthful full-size export outcome (either the real
+    /// 1080x1350 in-page raster or the engine's honest FAILED line — a
+    /// viewport screenshot is recorded as preview-only evidence and is never
+    /// claimed as the declared raster).
+    @Test(
+        "Skill Hub seven-deep: canvas-design poster pipeline in the real guest + native WebKit CJK OCR render and truthful full-size export",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_CANVAS_GUEST_QUALIFICATION"] == "1")
+    )
+    func skillHubCanvasDesignGuestAndNativeQualification() async throws {
+        let zip = try SevenDeepInputs.requireTransportZip()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "skill-hub-seven-deep-canvas-not-model-not-ui",
+            "transportZip": zip.path,
+            "sourceCommit": SevenDeepInputs.sourceCommit,
+        ]
+        var manifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/seven-deep.zip", into: &manifest)
+        try SkillHubStager.writeManifest(manifest, at: root)
+
+        let ceiling: Set<String> = [
+            "exec.shell", "browser.tab", "browser.tabs", "browser.navigate", "browser.observe",
+            "browser.wait", "browser.click", "browser.screenshot", "browser.events",
+        ]
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var tabs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        var recordsCreated = false
+        let app = try await appQualificationEnvironment()
+        let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+        let runID = UUID()
+        let conversationUUID = UUID()
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationUUID, delegateCallID: "skillhub-canvas")
+        identity = fixedIdentity
+        func finish() async {
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationUUID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationUUID, runID: runID,
+                title: "Seven-deep canvas-design qualification",
+                goal: "canvas-design poster pipeline in the guest plus native CJK render/export; no model")
+            recordsCreated = true
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationUUID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task {
+                try await runtime.start(goal: "Qualify canvas-design in the real guest and native browser")
+            }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before seven-deep child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationUUID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: childContext)
+
+            evidence["guestStage"] = String(try await sevenDeepStageAndRehash(
+                runtime: runtime, identity: fixedIdentity, context: childContext).prefix(1_000))
+
+            let base = "transport/unpacked"
+
+            // 1. Guest compile of both shipped scripts.
+            let compile = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-compile",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile scripts/make_poster.py scripts/png_to_pdf.py && echo CANVAS_COMPILE_OK",
+                timeout: 120)
+            try #require(compile.status == .ok && compile.outputSummary.contains("CANVAS_COMPILE_OK"),
+                         "canvas py_compile failed: \(compile.outputSummary)")
+
+            // 2. check-only: JSON report, canvasPx 3508x4961, nothing written.
+            let checkOnly = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-check",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --check-only --spec assets/examples/hero-spec.json > check-hero.json && test ! -e poster-out && echo CANVAS_CHECK_OK",
+                timeout: 120)
+            try #require(checkOnly.status == .ok && checkOnly.outputSummary.contains("CANVAS_CHECK_OK"),
+                         "canvas check-only failed or wrote files: \(checkOnly.outputSummary)")
+            let checkReport = try sevenDeepJSON(root, "\(base)/canvas-design/check-hero.json")
+            let canvasPx = try #require(checkReport["canvasPx"] as? [Int])
+            try #require(canvasPx == [3_508, 4_961], "hero canvasPx != [3508,4961]: \(canvasPx)")
+            for field in ["metricBasis", "artifactPolicy", "notices"] {
+                try #require(checkReport[field] != nil, "check-only report missing \(field)")
+            }
+
+            // 3. Hero poster: three files, real SVG geometry, 5 licensed fonts.
+            let hero = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-hero",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/hero-spec.json --outdir poster-out --prefix hero; echo CANVAS_HERO_RC=$?",
+                timeout: 300)
+            try #require(hero.status == .ok && hero.outputSummary.contains("CANVAS_HERO_RC=0"),
+                         "hero poster failed: \(hero.outputSummary)")
+            let heroSVG = try String(contentsOf: root.appendingPathComponent(
+                "\(base)/canvas-design/poster-out/hero.svg"), encoding: .utf8)
+            try #require(heroSVG.contains("width=\"3508") && heroSVG.contains("height=\"4961")
+                            && heroSVG.contains("viewBox=\"0 0 3508 4961"),
+                         "hero.svg geometry mismatch: \(heroSVG.prefix(240))")
+            let heroCoverage = try sevenDeepJSON(root, "\(base)/canvas-design/poster-out/hero.coverage.json")
+            let fontsUsed = try #require(heroCoverage["fontsUsed"] as? [[String: Any]])
+            try #require(fontsUsed.count == 5, "hero fontsUsed != 5: \(fontsUsed.count)")
+            for font in fontsUsed {
+                let digest = try #require(font["sha256"] as? String)
+                try #require(digest.count == 64 && digest.allSatisfy(\.isHexDigit),
+                             "hero font sha256 malformed: \(font)")
+            }
+
+            // 4. CJK poster: exactly 22 fallback chars through the device stack.
+            let cjk = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-cjk",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/cjk-poster-spec.json --outdir poster-out --prefix cjk; echo CANVAS_CJK_RC=$?",
+                timeout: 300)
+            try #require(cjk.status == .ok && cjk.outputSummary.contains("CANVAS_CJK_RC=0"),
+                         "cjk poster failed: \(cjk.outputSummary)")
+            try #require(cjk.outputSummary.contains("\"fallbackChars\": 22"),
+                         "cjk fallbackChars != 22: \(cjk.outputSummary.prefix(400))")
+
+            // 5. --require-embedded on the CJK spec is the honest useful failure.
+            let embedded = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-embedded",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/cjk-poster-spec.json --outdir poster-out --prefix cjk --require-embedded; echo CANVAS_EMBED_RC=$?",
+                timeout: 120)
+            try #require(embedded.status == .ok && embedded.outputSummary.contains("CANVAS_EMBED_RC=4"),
+                         "--require-embedded must exit 4 on the CJK spec: \(embedded.outputSummary)")
+            try #require(embedded.outputSummary.contains("--require-embedded"),
+                         "--require-embedded refusal message missing: \(embedded.outputSummary.prefix(300))")
+
+            // 6. Guest determinism: byte-identical svg/html across runs.
+            let rerun = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-rerun",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/hero-spec.json --outdir poster-out2 --prefix hero && cmp poster-out/hero.svg poster-out2/hero.svg && cmp poster-out/hero.html poster-out2/hero.html && echo CANVAS_DETERMINISTIC",
+                timeout: 300)
+            try #require(rerun.status == .ok && rerun.outputSummary.contains("CANVAS_DETERMINISTIC"),
+                         "poster determinism failed: \(rerun.outputSummary)")
+
+            // 7. png_to_pdf: closure-corrected 2x2 fixture literal, verified
+            //    geometry, then the overwrite guard.
+            let pngPDF = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-pngpdf",
+                command: #"""
+                cd TRANSPORT_BASE/canvas-design
+                python3 - <<'EOF'
+                import struct, zlib
+                row1 = b"\x00" + b"\xff\x00\x00" * 2
+                row2 = b"\x00" + b"\x00\xff\x00" * 2
+                def chunk(t, d):
+                    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+                png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)) \
+                      + chunk(b"IDAT", zlib.compress(row1 + row2, 9)) + chunk(b"IEND", b"")
+                open("fixture.png", "wb").write(png)
+                EOF
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/png_to_pdf.py --input fixture.png --output fixture.pdf --dpi 300 > fixture-pdf.json
+                echo CANVAS_PNGPDF_RC=$?
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/png_to_pdf.py --input fixture.png --output fixture.pdf --dpi 300; echo CANVAS_PDF_OVERWRITE_RC=$?
+                """#.replacingOccurrences(of: "TRANSPORT_BASE", with: base),
+                timeout: 120)
+            try #require(pngPDF.status == .ok
+                            && pngPDF.outputSummary.contains("CANVAS_PNGPDF_RC=0")
+                            && pngPDF.outputSummary.contains("CANVAS_PDF_OVERWRITE_RC=3"),
+                         "png_to_pdf verify/overwrite-guard mismatch: \(pngPDF.outputSummary)")
+            let fixturePDFReport = try sevenDeepJSON(root, "\(base)/canvas-design/fixture-pdf.json")
+            try #require(fixturePDFReport["verified"] as? Bool == true,
+                         "png_to_pdf self-verify false: \(fixturePDFReport)")
+            try #require((fixturePDFReport["pixels"] as? [Int]) == [2, 2],
+                         "png_to_pdf pixels != [2,2]: \(fixturePDFReport)")
+            let pagePt = try #require(fixturePDFReport["pagePt"] as? [Double])
+            try #require(abs(pagePt[0] - 0.48) < 0.01 && abs(pagePt[1] - 0.48) < 0.01,
+                         "png_to_pdf pagePt != [0.48,0.48]: \(pagePt)")
+            let fixturePDF = try Data(contentsOf: root.appendingPathComponent(
+                "\(base)/canvas-design/fixture.pdf"))
+            let mediaBox = String(decoding: fixturePDF, as: UTF8.self)
+            try #require(mediaBox.contains("/MediaBox [0 0 0.48 0.48]"),
+                         "fixture.pdf MediaBox mismatch: \(mediaBox.prefix(300))")
+
+            // 8. Artifact truth on the self-contained hero.html.
+            let truth = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-truth",
+                command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n"
+                    + sevenDeepPosterTruthScript + "\nPY",
+                timeout: 120)
+            try #require(truth.status == .ok && truth.outputSummary.contains("ARTIFACT_TRUTH_OK"),
+                         "poster artifact truth failed: \(truth.outputSummary)")
+            evidence["canvasGuest"] = "compile+check+hero(5fonts)+cjk(22)+embed4+determinism+pngpdf+truth"
+            print("FLOE_SEVEN_CANVAS_GUEST hero=3508x4961 cjk_fallback=22 embed_rc=4 pngpdf=verified")
+
+            // 9. Native browser: serve the real guest output statically.
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(
+                runtime: "static", entry: "transport/unpacked/canvas-design/poster-out/cjk.html",
+                arguments: nil, cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "seven-canvas-poster-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(
+                jobs, id: serviceJob.id, samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "Preview must be the owned loopback endpoint, got \(preview)")
+
+            let created = try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-create", tool: "browser.tab", arguments: ["action": "create"])
+            let tabID = try #require(created.page?.tabs.first(where: { $0.isActive })?.id,
+                                     "canvas tab create returned no active tab")
+            tabs.append(tabID)
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-navigate", tool: "browser.navigate",
+                arguments: ["url": preview.absoluteString, "tabID": tabID.uuidString])
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-load", tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "load",
+                            "timeoutMilliseconds": 15_000])
+
+            // Declared-size chrome and the full-size export control.
+            var page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-observe", tabID: tabID)
+            try #require(page.nodes.contains { $0.text.contains("Declared size: 1080 × 1350 px") },
+                         "declared-size chrome missing: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            let exportButton = try #require(
+                page.nodes.first { $0.role == "button"
+                    && ($0.name.contains("Export PNG 1080×1350") || $0.text.contains("Export PNG 1080×1350")) },
+                "Export PNG 1080×1350 button missing: \(page.nodes.filter { $0.role == "button" }.map(\.name).joined(separator: " | "))")
+
+            // OCR screenshot: real CJK glyphs must be recognized (tofu boxes
+            // cannot OCR to the exact characters). The artifact is recorded
+            // as a viewport-bounded preview, never the declared raster.
+            let shotCall = try toolCall(id: "canvas-shot", toolName: "browser.screenshot",
+                arguments: try Self.json(["tabID": tabID.uuidString]))
+            let shotResult = await runtime.dispatchChildTool(
+                shotCall, identity: fixedIdentity, childContext: childContext)
+            try #require(shotResult.status == .ok,
+                         "canvas screenshot failed: \(shotResult.outputSummary)")
+            let shot = try sevenDeepDecodeScreenshot(shotResult)
+            let regions = try #require(shot.page?.visualTextRegions,
+                                       "screenshot carried no OCR regions")
+            let ocrText = regions.map(\.text).joined(separator: " ")
+            try #require(ocrText.contains("静默几何"),
+                         "CJK title did not OCR from the render (tofu?): \(ocrText.prefix(300))")
+            try #require(ocrText.contains("结构即语言"),
+                         "CJK subline did not OCR from the render (tofu?): \(ocrText.prefix(300))")
+            let viewportW = Int(try #require(shot.page?.viewportWidth))
+            let viewportH = Int(try #require(shot.page?.viewportHeight))
+            let artifact = try #require(shot.page?.screenshotArtifact)
+            let artifactBytes = try Data(contentsOf: root.appendingPathComponent(artifact.relativePath))
+            let artifactSize = try sevenDeepPNGSize(artifactBytes)
+            evidence["canvasViewport"] = "\(viewportW)x\(viewportH) preview"
+            evidence["canvasScreenshot"] = "\(artifactSize.width)x\(artifactSize.height) sha=\(artifact.sha256.prefix(16))… (viewport-bounded preview, NOT the 1080x1350 raster)"
+
+            // Truthful full-size export: either the real 1080x1350 in-page
+            // raster or the engine's honest FAILED line; both are passes.
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-export-click", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": exportButton.ref,
+                            "documentID": page.documentID])
+            try await Task.sleep(for: .milliseconds(4_000))
+            page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-export-observe", tabID: tabID)
+            let exportStatus = page.nodes.first {
+                $0.text.contains("Exported 1080x1350 PNG") || $0.text.hasPrefix("FAILED")
+            }?.text ?? ""
+            try #require(!exportStatus.isEmpty,
+                         "export control reported no truthful outcome: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            evidence["canvasExport"] = exportStatus.prefix(220)
+            print("FLOE_SEVEN_CANVAS_EXPORT \(exportStatus.prefix(120))")
+
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "seven-deep-canvas")
+            Issue.record("Seven-deep canvas qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test 4c: algorithmic-art real guest + native viewer qualification
+
+    /// Real TinyEMU guest qualification of the algorithmic-art package: the
+    /// node --check surface, byte-exact mulberry32 PRNG stream equality
+    /// between the guest Python generator and the guest Node core, canonical
+    /// digest parity for both algorithms at both boundary seeds plus one
+    /// override set (the runbook's mirror of the 100-combination host sweep),
+    /// four-file artifact generation with guest determinism (byte-identical
+    /// svg/html/primitives/params across runs), the three invalid-input
+    /// classes (exit 2) and the --list-algos surface, then the shipped
+    /// About & licenses + artifact-notices disclosures. The native half serves
+    /// the real guest output through exec.localService (static) and drives
+    /// the App's real browser tools against the live viewer: the seed
+    /// display and ops status, next/prev seed navigation with digest change
+    /// and exact return to the original digest (reversible deterministic
+    /// redraw), and the Download PNG control. No p5.js parity claim and no
+    /// riscv64 Chromium/Playwright anywhere in this test.
+    @Test(
+        "Skill Hub seven-deep: algorithmic-art python/node PRNG+digest parity and deterministic artifacts in the real guest + native viewer control truth",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_ART_GUEST_QUALIFICATION"] == "1")
+    )
+    func skillHubAlgorithmicArtGuestAndNativeQualification() async throws {
+        let zip = try SevenDeepInputs.requireTransportZip()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "skill-hub-seven-deep-art-not-model-not-ui",
+            "transportZip": zip.path,
+            "sourceCommit": SevenDeepInputs.sourceCommit,
+        ]
+        var manifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/seven-deep.zip", into: &manifest)
+        try SkillHubStager.writeManifest(manifest, at: root)
+
+        let ceiling: Set<String> = [
+            "exec.shell", "browser.tab", "browser.tabs", "browser.navigate", "browser.observe",
+            "browser.wait", "browser.click", "browser.screenshot", "browser.events",
+        ]
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var tabs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        var recordsCreated = false
+        let app = try await appQualificationEnvironment()
+        let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+        let runID = UUID()
+        let conversationUUID = UUID()
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationUUID, delegateCallID: "skillhub-art")
+        identity = fixedIdentity
+        func finish() async {
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationUUID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationUUID, runID: runID,
+                title: "Seven-deep algorithmic-art qualification",
+                goal: "algorithmic-art parity and determinism in the guest plus native viewer truth; no model")
+            recordsCreated = true
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationUUID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task {
+                try await runtime.start(goal: "Qualify algorithmic-art in the real guest and native browser")
+            }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before seven-deep child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationUUID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: childContext)
+
+            evidence["guestStage"] = String(try await sevenDeepStageAndRehash(
+                runtime: runtime, identity: fixedIdentity, context: childContext).prefix(1_000))
+
+            let base = "transport/unpacked"
+
+            // 1. node --check on the browser core, the node parity driver and
+            //    the viewer glue (node ships in the Debian 13 riscv64 image).
+            let nodeCheck = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-node-check",
+                command: "cd \(base)/algorithmic-art && node --check assets/floegart.js && node --check scripts/prng_parity.js && node --check assets/viewer-ui.js && echo ART_NODE_CHECK_OK",
+                timeout: 120)
+            try #require(nodeCheck.status == .ok && nodeCheck.outputSummary.contains("ART_NODE_CHECK_OK"),
+                         "node --check failed: \(nodeCheck.outputSummary)")
+
+            // 2. PRNG stream equality: guest python vs guest node.
+            let prng = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-prng",
+                command: "cd \(base)/algorithmic-art && PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 987654321 --prng-stream > /tmp/seven-py.stream && node scripts/prng_parity.js --seed 987654321 --streams > /tmp/seven-js.stream && cmp /tmp/seven-py.stream /tmp/seven-js.stream && echo ART_PRNG_STREAM_OK",
+                timeout: 120)
+            try #require(prng.status == .ok && prng.outputSummary.contains("ART_PRNG_STREAM_OK"),
+                         "PRNG stream parity failed: \(prng.outputSummary)")
+
+            // 3. Canonical digest parity: both algos, both boundary seeds, one
+            //    override set (mirrors the runbook's host 100-case sweep).
+            let parity = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-parity",
+                command: """
+                cd \(base)/algorithmic-art
+                set -e
+                py_digest() { PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --digest "$@"; }
+                js_digest() { node scripts/prng_parity.js "$@" | python3 -c 'import sys,json;print(json.load(sys.stdin)["digest"])'; }
+                test "$(py_digest --seed 987654321 --algo flowfield --width 1200 --height 1200)" = "$(js_digest --seed 987654321 --algo flowfield --width 1200 --height 1200)" && echo PARITY_FLOWFIELD_OK
+                test "$(py_digest --seed 4294967295 --algo orbitwash --width 100 --height 4096)" = "$(js_digest --seed 4294967295 --algo orbitwash --width 100 --height 4096)" && echo PARITY_ORBITWASH_OK
+                test "$(py_digest --seed 987654321 --algo flowfield --width 1200 --height 1200 --overrides '{"particles":100,"palette":1}')" = "$(js_digest --seed 987654321 --algo flowfield --width 1200 --height 1200 --overrides '{"particles":100,"palette":1}')" && echo PARITY_OVERRIDES_OK
+                """,
+                timeout: 300)
+            try #require(parity.status == .ok
+                            && parity.outputSummary.contains("PARITY_FLOWFIELD_OK")
+                            && parity.outputSummary.contains("PARITY_ORBITWASH_OK")
+                            && parity.outputSummary.contains("PARITY_OVERRIDES_OK"),
+                         "digest parity failed: \(parity.outputSummary)")
+
+            // 4. Four-file artifacts + guest determinism across runs.
+            let generate = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-generate",
+                command: """
+                cd \(base)/algorithmic-art
+                set -e
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 987654321 --algo flowfield --width 1200 --height 1200 --outdir art-out --prefix study
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 987654321 --algo flowfield --width 1200 --height 1200 --outdir art-out2 --prefix study
+                for f in study.svg study.html study.primitives.json study.params.json; do
+                  cmp "art-out/$f" "art-out2/$f"
+                done
+                echo ART_DETERMINISTIC
+                """,
+                timeout: 300)
+            try #require(generate.status == .ok && generate.outputSummary.contains("ART_DETERMINISTIC"),
+                         "art generation/determinism failed: \(generate.outputSummary)")
+            for artifact in ["study.svg", "study.html", "study.primitives.json", "study.params.json"] {
+                let url = root.appendingPathComponent("\(base)/algorithmic-art/art-out/\(artifact)")
+                try #require(FileManager.default.fileExists(atPath: url.path),
+                             "art artifact missing: \(artifact)")
+            }
+
+            // 5. Invalid inputs stay exit 2 (seed bound, geometry bound,
+            //    overrides shape) — never a silent substitute.
+            let negatives = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-negatives",
+                command: """
+                cd \(base)/algorithmic-art
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 4294967296 --algo flowfield --width 100 --height 100 --outdir bad-seed --prefix bad; echo ART_BAD_SEED_RC=$?
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 1 --algo flowfield --width 50 --height 100 --outdir bad-width --prefix bad; echo ART_BAD_WIDTH_RC=$?
+                PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 1 --algo flowfield --width 100 --height 100 --overrides '[1,2]' --outdir bad-overrides --prefix bad; echo ART_BAD_OVERRIDES_RC=$?
+                """,
+                timeout: 120)
+            try #require(negatives.status == .ok
+                            && negatives.outputSummary.contains("ART_BAD_SEED_RC=2")
+                            && negatives.outputSummary.contains("ART_BAD_WIDTH_RC=2")
+                            && negatives.outputSummary.contains("ART_BAD_OVERRIDES_RC=2"),
+                         "invalid-input exit codes wrong: \(negatives.outputSummary)")
+
+            // 6. --list-algos lists both algorithms.
+            let algos = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-algos",
+                command: "cd \(base)/algorithmic-art && PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --list-algos > algos.txt && grep -q flowfield algos.txt && grep -q orbitwash algos.txt && echo ART_ALGOS_OK",
+                timeout: 120)
+            try #require(algos.status == .ok && algos.outputSummary.contains("ART_ALGOS_OK"),
+                         "--list-algos missing an algorithm: \(algos.outputSummary)")
+
+            // 7. Shipped disclosures inside the self-contained study.html.
+            let studyHTML = try String(contentsOf: root.appendingPathComponent(
+                "\(base)/algorithmic-art/art-out/study.html"), encoding: .utf8)
+            try #require(studyHTML.contains("About &amp; licenses"),
+                         "study.html About & licenses disclosure missing")
+            try #require(studyHTML.contains("artifact-notices")
+                            && studyHTML.contains("coreSha256") && studyHTML.contains("uiSha256")
+                            && studyHTML.contains("digest"),
+                         "study.html artifact-notices disclosures missing")
+            evidence["artGuest"] = "node-check prng=bytes parity=3 det=4files negatives=2 algos=2 disclosures"
+            print("FLOE_SEVEN_ART_GUEST prng=cmp parity=3 determinism=4files negatives=exit2")
+
+            // 8. Native viewer: serve the real guest output statically.
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(
+                runtime: "static", entry: "transport/unpacked/algorithmic-art/art-out/study.html",
+                arguments: nil, cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "seven-art-viewer-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(
+                jobs, id: serviceJob.id, samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "Preview must be the owned loopback endpoint, got \(preview)")
+
+            let created = try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-create", tool: "browser.tab", arguments: ["action": "create"])
+            let tabID = try #require(created.page?.tabs.first(where: { $0.isActive })?.id,
+                                     "art tab create returned no active tab")
+            tabs.append(tabID)
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-navigate", tool: "browser.navigate",
+                arguments: ["url": preview.absoluteString, "tabID": tabID.uuidString])
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-load", tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "load",
+                            "timeoutMilliseconds": 15_000])
+
+            // Initial viewer state: seed, ops status, artifact-notices digest.
+            var page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-observe", tabID: tabID)
+            try #require(page.nodes.contains { $0.text == "987654321" },
+                         "viewer seed display missing 987654321: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            try #require(page.nodes.contains { $0.text.contains("1200x1200px") },
+                         "viewer ops status missing 1200x1200px: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            // The disclosure is immutable source provenance, not live viewer state.
+            let noticeStart = try #require(studyHTML.range(of: #"<pre id="artifact-notices">"#))
+            let noticeEnd = try #require(studyHTML.range(of: "</pre>", range: noticeStart.upperBound..<studyHTML.endIndex))
+            let noticeBytes = Data(studyHTML[noticeStart.upperBound..<noticeEnd.lowerBound].utf8)
+            let notice = try #require(try JSONSerialization.jsonObject(with: noticeBytes) as? [String: Any])
+            let provenance = try #require(notice["provenance"] as? [String: Any])
+            let params = try sevenDeepJSON(root, "art-out/study.params.json")
+            let generatedOutput = try #require(params["output"] as? [String: Any])
+            let sourceDigest = try #require(provenance["digest"] as? String)
+            let generatedDigest = try #require(generatedOutput["digest"] as? String)
+            try #require(sourceDigest.count == 64 && sourceDigest.allSatisfy { "0123456789abcdef".contains($0) }
+                            && sourceDigest == generatedDigest,
+                         "source provenance digest differs from guest output")
+            let initialDigest = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "initial")
+
+            // next → digest changes; ← prev returns the EXACT original digest:
+            // the controls drive the real seeded engine reversibly.
+            let nextRef = try skillHubFindRef(in: page, namePrefix: "next", role: "button")
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-seed-next", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": nextRef.ref,
+                            "documentID": page.documentID])
+            page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-observe-next", tabID: tabID)
+            try #require(page.nodes.contains { $0.text == "987654322" },
+                         "seed-next did not advance the displayed seed")
+            let nextDigest = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "next")
+            try #require(nextDigest != initialDigest, "seed-next did not change the artwork digest")
+
+            let prevRef = try skillHubFindRef(in: page, namePrefix: "← prev", role: "button")
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-seed-prev", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": prevRef.ref,
+                            "documentID": page.documentID])
+            page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-observe-prev", tabID: tabID)
+            try #require(page.nodes.contains { $0.text == "987654321" },
+                         "seed-prev did not restore the displayed seed")
+            let restoredDigest = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "restored")
+            try #require(restoredDigest == initialDigest,
+                         "seed-prev did not restore the exact original digest")
+
+            // Download PNG control exists and stays functional after the
+            // interactions (the in-app download target is outside the test
+            // workspace; no artifact is claimed here — the full-size raster
+            // truth is the canvas poster export control's honest outcome).
+            let downloadRef = try skillHubFindRef(in: page, namePrefix: "Download PNG", role: "button")
+            try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-download", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": downloadRef.ref,
+                            "documentID": page.documentID])
+            page = try await skillHubObserve(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-observe-final", tabID: tabID)
+            let finalDigest = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "after-download")
+            try #require(finalDigest == initialDigest,
+                         "viewer state corrupted after the download control click")
+            evidence["artNative"] = "seed next/prev reversible actual canvas PNG; download control intact, file delivery unverified"
+            evidence["artCanvasInitialSHA256"] = initialDigest
+            evidence["artCanvasNextSHA256"] = nextDigest
+            evidence["artCanvasRestoredSHA256"] = restoredDigest
+            print("FLOE_SEVEN_ART_NATIVE seed=next/prev digest=reversible download=control-ok")
+
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "seven-deep-art")
+            Issue.record("Seven-deep art qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
 #endif
