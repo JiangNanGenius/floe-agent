@@ -51,6 +51,11 @@ public struct ToolContext: Sendable {
     public var activeSkillIDs: Set<String>
     /// Executor-side capability ceiling derived before the provider request.
     public var allowedToolNames: Set<String>?
+    /// Exact professional-dataset accounts and registration generations frozen
+    /// when this run started. This is native web.search authority, never a
+    /// model-callable legacy alias or a live registry lookup. Children receive
+    /// only the parent's value through the canonical dispatcher.
+    public var professionalSearchAuthority: ProfessionalSearchAuthority.Frozen?
     /// True for temporary (ephemeral) chat runs: outbound web retrieval is
     /// public-only. Tools that can opt into LAN/diagnostic targets
     /// (web.fetch localNetwork) must refuse that opt-in and every private
@@ -122,6 +127,7 @@ public struct ToolContext: Sendable {
         scope: ToolScope = .local,
         activeSkillIDs: Set<String> = [],
         allowedToolNames: Set<String>? = nil,
+        professionalSearchAuthority: ProfessionalSearchAuthority.Frozen? = nil,
         publicWebOnly: Bool = false,
         workspaceRootURL: URL? = nil,
         canvasStagedDocument: CanvasStagedDocumentAccess? = nil,
@@ -149,6 +155,7 @@ public struct ToolContext: Sendable {
         self.scope = scope
         self.activeSkillIDs = activeSkillIDs
         self.allowedToolNames = allowedToolNames
+        self.professionalSearchAuthority = professionalSearchAuthority
         self.publicWebOnly = publicWebOnly
         self.workspaceRootURL = workspaceRootURL
         self.canvasStagedDocument = canvasStagedDocument

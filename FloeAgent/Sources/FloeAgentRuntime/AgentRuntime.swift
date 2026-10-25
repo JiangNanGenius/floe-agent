@@ -393,6 +393,10 @@ public actor FloeAgentRuntime {
         /// Tool ceiling after skill declarations, device compatibility and
         /// user grants are intersected. `nil` preserves legacy no-skill runs.
         public var allowedToolNames: Set<String>?
+        /// Exact native professional-search accounts and registration
+        /// generations frozen by the app at run launch. Nil/empty never falls
+        /// back to live registrations and children can only inherit this value.
+        public var professionalSearchAuthority: ProfessionalSearchAuthority.Frozen?
         /// Exact installed-skill Python artifacts audited at installation.
         /// Approval policies may reuse only these fingerprints/specs.
         public var preapprovedPythonScriptSHA256: Set<String>
@@ -533,6 +537,7 @@ public actor FloeAgentRuntime {
             activeSkillIDs: Set<String> = [],
             relatedSkillIDsByTool: [String: [String]] = [:],
             allowedToolNames: Set<String>? = nil,
+            professionalSearchAuthority: ProfessionalSearchAuthority.Frozen? = nil,
             preapprovedPythonScriptSHA256: Set<String> = [],
             preapprovedPythonPackages: Set<String> = [],
             workspaceRootURL: URL? = nil,
@@ -572,6 +577,7 @@ public actor FloeAgentRuntime {
             self.activeSkillIDs = activeSkillIDs
             self.relatedSkillIDsByTool = relatedSkillIDsByTool
             self.allowedToolNames = allowedToolNames
+            self.professionalSearchAuthority = professionalSearchAuthority
             self.preapprovedPythonScriptSHA256 = preapprovedPythonScriptSHA256
             self.preapprovedPythonPackages = preapprovedPythonPackages
             self.workspaceRootURL = workspaceRootURL
@@ -3701,6 +3707,7 @@ public actor FloeAgentRuntime {
             scope: call.scope,
             activeSkillIDs: effectiveSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
+            professionalSearchAuthority: configuration.professionalSearchAuthority,
             publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,
@@ -3933,6 +3940,10 @@ public actor FloeAgentRuntime {
                 decision: "deny:child-nested"
             )
         }
+        // Account authority is always the parent's frozen value. A direct or
+        // nested wrapper cannot substitute a newer/wider registry snapshot.
+        var childContext = childContext
+        childContext.professionalSearchAuthority = configuration.professionalSearchAuthority
         guard let descriptor = executor.descriptor(named: call.toolName) else {
             return await childDenied(
                 call,
@@ -4784,6 +4795,7 @@ public actor FloeAgentRuntime {
                 scope: call.scope,
                 activeSkillIDs: configuration.activeSkillIDs,
                 allowedToolNames: configuration.allowedToolNames,
+                professionalSearchAuthority: configuration.professionalSearchAuthority,
                 publicWebOnly: configuration.publicWebOnly,
                 workspaceRootURL: configuration.workspaceRootURL,
                 canvasStagedDocument: configuration.canvasStagedDocument,
@@ -5073,6 +5085,7 @@ public actor FloeAgentRuntime {
             scope: .local,
             activeSkillIDs: configuration.activeSkillIDs,
             allowedToolNames: configuration.allowedToolNames,
+            professionalSearchAuthority: configuration.professionalSearchAuthority,
             publicWebOnly: configuration.publicWebOnly,
             workspaceRootURL: configuration.workspaceRootURL,
             canvasStagedDocument: configuration.canvasStagedDocument,

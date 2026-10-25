@@ -28,6 +28,11 @@ final class ContinuousVoiceScreenSession: ObservableObject {
     @Published private(set) var spokenText = ""
     @Published private(set) var muted = false
     @Published private(set) var consumedAttachmentIDs = Set<UUID>()
+    /// Orb smoother + count-only cadence aggregates, owned by the session so
+    /// they survive the text/voice panel toggles and can be flushed ONCE at
+    /// the session boundary (never a per-frame log, never a @Published
+    /// metric that would invalidate UI).
+    let orbPresentation = VoiceOrbPresentationState()
     var initialAttachments: [AttachmentRef] { temporary ? [] : request.attachments }
     @Published private(set) var history: [PersistedMessage] = []
     @Published var failureKey: String?
@@ -199,6 +204,13 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         coordinator.end()
         historyTask?.cancel()
         subscriptions.removeAll()
+        // ONE counts-only orb cadence line at the session boundary (active
+        // tick count + max inter-tick gap; intentional pause/background gaps
+        // are excluded by the view's suspend() contract). This measures UI
+        // cadence pressure, never a GPU presented-FPS claim.
+        if let summary = orbPresentation.summaryAndReset() {
+            FloeLogger(category: .app).info("voiceOrbTiming domain=voice \(summary)")
+        }
     }
     func updatePendingDraft(_ text: String, attachments: [AttachmentRef]) {
         guard !ended else { return }
@@ -297,7 +309,7 @@ struct VoiceConversationView: View {
                     transcript
                 } else {
                     Spacer(minLength: 8)
-                    VoiceOrbView(coordinator: session.coordinator, state: session.state, muted: session.muted)
+                    VoiceOrbView(coordinator: session.coordinator, state: session.state, muted: session.muted, presentation: session.orbPresentation)
                     Text(LocalizedStringKey(statusKey))
                         .font(.title3.weight(.medium))
                         .accessibilityIdentifier("voice.conversation.state")

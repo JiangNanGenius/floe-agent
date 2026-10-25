@@ -296,6 +296,11 @@ enum ProposalDecisionPresentation {
 
 /// One row of the unified thread timeline.
 enum ThreadTimelineItem: Identifiable, Hashable {
+    /// Boundary for a run's older events that are not loaded yet. The chat
+    /// thread renders this as a continuous auto-paging marker (older records
+    /// arrive when it scrolls into view — no manual expansion); other
+    /// surfaces may still render an explicit control. The builder drops the
+    /// row as soon as no older coverage remains.
     case earlierEvents(runID: UUID)
     /// The goal message that started the selected run.
     case userMessage(PersistedMessage)

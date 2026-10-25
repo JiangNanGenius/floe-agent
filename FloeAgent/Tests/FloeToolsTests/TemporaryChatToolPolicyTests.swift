@@ -259,6 +259,20 @@ struct TemporaryChatToolPolicyTests {
         ) != nil)
     }
 
+    @Test("Professional source is denied while default and explicit public web remain unchanged")
+    func professionalSourceDenied() {
+        let search = descriptor("web.search")
+        let reason = TemporaryChatToolPolicy.denialReason(
+            descriptor: search,
+            arguments: Data(#"{"query":"公司档案","source":"professional"}"#.utf8)
+        )
+        #expect(reason?.contains("public web search only") == true)
+        for json in [#"{"query":"weather"}"#, #"{"query":"weather","source":"web"}"#] {
+            #expect(TemporaryChatToolPolicy.denialReason(
+                descriptor: search, arguments: Data(json.utf8)) == nil)
+        }
+    }
+
     @Test("Provider-backed public search names include web.search and web.searchAI")
     func providerBackedSearchNames() {
         #expect(TemporaryChatToolPolicy.providerBackedWebSearchToolNames == ["web.search", "web.searchAI"])

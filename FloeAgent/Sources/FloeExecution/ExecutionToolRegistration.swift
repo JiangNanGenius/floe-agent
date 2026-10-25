@@ -162,7 +162,13 @@ public func registerExecutionTools(
     registry.register(SVGDocumentTool(), compatibilityOnly: true)
     registry.register(CryptoCipherTool())
     registry.register(PDFFillFormTool(service: service))
-    var webSearch = AnyAgentTool(WebSearchTool(service: webSearchService))
+    // Unified web.search: professional execution binds to the SAME injected
+    // registry as the owned DataPro adapter. Runs freeze that registry's exact
+    // accounts+generations at launch; no alias runner or live widening occurs.
+    var webSearch = AnyAgentTool(WebSearchTool(
+        service: webSearchService,
+        professional: MCPRegistryProfessionalSearchExecutor(registry: registry)
+    ))
     webSearch.isAvailable = { webSearchAvailability(WebSearchTool.name) }
     registry.register(webSearch)
     var searchAI = AnyAgentTool(BochaAISearchTool(service: webSearchService))

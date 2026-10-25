@@ -73,6 +73,11 @@ struct ThreadDetailView: View {
     @State private var showsReturnToLatest = false
     @State private var latestFollow = LatestMessageFollowState()
     @State private var isUserScrolling = false
+    /// Viewport rect in global coordinates, measured from the thread scroll
+    /// container. The earlier-activity row pages only when it actually
+    /// enters this rect, so lazy-margin rows never fetch off-screen.
+    @State private var threadViewportFrame: CGRect = .zero
+    @State private var earlierActivityScrollDemand: UInt64 = 0
     @State private var structuredExport: TaskExportFile?
     @State private var exporting = false
     @State private var showsChecklist = false
@@ -460,7 +465,10 @@ struct ThreadDetailView: View {
                     .animation(viewModel.isRunning && !reduceMotion ? .easeOut(duration: 0.22) : nil, value: viewModel.timelineIDs)
                 }
                 .defaultScrollAnchor(.bottom, for: .initialOffset)
-                .onScrollPhaseChange { _, phase in
+                .onScrollPhaseChange { old, phase in
+                    if phase == .interacting, old != .interacting {
+                        earlierActivityScrollDemand &+= 1
+                    }
                     isUserScrolling = phase == .tracking || phase == .interacting || phase == .decelerating
                     if phase == .idle, latestFollow.followsLatest {
                         proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
@@ -481,6 +489,13 @@ struct ThreadDetailView: View {
                         proxy.scrollTo("thread-latest-anchor", anchor: .bottom)
                     }
                 }
+                .background(GeometryReader { geometry in
+                    Color.clear
+                        .onAppear { threadViewportFrame = geometry.frame(in: .global) }
+                        .onChange(of: geometry.frame(in: .global)) { _, new in
+                            threadViewportFrame = new
+                        }
+                })
 
                 if showsReturnToLatest {
                     Button {
@@ -525,11 +540,11 @@ struct ThreadDetailView: View {
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
         case .earlierEvents(let runID):
-            Button("chat.thread_detail_view.show_earlier_tool_activity", systemImage: "clock.arrow.circlepath") {
-                Task { await viewModel.loadEarlierEvents(runID: runID) }
-            }
-            .disabled(viewModel.loadingEventRunIDs.contains(runID))
-            .accessibilityIdentifier("thread.events.earlier.\(runID.uuidString)")
+            // Visibility and real scroll gestures demand bounded pages.
+            // Never move the reader to manufacture a new visibility edge.
+            ThreadEarlierActivityRow(viewModel: viewModel, runID: runID,
+                                     viewportFrame: threadViewportFrame,
+                                     scrollDemand: earlierActivityScrollDemand)
         case .userMessage(let message):
             MessageBubble(message: message, onOpenAttachment: { item in
                 selectedAttachment = ChatAttachmentOpenRequest(conversationID: message.conversationID,

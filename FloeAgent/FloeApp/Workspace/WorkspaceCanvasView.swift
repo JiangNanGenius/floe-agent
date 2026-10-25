@@ -12309,6 +12309,8 @@ private struct SharedCanvasAgentConversation: View {
     @State private var isNotesPickerPresented = false
     @State private var dictationPrefix = ""
     @State private var visibleTimelineCount = 30
+    @State private var earlierActivityViewport: CGRect = .zero
+    @State private var earlierActivityScrollDemand: UInt64 = 0
 
     init(
         conversationID: UUID,
@@ -12416,6 +12418,18 @@ private struct SharedCanvasAgentConversation: View {
             .padding(14)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: viewModel.timeline.map(\.id))
         }
+        .onScrollPhaseChange { old, phase in
+            if phase == .interacting, old != .interacting {
+                earlierActivityScrollDemand &+= 1
+            }
+        }
+        .background(GeometryReader { geometry in
+            Color.clear
+                .onAppear { earlierActivityViewport = geometry.frame(in: .global) }
+                .onChange(of: geometry.frame(in: .global)) { _, frame in
+                    earlierActivityViewport = frame
+                }
+        })
     }
 
     private var composer: some View {
@@ -12599,10 +12613,10 @@ private struct SharedCanvasAgentConversation: View {
     private func timelineRow(_ item: ThreadTimelineItem) -> some View {
         switch item {
         case .earlierEvents(let runID):
-            Button("chat.thread_detail_view.show_earlier_tool_activity", systemImage: "clock.arrow.circlepath") {
-                Task { await viewModel.loadEarlierEvents(runID: runID) }
-            }
-            .disabled(viewModel.loadingEventRunIDs.contains(runID))
+            ThreadEarlierActivityRow(
+                viewModel: viewModel, runID: runID,
+                viewportFrame: earlierActivityViewport,
+                scrollDemand: earlierActivityScrollDemand)
         case .userMessage(let message):
             messageBubble(title: FloeL10n.l("workspace.workspace_canvas_view.you"), text: displayContent(message), isUser: true)
         case .assistantMessage(let text, _):

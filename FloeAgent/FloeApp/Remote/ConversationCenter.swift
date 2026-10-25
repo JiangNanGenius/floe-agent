@@ -1034,7 +1034,9 @@ final class ConversationCenter: ObservableObject {
     /// policy-only fixture.
     nonisolated static func temporaryToolCeiling(
         offeredDescriptors: [ToolCatalog.Descriptor],
-        webSearchAvailable: (String) -> Bool = { WebSearchSettingsCenter.toolIsAvailable($0) }
+        webSearchAvailable: (String) -> Bool = {
+            WebSearchSettingsCenter.publicWebToolIsAvailable($0)
+        }
     ) -> Set<String> {
         var ceiling = TemporaryChatToolPolicy.allowedToolNames(from: offeredDescriptors)
         // Unconfigured provider-backed search is never advertised: the
@@ -1044,6 +1046,48 @@ final class ConversationCenter: ObservableObject {
             ceiling.remove(name)
         }
         return ceiling
+    }
+
+    /// Native professional-query eligibility BEFORE account freezing. The
+    /// final allowedToolNames intersection is applied separately by
+    /// ProfessionalSearchAuthority.freeze, so explicit task/skill/route lists
+    /// cannot silently acquire an account token.
+    nonisolated static func allowsNativeProfessionalSearch(
+        runSurface: AgentRunSurface,
+        isNotesAssistant: Bool,
+        isTemporary: Bool,
+        chatFastMode: Bool,
+        conversationMode: ConversationMode,
+        toolsEnabled: Bool,
+        isLocalProvider: Bool,
+        taskPolicy: TaskPolicy
+    ) -> Bool {
+        runSurface == .ordinary
+            && !isNotesAssistant
+            && !isTemporary
+            && !chatFastMode
+            && conversationMode != .plan
+            && toolsEnabled
+            && !isLocalProvider
+            && taskPolicy.networkAllowed != false
+            && taskPolicy.remoteExecutionAllowed != false
+    }
+
+    /// A registered search handler is usable only if this run has at least
+    /// one configured source. Materialize a nil ceiling before removing it;
+    /// never widen an explicit task/skill ceiling.
+    nonisolated static func pruneUnavailableSearch(
+        allowedToolNames: Set<String>?,
+        offeredToolNames: Set<String>,
+        publicWebReady: Bool,
+        professionalAccounts: [ProfessionalSearchAuthority.Account]
+    ) -> Set<String>? {
+        guard !publicWebReady && professionalAccounts.isEmpty else {
+            return allowedToolNames
+        }
+        var result = allowedToolNames ?? offeredToolNames
+        result.remove(WebSearchTool.name)
+        return result
     }
 
     // MARK: - Published state
@@ -3003,7 +3047,9 @@ final class ConversationCenter: ObservableObject {
     nonisolated static func chatToolCeiling(
         offeredDescriptors: [ToolCatalog.Descriptor],
         hasResourceContext: Bool,
-        webSearchAvailable: (String) -> Bool = { WebSearchSettingsCenter.toolIsAvailable($0) }
+        webSearchAvailable: (String) -> Bool = {
+            WebSearchSettingsCenter.publicWebToolIsAvailable($0)
+        }
     ) -> Set<String> {
         var ceiling = ChatToolPolicy.allowedToolNames(
             from: offeredDescriptors, hasResourceContext: hasResourceContext)
@@ -3519,6 +3565,32 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = (allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))).intersection(ceiling)
         }
+        // Freeze exact native professional-query authority only after every
+        // task/skill/provider/route/restricted-mode ceiling is final. Public
+        // web readiness is independent: temporary/fast chat, plan, Canvas,
+        // Notes, local models, network/remote-denied tasks and an explicit
+        // allowlist without web.search receive no professional account access.
+        let allowsProfessionalSearch = Self.allowsNativeProfessionalSearch(
+            runSurface: runSurface,
+            isNotesAssistant: isNotesAssistant,
+            isTemporary: isTemporary,
+            chatFastMode: chatFastMode,
+            conversationMode: effectiveExecutionMode.conversationMode,
+            toolsEnabled: effectiveExecutionMode.toolsEnabled,
+            isLocalProvider: provider.kind == .local,
+            taskPolicy: taskPolicy
+        )
+        let professionalSearchAuthority = ProfessionalSearchAuthority.freeze(
+            registry: .shared,
+            allowedToolNames: allowedToolNames,
+            allowsProfessionalSource: allowsProfessionalSearch
+        )
+        allowedToolNames = Self.pruneUnavailableSearch(
+            allowedToolNames: allowedToolNames,
+            offeredToolNames: Set(availableDescriptors.map(\.name)),
+            publicWebReady: WebSearchSettingsCenter.publicWebToolIsAvailable(WebSearchTool.name),
+            professionalAccounts: professionalSearchAuthority.accounts
+        )
         // Voice playback evidence for the next ordinary chat turn: newest
         // receipt from ≤3 recent OTHER runs of THIS conversation. Ordinary
         // and temporary chat reads only the store routed for its own session,
@@ -3615,6 +3687,7 @@ final class ConversationCenter: ObservableObject {
             activeSkillIDs: skills.skillIDs,
             relatedSkillIDsByTool: skills.relatedSkillIDsByTool,
             allowedToolNames: allowedToolNames,
+            professionalSearchAuthority: professionalSearchAuthority,
             preapprovedPythonScriptSHA256: skills.preapprovedPythonScriptSHA256,
             preapprovedPythonPackages: skills.preapprovedPythonPackages,
             workspaceRootURL: runWorkspaceRoot,
@@ -3799,7 +3872,13 @@ final class ConversationCenter: ObservableObject {
                 workspaceAttachmentPaths: workspaceAttachmentPaths,
                 workspaceNotes: (runSurface == .ordinary
                     ? environment.workspaceCenter.runtimeWorkspaceNotes(rootURL: taskRootLease?.url)
-                    : []) + [WebSearchSettingsCenter.runtimeProviderNote()].compactMap { $0 },
+                    : []) + [
+                        allowedToolNames?.contains(WebSearchTool.name) == true
+                            ? WebSearchSettingsCenter.runtimeProviderNote(
+                                frozenProfessionalAccounts: professionalSearchAuthority.accounts
+                            )
+                            : nil
+                    ].compactMap { $0 },
                 workspaceListing: runSurface == .ordinary
                     ? WorkspaceContextBriefing.topLevelListing(rootURL: taskRootLease?.url)
                     : nil,

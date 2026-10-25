@@ -722,19 +722,57 @@ final class WebSearchSettingsCenter: ObservableObject {
         readyConfigurations()
     }
 
+    // Keep this exact one-argument signature: AppEnvironment injects it as a
+    // @Sendable (String) -> Bool function value for ordinary tool discovery.
     nonisolated static func toolIsAvailable(_ name: String) -> Bool {
-        toolIsAvailable(name, defaults: .standard,
-                        cloudData: { NSUbiquitousKeyValueStore.default.data(forKey: $0) })
+        toolIsAvailable(
+            name,
+            defaults: .standard,
+            cloudData: { NSUbiquitousKeyValueStore.default.data(forKey: $0) },
+            professionalRegistry: .shared
+        )
     }
 
+    /// Ordinary-run availability: web.search is usable with either a public
+    /// provider or a frozen-at-launch professional account. Restricted public-
+    /// web ceilings MUST use publicWebToolIsAvailable instead of this combined
+    /// predicate so a professional-only setup cannot falsely offer web.search.
     nonisolated static func toolIsAvailable(
+        _ name: String,
+        defaults: UserDefaults,
+        cloudData: (String) -> Data?,
+        professionalRegistry: ToolRunnerRegistry = .shared
+    ) -> Bool {
+        if name == WebSearchTool.name {
+            return publicWebToolIsAvailable(name, defaults: defaults, cloudData: cloudData)
+                || !VolcengineProfessionalSearch.registeredInstances(
+                    registry: professionalRegistry
+                ).isEmpty
+        }
+        return publicWebToolIsAvailable(name, defaults: defaults, cloudData: cloudData)
+    }
+
+    /// Public-provider-only readiness for temporary and fast-chat ceilings.
+    /// Professional accounts are intentionally invisible here: those runs may
+    /// use source=web only and have no cross-source fallback.
+    nonisolated static func publicWebToolIsAvailable(_ name: String) -> Bool {
+        publicWebToolIsAvailable(
+            name,
+            defaults: .standard,
+            cloudData: { NSUbiquitousKeyValueStore.default.data(forKey: $0) }
+        )
+    }
+
+    nonisolated static func publicWebToolIsAvailable(
         _ name: String,
         defaults: UserDefaults,
         cloudData: (String) -> Data?
     ) -> Bool {
         let ready = readyConfigurations(defaults: defaults, cloudData: cloudData)
         if name == WebSearchTool.name { return !ready.isEmpty }
-        if name == BochaAISearchTool.name { return ready.contains { $0.0.kind == .bochaWeb || $0.0.kind == .bochaAI } }
+        if name == BochaAISearchTool.name {
+            return ready.contains { $0.0.kind == .bochaWeb || $0.0.kind == .bochaAI }
+        }
         return false
     }
 
@@ -822,12 +860,41 @@ final class WebSearchSettingsCenter: ObservableObject {
         return result.sorted { $0.priority < $1.priority }
     }
 
-    nonisolated static func runtimeProviderNote() -> String? {
-        let ready = readyConfigurations().map(\.0)
-        guard !ready.isEmpty else { return nil }
-        return "Available web search providers: "
-            + ready.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
-            + ". The optional web.search provider argument must use one of these names or kinds."
+    nonisolated static func runtimeProviderNote(
+        defaults: UserDefaults = .standard,
+        cloudData: (String) -> Data? = {
+            NSUbiquitousKeyValueStore.default.data(forKey: $0)
+        },
+        professionalRegistry: ToolRunnerRegistry = .shared,
+        frozenProfessionalAccounts: [ProfessionalSearchAuthority.Account]? = nil
+    ) -> String? {
+        let ready = readyConfigurations(defaults: defaults, cloudData: cloudData).map(\.0)
+        // A run passes its actual frozen list (including an empty restricted
+        // list); never re-read a replacement/new account into that run's note.
+        let professional = frozenProfessionalAccounts
+            ?? VolcengineProfessionalSearch.registeredInstances(registry: professionalRegistry)
+        guard !ready.isEmpty || !professional.isEmpty else { return nil }
+        var sentences: [String] = []
+        if !ready.isEmpty {
+            sentences.append(
+                "Available web search providers (web.search, default source): "
+                    + ready.map { "\($0.displayName) [\($0.kind.rawValue)]" }.joined(separator: ", ")
+                    + ". The optional web.search provider argument must use one of these names or kinds."
+            )
+        }
+        if !professional.isEmpty {
+            sentences.append(
+                "Professional dataset accounts (web.search with source=professional): "
+                    + professional.map { "\($0.displayName) [\($0.serverID.uuidString)]" }.joined(separator: ", ")
+                    + ". Send one exact dataset question per call; with several accounts, select one with the provider argument. The web and professional sources never fall back to each other."
+            )
+        }
+        if ready.isEmpty {
+            sentences.append(
+                "No public web search provider is configured; web.search without source=professional will fail."
+            )
+        }
+        return sentences.joined(separator: " ")
     }
 }
 
@@ -1085,7 +1152,7 @@ private struct ProfessionalSearchSettingsView: View {
                 Section {
                     DisclosureGroup("websearch.professional.details") {
                         Text(server.endpoint.absoluteString).textSelection(.enabled)
-                        Text(VolcengineProfessionalSearch.toolName(for: server)).textSelection(.enabled)
+                        Text("web.search · source=professional").textSelection(.enabled)
                         Text(VolcengineProfessionalSearch.remoteName).textSelection(.enabled)
                         if case .failed(let message) = center.stateByServerID[serverID] {
                             Text(message).foregroundStyle(.secondary)

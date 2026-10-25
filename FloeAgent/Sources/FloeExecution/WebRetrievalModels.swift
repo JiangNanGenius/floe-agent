@@ -1,4 +1,5 @@
 import Foundation
+import FloeTools
 
 /// Search backends supported by Floe's provider-neutral retrieval layer.
 /// Raw provider responses never enter the agent context; adapters normalize
@@ -27,6 +28,48 @@ public enum WebSearchMode: String, Codable, CaseIterable, Sendable {
     case fast
     case balanced
     case deep
+}
+
+/// Explicit source selector of the unified `web.search` tool. `web` (the
+/// default, and every legacy call without the argument) keeps the existing
+/// public-web semantics byte-for-byte; `professional` routes the exact query
+/// to a configured Volcengine DataPro dataset account through its reviewed
+/// MCP capability. There is never a fallback between the two sources or
+/// between paid channels.
+public enum WebSearchSource: String, Codable, CaseIterable, Sendable {
+    case web
+    case professional
+}
+
+/// One frozen professional-dataset account selectable through the unified
+/// web.search provider argument. Its generation is authority metadata, never a
+/// model-callable tool name or a live fallback token.
+public typealias WebSearchProfessionalInstance = ProfessionalSearchAuthority.Account
+
+/// Typed, secret-free failures of the professional source. Each states the
+/// actionable condition; none silently reroutes to public web providers, to
+/// another account or to another paid channel.
+public enum WebSearchProfessionalError: Error, LocalizedError, Sendable {
+    case notConfigured
+    case authorityUnavailable
+    case providerNotFound(String)
+    case ambiguousSelection([String])
+    case notReady(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notConfigured:
+            return "No professional dataset account was authorized when this run started. Configure Volcengine DataPro and start a new run, or search without source=professional."
+        case .authorityUnavailable:
+            return "Professional search requires the run's frozen account authority; start a new ordinary agent run."
+        case .providerNotFound(let value):
+            return "No configured professional dataset account matches: \(value)"
+        case .ambiguousSelection(let names):
+            return "Several professional dataset accounts are configured (\(names.joined(separator: ", "))); select one with the provider argument"
+        case .notReady(let name):
+            return "Professional dataset account is not ready: \(name)"
+        }
+    }
 }
 
 /// Volcengine exposes several distinct search products with mutually

@@ -1,0 +1,4 @@
+{
+  "en-US": "Improved turn endings, interruptions and playback recovery in voice conversations.\nSmoothed the central voice animation.\nEarlier tool activity now loads as you scroll.\nUnified the professional dataset search entry.",
+  "zh-Hans": "改进语音聊天的结束判断、打断与播放恢复。\n改善语音聊天中心图标的动画连贯性。\n更早的工具记录随滚动自动加载。\n统一专业数据集的搜索入口。"
+}

@@ -497,6 +497,69 @@ extension VoiceConversationStack {
     var playbackEpoch: UInt64 { 0 }
 }
 
+// MARK: - Explicit playback pause intent (epoch-scoped autoplay veto)
+
+/// The pure decision surface behind every live-stack auto-`play()` that
+/// exists only to START producer traffic (scheduleChunk arrival, capture
+/// recovery restart). A tentative barge pause or a deliberate app pause
+/// sets an explicit intent; accepted chunks keep queueing under the
+/// existing bounds, but NOTHING may auto-start rendering until a
+/// legitimate resume of the SAME epoch clears the intent, or a NEW epoch
+/// (stop/flush = new round or session) begins — the pause can neither be
+/// silently undone by the next streaming buffer nor leak into the next
+/// answer.
+///
+/// CONFIRMED SOURCE DEFECT (2026-10-25): `scheduleChunk` ended with an
+/// unconditional `if !playerNode.isPlaying { playerNode.play() }`, so the
+/// next accepted chunk — arriving at sub-second streaming cadence while
+/// the ≤1.2 s pause window was open — silently resumed output UNDER the
+/// user's own voice, burned genuine false-start strikes, and defeated
+/// both the barge pause and `pauseOutput()`. The pause had been only a
+/// player STATE, never an intent. Foundation-only and consulted directly
+/// by the production stack (and by `VoiceConversationLiveStack
+/// .mayAutoStartPlayback`), so host tests exercise the exact decision —
+/// never a copy of the logic inside a fake.
+struct VoicePlaybackIntentGate: Equatable {
+    /// Epoch in which a pause was explicitly requested; nil renders freely.
+    private var pausedEpoch: UInt64?
+
+    var isPauseIntended: Bool { pausedEpoch != nil }
+
+    /// Explicit pause of `epoch`'s output (barge candidate / app pause).
+    /// Idempotent for the same epoch.
+    mutating func pause(epoch: UInt64) { pausedEpoch = epoch }
+
+    /// Legitimate release of the veto (false-start resume at the SAME
+    /// position / manual `resumeOutput`), valid ONLY for the epoch that
+    /// actually paused. HONEST FENCE BOUNDARY: the production stack's
+    /// `resumePlayback()` passes the CURRENT epoch (the protocol carries no
+    /// caller epoch), so the old-resume rejection this pure method provides
+    /// is gate-level defense; the fence that matters in production is the
+    /// COORDINATOR's round/session guards — `endBargePause` runs only while
+    /// the live round still owns `outputPausedByBarge` and `resumeOutput`
+    /// only while it owns `appPaused`; a cancelled/finished round takes the
+    /// `stopPlayback` path instead (`VoiceConversationCoordinator
+    /// .finishRound`), which fences a fresh epoch and clears the intent.
+    /// `VoicePlaybackIntentTests` pins that coordinator behavior directly.
+    mutating func resume(epoch: UInt64) {
+        guard pausedEpoch == epoch else { return }
+        pausedEpoch = nil
+    }
+
+    /// A stop/flush fence opened `epoch`: the next accepted round may
+    /// auto-start again. A pause intent NEVER survives into a new
+    /// round/session.
+    mutating func beginEpoch(_ epoch: UInt64) { pausedEpoch = nil }
+
+    /// The single question every auto-start site asks: may the player be
+    /// started for `currentEpoch`? True exactly when no pause intent is
+    /// active FOR THAT EPOCH — a stale intent from a superseded epoch can
+    /// never gate the current output.
+    func mayAutoStartPlayback(currentEpoch: UInt64) -> Bool {
+        pausedEpoch != currentEpoch
+    }
+}
+
 /// Microphone + speech authorization seam (same prompts dictation uses).
 protocol VoiceConversationAuthorizationProviding: Sendable {
     func requestMicrophoneAccess() async -> Bool

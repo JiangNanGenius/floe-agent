@@ -84,7 +84,7 @@ Models that support it also carry a reasoning/thinking effort setting. With **Au
 
 Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Preset provider names follow directory updates automatically; names you edit yourself are preserved. Review other available changes before applying them to an existing account.
 
-Search returns five results when no count is specified and bounds long summaries. Enabled professional data searches appear under search tools, using the configured account and permissions. Chat discovers only its currently allowed public-search and attached-file tools; leaving continuous voice preserves the original conversation mode.
+Search returns five results when no count is specified and bounds long summaries. Enabled professional datasets use the same search tool and selected account when the current task permits them. Chat discovers only its currently allowed public-search and attached-file tools; leaving continuous voice preserves the original conversation mode.
 
 In the Volcengine editor, choose the account that matches your key:
 
@@ -140,7 +140,7 @@ Scroll up to read history without following new output; return to the bottom to 
 <!-- doc-anchor: section-9 -->
 ## 5. Permissions and verification
 
-Tool cards show the progress and results of actions. Review the target and effects when a permission request appears.
+Tool cards show the progress and results of actions. Review the target and effects when a permission request appears. Earlier tool activity loads as you scroll, without a separate history expansion button. Individual tool cards still expand to show their details.
 
 1. Expand a tool card and inspect its target, workspace and result.
 2. Review the object and side effect before allowing a permission request.

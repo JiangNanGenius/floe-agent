@@ -153,6 +153,10 @@ public enum TemporaryChatToolPolicy {
         guard let object = try? JSONSerialization.jsonObject(with: arguments) as? [String: Any] else {
             return "The '\(descriptor.name)' call requires a JSON object with public web arguments."
         }
+        if descriptor.name == ProfessionalSearchAuthority.unifiedToolName,
+           ProfessionalSearchAuthority.requestsProfessionalSource(argumentsJSON: arguments) {
+            return "Temporary chats allow public web search only; professional dataset search requires an ordinary agent run."
+        }
         if descriptor.name == "web.fetch", object["localNetwork"] as? Bool == true {
             return "Temporary chats can only fetch public web targets; the local-network option is unavailable."
         }

@@ -17,7 +17,18 @@
 // - A monotonic session generation fences EVERY async callback. A superseded
 //   round or stack can never change state or resume output.
 // - Endpointing (~900 ms silence / ~1.6 s trailing-incomplete extension) uses
-//   the injected scheduling seam, never a hidden wall clock.
+//   the injected scheduling seam, never a hidden wall clock. Since 2026-10-25
+//   the SAME armed window is the required actual microphone-quiet window,
+//   JOINTLY with transcript stability: a window that expires while the real
+//   capture stream has not yet shown that much continuous non-speech DEFERS
+//   the decision and releases it event-driven at the exact quiet crossing —
+//   never a forced submit into ongoing speech, never a shorter invented
+//   quiet rule, never a longer timeout, never a poll. Evidence spans the whole
+//   capture stretch, so speech seen before a late partial re-arm still
+//   blocks submission. A stretch with no real level samples at all keeps the
+//   original transcript-only latency (legacy level-less hosts), and the
+//   recognition-health bounds escalate sustained voice-without-text exactly
+//   as before.
 // - Barge-in: persistent echo-processed speech TENTATIVELY PAUSES playback at
 //   its exact position for AT MOST the bounded candidate pause window
 //   (1.2 s, 2026-10-25); only a genuinely NEW valid ASR turn that arrived
@@ -55,6 +66,19 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     struct Timing: Sendable {
         var endpointSilence: Double = 0.9
         var endpointIncomplete: Double = 1.6
+        // JOINT end-of-utterance rule (2026-10-25, premature-submit fix):
+        // the armed `endpointSilence`/`endpointIncomplete` window is the
+        // required ACTUAL microphone-quiet window as well as the transcript-
+        // stability window — deliberately no separate shorter quiet constant.
+        // The transcript window measures ASR partial cadence, not mic
+        // silence; a Whisper-slow frozen partial could otherwise send while
+        // the user was measurably still speaking (the reported "submits
+        // halfway through"). A clean end-of-utterance already shows ≥ the
+        // window of quiet when its timer fires, so normal latency is
+        // UNCHANGED. Ongoing voice DEFERS event-driven; there is deliberately
+        // NO forced-submit cap (never submit into actual speech) — sustained
+        // voiced-without-recognition stays bounded by the existing
+        // recognition-health failure, and manual send bypasses as before.
         var bargeSuspect: Double = 0.18
         var bargeClear: Double = 0.25
         /// HARD upper bound on ONE tentative barge-in pause (product
@@ -269,6 +293,29 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     private var round: Round?
     private var observationTasks: [Task<Void, Never>] = []
     private var endpointTimer: (any VoiceConversationScheduled)?
+    /// True once the armed transcript window fired while the real capture
+    /// stream had not yet shown the required microphone-quiet window: the
+    /// decision is deferred and released event-driven from `consume(level)`
+    /// at the first genuine-quiet crossing — never a forced submit into
+    /// ongoing speech, never a poll task. Cleared by every re-arm/lifecycle
+    /// fence (identity fences).
+    private var endpointDeferralActive = false
+    /// The SAME 0.9/1.6 window that armed the deferred decision, in seconds:
+    /// the deferred release must observe this much continuous real quiet.
+    /// Stored at deferral time because a new partial re-arms a new window.
+    private var endpointDeferralWindow: Double = 0
+    /// True once ANY real level sample arrived in this capture stretch. A
+    /// re-arm must never erase it: after samples were seen, a late partial
+    /// or a route gap with no further samples is NOT evidence of quiet. A
+    /// stretch that never delivers level samples (legacy level-less hosts)
+    /// keeps the original transcript-only latency exactly.
+    private var micSamplesSeen = false
+    /// Continuous non-speech seconds integrated from REAL capture sample
+    /// durations (the same stream the barge gate and the health clocks
+    /// already consume): no wall clock, no polling task, deterministic for
+    /// the injectable-clock rig. Reset to 0 by any voiced sample, and at the
+    /// boundary of a capture stretch (start/resume/mute).
+    private var micQuietRun: Double = 0
     private var preparationTimer: (any VoiceConversationScheduled)?
     /// True while a deliberate pause/end drains the ASR stream; suppresses
     /// the "stream ended unexpectedly" failure path.
@@ -346,6 +393,22 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
 
     private func isCurrent(_ attempt: UInt64) -> Bool { attempt == activeAttempt }
 
+    /// Cancels the armed endpoint window AND its deferred-decision state as
+    /// one unit. Every lifecycle fence (mute, pause, scene, navigation,
+    /// session generation, submit) and every re-arm goes through here, so
+    /// a stale deferral release can never survive into a new window, a new
+    /// attempt, or a submitted turn (no duplicate commit). The capture
+    /// stretch's real-level evidence (`micSamplesSeen`, `micQuietRun`) is
+    /// deliberately NOT cleared here: it belongs to the stretch, not to an
+    /// armed window, so a partial re-arm cannot launder ongoing speech into
+    /// apparent quiet.
+    private func clearEndpointTimer() {
+        endpointTimer?.cancel()
+        endpointTimer = nil
+        endpointDeferralActive = false
+        endpointDeferralWindow = 0
+    }
+
     // MARK: - Session lifecycle
 
     /// Reserves and launches a session synchronously (mirrors the proven
@@ -388,6 +451,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         bargeGate = VoiceConversationBargeGate(
             suspectAfter: timing.bargeSuspect, clearAfter: timing.bargeClear
         )
+        // A fresh capture stretch carries no earlier quiet evidence: the
+        // joint endpoint gate must observe THIS stretch's real samples.
+        micSamplesSeen = false
+        micQuietRun = 0
         pausedReason = nil
         isMuted = false
         interruptedRoundContext = nil
@@ -531,7 +598,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         // Fence synchronously before any await so no observation (including a
         // paused-session race or a late ASR restart) can act during teardown.
         activeAttempt = nextAttemptValue()
-        endpointTimer?.cancel(); endpointTimer = nil
+        clearEndpointTimer()
         preparationTimer?.cancel(); preparationTimer = nil
         observationTasks.forEach { $0.cancel() }
         observationTasks = []
@@ -587,6 +654,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         bargeGate = VoiceConversationBargeGate(
             suspectAfter: timing.bargeSuspect, clearAfter: timing.bargeClear
         )
+        // A fresh capture stretch carries no earlier quiet evidence: the
+        // joint endpoint gate must observe THIS stretch's real samples.
+        micSamplesSeen = false
+        micQuietRun = 0
         sessionGeneration &+= 1
         activeAttempt = sessionGeneration
         state = .requestingPermission
@@ -639,7 +710,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         // Fence synchronously: a route loss arriving mid-preparation or
         // mid-round must stop every stale async path immediately.
         activeAttempt = nextAttemptValue()
-        endpointTimer?.cancel(); endpointTimer = nil
+        clearEndpointTimer()
         preparationTimer?.cancel(); preparationTimer = nil
         observationTasks.forEach { $0.cancel() }
         observationTasks = []
@@ -675,7 +746,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     }
 
     private func failCurrentSession(_ failure: VoiceConversationFailure) {
-        endpointTimer?.cancel(); endpointTimer = nil
+        clearEndpointTimer()
         preparationTimer?.cancel(); preparationTimer = nil
         observationTasks.forEach { $0.cancel() }
         observationTasks = []
@@ -714,7 +785,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         isMuted = on
         if on {
             stack?.stopCapture()
-            endpointTimer?.cancel(); endpointTimer = nil
+            clearEndpointTimer()
+            // Capture stops with the mute: the next stretch must produce its
+            // own real samples. Pre-mute quiet can never vouch for the
+            // post-unmute draft (which, by the settled mute contract, is
+            // finalized only by NEW transcript activity).
+            micSamplesSeen = false
+            micQuietRun = 0
             if suspectingSpeech {
                 suspectingSpeech = false
                 if round?.outputPausedByBarge == true {
@@ -932,6 +1009,19 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         // age accumulator; the voiced-without-text accumulator stops the
         // session when actual speech produces no recognition for too long.
         let sampleSeconds = min(max(level.duration, 0), 0.5)
+        // Endpoint joint-gate evidence (2026-10-25): integrate the SAME
+        // physical stream into a continuous quiet run for THIS capture
+        // stretch. Any real sample records that level evidence exists, so a
+        // late partial or route gap with no further samples can never be
+        // mistaken for quiet (and the evidence is never reset by a re-arm).
+        // Pure bookkeeping — it never touches the recognition-health clocks
+        // below (a deferral cannot hide a failure).
+        micSamplesSeen = true
+        if level.isSpeech {
+            micQuietRun = 0
+        } else {
+            micQuietRun += sampleSeconds
+        }
         if !isMuted, state.hasSession {
             observedSecondsWithoutText += sampleSeconds
             if level.isSpeech { voicedSecondsWithoutText += sampleSeconds }
@@ -944,6 +1034,18 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         }
         let roundActive = round != nil && !isMuted && (state == .waitingModel || state == .answering)
         let edge = bargeGate.process(level)
+        // EVENT-DRIVEN RELEASE of a deferred endpoint: the first real
+        // sample that completes the SAME armed quiet window resolves the
+        // decision NOW, inside the capture callback — no re-armed poll, no
+        // wall clock. Only a live deferral can release, and every lifecycle
+        // fence clears it, so pre-mute/old-attempt text cannot be revived
+        // by levels alone.
+        if endpointDeferralActive, !level.isSpeech,
+           micQuietRun >= endpointDeferralWindow,
+           state == .listening, !isMuted {
+            endpointDeferralActive = false
+            decideEndpoint()
+        }
         switch edge {
         case .suspectStarted:
             guard roundActive, allowBargeIn, let r = round else { return }
@@ -1104,7 +1206,7 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         }
         stagedTranscript = display.trimmingCharacters(in: .whitespacesAndNewlines)
         if isMuted {
-            endpointTimer?.cancel(); endpointTimer = nil
+            clearEndpointTimer()
             return
         }
         if let r = round {
@@ -1199,32 +1301,69 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     }
 
     private func scheduleEndpoint(for text: String) {
-        endpointTimer?.cancel()
-        guard state == .listening, !isMuted else { endpointTimer = nil; return }
+        clearEndpointTimer()
+        guard state == .listening, !isMuted else { return }
         let window = VoiceConversationEndpointPolicy.isProbablyIncomplete(text)
             ? timing.endpointIncomplete
             : timing.endpointSilence
         endpointTimer = clock.schedule(after: window) { [weak self] in
             guard let self, self.state == .listening, !self.isMuted else { return }
             self.endpointTimer = nil
-            let final = self.stagedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard VoiceConversationTurnValidity.isValidTurn(final) else {
-                self.report("endpointDiscarded")
-                self.stagedTranscript = ""
-                self.transcriptBaseline = self.rawTranscript
-                self.resumePrefix = nil
+            // JOINT GATE (2026-10-25, premature-submit repair): the armed
+            // 0.9/1.6 window is BOTH the transcript-stability window and the
+            // required ACTUAL microphone-quiet window. A Whisper-slow frozen
+            // partial previously auto-submitted while the mic was measurably
+            // still voiced — the reported "submits halfway through while I'm
+            // STILL speaking". If this capture stretch has real level
+            // evidence but its continuous quiet run has not reached the SAME
+            // window, the decision DEFERS event-driven (released from
+            // `consume(level)` at the quiet crossing): NEVER force-submit
+            // into ongoing speech, NEVER a second shorter quiet rule, NEVER
+            // lengthen the settled 0.9/1.6 window, NEVER re-arm a busy poll.
+            // Evidence from BEFORE a partial re-arm still counts, and a
+            // re-arm with no new samples is not proof of quiet. Sustained
+            // voiced-without-recognition stays bounded by the untouched
+            // recognition-health escalation; manual send / typed submit
+            // bypass as before. A stretch with NO real sample at all
+            // (legacy level-less hosts) keeps the original transcript-only
+            // latency exactly — valid short turns are never slowed.
+            if self.micSamplesSeen, self.micQuietRun < window {
+                self.endpointDeferralActive = true
+                self.endpointDeferralWindow = window
+                self.report("endpointDeferredVoiced",
+                            "quietMs=\(Int(self.micQuietRun * 1000)) windowMs=\(Int(window * 1000))")
                 return
             }
-            self.report("endpointFired")
-            self.submit(final)
+            self.decideEndpoint()
         }
+    }
+
+    /// The endpoint decision itself — unchanged in substance from the
+    /// settled policy: hesitation/noise-only residue is discarded with the
+    /// baseline advanced (never re-sent, never merged into the next draft),
+    /// a valid final submits exactly once. Reached from an armed timer (the
+    /// quiet window is already satisfied, or the stretch has no real level
+    /// samples at all) and from the event-driven release of a deferred
+    /// window — the joint gate changes WHEN the decision is taken, never
+    /// WHAT it does.
+    private func decideEndpoint() {
+        let final = stagedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard VoiceConversationTurnValidity.isValidTurn(final) else {
+            report("endpointDiscarded")
+            stagedTranscript = ""
+            transcriptBaseline = rawTranscript
+            resumePrefix = nil
+            return
+        }
+        report("endpointFired")
+        submit(final)
     }
 
     // MARK: - Turn flow
 
     private func submit(_ text: String) {
         guard state == .listening else { return }
-        endpointTimer?.cancel(); endpointTimer = nil
+        clearEndpointTimer()
         // From here on, new backend text belongs to the NEXT utterance.
         transcriptBaseline = rawTranscript
         resumePrefix = nil

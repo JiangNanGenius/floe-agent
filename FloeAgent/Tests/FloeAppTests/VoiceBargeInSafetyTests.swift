@@ -294,6 +294,9 @@ struct VoiceBargeInSafetyTests {
         #expect(rig.driving.cancelled.count == 1)
         #expect(rig.coordinator.state == .listening)
         #expect(rig.coordinator.stagedTranscript == "等一下")
+        // Real capture keeps emitting quiet buffers after speech ends.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 2)
@@ -328,6 +331,9 @@ struct VoiceBargeInSafetyTests {
         rig.stack.yieldTranscript("念诗等一下别讲了")
         await rig.settle(30)
         #expect(rig.driving.cancelled.count == 1)
+        // Real capture keeps emitting quiet buffers after speech ends.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 2)
@@ -381,6 +387,9 @@ struct VoiceBargeInSafetyTests {
         // the round ends naturally.
         rig.stack.stepPlayed(frames: 150)
         await rig.settle(30)
+        // Real capture keeps emitting quiet buffers after speech ends.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 2)
@@ -398,6 +407,9 @@ struct VoiceBargeInSafetyTests {
         rig.stack.yieldTranscript("等一下")
         await rig.settle(30)
         #expect(rig.driving.cancelled.count == 1)
+        // Real capture keeps emitting quiet buffers after speech ends.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 2)
@@ -414,6 +426,9 @@ struct VoiceBargeInSafetyTests {
         rig.stack.yieldTranscript("讲个故事")
         await rig.settle(30)
         #expect(rig.driving.cancelled.count == 2)
+        // Real capture keeps emitting quiet buffers after speech ends.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 3)

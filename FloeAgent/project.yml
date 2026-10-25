@@ -384,8 +384,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.56"
-        CURRENT_PROJECT_VERSION: "297"
+        MARKETING_VERSION: "1.7.57"
+        CURRENT_PROJECT_VERSION: "298"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -466,8 +466,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.56"
-        CURRENT_PROJECT_VERSION: "297"
+        MARKETING_VERSION: "1.7.57"
+        CURRENT_PROJECT_VERSION: "298"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -517,8 +517,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.56"
-        CURRENT_PROJECT_VERSION: "297"
+        MARKETING_VERSION: "1.7.57"
+        CURRENT_PROJECT_VERSION: "298"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -561,8 +561,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.56"
-        CURRENT_PROJECT_VERSION: "297"
+        MARKETING_VERSION: "1.7.57"
+        CURRENT_PROJECT_VERSION: "298"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -614,8 +614,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.56"
-        CURRENT_PROJECT_VERSION: "297"
+        MARKETING_VERSION: "1.7.57"
+        CURRENT_PROJECT_VERSION: "298"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -691,6 +691,7 @@ targets:
       - path: Tests/FloeAppTests/ContinuousVoiceMicrophoneActivationTests.swift
       - path: Tests/FloeAppTests/TableSpeechReadabilityTests.swift
       - path: Tests/FloeAppTests/VolcengineDraftSearchTests.swift
+      - path: Tests/FloeAppTests/ProfessionalSearchPolicyTests.swift
       - path: Tests/FloeExecutionTests/VolcengineDirectGatewayEnvelopeTests.swift
       - path: Tests/FloeSyncTests/ConfigSyncStatusArrivalTests.swift
       - path: Tests/FloeAppTests/SpeechTransferRetirementTests.swift
@@ -711,12 +712,16 @@ targets:
       - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/VoiceConversationTests.swift
+      - path: Tests/FloeAppTests/VoiceEndpointCoordinationTests.swift
+      - path: Tests/FloeAppTests/VoicePlaybackIntentTests.swift
+      - path: Tests/FloeAppTests/VoiceOrbPresentationTests.swift
       - path: Tests/FloeAppTests/VoiceOutputPipelineTests.swift
       - path: Tests/FloeAppTests/VoiceBargeInSafetyTests.swift
       - path: Tests/FloeAppTests/VoiceConversationAudioTests.swift
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
       - path: Tests/FloeProvidersTests/ChatReasoningTests.swift
       - path: Tests/FloeAgentRuntimeTests/ChatModePolicyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ProfessionalSearchAuthorizationTests.swift
       - path: Tests/FloeToolsTests/ChatToolPolicyTests.swift
       - path: Tests/FloePersistenceTests/ChatPreferenceStoreTests.swift
       - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
@@ -984,6 +989,7 @@ targets:
       - path: Tests/FloeAgentUITests/IDELanguageRunPolicyTests.swift
       - path: Tests/FloeAgentUITests/HomeChatSeparationTests.swift
       - path: Tests/FloeAgentUITests/ThreadTimelineTests.swift
+      - path: Tests/FloeAppTests/ThreadActivityHistoryTests.swift
       - path: Tests/FloeAgentUITests/VoiceInputControllerTests.swift
       - path: Tests/FloeAgentUITests/BrowserProtocolTests.swift
       - path: Tests/FloeAgentUITests/CrashAndFeedbackRegressionTests.swift
@@ -1016,6 +1022,7 @@ targets:
       - path: Tests/FloeAppTests/VolcengineSearchSettingsTests.swift
       - path: Tests/FloeAppTests/WebSearchCatalogSettingsTests.swift
       - path: Tests/FloeToolsTests/WebSearchServiceIntegrationTests.swift
+      - path: Tests/FloeExecutionTests/ProfessionalWebSearchRoutingTests.swift
       - path: Tests/FloeSkillsTests/ContentUpdateStoreTests.swift
       - path: Tests/FloeAppTests/OfficeHighlighterAlphaTests.swift
       - path: Tests/FloeAppTests/OfficePDFExportServiceTests.swift

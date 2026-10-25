@@ -44,6 +44,17 @@ final class ContinuousVoiceSpeechBridge {
     private var roundInputEnded = false
     private var generation: UInt64 = 0
 
+    // Counts-only supply timing (bounded evidence, 2026-10-25): per ACCEPTED
+    // PCM chunk, the synchronous main-actor work — s16 decode + the
+    // `appendAudio` round-trip (conversion + scheduleBuffer) — accumulated
+    // per round and flushed as ONE line at the round boundary. Backpressure
+    // sleeps are excluded; rejected attempts are measured at their own
+    // synchronous cost; never audio, text, secrets, per-chunk logs or a
+    // @Published metric.
+    private var supplyChunkCount = 0
+    private var supplyMaxMs = 0.0
+    private var supplyTotalMs = 0.0
+
     enum Failure: Error {
         case invalidAudio
         case emptyAudio
@@ -92,6 +103,7 @@ final class ContinuousVoiceSpeechBridge {
 
     private func invalidateRound() {
         generation &+= 1
+        reportSupplyTiming()
         let ended = activeRound?.id
         activeSource?.closeStream()
         activeSource = nil
@@ -196,17 +208,24 @@ final class ContinuousVoiceSpeechBridge {
                     carry.append(chunk.pcm)
                     let usable = carry.count - carry.count % 2
                     if usable > 0 {
+                        let decodeStart = clock.now
                         let samples = Self.decodePCM16(carry.prefix(usable))
+                        var workMs = Self.elapsedMilliseconds(since: decodeStart, clock: clock)
                         carry = Data(carry.dropFirst(usable))
                         let audio = VoiceConversationAudioChunk(
                             samples: samples, channelCount: 1, sampleRate: Double(chunk.sampleRate)
                         )
                         var engineRefusals = 0
+                        var acceptedAudio = false
                         while self.isCurrent(unit, attempt: attempt) {
                             try Task.checkCancellation()
                             guard let output = self.output else { return }
-                            switch output.appendAudio(audio, to: unit) {
+                            let appendStart = clock.now
+                            let appendResult = output.appendAudio(audio, to: unit)
+                            workMs += Self.elapsedMilliseconds(since: appendStart, clock: clock)
+                            switch appendResult {
                             case .accepted:
+                                acceptedAudio = true
                                 break
                             case .rejectedStale:
                                 return
@@ -216,7 +235,8 @@ final class ContinuousVoiceSpeechBridge {
                                 // REAL player backpressure: the chunk was not
                                 // consumed. Hold it and retry while the player
                                 // drains. Never drop it, never replay it after
-                                // acceptance.
+                                // acceptance. (The 20 ms hold below is waiting,
+                                // not main-actor work, so it is not timed.)
                                 try await Task.sleep(for: .milliseconds(20))
                                 continue
                             case .rejectedEngine:
@@ -235,6 +255,13 @@ final class ContinuousVoiceSpeechBridge {
                                 continue
                             }
                             break
+                        }
+                        // Counts-only synchronous-work aggregate for this
+                        // ACCEPTED chunk (decode + append round-trip); a
+                        // chunk skipped by a superseded round is never
+                        // counted as supplied.
+                        if acceptedAudio {
+                            self.recordSupplyWork(milliseconds: workMs)
                         }
                         // Player backpressure is not time spent waiting for
                         // synthesis. Empty protocol headers, however, cannot
@@ -280,6 +307,35 @@ final class ContinuousVoiceSpeechBridge {
         invalidateRound()
         output?.stopNow()
         onFailure(error)
+    }
+
+    /// Milliseconds of a synchronous interval on the monotonic clock.
+    private static func elapsedMilliseconds(
+        since start: ContinuousClock.Instant,
+        clock: ContinuousClock
+    ) -> Double {
+        let components = start.duration(to: clock.now).components
+        return Double(components.seconds) * 1000 + Double(components.attoseconds) / 1e15
+    }
+
+    private func recordSupplyWork(milliseconds: Double) {
+        guard milliseconds.isFinite, milliseconds >= 0 else { return }
+        supplyChunkCount += 1
+        supplyTotalMs += milliseconds
+        supplyMaxMs = max(supplyMaxMs, milliseconds)
+    }
+
+    /// ONE counts-only line per round boundary (round start invalidates the
+    /// previous round; stop/drain/fail close the last one). No chunk is ever
+    /// logged individually and no content is included.
+    private func reportSupplyTiming() {
+        guard supplyChunkCount > 0 else { return }
+        FloeLogger(category: .app).info(
+            "voiceSupplyTiming domain=voice chunks=\(supplyChunkCount) maxChunkMs=\(Int(supplyMaxMs.rounded())) totalChunkMs=\(Int(supplyTotalMs.rounded()))"
+        )
+        supplyChunkCount = 0
+        supplyMaxMs = 0
+        supplyTotalMs = 0
     }
 
     private static func nextChunk(_ box: ContinuousTTSChunkIteratorBox,

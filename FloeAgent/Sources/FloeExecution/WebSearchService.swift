@@ -1,6 +1,7 @@
 import Crypto
 import Foundation
 import FloeCore
+import FloeTools
 
 /// Parsed provider output. URL citations and a provider-generated answer stay
 /// separate so model text is never relabeled as per-URL evidence.
@@ -1178,5 +1179,100 @@ private final class SearchProviderRedirectDelegate: NSObject, URLSessionTaskDele
             return nil
         }
         return "\(scheme)://\(host):\(url.port ?? 443)"
+    }
+}
+
+// MARK: - Professional dataset source (unified web.search selector)
+
+/// Execution seam for web.search with source=professional. Production uses
+/// the exact owned MCP client registered for the selected account; tests may
+/// inject deterministic fakes. No generic HTTP API, remote-method argument or
+/// cross-source fallback exists at this boundary.
+public protocol WebSearchProfessionalExecuting: Sendable {
+    /// Accounts frozen for THIS run, not a live lookup that could widen it.
+    func instances(context: ToolContext) -> [WebSearchProfessionalInstance]
+
+    /// Executes only the validated query string against the selected frozen
+    /// account+generation. Arbitrary model JSON never crosses this seam.
+    func execute(
+        instance: WebSearchProfessionalInstance,
+        query: String,
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput
+}
+
+/// Default executor over the SAME injected registry as MCP registration. The
+/// private authority store owns the client closure, exact generation checks
+/// and late-result suppression; no credential is copied or migrated.
+public struct MCPRegistryProfessionalSearchExecutor: WebSearchProfessionalExecuting {
+    private let registry: ToolRunnerRegistry
+
+    public init(registry: ToolRunnerRegistry = .shared) {
+        self.registry = registry
+    }
+
+    public func instances(context: ToolContext) -> [WebSearchProfessionalInstance] {
+        guard let authority = context.professionalSearchAuthority,
+              authority.isBound(to: registry),
+              authority.allowsProfessionalSource else { return [] }
+        return authority.accounts
+    }
+
+    public func execute(
+        instance: WebSearchProfessionalInstance,
+        query: String,
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput {
+        guard let authority = context.professionalSearchAuthority else {
+            throw WebSearchProfessionalError.authorityUnavailable
+        }
+        return try await ProfessionalSearchAuthority.execute(
+            registry: registry,
+            authority: authority,
+            account: instance,
+            query: query,
+            context: context
+        )
+    }
+}
+
+/// Deterministic account selection for the professional source. An explicit
+/// selector must match exactly one registered account; several accounts
+/// without a selector are an explicit choice the model has to make. There is
+/// never an implicit first-match, cross-account or cross-channel fallback.
+public enum WebSearchProfessionalRouting {
+    public static func selectInstance(
+        _ instances: [WebSearchProfessionalInstance],
+        requestedProvider: String?
+    ) throws -> WebSearchProfessionalInstance {
+        guard !instances.isEmpty else {
+            throw WebSearchProfessionalError.notConfigured
+        }
+        guard let requested = requestedProvider?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !requested.isEmpty else {
+            guard instances.count == 1 else {
+                throw WebSearchProfessionalError.ambiguousSelection(
+                    instances.map(\.displayName)
+                )
+            }
+            return instances[0]
+        }
+        let needle = requested.lowercased()
+        // Only public account identity is selectable. A retired internal alias
+        // is neither a provider selector nor an authorization route.
+        let matches = instances.filter {
+            $0.serverID.uuidString.lowercased() == needle
+                || $0.displayName.lowercased() == needle
+        }
+        guard !matches.isEmpty else {
+            throw WebSearchProfessionalError.providerNotFound(requested)
+        }
+        guard matches.count == 1 else {
+            throw WebSearchProfessionalError.ambiguousSelection(
+                matches.map(\.displayName)
+            )
+        }
+        return matches[0]
     }
 }

@@ -323,7 +323,8 @@ final class VoiceRig {
     private(set) var coordinator: VoiceConversationCoordinator! = nil
 
     init(speechNormalizer: @escaping @Sendable (String) -> String = { $0 },
-         timing: VoiceConversationCoordinator.Timing = .init()) {
+         timing: VoiceConversationCoordinator.Timing = .init(),
+         diagnostics: (any VoiceConversationDiagnostics)? = nil) {
         coordinator = VoiceConversationCoordinator(
             authorization: auth,
             makeStack: { [weak self] in
@@ -347,7 +348,7 @@ final class VoiceRig {
             },
             driving: driving,
             clock: clock,
-            diagnostics: nil,
+            diagnostics: diagnostics,
             timing: timing,
             speechNormalizer: speechNormalizer
         )
@@ -662,6 +663,12 @@ struct VoiceConversationTests {
         }
         #expect(!rig.coordinator.answerText.contains("迟到"))
 
+        // Real capture keeps flowing silence after the barge command; the
+        // joint endpoint gate needs that SAME 0.9 s of actual quiet (a gap
+        // in level samples is never assumed quiet) before the staged command
+        // may auto-submit. Latency/count assertions below are unchanged.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 2)
@@ -928,7 +935,15 @@ struct VoiceConversationTests {
         #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.41 })
         // 6 s of voiced audio since the transcript → below the 8 s cap.
         #expect(rig.coordinator.state == .listening)
-        // And the utterance still endpoints normally.
+        // The endpoint joint gate (2026-10-25) additionally requires the SAME
+        // armed 0.9 s window of genuine microphone quiet before the staged
+        // text may auto-submit: deliver an explicit continuous silence tail
+        // (real capture always flows silence samples). The ORIGINAL latency
+        // and the exactly-one-submit assertion below are unchanged — this is
+        // a realistic level sequence, not a weaker check.
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }  // 1.0 s quiet
+        rig.stack.yieldLevel(0.03, speech: false, duration: 0.1)                    // last level, proves consumption
+        #expect(await rig.waitUntil { rig.coordinator.audioLevel == 0.03 })
         rig.clock.advance(by: 0.95)
         await rig.settle()
         #expect(rig.driving.starts.count == 1)

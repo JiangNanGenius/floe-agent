@@ -12,6 +12,11 @@ public struct WebSearchTool: AgentTool {
         public var recencyDays: Int?
         public var maxResults: Int?
         public var provider: String?
+        /// Explicit source selector: nil/`web` keeps the historical public-web
+        /// semantics byte-for-byte; `professional` routes the exact query to a
+        /// configured Volcengine DataPro dataset account. Unknown values are
+        /// validation errors, never silent defaults.
+        public var source: String?
     }
 
     public static let name = "web.search"
@@ -35,7 +40,7 @@ public struct WebSearchTool: AgentTool {
     static let minimumUsefulSnippetCharacters = 64
 
     public static let toolDescription =
-        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently."
+        "Search the public web without opening the visual browser. Returns normalized titles, URLs, snippets, index metadata (page_age = published OR last modified date, relative age, crawl date, source profile/favicon), provider provenance, citation IDs and an explicit contentState=searchMetadataOnly. Index metadata is NOT page verification: excerpts and dates come from the search index; use web.fetch (or browser tools when interaction is required) before relying on actual page contents, publication dates or quotes. Some providers also return a bounded provider-generated answer, marked separately from URL citations and still not fetched-page evidence. Use fast for one search provider, balanced for ordinary research, or deep to query up to three configured providers concurrently. Set source=professional to search a configured Volcengine DataPro professional dataset account (academic literature, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases) with the exact query; it accepts only query and provider, returns an untrusted professionalDatasetSummary envelope instead of page citations, and never falls back to or from public web providers. Professional dataset search is unavailable in temporary/public-web-only chats and fails clearly when no DataPro account is configured."
     public static let parametersJSON = #"""
     {
       "type":"object",
@@ -46,7 +51,8 @@ public struct WebSearchTool: AgentTool {
         "excludeDomains":{"type":"array","items":{"type":"string"},"description":"Optional domains to exclude"},
         "recencyDays":{"type":"integer","minimum":1,"maximum":1825},
         "maxResults":{"type":"integer","minimum":1,"maximum":50,"description":"Maximum number of returned results; defaults to 5 when omitted"},
-        "provider":{"type":"string","description":"Optional configured provider name, kind, or UUID"}
+        "provider":{"type":"string","description":"Optional configured provider name, kind, or UUID; with source=professional selects one configured DataPro account"},
+        "source":{"type":"string","enum":["web","professional"],"description":"Search source; defaults to web (public web providers). professional routes the exact query to a configured Volcengine DataPro dataset account with no cross-source fallback"}
       },
       "required":["query"],
       "additionalProperties":false
@@ -57,12 +63,51 @@ public struct WebSearchTool: AgentTool {
     public static let toolEffect: ToolEffect = .readOnly
 
     private let service: WebSearchService
-    public init(service: WebSearchService) { self.service = service }
+    /// Professional-source execution seam. `nil` (default) leaves the
+    /// professional source unconfigured: it fails clearly instead of silently
+    /// rerouting to public web providers.
+    private let professional: (any WebSearchProfessionalExecuting)?
+
+    public init(
+        service: WebSearchService,
+        professional: (any WebSearchProfessionalExecuting)? = nil
+    ) {
+        self.service = service
+        self.professional = professional
+    }
+
+    /// Strict source parsing shared by validate/execute: an unknown selector
+    /// is an error, never a silent web default.
+    static func parsedSource(_ raw: String?) throws -> WebSearchSource {
+        guard let raw else { return .web }
+        guard let source = WebSearchSource(rawValue: raw) else {
+            throw FloeError.validationFailed("source must be web or professional")
+        }
+        return source
+    }
 
     public func validate(_ args: Arguments) throws {
         let query = args.query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, query.utf8.count <= 2_000 else {
             throw FloeError.validationFailed("query must contain 1-2000 UTF-8 bytes")
+        }
+        let source = try Self.parsedSource(args.source)
+        if source == .professional {
+            // The reviewed DataPro adapter accepts one exact dataset question
+            // only. Web-only refinements are rejected with an actionable
+            // message rather than silently dropped or half-applied.
+            var rejected: [String] = []
+            if args.mode != nil { rejected.append("mode") }
+            if args.domains != nil { rejected.append("domains") }
+            if args.excludeDomains != nil { rejected.append("excludeDomains") }
+            if args.recencyDays != nil { rejected.append("recencyDays") }
+            if args.maxResults != nil { rejected.append("maxResults") }
+            guard rejected.isEmpty else {
+                throw FloeError.validationFailed(
+                    "source=professional accepts only query and provider; remove \(rejected.joined(separator: ", "))"
+                )
+            }
+            return
         }
         if let mode = args.mode, WebSearchMode(rawValue: mode) == nil {
             throw FloeError.validationFailed("mode must be fast, balanced, or deep")
@@ -74,6 +119,10 @@ public struct WebSearchTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        let source = try Self.parsedSource(args.source)
+        if source == .professional {
+            return try await executeProfessionalSearch(args, context: context)
+        }
         let response = try await service.search(WebSearchQuery(
             text: args.query.trimmingCharacters(in: .whitespacesAndNewlines),
             mode: WebSearchMode(rawValue: args.mode ?? "balanced") ?? .balanced,
@@ -85,6 +134,42 @@ public struct WebSearchTool: AgentTool {
             summaryEnabled: false
         ))
         return try Self.output(response)
+    }
+
+    /// Professional branch of the ONE native web.search tool. The base
+    /// descriptor stays readOnly/networkAccess and no approval-identity copy
+    /// is made. Only the frozen account registry's exact DataPro query adapter
+    /// runs; generic MCP methods keep their conservative mutating approval.
+    private func executeProfessionalSearch(
+        _ args: Arguments,
+        context: ToolContext
+    ) async throws -> ToolExecutionOutput {
+        guard !context.publicWebOnly,
+              !context.temporaryReadOnly,
+              context.allowedToolNames?.contains(Self.name) != false,
+              context.frozenEffectiveCatalogNames?.contains(Self.name) != false else {
+            throw FloeError.validationFailed("Professional search is outside this task's tool ceiling")
+        }
+        guard let authority = context.professionalSearchAuthority else {
+            throw WebSearchProfessionalError.authorityUnavailable
+        }
+        guard authority.allowsProfessionalSource else {
+            throw FloeError.validationFailed("Professional search is outside this task's tool ceiling")
+        }
+        guard let professional else {
+            throw WebSearchProfessionalError.notConfigured
+        }
+        let instance = try WebSearchProfessionalRouting.selectInstance(
+            professional.instances(context: context),
+            requestedProvider: args.provider
+        )
+        let output = try await professional.execute(
+            instance: instance,
+            query: args.query.trimmingCharacters(in: .whitespacesAndNewlines),
+            context: context
+        )
+        try context.cancellation.throwIfCancelled()
+        return output
     }
 
     /// Shared, backward-compatible serialization for both search tools. The

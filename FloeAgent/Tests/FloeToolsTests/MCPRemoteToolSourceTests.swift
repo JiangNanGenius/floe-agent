@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import FloeExecution
 @testable import FloeTools
 
 private final class MCPStubURLProtocol: URLProtocol, @unchecked Sendable {
@@ -448,48 +449,87 @@ struct MCPRemoteToolSourceTests {
         )
     }
 
-    @Test("DataPro search facade routes the exact dataset query through the existing MCP client")
+    @Test("One native web.search routes the exact DataPro query; no professional alias exists")
     func professionalSearchRoutesExactQueryAndPreservesAuthority() async throws {
         MCPStubURLProtocol.prepare([
-            .init(status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic company dataset result"}]}}"#.utf8))
+            .init(status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"synthetic company dataset result"}]}}"#.utf8)),
+            .init(status: 200, headers: ["Content-Type": "application/json"], body: Data(#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"synthetic unified dataset result"}]}}"#.utf8))
         ])
         let config = dataProConfiguration()
         let client = try MCPRemoteClient(configuration: config, credential: "synthetic-test-credential", session: session())
         let registry = ToolRunnerRegistry()
         MCPRemoteToolSource.register(configuration: config, client: client, tools: [dataProTool], registry: registry)
-        let name = VolcengineProfessionalSearch.toolName(for: config)
-        let facade = try #require(registry.runner(named: name))
+        let legacyName = VolcengineProfessionalSearch.toolName(for: config)
         let rawName = MCPRemoteToolSource.namespacedName(prefix: config.namespacePrefix + "_", remoteName: "dataPro_search")
         let raw = try #require(registry.runner(named: rawName))
-        #expect(registry.allDescriptors.map(\.name) == [name])
-        #expect(ToolCapabilityGroups.group(name) == "web")
-        #expect(facade.descriptor.effect == raw.descriptor.effect)
-        #expect(facade.descriptor.isSideEffecting == raw.descriptor.isSideEffecting)
-        #expect(facade.descriptor.riskLabels == raw.descriptor.riskLabels)
-        #expect(facade.descriptor.requiresHostScope == raw.descriptor.requiresHostScope)
-        #expect(facade.descriptor.parametersJSON == raw.descriptor.parametersJSON)
-        #expect(!TemporaryChatToolPolicy.isReadOnlySafe(facade.descriptor))
-        #expect(!ChatToolPolicy.isAllowedName(name))
-        let query = "企业工商：查询腾讯和阿里巴巴的公司档案。"
-        let arguments = try JSONSerialization.data(withJSONObject: ["query": query])
-        var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
-        context.allowedToolNames = [name]
-        let output = try await facade.execute(argumentsJSON: arguments, context: context)
-        let request = try #require(MCPStubURLProtocol.capturedRequests().first)
-        let requestBody = try #require(request.httpBody)
-        let envelope = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
-        let params = try #require(envelope["params"] as? [String: Any])
-        #expect(params["name"] as? String == "dataPro_search")
-        #expect((params["arguments"] as? [String: String]) == ["query": query])
-        let result = try #require(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
-        #expect(result["contentState"] as? String == "professionalDatasetSummary")
-        #expect(result["serverID"] as? String == config.id.uuidString)
-        #expect(result["content"] as? String == "synthetic company dataset result")
-        #expect(result["truncated"] as? Bool == false)
-        #expect(output.exitStatus == 0)
-        MCPRemoteToolSource.unregister(configuration: config, registry: registry)
+        // The raw generic MCP runner keeps its original conservative approval
+        // classification. Neither it nor a professional facade is discoverable.
         #expect(registry.allDescriptors.isEmpty)
+        #expect(registry.runner(named: legacyName) == nil)
+        #expect(raw.descriptor.effect == .mutating)
+        #expect(raw.descriptor.isSideEffecting)
+        #expect(raw.descriptor.riskLabels == [.networkAccess, .modifiesRemoteSystem])
+        #expect(!TemporaryChatToolPolicy.isReadOnlySafe(raw.descriptor))
+        #expect(!ChatToolPolicy.isAllowedName(legacyName))
+        let account = try #require(VolcengineProfessionalSearch.registeredInstances(
+            registry: registry
+        ).first { $0.serverID == config.id })
+        #expect(account.displayName == VolcengineProfessionalSearch.displayName)
+
+        // Direct raw transport remains the generic MCP path (canonical runtime
+        // approval is tested elsewhere); this is not the native-query route.
+        let query = "企业工商：查询腾讯和阿里巴巴的公司档案。"
+        let rawOutput = try await raw.execute(
+            argumentsJSON: try JSONSerialization.data(withJSONObject: ["query": query]),
+            context: ToolContext(runID: UUID(), cancellation: CancellationToken())
+        )
+        #expect(rawOutput.summary.contains("synthetic company dataset result"))
+
+        let tool = WebSearchTool(
+            service: WebSearchService(),
+            professional: MCPRegistryProfessionalSearchExecutor(registry: registry)
+        )
+        registry.register(tool)
+        #expect(registry.allDescriptors.map(\.name) == [WebSearchTool.name])
+        #expect(registry.allDescriptors[0].effect == .readOnly)
+        #expect(registry.allDescriptors[0].riskLabels == [.networkAccess])
+        let authority = ProfessionalSearchAuthority.freeze(
+            registry: registry,
+            allowedToolNames: [WebSearchTool.name]
+        )
+        let unifiedContext = ToolContext(
+            runID: UUID(),
+            allowedToolNames: [WebSearchTool.name],
+            professionalSearchAuthority: authority,
+            cancellation: CancellationToken(),
+            frozenEffectiveCatalogNames: [WebSearchTool.name]
+        )
+        let unifiedArguments = try JSONDecoder().decode(
+            WebSearchTool.Arguments.self,
+            from: Data(#"{"query":"司法案例：车辆贬值损失 裁判观点","source":"professional"}"#.utf8)
+        )
+        let unifiedOutput = try await tool.execute(unifiedArguments, context: unifiedContext)
+        let unifiedRequest = try #require(MCPStubURLProtocol.capturedRequests().last)
+        let unifiedBody = try #require(unifiedRequest.httpBody)
+        let unifiedEnvelope = try #require(JSONSerialization.jsonObject(with: unifiedBody) as? [String: Any])
+        let unifiedParams = try #require(unifiedEnvelope["params"] as? [String: Any])
+        #expect(unifiedParams["name"] as? String == "dataPro_search")
+        #expect((unifiedParams["arguments"] as? [String: String])
+            == ["query": "司法案例：车辆贬值损失 裁判观点"])
+        let unifiedResult = try #require(
+            JSONSerialization.jsonObject(with: Data(unifiedOutput.summary.utf8)) as? [String: Any]
+        )
+        #expect(unifiedResult["contentState"] as? String == "professionalDatasetSummary")
+        #expect(unifiedResult["serverID"] as? String == config.id.uuidString)
+        #expect(unifiedResult["content"] as? String == "synthetic unified dataset result")
+
+        MCPRemoteToolSource.unregister(configuration: config, registry: registry)
+        #expect(registry.allDescriptors.map(\.name) == [WebSearchTool.name])
         #expect(registry.runner(named: rawName) == nil)
+        #expect(registry.runner(named: legacyName) == nil)
+        #expect(!VolcengineProfessionalSearch.registeredInstances(
+            registry: registry
+        ).contains { $0.serverID == config.id })
     }
 
     @Test("DataPro organization is exact, enabled, per-account and does not promote arbitrary MCP methods")
@@ -503,10 +543,17 @@ struct MCPRemoteToolSourceTests {
         }
         #expect(VolcengineProfessionalSearch.toolName(for: first) != VolcengineProfessionalSearch.toolName(for: second))
         #expect(VolcengineProfessionalSearch.toolName(for: first).count <= 64)
-        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: first)) != nil)
-        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: second)) != nil)
+        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: first)) == nil)
+        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: second)) == nil)
+        let ledgerIDs = Set(VolcengineProfessionalSearch.registeredInstances(registry: registry).map(\.serverID))
+        #expect(ledgerIDs.contains(first.id))
+        #expect(ledgerIDs.contains(second.id))
         MCPRemoteToolSource.unregister(configuration: first, registry: registry)
-        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: second)) != nil)
+        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: first)) == nil)
+        #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: second)) == nil)
+        #expect(!VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == first.id })
+        #expect(VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == second.id })
+        MCPRemoteToolSource.unregister(configuration: second, registry: registry)
 
         var foreign = dataProConfiguration()
         foreign.endpoint = URL(string: "https://unrelated.example.test/mcp")!
@@ -518,6 +565,8 @@ struct MCPRemoteToolSourceTests {
             let client = try MCPRemoteClient(configuration: config, credential: "synthetic-test-credential", session: session())
             MCPRemoteToolSource.register(configuration: config, client: client, tools: [dataProTool], registry: registry)
             #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: config)) == nil)
+            #expect(!VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == config.id })
+            MCPRemoteToolSource.unregister(configuration: config, registry: registry)
         }
         let exact = dataProConfiguration()
         let client = try MCPRemoteClient(configuration: exact, credential: "synthetic-test-credential", session: session())
@@ -525,39 +574,161 @@ struct MCPRemoteToolSourceTests {
         arbitrary.remoteName = "company.delete"
         MCPRemoteToolSource.register(configuration: exact, client: client, tools: [arbitrary], registry: registry)
         #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: exact)) == nil)
+        #expect(!VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == exact.id })
         MCPRemoteToolSource.register(configuration: exact, client: client, tools: [], registry: registry)
         #expect(registry.runner(named: VolcengineProfessionalSearch.toolName(for: exact)) == nil)
+        #expect(!VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == exact.id })
+        MCPRemoteToolSource.unregister(configuration: exact, registry: registry)
     }
 
-    @Test("DataPro facade checks name ceiling, public-only restriction, cancellation and schema before transport")
+    @Test("Professional selector is exact and native read classification stays identity-stable")
+    func professionalSelectorAndClassificationAreExact() throws {
+        #expect(ProfessionalSearchAuthority.requestsProfessionalSource(
+            argumentsJSON: Data(#"{"query":"q","source":"professional"}"#.utf8)))
+        for json in [
+            #"{"query":"q","source":"web"}"#, #"{"query":"q"}"#,
+            #"{"query":"q","source":"Professional"}"#, #"{"source":true}"#,
+            "[]", "not json",
+        ] {
+            #expect(!ProfessionalSearchAuthority.requestsProfessionalSource(
+                argumentsJSON: Data(json.utf8)), Comment(rawValue: json))
+        }
+        let base = AnyAgentTool(WebSearchTool(service: WebSearchService())).descriptor
+        #expect(!base.isSideEffecting)
+        #expect(base.effect == .readOnly)
+        #expect(base.riskLabels == [.networkAccess])
+        #expect(TemporaryChatToolPolicy.isReadOnlySafe(base))
+        // Public-web projection retains the exact base descriptor identity;
+        // source=professional is denied by arguments, never by a copied and
+        // rehashed approval descriptor.
+        #expect(TemporaryChatToolPolicy.readOnlyDescriptor(base)?.authorizationIdentity
+            == base.authorizationIdentity)
+        let professional = Data(#"{"query":"q","source":"professional"}"#.utf8)
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: base, arguments: professional) != nil)
+        #expect(ChatToolPolicy.denialReason(
+            descriptor: base, arguments: professional, resourceContext: nil) != nil)
+        for json in [#"{"query":"q"}"#, #"{"query":"q","source":"web"}"#] {
+            #expect(TemporaryChatToolPolicy.denialReason(
+                descriptor: base, arguments: Data(json.utf8)) == nil)
+            #expect(ChatToolPolicy.denialReason(
+                descriptor: base, arguments: Data(json.utf8), resourceContext: nil) == nil)
+        }
+    }
+
+    @Test("Professional account state is isolated by registry and unregister is scoped")
+    func professionalRegistryIsolation() {
+        let first = ToolRunnerRegistry()
+        let second = ToolRunnerRegistry()
+        let id = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEE01")!
+        let runner: ProfessionalSearchAuthority.Runner = { _, _ in
+            ToolExecutionOutput(summary: "{}", fullOutputSHA256: "")
+        }
+        let account = ProfessionalSearchAuthority.register(
+            serverID: id, displayName: "Registry A", registry: first, runner: runner
+        )
+        #expect(VolcengineProfessionalSearch.registeredInstances(registry: first) == [account])
+        #expect(VolcengineProfessionalSearch.registeredInstances(registry: second).isEmpty)
+        #expect(!VolcengineProfessionalSearch.registeredInstances().contains { $0.serverID == id })
+        let frozen = ProfessionalSearchAuthority.freeze(
+            registry: first, allowedToolNames: [WebSearchTool.name]
+        )
+        #expect(frozen.accounts == [account])
+        #expect(!frozen.isBound(to: second))
+        ProfessionalSearchAuthority.unregister(serverID: id, registry: second)
+        #expect(VolcengineProfessionalSearch.registeredInstances(registry: first) == [account])
+        ProfessionalSearchAuthority.unregister(serverID: id, registry: first)
+        #expect(VolcengineProfessionalSearch.registeredInstances(registry: first).isEmpty)
+    }
+
+    @Test("A stale visible professional alias from an earlier build is purged on unregister")
+    func staleProfessionalAliasIsPurged() throws {
+        let config = dataProConfiguration()
+        let registry = ToolRunnerRegistry()
+        // Simulate the pre-unification registration: a VISIBLE runner under
+        // the same owned alias name.
+        let legacyDescriptor = ToolCatalog.Descriptor(
+            name: VolcengineProfessionalSearch.toolName(for: config),
+            toolDescription: "legacy visible alias",
+            parametersJSON: #"{"type":"object"}"#,
+            riskLabels: [.networkAccess],
+            isSideEffecting: true
+        )
+        registry.register(AnyAgentTool(descriptor: legacyDescriptor) { _, _ in
+            ToolExecutionOutput(summary: "{}", fullOutputSHA256: "")
+        })
+        #expect(registry.allDescriptors.contains { $0.name == legacyDescriptor.name })
+        MCPRemoteToolSource.unregister(configuration: config, registry: registry)
+        #expect(registry.runner(named: legacyDescriptor.name) == nil)
+        #expect(registry.allDescriptors.isEmpty)
+        #expect(!VolcengineProfessionalSearch.registeredInstances(registry: registry).contains { $0.serverID == config.id })
+    }
+
+    @Test("Native professional denials and cancellation happen before transport")
     func professionalSearchDenialsDoNotReachTransport() async throws {
         MCPStubURLProtocol.prepare([])
         let config = dataProConfiguration()
         let client = try MCPRemoteClient(configuration: config, credential: "synthetic-test-credential", session: session())
         let registry = ToolRunnerRegistry()
         MCPRemoteToolSource.register(configuration: config, client: client, tools: [dataProTool], registry: registry)
-        let name = VolcengineProfessionalSearch.toolName(for: config)
-        let runner = try #require(registry.runner(named: name))
-        let arguments = Data(#"{"query":"法律法规：竞业限制现行规定"}"#.utf8)
-        for mode in 0..<4 {
-            var context = ToolContext(runID: UUID(), cancellation: CancellationToken())
-            if mode == 0 { context.allowedToolNames = ["web.search"] }
-            if mode == 1 { context.publicWebOnly = true }
-            if mode == 2 { context.temporaryReadOnly = true }
-            if mode == 3 { context.cancellation.cancel() }
-            await #expect(throws: (any Error).self) { try await runner.execute(argumentsJSON: arguments, context: context) }
+        let tool = WebSearchTool(
+            service: WebSearchService(),
+            professional: MCPRegistryProfessionalSearchExecutor(registry: registry)
+        )
+        let arguments = try JSONDecoder().decode(
+            WebSearchTool.Arguments.self,
+            from: Data(#"{"query":"学术文献：AI","source":"professional"}"#.utf8)
+        )
+        let authority = ProfessionalSearchAuthority.freeze(
+            registry: registry, allowedToolNames: [WebSearchTool.name]
+        )
+        func validContext() -> ToolContext {
+            ToolContext(
+                runID: UUID(), allowedToolNames: [WebSearchTool.name],
+                professionalSearchAuthority: authority,
+                cancellation: CancellationToken(),
+                frozenEffectiveCatalogNames: [WebSearchTool.name]
+            )
         }
-        let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
-        await #expect(throws: (any Error).self) {
-            try await runner.execute(argumentsJSON: Data(#"{"query":"x","dataset":"hidden"}"#.utf8), context: context)
+        var denied = [ToolContext(
+            runID: UUID(), allowedToolNames: [WebSearchTool.name],
+            cancellation: CancellationToken()
+        )]
+        let noNames = ProfessionalSearchAuthority.freeze(
+            registry: registry, allowedToolNames: []
+        )
+        denied.append(ToolContext(
+            runID: UUID(), allowedToolNames: [],
+            professionalSearchAuthority: noNames,
+            cancellation: CancellationToken(), frozenEffectiveCatalogNames: []
+        ))
+        var publicOnly = validContext()
+        publicOnly.publicWebOnly = true
+        denied.append(publicOnly)
+        var temporary = validContext()
+        temporary.temporaryReadOnly = true
+        denied.append(temporary)
+        var noCatalog = validContext()
+        noCatalog.frozenEffectiveCatalogNames = []
+        denied.append(noCatalog)
+        var cancelled = validContext()
+        cancelled.cancellation.cancel()
+        denied.append(cancelled)
+        for context in denied {
+            await #expect(throws: (any Error).self) {
+                try await tool.execute(arguments, context: context)
+            }
         }
         #expect(MCPStubURLProtocol.capturedRequests().isEmpty)
         await client.disconnect()
-        await #expect(throws: (any Error).self) { try await runner.execute(argumentsJSON: arguments, context: context) }
+        await #expect(throws: (any Error).self) {
+            try await tool.execute(arguments, context: validContext())
+        }
         #expect(MCPStubURLProtocol.capturedRequests().isEmpty)
+        MCPRemoteToolSource.unregister(configuration: config, registry: registry)
     }
 
-    @Test("DataPro facade keeps error status and returns valid bounded JSON for escape-heavy data")
+    @Test("Native DataPro query keeps error status and bounded valid JSON")
     func professionalSearchBoundsOutputAndPreservesFailures() async throws {
         let text = String(repeating: "\"\\\n专业数据", count: 2000)
         let body = try JSONSerialization.data(withJSONObject: [
@@ -569,9 +740,23 @@ struct MCPRemoteToolSourceTests {
         let client = try MCPRemoteClient(configuration: config, credential: "synthetic-test-credential", session: session())
         let registry = ToolRunnerRegistry()
         MCPRemoteToolSource.register(configuration: config, client: client, tools: [dataProTool], registry: registry)
-        let runner = try #require(registry.runner(named: VolcengineProfessionalSearch.toolName(for: config)))
-        let context = ToolContext(runID: UUID(), cancellation: CancellationToken())
-        let output = try await runner.execute(argumentsJSON: Data(#"{"query":"学术文献：人工智能 近三年"}"#.utf8), context: context)
+        let tool = WebSearchTool(
+            service: WebSearchService(),
+            professional: MCPRegistryProfessionalSearchExecutor(registry: registry)
+        )
+        let authority = ProfessionalSearchAuthority.freeze(
+            registry: registry, allowedToolNames: [WebSearchTool.name]
+        )
+        let context = ToolContext(
+            runID: UUID(), allowedToolNames: [WebSearchTool.name],
+            professionalSearchAuthority: authority,
+            cancellation: CancellationToken(),
+            frozenEffectiveCatalogNames: [WebSearchTool.name]
+        )
+        let output = try await tool.execute(
+            WebSearchTool.Arguments(query: "学术文献：人工智能 近三年", source: "professional"),
+            context: context
+        )
         #expect(output.summary.count <= 4096)
         let result = try #require(JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
         #expect(result["truncated"] as? Bool == true)
@@ -581,8 +766,12 @@ struct MCPRemoteToolSourceTests {
 
         MCPStubURLProtocol.prepare([.init(status: 500, headers: ["Content-Type": "application/json"], body: Data("synthetic failure".utf8))])
         await #expect(throws: (any Error).self) {
-            try await runner.execute(argumentsJSON: Data(#"{"query":"股票金融：000001.SZ 行情"}"#.utf8), context: context)
+            try await tool.execute(
+                WebSearchTool.Arguments(query: "股票金融：000001.SZ 行情", source: "professional"),
+                context: context
+            )
         }
+        MCPRemoteToolSource.unregister(configuration: config, registry: registry)
     }
 
     @Test("Remote MCP error bodies and messages are redacted before surfacing")

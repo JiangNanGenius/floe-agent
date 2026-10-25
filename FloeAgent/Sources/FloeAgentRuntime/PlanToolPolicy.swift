@@ -5,6 +5,7 @@ import FloeTools
 public enum PlanToolDenialReason: String, Sendable, Codable, Hashable {
     case mutationNotAllowed
     case internalStateNotModelCallable
+    case professionalSearchNotAllowed
     case unknownTool
 }
 
@@ -43,6 +44,22 @@ public struct PlanToolPolicy: Sendable {
                 outputDigest: ""
             )
         }
+        // The native professional source is intentionally read-only, but plan
+        // mode keeps its previous public-web boundary. This argument-aware
+        // denial leaves the base descriptor/authorization identity untouched.
+        if descriptor.name == ProfessionalSearchAuthority.unifiedToolName,
+           ProfessionalSearchAuthority.requestsProfessionalSource(argumentsJSON: call.argumentsJSON) {
+            let error = PlanToolPolicyError(
+                reason: .professionalSearchNotAllowed,
+                toolName: descriptor.name
+            )
+            return ToolResult(
+                callID: call.id,
+                status: .denied,
+                outputSummary: error.localizedDescription,
+                outputDigest: ""
+            )
+        }
         guard case .failure(let error) = decision(for: descriptor) else { return nil }
         return ToolResult(
             callID: call.id,
@@ -68,6 +85,8 @@ public struct PlanToolPolicyError: Error, Sendable, Codable, Hashable, Localized
             "Plan mode is read-only; tool '\(toolName)' may change external state"
         case .internalStateNotModelCallable:
             "Floe internal draft state cannot be modified through tool '\(toolName)'"
+        case .professionalSearchNotAllowed:
+            "Plan mode allows public web search only; professional dataset search requires an ordinary agent run"
         case .unknownTool:
             "Plan mode denied unknown tool '\(toolName)'"
         }

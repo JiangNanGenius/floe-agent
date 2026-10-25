@@ -315,6 +315,20 @@ struct ChatToolPolicyTests {
         #expect(ChatToolPolicy.publicWebToolNames == TemporaryChatToolPolicy.publicWebToolNames)
     }
 
+    @Test("Fast chat denies professional source without changing public web calls")
+    func professionalSourceDenied() {
+        let reason = ChatToolPolicy.denialReason(
+            descriptor: web("web.search"),
+            arguments: arguments(#"{"query":"学术文献","source":"professional"}"#),
+            resourceContext: nil)
+        #expect(reason?.contains("public web search only") == true)
+        for json in [#"{"query":"weather"}"#, #"{"query":"weather","source":"web"}"#] {
+            #expect(ChatToolPolicy.denialReason(
+                descriptor: web("web.search"), arguments: arguments(json),
+                resourceContext: nil) == nil)
+        }
+    }
+
     @Test("denial copy is actionable and never grants anything")
     func denialCopyIsActionable() {
         let reason = ChatToolPolicy.denialReason(

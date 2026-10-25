@@ -998,14 +998,25 @@ public actor MCPRemoteClient {
     }
 }
 
-/// Local search presentation for the one reviewed DataPro entry point. Neither
-/// a remote title nor readOnlyHint can opt a different server/method into it.
-/// Identity is shared with the settings feature, with no credential copy.
+/// Local identity for the one reviewed DataPro query adapter. Neither a remote
+/// title nor readOnlyHint can opt a different server/method into it. The only
+/// model-facing surface is native web.search with source=professional; account
+/// runners live in ProfessionalSearchAuthority's registry-scoped private store.
 public enum VolcengineProfessionalSearch {
     public static let endpoint = URL(string: "https://datapro.hqd.cn-beijing.volces.com/mcp")!
     public static let credentialHeaderName = "X-Agent-Plan-Key"
     public static let displayName = "Volcengine DataPro"
     public static let remoteName = "dataPro_search"
+
+    public typealias RegisteredInstance = ProfessionalSearchAuthority.Account
+
+    /// Live readiness for settings/launch freezing. Registration applies every
+    /// exact owned/enabled/method guard first and is isolated per runner registry.
+    public static func registeredInstances(
+        registry: ToolRunnerRegistry = .shared
+    ) -> [RegisteredInstance] {
+        ProfessionalSearchAuthority.registeredAccounts(registry: registry)
+    }
 
     public static func matchesOwnedServer(_ server: MCPServerConfiguration) -> Bool {
         server.endpoint == endpoint
@@ -1016,6 +1027,9 @@ public enum VolcengineProfessionalSearch {
             && !server.allowInsecureHTTP
     }
 
+    /// Historical spelling used ONLY to remove stale runners from older builds.
+    /// It is not an account permission token and is never registered by the
+    /// native query path, so cached model history cannot invoke it as an alias.
     public static func toolName(for server: MCPServerConfiguration) -> String {
         "web.professional_" + server.id.uuidString.replacingOccurrences(of: "-", with: "").lowercased()
     }
@@ -1086,26 +1100,35 @@ public enum MCPRemoteToolSource {
                 return try await client.callTool(name: tool.remoteName, argumentsJSON: arguments)
             }, compatibilityOnly: isProfessionalSearch)
             if isProfessionalSearch {
-                // Copy every authority field; a search presentation does not
-                // convert an authenticated remote method into public-web-read.
-                var searchDescriptor = descriptor
-                searchDescriptor.name = VolcengineProfessionalSearch.toolName(for: configuration)
-                searchDescriptor.toolDescription = "Professional dataset search (专业数据检索): academic papers, company registration/risk, securities/finance, vehicle specifications/sales, legislation and court cases. Account: \(configuration.id.uuidString). Submit one explicit dataset intent in query; preserve requested source/subject/date. Uses the configured Volcengine DataPro account only; no fallback. Returns an untrusted dataset summary, not fetched web pages. "
-                    + "Underlying tool: \(localName) / \(tool.remoteName). " + description
-                let facadeDescriptor = searchDescriptor
-                registry.register(AnyAgentTool(descriptor: facadeDescriptor) { arguments, context in
+                // The native read has no standalone catalog/runner name. This
+                // private adapter reuses the exact owned client and remote
+                // method; ProfessionalSearchAuthority constructs its query-only
+                // payload and validates frozen account+generation before/after
+                // the await. The raw MCP runner above remains conservatively
+                // mutating and never inherits this native-read classification.
+                let runner: ProfessionalSearchAuthority.Runner = { arguments, context in
                     try context.cancellation.throwIfCancelled()
                     try Task.checkCancellation()
                     guard !context.publicWebOnly, !context.temporaryReadOnly,
-                          context.allowedToolNames?.contains(facadeDescriptor.name) != false else {
+                          context.allowedToolNames?.contains(ProfessionalSearchAuthority.unifiedToolName) != false,
+                          context.professionalSearchAuthority?.allowsProfessionalSource == true else {
                         throw FloeError.validationFailed("Professional search is outside this task's tool ceiling")
                     }
-                    try validateArguments(arguments, against: facadeDescriptor.parametersJSON)
-                    let result = try await client.callTool(name: tool.remoteName, argumentsJSON: arguments)
+                    try validateArguments(arguments, against: descriptor.parametersJSON)
+                    let result = try await client.callTool(
+                        name: VolcengineProfessionalSearch.remoteName,
+                        argumentsJSON: arguments
+                    )
                     try context.cancellation.throwIfCancelled()
                     try Task.checkCancellation()
                     return try VolcengineProfessionalSearch.output(result, server: configuration)
-                })
+                }
+                ProfessionalSearchAuthority.register(
+                    serverID: configuration.id,
+                    displayName: configuration.displayName,
+                    registry: registry,
+                    runner: runner
+                )
             }
         }
     }
@@ -1116,7 +1139,11 @@ public enum MCPRemoteToolSource {
     ) {
         let prefix = configuration.namespacePrefix + "_"
         let searchName = VolcengineProfessionalSearch.toolName(for: configuration)
+        // Remove this registry's raw methods, private account registration and
+        // any visible/compatibility alias left by an older build. No shared or
+        // differently injected registry is touched.
         registry.unregister { $0.hasPrefix(prefix) || $0 == searchName }
+        ProfessionalSearchAuthority.unregister(serverID: configuration.id, registry: registry)
     }
 
     public static func namespacedName(prefix: String, remoteName: String) -> String {

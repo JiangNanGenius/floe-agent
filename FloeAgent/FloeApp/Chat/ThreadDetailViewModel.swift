@@ -125,6 +125,12 @@ final class ThreadDetailViewModel: ObservableObject {
     @Published private(set) var hasLoadedSpeechHistory = false
     @Published private(set) var earlierEventRunIDs = Set<UUID>() { didSet { timelineRevision &+= 1 } }
     @Published private(set) var loadingEventRunIDs = Set<UUID>()
+    /// Runs whose latest earlier-events page fetch failed. The paged row stays
+    /// actionable through an explicit retry; auto-paging pauses until either
+    /// that retry or a conversation reload succeeds (never a silent storm).
+    @Published private(set) var failedEarlierEventRunIDs = Set<UUID>()
+    private var earlierEventFailureMessages: [UUID: String] = [:]
+    private var earlierEventActionErrorOwner: UUID?
     @Published private(set) var loadingEarlierMessages = false
     /// Composer draft text. Every real change (typing, dictation, a send's
     /// own clear, a failure restore) advances `draftGeneration`; a successful
@@ -585,6 +591,11 @@ final class ThreadDetailViewModel: ObservableObject {
             if generation == loadGeneration { hasLoaded = true }
         }
         actionError = nil
+        // A reload re-arms auto-paging: a transient earlier-events failure
+        // from the previous pass must not permanently keep history folded.
+        failedEarlierEventRunIDs.removeAll()
+        earlierEventFailureMessages.removeAll()
+        earlierEventActionErrorOwner = nil
         var stage = "conversationRead"
         var preferredModeWarning: String?
         do {
@@ -782,20 +793,54 @@ final class ThreadDetailViewModel: ObservableObject {
     func loadEarlierEvents(runID: UUID) async {
         guard loadingEventRunIDs.insert(runID).inserted else { return }
         defer { loadingEventRunIDs.remove(runID) }
+        // Fence the page against a reload and against the boundary row's
+        // own visibility task: a normal scroll-away cancellation or a newer
+        // conversation load must never merge stale rows, surface an action
+        // error, or arm the retry state. Only a current genuine fetch
+        // failure keeps the row actionable.
+        let generation = loadGeneration
         do {
             let before = eventCoverage[runID]?.earlierCursor
-            let page: [RunEventRecord]
-            let runStore = center.runStore(for: conversationID)
-            if let before {
-                page = try await runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 51)
-            } else {
-                page = try await runStore.recentEvents(runID: runID, limit: 51)
-            }
+            let page = try await earlierEventPage(runID: runID, before: before)
+            guard !Task.isCancelled, generation == loadGeneration else { return }
             mergeEventPage(page, runID: runID, before: before)
+            failedEarlierEventRunIDs.remove(runID)
+            if let prior = earlierEventFailureMessages.removeValue(forKey: runID),
+               earlierEventActionErrorOwner == runID, actionError == prior {
+                actionError = nil
+                earlierEventActionErrorOwner = nil
+            }
             let selected = eventsByRun[runID, default: []]
             if selectedRunID == runID, events != selected { events = selected }
-        } catch { actionError = presentableError(error, stage: "olderEvents") }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled, generation == loadGeneration else { return }
+            let message = presentableError(error, stage: "olderEvents")
+            earlierEventFailureMessages[runID] = message
+            earlierEventActionErrorOwner = runID
+            failedEarlierEventRunIDs.insert(runID)
+            actionError = message
+        }
     }
+
+    /// One bounded earlier-events fetch. The default path pages the
+    /// conversation's run store; focused regressions may replace the fetch
+    /// through `earlierEventPageOverride` to prove the per-run failure and
+    /// retry bookkeeping without corrupting the shared store under test.
+    private func earlierEventPage(runID: UUID, before: Int?) async throws -> [RunEventRecord] {
+        if let earlierEventPageOverride {
+            return try await earlierEventPageOverride(runID, before, 51)
+        }
+        let runStore = center.runStore(for: conversationID)
+        if let before {
+            return try await runStore.earlierEvents(runID: runID, beforeSequence: before, limit: 51)
+        }
+        return try await runStore.recentEvents(runID: runID, limit: 51)
+    }
+
+    /// Test seam for `earlierEventPage`; nil (production) uses the run store.
+    var earlierEventPageOverride: ((_ runID: UUID, _ before: Int?, _ limit: Int) async throws -> [RunEventRecord])?
 
     func loadEarlierMessages() async {
         guard !loadingEarlierMessages, hasEarlierMessages, let earlierMessageCursor = messageCoverage.earlierCursor else { return }

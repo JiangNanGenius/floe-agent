@@ -175,6 +175,11 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     private var epoch: UInt64 = 0
     private var scheduledFrames = 0
     private var completedFrames = 0
+    /// EXPLICIT pause intent (2026-10-25): consulted by every auto-start
+    /// site so accepted-during-pause buffers queue instead of silently
+    /// resuming output. Guarded by `playbackLock` with the epoch it is
+    /// scoped to.
+    private var playbackIntent = VoicePlaybackIntentGate()
     /// Last closed-vocabulary scheduling refusal cause, for transition-only
     /// diagnostics (never one line per retry). Guarded by `playbackLock`.
     private var lastScheduleRejectCause: String?
@@ -633,10 +638,25 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
             )
             return false
         }
-        // The restart interrupted answer playback; resume rendering. Played
-        // -frame truth is unaffected — completion callbacks of dropped
-        // buffers are epoch-fenced and never credit a newer round.
-        playerNode.play()
+        // The restart interrupted answer playback; resume rendering ONLY
+        // when no explicit pause intent is active — a barge or app pause
+        // must survive an in-place graph restart, and the queued buffers
+        // wait for the legitimate resume instead of silently starting.
+        // Played-frame truth is unaffected — completion callbacks of
+        // dropped buffers are epoch-fenced and never credit a newer round.
+        //
+        // COMMAND ORDERING (primary review 2026-10-25): this recovery runs
+        // on a non-MainActor executor (watchdog/config-change tasks), while
+        // every coordinator-driven pause/resume/stop/schedule control lands
+        // on the MainActor. Re-checking the veto and issuing `play()` on a
+        // bare lock would leave a window where a pause landing between the
+        // check and the call is undone by this replay. Inside the hop the
+        // decision and the command form ONE unit serialized with all other
+        // playback controls (the lock itself is released before the
+        // CoreAudio call inside `mayAutoStartPlayback`).
+        await MainActor.run {
+            if self.mayAutoStartPlayback() { self.playerNode.play() }
+        }
         resetCaptureReadiness()
         Self.logGraphEvent("event=recoveryRestarted reason=\(reason)")
         return true
@@ -937,7 +957,12 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
                 }
             }
         )
-        if !playerNode.isPlaying { playerNode.play() }
+        // Auto-start is INTENT-gated (2026-10-25): an accepted buffer may
+        // queue while an explicit pause holds, but it can never silently
+        // resume rendering — the legitimate `resumePlayback()` (false-start
+        // at the same position / manual resume / fresh-epoch start) is the
+        // only path that releases the veto.
+        if !playerNode.isPlaying, mayAutoStartPlayback() { playerNode.play() }
         return .scheduled(frames: frames)
         #endif
     }
@@ -978,11 +1003,41 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
     /// coordinator's queued total. Kept for seam symmetry.
     func endQueuedAudio() {}
 
+    /// Production decision seam: EXPLICIT pause intent for the CURRENT
+    /// epoch vetoes every auto-start site (scheduleChunk arrival, graph
+    /// recovery). Queueing and played-frame truth are untouched: a paused
+    /// player keeps its scheduled buffers and its position. COMMAND
+    /// ORDERING: every site pairs this check with its `play()` inside one
+    /// MainActor job — `scheduleChunk`/`pause`/`resume`/`stop` are called
+    /// synchronously from the @MainActor coordinator, and the only
+    /// off-actor consumer (the capture-recovery restart) issues check+play
+    /// through a `MainActor.run` hop — so a pause can never land between
+    /// the veto read and the command. Tests exercise the real gate and the
+    /// stack seam; the simulator cannot run the AVAudio graph.
+    func mayAutoStartPlayback() -> Bool {
+        playbackLock.withLock { playbackIntent.mayAutoStartPlayback(currentEpoch: epoch) }
+    }
+
     func pausePlayback() {
+        // Record the EXPLICIT intent before touching the player: the next
+        // accepted buffer must queue, never silently resume (2026-10-25
+        // defect: scheduleChunk's `!isPlaying → play()` undid every pause).
+        playbackLock.withLock { playbackIntent.pause(epoch: epoch) }
         playerNode.pause()
     }
 
     func resumePlayback() {
+        // The legitimate release of the veto. FENCE TRUTH (primary review
+        // 2026-10-25): this protocol method carries NO caller epoch, so the
+        // live path always passes the CURRENT epoch and clears any current
+        // pause. What fences a stale resume in production is the
+        // COORDINATOR: `endBargePause` runs only while the live round still
+        // owns `outputPausedByBarge`, `resumeOutput` only while it owns
+        // `appPaused`, and every cancelled/finished round goes through
+        // `finishRound` → `stopPlayback` (fresh epoch, cleared intent)
+        // instead — pinned by VoicePlaybackIntentTests at the coordinator
+        // seam, not by a claim this signature cannot honor.
+        playbackLock.withLock { playbackIntent.resume(epoch: epoch) }
         #if !targetEnvironment(simulator)
         if graphLock.withLock({ engineStarted }) { playerNode.play() }
         #endif
@@ -999,6 +1054,10 @@ final class VoiceConversationLiveStack: VoiceConversationStack, @unchecked Senda
         playbackLock.lock()
         epoch &+= 1
         let fencedEpoch = epoch
+        // A stop is a NEW round/session boundary: any pause intent of the
+        // cancelled round must never gate the next answer, and the trailing
+        // explicit re-play below is the legitimate fresh-epoch start.
+        playbackIntent.beginEpoch(fencedEpoch)
         playbackLock.unlock()
         playerNode.stop()
         playerNode.reset()

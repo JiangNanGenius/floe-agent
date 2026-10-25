@@ -7118,6 +7118,40 @@
         }
       }
     },
+    "chat.thread_detail_view.loading_earlier_tool_activity": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Loading earlier tool activity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在加载更早的工具记录"
+          }
+        }
+      }
+    },
+    "chat.thread_detail_view.earlier_tool_activity_load_failed": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Couldn't load earlier tool activity"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法加载更早的工具记录"
+          }
+        }
+      }
+    },
     "chat.thread_detail_view.show_earlier_tool_activity": {
       "extractionState": "manual",
       "localizations": {
