@@ -43,6 +43,10 @@ import FloeTools
 import FloeEnvironments
 import FloeAgentRuntime
 import FloeSecurity
+import UserNotifications
+import FloeExecution
+import FloePersistence
+import FloeSkills
 @testable import FloeApp
 
 // MARK: - Scripted provider adapters (never a real model)
@@ -1417,4 +1421,1588 @@ private func scriptedCall(id: String, name: String, arguments: String) throws ->
         scope: .local
     )
 }
+
+// ==== Skill Hub guest qualification appended blocks ====
+// ============================================================================
+// Skill Hub guest qualification — PRIVATE PROPOSAL (job-f1b6a8e6bafa4285).
+//
+// Append-only content for FloeAgent/Tests/FloeAppTests/SubagentSimulatorExecutionTests.swift.
+// Base bytes: source 37bdeb14 (file sha256 3879c0e9fedf5896132d44d5d86d9e2110778aea133e189be1c88b3a3517421c,
+// 1420 lines; unchanged through ba01e73e/build12 per Main). Insert this block
+// AFTER the `scriptedCall` function and BEFORE the final `#endif`, and add the
+// four imports listed in each patch header. Main's line 76 `.textDelta(.init(text: …))`
+// and line 478 interpolated-`Comment` fixes are untouched by these hunks.
+//
+// Opt-in, fail-closed (a plain disabled run is reported as disabled, never a
+// pass — the existing real-guest policy in this file):
+//   * FLOE_SKILLHUB_PY_QUALIFICATION=1       + FLOE_SKILL_HUB_SOURCES_DIR + FLOE_SKILL_HUB_WHEELS_ZIP
+//   * FLOE_SKILLHUB_WEBAPP_QUALIFICATION=1   + FLOE_SKILL_HUB_SOURCES_DIR
+//   * FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1 (bundled 1.0.1 template only)
+//
+// Everything executes through the REAL production chain already used above:
+// bootGuest → makeRuntime → active parent → requireQualifiedKernel →
+// dispatchChildTool (exec.shell / browser.* / jobs.status / jobs.cancel), the
+// App's production BackgroundJobService.submit for long exec.shell stages and
+// exec.localService (the same jobs.submit shape proven by
+// FloeApp.LocalLinuxStaticServiceRealVMTests), the digest-gated
+// MCPServiceTemplate/SignedContentArchive path, and the real MCPRemoteClient.
+// No host interpreter, no fake guest, no copied executor, no model inference,
+// no new tool or environment subsystem.
+// ============================================================================
+
+// MARK: - Skill Hub staging / pinned inputs (file scope, private)
+
+/// One staged file with its exact bytes pinned by digest.
+private struct SkillHubStagedFile: Encodable {
+    let path: String
+    let sha256: String
+    let bytes: Int
+}
+
+/// The manifest the GUEST re-hashes: every staged path must match byte-exact.
+private struct SkillHubStagingManifest: Encodable {
+    let files: [SkillHubStagedFile]
+}
+
+/// Guest-side identity + manifest verification (stdlib only, executed INSIDE
+/// the Linux guest through exec.shell; the host never interprets sources).
+private let skillHubStageVerifyScript = """
+import hashlib, json, pathlib, platform, sys
+manifest = json.loads(pathlib.Path('/workspace/skill-hub-staging.json').read_text())
+bad = []
+for entry in manifest['files']:
+    p = pathlib.Path('/workspace') / entry['path']
+    try:
+        data = p.read_bytes()
+    except OSError:
+        bad.append(entry['path'] + ' MISSING')
+        continue
+    if hashlib.sha256(data).hexdigest() != entry['sha256'] or len(data) != entry['bytes']:
+        bad.append(entry['path'] + ' MISMATCH')
+print('FLOE_GUEST_MACHINE=' + platform.machine())
+print('FLOE_GUEST_SYSTEM=' + platform.system())
+print('FLOE_GUEST_PYTHON=' + sys.version.replace('\\n', ' '))
+print('FLOE_GUEST_STAGE files=%d bad=%d' % (len(manifest['files']), len(bad)))
+for item in bad:
+    print('FLOE_GUEST_STAGE_BAD ' + item)
+sys.exit(0 if not bad else 1)
+"""
+
+/// Minimal `jobs.status` progress projection for exec.localService readiness.
+private struct SkillHubServiceProgress: Decodable {
+    let state: String
+    let previewURL: String?
+}
+
+/// Resolves and fail-closes the environment-driven staging inputs. These are
+/// test-only input fixture paths, never a model-facing host bypass.
+private enum SkillHubInputs {
+    static var sourcesDir: URL? {
+        ProcessInfo.processInfo.environment["FLOE_SKILL_HUB_SOURCES_DIR"].map { URL(fileURLWithPath: $0) }
+    }
+    static var wheelsZip: URL? {
+        ProcessInfo.processInfo.environment["FLOE_SKILL_HUB_WHEELS_ZIP"].map { URL(fileURLWithPath: $0) }
+    }
+    static let wheelsZipSHA256 =
+        "fbcfe04038f0ea320afb5caa2a69b4deef27e1771a25c8f7b7e435fe755c5c5c"
+    static let wheelsZipBytes = 7_153_675
+    static let wheelNames: [String] = [
+        "certifi-2026.10.23-py3-none-any.whl",
+        "charset_normalizer-3.5.2-py3-none-any.whl",
+        "idna-3.20-py3-none-any.whl",
+        "mpmath-1.3.0-py3-none-any.whl",
+        "requests-2.34.2-py3-none-any.whl",
+        "sympy-1.14.0-py3-none-any.whl",
+        "urllib3-2.8.0-py3-none-any.whl",
+    ]
+
+    static func requireSourcesDir() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["FLOE_SKILL_HUB_SOURCES_DIR"] ?? ""
+        guard !path.isEmpty else {
+            throw FloeError.validationFailed("FLOE_SKILLHUB qualification requires FLOE_SKILL_HUB_SOURCES_DIR")
+        }
+        let dir = URL(fileURLWithPath: path)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            throw FloeError.notFound("Skill Hub sources directory does not exist: \(dir.path)")
+        }
+        return dir
+    }
+
+    static func requireWheelsZip() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["FLOE_SKILL_HUB_WHEELS_ZIP"] ?? ""
+        guard !path.isEmpty else {
+            throw FloeError.validationFailed("The wheel transport test requires FLOE_SKILL_HUB_WHEELS_ZIP")
+        }
+        let url = URL(fileURLWithPath: path)
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true, values.fileSize == wheelsZipBytes else {
+            throw FloeError.validationFailed(
+                "Wheel transport zip size is \(String(describing: values.fileSize)), expected \(wheelsZipBytes)")
+        }
+        let digest = FloeDigest.sha256Hex(try Data(contentsOf: url))
+        guard digest == wheelsZipSHA256 else {
+            throw FloeError.validationFailed("Wheel transport zip sha256 mismatch: \(digest)")
+        }
+        return url
+    }
+}
+
+/// Byte-exact staging of hub sources into the test-owned native workspace;
+/// the guest consumes them through the existing /workspace path mapping.
+private enum SkillHubStager {
+    static func stage(_ sourceRoot: URL, to workspaceRoot: URL, relativePrefix: String,
+                      into manifest: inout [SkillHubStagedFile]) throws {
+        guard let enumerator = FileManager.default.enumerator(
+            at: sourceRoot, includingPropertiesForKeys: [.isRegularFileKey], options: []) else {
+            throw FloeError.notFound("Cannot enumerate \(sourceRoot.path)")
+        }
+        var staged = 0
+        for case let fileURL as URL in enumerator {
+            let values = try fileURL.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else { continue }
+            let relative = String(fileURL.path.dropFirst(sourceRoot.path.count + 1))
+            let destination = workspaceRoot
+                .appendingPathComponent(relativePrefix, isDirectory: true)
+                .appendingPathComponent(relative, isDirectory: false)
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let bytes = try Data(contentsOf: fileURL)
+            try bytes.write(to: destination, options: .atomic)
+            manifest.append(SkillHubStagedFile(
+                path: relativePrefix + "/" + relative,
+                sha256: FloeDigest.sha256Hex(bytes),
+                bytes: bytes.count))
+            staged += 1
+        }
+        guard staged > 0 else {
+            throw FloeError.notFound("No files found under \(sourceRoot.path)")
+        }
+    }
+
+    static func stageBytes(_ bytes: Data, to workspaceRoot: URL, path: String,
+                           into manifest: inout [SkillHubStagedFile]) throws {
+        let destination = workspaceRoot.appendingPathComponent(path, isDirectory: false)
+        try FileManager.default.createDirectory(
+            at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try bytes.write(to: destination, options: .atomic)
+        manifest.append(SkillHubStagedFile(path: path, sha256: FloeDigest.sha256Hex(bytes),
+                                           bytes: bytes.count))
+    }
+
+    static func writeManifest(_ files: [SkillHubStagedFile], at workspaceRoot: URL) throws {
+        let data = try JSONEncoder().encode(SkillHubStagingManifest(files: files))
+        try data.write(to: workspaceRoot.appendingPathComponent("skill-hub-staging.json"),
+                       options: .atomic)
+    }
+}
+
+// MARK: - Shared child-dispatch/service helpers
+
+extension SubagentSimulatorExecutionTests {
+
+    /// One `exec.shell` dispatch through the same active-parent child chain.
+    func skillHubShell(
+        runtime: FloeAgentRuntime,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        tag: String,
+        command: String,
+        environment: [String: String] = [:],
+        timeout: Int = 120
+    ) async throws -> ToolResult {
+        var arguments: [String: Any] = [
+            "command": command, "timeout": timeout, "maxOutputBytes": 24_576,
+        ]
+        if !environment.isEmpty { arguments["env"] = environment }
+        let call = try toolCall(id: tag, toolName: "exec.shell", arguments: try Self.json(arguments))
+        return await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+    }
+
+    /// A background `exec.shell` job through the production job service
+    /// (the proven LocalLinuxStaticServiceRealVMTests submission shape).
+    func skillHubSubmitShell(
+        jobs: BackgroundJobService, runID: UUID, environmentID: String, root: URL,
+        name: String, command: String, timeout: Int, cwd: String = "."
+    ) async throws -> UUID {
+        let job = try await jobs.submit(
+            runID: runID,
+            toolCallID: "skill-hub-" + name + "-" + UUID().uuidString,
+            targetTool: "exec.shell",
+            payloadJSON: JSONSerialization.data(withJSONObject: [
+                "command": command, "cwd": cwd, "timeout": timeout, "maxOutputBytes": 24_576,
+            ]),
+            scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+            environmentID: environmentID,
+            submissionSource: .nativeService,
+            waitForCompletion: false)
+        try #require(job.runID == runID && job.environmentID == environmentID,
+                     "Skill Hub job ownership must match the submitted run and environment")
+        return job.id
+    }
+
+    func skillHubServiceProgress(_ data: Data?) -> SkillHubServiceProgress? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(SkillHubServiceProgress.self, from: data)
+    }
+
+    func skillHubWaitTerminal(
+        _ jobs: BackgroundJobService, id: UUID, seconds: TimeInterval
+    ) async throws -> BackgroundJob {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if let job = try await jobs.job(id: id), job.state.isTerminal { return job }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw FloeError.validationFailed("Skill Hub job \(id) never reached a terminal state; preserve its environment")
+    }
+
+    /// `exec.localService` readiness exactly as the proven static-service test.
+    /// previewURL is accepted only with the recorded "running" state, and every
+    /// poll is retained as evidence.
+    func skillHubWaitPreview(
+        _ jobs: BackgroundJobService, id: UUID, samples: inout [[String: String]],
+        timeout: TimeInterval
+    ) async throws -> URL {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            guard let job = try await jobs.job(id: id) else {
+                throw FloeError.notFound("Skill Hub service job disappeared")
+            }
+            if job.state.isTerminal {
+                throw FloeError.validationFailed(
+                    "Skill Hub service ended before readiness: \(job.lastError ?? job.state.rawValue)")
+            }
+            let progress = skillHubServiceProgress(job.progressJSON)
+            samples.append([
+                "at": ISO8601DateFormatter().string(from: Date()),
+                "state": progress?.state ?? "unknown",
+                "previewURL": progress?.previewURL ?? "",
+            ])
+            if let progress, progress.state == "running", let text = progress.previewURL,
+               let url = URL(string: text) {
+                return url
+            }
+            try await Task.sleep(for: .milliseconds(400))
+        }
+        throw FloeError.validationFailed("Skill Hub service readiness deadline exceeded; inspect the retained poll samples, do not resubmit")
+    }
+
+    /// Creates the durable conversation + run rows the production job service
+    /// and browser ownership require (the same rows the static-service and
+    /// pip qualifications use and then remove).
+    @discardableResult
+    func skillHubCreateRunRows(
+        app: AppEnvironment, conversationID: UUID, runID: UUID, title: String, goal: String
+    ) async throws -> Bool {
+        let date = Date()
+        try await app.conversationStore.saveConversation(ConversationRecord(
+            id: conversationID, title: title, createdAt: date, updatedAt: date, titleOrigin: .manual))
+        try await app.database.writer { database in
+            try database.execute(
+                sql: "INSERT INTO runs (id, conversation_id, state, goal, started_at) VALUES (?, ?, 'running', ?, ?)",
+                arguments: [runID.uuidString, conversationID.uuidString, goal,
+                            ISO8601DateFormatter().string(from: date)])
+        }
+        return true
+    }
+
+    func skillHubFinishJobs(_ jobs: BackgroundJobService, _ ids: [UUID]) async throws {
+        for id in ids {
+            if let job = try await jobs.job(id: id), !job.state.isTerminal {
+                _ = try await jobs.cancel(id: id)
+                _ = try await skillHubWaitTerminal(jobs, id: id, seconds: 120)
+            }
+        }
+    }
+
+    /// Standard ordered teardown: parent first, then owned jobs, guest,
+    /// records, workspace. A failed guest stop preserves the workspace.
+    func skillHubCleanup(
+        runtime: FloeAgentRuntime?, parentHold: CancellationToken?, parentTask: Task<Void, Error>?,
+        jobs: BackgroundJobService?, jobIDs: [UUID], environmentID: String?, root: URL,
+        conversationID: UUID?, app: AppEnvironment?
+    ) async {
+        runtime?.cancel()
+        parentHold?.cancel()
+        if let parentTask {
+            parentTask.cancel()
+            do { try await parentTask.value }
+            catch is CancellationError { }
+            catch let error as FloeError where error == .cancelled { }
+            catch { Issue.record("Skill Hub parent cleanup failed: \(error)") }
+        }
+        if let jobs, let app {
+            do { try await skillHubFinishJobs(jobs, jobIDs) }
+            catch {
+                Issue.record("Skill Hub owned jobs did not settle; preserve environment and workspace: \(error)")
+                return
+            }
+            let center = UNUserNotificationCenter.current()
+            let identifiers = jobIDs.map { "jobs." + $0.uuidString }
+            center.removePendingNotificationRequests(withIdentifiers: identifiers)
+            center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
+        let services = FloePlatformServices.shared
+        if let environmentID {
+            do {
+                try await services.stopEnvironment(id: environmentID)
+                try await services.deleteEnvironment(id: environmentID)
+            } catch {
+                Issue.record("Skill Hub owned environment cleanup failed; preserve its workspace: \(root.path): \(error)")
+                return
+            }
+        }
+        if let conversationID, let app {
+            do { try await app.conversationStore.deleteConversation(id: conversationID) }
+            catch {
+                Issue.record("Skill Hub conversation cleanup failed; preserve workspace: \(error)")
+                return
+            }
+        }
+        do { try FileManager.default.removeItem(at: root) }
+        catch { Issue.record("Skill Hub workspace cleanup failed: \(error)") }
+    }
+
+    func skillHubFailureEvidence(_ evidence: [String: String], root: URL, label: String) {
+        let data = (try? JSONEncoder().encode(evidence)) ?? Data("{}".utf8)
+        try? data.write(to: root.appendingPathComponent("skill-hub-\(label)-evidence.json"), options: .atomic)
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return }
+        let directory = support.appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let file = directory.appendingPathComponent(label + "-" + UUID().uuidString + ".json")
+            try data.write(to: file, options: .atomic)
+            print("FLOE_SKILLHUB_FAILURE_EVIDENCE=\(file.path)")
+        } catch { Issue.record("Skill Hub failure evidence could not be retained: \(error)") }
+    }
+
+    // MARK: - Test 1 (patch A): pinned wheel transport + sympy/citation scripts
+
+    /// Verifies the delivered seven-wheel transport and the two remote Skill
+    /// sources exactly as integrated at hub commit 4210403: byte-exact staging
+    /// (guest re-hash), hash-pinned offline installs, the fixed sympy verifier
+    /// (derivative / exact roots / ODE residual plus the other named checks),
+    /// the BibTeX formatter and validator, and ONE read-only keyless
+    /// first-page OpenAlex search with one DOI content-negotiation lookup, all
+    /// executed by the real guest. A genuine API or install failure stays a
+    /// failure with its original output retained: no fallback success, no
+    /// account creation, no host interpreter.
+    @Test(
+        "Skill Hub guest qualification: pinned wheel transport, hash installs, sympy verifier and citation scripts run in the real Linux guest",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_PY_QUALIFICATION"] == "1")
+    )
+    func skillHubWheelsSympyCitationGuestQualification() async throws {
+        let sources = try SkillHubInputs.requireSourcesDir()
+        let zip = try SkillHubInputs.requireWheelsZip()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "skill-hub-python-guest-not-model-not-ui",
+            "hubSources": sources.path,
+            "wheelsZip": zip.path,
+        ]
+        var manifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/wheels.zip", into: &manifest)
+        try SkillHubStager.stage(sources.appendingPathComponent("sympy", isDirectory: true),
+                                 to: root, relativePrefix: "skill-src/sympy", into: &manifest)
+        try SkillHubStager.stage(sources.appendingPathComponent("citation-management", isDirectory: true),
+                                 to: root, relativePrefix: "skill-src/citation-management", into: &manifest)
+        try SkillHubStager.writeManifest(manifest, at: root)
+        // The transport's own locks must be byte-identical to the integrated
+        // hub source locks (verified equal offline on 2026-10-26; the guest
+        // check re-proves it on the actual device).
+        let sympyLockSHA = try FloeDigest.sha256Hex(Data(contentsOf: root
+            .appendingPathComponent("skill-src/sympy/references/requirements.lock.txt")))
+        let citationLockSHA = try FloeDigest.sha256Hex(Data(contentsOf: root
+            .appendingPathComponent("skill-src/citation-management/references/requirements.lock.txt")))
+
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var conversationID: UUID?
+        var app: AppEnvironment?
+        func finish() async {
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app?.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: conversationID, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            let liveApp = AppEnvironment.live()
+            app = liveApp
+            try #require(liveApp.persistenceReady, "Production persistence bootstrap failed")
+            let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
+            let runID = UUID()
+            let conversationUUID = UUID()
+            conversationID = conversationUUID
+            try await skillHubCreateRunRows(app: liveApp, conversationID: conversationUUID, runID: runID,
+                title: "Skill Hub Python qualification",
+                goal: "Skill Hub wheel installs and scripts through owned jobs; no model")
+
+            let ceiling: Set<String> = ["exec.shell"]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationUUID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Skill Hub Python guest qualification") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before Skill Hub child execution")
+            let context = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationUUID)
+            let identity = ChildExecutionIdentity(
+                parentRunID: runID, rootTaskID: conversationUUID, delegateCallID: "skillhub-python")
+            try await requireQualifiedKernel(runtime: runtime, identity: identity, context: context)
+
+            // 1. Guest identity + byte-exact staging proof (guest re-hash).
+            let stageResult = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "stage-verify",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n" + skillHubStageVerifyScript + "\nPY",
+                timeout: 120)
+            try #require(stageResult.status == .ok,
+                         "Guest staging verification failed: \(stageResult.outputSummary)")
+            try #require(stageResult.outputSummary.contains("bad=0"),
+                         "Guest re-hash found staged byte mismatches: \(stageResult.outputSummary)")
+            try #require(stageResult.outputSummary.contains("FLOE_GUEST_MACHINE=riscv64"),
+                         "Guest architecture is not riscv64: \(stageResult.outputSummary)")
+            evidence["guestStage"] = String(stageResult.outputSummary.prefix(1_200))
+            print("FLOE_SKILLHUB_STAGE \(stageResult.outputSummary.prefix(600))")
+
+            // 2. Transport zip integrity inside the guest + exact locks.
+            let zipHash = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "zip-hash",
+                command: "sha256sum transport/wheels.zip && ls -l transport/wheels.zip")
+            try #require(zipHash.status == .ok
+                            && zipHash.outputSummary.contains(SkillHubInputs.wheelsZipSHA256),
+                         "Guest-side transport zip digest differs: \(zipHash.outputSummary)")
+            let unpack = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "zip-unpack",
+                command: """
+                set -e
+                PYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/wheels.zip transport/unpacked
+                ls transport/unpacked/wheels | wc -l
+                ls transport/unpacked/wheels
+                sha256sum transport/unpacked/sympy/requirements.lock.txt transport/unpacked/citation-management/requirements.lock.txt
+                """)
+            try #require(unpack.status == .ok, "Guest unzip failed: \(unpack.outputSummary)")
+            for name in SkillHubInputs.wheelNames {
+                try #require(unpack.outputSummary.contains(name), "Missing wheel \(name): \(unpack.outputSummary)")
+            }
+            try #require(unpack.outputSummary.contains(sympyLockSHA),
+                         "Transport sympy lock differs from the integrated hub source lock")
+            try #require(unpack.outputSummary.contains(citationLockSHA),
+                         "Transport citation lock differs from the integrated hub source lock")
+            evidence["guestUnzip"] = String(unpack.outputSummary.prefix(1_200))
+
+            // 3. Hash-pinned offline installs (CPU-heavy -> background jobs).
+            let pip = "env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/skill-env/home "
+                + "PYTHONDONTWRITEBYTECODE=1 PIP_CONFIG_FILE=/dev/null python3 -u -m pip --isolated "
+                + "--disable-pip-version-check --no-input --no-cache-dir install --no-index --require-hashes "
+                + "--find-links /workspace/transport/unpacked/wheels --target /workspace/skill-env/site -r "
+            let sympyInstall = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "pip-sympy",
+                command: "mkdir -p skill-env/home && " + pip
+                    + "/workspace/transport/unpacked/sympy/requirements.lock.txt", timeout: 600)
+            jobIDs.append(sympyInstall)
+            let sympyJob = try await skillHubWaitTerminal(jobs, id: sympyInstall, seconds: 660)
+            evidence["pipSympy"] = sympyJob.resultSummary ?? sympyJob.lastError ?? sympyJob.state.rawValue
+            try #require(sympyJob.state == .completed,
+                         "SymPy install job failed: \(evidence["pipSympy"] ?? "unknown")")
+            try #require((sympyJob.resultSummary ?? "").contains("sympy-1.14.0")
+                            && (sympyJob.resultSummary ?? "").contains("mpmath-1.3.0"),
+                         "SymPy install did not report the pinned wheels: \(sympyJob.resultSummary ?? "")")
+            let citationInstall = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "pip-citation",
+                command: pip + "/workspace/transport/unpacked/citation-management/requirements.lock.txt",
+                timeout: 600)
+            jobIDs.append(citationInstall)
+            let citationJob = try await skillHubWaitTerminal(jobs, id: citationInstall, seconds: 660)
+            evidence["pipCitation"] = citationJob.resultSummary ?? citationJob.lastError ?? citationJob.state.rawValue
+            try #require(citationJob.state == .completed,
+                         "Citation install job failed: \(evidence["pipCitation"] ?? "unknown")")
+            for pin in ["requests-2.34.2", "certifi-2026.10.23", "charset-normalizer-3.5.2",
+                        "idna-3.20", "urllib3-2.8.0"] {
+                try #require((citationJob.resultSummary ?? "").contains(pin),
+                             "Install summary missing \(pin): \(citationJob.resultSummary ?? "")")
+            }
+
+            // 4. SymPy verifier in the guest: derivative, exact roots, ODE
+            //    residual and the remaining named checks; host re-reads the
+            //    guest-written JSON artifact for the real result.
+            let sympyRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "sympy-verify", command: """
+                set -e
+                mkdir -p skill-out
+                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                python3 skill-src/sympy/scripts/sympy_verify.py > skill-out/sympy-verify.json
+                sha256sum skill-out/sympy-verify.json
+                """, timeout: 600)
+            jobIDs.append(sympyRun)
+            let sympyResult = try await skillHubWaitTerminal(jobs, id: sympyRun, seconds: 660)
+            evidence["sympyRun"] = sympyResult.resultSummary ?? sympyResult.lastError ?? sympyResult.state.rawValue
+            try #require(sympyResult.state == .completed,
+                         "Guest sympy verification failed: \(evidence["sympyRun"] ?? "unknown")")
+            let sympyBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/sympy-verify.json"))
+            let sympyReport = try JSONSerialization.jsonObject(with: sympyBytes) as? [String: Any]
+            try #require(sympyReport?["ok"] as? Bool == true,
+                         "SymPy verifier ok is not true: \(String(decoding: sympyBytes, as: UTF8.self).prefix(600))")
+            let sympyChecks = sympyReport?["results"] as? [String: Any] ?? [:]
+            for name in ["derivative", "solve", "ode", "exact_rational", "integral", "simplify"] {
+                try #require(sympyChecks[name] as? Bool == true, "SymPy check \(name) did not pass")
+            }
+            try #require(sympyChecks["version"] as? String == "1.14.0",
+                         "Guest sympy version is not the pinned 1.14.0: \(String(describing: sympyChecks["version"]))")
+            print("FLOE_SKILLHUB_SYMPY sha256=\(FloeDigest.sha256Hex(sympyBytes)) checks=derivative,solve,ode")
+
+            // 5. Citation formatter + validator (offline scripts, owned jobs).
+            let formatRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "format-bibtex", command: """
+                set -e
+                mkdir -p skill-out
+                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                python3 skill-src/citation-management/scripts/format_bibtex.py \
+                skill-src/citation-management/assets/bibtex_template.bib -o skill-out/clean.bib
+                grep -c '^@' skill-out/clean.bib
+                """, timeout: 300)
+            jobIDs.append(formatRun)
+            let formatJob = try await skillHubWaitTerminal(jobs, id: formatRun, seconds: 360)
+            evidence["formatBibtex"] = formatJob.resultSummary ?? formatJob.lastError ?? formatJob.state.rawValue
+            try #require(formatJob.state == .completed,
+                         "Guest BibTeX formatter failed: \(evidence["formatBibtex"] ?? "unknown")")
+            let cleanBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/clean.bib"))
+            try #require(String(decoding: cleanBytes, as: UTF8.self).contains("@"),
+                         "Formatted BibTeX output carries no entries")
+            let validateRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "validate-citations", command: """
+                set -e
+                mkdir -p skill-out
+                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                python3 skill-src/citation-management/scripts/validate_citations.py \
+                skill-src/citation-management/assets/bibtex_template.bib --report skill-out/validation-report.json
+                """, timeout: 300)
+            jobIDs.append(validateRun)
+            let validateJob = try await skillHubWaitTerminal(jobs, id: validateRun, seconds: 360)
+            evidence["validateCitations"] = validateJob.resultSummary ?? validateJob.lastError ?? validateJob.state.rawValue
+            try #require(validateJob.state == .completed,
+                         "Guest citation validator failed (high-severity findings keep the original non-zero exit): "
+                             + "\(evidence["validateCitations"] ?? "unknown")")
+            let reportBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/validation-report.json"))
+            try #require(reportBytes.count > 2, "The validation report is empty")
+            print("FLOE_SKILLHUB_CITATION clean=\(FloeDigest.sha256Hex(cleanBytes)) report=\(FloeDigest.sha256Hex(reportBytes))")
+
+            // 6. One read-only keyless first-page OpenAlex search and one DOI
+            //    lookup, executed by the GUEST. A real API/network failure must
+            //    fail this qualification here with the original output retained.
+            let openAlexRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "openalex-first-page", command: """
+                set -e
+                mkdir -p skill-out
+                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                python3 skill-src/citation-management/scripts/search_openalex.py "CRISPR gene editing" \
+                --limit 5 -o skill-out/openalex.json
+                """, timeout: 300)
+            jobIDs.append(openAlexRun)
+            let openAlexJob = try await skillHubWaitTerminal(jobs, id: openAlexRun, seconds: 360)
+            evidence["openalex"] = openAlexJob.resultSummary ?? openAlexJob.lastError ?? openAlexJob.state.rawValue
+            try #require(openAlexJob.state == .completed,
+                         "Keyless OpenAlex first-page lookup failed in the guest (no fallback is allowed): "
+                             + "\(evidence["openalex"] ?? "unknown")")
+            let openAlexBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/openalex.json"))
+            let openAlexJSON = try JSONSerialization.jsonObject(with: openAlexBytes) as? [String: Any]
+            let openAlexCount = (openAlexJSON?["results"] as? [Any])?.count ?? 0
+            try #require(openAlexCount >= 1,
+                         "OpenAlex returned no works: \(String(decoding: openAlexBytes, as: UTF8.self).prefix(400))")
+            print("FLOE_SKILLHUB_OPENALEX sha256=\(FloeDigest.sha256Hex(openAlexBytes)) count=\(openAlexCount)")
+            let doiRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "doi-lookup", command: """
+                set -e
+                mkdir -p skill-out
+                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                python3 skill-src/citation-management/scripts/doi_to_bibtex.py 10.1038/s41586-021-03819-2 \
+                -o skill-out/doi.bib
+                """, timeout: 300)
+            jobIDs.append(doiRun)
+            let doiJob = try await skillHubWaitTerminal(jobs, id: doiRun, seconds: 360)
+            evidence["doi"] = doiJob.resultSummary ?? doiJob.lastError ?? doiJob.state.rawValue
+            try #require(doiJob.state == .completed,
+                         "DOI content-negotiation lookup failed in the guest: \(evidence["doi"] ?? "unknown")")
+            let doiBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/doi.bib"))
+            let doiText = String(decoding: doiBytes, as: UTF8.self).lowercased()
+            try #require(doiText.contains("@") && doiText.contains("10.1038/s41586-021-03819-2"),
+                         "DOI lookup output lacks a BibTeX entry for the requested DOI")
+            evidence["openalexSHA256"] = FloeDigest.sha256Hex(openAlexBytes)
+            evidence["doiSHA256"] = FloeDigest.sha256Hex(doiBytes)
+            print("FLOE_SKILLHUB_PYTHON_QUALIFIED wheels=7 sympy=ok citation=scripts-executed doi=\(FloeDigest.sha256Hex(doiBytes))")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "python")
+            Issue.record("Skill Hub Python guest qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
+// ============================================================================
+// PART B — webapp-testing Level B + Level C. Applies on top of PART A.
+// Requires PART A's helpers (skillHubShell / skillHubSubmitShell /
+// skillHubWaitTerminal / skillHubWaitPreview / skillHubCreateRunRows /
+// skillHubCleanup / skillHubFailureEvidence / SkillHubStager / SkillHubInputs).
+// Opt-in: FLOE_SKILLHUB_WEBAPP_QUALIFICATION=1 + FLOE_SKILL_HUB_SOURCES_DIR.
+// ============================================================================
+
+// MARK: - Browser/service/record decoders (file scope, private)
+
+/// Decodes the semantic browser tool JSON summary (`BrowserResult`).
+private struct SkillHubBrowserResult: Decodable {
+    struct Page: Decodable {
+        struct Tab: Decodable { let id: UUID; let url: String; let isActive: Bool }
+        struct Node: Decodable {
+            let ref: String
+            let role: String
+            let name: String
+            let text: String
+            let value: String?
+        }
+        struct Artifact: Decodable {
+            let relativePath: String
+            let byteCount: Int
+            let sha256: String
+        }
+        let documentID: String
+        let url: String
+        let tabs: [Tab]
+        let nodes: [Node]
+        let nextCursor: Int?
+        let screenshotArtifact: Artifact?
+        init(documentID: String, url: String, tabs: [Tab], nodes: [Node],
+             nextCursor: Int?, screenshotArtifact: Artifact?) {
+            self.documentID = documentID
+            self.url = url
+            self.tabs = tabs
+            self.nodes = nodes
+            self.nextCursor = nextCursor
+            self.screenshotArtifact = screenshotArtifact
+        }
+    }
+    let status: String
+    let message: String?
+    let page: Page?
+}
+
+/// Authoritative fixture-server `/state` document (guest loopback 10.0.2.15).
+private struct SkillHubServerState: Decodable {
+    struct Submission: Decodable { let receipt: String }
+    let submissions: [Submission]
+    let serverCount: Int
+    let ready: String
+}
+
+/// One JSONL line written by the shipped `record_case.py`.
+private struct SkillHubRecordedCase: Decodable {
+    let caseName: String
+    let status: String
+    enum CodingKeys: String, CodingKey {
+        case caseName = "case"
+        case status
+    }
+}
+
+extension SubagentSimulatorExecutionTests {
+
+    func skillHubDecodeBrowser(_ result: ToolResult) throws -> SkillHubBrowserResult {
+        guard let start = result.outputSummary.firstIndex(of: "{"),
+              let end = result.outputSummary.lastIndex(of: "}"), start < end,
+              let data = result.outputSummary[start...end].data(using: .utf8),
+              let decoded = try? JSONDecoder().decode(SkillHubBrowserResult.self, from: data) else {
+            throw FloeError.validationFailed("Browser result is not decodable JSON: \(result.outputSummary.prefix(400))")
+        }
+        return decoded
+    }
+
+    /// Full semantic observation, following `nextCursor` pagination; the
+    /// returned page accumulates nodes across all observed pages.
+    func skillHubObserve(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        tag: String, tabID: UUID
+    ) async throws -> SkillHubBrowserResult.Page {
+        var nodes: [SkillHubBrowserResult.Page.Node] = []
+        var latest: SkillHubBrowserResult.Page?
+        var cursor: Int?
+        for index in 0..<12 {
+            var arguments: [String: Any] = ["tabID": tabID.uuidString]
+            if let cursor { arguments["cursor"] = cursor }
+            let result = try await skillHubBrowserCall(runtime: runtime, identity: identity,
+                context: context, tag: "\(tag)-\(index)", tool: "browser.observe",
+                arguments: arguments)
+            let page = try #require(result.page, "semantic observation returned no page")
+            latest = page
+            nodes.append(contentsOf: page.nodes)
+            guard let next = page.nextCursor else { break }
+            cursor = next
+        }
+        let resolved = try #require(latest, "observation never returned a page")
+        return SkillHubBrowserResult.Page(documentID: resolved.documentID, url: resolved.url,
+                                         tabs: resolved.tabs, nodes: nodes,
+                                         nextCursor: nil,
+                                         screenshotArtifact: resolved.screenshotArtifact)
+    }
+
+    func skillHubFindRef(
+        in page: SkillHubBrowserResult.Page, namePrefix: String, role: String? = nil
+    ) throws -> SkillHubBrowserResult.Page.Node {
+        let lowered = namePrefix.lowercased()
+        guard let node = page.nodes.first(where: {
+            ($0.name.lowercased().hasPrefix(lowered) || $0.text.lowercased().hasPrefix(lowered))
+                && (role == nil || $0.role == role)
+        }) else {
+            throw FloeError.notFound("No fresh node named '\(namePrefix)' (role \(role ?? "any")) in document \(page.documentID)")
+        }
+        return node
+    }
+
+    @discardableResult
+    func skillHubBrowserCall(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        tag: String, tool: String, arguments: [String: Any]
+    ) async throws -> SkillHubBrowserResult {
+        let call = try toolCall(id: tag, toolName: tool, arguments: try Self.json(arguments))
+        let result = await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+        try #require(result.status == .ok, "\(tool) failed: \(result.outputSummary)")
+        return try skillHubDecodeBrowser(result)
+    }
+
+    /// Dispatches a browser call EXPECTED to fail (stale/timeout halves of the
+    /// contract); returns the raw result for honest assertion.
+    func skillHubBrowserFailure(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        tool: String, arguments: [String: Any]
+    ) async throws -> ToolResult {
+        let call = try toolCall(id: "expected-failure-" + UUID().uuidString, toolName: tool,
+                                arguments: try Self.json(arguments))
+        return await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+    }
+
+    /// `browser.wait` on a text marker with an explicit bounded timeout.
+    func skillHubWaitText(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        tag: String, tabID: UUID, marker: String, timeoutMilliseconds: Int = 8_000
+    ) async throws -> SkillHubBrowserResult {
+        try await skillHubBrowserCall(
+            runtime: runtime, identity: identity, context: context, tag: tag,
+            tool: "browser.wait",
+            arguments: ["tabID": tabID.uuidString, "condition": "text", "value": marker,
+                        "timeoutMilliseconds": timeoutMilliseconds])
+    }
+
+    /// Keeps recorded details safe for the single-quoted guest shell argument:
+    /// bounded to benign characters, whitespace-collapsed, never a secret.
+    func skillHubSanitize(_ text: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(
+            CharacterSet(charactersIn: " .=:/-_()[]{}<>,%+*'"))
+        let filtered = String(String.UnicodeScalarView(
+            text.unicodeScalars.filter { allowed.contains($0) && !"\n\r\t".unicodeScalars.contains($0) }))
+        let collapsed = filtered.split(separator: " ", omittingEmptySubsequences: true)
+            .joined(separator: " ")
+        return String(collapsed.prefix(300))
+    }
+
+    func skillHubFirstMatch(pattern: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let swiftRange = Range(match.range, in: text) else { return nil }
+        return String(text[swiftRange])
+    }
+
+    /// Records one runbook case through the SHIPPED recorder, inside the guest.
+    func skillHubRecordCase(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        name: String, index: Int, status: String, detail: String, sets: [String]
+    ) async throws {
+        var command = "PYTHONDONTWRITEBYTECODE=1 python3 webapp-testing/scripts/record_case.py "
+            + "--results results/webapp-testing.jsonl --case \(name) --status \(status) "
+            + "--detail '\(skillHubSanitize(detail))'"
+        for set in sets { command += " --set " + set }
+        let result = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+                                             tag: "record-\(index)-\(name)", command: command, timeout: 60)
+        try #require(result.status == .ok, "record_case failed for \(name): \(result.outputSummary)")
+    }
+
+    /// Authoritative fixture-server read executed INSIDE the guest over the
+    /// service's bound interface (no host interpreter, no page trust).
+    func skillHubGuestFetch(
+        runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
+        tag: String, port: Int, path: String, readTimeout: Int = 8, shellTimeout: Int = 60
+    ) async throws -> String {
+        let command = "python3 -c \"import sys,urllib.request;"
+            + "sys.stdout.write(urllib.request.urlopen(sys.argv[1],timeout=\(readTimeout)).read().decode())\" "
+            + "'http://10.0.2.15:\(port)/\(path)'"
+        let result = try await skillHubShell(runtime: runtime, identity: identity, context: context,
+                                             tag: tag, command: command, timeout: shellTimeout)
+        try #require(result.status == .ok, "guest /\(path) fetch failed: \(result.outputSummary)")
+        guard let start = result.outputSummary.firstIndex(of: "{"),
+              let end = result.outputSummary.lastIndex(of: "}"),
+              let data = result.outputSummary[start...end].data(using: .utf8) else {
+            throw FloeError.validationFailed("guest /\(path) returned no JSON: \(result.outputSummary.prefix(400))")
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    func skillHubCloseBrowserTabs(
+        runtime: FloeAgentRuntime?, identity: ChildExecutionIdentity?,
+        context: ToolContext?, tabs: [UUID]
+    ) async {
+        guard let runtime, let identity, let context else { return }
+        for tab in tabs {
+            guard let call = try? toolCall(id: "close-" + tab.uuidString, toolName: "browser.tab",
+                                           arguments: try! Self.json(["action": "close",
+                                                                      "tabID": tab.uuidString])) else { continue }
+            _ = await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+        }
+    }
+
+    /// Loopback fetch exactly as the proven static-service test.
+    func skillHubFetch(_ url: URL, session: URLSession) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: 3)
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw FloeError.validationFailed("Preview did not return HTTP")
+        }
+        return (data, http)
+    }
+
+    // MARK: - Test 2: webapp-testing Level B + Level C (14 real cases)
+
+    /// Runs the shipped webapp-testing contract through the REAL product
+    /// surfaces: `exec.localService` readiness via the production job service,
+    /// guest-loopback `/state` authority, all 14 runbook cases through the
+    /// App's registered semantic `browser.*` tools under the active-parent
+    /// child chain, the honest recording of the deliberately failing
+    /// `absent-marker-fails` case (never PASS), the shipped recorder + gate,
+    /// a live port-collision refusal, cancellation with guest/host endpoint
+    /// closure, and re-hash of the real screenshot artifact bytes read back
+    /// from disk. No user-device or persistent Simulator state changes: every
+    /// tab, job, environment and conversation row it creates is test-owned and
+    /// settled/removed in its cleanup path.
+    @Test(
+        "Skill Hub guest qualification: webapp-testing service, 14 real browser cases, recorder gate, collision and cancel",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_WEBAPP_QUALIFICATION"] == "1")
+    )
+    func skillHubWebappTestingGuestAndBrowserQualification() async throws {
+        let sources = try SkillHubInputs.requireSourcesDir()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = ["kind": "skill-hub-webapp-levelBC-not-model-not-ui",
+                                          "hubSources": sources.path]
+        var manifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stage(sources.appendingPathComponent("webapp-testing", isDirectory: true),
+                                 to: root, relativePrefix: "webapp-testing", into: &manifest)
+        try SkillHubStager.writeManifest(manifest, at: root)
+        let ceiling: Set<String> = [
+            "exec.shell", "jobs.status", "jobs.cancel",
+            "browser.tab", "browser.tabs", "browser.navigate", "browser.observe",
+            "browser.wait", "browser.type", "browser.click", "browser.screenshot", "browser.events",
+        ]
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var tabs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        let app = try await appQualificationEnvironment()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "skillhub-webapp")
+        identity = fixedIdentity
+        func finish() async {
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Webapp-testing qualification",
+                goal: "Real guest service plus real browser 14-case run; scripted parent")
+            recordsCreated = true
+            let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify webapp-testing level B and C") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before browser child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity,
+                                             context: childContext)
+
+            // Byte-exact staging proof + the shipped scripts compile in-guest.
+            let stageResult = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "stage-verify",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n" + skillHubStageVerifyScript
+                    + "\nPY", timeout: 120)
+            try #require(stageResult.status == .ok && stageResult.outputSummary.contains("bad=0"),
+                         "Guest staging verification failed: \(stageResult.outputSummary)")
+            let compileResult = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "py-compile",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile webapp-testing/scripts/fixture_server.py webapp-testing/scripts/record_case.py webapp-testing/scripts/check_fixture.py && echo FLOE_WEBAPP_COMPILE_OK",
+                timeout: 120)
+            try #require(compileResult.status == .ok && compileResult.outputSummary.contains("FLOE_WEBAPP_COMPILE_OK"),
+                         "Guest py_compile failed: \(compileResult.outputSummary)")
+
+            // Level B: the real exec.localService submission and readiness.
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(runtime: "python",
+                entry: "webapp-testing/scripts/fixture_server.py", arguments: [], cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "skillhub-fixture-server-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            evidence["serviceJobID"] = serviceJob.id.uuidString
+            evidence["servicePort"] = String(port)
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(jobs, id: serviceJob.id,
+                                                        samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "PreviewURL must be the owned loopback endpoint, got \(preview)")
+            // Readiness invariant across every retained poll: a previewURL is
+            // never observed while the recorded state is anything but running.
+            for sample in progressSamples {
+                try #require(!(sample["previewURL"]?.isEmpty == false && sample["state"] != "running"),
+                             "previewURL appeared before the running state: \(sample)")
+            }
+            let sampleData = (try? JSONEncoder().encode(progressSamples)) ?? Data()
+            evidence["progressSamples"] = String(decoding: sampleData, as: UTF8.self)
+            print("FLOE_SKILLHUB_WEBAPP_READY polls=\(progressSamples.count) preview=\(preview.absoluteString)")
+
+            // Guest-side authority: the fresh server is authoritative-clean.
+            let stateJSON = try await skillHubGuestFetch(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "state-ready", port: port, path: "state")
+            let serverState = try JSONDecoder().decode(SkillHubServerState.self, from: Data(stateJSON.utf8))
+            try #require(serverState.ready == "live" && serverState.submissions.isEmpty
+                            && serverState.serverCount == 0,
+                         "Fresh fixture server state is not authoritative-clean: \(stateJSON)")
+
+            // Case 1 — nav-index.
+            let created = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case1-create", tool: "browser.tab",
+                arguments: ["action": "create"])
+            let tabID = try #require(created.page?.tabs.first(where: { $0.isActive })?.id,
+                                     "tab create returned no active tab")
+            tabs.append(tabID)
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case1-navigate", tool: "browser.navigate",
+                arguments: ["url": preview.absoluteString, "tabID": tabID.uuidString])
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case1-load", tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "load",
+                            "timeoutMilliseconds": 15_000])
+            var page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                                                 context: childContext, tag: "case1-observe",
+                                                 tabID: tabID)
+            let document1 = page.documentID
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "nav-index", index: 1, status: "PASS",
+                detail: "tab create+navigate+wait load ok url " + preview.absoluteString,
+                sets: ["document_id=" + document1])
+            // Case 2 — wait-async-ready (delayed render).
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case2-wait", tabID: tabID, marker: "ASYNC-READY-77")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "wait-async-ready", index: 2, status: "PASS",
+                detail: "browser.wait text resolved after the fixture delay",
+                sets: ["marker=ASYNC-READY-77"])
+            // Case 3 — observe-form-fields (all five named controls).
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case3-observe", tabID: tabID)
+            let nameNode = try skillHubFindRef(in: page, namePrefix: "Name", role: "input")
+            let emailNode = try skillHubFindRef(in: page, namePrefix: "Email", role: "input")
+            let planNode = try skillHubFindRef(in: page, namePrefix: "Plan")
+            let termsNode = try skillHubFindRef(in: page, namePrefix: "Agree")
+            let submitNode = try skillHubFindRef(in: page, namePrefix: "Save signup", role: "button")
+            _ = try skillHubFindRef(in: page, namePrefix: "Register click", role: "button")
+            _ = try skillHubFindRef(in: page, namePrefix: "Proceed to checkout", role: "a")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "observe-form-fields", index: 3, status: "PASS",
+                detail: "semantic refs present for name email plan terms submit",
+                sets: ["document_id=" + page.documentID, "refs_found=5"])
+            // Case 4 — input-signup-fields (values visible, no submit).
+            let typedName = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case4-type-name", tool: "browser.type",
+                arguments: ["tabID": tabID.uuidString, "ref": nameNode.ref,
+                            "documentID": page.documentID, "text": "Ada"])
+            try #require(typedName.page?.nodes.contains { $0.ref == nameNode.ref && $0.value == "Ada" } == true,
+                         "typed name value not visible in the returned snapshot")
+            let typedEmail = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case4-type-email", tool: "browser.type",
+                arguments: ["tabID": tabID.uuidString, "ref": emailNode.ref,
+                            "documentID": typedName.page?.documentID ?? page.documentID,
+                            "text": "ada@example.invalid"])
+            try #require(typedEmail.page?.nodes.contains {
+                $0.ref == emailNode.ref && $0.value == "ada@example.invalid"
+            } == true, "typed email value not visible in the returned snapshot")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "input-signup-fields", index: 4, status: "PASS",
+                detail: "type returned value-set snapshots without submit",
+                sets: ["document_id=" + (typedEmail.page?.documentID ?? page.documentID)])
+            // Case 5 — click-submit (page signal only; case 6 attests).
+            let document5 = typedEmail.page?.documentID ?? page.documentID
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case5-click", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": submitNode.ref, "documentID": document5])
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case5-wait", tabID: tabID, marker: "status: saved")
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case5-observe", tabID: tabID)
+            let statusText = page.nodes.first { $0.text.contains("status: saved") }?.text ?? ""
+            let receipt = try #require(skillHubFirstMatch(pattern: "[0-9a-f]{12}", in: statusText),
+                                       "post-click status carries no 12-hex receipt: \(statusText)")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "click-submit", index: 5, status: "PASS",
+                detail: "page showed saved status with receipt", sets: ["document_id=" + page.documentID])
+            // Case 6 — attest-submit-state from the server authority.
+            let stateAfterSubmit = try await skillHubGuestFetch(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "state-submit", port: port, path: "state")
+            let submitState = try JSONDecoder().decode(SkillHubServerState.self,
+                                                      from: Data(stateAfterSubmit.utf8))
+            try #require(submitState.submissions.last?.receipt == receipt,
+                         "server receipt does not match the page-displayed receipt: \(stateAfterSubmit.prefix(300))")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "attest-submit-state", index: 6, status: "PASS",
+                detail: "guest state submission matches the page receipt",
+                sets: ["receipt=" + receipt])
+            // Case 7 — click-counter.
+            let countNode = try skillHubFindRef(in: page, namePrefix: "Register click", role: "button")
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case7-click", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": countNode.ref,
+                            "documentID": page.documentID])
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case7-wait", tabID: tabID, marker: "count: 1")
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case7-observe", tabID: tabID)
+            let countText = page.nodes.first { $0.text.contains("count:") }?.text ?? ""
+            let countValue = try #require(skillHubFirstMatch(pattern: "count: [0-9]+", in: countText),
+                                          "counter region missing after the click")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "click-counter", index: 7, status: "PASS",
+                detail: countValue, sets: ["document_id=" + page.documentID])
+            // Case 8 — attest-counter-state (server counter, independent of page text).
+            let stateAfterClick = try await skillHubGuestFetch(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "state-click", port: port, path: "state")
+            let clickState = try JSONDecoder().decode(SkillHubServerState.self,
+                                                     from: Data(stateAfterClick.utf8))
+            try #require(clickState.serverCount >= 1, "server counter never incremented: \(stateAfterClick)")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "attest-counter-state", index: 8, status: "PASS",
+                detail: "guest state serverCount proves the click reached the server",
+                sets: ["server_count=" + String(clickState.serverCount)])
+            // Case 9 — screenshot-evidence with real artifact re-hash.
+            let shot = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case9-shot", tool: "browser.screenshot",
+                arguments: ["tabID": tabID.uuidString])
+            let artifact = try #require(shot.page?.screenshotArtifact, "screenshot returned no artifact reference")
+            let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: true)
+            let artifactURL = support.appendingPathComponent("FloeAgent").appendingPathComponent(artifact.relativePath)
+            let artifactBytes = try Data(contentsOf: artifactURL)
+            try #require(artifactBytes.count == artifact.byteCount,
+                         "screenshot bytes differ from the recorded byte count")
+            let artifactSHA = FloeDigest.sha256Hex(artifactBytes)
+            try #require(artifactSHA == artifact.sha256.lowercased(),
+                         "screenshot re-hash differs from the recorded sha256: \(artifact.sha256) vs \(artifactSHA)")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "screenshot-evidence", index: 9, status: "PASS",
+                detail: "artifact retained and re-hashed from disk bytes",
+                sets: ["screenshot_path=" + artifact.relativePath, "screenshot_sha256=" + artifactSHA])
+            // Case 10 — navigate-checkout (main-frame commit to a new document).
+            let checkoutLink = try skillHubFindRef(in: page, namePrefix: "Proceed to checkout", role: "a")
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case10-click", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": checkoutLink.ref,
+                            "documentID": page.documentID])
+            let waited10 = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case10-wait", tabID: tabID, marker: "CHECKOUT-OK-222")
+            try #require(waited10.page?.documentID != document1,
+                         "checkout navigation never committed a new document")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "navigate-checkout", index: 10, status: "PASS",
+                detail: "new document after checkout click marker visible",
+                sets: ["marker=CHECKOUT-OK-222"])
+            // Case 11 — click-confirm.
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case11-observe", tabID: tabID)
+            let confirmNode = try skillHubFindRef(in: page, namePrefix: "Confirm order", role: "button")
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case11-click", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": confirmNode.ref,
+                            "documentID": page.documentID])
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case11-wait", tabID: tabID, marker: "CONFIRMED-OK-221")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "click-confirm", index: 11, status: "PASS",
+                detail: "confirm state visible after the click", sets: ["marker=CONFIRMED-OK-221"])
+            // Case 12 — stale-after-reload: BOTH halves must really happen.
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-observe", tabID: tabID)
+            let backLink = try skillHubFindRef(in: page, namePrefix: "Back to signup", role: "a")
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-back", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": backLink.ref,
+                            "documentID": page.documentID])
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-wait-index", tabID: tabID,
+                marker: "Register click", timeoutMilliseconds: 10_000)
+            page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-observe-2", tabID: tabID)
+            let reloadNode = try skillHubFindRef(in: page, namePrefix: "Reload page", role: "button")
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-reload", tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": reloadNode.ref,
+                            "documentID": page.documentID])
+            let staleAttempt = try await skillHubBrowserFailure(runtime: runtime,
+                identity: fixedIdentity, context: childContext, tool: "browser.click",
+                arguments: ["tabID": tabID.uuidString, "ref": reloadNode.ref,
+                            "documentID": page.documentID])
+            try #require(staleAttempt.status != .ok,
+                         "a pre-reload ref/document pair must not succeed after the reload commits")
+            try #require(staleAttempt.outputSummary.contains("The page changed")
+                            || staleAttempt.outputSummary.contains("observe it again"),
+                         "the stale half must surface the documented recovery message: \(staleAttempt.outputSummary)")
+            let recoveryPage = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case12-recovery", tabID: tabID)
+            _ = try skillHubFindRef(in: recoveryPage, namePrefix: "Register click", role: "button")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "stale-after-reload", index: 12, status: "PASS",
+                detail: "stale refusal observed then fresh observation recovered",
+                sets: ["stale_observed=true", "recovery_observed=true"])
+            // Case 13 — late-result-slow over the guest loopback + event read.
+            let slowText = try await skillHubGuestFetch(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "state-slow", port: port, path: "slow",
+                readTimeout: 8, shellTimeout: 40)
+            try #require(slowText.contains("SLOW-DONE-45"), "late /slow answer missing: \(slowText)")
+            let events = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "case13-events", tool: "browser.events",
+                arguments: ["tabID": tabID.uuidString, "afterSequence": 0, "limit": 50])
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "late-result-slow", index: 13, status: "PASS",
+                detail: "slow answered after about two seconds events read status " + events.status,
+                sets: ["marker=SLOW-DONE-45"])
+            // Case 14 — the deliberate honest failure, recorded TIMEOUT.
+            let absent = try await skillHubBrowserFailure(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "text",
+                            "value": "MARKER-NEVER-RENDERED", "timeoutMilliseconds": 1_500])
+            try #require(absent.status != .ok,
+                         "the absent-marker wait must NOT succeed (dishonest fixture state)")
+            try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
+                context: childContext, name: "absent-marker-fails", index: 14, status: "TIMEOUT",
+                detail: skillHubSanitize(absent.outputSummary), sets: ["error=timeout"])
+
+            // The shipped deterministic gate + host-side JSONL check.
+            let gate = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "gate",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 webapp-testing/scripts/check_fixture.py --results results/webapp-testing.jsonl",
+                timeout: 120)
+            evidence["gate"] = String(gate.outputSummary.prefix(2_000))
+            try #require(gate.status == .ok,
+                         "the shipped gate rejected the honest run (exit non-zero): \(gate.outputSummary.prefix(800))")
+            let passCount = gate.outputSummary.components(separatedBy: "CHECK PASS").count - 1
+            try #require(passCount >= 14, "expected 14 CHECK PASS lines, got \(passCount): \(gate.outputSummary.prefix(800))")
+            try #require(gate.outputSummary.contains("absent-marker-fails status=TIMEOUT")
+                            || gate.outputSummary.contains("absent-marker-fails status=FAIL"),
+                         "the gate must read the failing case honestly: \(gate.outputSummary.prefix(500))")
+            let resultsBytes = try Data(contentsOf: root.appendingPathComponent("results/webapp-testing.jsonl"))
+            let records = String(decoding: resultsBytes, as: UTF8.self)
+                .split(separator: "\n").compactMap { line in
+                    try? JSONDecoder().decode(SkillHubRecordedCase.self, from: Data(String(line).utf8))
+                }
+            try #require(records.count == 14, "14 recorded cases expected, got \(records.count)")
+            for record in records {
+                if record.caseName == "absent-marker-fails" {
+                    try #require(record.status == "TIMEOUT" || record.status == "FAIL",
+                                 "the failing case must stay honestly recorded")
+                } else {
+                    try #require(record.status == "PASS",
+                                 "case \(record.caseName) must reflect its real PASS, got \(record.status)")
+                }
+            }
+            print("FLOE_SKILLHUB_WEBAPP_JSONL sha256=\(FloeDigest.sha256Hex(resultsBytes)) cases=14")
+
+            // One deliberate live port collision: closed failure, no resubmit.
+            let collision = try await jobs.submit(
+                runID: runID, toolCallID: "skillhub-collision-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(collision.id)
+            let collisionJob = try await skillHubWaitTerminal(jobs, id: collision.id, seconds: 240)
+            let collisionText = (collisionJob.lastError ?? "") + (collisionJob.resultSummary ?? "")
+            evidence["collision"] = String(collisionText.prefix(500))
+            try #require(collisionJob.state != .completed,
+                         "a second service on the live port must fail closed, never start")
+            try #require(collisionText.lowercased().contains("port"),
+                         "the collision refusal must name the port conflict: \(collisionText.prefix(300))")
+
+            // jobs.status while running through the same child chain (bounded
+            // production view: state running + the owned previewURL document).
+            let statusCall = try toolCall(id: "jobs-status-running", toolName: "jobs.status",
+                arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
+            let statusResult = await runtime.dispatchChildTool(statusCall, identity: fixedIdentity,
+                                                               childContext: childContext)
+            try #require(statusResult.status == .ok
+                            && statusResult.outputSummary.contains("http://127.0.0.1:\(port)"),
+                         "jobs.status must expose the running previewURL: \(statusResult.outputSummary.prefix(400))")
+            evidence["jobsStatusRunning"] = String(statusResult.outputSummary.prefix(1_200))
+
+            // Cancellation: real guest process exit, endpoint closure both
+            // sides, terminal cancelled reported by the production view.
+            let cancelCall = try toolCall(id: "jobs-cancel-service", toolName: "jobs.cancel",
+                arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
+            let cancelResult = await runtime.dispatchChildTool(cancelCall, identity: fixedIdentity,
+                                                               childContext: childContext)
+            try #require(cancelResult.status == .ok, "jobs.cancel dispatch failed: \(cancelResult.outputSummary)")
+            let cancelled = try await skillHubWaitTerminal(jobs, id: serviceJob.id, seconds: 90)
+            try #require(cancelled.state == .cancelled,
+                         "cancellation did not settle honestly: \(cancelled.state.rawValue)")
+            let closedStatus = await runtime.dispatchChildTool(
+                try toolCall(id: "jobs-status-cancelled", toolName: "jobs.status",
+                             arguments: try Self.json(["jobID": serviceJob.id.uuidString])),
+                identity: fixedIdentity, childContext: childContext)
+            try #require(closedStatus.outputSummary.contains("cancelled"),
+                         "jobs.status must report the terminal cancellation: \(closedStatus.outputSummary.prefix(300))")
+            // The final stored progress document nulls previewURL on exit
+            // (LocalServiceTool runGuestService): runbook §6 closure evidence.
+            try #require(!closedStatus.outputSummary.contains("http://127.0.0.1:\(port)"),
+                         "previewURL must vanish from jobs.status once cancelled: \(closedStatus.outputSummary.prefix(400))")
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            configuration.timeoutIntervalForRequest = 3
+            configuration.timeoutIntervalForResource = 5
+            configuration.waitsForConnectivity = false
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let deadline = Date().addingTimeInterval(15)
+            var stillReachable = true
+            repeat {
+                do { _ = try await skillHubFetch(preview, session: session); stillReachable = true }
+                catch { stillReachable = false }
+                if !stillReachable { break }
+                try await Task.sleep(for: .milliseconds(250))
+            } while Date() < deadline
+            try #require(!stillReachable, "the cancelled fixture endpoint must not stay reachable from the host")
+            let deadState = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "state-dead",
+                command: "python3 -c \"import sys,urllib.request;urllib.request.urlopen(sys.argv[1],timeout=4).read()\" 'http://10.0.2.15:\(port)/state' && echo GUEST_STATE_STILL_REACHABLE",
+                timeout: 30)
+            try #require(deadState.status != .ok || !deadState.outputSummary.contains("GUEST_STATE_STILL_REACHABLE"),
+                         "the cancelled service endpoint must not stay reachable inside the guest")
+            print("FLOE_SKILLHUB_WEBAPP_QUALIFIED service=\(serviceJob.id) receipt=\(receipt) gate=exit0 collision=\(collisionJob.state.rawValue) cancel=settled")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "webapp")
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            Issue.record("webapp-testing Level B+C qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
+// ============================================================================
+// PART C — real guest node-http MCP service. Its logic uses ONLY PART A's
+// helpers (no browser helper from PART B), but the delivered patch file
+// 0003 applies sequentially after A+B because its diff context ends inside
+// B's block. If Main wants A+C without B, request a regenerated context —
+// no source change is needed, C never calls a B-only helper.
+// Opt-in: FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1.
+// ============================================================================
+
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test 3: real guest node-http MCP service (template, no model)
+
+    /// Creates the bundled reviewed node-http MCP service the way the
+    /// production creation chain stages it — digest-gated `MCPServiceTemplate`
+    /// load, the same `SignedContentArchive` limits and allowed top level, the
+    /// production launcher/build command bytes, the fixed immutable-project
+    /// digest gate, the `exec.localService` node runtime through the real job
+    /// service — then exercises it with the real `MCPRemoteClient` (initialize,
+    /// tools/list, tools/call on the fixed `service_status` contract) and
+    /// cancels it with verified endpoint closure. There is no fake Node
+    /// substitute: if the guest cannot provide Node, this qualification fails
+    /// unproven with the production provisioner error retained; it never
+    /// silently skips. Registration into the user's persisted MCP connection
+    /// store is deliberately excluded (no persistent Simulator state change);
+    /// that remains coordinator-owned.
+    @Test(
+        "Skill Hub guest qualification: bundled node-http MCP template builds, serves and answers the real MCP client in the Linux guest",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILLHUB_MCP_NODE_QUALIFICATION"] == "1")
+    )
+    func skillHubMCPNodeHTTPLiveGuestQualification() async throws {
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = ["kind": "skill-hub-mcp-node-guest-not-model-not-ui"]
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var conversationID: UUID?
+        var app: AppEnvironment?
+        let operationDirectory = "MCPServices/" + UUID().uuidString.lowercased()
+
+        func finish() async {
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app?.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: conversationID, app: app)
+        }
+        do {
+            // 1. Production digest-gated template load + byte-exact staging.
+            let template = try MCPServiceTemplate.load()
+            try #require(template.contract.templateID == "floe.mcp.node-http")
+            try #require(template.contract.templateVersion == "1.0.1")
+            try #require(template.contract.runtime.os == "linux")
+            try #require(template.contract.runtime.node == ">=20.19.0")
+            try #require(template.contract.sdk.package == "@modelcontextprotocol/sdk")
+            try #require(template.contract.sdk.version == "1.32.2")
+            try #require(template.contract.smokeTest.tool == "service_status")
+            // The frozen contract stays honest until real guest runs land.
+            try #require(template.contract.runtime.guestExecutionVerified == false,
+                         "the template contract must still declare guest execution unproven")
+            let archiveSHA = FloeDigest.sha256Hex(template.archive)
+            evidence["templateArchiveSHA256"] = archiveSHA
+            try #require(FloeDigest.sha256Hex(template.contractBytes)
+                            == MCPServiceTemplate.immutableProjectDigests["contract.json"],
+                         "contract bytes differ from the pinned immutable digest")
+            var manifest: [SkillHubStagedFile] = []
+            try SkillHubStager.stageBytes(template.archive, to: root,
+                                          path: "mcp-template.zip", into: &manifest)
+            _ = try SignedContentArchive.extract(
+                template.archive,
+                at: root.appendingPathComponent(operationDirectory, isDirectory: true),
+                limits: .init(maximumEntries: 32, maximumFileBytes: 262_144,
+                              maximumTotalBytes: 1_048_576),
+                allowedTopLevel: ["README.md", "contract.json", "node-http"])
+            let launcher = root.appendingPathComponent(operationDirectory)
+                .appendingPathComponent("node-http/floe-start.mjs")
+            try SkillHubStager.stageBytes(Data(MCPServiceCreationAppBackend.launcher.utf8), to: root,
+                                          path: operationDirectory + "/node-http/floe-start.mjs",
+                                          into: &manifest)
+            for (path, expected) in MCPServiceTemplate.immutableProjectDigests {
+                let file = root.appendingPathComponent(operationDirectory).appendingPathComponent(path)
+                let bytes = try Data(contentsOf: file)
+                try #require(FloeDigest.sha256Hex(bytes) == expected,
+                             "staged \(path) differs from the pinned immutable digest")
+                manifest.append(SkillHubStagedFile(path: operationDirectory + "/" + path,
+                                                   sha256: expected, bytes: bytes.count))
+            }
+            _ = launcher // referenced through the manifest entry above
+            try SkillHubStager.writeManifest(manifest, at: root)
+
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            let liveApp = AppEnvironment.live()
+            app = liveApp
+            try #require(liveApp.persistenceReady, "Production persistence bootstrap failed")
+            let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
+            let runID = UUID()
+            let conversationUUID = UUID()
+            conversationID = conversationUUID
+            try await skillHubCreateRunRows(app: liveApp, conversationID: conversationUUID, runID: runID,
+                title: "MCP node-http qualification",
+                goal: "Real guest node MCP service through owned jobs; no model")
+
+            let ceiling: Set<String> = ["exec.shell", "jobs.status", "jobs.cancel"]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationUUID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify the node-http MCP guest service") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before the MCP child checks")
+            let context = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationUUID)
+            let identity = ChildExecutionIdentity(
+                parentRunID: runID, rootTaskID: conversationUUID, delegateCallID: "skillhub-mcp")
+            try await requireQualifiedKernel(runtime: runtime, identity: identity, context: context)
+
+            let stageResult = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "mcp-stage-verify",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n" + skillHubStageVerifyScript
+                    + "\nPY", timeout: 120)
+            try #require(stageResult.status == .ok && stageResult.outputSummary.contains("bad=0"),
+                         "Guest staging verification failed: \(stageResult.outputSummary)")
+
+            // 2. Guest Node must be REAL and production-provisioned. A missing
+            //    or unprovisionable runtime fails this test explicitly.
+            let services = FloePlatformServices.shared
+            let runner = try #require(services.linuxCommandRunner(),
+                                      "Production Linux command runner is unavailable")
+            let node: LinuxGuestNodeEnvironment
+            do {
+                node = try await LinuxGuestNodeProvisioner.shared.ensure(
+                    environmentID: environmentID, runner: runner, cancellation: CancellationToken())
+            } catch {
+                throw FloeError.validationFailed(
+                    "guest Node is unavailable/unproven (this qualification must fail, not skip): \(error)")
+            }
+            try #require(!node.nodePath.isEmpty && !node.npmPath.isEmpty,
+                         "guest node/npm paths are empty")
+            evidence["guestNodePath"] = node.nodePath
+            evidence["guestNodeVersion"] = node.version ?? "unknown"
+            print("FLOE_SKILLHUB_NODE path=\(node.nodePath) version=\(node.version ?? "unknown")")
+
+            // 3. The production fixed build contract runs in the guest.
+            let build = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "mcp-build", command: MCPServiceCreationAppBackend.buildCommand,
+                timeout: 600, cwd: operationDirectory + "/node-http")
+            jobIDs.append(build)
+            let buildJob = try await skillHubWaitTerminal(jobs, id: build, seconds: 780)
+            evidence["build"] = buildJob.resultSummary ?? buildJob.lastError ?? buildJob.state.rawValue
+            try #require(buildJob.state == .completed,
+                         "guest node-http template build/test contract failed: \(evidence["build"] ?? "unknown")")
+            let dist = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "dist-hash",
+                command: "test -s \(operationDirectory)/node-http/dist/server.js && sha256sum \(operationDirectory)/node-http/dist/server.js",
+                timeout: 60)
+            try #require(dist.status == .ok, "built server missing after a completed build: \(dist.outputSummary)")
+            evidence["distServer"] = String(dist.outputSummary.prefix(300))
+
+            // 4. Serve the built MCP through the real exec.localService node runtime.
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(
+                runtime: "node", entry: operationDirectory + "/node-http/floe-start.mjs",
+                arguments: [], cwd: operationDirectory + "/node-http", port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "skillhub-mcp-service-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            evidence["serviceJobID"] = serviceJob.id.uuidString
+            var samples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(jobs, id: serviceJob.id,
+                                                        samples: &samples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "preview endpoint must be the owned loopback, got \(preview)")
+            for sample in samples {
+                try #require(!(sample["previewURL"]?.isEmpty == false && sample["state"] != "running"),
+                             "previewURL appeared before the running state: \(sample)")
+            }
+            let sampleData = (try? JSONEncoder().encode(samples)) ?? Data()
+            evidence["progressSamples"] = String(decoding: sampleData, as: UTF8.self)
+
+            // 5. The REAL production MCP client against the fixed contract.
+            let endpoint = URL(string: "http://127.0.0.1:\(port)/mcp")!
+            let configuration = MCPServerConfiguration(
+                id: UUID(), displayName: "Floe node-http qualification", endpoint: endpoint,
+                enabled: true, allowInCanvas: false, allowInsecureHTTP: true, authentication: .none)
+            let client = try MCPRemoteClient(configuration: configuration, credential: nil)
+            do {
+                try await client.prepareLegacySession()
+                let tools = try await client.discoverTools()
+                let status = try #require(tools.first(where: { $0.remoteName == "service_status" }),
+                                          "the template's fixed status tool was not discovered: \(tools.map(\.remoteName))")
+                try #require(status.readOnlyHint && !status.destructiveHint,
+                             "service_status must stay read-only and non-destructive")
+                let output = try await client.callTool(name: "service_status",
+                    argumentsJSON: Data(#"{"label":"floe-native-verification"}"#.utf8))
+                try #require(output.exitStatus == 0, "status call failed: \(output.summary.prefix(400))")
+                let content = try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: String]
+                try #require(content?["status"] == "ready"
+                                && content?["service"] == "floe-mcp-service"
+                                && content?["label"] == "floe-native-verification",
+                             "structured content must match the pinned smoke contract: \(output.summary.prefix(400))")
+                evidence["smokeSHA256"] = output.fullOutputSHA256
+                // 6. Cancellation with honest closure: terminal cancelled, the
+                //    guest endpoint refuses, and a post-cancel client call fails.
+                _ = try await jobs.cancel(id: serviceJob.id)
+                let terminal = try await skillHubWaitTerminal(jobs, id: serviceJob.id, seconds: 90)
+                try #require(terminal.state == .cancelled,
+                             "MCP service cancellation is not honest: \(terminal.state.rawValue)")
+                let finalStatus = try toolCall(id: "jobs-status-mcp-final", toolName: "jobs.status",
+                    arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
+                let finalResult = await runtime.dispatchChildTool(finalStatus, identity: identity,
+                                                                  childContext: context)
+                try #require(finalResult.outputSummary.contains("cancelled"),
+                             "jobs.status must report the terminal cancelled service: \(finalResult.outputSummary.prefix(300))")
+                try #require(!finalResult.outputSummary.contains("http://127.0.0.1:\(port)"),
+                             "previewURL must vanish from jobs.status once cancelled: \(finalResult.outputSummary.prefix(400))")
+                var refused = false
+                do {
+                    _ = try await client.callTool(name: "service_status",
+                        argumentsJSON: Data(#"{"label":"post-cancel-probe"}"#.utf8))
+                } catch { refused = true }
+                try #require(refused, "the cancelled guest MCP endpoint must refuse real requests")
+            } catch {
+                await client.disconnect()
+                throw error
+            }
+            await client.disconnect()
+            print("FLOE_SKILLHUB_MCP_QUALIFIED service=\(serviceJob.id) node=\(node.version ?? "unknown") build=completed smoke=\(evidence["smokeSHA256"] ?? "missing")")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "mcp-node")
+            Issue.record("MCP node-http guest qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
 #endif
