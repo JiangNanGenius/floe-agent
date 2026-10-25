@@ -77,7 +77,7 @@ enum ImpeccableProducerScript {
         defer { cacheLock.unlock() }
         if let cached { return cached }
 
-        guard let fileURL = resourceURL(named: fileName, extension: "js", bundle: bundle) else {
+        guard let fileURL = resourceURL(named: (fileName as NSString).deletingPathExtension, extension: "js", bundle: bundle) else {
             throw LoadError.missingResource(fileName)
         }
         let fileData: Data

@@ -93,11 +93,13 @@ private func makeELF64(
     }
     put16(16, eType); put16(18, eMachine); put32(20, eVersion)
     put64(32, phoff); put16(54, phentsize); put16(56, phnum)
-    let total = Int(phoff) + Int(phnum) * Int(phentsize)
+    // Actual fixture bytes are independent of the possibly corrupt header
+    // declarations. Otherwise an out-of-file phoff becomes valid by padding,
+    // and phnum == 0 crashes the fixture before the validator can reject it.
+    let total = programHeaders.map { Int($0.offset) + 56 }.max() ?? 64
     if bytes.count < total { bytes.append(Data(count: total - bytes.count)) }
-    for (index, header) in programHeaders.enumerated() {
-        let offset = Int(phoff) + index * Int(phentsize)
-        put32(offset, header.type)
+    for header in programHeaders {
+        put32(Int(header.offset), header.type)
     }
     return bytes
 }
@@ -193,7 +195,10 @@ private func makeELF64(
 
     @Test func componentVersionPatterns() throws {
         for valid in ["0.1.17+floe.1.0.0", "1.0.0+floe.0.0.1", "10.20.30+floe.40.50.60"] {
-            let object = makeDescriptorDictionary(componentVersion: valid)
+            let object = makeDescriptorDictionary(componentVersion: valid, artifact: [
+                "path": "engines/impeccable/dist/impeccable-\(valid)/riscv64gc-unknown-linux-musl/floe-impeccable",
+                "size": 5579704, "sha256": frozenArtifactSHA256
+            ])
             let descriptor = try SkillRuntimeDependency.decode(try encode(object))
             #expect(descriptor.componentVersion == valid)
         }

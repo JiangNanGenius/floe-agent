@@ -1459,6 +1459,7 @@ struct BrowserImpeccableCaptureTests {
         installTrustedCapture(on: transport, session: session, tabID: tabID)
         let ticket = try await service.capture(tabID: tabID)
         installMatchingProbe(on: transport, ticket: ticket)
+        let issued = try issuedIdentity(ticket: ticket)
         #expect(service.status(captureID: ticket.captureID) == .active)
         guard let tab = session.tabs.first(where: { $0.id == tabID }) else {
             Issue.record("tab disappeared"); return
@@ -1484,7 +1485,6 @@ struct BrowserImpeccableCaptureTests {
         await #expect(throws: ImpeccableCaptureError.self) {
             try await service.answerNeeds(captureID: ticket.captureID, needsJSON: impeccableNeedsData(points: [(10.0, 20.0)]))
         }
-        let issued = try issuedIdentity(ticket: ticket)
         let data = resultJSON(
             status: "complete", verdict: "findings", identity: issued,
             extras: ["findings": ["groups": [], "pageLevel": [], "counts": ["total": 2]]]
