@@ -513,7 +513,9 @@ final class TaskLiveActivityCoordinator {
 // MARK: - ActivityKit implementation
 
 #if os(iOS) && canImport(ActivityKit) && !targetEnvironment(macCatalyst)
-import ActivityKit
+// ActivityKit's SDK Activity handle lacks Sendable annotations. Keep its
+// compatibility boundary here; the MainActor coordinator serializes calls.
+@preconcurrency import ActivityKit
 
 @MainActor
 private final class ActivityKitTaskLiveActivityControl: TaskLiveActivityControlling {
