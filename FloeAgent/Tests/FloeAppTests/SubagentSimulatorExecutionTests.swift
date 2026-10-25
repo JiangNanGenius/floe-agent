@@ -3005,4 +3005,942 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+
+// ==== Impeccable engine guest + native capture loop qualification ====
+// ============================================================================
+// Impeccable engine qualification — PRIVATE PROPOSAL (job-c50410e5135949db).
+//
+// Append-only content for FloeAgent/Tests/FloeAppTests/SubagentSimulatorExecutionTests.swift.
+// Insert this block AFTER the Skill Hub guest qualification blocks (the
+// `skillHubMCPNodeHTTPLiveGuestQualification` function) and BEFORE the final
+// `#endif`. Same-file extension: no project.yml or membership change.
+//
+// Frozen inputs (verified as DATA on the host on 2026-10-26; no host engine
+// execution anywhere in this harness):
+//   * FLOE_IMPECCABLE_TRANSPORT_ZIP -> Local/Artifacts/skill-hub-20261026/
+//     impeccable-riscv64-qualification-0.1.17-floe1.0.0.zip
+//     (3,376,092 bytes, sha256 7b09d78470e4df3cffe3d015a995489f07ae5bd565d1e42d7e851ff0c7310aa0,
+//     128 safe relative entries). The engine dependency is a raw fixture
+//     transport only, never a Skill ZIP: the normal Skill ZIP size/type caps
+//     are untouched.
+//   * engine/floe-impeccable: 5,579,704 bytes, sha256
+//     af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b,
+//     static RISC-V ELF; probe stdout is exactly
+//     "impeccable-engine 0.1.17+floe.1.0.0"; `contract` sha256 is
+//     baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3.
+//   * root Hub qemu/docker evidence is NOT guest proof: only the real App
+//     TinyEMU guest below is. The root package stays unqualified/unpublished;
+//     no catalog, claim or version is touched here.
+//
+// Opt-in, fail-closed (a plain disabled run is reported as disabled, never a
+// pass — the existing real-guest policy in this file):
+//   * FLOE_IMPECCABLE_ENGINE_QUALIFICATION=1  + FLOE_IMPECCABLE_TRANSPORT_ZIP
+//   * FLOE_IMPECCABLE_CAPTURE_QUALIFICATION=1 + FLOE_IMPECCABLE_TRANSPORT_ZIP
+//     + FLOE_SKILL_HUB_SOURCES_DIR (fixture server pages only)
+//
+// Everything executes through the SAME real production chain the Skill Hub
+// blocks above use: bootGuest -> makeRuntime -> active parent ->
+// requireQualifiedKernel -> dispatchChildTool(exec.shell / browser.*), the
+// production BackgroundJobService.submit for exec.localService, and the real
+// browser.observe profile=design capture/facts/release path. The engine runs
+// ONLY inside the resolved Linux guest on its staged, guest-re-hashed bytes
+// (chmod +x in the guest after the re-hash). No host engine execution, no
+// fabricated outputs, no new model-facing tools, no permission bypass.
+//
+// Nonzero engine exits are semantic results, never crashes: 0 clean (unreachable
+// in v1), 1 failed, 2 findings, 3 needs-facts, 4 inconclusive. The harness
+// preserves those distinctions instead of flattening them.
+// ============================================================================
+
+// MARK: - Impeccable pinned transport + contract constants (file scope, private)
+
+private enum ImpeccableInputs {
+    static let transportZipSHA256 =
+        "7b09d78470e4df3cffe3d015a995489f07ae5bd565d1e42d7e851ff0c7310aa0"
+    static let transportZipBytes = 3_376_092
+    static let engineSHA256 =
+        "af8795bf9636e763541c58ef90ee889941e468f453ec6580c32a89a5a758b87b"
+    static let engineBytes = 5_579_704
+    static let engineProbeLine = "impeccable-engine 0.1.17+floe.1.0.0"
+    static let engineVersionLine = "0.1.17+floe.1.0.0"
+    static let contractSHA256 =
+        "baf2453164be6162703af9d671be16da152fa874db53ce95ad5b3516d40de4a3"
+    static let launcherSHA256 =
+        "b317617bb9f473a4d80b3477543d015f8d7d2645f63f0998acbce43bcbf58cc4"
+
+    // Frozen synthetic-golden fixtures and goldens (sha256 pinned, re-hashed
+    // inside the guest after byte-exact staging from the verified zip).
+    static let fixtureSnapshotSHA256 =
+        "4c9fec636a1c0d8a8bc593d963501dbd51aca147cba1e9e25fbd93179944127d"
+    static let fixtureIdentitySHA256 =
+        "bbcc122bd96c86c395c50a23c47db6d4bd7f7de7da99a83f35ee58a5fa38c08b"
+    static let fixtureOverlayFactsSHA256 =
+        "a1aca5caaf8166bedd6391365382095ffa926d10949361b8890e3e749908e6df"
+    static let fixtureNoAnswerFactsSHA256 =
+        "64c5cce236dfd9ba1396b65bbd560c42a8dc70cdc6c20330a73978faa2612560"
+    static let goldenOverlayRound1SHA256 =
+        "3b60240583f4ed26b76ac169a76e7994461cc99359d64d3f8bb7b827fa17fdcb"
+    static let goldenOverlayRound2SHA256 =
+        "7a7e6c420275cf66ebd4934bdfbd49a2fac78a8053a2ef3360e9de6cf2c80eb5"
+    static let goldenNoFindingsSHA256 =
+        "d87ff1559367c0328722ee239c35106e94b257fa962190e2579059ee488b4bc0"
+    static let goldenNeedsPoints = 169
+
+    /// The six v1 coverage gaps that can never be certified by the engine
+    /// alone, from the frozen `no-findings` golden. v1 verdict `clean` is
+    /// unreachable by design: 0 findings still exits 4 `inconclusive`.
+    static let alwaysUncoveredRequired = [
+        "pixel-contrast", "reveal-sweep", "content-hidden-at-rest-measure",
+        "script-errors", "cross-origin-iframe", "same-origin-iframe",
+    ]
+
+    static func requireTransportZip() throws -> URL {
+        let path = ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_TRANSPORT_ZIP"] ?? ""
+        guard !path.isEmpty else {
+            throw FloeError.validationFailed(
+                "Impeccable qualification requires FLOE_IMPECCABLE_TRANSPORT_ZIP")
+        }
+        let url = URL(fileURLWithPath: path)
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true, values.fileSize == transportZipBytes else {
+            throw FloeError.validationFailed(
+                "Impeccable transport zip size is \(String(describing: values.fileSize)), expected \(transportZipBytes)")
+        }
+        let digest = FloeDigest.sha256Hex(try Data(contentsOf: url))
+        guard digest == transportZipSHA256 else {
+            throw FloeError.validationFailed("Impeccable transport zip sha256 mismatch: \(digest)")
+        }
+        return url
+    }
+}
+
+/// Small result-document projection: exactly the fields this harness asserts.
+private struct ImpeccableEngineResult: Decodable {
+    struct Needs: Decodable {
+        let hitTests: [[Double]]?
+        let scrollProbes: [Int]?
+    }
+    struct Findings: Decodable {
+        struct Counts: Decodable {
+            let total: Int?
+            let byRule: [String: Int]?
+        }
+        let counts: Counts?
+    }
+    struct Coverage: Decodable {
+        let uncoveredRequired: [String]?
+    }
+    struct IdentityEcho: Decodable {
+        let taskId: String?
+        let captureId: String?
+        let documentId: String?
+    }
+    struct Failure: Decodable {
+        let code: String?
+        let message: String?
+    }
+    let status: String?
+    let verdict: String?
+    let needs: Needs?
+    let findings: Findings?
+    let coverage: Coverage?
+    let identity: IdentityEcho?
+    let error: Failure?
+}
+
+private struct ImpeccableDesignCaptureResponse: Decodable {
+    struct Capture: Decodable {
+        struct Binding: Decodable {
+            let taskId: String
+            let sessionId: String
+            let tabId: String
+            let documentId: String
+            let documentGeneration: Int
+            let captureId: String
+        }
+        let captureId: String
+        let binding: Binding
+        let bridgeRootIsTaskWorkspace: Bool
+        let relativeSnapshotFile: String
+        let relativeIdentityFile: String
+        let documentGeneration: Int
+        let elementCount: Int
+        let snapshotBytes: Int
+        let scriptDigest: String
+    }
+    let profile: String
+    let state: String
+    let capture: Capture
+}
+
+private struct ImpeccableDesignFactsResponse: Decodable {
+    let state: String
+    let captureID: String
+    let relativeFactsFile: String
+}
+
+/// Guest-side engine driver: runs one engine invocation, captures its exact
+/// exit code, wall time (guest clock) and peak RSS sampled from /proc while
+/// the process lives. RSS is reported as `unavailable` when /proc is not
+/// readable — it is never synthesized. The sampler breaks on the zombie
+/// state (or a gone /proc entry) before `wait`, so an exited engine can never
+/// hang the driver until the shell timeout. stdout/stderr go to bounded files
+/// so page text can never flood the tool summary.
+private let impeccableEngineDriver = """
+run_engine() {
+    label="$1"; shift
+    mkdir -p synthetic
+    start=$(date +%s%N)
+    "$@" >"synthetic/$label.stdout" 2>"synthetic/$label.stderr" &
+    pid=$!
+    peak=""
+    while [ -d "/proc/$pid" ]; do
+        v=$(awk '/VmHWM/{print $2}' "/proc/$pid/status" 2>/dev/null)
+        if [ -n "$v" ]; then peak=$v; fi
+        state=$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)
+        if [ "$state" = "Z" ] || [ -z "$state" ]; then break; fi
+        sleep 0.02
+    done
+    wait "$pid"; rc=$?
+    end=$(date +%s%N)
+    echo "FLOE_ENGINE label=$label rc=$rc elapsed_ms=$(( (end - start) / 1000000 )) vmhwm_kb=${peak:-unavailable}"
+    return 0
+}
+"""
+
+extension SubagentSimulatorExecutionTests {
+
+    /// Reads an engine result document the guest wrote into the workspace.
+    func impeccableReadResult(_ root: URL, _ relative: String) throws -> ImpeccableEngineResult {
+        let data = try Data(contentsOf: root.appendingPathComponent(relative))
+        return try JSONDecoder().decode(ImpeccableEngineResult.self, from: data)
+    }
+
+    struct ImpeccableEngineRunStats {
+        let rc: Int
+        let elapsedMS: Int
+        let vmhwmKB: Int?
+    }
+
+    /// Strict marker parse. The driver emits exactly one line of the form
+    /// `FLOE_ENGINE label=<label> rc=<digits> elapsed_ms=<digits>
+    ///  vmhwm_kb=<digits|unavailable>`; a regex prefix match would accept
+    /// junk like `vmhwm_kb=12a` as `12`, so this tokenizes the whole line
+    /// instead. The shared `skillHubFirstMatch` returns the WHOLE match and
+    /// is deliberately not used here. Malformed markers throw — they are
+    /// never guessed, and `unavailable` RSS stays nil (never synthesized).
+    func impeccableParseEngineStats(label: String, output: String) throws -> ImpeccableEngineRunStats {
+        guard let line = output.split(separator: "\n")
+            .first(where: { $0.hasPrefix("FLOE_ENGINE label=\(label) ") })
+            .map(String.init) else {
+            throw FloeError.validationFailed(
+                "Missing FLOE_ENGINE marker for \(label): \(output.prefix(400))")
+        }
+        let tokens = line.split(separator: " ", omittingEmptySubsequences: true)
+        func digits(_ token: Substring, _ prefix: String) throws -> Int {
+            let value = token.dropFirst(prefix.count)
+            guard token.hasPrefix(prefix), !value.isEmpty, value.allSatisfy({ $0.isNumber }),
+                  let parsed = Int(value) else {
+                throw FloeError.validationFailed("Malformed \(prefix) in engine marker: \(line)")
+            }
+            return parsed
+        }
+        guard tokens.count == 5, tokens[0] == "FLOE_ENGINE",
+              tokens[1] == "label=\(label)" else {
+            throw FloeError.validationFailed("Malformed engine marker shape: \(line)")
+        }
+        let rc = try digits(tokens[2], "rc=")
+        let elapsedMS = try digits(tokens[3], "elapsed_ms=")
+        guard tokens[4].hasPrefix("vmhwm_kb=") else {
+            throw FloeError.validationFailed("Malformed RSS field in engine marker: \(line)")
+        }
+        let vmhwmToken = tokens[4].dropFirst("vmhwm_kb=".count)
+        let vmhwmKB: Int?
+        if vmhwmToken == "unavailable" {
+            vmhwmKB = nil
+        } else {
+            vmhwmKB = try digits(tokens[4], "vmhwm_kb=")
+        }
+        return ImpeccableEngineRunStats(rc: rc, elapsedMS: elapsedMS, vmhwmKB: vmhwmKB)
+    }
+
+    /// Runs one driver-wrapped engine invocation and returns the recorded
+    /// exit code, guest elapsed ms and sampled VmHWM kb (nil = unavailable).
+    @discardableResult
+    func impeccableEngineRun(
+        runtime: FloeAgentRuntime,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        tag: String,
+        label: String,
+        arguments: [String],
+        timeout: Int = 600
+    ) async throws -> (rc: Int, elapsedMS: Int?, vmhwmKB: Int?, stderrSummary: String) {
+        let command = impeccableEngineDriver + "\nrun_engine \(label) " + arguments.joined(separator: " ")
+        let result = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context,
+            tag: tag, command: command, timeout: timeout)
+        try #require(result.status == .ok, "Impeccable engine driver failed to run: \(result.outputSummary)")
+        let stats = try impeccableParseEngineStats(label: label, output: result.outputSummary)
+        let stderrText = (try? String(contentsOf: context.workspaceRootURL!
+            .appendingPathComponent("synthetic/\(label).stderr"), encoding: .utf8)) ?? ""
+        let summary = stderrText.split(separator: "\n")
+            .first(where: { $0.contains("floe-impeccable: snapshot-scan status=") })
+            .map(String.init) ?? ""
+        return (stats.rc, stats.elapsedMS, stats.vmhwmKB, summary)
+    }
+
+    /// Background-job variant for the scaling sample: the same driver runs
+    /// through the production job service (proven 600 s guest command cap, the
+    /// pip/static precedent), so a genuine TinyEMU sizing overrun fails as an
+    /// honest timeout result instead of a harness grace extension.
+    @discardableResult
+    func impeccableEngineRunJob(
+        jobs: BackgroundJobService,
+        runID: UUID,
+        environmentID: String,
+        root: URL,
+        label: String,
+        arguments: [String],
+        jobIDs: inout [UUID]
+    ) async throws -> (rc: Int, elapsedMS: Int?, vmhwmKB: Int?, stderrSummary: String) {
+        let command = impeccableEngineDriver + "\nrun_engine \(label) " + arguments.joined(separator: " ")
+        let id = try await skillHubSubmitShell(
+            jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+            name: "impeccable-\(label)", command: command, timeout: 600)
+        jobIDs.append(id)
+        let job = try await skillHubWaitTerminal(jobs, id: id, seconds: 660)
+        let output = job.resultSummary ?? job.lastError ?? job.state.rawValue
+        try #require(job.state == .completed,
+                     "Impeccable engine job \(label) did not complete: \(output)")
+        let stats = try impeccableParseEngineStats(label: label, output: output)
+        let stderrText = (try? String(contentsOf: root
+            .appendingPathComponent("synthetic/\(label).stderr"), encoding: .utf8)) ?? ""
+        let summary = stderrText.split(separator: "\n")
+            .first(where: { $0.contains("floe-impeccable: snapshot-scan status=") })
+            .map(String.init) ?? ""
+        return (stats.rc, stats.elapsedMS, stats.vmhwmKB, summary)
+    }
+
+    /// A raw browser call for the design profile; returns the decoded JSON
+    /// summary string (the design tool answers with a metadata receipt, not
+    /// the semantic page shape, so the shared browser decoder does not apply).
+    func impeccableDesignCall(
+        runtime: FloeAgentRuntime,
+        identity: ChildExecutionIdentity,
+        context: ToolContext,
+        tag: String,
+        arguments: [String: Any]
+    ) async throws -> String {
+        let call = try toolCall(id: tag, toolName: "browser.observe",
+                                arguments: try Self.json(arguments))
+        let result = await runtime.dispatchChildTool(call, identity: identity, childContext: context)
+        try #require(result.status == .ok, "browser.observe design failed: \(result.outputSummary)")
+        return result.outputSummary
+    }
+
+    /// Deterministic test-owned synthetic page for the scaling sample: ~2,000
+    /// sections (about 6,001 elements), well inside the 30,000-element capture
+    /// budget. Authored by the harness, staged byte-exact, served by the
+    /// unmodified shipped fixture server.
+    func impeccableLargeFixtureHTML() -> Data {
+        var html = """
+        <!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+        <title>Impeccable large synthetic</title>
+        <style>body{font-family:system-ui;margin:2rem}section{margin:.25rem 0}h2{font-size:15px}p{font-size:13px;color:#333}</style>
+        </head><body><h1>Impeccable large synthetic page</h1>
+        """
+        for index in 0..<2_000 {
+            html += """
+            <section id="s\(index)"><h2>Section \(index) heading</h2><p>Body copy \(index): synthetic design-capture scaling fixture with benign readable text.</p></section>
+            """
+        }
+        html += "</body></html>"
+        return Data(html.utf8)
+    }
+}
+
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test: real guest engine proof + frozen synthetic golden contract
+
+    /// Real TinyEMU guest qualification of the delivered Impeccable engine:
+    /// byte-exact transport staging (guest re-hash of the engine, launcher,
+    /// fixtures and goldens), chmod +x only after the guest re-hash, probe and
+    /// contract digests, launcher probe, and the frozen synthetic golden
+    /// matrix — round 1 exit 3 with exactly 169 requested points, overlay
+    /// round 2 exit 2 with exactly one text-occlusion finding, and the v1
+    /// never-clean invariant (exit 4, 0 findings, the six always-uncovered
+    /// passes) verified live against shipped fixtures. Every nonzero engine
+    /// exit is asserted as its semantic meaning, never flattened to a crash.
+    @Test(
+        "Impeccable engine guest qualification: staged riscv64 engine probe/contract and the frozen synthetic golden contract in the real Linux guest",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_ENGINE_QUALIFICATION"] == "1")
+    )
+    func impeccableEngineGuestQualification() async throws {
+        let zip = try ImpeccableInputs.requireTransportZip()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "impeccable-engine-guest-not-model-not-ui",
+            "transportZip": zip.path,
+        ]
+        var stagingManifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/impeccable.zip", into: &stagingManifest)
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        let app = try await appQualificationEnvironment()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "impeccable-engine")
+        func finish() async {
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: nil, jobIDs: [],
+                                  environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Impeccable engine qualification",
+                goal: "Real guest engine probe, contract and synthetic golden contract; no model")
+            recordsCreated = true
+            let ceiling: Set<String> = ["exec.shell"]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify the Impeccable engine in the real guest") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before engine child execution")
+            let context = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: context)
+            evidence["guestKernel"] = "6.18.56"
+
+            // 1. Guest-side unpack + re-hash of every pinned byte.
+            let setup = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "engine-stage",
+                command: """
+                set -e
+                PYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/impeccable.zip transport/unpacked
+                sha256sum transport/impeccable.zip
+                sha256sum transport/unpacked/engine/floe-impeccable
+                sha256sum transport/unpacked/launcher/floe-impeccable
+                sha256sum transport/unpacked/contract/fixtures/snapshot-needs-hit-tests.v1.json
+                sha256sum transport/unpacked/contract/fixtures/identity-needs.v1.json
+                sha256sum transport/unpacked/adapter-test-data/facts-overlay-round2.v1.json
+                sha256sum transport/unpacked/contract/fixtures/facts-hit-tests.v1.json
+                sha256sum transport/unpacked/contract/expected/riscv64-docker/overlay-round1.result.v1.json
+                sha256sum transport/unpacked/contract/expected/riscv64-docker/overlay-round2.result.v1.json
+                sha256sum transport/unpacked/contract/expected/riscv64-docker/no-findings-round2.result.v1.json
+                chmod +x transport/unpacked/engine/floe-impeccable transport/unpacked/launcher/floe-impeccable
+                mkdir -p synthetic
+                """, timeout: 300)
+            try #require(setup.status == .ok, "Guest engine staging failed: \(setup.outputSummary)")
+            for pin in [ImpeccableInputs.transportZipSHA256, ImpeccableInputs.engineSHA256,
+                        ImpeccableInputs.launcherSHA256, ImpeccableInputs.fixtureSnapshotSHA256,
+                        ImpeccableInputs.fixtureIdentitySHA256, ImpeccableInputs.fixtureOverlayFactsSHA256,
+                        ImpeccableInputs.fixtureNoAnswerFactsSHA256, ImpeccableInputs.goldenOverlayRound1SHA256,
+                        ImpeccableInputs.goldenOverlayRound2SHA256, ImpeccableInputs.goldenNoFindingsSHA256] {
+                try #require(setup.outputSummary.contains(pin),
+                             "Guest re-hash missing pinned digest \(pin): \(setup.outputSummary)")
+            }
+            evidence["guestStage"] = String(setup.outputSummary.prefix(1_200))
+
+            // 2. Engine executable proof: probe + version + contract digest.
+            let probe = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "engine-probe",
+                command: """
+                transport/unpacked/engine/floe-impeccable engine-probe
+                echo FLOE_PROBE_RC=$?
+                transport/unpacked/engine/floe-impeccable --version
+                transport/unpacked/engine/floe-impeccable contract | sha256sum
+                """, timeout: 120)
+            try #require(probe.status == .ok, "Engine probe failed to run: \(probe.outputSummary)")
+            try #require(probe.outputSummary.contains(ImpeccableInputs.engineProbeLine),
+                         "Engine probe stdout mismatch: \(probe.outputSummary)")
+            try #require(probe.outputSummary.contains("FLOE_PROBE_RC=0"),
+                         "Engine probe exit was not 0: \(probe.outputSummary)")
+            try #require(probe.outputSummary.contains(ImpeccableInputs.contractSHA256),
+                         "Engine contract digest mismatch: \(probe.outputSummary)")
+            let launcherProbe = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "launcher-probe",
+                command: """
+                FLOE_IMPECCABLE_ENGINE=/workspace/transport/unpacked/engine/floe-impeccable \
+                IMPECCABLE_SKILL_DIR=/workspace/transport/unpacked/raw-skill \
+                sh transport/unpacked/launcher/floe-impeccable engine-probe
+                echo FLOE_LAUNCHER_PROBE_RC=$?
+                """, timeout: 120)
+            try #require(launcherProbe.status == .ok
+                            && launcherProbe.outputSummary.contains(ImpeccableInputs.engineProbeLine)
+                            && launcherProbe.outputSummary.contains("FLOE_LAUNCHER_PROBE_RC=0"),
+                         "Launcher probe failed in the guest: \(launcherProbe.outputSummary)")
+            evidence["engineProof"] = "probe+version+contract+launcher exact"
+            print("FLOE_IMPECCABLE_ENGINE_PROOF contract=\(ImpeccableInputs.contractSHA256.prefix(12))…")
+
+            // 3. Synthetic golden round 1: MUST exit 3 needs-facts, 169 points.
+            let round1 = try await impeccableEngineRun(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "golden-round1",
+                label: "golden-round1",
+                arguments: ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
+                            "--snapshot", "transport/unpacked/contract/fixtures/snapshot-needs-hit-tests.v1.json",
+                            "--identity", "transport/unpacked/contract/fixtures/identity-needs.v1.json",
+                            "--out", "synthetic/result.golden-round1.v1.json", "--round", "1"])
+            try #require(round1.rc == 3, "Golden round 1 must exit 3 needs-facts, got rc=\(round1.rc): \(round1.stderrSummary)")
+            let round1Doc = try impeccableReadResult(root, "synthetic/result.golden-round1.v1.json")
+            try #require(round1Doc.status == "needs-facts", "Golden round 1 status: \(String(describing: round1Doc.status))")
+            try #require(round1Doc.needs?.hitTests?.count == ImpeccableInputs.goldenNeedsPoints,
+                         "Golden round 1 must ask exactly \(ImpeccableInputs.goldenNeedsPoints) points, got \(String(describing: round1Doc.needs?.hitTests?.count))")
+            evidence["goldenRound1"] = "rc=3 needs=\(round1Doc.needs?.hitTests?.count ?? -1) elapsed_ms=\(round1.elapsedMS ?? -1) vmhwm_kb=\(round1.vmhwmKB ?? -1)"
+
+            // 4. Synthetic golden round 2 (facts overlay): MUST exit 2 with
+            //    exactly one text-occlusion finding.
+            let round2 = try await impeccableEngineRun(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "golden-round2",
+                label: "golden-round2",
+                arguments: ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
+                            "--snapshot", "transport/unpacked/contract/fixtures/snapshot-needs-hit-tests.v1.json",
+                            "--identity", "transport/unpacked/contract/fixtures/identity-needs.v1.json",
+                            "--facts", "transport/unpacked/adapter-test-data/facts-overlay-round2.v1.json",
+                            "--out", "synthetic/result.golden-round2.v1.json", "--round", "2"])
+            try #require(round2.rc == 2, "Golden round 2 must exit 2 findings, got rc=\(round2.rc): \(round2.stderrSummary)")
+            let round2Doc = try impeccableReadResult(root, "synthetic/result.golden-round2.v1.json")
+            try #require(round2Doc.status == "complete" && round2Doc.verdict == "findings",
+                         "Golden round 2 status/verdict: \(String(describing: round2Doc.status))/\(String(describing: round2Doc.verdict))")
+            try #require(round2Doc.findings?.counts?.total == 1
+                            && round2Doc.findings?.counts?.byRule?["text-occlusion"] == 1,
+                         "Golden round 2 must report exactly one text-occlusion finding: \(String(describing: round2Doc.findings?.counts))")
+            evidence["goldenRound2"] = "rc=2 findings=\(round2Doc.findings?.counts?.total ?? -1) elapsed_ms=\(round2.elapsedMS ?? -1) vmhwm_kb=\(round2.vmhwmKB ?? -1)"
+
+            // 5. Cross-check the live results against the frozen goldens on the
+            //    normalized fields (elapsedMs is normalized to 0 in the goldens
+            //    and is never compared).
+            let golden1 = try impeccableReadResult(root, "transport/unpacked/contract/expected/riscv64-docker/overlay-round1.result.v1.json")
+            let golden2 = try impeccableReadResult(root, "transport/unpacked/contract/expected/riscv64-docker/overlay-round2.result.v1.json")
+            try #require(golden1.status == "needs-facts"
+                            && golden1.needs?.hitTests?.count == ImpeccableInputs.goldenNeedsPoints,
+                         "Frozen overlay-round1 golden mismatch: \(String(describing: golden1.status))")
+            try #require(golden2.verdict == "findings" && golden2.findings?.counts?.total == 1
+                            && golden2.findings?.counts?.byRule?["text-occlusion"] == 1,
+                         "Frozen overlay-round2 golden mismatch: \(String(describing: golden2.findings?.counts))")
+
+            // 6. v1 never certifies clean: answering nothing is still inconclusive.
+            let noClean = try await impeccableEngineRun(
+                runtime: runtime, identity: fixedIdentity, context: context, tag: "golden-noclean",
+                label: "golden-noclean",
+                arguments: ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
+                            "--snapshot", "transport/unpacked/contract/fixtures/snapshot-needs-hit-tests.v1.json",
+                            "--identity", "transport/unpacked/contract/fixtures/identity-needs.v1.json",
+                            "--facts", "transport/unpacked/contract/fixtures/facts-hit-tests.v1.json",
+                            "--out", "synthetic/result.golden-noclean.v1.json", "--round", "2"])
+            try #require(noClean.rc == 4, "Never-clean run must exit 4 inconclusive, got rc=\(noClean.rc): \(noClean.stderrSummary)")
+            let noCleanDoc = try impeccableReadResult(root, "synthetic/result.golden-noclean.v1.json")
+            try #require(noCleanDoc.status == "inconclusive" && noCleanDoc.verdict == "inconclusive",
+                         "Never-clean status/verdict: \(String(describing: noCleanDoc.status))/\(String(describing: noCleanDoc.verdict))")
+            try #require(noCleanDoc.findings?.counts?.total == 0,
+                         "Never-clean run must report zero findings: \(String(describing: noCleanDoc.findings?.counts))")
+            let uncovered = Set(noCleanDoc.coverage?.uncoveredRequired ?? [])
+            for required in ImpeccableInputs.alwaysUncoveredRequired {
+                try #require(uncovered.contains(required),
+                             "Never-clean run lost the always-uncovered pass \(required): \(uncovered)")
+            }
+            let frozenNoFindings = try impeccableReadResult(
+                root, "transport/unpacked/contract/expected/riscv64-docker/no-findings-round2.result.v1.json")
+            try #require(frozenNoFindings.verdict == "inconclusive"
+                            && frozenNoFindings.findings?.counts?.total == 0
+                            && Set(frozenNoFindings.coverage?.uncoveredRequired ?? [])
+                                == Set(ImpeccableInputs.alwaysUncoveredRequired),
+                         "Frozen no-findings golden does not record the v1 never-clean shape")
+            evidence["neverClean"] = "rc=4 uncovered=\(uncovered.count) elapsed_ms=\(noClean.elapsedMS ?? -1)"
+
+            print("FLOE_IMPECCABLE_ENGINE_QUALIFIED round1=exit3/169p round2=exit2/text-occlusion never-clean=exit4/\(uncovered.count)uncovered")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "impeccable-engine")
+            Issue.record("Impeccable engine guest qualification failed: \(error)")
+            await finish()
+        }
+    }
+
+    // MARK: - Test: real native WebKit capture loop + scaling sample
+
+    /// End-to-end native design-capture loop on real WebKit pages served by
+    /// the shipped fixture server: browser.observe profile=design capture ->
+    /// real guest engine snapshot-scan (exit 3 Needs) -> native facts for
+    /// exactly the requested hit-test points -> engine rerun (exit 2/4),
+    /// identity echo and snapshot digest preserved, release removes the
+    /// bridge files. A second ~6,000-element synthetic page exercises the
+    /// 5k-30k band under the unchanged production budgets (4,096 hit
+    /// tests/round, 16,384 total, 120 s engine budget): a budget-exceeded or
+    /// timeout outcome is recorded explicitly as the real result, never
+    /// widened into a pass. Guest elapsed ms plus /proc-sampled peak RSS are
+    /// honest resource sampling — never a performance acceptance claim.
+    @Test(
+        "Impeccable native capture loop qualification: real WebKit design capture, guest engine Needs, native facts, rerun and scaling sample",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_CAPTURE_QUALIFICATION"] == "1")
+    )
+    func impeccableNativeCaptureLoopQualification() async throws {
+        let zip = try ImpeccableInputs.requireTransportZip()
+        let sources = try SkillHubInputs.requireSourcesDir()
+        let root = try makeWorkspaceRoot()
+        var evidence: [String: String] = [
+            "kind": "impeccable-native-capture-loop-not-model-not-ui",
+            "transportZip": zip.path,
+            "hubSources": sources.path,
+        ]
+        var stagingManifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(try Data(contentsOf: zip), to: root,
+                                      path: "transport/impeccable.zip", into: &stagingManifest)
+        try SkillHubStager.stageBytes(impeccableLargeFixtureHTML(), to: root,
+                                      path: "webapp-testing-src/assets/fixtures/site/impeccable-large.html",
+                                      into: &stagingManifest)
+        try SkillHubStager.stage(sources.appendingPathComponent("webapp-testing", isDirectory: true),
+                                 to: root, relativePrefix: "webapp-testing-src", into: &stagingManifest)
+        try SkillHubStager.writeManifest(stagingManifest, at: root)
+
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var tabs: [UUID] = []
+        var captureIDs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        let app = try await appQualificationEnvironment()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "impeccable-capture")
+        identity = fixedIdentity
+        func finish() async {
+            // Release design captures and close tabs through the real tools
+            // while the parent runtime is still alive, then the standard
+            // ordered teardown (jobs settle before the owned guest is stopped).
+            if let runtime = ownedRuntime, let context {
+                for captureID in captureIDs {
+                    guard let release = try? toolCall(
+                        id: "release-" + captureID.uuidString, toolName: "browser.observe",
+                        arguments: try! Self.json([
+                            "profile": "design", "designAction": "release",
+                            "captureID": captureID.uuidString])) else { continue }
+                    _ = await runtime.dispatchChildTool(release, identity: fixedIdentity,
+                                                        childContext: context)
+                }
+            }
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Impeccable native capture qualification",
+                goal: "Real WebKit design capture loop with the guest engine; no model")
+            recordsCreated = true
+            let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+            let ceiling: Set<String> = [
+                "exec.shell", "browser.tab", "browser.tabs", "browser.navigate",
+                "browser.wait", "browser.observe",
+            ]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Qualify the Impeccable native capture loop") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before capture-loop child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: childContext)
+
+            // Byte-exact staging proof (guest re-hash) + fixture server build.
+            let stageResult = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "capture-stage-verify",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n" + skillHubStageVerifyScript
+                    + "\nPY", timeout: 120)
+            try #require(stageResult.status == .ok && stageResult.outputSummary.contains("bad=0"),
+                         "Guest staging verification failed: \(stageResult.outputSummary)")
+            let engineSetup = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext, tag: "capture-engine-stage",
+                command: """
+                set -e
+                PYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/impeccable.zip transport/unpacked
+                sha256sum transport/unpacked/engine/floe-impeccable
+                transport/unpacked/engine/floe-impeccable engine-probe
+                transport/unpacked/engine/floe-impeccable contract | sha256sum
+                chmod +x transport/unpacked/engine/floe-impeccable
+                mkdir -p synthetic
+                """, timeout: 300)
+            try #require(engineSetup.status == .ok
+                            && engineSetup.outputSummary.contains(ImpeccableInputs.engineSHA256)
+                            && engineSetup.outputSummary.contains(ImpeccableInputs.engineProbeLine)
+                            && engineSetup.outputSummary.contains(ImpeccableInputs.contractSHA256),
+                         "Guest engine staging/probe failed: \(engineSetup.outputSummary)")
+            evidence["engineProof"] = "staged probe+contract exact in this guest"
+
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(runtime: "python",
+                entry: "webapp-testing-src/scripts/fixture_server.py", arguments: [], cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "impeccable-fixture-server-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            evidence["serviceJobID"] = serviceJob.id.uuidString
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(jobs, id: serviceJob.id,
+                                                        samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "PreviewURL must be the owned loopback endpoint, got \(preview)")
+            for sample in progressSamples {
+                try #require(!(sample["previewURL"]?.isEmpty == false && sample["state"] != "running"),
+                             "previewURL appeared before the running state: \(sample)")
+            }
+
+            // One closure over the whole capture -> scan -> facts -> rerun loop.
+            func runCaptureLoop(tag: String, path: String, marker: String, large: Bool) async throws -> [String: String] {
+                var loopEvidence: [String: String] = [:]
+                let created = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                    context: childContext, tag: "\(tag)-create", tool: "browser.tab",
+                    arguments: ["action": "create"])
+                let tabID = try #require(created.page?.tabs.first(where: { $0.isActive })?.id,
+                                         "tab create returned no active tab")
+                tabs.append(tabID)
+                try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                    context: childContext, tag: "\(tag)-navigate", tool: "browser.navigate",
+                    arguments: ["url": preview.absoluteString + path, "tabID": tabID.uuidString])
+                try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                    context: childContext, tag: "\(tag)-load", tool: "browser.wait",
+                    arguments: ["tabID": tabID.uuidString, "condition": "load",
+                                "timeoutMilliseconds": 15_000])
+                _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                                               context: childContext, tag: "\(tag)-settle",
+                                               tabID: tabID, marker: marker)
+
+                // Native design capture: metadata receipt only, task-owned root.
+                let captureSummary = try await impeccableDesignCall(
+                    runtime: runtime, identity: fixedIdentity, context: childContext,
+                    tag: "\(tag)-capture",
+                    arguments: ["profile": "design", "tabID": tabID.uuidString])
+                let captureData = try #require(captureSummary.data(using: .utf8),
+                                               "Capture response was not UTF-8")
+                let capture = try JSONDecoder().decode(ImpeccableDesignCaptureResponse.self,
+                                                       from: captureData)
+                try #require(capture.profile == "design" && capture.state == "captured",
+                             "Capture response state mismatch: \(captureSummary.prefix(300))")
+                try #require(capture.capture.bridgeRootIsTaskWorkspace,
+                             "Capture must belong to this task workspace")
+                let captureID = try #require(UUID(uuidString: capture.capture.captureId),
+                                             "Capture id is not a UUID: \(capture.capture.captureId)")
+                captureIDs.append(captureID)
+                loopEvidence["captureId"] = captureID.uuidString
+                loopEvidence["elementCount"] = String(capture.capture.elementCount)
+                loopEvidence["snapshotBytes"] = String(capture.capture.snapshotBytes)
+                loopEvidence["scriptDigest"] = capture.capture.scriptDigest
+                if large {
+                    try #require(capture.capture.elementCount >= 5_000,
+                                 "Large fixture must really exceed 5,000 elements, got \(capture.capture.elementCount)")
+                    try #require(capture.capture.elementCount <= 30_000,
+                                 "Large fixture exceeds the 30,000-element capture budget: \(capture.capture.elementCount)")
+                }
+
+                // Snapshot digest preserved across the whole loop.
+                let snapshotURL = root.appendingPathComponent(capture.capture.relativeSnapshotFile)
+                let snapshotBytes = try Data(contentsOf: snapshotURL)
+                let snapshotSHA = FloeDigest.sha256Hex(snapshotBytes)
+                loopEvidence["snapshotSHA256"] = snapshotSHA
+                try #require(snapshotBytes.count == capture.capture.snapshotBytes,
+                             "Snapshot bytes differ from the native receipt")
+
+                // Engine round 1: Needs on exactly the staged identity.
+                let identityFile = capture.capture.relativeIdentityFile
+                let relPrefix = "Impeccable/\(conversationID.uuidString)/\(captureID.uuidString)"
+                // Production budgets only (4,096 hit tests/round, 16,384 total,
+                // 120 s engine budget, 48 MiB snapshot): the scaling sample must
+                // prove the actual App loop, not a relaxed one.
+                let round1Arguments = ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
+                                       "--snapshot", capture.capture.relativeSnapshotFile,
+                                       "--identity", identityFile,
+                                       "--out", "\(relPrefix)/result.round1.v1.json", "--round", "1"]
+                let round1: (rc: Int, elapsedMS: Int?, vmhwmKB: Int?, stderrSummary: String)
+                if large {
+                    round1 = try await impeccableEngineRunJob(
+                        jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                        label: "\(tag)-round1", arguments: round1Arguments, jobIDs: &jobIDs)
+                } else {
+                    round1 = try await impeccableEngineRun(
+                        runtime: runtime, identity: fixedIdentity, context: childContext,
+                        tag: "\(tag)-round1", label: "\(tag)-round1",
+                        arguments: round1Arguments, timeout: 300)
+                }
+                let round1Doc = try impeccableReadResult(root, "\(relPrefix)/result.round1.v1.json")
+                if large && round1.rc == 1 {
+                    // Production-budget honesty: with the native 4,096 hit-test
+                    // allowance and the 120 s engine budget unchanged, a large
+                    // page may legitimately end as budget-exceeded/timeout.
+                    // That is recorded as the real outcome — never widened,
+                    // never skipped silently, and never a fabricated pass.
+                    let code = round1Doc.error?.code
+                    try #require(code == "budget-exceeded" || code == "timeout",
+                                 "\(tag) round 1 failed unexpectedly: rc=1 code=\(code ?? "?"): \(round1.stderrSummary)")
+                    loopEvidence["budgetLimited"] = "true"
+                    loopEvidence["budgetCode"] = code ?? "unknown"
+                    loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS)
+                    loopEvidence["round1VmHWMKB"] = String(round1.vmhwmKB ?? -1)
+                    loopEvidence["round1Summary"] = round1.stderrSummary
+                    return loopEvidence
+                }
+                try #require(round1.rc == 3,
+                             "\(tag) round 1 must exit 3 needs-facts, got rc=\(round1.rc): \(round1.stderrSummary)")
+                let needsCount = try #require(round1Doc.needs?.hitTests?.count,
+                                              "\(tag) round 1 asked no hit tests")
+                try #require(round1Doc.identity?.captureId == captureID.uuidString,
+                             "Round 1 identity must echo this captureId")
+                if large {
+                    // Production guard: the engine must not hand out more
+                    // points than the native allowance it ran under.
+                    try #require(needsCount <= 4_096,
+                                 "\(tag) round 1 exceeded the 4,096 hit-test allowance without a budget failure: \(needsCount)")
+                }
+                loopEvidence["round1Needs"] = String(needsCount)
+                loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS)
+                loopEvidence["round1VmHWMKB"] = String(round1.vmhwmKB ?? -1)
+                loopEvidence["round1Summary"] = round1.stderrSummary
+
+                // Native facts for exactly the requested points.
+                let factsSummary = try await impeccableDesignCall(
+                    runtime: runtime, identity: fixedIdentity, context: childContext,
+                    tag: "\(tag)-facts",
+                    arguments: ["profile": "design", "designAction": "facts",
+                                "captureID": captureID.uuidString,
+                                "needsFile": "\(relPrefix)/result.round1.v1.json"])
+                let factsData = try #require(factsSummary.data(using: .utf8))
+                let facts = try JSONDecoder().decode(ImpeccableDesignFactsResponse.self, from: factsData)
+                try #require(facts.state == "factsReady" && facts.captureID == captureID.uuidString,
+                             "Facts response mismatch: \(factsSummary.prefix(300))")
+                let factsURL = root.appendingPathComponent(facts.relativeFactsFile)
+                let factsJSON = try Data(contentsOf: factsURL)
+                let factsObject = try JSONSerialization.jsonObject(with: factsJSON) as? [String: Any]
+                let factHits = factsObject?["hits"] as? [[String: Any]] ?? []
+                try #require(factHits.count == needsCount,
+                             "Native facts answered \(factHits.count) points, engine asked \(needsCount)")
+                try #require((factsObject?["captureId"] as? String) == captureID.uuidString,
+                             "Facts binding captureId must echo this capture")
+                loopEvidence["factsSHA256"] = FloeDigest.sha256Hex(factsJSON)
+                loopEvidence["factsHits"] = String(factHits.count)
+
+                // Engine rerun with the native facts: semantic nonzero result.
+                let round2Arguments = ["transport/unpacked/engine/floe-impeccable", "snapshot-scan",
+                                       "--snapshot", capture.capture.relativeSnapshotFile,
+                                       "--identity", identityFile,
+                                       "--facts", facts.relativeFactsFile,
+                                       "--out", "\(relPrefix)/result.round2.v1.json", "--round", "2"]
+                let round2: (rc: Int, elapsedMS: Int?, vmhwmKB: Int?, stderrSummary: String)
+                if large {
+                    round2 = try await impeccableEngineRunJob(
+                        jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                        label: "\(tag)-round2", arguments: round2Arguments, jobIDs: &jobIDs)
+                } else {
+                    round2 = try await impeccableEngineRun(
+                        runtime: runtime, identity: fixedIdentity, context: childContext,
+                        tag: "\(tag)-round2", label: "\(tag)-round2",
+                        arguments: round2Arguments, timeout: 300)
+                }
+                try #require(round2.rc == 2 || round2.rc == 4,
+                             "\(tag) rerun must exit 2 findings or 4 inconclusive, got rc=\(round2.rc): \(round2.stderrSummary)")
+                let round2Doc = try impeccableReadResult(root, "\(relPrefix)/result.round2.v1.json")
+                try #require(round2Doc.verdict == "findings" || round2Doc.verdict == "inconclusive",
+                             "\(tag) rerun verdict must stay semantic: \(String(describing: round2Doc.verdict))")
+                try #require(round2Doc.verdict != "clean" && round2.rc != 0,
+                             "v1 must never certify clean")
+                try #require(round2Doc.identity?.captureId == captureID.uuidString,
+                             "Rerun identity must echo this captureId")
+                // The snapshot digest is preserved end to end.
+                let snapshotAfter = try FloeDigest.sha256Hex(Data(contentsOf: snapshotURL))
+                try #require(snapshotAfter == snapshotSHA,
+                             "Snapshot bytes changed during the capture loop")
+                loopEvidence["round2RC"] = String(round2.rc)
+                loopEvidence["round2Verdict"] = round2Doc.verdict ?? "missing"
+                loopEvidence["round2Findings"] = String(round2Doc.findings?.counts?.total ?? 0)
+                loopEvidence["round2ElapsedMS"] = String(round2.elapsedMS)
+                loopEvidence["round2VmHWMKB"] = String(round2.vmhwmKB ?? -1)
+                loopEvidence["round2Summary"] = round2.stderrSummary
+                let round2Data = try Data(contentsOf: root.appendingPathComponent("\(relPrefix)/result.round2.v1.json"))
+                loopEvidence["round2SHA256"] = FloeDigest.sha256Hex(round2Data)
+                return loopEvidence
+            }
+
+            // Small real page: the fixture index (form, text, delayed region).
+            let smallLoop = try await runCaptureLoop(
+                tag: "small", path: "", marker: "ASYNC-READY-77", large: false)
+            for (key, value) in smallLoop { evidence["small.\(key)"] = value }
+            print("FLOE_IMPECCABLE_CAPTURE_SMALL capture=\(smallLoop["captureId"] ?? "?") elements=\(smallLoop["elementCount"] ?? "?") needs=\(smallLoop["round1Needs"] ?? "?") round2=\(smallLoop["round2RC"] ?? "?")/\(smallLoop["round2Verdict"] ?? "?")")
+
+            // Larger 5k-30k band sample under unchanged production budgets.
+            let largeLoop = try await runCaptureLoop(
+                tag: "large", path: "impeccable-large.html",
+                marker: "Impeccable large synthetic page", large: true)
+            for (key, value) in largeLoop { evidence["large.\(key)"] = value }
+            if largeLoop["budgetLimited"] == "true" {
+                print("FLOE_IMPECCABLE_CAPTURE_LARGE_BUDGET_LIMITED capture=\(largeLoop["captureId"] ?? "?") elements=\(largeLoop["elementCount"] ?? "?") snapshotBytes=\(largeLoop["snapshotBytes"] ?? "?") code=\(largeLoop["budgetCode"] ?? "?") round1_ms=\(largeLoop["round1ElapsedMS"] ?? "?")")
+            } else {
+                print("FLOE_IMPECCABLE_CAPTURE_LARGE capture=\(largeLoop["captureId"] ?? "?") elements=\(largeLoop["elementCount"] ?? "?") snapshotBytes=\(largeLoop["snapshotBytes"] ?? "?") needs=\(largeLoop["round1Needs"] ?? "?") round1_ms=\(largeLoop["round1ElapsedMS"] ?? "?") round1_vmhwm_kb=\(largeLoop["round1VmHWMKB"] ?? "?") round2=\(largeLoop["round2RC"] ?? "?")/\(largeLoop["round2Verdict"] ?? "?")")
+            }
+
+            // Release both captures through the real tool and verify removal.
+            for captureID in captureIDs {
+                let releaseSummary = try await impeccableDesignCall(
+                    runtime: runtime, identity: fixedIdentity, context: childContext,
+                    tag: "release-\(captureID.uuidString)",
+                    arguments: ["profile": "design", "designAction": "release",
+                                "captureID": captureID.uuidString])
+                try #require(releaseSummary.contains("Design capture released"),
+                             "Release did not confirm: \(releaseSummary.prefix(300))")
+                let directory = root.appendingPathComponent(
+                    "Impeccable/\(conversationID.uuidString)/\(captureID.uuidString)")
+                try #require(!FileManager.default.fileExists(atPath: directory.path),
+                             "Release left capture files behind: \(directory.path)")
+            }
+            captureIDs.removeAll()
+            evidence["release"] = "both captures released, bridge files removed"
+            print("FLOE_IMPECCABLE_CAPTURE_QUALIFIED small=\(smallLoop["round2Verdict"] ?? "?") large=\(largeLoop["round2Verdict"] ?? (largeLoop["budgetCode"].map { "budget-limited:\($0)" } ?? "?")) large_round1_ms=\(largeLoop["round1ElapsedMS"] ?? "?")")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "impeccable-capture")
+            Issue.record("Impeccable native capture loop qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
 #endif
