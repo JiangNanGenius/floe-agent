@@ -735,6 +735,7 @@ targets:
       - path: Tests/FloeSkillsTests/SkillCreateToolTests.swift
       - path: Tests/FloeExecutionTests/LocalShellLargeScriptTests.swift
       - path: Tests/FloeAppTests/RoutingShellTimeoutTests.swift
+      - path: Tests/FloeAppTests/SkillRuntimeComponentTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolResultCaptureTests.swift
       - path: Tests/FloeAgentRuntimeTests/SharedEnvironmentConcurrencyTests.swift
       - path: Tests/FloeAgentRuntimeTests/ChildToolDiscoveryTests.swift
@@ -748,6 +749,7 @@ targets:
       - path: Tests/FloeSkillsTests/SkillHubTransportBudgetTests.swift
       - path: Tests/FloeSkillsTests/SkillHubToolContractTests.swift
       - path: Tests/FloeSkillsTests/CuratedSkillHubTests.swift
+      - path: Tests/FloeSkillsTests/SkillRuntimeDependencyTests.swift
       - path: Tests/FloeSkillsTests/Fixtures/CuratedSkillHub
         type: folder
         buildPhase: resources
