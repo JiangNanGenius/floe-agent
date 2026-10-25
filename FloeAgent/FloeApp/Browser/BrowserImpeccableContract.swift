@@ -668,7 +668,7 @@ struct ImpeccableSnapshotIngress: Sendable {
         }
         let styleProps = dictionary["styleProps"] as? [Any] ?? []
         let stylePropsCount = styleProps.count
-        guard stylePropsCount == ImpeccableContract.stylePropCount else {
+        if stylePropsCount != ImpeccableContract.stylePropCount {
             rejections.append("schema-mismatch: styleProps column count \(stylePropsCount) != 138")
         }
         let elements = dictionary["els"] as? [Any] ?? []
