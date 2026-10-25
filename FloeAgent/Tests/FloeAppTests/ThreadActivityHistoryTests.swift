@@ -147,7 +147,7 @@ struct ThreadActivityHistoryTests {
         #expect(ThreadEarlierActivityPolicy.mode(loading: false, failed: false) == .quiet)
         #expect(ThreadEarlierActivityPolicy.mode(loading: true, failed: false) == .loading)
         #expect(ThreadEarlierActivityPolicy.mode(loading: false, failed: true) == .failed)
-        #expect(ThreadEarlierActivityPolicy.mode(loading: true, failed: true) == .failed)
+        #expect(ThreadEarlierActivityPolicy.mode(loading: true, failed: true) == .loading)
     }
 
     @Test("A retry shows progress while its old failure is still recorded")
