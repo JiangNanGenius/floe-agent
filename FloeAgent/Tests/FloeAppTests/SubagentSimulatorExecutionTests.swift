@@ -5071,7 +5071,7 @@ extension SubagentSimulatorExecutionTests {
             }?.text ?? ""
             try #require(!exportStatus.isEmpty,
                          "export control reported no truthful outcome: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
-            evidence["canvasExport"] = exportStatus.prefix(220)
+            evidence["canvasExport"] = String(exportStatus.prefix(220))
             print("FLOE_SEVEN_CANVAS_EXPORT \(exportStatus.prefix(120))")
 
             await finish()
@@ -5331,7 +5331,7 @@ extension SubagentSimulatorExecutionTests {
                             && sourceDigest == generatedDigest,
                          "source provenance digest differs from guest output")
             let initialDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "initial")
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "initial")
 
             // next → digest changes; ← prev returns the EXACT original digest:
             // the controls drive the real seeded engine reversibly.
@@ -5347,7 +5347,7 @@ extension SubagentSimulatorExecutionTests {
             try #require(page.nodes.contains { $0.text == "987654322" },
                          "seed-next did not advance the displayed seed")
             let nextDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "next")
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "next")
             try #require(nextDigest != initialDigest, "seed-next did not change the artwork digest")
 
             let prevRef = try skillHubFindRef(in: page, namePrefix: "← prev", role: "button")
@@ -5362,7 +5362,7 @@ extension SubagentSimulatorExecutionTests {
             try #require(page.nodes.contains { $0.text == "987654321" },
                          "seed-prev did not restore the displayed seed")
             let restoredDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "restored")
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "restored")
             try #require(restoredDigest == initialDigest,
                          "seed-prev did not restore the exact original digest")
 
@@ -5380,7 +5380,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-observe-final", tabID: tabID)
             let finalDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationID, tabID: tabID, root: root, tag: "after-download")
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "after-download")
             try #require(finalDigest == initialDigest,
                          "viewer state corrupted after the download control click")
             evidence["artNative"] = "seed next/prev reversible actual canvas PNG; download control intact, file delivery unverified"
