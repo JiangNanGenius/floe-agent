@@ -716,6 +716,85 @@ struct BrowserImpeccableCaptureTests {
         #expect((floeArgs?["points"] as? [[Any]])?.count == 1)
     }
 
+    @Test("The fixed answer invocation carries the recorded exact-bit view, never defaults")
+    func answerInvocationCarriesRecordedExactBitView() async throws {
+        let (session, tabID) = makeSession()
+        defer { session.release() }
+        await waitLoaded(session, tabID: tabID)
+        let transport = StubTransport()
+        let service = makeService(session: session, transport: transport)
+        // Distinctive non-default view/scroll: any placeholder (zero/NaN)
+        // in the serialized expect would fail the exact-bit comparisons.
+        let documentID = session.tabs.first(where: { $0.id == tabID })?.documentID ?? ""
+        transport.captureHandler = { _, captureId in
+            let snapshot = impeccableSnapshotDictionary(
+                captureId: captureId.uuidString,
+                documentId: documentID,
+                innerWidth: 980.5,
+                innerHeight: 720.25,
+                scrollX: 0.75,
+                scrollY: 1234.5
+            )
+            return impeccableMeasurement(documentId: documentID, snapshot: snapshot)
+        }
+        let ticket = try await service.capture(tabID: tabID)
+        #expect(ticket.viewport.width == 980.5 && ticket.viewport.height == 720.25)
+        #expect(ticket.scroll.x == 0.75 && ticket.scroll.y == 1234.5)
+        transport.answerHandler = { _, _ in
+            .answered(hits: [ImpeccableAnswerOutcome.Hit(top: 1, stack: [1], unanswerable: false, reason: nil)])
+        }
+        _ = try await service.answerNeeds(captureID: ticket.captureID, needsJSON: impeccableNeedsData(points: [(10.0, 20.0)]))
+        let floeArgs = try #require(transport.lastAnswerArguments?["floeArgs"] as? [String: Any])
+        let expect = try #require(floeArgs["expect"] as? [String: Any])
+        #expect((expect["documentId"] as? String) == ticket.binding.documentId)
+        // The native frozen identity's recorded CSS view travels as data:
+        // exact IEEE-754 bits, equal to the capture-path verified numbers.
+        #expect((expect["viewportWidth"] as? NSNumber)?.doubleValue.bitPattern == ticket.viewport.width.bitPattern)
+        #expect((expect["viewportHeight"] as? NSNumber)?.doubleValue.bitPattern == ticket.viewport.height.bitPattern)
+        #expect((expect["scrollX"] as? NSNumber)?.doubleValue.bitPattern == ticket.scroll.x.bitPattern)
+        #expect((expect["scrollY"] as? NSNumber)?.doubleValue.bitPattern == ticket.scroll.y.bitPattern)
+        // The world-side fence itself is unchanged and still enforced: a
+        // reported drift fences the round even though expect carries values.
+        #expect((floeArgs["points"] as? [[Any]])?.count == 1)
+    }
+
+    @Test("answerArguments serializes the recorded expect and bounds points to the budget")
+    func answerArgumentsSerializerBindsRecordedExpect() throws {
+        let budgets = ImpeccableBudgets(
+            maxSnapshotBytes: 1_048_576,
+            maxElements: 10,
+            maxRounds: 2,
+            maxHitTestsPerRound: 2,
+            maxHitTestsTotal: 4,
+            timeoutMs: 1_000
+        )
+        let arguments = ImpeccableProducerInvocation.answerArguments(
+            ImpeccableProducerInvocation.AnswerArguments(
+                captureId: "capture-1",
+                expectedDocumentId: "document-1",
+                expectedViewportWidth: 1024.5,
+                expectedViewportHeight: 768.25,
+                expectedScrollX: 12.75,
+                expectedScrollY: 0.5,
+                points: [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
+            ),
+            budgets: budgets
+        )
+        #expect(arguments["floeOp"] as? String == "answer")
+        guard let floeArgs = arguments["floeArgs"] as? [String: Any],
+              let expect = floeArgs["expect"] as? [String: Any] else {
+            Issue.record("answer arguments lost their fixed shape")
+            return
+        }
+        #expect((expect["documentId"] as? String) == "document-1")
+        #expect((expect["viewportWidth"] as? NSNumber)?.doubleValue.bitPattern == 1024.5.bitPattern)
+        #expect((expect["viewportHeight"] as? NSNumber)?.doubleValue.bitPattern == 768.25.bitPattern)
+        #expect((expect["scrollX"] as? NSNumber)?.doubleValue.bitPattern == 12.75.bitPattern)
+        #expect((expect["scrollY"] as? NSNumber)?.doubleValue.bitPattern == 0.5.bitPattern)
+        // Points stay bounded by the per-round budget, exact pairs preserved.
+        #expect((floeArgs["points"] as? [[Double]]) == [[1.0, 2.0], [3.0, 4.0]])
+    }
+
     @Test("Viewport drift at answer time fences the capture and refuses the round")
     func answerFencesOnDrift() async throws {
         let (session, tabID) = makeSession()

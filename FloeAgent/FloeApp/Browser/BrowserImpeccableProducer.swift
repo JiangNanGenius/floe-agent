@@ -199,6 +199,14 @@ enum ImpeccableProducerInvocation {
     struct AnswerArguments: Sendable {
         let captureId: String
         let expectedDocumentId: String
+        /// The exact IEEE-754 CSS viewport/scroll recorded in the native
+        /// frozen identity at capture time (bit-identical to the producer
+        /// envelope and snapshot view fields — the capture path refuses any
+        /// disagreement). The fixed adapter enforces live-view drift against
+        /// its own recorded run view inside `answer` before measuring any
+        /// point; these fields bind the call to native's recorded identity
+        /// so the invocation itself carries the full fencing expectation,
+        /// never placeholders or defaults.
         let expectedViewportWidth: Double
         let expectedViewportHeight: Double
         let expectedScrollX: Double
@@ -238,6 +246,18 @@ enum ImpeccableProducerInvocation {
                 "captureId": arguments.captureId,
                 "expect": [
                     "documentId": arguments.expectedDocumentId,
+                    // Native's recorded view, exact bits (see AnswerArguments).
+                    // The pinned adapter currently enforces viewport/scroll
+                    // drift against its own recorded run view inside `answer`
+                    // and consumes only `documentId` here; these keys carry
+                    // the identical frozen numbers so the fixed call is bound
+                    // to the native record and the adapter bytes stay
+                    // unchanged (unknown `expect` keys are inert by
+                    // construction — `runAnswer` reads named fields only).
+                    "viewportWidth": arguments.expectedViewportWidth,
+                    "viewportHeight": arguments.expectedViewportHeight,
+                    "scrollX": arguments.expectedScrollX,
+                    "scrollY": arguments.expectedScrollY,
                 ],
                 "points": boundedPoints,
             ],

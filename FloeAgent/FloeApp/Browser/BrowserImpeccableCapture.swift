@@ -1060,10 +1060,20 @@ final class BrowserImpeccableCaptureService {
         } catch {
             throw ImpeccableCaptureError.producerScriptRejected("\(error)")
         }
+        // The fixed answer call is bound to the native frozen identity's
+        // exact-bit recorded view: the same numbers the capture ingress
+        // verified equal (bit-for-bit) to the producer envelope and the
+        // snapshot's own view fields, which the pinned adapter's recorded
+        // run view was measured from. A live-vs-recorded drift inside the
+        // world fences the round; nothing here passes a placeholder.
         let arguments = ImpeccableProducerInvocation.answerArguments(
             ImpeccableProducerInvocation.AnswerArguments(
                 captureId: captureID.uuidString,
                 expectedDocumentId: record.binding.documentId,
+                expectedViewportWidth: record.identity.viewport.width,
+                expectedViewportHeight: record.identity.viewport.height,
+                expectedScrollX: record.identity.scroll.x,
+                expectedScrollY: record.identity.scroll.y,
                 points: points.map { [$0.x, $0.y] }
             ),
             budgets: budgets
