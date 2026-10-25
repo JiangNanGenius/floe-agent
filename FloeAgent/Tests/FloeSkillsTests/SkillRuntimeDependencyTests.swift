@@ -13,6 +13,7 @@
 // public; no private material is embedded).
 
 import Foundation
+import FloeCore
 import Testing
 @testable import FloeSkills
 
@@ -131,7 +132,7 @@ private func makeELF64(
     // MARK: - Decode: structural negatives
 
     @Test func topLevelArrayFailsClosed() {
-        #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted forbidden key '\(key)'") {
+        #expect(throws: SkillRuntimeDependencyError.self, "An array must not be accepted as a descriptor") {
             _ = try SkillRuntimeDependency.decode(Data("[1,2,3]".utf8))
         }
     }
@@ -166,7 +167,7 @@ private func makeELF64(
     @Test func missingTopLevelFieldsFailClosed() throws {
         var object = makeDescriptorDictionary()
         object["captureContract"] = nil
-        #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted componentVersion '\(invalid)'") {
+        #expect(throws: SkillRuntimeDependencyError.self, "A descriptor without captureContract must be rejected") {
             _ = try SkillRuntimeDependency.decode(try encode(object))
         }
     }
@@ -208,7 +209,7 @@ private func makeELF64(
     @Test func nonASCIIComponentVersionFailsClosed() throws {
         // Unicode-Indic digit U+0667 looks like 7 but is not an ASCII digit.
         let object = makeDescriptorDictionary(componentVersion: "0.1.1٧+floe.1.0.0")
-        #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted minimumAppVersion '\(invalid)'") {
+        #expect(throws: SkillRuntimeDependencyError.self, "A component version containing non-ASCII digits must be rejected") {
             _ = try SkillRuntimeDependency.decode(try encode(object))
         }
     }
@@ -232,7 +233,7 @@ private func makeELF64(
             ["os": "linux", "arch": "riscv64", "triple": "riscv64gc-unknown-linux-musl", "format": "elf64-little-arm"]
         ] {
             let object = makeDescriptorDictionary(target: target)
-            #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted artifact path '\(path)'") {
+            #expect(throws: SkillRuntimeDependencyError.self, "Unexpectedly accepted target: \(String(describing: target))") {
                 _ = try SkillRuntimeDependency.decode(try encode(object))
             }
         }
@@ -267,7 +268,7 @@ private func makeELF64(
         let long = makeDescriptorDictionary(artifact: [
             "path": String(repeating: "a", count: 300), "size": 5579704, "sha256": frozenArtifactSHA256
         ])
-        #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted size \(size)") {
+        #expect(throws: SkillRuntimeDependencyError.self, "An oversized artifact path must be rejected") {
             _ = try SkillRuntimeDependency.decode(try encode(long))
         }
     }
@@ -287,7 +288,7 @@ private func makeELF64(
             "path": "engines/impeccable/dist/impeccable-0.1.17+floe.1.0.0/riscv64gc-unknown-linux-musl/floe-impeccable",
             "size": 5.5, "sha256": frozenArtifactSHA256
         ])
-        #expect(throws: SkillRuntimeDependencyError.self, "unexpectedly accepted sha256 '\(sha.prefix(16))…'") {
+        #expect(throws: SkillRuntimeDependencyError.self, "A fractional artifact size must be rejected") {
             _ = try SkillRuntimeDependency.decode(try encode(fractional))
         }
         // Booleans are not integers.
