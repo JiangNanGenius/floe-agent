@@ -15,6 +15,18 @@ public enum SkillHubTransportBudget {
         if (path.hasPrefix("packages/") || path.hasPrefix("android/packages/")), path.hasSuffix(".zip") {
             return 8_388_608
         }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        if parts.count == 6,
+           parts[0] == "engines", parts[1] == "impeccable", parts[2] == "dist",
+           parts[3].hasPrefix("impeccable-"),
+           parts[4] == "riscv64gc-unknown-linux-musl", parts[5] == "floe-impeccable" {
+            let version = parts[3].dropFirst("impeccable-".count)
+            let safeVersion = !version.isEmpty && version.utf8.allSatisfy {
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+                    || $0 == 46 || $0 == 43 || $0 == 45
+            }
+            if safeVersion { return 16_777_216 }
+        }
         return 2_097_152
     }
 }
