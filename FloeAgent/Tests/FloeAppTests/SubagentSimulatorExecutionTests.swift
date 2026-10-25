@@ -1642,7 +1642,7 @@ extension SubagentSimulatorExecutionTests {
         return job.id
     }
 
-    func skillHubServiceProgress(_ data: Data?) -> SkillHubServiceProgress? {
+    fileprivate func skillHubServiceProgress(_ data: Data?) -> SkillHubServiceProgress? {
         guard let data else { return nil }
         return try? JSONDecoder().decode(SkillHubServiceProgress.self, from: data)
     }
@@ -1724,7 +1724,7 @@ extension SubagentSimulatorExecutionTests {
         jobs: BackgroundJobService?, jobIDs: [UUID], environmentID: String?, root: URL,
         conversationID: UUID?, app: AppEnvironment?
     ) async {
-        runtime?.cancel()
+        await runtime?.cancel()
         parentHold?.cancel()
         if let parentTask {
             parentTask.cancel()
@@ -2002,8 +2002,7 @@ extension SubagentSimulatorExecutionTests {
             let validateJob = try await skillHubWaitTerminal(jobs, id: validateRun, seconds: 360)
             evidence["validateCitations"] = validateJob.resultSummary ?? validateJob.lastError ?? validateJob.state.rawValue
             try #require(validateJob.state == .completed,
-                         "Guest citation validator failed (high-severity findings keep the original non-zero exit): "
-                             + "\(evidence["validateCitations"] ?? "unknown")")
+                         "Guest citation validator failed (high-severity findings keep the original non-zero exit): \(evidence["validateCitations"] ?? "unknown")")
             let reportBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/validation-report.json"))
             try #require(reportBytes.count > 2, "The validation report is empty")
             print("FLOE_SKILLHUB_CITATION clean=\(FloeDigest.sha256Hex(cleanBytes)) report=\(FloeDigest.sha256Hex(reportBytes))")
@@ -2024,8 +2023,7 @@ extension SubagentSimulatorExecutionTests {
             let openAlexJob = try await skillHubWaitTerminal(jobs, id: openAlexRun, seconds: 360)
             evidence["openalex"] = openAlexJob.resultSummary ?? openAlexJob.lastError ?? openAlexJob.state.rawValue
             try #require(openAlexJob.state == .completed,
-                         "Keyless OpenAlex first-page lookup failed in the guest (no fallback is allowed): "
-                             + "\(evidence["openalex"] ?? "unknown")")
+                         "Keyless OpenAlex first-page lookup failed in the guest (no fallback is allowed): \(evidence["openalex"] ?? "unknown")")
             let openAlexBytes = try Data(contentsOf: root.appendingPathComponent("skill-out/openalex.json"))
             let openAlexJSON = try JSONSerialization.jsonObject(with: openAlexBytes) as? [String: Any]
             let openAlexCount = (openAlexJSON?["results"] as? [Any])?.count ?? 0
@@ -2130,7 +2128,7 @@ private struct SkillHubRecordedCase: Decodable {
 
 extension SubagentSimulatorExecutionTests {
 
-    func skillHubDecodeBrowser(_ result: ToolResult) throws -> SkillHubBrowserResult {
+    fileprivate func skillHubDecodeBrowser(_ result: ToolResult) throws -> SkillHubBrowserResult {
         guard let start = result.outputSummary.firstIndex(of: "{"),
               let end = result.outputSummary.lastIndex(of: "}"), start < end,
               let data = result.outputSummary[start...end].data(using: .utf8),
@@ -2142,7 +2140,7 @@ extension SubagentSimulatorExecutionTests {
 
     /// Full semantic observation, following `nextCursor` pagination; the
     /// returned page accumulates nodes across all observed pages.
-    func skillHubObserve(
+    fileprivate func skillHubObserve(
         runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
         tag: String, tabID: UUID
     ) async throws -> SkillHubBrowserResult.Page {
@@ -2168,7 +2166,7 @@ extension SubagentSimulatorExecutionTests {
                                          screenshotArtifact: resolved.screenshotArtifact)
     }
 
-    func skillHubFindRef(
+    fileprivate func skillHubFindRef(
         in page: SkillHubBrowserResult.Page, namePrefix: String, role: String? = nil
     ) throws -> SkillHubBrowserResult.Page.Node {
         let lowered = namePrefix.lowercased()
@@ -2182,7 +2180,7 @@ extension SubagentSimulatorExecutionTests {
     }
 
     @discardableResult
-    func skillHubBrowserCall(
+    fileprivate func skillHubBrowserCall(
         runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
         tag: String, tool: String, arguments: [String: Any]
     ) async throws -> SkillHubBrowserResult {
@@ -2204,7 +2202,7 @@ extension SubagentSimulatorExecutionTests {
     }
 
     /// `browser.wait` on a text marker with an explicit bounded timeout.
-    func skillHubWaitText(
+    fileprivate func skillHubWaitText(
         runtime: FloeAgentRuntime, identity: ChildExecutionIdentity, context: ToolContext,
         tag: String, tabID: UUID, marker: String, timeoutMilliseconds: Int = 8_000
     ) async throws -> SkillHubBrowserResult {
@@ -3211,7 +3209,7 @@ run_engine() {
 extension SubagentSimulatorExecutionTests {
 
     /// Reads an engine result document the guest wrote into the workspace.
-    func impeccableReadResult(_ root: URL, _ relative: String) throws -> ImpeccableEngineResult {
+    fileprivate func impeccableReadResult(_ root: URL, _ relative: String) throws -> ImpeccableEngineResult {
         let data = try Data(contentsOf: root.appendingPathComponent(relative))
         return try JSONDecoder().decode(ImpeccableEngineResult.self, from: data)
     }
@@ -3814,7 +3812,7 @@ extension SubagentSimulatorExecutionTests {
                                  "\(tag) round 1 failed unexpectedly: rc=1 code=\(code ?? "?"): \(round1.stderrSummary)")
                     loopEvidence["budgetLimited"] = "true"
                     loopEvidence["budgetCode"] = code ?? "unknown"
-                    loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS)
+                    loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS ?? -1)
                     loopEvidence["round1VmHWMKB"] = String(round1.vmhwmKB ?? -1)
                     loopEvidence["round1Summary"] = round1.stderrSummary
                     return loopEvidence
@@ -3832,7 +3830,7 @@ extension SubagentSimulatorExecutionTests {
                                  "\(tag) round 1 exceeded the 4,096 hit-test allowance without a budget failure: \(needsCount)")
                 }
                 loopEvidence["round1Needs"] = String(needsCount)
-                loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS)
+                loopEvidence["round1ElapsedMS"] = String(round1.elapsedMS ?? -1)
                 loopEvidence["round1VmHWMKB"] = String(round1.vmhwmKB ?? -1)
                 loopEvidence["round1Summary"] = round1.stderrSummary
 
@@ -3891,7 +3889,7 @@ extension SubagentSimulatorExecutionTests {
                 loopEvidence["round2RC"] = String(round2.rc)
                 loopEvidence["round2Verdict"] = round2Doc.verdict ?? "missing"
                 loopEvidence["round2Findings"] = String(round2Doc.findings?.counts?.total ?? 0)
-                loopEvidence["round2ElapsedMS"] = String(round2.elapsedMS)
+                loopEvidence["round2ElapsedMS"] = String(round2.elapsedMS ?? -1)
                 loopEvidence["round2VmHWMKB"] = String(round2.vmhwmKB ?? -1)
                 loopEvidence["round2Summary"] = round2.stderrSummary
                 let round2Data = try Data(contentsOf: root.appendingPathComponent("\(relPrefix)/result.round2.v1.json"))

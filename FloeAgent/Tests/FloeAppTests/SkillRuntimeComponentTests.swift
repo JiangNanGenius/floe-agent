@@ -35,7 +35,7 @@ import FloeTools
 
 // MARK: - File-scope helpers
 
-private func makeTemporaryDirectory(_ label: String) -> URL {
+private func makeComponentTemporaryDirectory(_ label: String) -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("floe-runtime-component-\(label)-\(UUID().uuidString)", isDirectory: true)
     try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -113,8 +113,8 @@ private func makeStagedSkillFixture(
     descriptorBytes: Data,
     capabilities: [String] = []
 ) async throws -> StagedSkillFixture {
-    let workspace = makeTemporaryDirectory("workspace")
-    let layer = makeTemporaryDirectory("layer")
+    let workspace = makeComponentTemporaryDirectory("workspace")
+    let layer = makeComponentTemporaryDirectory("layer")
     let packageRoot = workspace.appendingPathComponent("package-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: packageRoot, withIntermediateDirectories: true)
     let markdown = """
@@ -360,7 +360,7 @@ private func makeHarness(
     let authorization = FakeComponentAuthorization()
     let generationBox = GenerationBox()
     generationBox.set(generation)
-    let cacheRoot = makeTemporaryDirectory("cache")
+    let cacheRoot = makeComponentTemporaryDirectory("cache")
     let center = SkillRuntimeComponentCenter(
         environmentResolver: { environmentID in
             guard let layer = layers[environmentID] else { return nil }
@@ -603,7 +603,7 @@ private func makePreparedChain(
     }
 
     @Test func prepareBindingsWithoutPlanReturnsNothing() async throws {
-        let harness = makeHarness(layers: ["env": makeTemporaryDirectory("layer")], pathMaps: [:])
+        let harness = makeHarness(layers: ["env": makeComponentTemporaryDirectory("layer")], pathMaps: [:])
         let bindings = await harness.center.prepareBindings(environmentID: "env", runID: UUID(), cancellation: nil)
         #expect(bindings == nil)
         let state = await harness.center.state(environmentID: "env", componentID: componentID)
@@ -706,7 +706,7 @@ private func makePreparedChain(
         }
         let transport = FakeComponentTransport()
         transport.handler = { _ in component.engineBytes }
-        let cacheRoot = makeTemporaryDirectory("cache-shared")
+        let cacheRoot = makeComponentTemporaryDirectory("cache-shared")
         let makeCenter = {
             SkillRuntimeComponentCenter(
                 environmentResolver: { _ in
@@ -891,7 +891,7 @@ private func makePreparedChain(
                 SkillRuntimeComponentEnvironment(layerURL: staged.layer, isLinuxVM: true, isActive: true)
             },
             runner: nil,
-            cacheRoot: makeTemporaryDirectory("cache"),
+            cacheRoot: makeComponentTemporaryDirectory("cache"),
             pathMapping: { _ in staged.pathMap },
             launchGeneration: { _ in 7 },
             appVersion: { "1.7.59" },
@@ -1198,7 +1198,7 @@ private func makePreparedChain(
                 ]
             }
         )
-        let workspace = makeTemporaryDirectory("routing-workspace")
+        let workspace = makeComponentTemporaryDirectory("routing-workspace")
         FloePlatformServices.shared.setLinuxCommandService(runner)
         defer { FloePlatformServices.shared.setLinuxCommandService(nil) }
         let request = ShellRunRequest(
@@ -1235,7 +1235,7 @@ private func makePreparedChain(
     // MARK: Temp pruning
 
     @Test func pruneStaleComponentTempsRemovesOnlyOwnAbandonedFiles() throws {
-        let directory = makeTemporaryDirectory("prune")
+        let directory = makeComponentTemporaryDirectory("prune")
         let oldDate = Date(timeIntervalSinceNow: -SkillRuntimeComponentCenter.staleTemporaryAge - 60)
         // Own abandoned temporaries (BOTH prefixes), old enough.
         for name in [
