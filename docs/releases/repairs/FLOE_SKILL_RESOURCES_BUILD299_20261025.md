@@ -36,4 +36,6 @@ Internal TestFlight and verified unsigned/Feather delivery are available. Public
 
 已移除本轮 Simulator／Release 编译缓存、重复归档、App 副本及传输暂存；保留可恢复原包、14 份匹配符号、无签名包与摘要、原始失败及验证材料、既有回滚版本和模拟器数据。正式 App Store 275、其他工作树及用户数据保持原状。
 
-This build does not change idle-location cleanup or establish new voice acceptance. Scoped cleanup preserves recovery artifacts, symbols, installable delivery, original evidence and user data.
+本轮移除分配量合计 15.73 GiB，各清理点实测可用空间增量合计 11.88 GiB。两个分发消费者及独立回读完成后删除私有传输草稿，草稿和临时引用均回读 404，正式标签保持原指向。
+
+This build does not change idle-location cleanup or establish new voice acceptance. Scoped cleanup reclaimed 11.88 GiB measured free space (15.73 GiB allocated removal), retaining recovery artifacts, symbols, installable delivery, original evidence and user data. The private transport was removed only after both verified consumers; the public tag remains unchanged.
