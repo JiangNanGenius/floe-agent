@@ -3,6 +3,7 @@ import Foundation
 import SwiftUI
 import FloeCore
 import FloeGit
+import FloeSkills
 
 /// Pure workspace-identity decision used by both the pinned source-control
 /// pane (rendering/lock) and the mutation guard inside `perform(pinnedRoot:)`.
