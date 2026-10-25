@@ -18,9 +18,11 @@ Voice endpointing now combines real quiet with transcript stability. Playback pa
 - 复用唯一既有 iPad Simulator，21 个相关测试套件共 259 项通过，0 失败、0 跳过；测试结束后关闭实例并保留应用及数据。
 - 新增测试夹具曾暴露只读系统环境值与跨模块参数初始化两处编译错误，修正为实际系统状态和公开 JSON 参数解码后完成编译；原失败记录保留。
 - 实际 SwiftUI 宿主图标测试使用合成音量输入，记录 24 个有效间隔、最大 67 ms；这些数据反映模拟器刷新节奏，不能证明真机 GPU 帧率或实际声音流畅度。
-- 已授权的 M4 iPad 从 TestFlight 自动更新并实际启动 298，正确展示本版说明；两类真实 Skill 安装与调用作为独立验收继续。这里不据此宣称真实麦克风、听感或打断质量已全部验收。
+- 已授权的 M4 iPad 从 TestFlight 自动更新并实际启动 298，正确展示本版说明。通过原生文件夹导入安装 `brand-guidelines` 与 `jupyter-notebook`，均显示外部来源并启用；从设备读回的 12 个输入文件摘要全部一致。
+- 无脚本 `brand-guidelines` 已完成实际读取与回复，配色、字体与原文一致。带脚本 `jupyter-notebook` 的安装和读取成功，但本次任务未完成脚本及模板在 Linux 环境中的访问，已停止尝试并保留记录，资源传递断点另行修复；不把安装成功计为脚本执行通过。
+- 上述 Skill 验收不证明真实麦克风、听感或打断质量已全部验收。
 
-All 259 selected App-host tests passed with no skips; full Swift 6 compilation and the device archive passed. The hosted orb probe uses synthetic levels and does not establish physical audio or GPU performance. Build 298 actually launched on the authorized iPad; real Skill installation is a separate ongoing check.
+All 259 selected App-host tests passed with no skips; full Swift 6 compilation and the device archive passed. The hosted orb probe uses synthetic levels and does not establish physical audio or GPU performance. Both real external Skills installed on the authorized iPad, with all 12 input hashes matching device read-back. The scriptless Skill returned the correct palette and typography. The scripted Skill loaded, but the task did not complete access to its script and templates in Linux; original evidence is retained for a separate resource-delivery fix. Installation is not counted as execution acceptance.
 
 ## 不可变交付 / Immutable delivery
 
