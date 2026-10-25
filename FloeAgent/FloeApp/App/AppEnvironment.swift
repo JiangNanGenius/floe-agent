@@ -115,6 +115,11 @@ final class AppEnvironment: ObservableObject {
     /// Explicit tool calls retain their resolved environment. nil
     /// only where the engine is not built in.
     let linuxGuestService: TinyEMULinuxCommandService?
+    /// Trusted lazy runtime-component deployment (Impeccable engine): records
+    /// immutable task/run/environment-bound plans from verified exact skill
+    /// reads and prepares download/staging/probe only at the approved
+    /// exec.shell boundary through the routing backend's injected closure.
+    let skillRuntimeComponents: SkillRuntimeComponentCenter
     /// Single lifecycle manager shared by the execution tools and the
     /// runtime's unknown-outcome reconciliation bridge. One instance per app
     /// so the authority probes (quiet-stop facts, launch generation, epoch)
@@ -217,7 +222,8 @@ final class AppEnvironment: ObservableObject {
             environment: self,
             resourceStager: SkillWorkspaceResourceStager { environmentID in
                 await guestService?.linuxGuestPathMap(environmentID: environmentID)
-            }
+            },
+            runtimeComponents: skillRuntimeComponents
         )
     }()
     private lazy var _mcpServiceCreationBackend = MCPServiceCreationAppBackend(
@@ -880,12 +886,55 @@ final class AppEnvironment: ObservableObject {
         )
         self.linuxGuestLifecycle = linuxGuestLifecycle
 
+        // Trusted lazy runtime components (Impeccable engine). Built from
+        // init-locals only: the routing backend closure below must not capture
+        // a partially initialized `self`, so the two `self`-dependent seams
+        // (GitHub-only transport, skills-center authorization) late-bind right
+        // after phase-1 completes (same publication pattern as the pinned
+        // image source). No environment is chosen at install time — staging
+        // resolves the explicit task/run/environment write layer at use.
+        let runtimeComponentCacheRoot = (try? FloeArtifactStore.root())?
+            .appendingPathComponent("RuntimeComponents", isDirectory: true)
+        let skillRuntimeComponents = SkillRuntimeComponentCenter(
+            environmentResolver: { environmentID in
+                guard let record = await environmentRegistry.record(id: environmentID) else { return nil }
+                return SkillRuntimeComponentEnvironment(
+                    layerURL: await environmentRegistry.layerURL(for: environmentID),
+                    isLinuxVM: record.effectiveExecutionBackend == .linuxVM,
+                    isActive: record.state != .deleting
+                )
+            },
+            runner: linuxGuests,
+            cacheRoot: runtimeComponentCacheRoot,
+            pathMapping: { environmentID in
+                await linuxGuests.linuxGuestPathMap(environmentID: environmentID)
+            },
+            launchGeneration: { environmentID in
+                let states = await linuxGuests.runtimeStates()
+                return states.first { $0.environmentID == environmentID && $0.running }?.identity.launchGeneration
+            },
+            appVersion: {
+                Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+            }
+        )
+        self.skillRuntimeComponents = skillRuntimeComponents
+
         // exec.shell requires the request's owned Linux environment;
         // an unavailable guest never falls back to the host substrate.
         let shellBackend = RoutingLocalShellBackend(
             native: nativeShellBackend,
             guests: linuxGuests,
-            prepareLinux: linuxPreparation
+            prepareLinux: linuxPreparation,
+            // Fixed native runtime-component preparation: after the real guest
+            // activation, before the already-authorized command; verified
+            // guest-path bindings are exported for this run only (native
+            // values win over caller-supplied ones). Never a recursive
+            // shell-tool dispatch; a deferral never blocks the command.
+            prepareNativeComponents: { environmentID, runID, cancellation in
+                await skillRuntimeComponents.prepareBindings(
+                    environmentID: environmentID, runID: runID, cancellation: cancellation
+                )
+            }
         )
         self.localShellService = LocalShellService(
             backend: shellBackend,
@@ -894,6 +943,24 @@ final class AppEnvironment: ObservableObject {
             rootProvider: WorkspaceCenter.toolRootProvider
         )
         self.shellSessionCenter = ShellSessionCenter(backend: shellBackend, policy: shellPolicy)
+        // Phase-1 is complete: publish the two self-dependent component seams.
+        skillRuntimeComponents.setLateBindings(
+            transport: { [weak self] owner, repository, ref, path in
+                guard let self else {
+                    throw FloeError.invalidConfiguration("App services are unavailable")
+                }
+                // GitHub-only trusted transport at the SAME publication commit
+                // Y recorded in the curated receipt; no website fallback.
+                return try await self.sourceControlCenter.skillRepositoryData(
+                    owner: owner, repository: repository, ref: ref, path: path,
+                    usesConnectorCredential: false
+                )
+            },
+            authorization: { [weak self] skillID in
+                guard let self else { return nil }
+                return await self.skillsCenter.runtimeComponentAuthorization(skillID: skillID)
+            }
+        )
 
         let containerLifecycle = ContainerLifecycle(
             roots: environmentRoots,
@@ -910,7 +977,11 @@ final class AppEnvironment: ObservableObject {
                     guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
-                cancelJobs: { [linuxGuests] id in
+                cancelJobs: { [linuxGuests, skillRuntimeComponents] id in
+                    // Join owned runtime-component work (cancel + await) while
+                    // the guest and its write layer still exist, so an
+                    // in-flight preparation never outlives its environment.
+                    await skillRuntimeComponents.releaseEnvironment(id)
                     // stopGuest also stops every guest localService and drops
                     // the shared interpreter caches; the retired native
                     // CPython/Node workers no longer exist to stop.
@@ -921,7 +992,8 @@ final class AppEnvironment: ObservableObject {
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
-                terminateWorkers: { [linuxGuests] id in
+                terminateWorkers: { [linuxGuests, skillRuntimeComponents] id in
+                    await skillRuntimeComponents.releaseEnvironment(id)
                     await linuxGuests.stopGuest(environmentID: id)
                     if !(await linuxGuests.guestIsRunning(environmentID: id)) {
                         await FloePlatformServices.shared.reportLinuxRuntimeEnded(environmentID: id)

@@ -899,6 +899,11 @@ final class SkillsCenter: ObservableObject {
     /// hosts/tests that have no local Linux environment wiring; exact reads
     /// then keep the historical Markdown-only behavior.
     private let resourceStager: SkillWorkspaceResourceStager?
+    /// Trusted lazy runtime-component deployment (Impeccable engine): records
+    /// immutable task/run/environment-bound plans from verified exact reads.
+    /// Nil in hosts/tests without the native component wiring; the read path
+    /// then keeps its historical Markdown-only behavior.
+    private let runtimeComponents: SkillRuntimeComponentCenter?
     private var packageMutationInProgress = false
     private var builtinSeedTask: Task<Void, Never>?
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
@@ -917,14 +922,77 @@ final class SkillsCenter: ObservableObject {
         return snapshot
     }
 
+    // MARK: - Runtime component authority (verified installed snapshot only)
+
+    /// Authority facts for the native runtime-component center, derived ONLY
+    /// from the actual installed, ENABLED official curated snapshot: the
+    /// persisted row, its typed curated receipt, the digest-verified pinned
+    /// content AND the CURRENT persisted effective grants — every capability
+    /// the pinned manifest declares must still be granted (`skillStore.
+    /// allowedCapabilities`, the same source `runtimeSelection` uses). A
+    /// descriptor file alone — an imported same-ID copy, an edited skill, a
+    /// forged receipt — or a revoked declared grant yields nil and can never
+    /// grant component authority. No new grant is invented here; the normal
+    /// exec.shell approval ceiling is unchanged.
+    static func runtimeComponentAuthority(
+        row: PersistedSkill,
+        snapshot: SkillContentSnapshot,
+        grantedCapabilities: Set<String>
+    ) -> SkillRuntimeComponentAuthority? {
+        guard row.status == "enabled",
+              let receipt = curatedReceipt(for: row),
+              receipt.entryID == row.id,
+              receipt.contentDigest == row.rewrittenDigest,
+              receipt.contentDigest == snapshot.package.canonicalSHA256,
+              Set(snapshot.package.manifest.capabilities).isSubset(of: grantedCapabilities),
+              let descriptorBytes = snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath]
+        else { return nil }
+        return SkillRuntimeComponentAuthority(
+            skillID: row.id,
+            entryVersion: receipt.entryVersion,
+            contentDigest: receipt.contentDigest,
+            packageSHA256: receipt.packageSHA256,
+            catalogSHA256: receipt.catalogSHA256,
+            reviewSHA256: receipt.reviewSHA256,
+            auditedSourceCommit: receipt.auditedSourceCommit,
+            publicationCommit: receipt.publicationCommit,
+            feedStatus: receipt.feedStatus,
+            reviewDecision: receipt.reviewDecision,
+            feedSignatureKeyID: receipt.feedSignatureKeyID,
+            reviewKeyID: receipt.reviewKeyID,
+            hubRepository: receipt.hubRepository,
+            descriptorBytes: descriptorBytes,
+            descriptorSHA256: FloeDigest.sha256Hex(descriptorBytes),
+            declaredFiles: snapshot.package.files,
+            packageFiles: snapshot.files
+        )
+    }
+
+    /// Live revalidation used by the component center on EVERY fresh use: the
+    /// row must still be installed and enabled, the receipt digest must still
+    /// match the row and the re-verified snapshot, the snapshot must still
+    /// carry the descriptor, and every capability the pinned manifest declares
+    /// must still be effectively granted. Any drift (disable, uninstall,
+    /// edit, revoked grant) yields nil.
+    func runtimeComponentAuthorization(skillID: String) async -> SkillRuntimeComponentAuthority? {
+        guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              let snapshot = try? snapshot(for: row, runID: nil),
+              let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID)
+        else { return nil }
+        return Self.runtimeComponentAuthority(
+            row: row, snapshot: snapshot, grantedCapabilities: grants
+        )
+    }
+
     var rewriteModels: [ModelProfile] { environment.conversationCenter.availableAgentModels }
     var defaultRewriteModelID: UUID? {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil) {
         self.environment = environment
         self.resourceStager = resourceStager
+        self.runtimeComponents = runtimeComponents
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -1641,6 +1709,33 @@ final class SkillsCenter: ObservableObject {
                         staged: false, guestRoot: nil,
                         pinnedSHA256: snapshot.package.canonicalSHA256,
                         fileCount: snapshot.package.files.count, reason: reason
+                    )
+                }
+                // Trusted lazy runtime-component plan: a verified exact read of
+                // an installed package that carries the frozen engine
+                // dependency descriptor records an immutable task/run/
+                // environment-bound plan for the native component center.
+                // Recording downloads nothing, stages nothing new and executes
+                // nothing — readiness runs only at the approved exec.shell
+                // boundary. Packages without the descriptor file are untouched.
+                if let runtimeComponents, let runID,
+                   snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
+                    let stagedRoot: String? = {
+                        if case .staged(let staged) = outcome { return staged.guestRoot }
+                        return nil
+                    }()
+                    let grants = try? await environment.skillStore.allowedCapabilities(skillID: row.id)
+                    _ = await runtimeComponents.recordPlan(
+                        skillID: row.id,
+                        environmentID: resourceContext.environmentID,
+                        workspaceRootURL: resourceContext.workspaceRootURL,
+                        runID: runID,
+                        stagedGuestRoot: stagedRoot,
+                        authority: grants.flatMap {
+                            Self.runtimeComponentAuthority(
+                                row: row, snapshot: snapshot, grantedCapabilities: $0
+                            )
+                        }
                     )
                 }
             }

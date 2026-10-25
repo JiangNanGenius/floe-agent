@@ -596,6 +596,19 @@ private struct UnavailableLinuxGuestImageResolver: LinuxGuestImageResolving {
     }
 }
 
+/// Optional native runtime-component preparation, injected by the app
+/// assembly. Called AFTER the environment's real guest activation and BEFORE
+/// the already-authorized command runs; it returns per-run environment
+/// bindings (verified guest paths) to export for this run only, or nil when
+/// nothing is prepared (an honest deferral the component center records).
+/// Implementations use the underlying guest runner directly — never a
+/// recursive shell-tool dispatch — and never widen the run's approval.
+typealias NativeComponentPreparation = @Sendable (
+    _ environmentID: String,
+    _ runID: UUID?,
+    _ cancellation: CancellationToken?
+) async -> [String: String]?
+
 /// Routes one-shot shell runs by the request's environment runtime: Linux
 /// environments execute inside their guest, every other environment keeps the
 /// injected native backend. Interactive sessions retain the backend selected
@@ -607,16 +620,21 @@ struct RoutingLocalShellBackend: LocalShellBackend {
     /// Optional explicit environment preparation. When the image is not
     /// qualified, the backend prepares Linux once, then resumes.
     let prepareLinux: LinuxPreparationHandler?
+    /// Optional trusted runtime-component preparation (bound to the approved
+    /// exec.shell boundary only — interactive sessions never trigger it).
+    let prepareNativeComponents: NativeComponentPreparation?
     private let guestSessions = GuestSessionIDSet()
 
     init(native: any LocalShellBackend,
          guests: any LinuxCommandRunning,
          limits: LinuxGuestLimits = .standard,
-         prepareLinux: LinuxPreparationHandler? = nil) {
+         prepareLinux: LinuxPreparationHandler? = nil,
+         prepareNativeComponents: NativeComponentPreparation? = nil) {
         self.native = native
         self.guests = guests
         self.guestBackend = LinuxGuestShellBackend(runner: guests, limits: limits)
         self.prepareLinux = prepareLinux
+        self.prepareNativeComponents = prepareNativeComponents
     }
 
     func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval {
@@ -673,7 +691,19 @@ struct RoutingLocalShellBackend: LocalShellBackend {
         } catch {
             return .failed(message: error.localizedDescription)
         }
-        return await guestBackend.run(request, cancellation: cancellation)
+        var preparedRequest = request
+        if let prepareNativeComponents,
+           let bindings = await prepareNativeComponents(
+               environmentID, request.runID, cancellation
+           ),
+           !bindings.isEmpty {
+            // Native verified bindings win over any caller-supplied value for
+            // the same keys: a model or user cannot silently override the
+            // verified guest paths. The merge applies to THIS run's request
+            // only — the guest backend exports them per command.
+            preparedRequest.environment.merge(bindings) { _, nativeBinding in nativeBinding }
+        }
+        return await guestBackend.run(preparedRequest, cancellation: cancellation)
     }
 
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
