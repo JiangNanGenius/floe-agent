@@ -130,6 +130,8 @@ struct VoiceOrbPresentationTests {
     }
     @Test("The hosted SwiftUI orb reports live cadence and excludes a deliberate pause")
     func hostedOrbCadenceAndPause() async throws {
+        try #require(!UIAccessibility.isReduceMotionEnabled,
+                     "Active cadence requires the simulator’s actual Reduce Motion setting to be off")
         guard let scene = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene })
             .first(where: { $0.activationState == .foregroundActive }) else {
@@ -146,7 +148,7 @@ struct VoiceOrbPresentationTests {
         let presentation = VoiceOrbPresentationState()
         let host = UIHostingController(rootView: VoiceOrbView(
             coordinator: rig.coordinator, state: .listening, muted: false,
-            presentation: presentation).environment(\.accessibilityReduceMotion, false))
+            presentation: presentation))
         let previous = scene.windows.first { $0.isKeyWindow }
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: 320, height: 400)
@@ -167,7 +169,7 @@ struct VoiceOrbPresentationTests {
 
         host.rootView = VoiceOrbView(
             coordinator: rig.coordinator, state: .paused, muted: false,
-            presentation: presentation).environment(\.accessibilityReduceMotion, false)
+            presentation: presentation)
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         try await Task.sleep(for: .milliseconds(100))
