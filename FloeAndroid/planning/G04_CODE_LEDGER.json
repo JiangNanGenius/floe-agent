@@ -2,8 +2,8 @@
   "schema": "floe.android.goal-code-ledger/1",
   "goal": "G04",
   "subgoal": "G04-R2",
-  "updatedAt": "2026-10-25T05:26:14.156193+00:00",
-  "phase": "G04_R2_actual_App_integration_active_release_pending",
+  "updatedAt": "2026-10-25T14:59:24.088734+00:00",
+  "phase": "G04_R2_Alpha11_representative_delivery_closed",
   "baselinePolicy": "Original feature-baseline/work-packages status digests remain frozen historical fixture inputs. This ledger records current G04 contributions using existing IDs; no new feature/work-package IDs or shifted goal ownership.",
   "sourceBaseline": "3fd597b537590b4e6c11c0a25f413361a66b42b6",
   "originalWorkPackageCount": 85,
@@ -11,74 +11,80 @@
     {
       "id": "P1.8",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P1.17",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P2.4",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P3.1",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P3.2",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P3.5",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     },
     {
       "id": "P3.6",
@@ -90,21 +96,23 @@
         "G12",
         "G13"
       ],
-      "g04ContributionState": "code_verified_App_pending",
+      "g04ContributionState": "code_verified_representative_R2_scope_qualified",
       "note": "Current native GitHub Actions contribution only; overall G11 work package remains planned.",
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "planned"
     },
     {
       "id": "P3.12",
       "implementationGoal": "G04",
-      "state": "code_verified_App_pending",
+      "state": "code_verified_representative_R2_scope_qualified",
       "g04ContributionOnly": false,
       "owner": "files-ide-browser",
       "verificationGoals": [
         "G12",
         "G13"
       ],
-      "appAcceptanceState": "pending_G04_R2"
+      "appAcceptanceState": "representative_R2_scope_qualified_full_matrix_deferred",
+      "historicalR1State": "code_verified_App_pending"
     }
   ],
   "operations": [
@@ -236,8 +244,8 @@
       "implementationGoal": "G04",
       "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
       "r2AppAcceptance": {
-        "state": "actual_previous_basics_pass_current_file_open_blocked",
-        "scope": "Previous real CRUD/edit/save/reopen retained; C06 ordinary new Python open crashes during completion initialization. Guarded input/selection source and relevant13JVM tests pass; final runtime retake pending.",
+        "state": "representative_actual_pass",
+        "scope": "C07 empty Python opens without original NPE; rapid42B save/close/reopen, C08 phone12B create/edit/save/close/reopen and compact menus passed. Original failures retained.",
         "notFullMatrix": true
       }
     },
@@ -331,8 +339,8 @@
       "implementationGoal": "G04",
       "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
       "r2AppAcceptance": {
-        "state": "actual_preview_pass_run_output_blocked",
-        "scope": "Saved preview rendered and owner shutdown passed; free-slot GUI Run output binding missing.",
+        "state": "representative_actual_pass",
+        "scope": "C07 GUIRun on existingLinux environment: real C07_IDE_RUN_OK +exit0 in owned attachedTerminal; earlier savedHTML actualcontrolledpreview/owner shutdown retained.",
         "notFullMatrix": true
       }
     },
@@ -350,8 +358,8 @@
       "implementationGoal": "G04",
       "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
       "r2AppAcceptance": {
-        "state": "standalone_actual_pass_embedded_blocked",
-        "scope": "Real terminal controls proven; IDE optional accessory omitted by App host.",
+        "state": "representative_actual_pass",
+        "scope": "C07 actualattachedTerminal output; firstBack hidesIME, secondclosespane restoring sameSavededitor. StandalonePTY interrupt/close/reset actualproofs reused unchanged.",
         "notFullMatrix": true
       }
     },
@@ -369,8 +377,8 @@
       "implementationGoal": "G04",
       "compileLimit": "Current Full/Play App Kotlin/resources + Swift6.4.1 Android ARM64 Core object/link verified; actual App/device interaction remains R2.",
       "r2AppAcceptance": {
-        "state": "actual_backend_seen_completion_acceptance_blocked",
-        "scope": "Real Python backend and candidate observed on previous candidate; Tab triggered ANR. Bounded-scrolling source fix has a new initialization crash; final actual completion acceptance pending.",
+        "state": "representative_backend_and_tab_accept_actual_pass",
+        "scope": "RealPythonReady and actualpylsp process observed. C07 pri->Tab print withoutANR; candidate labelledKeyword, not proof uniquely originating fromLSP. Wholelanguage/semantic matrix deferred.",
         "notFullMatrix": true
       }
     },
@@ -651,7 +659,7 @@
   },
   "goalComplete": false,
   "subgoalCodeVerified": true,
-  "goalCompleteMeaning": "Whole G04 App/device/phase APK remains open; R1 code-stage delivery is separate.",
+  "goalCompleteMeaning": "G04-R2 representative delivery is complete; this is not a whole-product/full-G04-operation/hardware/visual matrix completion claim. Original verificationGoals and ownership remain.",
   "currentComponentQualification": {
     "androidCore": {
       "swift": "6.4.1",
@@ -681,38 +689,96 @@
   },
   "qualificationScope": "Original sourceHandoffs/appIntegration/currentIntegrationBatch/currentComponentQualification retain G04-R1 historical component evidence. Current R2 actual acceptance is recorded separately; not a whole-product or complete hardware/visual matrix claim.",
   "currentR2Qualification": {
-    "candidate": "0.1.0-alpha.10 versionCode12 candidate06; signed and installed on reused API37/16KiB tablet",
+    "candidate": "Alpha11/code13",
+    "source": "ab825370e3253285e777f4970ee993f73aeef95a",
     "kotlin": {
-      "tests": 120,
+      "appTests": 102,
+      "featureTests": 19,
       "failures": 0,
       "errors": 0,
       "skipped": 0,
-      "fullPlayProductionCompile": true,
-      "scope": "IDE and terminal-controller changed boundary; not Android View lifecycle coverage"
+      "fullPlayCompile": true
     },
     "native": {
-      "queueRunHostTests": 31,
-      "androidARM64ObjectLink": true,
-      "sourceInputs": 2212,
-      "stableInputs": true
+      "hostTests": 51,
+      "actualAndroidArm64ObjectLink": true,
+      "inputs": 2212,
+      "stableInputs": true,
+      "artifactSha256": "48334a2beadc03bac3420d1abdc8328aa458779d7e530049eef167efd4fafa26"
     },
-    "actualQueue": "Actual ordinary approval -> exec0 -> exact235B user message once -> automatic second reply. Active queue row remains until navigation; refresh fix pending, not an automatic-retirement pass.",
-    "actualIde": "Previous encoded bytes/conflict/local-only keep-both results retained. Current new Python file open crashes in completion initialization before typing; patched actual completion/input/run checks pending.",
-    "remaining": [
-      "Fix actual queue projection and completion initialization",
-      "Batch changed checks and one saved signed APK",
-      "Actual tablet IDE/queue retakes and same-artifact Samsung representative upgrade",
-      "Exact-source push and immutable Android prerelease with real asset download/hash read-back",
-      "Owned device/fixture/cache cleanup and final original-scope audit"
-    ],
-    "publication": false,
+    "actualQueue": "One real approval, actual /workspace and C09_QUEUE_EXEC_OK exit0; exact235B user bubble once, automatic queue absence on same page with no manual refresh/navigation. Compatible installed runtime12 was used; packaged13 pair upgraded/read back separately.",
+    "actualIde": "Prior C07/C08 GUIRun/Tab/noANR/save/reopen/Back, SAF/CAS/encoded byte/localGit/ownedPreview evidence retained unchanged. Samsung Alpha11 upgrade and old file reopen passed.",
+    "publication": true,
     "paidAppModelCalls": 0,
     "wholeG04Complete": false,
-    "nextSourceCohort": {
-      "editorOpen": "Count-before-height guard integrated, pendingnewAPKactualopen/Tab",
-      "icons": "44Cupertinovectors+9accuratefallbacks;50existingAPI/orderretained+3newsemanticvalues; privatehandoff hashintegrated14files; compile/Apppending",
-      "native": "Core05 unchanged; queuepublicationfix remainsprivate/inprogress, NOT partofthiscohort",
-      "intermediateRelease": "QualifiedAlpha10 maypublish with explicitknownqueuedisplaylimit; originalG04R2remainsACTIVE untilqueuefix/finalactualqualification/cleanup. No goal scope removed."
+    "remaining": []
+  },
+  "currentDelivery": {
+    "version": "0.1.0-alpha.11",
+    "versionCode": 13,
+    "sourceCommit": "ab825370e3253285e777f4970ee993f73aeef95a",
+    "url": "https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.11",
+    "publicDownloadHashVerified": true,
+    "prerelease": true,
+    "latest": false,
+    "r2Complete": true,
+    "goalComplete": false
+  },
+  "uiAcceptance": {
+    "compactWorkspaceActions": "C08 all6 original actions in New2+More4+Close singleheader;48dp; tablet API37 IME/Back and SamsungAPI33 nativefile save/reopen actualpass",
+    "icons": "45 MITCupertino generated +9 accuratefallbacks, noFlutterruntime",
+    "systemBars": "C08 Night/Day/Auto representative contrast actualpass",
+    "notClaimed": "Whole currentiOS visualparity or hardwarematrix"
+  },
+  "remainingR2": "None in the representative G04-R2 delivery scope. Unexercised remote operations and full hardware/visual matrix retain their recorded later goals.",
+  "r2Complete": true,
+  "qualificationHistory": [
+    {
+      "label": "Before Alpha11 final queue batch",
+      "qualification": {
+        "candidate": "0.1.0-alpha.10 versionCode12 candidate06; signed and installed on reused API37/16KiB tablet",
+        "kotlin": {
+          "tests": 120,
+          "failures": 0,
+          "errors": 0,
+          "skipped": 0,
+          "fullPlayProductionCompile": true,
+          "scope": "IDE and terminal-controller changed boundary; not Android View lifecycle coverage"
+        },
+        "native": {
+          "queueRunHostTests": 31,
+          "androidARM64ObjectLink": true,
+          "sourceInputs": 2212,
+          "stableInputs": true
+        },
+        "actualQueue": "Actual ordinary approval -> exec0 -> exact235B user message once -> automatic second reply. Active queue row remains until navigation; refresh fix pending, not an automatic-retirement pass.",
+        "actualIde": "Previous encoded bytes/conflict/local-only keep-both results retained. Current new Python file open crashes in completion initialization before typing; patched actual completion/input/run checks pending.",
+        "remaining": [
+          "Fix actual queue projection and completion initialization",
+          "Batch changed checks and one saved signed APK",
+          "Actual tablet IDE/queue retakes and same-artifact Samsung representative upgrade",
+          "Exact-source push and immutable Android prerelease with real asset download/hash read-back",
+          "Owned device/fixture/cache cleanup and final original-scope audit"
+        ],
+        "publication": false,
+        "paidAppModelCalls": 0,
+        "wholeG04Complete": false,
+        "nextSourceCohort": {
+          "editorOpen": "Count-before-height guard integrated, pendingnewAPKactualopen/Tab",
+          "icons": "44Cupertinovectors+9accuratefallbacks;50existingAPI/orderretained+3newsemanticvalues; privatehandoff hashintegrated14files; compile/Apppending",
+          "native": "Core05 unchanged; queuepublicationfix remainsprivate/inprogress, NOT partofthiscohort",
+          "intermediateRelease": "QualifiedAlpha10 maypublish with explicitknownqueuedisplaylimit; originalG04R2remainsACTIVE untilqueuefix/finalactualqualification/cleanup. No goal scope removed."
+        }
+      }
     }
+  ],
+  "iosDeltaReview": {
+    "date": "2026-10-26",
+    "previousBaseline": "037698e96e6890b0b3ac6d95037e3792aa32c692",
+    "mainAtReview": "ab825370e3253285e777f4970ee993f73aeef95a",
+    "iosSourceParent": "f274b1f241673f75510da6c5ee956a57ceb03582",
+    "changeGroups": 18,
+    "record": "docs/FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md",
+    "nextGoal": "G05-R1"
   }
 }

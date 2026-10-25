@@ -17,8 +17,9 @@ are complete. G03-R3 representative App qualification, Alpha9 delivery and round
 cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks are
 complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
 has been pushed and independently read back. G04-R2 adds representative App
-integration for the Alpha10 stage (build 12). Release availability, actual device
-coverage and remaining limits are recorded in
+integration and is now closed for its representative Alpha11 stage (build 13).
+The next goal is G05-R1: native Office integration and offline document preview.
+Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
@@ -35,15 +36,27 @@ accurate existing fallbacks and corrected settings-category mappings. No Flutter
 engine or new runtime dependency is added. The six workspace commands are grouped
 under compact New and More controls in the existing title bar.
 
-The C07 editor/pending-input/terminal Kotlin boundary passed 147 JVM tests and
-Full/Play production compilation; actual Tab acceptance, rapid edit/save/reopen
-and GUI-run output with exit code 0 also passed. The subsequent compact-header
-and system-bar source cohort has separate compilation and device evidence. The unchanged queue/run
-native component passed 31 tests and actual Android ARM64 object compilation and
-linking. Qualification of each new source/artifact cohort and App/device behavior
-are recorded separately in the implementation record above.
-This stage does not close whole-product visual parity, the full device/IME matrix,
-or later Root/ADB/accessibility capabilities.
+The final queue observer/read-recovery batch passed 102 App JVM tests, 19
+feature tests and 51 native tests, Full/Play Kotlin compilation and actual Swift
+Android ARM64 object compilation/linking. The actual tablet flow approved one
+local command, observed exit 0, automatically ran one queued 235-byte input and
+removed its queue row on the same page without navigation or manual refresh.
+That queue proof used the previously installed compatible runtime12; the exact
+packaged runtime13 was subsequently upgraded and read back separately. The
+Samsung upgrade retained existing history, model selection and saved-file text.
+Earlier editor/terminal/preview/local Git evidence is reused for unchanged paths.
+
+Owned test users, fixture services, forwarding and phone QA objects were removed;
+original device data, the existing AVD and useful pinned SDKs were preserved.
+The stage does not close every operation, remote-account integration, whole-product
+visual parity, the complete hardware/IME matrix or later Root/ADB/accessibility
+capabilities. The original 85 work packages and 24 G04 operation identities remain.
+
+At each major Android goal close, compare the latest iOS main source against the
+last recorded baseline and update the requirements and next goal. The first
+[delta review](../docs/FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md) identifies 18 groups;
+Office target/save/PDF and output/skill-resource contracts feed into G05. New
+requirements stay in the plan until their inputs and worker ownership are ready.
 
 ## G04-R1 code and component qualification
 
@@ -81,7 +94,19 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 ## Android Alpha
 
-### Alpha10 / G04
+### Alpha11 / G04-R2 representative delivery
+
+[Download Alpha11](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.11)
+is build13 from immutable source `ab825370e3253285e777f4970ee993f73aeef95a`.
+Its assets are one signed ARM64 Full APK, final APK/source `SHA256SUMS`, and the
+combined corresponding-source/license archive. Public downloads, hashes, tag
+binding and package integrity passed. An initially incorrect generator-internal
+checksum list was replaced with the final two-file list and downloaded again.
+The release is a prerelease with `latest=false`; existing Android tags and the
+iOS Latest release are preserved. The GitHub in-app updater remains planned;
+this Alpha currently uses manual installation.
+
+### Alpha10 / G04 history
 
 [Alpha10 release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.10)
 uses build 12 and the same signing identity. Its clean asset set is one signed
@@ -90,8 +115,8 @@ archive. See the implementation record for publication and device qualification.
 
 Known limitation: the active queue panel can retain an already-executed input
 until the conversation is reopened. The observed input was consumed and replied
-to, while the live display did not refresh. The cross-layer observer repair is
-still in progress; this stage does not close G04-R2.
+to, while the live display did not refresh. The cross-layer observer repair was subsequently delivered in Alpha11.
+This paragraph records the unchanged Alpha10 limitation.
 
 ### Alpha9 / G03 history
 
