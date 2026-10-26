@@ -639,7 +639,7 @@ actor SkillDependencyPreparationCenter {
     nonisolated static func profileMatches(_ profile: SkillDependencyProfile, architectures supported: [String]) -> Bool {
         guard profile.os == "linux", !supported.isEmpty else { return false }
         return profile.architectures.contains("any")
-            || !profile.architectures.intersection(supported).isEmpty
+            || !Set(profile.architectures).isDisjoint(with: supported)
     }
 
     func matchingProfiles(_ declaration: SkillDependencyDeclaration) -> [SkillDependencyProfile] {
@@ -735,6 +735,8 @@ actor SkillDependencyPreparationCenter {
             if case .unsupportedSchemaVersion = error {
                 return .refused(reason: SkillDependencyReason.unsupportedSchema)
             }
+            return .refused(reason: SkillDependencyReason.declarationRejected)
+        } catch {
             return .refused(reason: SkillDependencyReason.declarationRejected)
         }
         persistDeclarationRecord(for: authority)
@@ -1319,7 +1321,7 @@ actor SkillDependencyPreparationCenter {
                 state: .verified, detail: "verified cache bytes reused (no download)"
             )
         }
-        guard Self.isCanonicalHex(authority.publicationCommit, length: 40) else {
+        guard SkillDependency.isCanonicalHex(authority.publicationCommit, length: 40) else {
             return SkillDependencyPrefetchEntry(
                 kind: "runtimeComponent", name: descriptor.componentID, version: descriptor.componentVersion,
                 state: .failed, detail: "the receipt publication commit is not an immutable 40-hex pin"
