@@ -16,6 +16,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.InputDevice
+import android.view.View
 import android.webkit.WebView
 import com.floe.android.core.officeengine.OfficeRequestPolicy.formatForPath
 import java.io.File
@@ -105,6 +106,13 @@ class OfficeEngineService : Service() {
     inner class LocalBinder : Binder() {
         val service: OfficeEngineService get() = this@OfficeEngineService
     }
+
+    /** Pending page-load listeners owned by one WebView. */
+    private class LoadGeometryGuard(
+        val view: COWebView,
+        val layoutListener: View.OnLayoutChangeListener,
+        val attachListener: View.OnAttachStateChangeListener,
+    )
 
     private inner class Session(
         val request: OfficePreviewRequest,
@@ -308,6 +316,120 @@ class OfficeEngineService : Service() {
         @Volatile var lastPhaseText: String? = null
         @Volatile var lastPercent: Int? = null
         var pendingLoadUrl: String? = null
+
+        /**
+         * One-shot geometry guard for the initial page load (main-thread
+         * only). While a pending load waits, the guard's OWNERS are exactly
+         * the armed [COWebView]: its attach-state and layout-change listeners
+         * funnel into [maybeStartPendingLoad], and both are removed together.
+         * A callback acts only while it still belongs to the currently armed
+         * guard on the live view, so a stale view's late event can never
+         * tear down a replacement's guard or start another mount's load.
+         */
+        private var loadGeometryGuard: LoadGeometryGuard? = null
+
+        /** Bounded first-arming diagnostic per mount (not per event). */
+        private var loadGeometryGateDiagnosed = false
+
+        /**
+         * Single initial-load funnel for BOTH load branches (attachWebView's
+         * pending consumption and the already-attached view race in runOpen).
+         * The page load never starts until the exact live view is attached
+         * to its window with positive real layout size; otherwise a one-shot
+         * guard resumes it on this view's actual attach/layout events.
+         *
+         * Mechanism (G05-R2, actual Alpha13 C03): the frontend measures its
+         * initial canvas geometry from the live DOM at doc-layer setup, and
+         * only the Calc/zoom paths re-run that measurement — a Writer page
+         * that begins loading into a not-yet-laid-out (0x0) view can latch a
+         * zero first canvas until a REAL viewport change re-runs the resize
+         * chain (the observed C03 steady state; exact internal latching path
+         * stays in the private handoff evidence). Waiting for the actual
+         * layout is a lifecycle invariant, not a sleep, resize hack, poll,
+         * or readiness claim: honest readiness still requires the real
+         * witnesses (shape + tile delivery + permission barrier + PixelCopy
+         * paint probe + renderer draw).
+         */
+        fun maybeStartPendingLoad() {
+            val url = pendingLoadUrl ?: return
+            if (retired || presentationSuperseded || cancelled.get() || current !== this) return
+            val view = webView ?: return
+            if (!OfficeLoadGeometry.permitsInitialLoad(view.isAttachedToWindow, view.width, view.height)) {
+                armLoadGeometryGuard(view)
+                return
+            }
+            pendingLoadUrl = null
+            disarmLoadGeometryGuard()
+            val loadResult = runCatching { view.loadUrl(url) }
+            if (loadResult.isSuccess) {
+                // ONE bounded numeric fact, recorded only when the load was
+                // actually accepted (coordinator acceptance 2026-10-26): lets
+                // the device run distinguish a real positive-size preload
+                // from a source-only claim without claiming any outcome.
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_LIFECYCLE,
+                    "page load started at layout ${view.width}x${view.height} attached=${view.isAttachedToWindow}",
+                )
+            } else {
+                // Honest failure fact, no retry loop, no fabricated state:
+                // the existing loadError notice path stays the user-visible
+                // truth and readiness witnesses remain unsatisfied.
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_LIFECYCLE,
+                    "page load rejected: " + (loadResult.exceptionOrNull()?.javaClass?.simpleName ?: "unknown"),
+                )
+                notifyNotice("loadError", null)
+            }
+        }
+
+        private fun armLoadGeometryGuard(view: COWebView) {
+            val existing = loadGeometryGuard
+            if (existing != null && existing.view === view) return // already guarding THIS exact view
+            // Re-pointing to a different view: remove the old guard's own
+            // listeners from the view they were registered on, never from
+            // whatever session.webView happens to be now.
+            disarmLoadGeometryGuard()
+            if (!loadGeometryGateDiagnosed) {
+                loadGeometryGateDiagnosed = true
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_LIFECYCLE,
+                    "page load geometry-gated (${view.width}x${view.height}, attached=${view.isAttachedToWindow})",
+                )
+            }
+            val layoutListener = View.OnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
+                guardedViewGeometryChanged(v)
+            }
+            val attachListener = object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(v: View) = guardedViewGeometryChanged(v)
+                // Detach with the view still guarded: the mount is leaving;
+                // detachWebView/disarm owns removal. Nothing loads from here.
+                override fun onViewDetachedFromWindow(v: View) = Unit
+            }
+            loadGeometryGuard = LoadGeometryGuard(view, layoutListener, attachListener)
+            view.addOnLayoutChangeListener(layoutListener)
+            view.addOnAttachStateChangeListener(attachListener)
+        }
+
+        private fun guardedViewGeometryChanged(v: View) {
+            val guard = loadGeometryGuard ?: return
+            // Own-guard + live-view fences first: a foreign/stale callback
+            // returns without disarming anything newer.
+            if (guard.view !== v || webView !== v) return
+            if (retired || presentationSuperseded || current !== this@Session) {
+                if (loadGeometryGuard === guard) disarmLoadGeometryGuard()
+                return
+            }
+            maybeStartPendingLoad()
+        }
+
+        /** Main-thread only; removes BOTH listeners from the guard's own view. */
+        fun disarmLoadGeometryGuard() {
+            val guard = loadGeometryGuard ?: return
+            loadGeometryGuard = null
+            guard.view.removeOnLayoutChangeListener(guard.layoutListener)
+            guard.view.removeOnAttachStateChangeListener(guard.attachListener)
+        }
+
         val terminalDelivered = AtomicBoolean(false)
         val nativeCloseClaimed = AtomicBoolean(false)
         val hulloClaimed = AtomicBoolean(false)
@@ -1082,20 +1204,26 @@ class OfficeEngineService : Service() {
     fun attachWebView(view: COWebView, sessionToken: String, generation: Long) {
         val session = current ?: return
         if (session.request.sessionToken != sessionToken || session.generation != generation) return
+        // Drop any previous guard BEFORE re-pointing the session view, so
+        // its listeners are removed from the view that actually holds them.
+        session.disarmLoadGeometryGuard()
         session.webView = view
         synchronized(socketHosts) { socketHosts[view]?.delegate = session }
         view.addJavascriptInterface(session.host, JAVASCRIPT_INTERFACE)
-        session.pendingLoadUrl?.let { url ->
-            session.pendingLoadUrl = null
-            view.loadUrl(url)
-            session.setState(OfficeViewerState.OPENING)
-        }
+        // G05-R2 first-paint repair (2026-10-26): this factory callback runs
+        // BEFORE Compose attaches/measures the view, so the load must not
+        // start here at 0x0; the funnel loads only at this exact view's real
+        // attached positive layout, otherwise its guard resumes it on the
+        // view's actual attach/layout events. The redundant setState here is
+        // dropped: runOpen already set OPENING before native create.
+        session.maybeStartPendingLoad()
     }
 
     fun detachWebView(view: COWebView, sessionToken: String, generation: Long) {
         val session = current ?: return
         if (session.request.sessionToken != sessionToken || session.generation != generation || session.webView !== view) return
         session.webView?.let { view ->
+            session.disarmLoadGeometryGuard()
             runCatching { view.evaluateJavascript("window.__floeRenderWitness && window.__floeRenderWitness.cancel()", null) }
             runCatching { view.removeJavascriptInterface(JAVASCRIPT_INTERFACE) }
             runCatching { view.getWebViewClient().mobileSocket.close() }
@@ -2104,16 +2232,25 @@ class OfficeEngineService : Service() {
 
         val viewerUrl = buildViewerUrl(urlToLoad, languageTag, uiMode, session)
         session.pendingLoadUrl = viewerUrl
-        // If the view was already attached (rare race), load now; otherwise
-        // attachWebView will consume pendingLoadUrl.
+        // BOTH load paths now converge on Session.maybeStartPendingLoad():
+        // a live view loads only at real attached positive layout size, and
+        // a not-yet-composed view receives the URL through onLoadUrl and is
+        // gated by attachWebView through the identical funnel.
         mainHandler.post {
             if (session.retired || session.presentationSuperseded || current !== session) return@post
-            val view = session.webView
-            if (view != null) {
-                session.pendingLoadUrl = null
-                runCatching { view.loadUrl(viewerUrl) }
-            } else {
+            if (session.webView == null) {
+                // No view yet: onLoadUrl makes the Activity compose the
+                // AndroidView; attachWebView then consumes pendingLoadUrl
+                // through the SAME real-layout funnel (never at 0x0).
                 runCatching { listeners.toList().forEach { it.onLoadUrl(request.sessionToken, session.generation, viewerUrl) } }
+            } else {
+                // G05-R2 first-paint repair (2026-10-26): the previous
+                // branch loaded directly here with no attach/size check.
+                // An already-attached view (rare reconstruction race) now
+                // goes through the identical geometry gate: load when this
+                // exact view is attached with positive real layout size,
+                // otherwise its next layout pass resumes the same funnel.
+                session.maybeStartPendingLoad()
             }
         }
     }

@@ -368,8 +368,30 @@ object CoolMessageGate {
     enum class Mode { READ_ONLY, EDITABLE }
 
     fun decide(message: String, mode: Mode): Outcome {
+        if (message.length > 65536) return Outcome(Decision.BLOCK_ROUTE, "editModeBlocked")
         val editable = mode == Mode.EDITABLE
-        if (message.length > 65536 || message.any { it == '\n' || it == '\r' || it == '\u0000' }) {
+        // Framing guard with pinned keyboard-protocol parity (G05-R2,
+        // 2026-10-26): the mobile bundle terminates ONLY its keyboard frames
+        // with a single trailing LF (TextInput.js `_sendKeyEvent` sends
+        // `key …\n` / `windowkey …\n`), the mobile ProxySocket passes them
+        // to postMobileMessage unchanged, and upstream forwards those frames
+        // to the kit VERBATIM (LOActivity.postMobileMessage ->
+        // beforeMessageFromWebView has no key case). Refusing every LF
+        // dropped each real Ctrl+A/Enter/Ctrl+End command and surfaced the
+        // misleading editModeBlocked preview notice during live editing.
+        // ONE trailing LF is protocol content ONLY for these two commands;
+        // embedded LF, any CR, NUL, double terminators, oversize frames, and
+        // trailing LF on any other command stay refused. Preview denial
+        // authority is unchanged: the native barrier/perm/filemode witnesses
+        // still gate read-only truth; no guard is weakened here.
+        val frameHead = message.substringBefore(' ')
+        val frameBody =
+            if ((frameHead == "key" || frameHead == "windowkey") && message.endsWith("\n")) {
+                message.dropLast(1)
+            } else {
+                message
+            }
+        if (frameBody.any { it == '\n' || it == '\r' || it == '\u0000' }) {
             return Outcome(Decision.BLOCK_ROUTE, "editModeBlocked")
         }
         val parts = message.split(" ", limit = 2)

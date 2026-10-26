@@ -18,7 +18,9 @@ import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -59,13 +61,20 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      * BYE whose process exit (std::_exit(0)) bypasses every Java
      * Activity-result path in the viewer process. Acknowledgement records
      * close ownership only: it never marks closedCleanly and never deletes
-     * the retained staged snapshot. The record is consumed by the real
-     * Activity result (or dropped when the operation is replaced).
+     * the retained staged snapshot. The record is consumed either by the
+     * real Activity result or by the bounded retirement armed on a
+     * successful accept (and dropped when the operation settles or is
+     * replaced).
      */
     private val closeAckBinder: IBinder by lazy { OfficeCloseAck.parentBinder(this::acceptCloseIntent) }
 
     /** lock-protected: the acknowledged close for the current operation. */
     private var ackedClose: OfficeCloseAckPolicy.AckRequest? = null
+    /** lock-protected: the single bounded acknowledged-close retirement job.
+     * Only the current operation's exact recorded ack may replace it (see
+     * [armAckQuiescenceLocked]); a stale accepted close never touches it,
+     * and every settle cancels it. */
+    private var ackQuiescence: Job? = null
     val pickerNamespace = PlatformLaunchOwnership.mintNamespace()
     val viewerNamespace = PlatformLaunchOwnership.mintNamespace()
 
@@ -141,7 +150,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                         val snapshot = result.value
                         op.snapshot = snapshot.file
                         op.input = snapshot.file
-                        // EDIT route (Main 2026-10-26): stage a separately owned
+                        // EDIT route: stage a separately owned
                         // MUTABLE working copy from the verified immutable snapshot.
                         // The snapshot and the provider original are never chmod'd,
                         // truncated or overwritten; the same-original refusal below
@@ -246,18 +255,100 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
      * ONLY the current, un-retired VIEWING operation whose opaque viewer
      * incarnation AND session token match exactly may be acknowledged
      * (shape/allowlist were already enforced fail-closed by the endpoint).
-     * Stale owners, replacements and internal teardowns are rejected; the
-     * record is consumed only by the later real Activity result.
+     * Stale owners, replacements and internal teardowns are rejected.
+     * The record is consumed either by the later real Activity result or,
+     * because the fatal native BYE can make that result never arrive, by
+     * the bounded retirement armed here — never by the acknowledgement
+     * alone and never with a clean-close claim. Recording and arming happen
+     * in ONE lock pass, so no settle or replacement can interleave between
+     * them; a duplicate acknowledgement re-arms the same operation (the
+     * single job slot is replaced by its own exact owner — idempotent).
      */
     private fun acceptCloseIntent(ack: OfficeCloseAckPolicy.AckRequest): Boolean = synchronized(lock) {
-        val op = active?.takeIf { !it.retired }
-        android.util.Log.d("OfficeCloseAck", "parent owner active=${op != null} viewing=${op?.phase == Phase.VIEWING} incarnationMatch=${op?.id == ack.viewerIncarnation} tokenMatch=${op?.sessionToken == ack.sessionToken}")
-        if (op == null) return false
-        if (op.id != ack.viewerIncarnation || op.phase != Phase.VIEWING || op.sessionToken != ack.sessionToken) {
+        val current = active?.takeIf { !it.retired }
+        android.util.Log.d("OfficeCloseAck", "parent owner active=${current != null} viewing=${current?.phase == Phase.VIEWING} incarnationMatch=${current?.id == ack.viewerIncarnation} tokenMatch=${current?.sessionToken == ack.sessionToken}")
+        if (current == null) return false
+        if (current.id != ack.viewerIncarnation || current.phase != Phase.VIEWING || current.sessionToken != ack.sessionToken) {
             return false
         }
         ackedClose = ack
+        armAckQuiescenceLocked(current)
         true
+    }
+
+    /**
+     * Arms (or re-arms, for a duplicate ack of the same operation) the
+     * bounded retirement for ONE exact recorded close-intent. Callers must
+     * hold [lock]. Before cancelling or replacing the single global job,
+     * revalidate under that same lock that the candidate is STILL the
+     * current, un-retired, not-view-ended, VIEWING operation with its exact
+     * acknowledgement recorded: a stale accepted close whose operation has
+     * already settled or been replaced must never cancel a NEWER operation's
+     * armed job — the global slot would keep only the stale expiry no-op
+     * and the new close could wedge until process death. The bound is
+     * deliberately short and honest: the acknowledgement already delegated
+     * the close to the engine, the module serializes a rapid reopen against
+     * the old native close, and a platform RESULT_CANCELED that ever did
+     * arrive converges to the identical OWNED_CLOSE_UNCERTAIN resolution
+     * applied by onViewerResult for a missing result. The delay only needs
+     * to exceed the ordinary result delivery latency so the real-result
+     * path wins the race whenever delivery exists.
+     */
+    private fun armAckQuiescenceLocked(op: Operation) {
+        if (!ackedCloseStillOwnsSlot(
+                activeIsCandidate = active === op,
+                retired = op.retired,
+                viewEnded = op.viewEnded,
+                phaseViewing = op.phase == Phase.VIEWING,
+                candidateIncarnation = op.id,
+                candidateSessionToken = op.sessionToken,
+                ack = ackedClose,
+            )
+        ) {
+            return
+        }
+        ackQuiescence?.cancel()
+        ackQuiescence = scope.launch {
+            delay(ACKED_CLOSE_RETIREMENT_MS)
+            settleAcknowledgedCloseIfUnclaimed(op)
+        }
+    }
+
+    /**
+     * Bounded-retirement expiry: retire THIS exact operation through the
+     * same [OfficeCloseAckPolicy.resolveViewerResult] decision a
+     * missing-result onViewerResult applies — honest uncertainty (no error
+     * report, never closedCleanly, staged inputs and working copy
+     * retained, Save-Copy session closed by the ordinary settle drain). The
+     * expiry does NOT claim the engine or its IO quiesced; the engine
+     * acknowledged this exact user close and only the admission slot is
+     * released. Re-validates the same full identity fence under the lock
+     * first, so a settled, replaced or superseded operation — and any
+     * acknowledgement recorded for another incarnation/token — is never
+     * touched.
+     */
+    private fun settleAcknowledgedCloseIfUnclaimed(op: Operation) {
+        val acked = synchronized(lock) {
+            ackedCloseStillOwnsSlot(
+                activeIsCandidate = active === op,
+                retired = op.retired,
+                viewEnded = op.viewEnded,
+                phaseViewing = op.phase == Phase.VIEWING,
+                candidateIncarnation = op.id,
+                candidateSessionToken = op.sessionToken,
+                ack = ackedClose,
+            )
+        }
+        if (!acked) return
+        val resolution = OfficeCloseAckPolicy.resolveViewerResult(
+            ownerCurrent = op.ownerCurrent(),
+            outcomePresent = false,
+            exactToken = false,
+            failureName = null,
+            closedCleanly = false,
+            ackedUserClose = true,
+        )
+        settle(op, resolution.errorKey, removeInput = resolution.removeInput)
     }
 
     /** Claim immediately before launching, on the UI thread. Admission is
@@ -343,6 +434,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
 
     private fun settle(op: Operation, error: String?, removeInput: Boolean = true) = synchronized(lock) {
         if (active !== op) return
+        ackQuiescence?.cancel()
         // A close-intent belongs only to the operation it acknowledged.
         ackedClose = null
         op.viewEnded = true
@@ -384,6 +476,12 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private fun languageTag(): String = context.resources.configuration.locales.get(0).toLanguageTag()
 
     companion object {
+        /** Bounded acknowledged-close retirement window. See
+         *  [armAckQuiescenceLocked]: the expiry releases ONLY the admission
+         *  slot for an engine-acknowledged close under honest uncertainty;
+         *  it is not a claim of native or IO quiescence. */
+        private const val ACKED_CLOSE_RETIREMENT_MS = 4_000L
+
         fun supports(path: String): Boolean = path.substringAfterLast('.', "").lowercase(Locale.ROOT) in
             setOf("docx", "xlsx", "pptx")
         val MIME_TYPES = arrayOf(
@@ -393,3 +491,30 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         )
     }
 }
+
+/**
+ * Exact-ownership guard shared by the acknowledged-close arming and its
+ * bounded-retirement expiry (one decision, both call sites, both made while
+ * holding the controller lock): a candidate operation may cancel/replace
+ * the single global retirement job or settle through it ONLY while it is
+ * still THE current operation, un-retired, not view-ended, in the VIEWING
+ * phase, AND the recorded acknowledgement names this exact incarnation and
+ * session token. A duplicate acknowledgement for the same still-current
+ * operation answers true (its own job slot is replaced — idempotent);
+ * any settle, replacement, teardown, or an acknowledgement recorded for a
+ * different incarnation/token answers false. JVM-expressible so the
+ * regression drives the real production decision; the controller supplies
+ * the facts from its lock.
+ */
+internal fun ackedCloseStillOwnsSlot(
+    activeIsCandidate: Boolean,
+    retired: Boolean,
+    viewEnded: Boolean,
+    phaseViewing: Boolean,
+    candidateIncarnation: Long,
+    candidateSessionToken: String?,
+    ack: OfficeCloseAckPolicy.AckRequest?,
+): Boolean =
+    activeIsCandidate && !retired && !viewEnded && phaseViewing &&
+        ack != null && ack.viewerIncarnation == candidateIncarnation &&
+        ack.sessionToken == candidateSessionToken
