@@ -97,14 +97,19 @@ public struct LinuxGuestLanguagePackages: Sendable {
 
     /// One bounded read of /proc/mounts per decision. A failing or absent
     /// guest answers false (per-environment fallback), never an error that
-    /// blocks an unrelated package operation.
+    /// blocks an unrelated package operation. The mount point is the SECOND
+    /// whitespace-separated field of a /proc/mounts row; the check compares
+    /// that field exactly (awk's default splitting tolerates any single or
+    /// repeated spaces/tabs), so an older guest without the share keeps its
+    /// honest per-environment fallback instead of a literal that can never
+    /// match. No guest is ever restarted for this decision.
     private func isSharedCacheMounted(environmentID: String, cancellation: CancellationToken?) async -> Bool {
         let result: LinuxCommandResult
         do {
             result = try await runner.run(
                 environmentID: environmentID,
                 argv: ["/bin/sh", "-c",
-                       #"grep -q '  /floe/cache ' /proc/mounts && mkdir -p /floe/cache/pip /floe/cache/npm /floe/cache/xdg"#],
+                       #"awk '$2=="/floe/cache"{found=1} END{exit found?0:1}' /proc/mounts && mkdir -p /floe/cache/pip /floe/cache/npm /floe/cache/xdg"#],
                 workingDirectory: nil,
                 standardInput: nil,
                 timeout: 15,
@@ -146,13 +151,104 @@ public struct LinuxGuestLanguagePackages: Sendable {
     ///     packages path); `nil` keeps the historical bounded budget for the
     ///     package-UI and provisioning callers, which are separate confirmed
     ///     flows with their own progress/cancel UX.
+    /// - Parameter findLinksGuestPath: optional ALREADY-MAPPED guest path of
+    ///   the official dependency wheel store (a reviewed directory inside the
+    ///   shared cache export). When provided, pip additionally consults those
+    ///   verified local wheel files through `--find-links` before falling back
+    ///   to the configured index; the exact pin and every other argument are
+    ///   unchanged, and `nil` keeps the command byte-for-byte what it is
+    ///   today. The store is an optimization only: a damaged or missing local
+    ///   wheel never blocks the index path and never weakens the audit.
+    /// - Parameter hashesBySpec: signed-lock sha256 pins keyed by the exact
+    ///   `name==version` spec. When this map is non-empty EVERY spec must
+    ///   carry at least one canonical lowercase sha256 and pip runs in its own
+    ///   `--require-hashes` mode, refusing a silent different artifact at the
+    ///   digest level — verified bytes, not just a version readback. pip only
+    ///   accepts `--hash` INSIDE a requirements file (a CLI `--hash` is
+    ///   rejected with exit 2 "no such option"), so each requirement line is
+    ///   fed to the guest pip through the runner's standardInput with
+    ///   `--requirement /dev/stdin`; the pins never enter argv. An empty map
+    ///   keeps the command byte-for-byte what it is today with no stdin. A
+    ///   malformed digest, an unpinned or injection-shaped spec, a duplicate
+    ///   project, an oversized pin set or a contradictory pin map fails closed
+    ///   BEFORE any guest command (even the readiness probe) is issued.
     public func pythonInstall(
         specs: [String],
         environment: ToolEnvironment,
         timeout: TimeInterval = 180,
         deadline: ShellExecutionDeadline? = nil,
+        findLinksGuestPath: String? = nil,
+        hashesBySpec: [String: [String]] = [:],
         cancellation: CancellationToken?
     ) async throws -> String {
+        // Signed-lock hash mode is validated FIRST, before this call touches
+        // the guest at all: pip's own grammar accepts `--hash` only inside a
+        // requirements file, so every requirement-plus-pins line travels as
+        // the runner's standardInput while argv carries
+        // `--require-hashes --requirement /dev/stdin`. Identities are exact
+        // `name==version` pins or the request fails closed — options,
+        // whitespace, newlines, duplicate projects, oversized pin sets and
+        // contradictory pin maps never reach the guest. With an empty pin map
+        // the command below is byte-for-byte the plain one and stdin stays
+        // nil, exactly as before hash mode existed.
+        func isCanonicalSHA256(_ value: String) -> Bool {
+            value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+                (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                    || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+            }
+        }
+        func exactPinSpec(_ value: String) -> Bool {
+            // No whitespace/newline anywhere: NSRegularExpression's `$` also
+            // matches just before a trailing line break, so the anchored
+            // pattern alone could let "demo==1.0\n" through and smuggle a
+            // second requirements line onto stdin.
+            guard !value.isEmpty,
+                  value.rangeOfCharacter(from: .whitespacesAndNewlines) == nil else { return false }
+            return value.range(
+                of: #"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._+-]+\])?==[A-Za-z0-9][A-Za-z0-9.+!_-]*$"#,
+                options: .regularExpression) != nil
+        }
+        func projectName(_ value: String) -> String {
+            let head = value.components(separatedBy: "==").first ?? value
+            return (head.split(separator: "[", maxSplits: 1).first.map { String($0).lowercased() } ?? head.lowercased())
+                .replacingOccurrences(of: "[-_.]+", with: "-", options: .regularExpression)
+        }
+        let requireHashesMode = !hashesBySpec.isEmpty
+        var requirementsInput: String? = nil
+        if requireHashesMode {
+            guard hashesBySpec.keys.allSatisfy({ specs.contains($0) }),
+                  specs.allSatisfy({ !(hashesBySpec[$0] ?? []).isEmpty }) else {
+                throw FloeError.validationFailed("hash mode requires a sha256 pin for every spec installed in one command")
+            }
+            guard specs.allSatisfy(exactPinSpec) else {
+                throw FloeError.validationFailed("the pip hash-mode requirement must be an exact name==version pin; options, whitespace and newlines are rejected")
+            }
+            let names = specs.map(projectName)
+            guard Set(names).count == names.count else {
+                throw FloeError.validationFailed("hash mode refuses two requirements for the same project in one command")
+            }
+            var lines: [String] = []
+            var totalBytes = 0
+            for spec in specs {
+                let digests = hashesBySpec[spec] ?? []
+                guard digests.count <= 16 else {
+                    throw FloeError.validationFailed("the pip hash pin set for \(spec) exceeds the 16-digest bound")
+                }
+                var line = spec
+                for digest in digests {
+                    guard isCanonicalSHA256(digest) else {
+                        throw FloeError.validationFailed("the pip hash pin for \(spec) is not a canonical lowercase sha256 digest")
+                    }
+                    line += " --hash=sha256:" + digest
+                }
+                totalBytes += line.utf8.count + 1
+                lines.append(line)
+            }
+            guard totalBytes <= 32 * 1024 else {
+                throw FloeError.validationFailed("the pip hash-mode requirements input exceeds the 32768-byte bound")
+            }
+            requirementsInput = lines.joined(separator: "\n") + "\n"
+        }
         try await requireRunning(environment.id)
         let venv = try await LinuxGuestPythonProvisioner.shared.ensure(
             environmentID: environment.id,
@@ -180,17 +276,30 @@ public struct LinuxGuestLanguagePackages: Sendable {
             "PIP_EXTRA_INDEX_URL": "",
             "PIP_TRUSTED_HOST": ""
         ]
+        let findLinks: [String] = {
+            guard let findLinksGuestPath,
+                  findLinksGuestPath.hasPrefix("/"), findLinksGuestPath.utf8.count <= 512,
+                  !findLinksGuestPath.contains(".."), findLinksGuestPath.range(
+                      of: #"^[A-Za-z0-9/._+-]+$"#, options: .regularExpression) != nil
+            else { return [] }
+            return ["--find-links", findLinksGuestPath]
+        }()
+        // The (already fully validated) hash-mode transport: the requirements
+        // lines with their `--hash` pins go to pip on standardInput; argv only
+        // names the file. The no-hash command stays byte-for-byte the plain one.
         let argv = ["/usr/bin/env"]
             + (LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
             + [venv.pythonPath, "-m", "pip", "install", "--disable-pip-version-check", "--no-input"]
-            + specs
+            + (requireHashesMode ? ["--require-hashes"] : [])
+            + findLinks
+            + (requireHashesMode ? ["--requirement", "/dev/stdin"] : specs)
         let result: LinuxCommandResult
         if let deadline {
             result = try await runner.run(
                 environmentID: environment.id,
                 argv: argv,
                 workingDirectory: nil,
-                standardInput: nil,
+                standardInput: requirementsInput,
                 deadline: deadline,
                 maxOutputBytes: 256 * 1024,
                 cancellation: cancellation
@@ -201,7 +310,7 @@ public struct LinuxGuestLanguagePackages: Sendable {
                 environmentID: environment.id,
                 argv: argv,
                 workingDirectory: nil,
-                standardInput: nil,
+                standardInput: requirementsInput,
                 timeout: effectiveTimeout,
                 maxOutputBytes: 256 * 1024,
                 cancellation: cancellation
@@ -945,6 +1054,219 @@ public struct LinuxGuestLanguagePackages: Sendable {
         guard result.exitCode == 0 else {
             throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.node_transaction_commit_failed") + bounded(result.stderr.isEmpty ? result.stdout : result.stderr))
         }
+    }
+
+    // MARK: - Debian apt (exact pins only: reviewed Skill dependency provisioning)
+
+    /// The only apt shapes this channel accepts: a Debian identity with an
+    /// optional exact Debian version. No arbitrary strings ever reach argv —
+    /// `aptInstallExact` takes the identity and version separately, validates
+    /// both against the frozen character classes, and then runs the guest's
+    /// own single `apt-get install -y --no-install-recommends name=version`
+    /// transaction followed by a fixed `dpkg-query` readback. This mirrors the
+    /// proven provisioner repair shape (python3-venv self-heal) with one
+    /// difference: the pin is exact, and a foreign installed version is
+    /// reported honestly instead of being silently downgraded or upgraded.
+    public func aptInstallExact(
+        identity: String,
+        version: String?,
+        environment: ToolEnvironment,
+        cancellation: CancellationToken?
+    ) async throws -> String {
+        guard LinuxGuestLanguagePackages.isValidAptIdentity(identity) else {
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.invalid_package_spec", identity))
+        }
+        if let version {
+            guard LinuxGuestLanguagePackages.isValidAptVersion(version) else {
+                throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.invalid_package_spec", identity + "=" + version))
+            }
+        }
+        try await requireRunning(environment.id)
+        let update = try await runner.run(
+            environmentID: environment.id,
+            argv: ["apt-get", "update"],
+            workingDirectory: nil,
+            standardInput: nil,
+            timeout: 600,
+            maxOutputBytes: 128 * 1024,
+            cancellation: cancellation
+        )
+        guard update.exitCode == 0 else {
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.apt_get_update_failed") + bounded(update.stderr.isEmpty ? update.stdout : update.stderr))
+        }
+        let pin = version.map { "\(identity)=\($0)" } ?? identity
+        let install = try await runner.run(
+            environmentID: environment.id,
+            argv: ["apt-get", "install", "-y", "--no-install-recommends", pin],
+            workingDirectory: nil,
+            standardInput: nil,
+            timeout: 900,
+            maxOutputBytes: 256 * 1024,
+            cancellation: cancellation
+        )
+        guard install.exitCode == 0 else {
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.apt_get_install_failed") + bounded(install.stderr.isEmpty ? install.stdout : install.stderr))
+        }
+        return bounded(install.stdout.isEmpty ? install.stderr : install.stdout)
+    }
+
+    /// Fixed readback of one dpkg status line. Returns the exact installed
+    /// version, or nil when the identity is not installed.
+    public func aptReadback(
+        identity: String,
+        environment: ToolEnvironment,
+        cancellation: CancellationToken?
+    ) async throws -> String? {
+        guard LinuxGuestLanguagePackages.isValidAptIdentity(identity) else {
+            throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.invalid_package_spec", identity))
+        }
+        try await requireRunning(environment.id)
+        let result: LinuxCommandResult
+        do {
+            result = try await runner.run(
+                environmentID: environment.id,
+                argv: ["/usr/bin/dpkg-query", "-W", "-f=${Package} ${Version}\n", identity],
+                workingDirectory: nil,
+                standardInput: nil,
+                timeout: 60,
+                maxOutputBytes: 8 * 1024,
+                cancellation: cancellation
+            )
+        } catch {
+            // dpkg-query exits 1 for an unknown identity; treat a non-zero
+            // result as "not installed" rather than an error.
+            return nil
+        }
+        guard result.exitCode == 0 else { return nil }
+        for line in result.stdout.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2, parts[0] == Substring(identity) else { continue }
+            return String(parts[1]).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// The fixed, bounded CJK GLYPH-RENDERING probe. A path listing only
+    /// proved bytes on disk; readiness of a font profile means the guest can
+    /// actually rasterize CJK text. This verb runs the guest's own stdlib
+    /// Python ctypes against the FreeType library (the Debian-provided native
+    /// renderer — never a model-authored script, never a host execution):
+    /// load libfreetype, `FT_Init_FreeType`, `FT_New_Face` on the frozen
+    /// Noto CJK TTC locations, a NONZERO `FT_Get_Char_Index` for one Chinese
+    /// (U+4E2D) and one Japanese (U+3072) codepoint, `FT_Set_Pixel_Sizes(32)`
+    /// and an `FT_LOAD_RENDER` `FT_Load_Char` that must succeed, then face +
+    /// library teardown. Missing renderer, missing fonts, zero glyphs or a
+    /// render failure all answer false — honest not-ready, which the
+    /// declared exact font pin (fontconfig + `fonts-noto-cjk`) closes. No
+    /// path, pattern or code ever comes from JSON; the artifact this proves
+    /// is glyph availability at 32 px, not visual quality of any produced
+    /// document.
+    public func cjkFontProbe(
+        environment: ToolEnvironment,
+        cancellation: CancellationToken?
+    ) async throws -> Bool {
+        try await requireRunning(environment.id)
+        let result: LinuxCommandResult
+        do {
+            result = try await runner.run(
+                environmentID: environment.id,
+                argv: ["python3", "-c", Self.cjkFreeTypeProbeScript],
+                workingDirectory: nil,
+                standardInput: nil,
+                timeout: 120,
+                maxOutputBytes: 8 * 1024,
+                cancellation: cancellation
+            )
+        } catch {
+            return false
+        }
+        return result.exitCode == 0
+    }
+
+    /// The frozen probe program. Python stdlib only (`ctypes`); the two TTC
+    /// locations are the exact Debian `fonts-noto-cjk` install paths.
+    static let cjkFreeTypeProbeScript = #"""
+import sys
+try:
+    import ctypes
+    import ctypes.util
+except ImportError:
+    sys.exit(1)
+name = ctypes.util.find_library("freetype")
+try:
+    ft = ctypes.CDLL(name or "libfreetype.so.6")
+except OSError:
+    sys.exit(1)
+ft.FT_Init_FreeType.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+ft.FT_New_Face.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p)]
+ft.FT_Get_Char_Index.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+ft.FT_Get_Char_Index.restype = ctypes.c_uint
+ft.FT_Set_Pixel_Sizes.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint]
+ft.FT_Load_Char.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int]
+ft.FT_Done_Face.argtypes = [ctypes.c_void_p]
+ft.FT_Done_FreeType.argtypes = [ctypes.c_void_p]
+lib = ctypes.c_void_p()
+face = ctypes.c_void_p()
+if ft.FT_Init_FreeType(ctypes.byref(lib)) != 0 or not lib.value:
+    sys.exit(1)
+opened = False
+for path in (b"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+             b"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"):
+    if ft.FT_New_Face(lib, path, 0, ctypes.byref(face)) == 0 and face.value:
+        opened = True
+        break
+if not opened:
+    ft.FT_Done_FreeType(lib)
+    sys.exit(1)
+ok = ft.FT_Set_Pixel_Sizes(face, 0, 32) == 0
+for code in (0x4E2D, 0x3072):
+    if ft.FT_Get_Char_Index(face, code) == 0:
+        ok = False
+if ok and ft.FT_Load_Char(face, 0x4E2D, 0x4) != 0:
+    ok = False
+ft.FT_Done_Face(face)
+ft.FT_Done_FreeType(lib)
+sys.exit(0 if ok else 1)
+"""#
+
+    /// Debian identity class `[a-z0-9][a-z0-9+._-]*` (ASCII strict).
+    public static func isValidAptIdentity(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard !bytes.isEmpty, bytes.count <= 128 else { return false }
+        let lower = UInt8(ascii: "a")...UInt8(ascii: "z")
+        let digit = UInt8(ascii: "0")...UInt8(ascii: "9")
+        func firstOK(_ b: UInt8) -> Bool { lower.contains(b) || digit.contains(b) }
+        func restOK(_ b: UInt8) -> Bool {
+            firstOK(b) || b == UInt8(ascii: "+") || b == UInt8(ascii: ".")
+                || b == UInt8(ascii: "_") || b == UInt8(ascii: "-")
+        }
+        guard firstOK(bytes[0]) else { return false }
+        return bytes.dropFirst().allSatisfy(restOK)
+    }
+
+    /// Debian version class `([0-9]+:)?[A-Za-z0-9][A-Za-z0-9+.-~:]*` (epoch,
+    /// revision, dfsg/tilde suffixes stay verbatim inside the pin).
+    public static func isValidAptVersion(_ value: String) -> Bool {
+        var body = Substring(value)
+        if let colon = value.firstIndex(of: ":") {
+            let epoch = value[value.startIndex..<colon]
+            guard !epoch.isEmpty, epoch.utf8.allSatisfy({ UInt8(ascii: "0")...UInt8(ascii: "9").contains($0) }) else {
+                return false
+            }
+            body = value[value.index(after: colon)...]
+        }
+        let bytes = Array(body.utf8)
+        guard !bytes.isEmpty, bytes.count <= 128 else { return false }
+        let lower = UInt8(ascii: "a")...UInt8(ascii: "z")
+        let upper = UInt8(ascii: "A")...UInt8(ascii: "Z")
+        let digit = UInt8(ascii: "0")...UInt8(ascii: "9")
+        func alnumOK(_ b: UInt8) -> Bool { lower.contains(b) || upper.contains(b) || digit.contains(b) }
+        func restOK(_ b: UInt8) -> Bool {
+            alnumOK(b) || b == UInt8(ascii: "+") || b == UInt8(ascii: ".")
+                || b == UInt8(ascii: "-") || b == UInt8(ascii: "~") || b == UInt8(ascii: ":")
+        }
+        guard alnumOK(bytes[0]) else { return false }
+        return bytes.dropFirst().allSatisfy(restOK)
     }
 
     private func bounded(_ text: String) -> String {
