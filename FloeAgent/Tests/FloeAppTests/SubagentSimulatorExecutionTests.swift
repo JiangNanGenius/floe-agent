@@ -2592,8 +2592,24 @@ extension SubagentSimulatorExecutionTests {
             // Case 3 — observe-form-fields (all five named controls).
             page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "case3-observe", tabID: tabID)
-            let nameNode = try skillHubFindRef(in: page, namePrefix: "Name", role: "input")
-            let emailNode = try skillHubFindRef(in: page, namePrefix: "Email", role: "input")
+            // The observe contract names inputs only via aria-label/title;
+            // this fixture binds accessible names through wrapping <label>
+            // elements instead. Resolve each named control exactly: the
+            // first input node enumerated after that label's own node is the
+            // control the label wraps (document order keeps the wrapped input
+            // ahead of the next label).
+            func wrappedInput(afterLabel marker: String) throws -> SkillHubBrowserResult.Page.Node {
+                guard let labelIndex = page.nodes.firstIndex(where: {
+                    $0.role == "label" && ($0.name.hasPrefix(marker) || $0.text.hasPrefix(marker))
+                }), let node = page.nodes.dropFirst(labelIndex + 1).first(where: {
+                    $0.role == "input"
+                }) else {
+                    throw FloeError.notFound("No wrapped input node after label '\(marker)' in document \(page.documentID)")
+                }
+                return node
+            }
+            let nameNode = try wrappedInput(afterLabel: "Name")
+            let emailNode = try wrappedInput(afterLabel: "Email")
             let planNode = try skillHubFindRef(in: page, namePrefix: "Plan")
             let termsNode = try skillHubFindRef(in: page, namePrefix: "Agree")
             let submitNode = try skillHubFindRef(in: page, namePrefix: "Save signup", role: "button")
@@ -5238,12 +5254,22 @@ extension SubagentSimulatorExecutionTests {
                 arguments: ["tabID": tabID.uuidString, "condition": "load",
                             "timeoutMilliseconds": 15_000])
 
-            // Declared-size chrome and the full-size export control.
+            // Declared-size chrome and the full-size export control. The
+            // artifact renders the declared-size sentence inside a bare
+            // <span id="decl"> that the observe node contract does not
+            // enumerate (its selector set is a/button/input/textarea/select/
+            // [role]/summary/label/h1-h3/p), while the sentence is fully
+            // visible in the rendered page. Prove it through the official
+            // browser.wait text surface (document.body.innerText) and keep
+            // the same 1080×1350 golden on the node the contract does expose:
+            // the export control's visible label below.
             var page = try await skillHubObserve(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "canvas-observe", tabID: tabID)
-            try #require(page.nodes.contains { $0.text.contains("Declared size: 1080 × 1350 px") },
-                         "declared-size chrome missing: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            _ = try await skillHubWaitText(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "canvas-declared-size", tabID: tabID,
+                marker: "Declared size: 1080 × 1350 px")
             let exportButton = try #require(
                 page.nodes.first { $0.role == "button"
                     && ($0.name.contains("Export PNG 1080×1350") || $0.text.contains("Export PNG 1080×1350")) },
@@ -5316,10 +5342,12 @@ extension SubagentSimulatorExecutionTests {
     /// classes (exit 2) and the --list-algos surface, then the shipped
     /// About & licenses + artifact-notices disclosures. The native half serves
     /// the real guest output through exec.localService (static) and drives
-    /// the App's real browser tools against the live viewer: the seed
-    /// display and ops status, next/prev seed navigation with digest change
-    /// and exact return to the original digest (reversible deterministic
-    /// redraw), and the Download PNG control. No p5.js parity claim and no
+    /// the App's real browser tools against the live viewer: the rendered
+    /// title seed (node text) plus ops raster text (official text-wait
+    /// surface), next/prev seed navigation with digest change and exact
+    /// return of the live slider values and the original digest (reversible
+    /// deterministic redraw), and the Download PNG control. No p5.js parity
+    /// claim and no
     /// riscv64 Chromium/Playwright anywhere in this test.
     @Test(
         "Skill Hub seven-deep: algorithmic-art python/node PRNG+digest parity and deterministic artifacts in the real guest + native viewer control truth",
@@ -5529,13 +5557,29 @@ extension SubagentSimulatorExecutionTests {
                             "timeoutMilliseconds": 15_000])
 
             // Initial viewer state: seed, ops status, artifact-notices digest.
+            // The live seed readout (#seed-value) and ops line (#status-ops)
+            // render in a bare div/span that the observe node contract does
+            // not enumerate, and inputs expose their displayed value through
+            // Node.value, never Node.text. Pin the visible seed on the exact
+            // rendered <h1> title node (generate_art.py emits "Generative
+            // study — seed <seed>" with no text transform), prove the ops
+            // raster text is actually rendered through the official browser.wait
+            // text surface, and capture the live seed-resolved slider values
+            // for the prev restoration check below.
             var page = try await skillHubObserve(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-observe", tabID: tabID)
-            try #require(page.nodes.contains { $0.text == "987654321" },
-                         "viewer seed display missing 987654321: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
-            try #require(page.nodes.contains { $0.text.contains("1200x1200px") },
-                         "viewer ops status missing 1200x1200px: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            try #require(page.nodes.contains {
+                $0.role == "h1" && $0.text == "Generative study — seed 987654321"
+            }, "viewer title seed display missing 987654321: \(page.nodes.map(\.text).joined(separator: " | ").prefix(400))")
+            _ = try await skillHubWaitText(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-ops-status", tabID: tabID, marker: "1200x1200px")
+            let initialControlValues = page.nodes.filter {
+                $0.role == "input" && !($0.value ?? "").isEmpty
+            }.map(\.value)
+            try #require(!initialControlValues.isEmpty,
+                         "viewer exposes no seed-resolved parameter slider values")
             // The disclosure is immutable source provenance, not live viewer state.
             let noticeStart = try #require(studyHTML.range(of: #"<pre id="artifact-notices">"#))
             let noticeEnd = try #require(studyHTML.range(of: "</pre>", range: noticeStart.upperBound..<studyHTML.endIndex))
@@ -5563,8 +5607,12 @@ extension SubagentSimulatorExecutionTests {
             page = try await skillHubObserve(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-observe-next", tabID: tabID)
-            try #require(page.nodes.contains { $0.text == "987654322" },
-                         "seed-next did not advance the displayed seed")
+            // The advanced seed renders only in #seed-value (the static h1
+            // keeps 987654321), so the exact 9-digit string on the official
+            // text surface proves the live display advanced to the new seed.
+            _ = try await skillHubWaitText(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "art-seed-next-text", tabID: tabID, marker: "987654322")
             let nextDigest = try await sevenDeepCanvasReadback(
                 app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "next")
             try #require(nextDigest != initialDigest, "seed-next did not change the artwork digest")
@@ -5578,8 +5626,17 @@ extension SubagentSimulatorExecutionTests {
             page = try await skillHubObserve(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-observe-prev", tabID: tabID)
-            try #require(page.nodes.contains { $0.text == "987654321" },
-                         "seed-prev did not restore the displayed seed")
+            // A substring wait cannot distinguish the restored #seed-value
+            // from the static h1 title, so pin restoration on the real
+            // control truth: the seed-resolved slider values (Node.value)
+            // are exactly the initial capture; the canvas digest check
+            // below proves the exact original artwork bytes. (The empty
+            // seed-jump field is excluded by its empty value; it is never
+            // typed into.)
+            try #require(page.nodes.filter {
+                $0.role == "input" && !($0.value ?? "").isEmpty
+            }.map(\.value) == initialControlValues,
+                         "seed-prev did not restore the live control values")
             let restoredDigest = try await sevenDeepCanvasReadback(
                 app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "restored")
             try #require(restoredDigest == initialDigest,
