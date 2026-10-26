@@ -33,13 +33,17 @@
 //      (the pre-fix invented name could never satisfy this; no redownload
 //      masking because the index is disabled);
 //   4b. PRODUCTION hash-mode install through the same managed service: a
-//       WRONG-but-canonical digest must be refused by the guest's own pip AND
-//       leave mpmath uninstalled; the REAL verified wheel digest must then
-//       install through pip's `--require-hashes` mode with every pin delivered
-//       as a requirements-file line on the runner's standardInput
-//       (`--requirement /dev/stdin`) — a CLI `--hash` is a pip grammar error
-//       (exit 2 "no such option"), so this stage is the transport contract
-//       the real regression needs;
+//       WRONG-but-canonical digest must be refused by the guest's own pip
+//       with pip's OWN hash verdict visible in the failure (the leg cannot
+//       pass on a generic or transport failure) AND must leave mpmath
+//       uninstalled; the REAL verified wheel digest must then install
+//       through pip's `--require-hashes` mode with every pin delivered as a
+//       requirements-file line on the runner's standardInput to a pin-free
+//       guest wrapper that materializes an owned temporary requirements
+//       file and runs pip against that real path — `/dev/stdin` is NOT
+//       assumed (the real guest has no such path; 2026-10-27 regression)
+//       and a CLI `--hash` is a pip grammar error (exit 2 "no such option"),
+//       so this stage is the transport contract the real regression needs;
 //   5. small Debian package: query the guest's OWN apt candidate for `hello`
 //      after `apt-get update`, freeze that exact version string, run the NEW
 //      `aptInstallExact` signed transaction with it, read the version back
@@ -145,7 +149,7 @@ struct SkillDependencyGuestQualificationTests {
     }
 
     @Test(
-        "Real RISC-V guest: uname truth, cache mount truth, mpmath exact pip install + venv import/version/calculation, offline wheel-store consumption, production hash-mode install (wrong digest refused, verified wheel digest accepted through requirements stdin), hello exact apt pin + dpkg readback + execution (+ optional CJK render)",
+        "Real RISC-V guest: uname truth, cache mount truth, mpmath exact pip install + venv import/version/calculation, offline wheel-store consumption, production hash-mode install (wrong digest refused by pip's own hash verdict, verified wheel digest installed through the owned temp-file transport), hello exact apt pin + dpkg readback + execution (+ optional CJK render)",
         .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION"] == "1")
     )
     func guestRealPipAptAndWheelStoreQualification() async throws {
@@ -352,12 +356,19 @@ struct SkillDependencyGuestQualificationTests {
             //     service — the transport under real-guest qualification:
             //     pip's `--require-hashes` mode with every pin as a
             //     requirements-file line fed through the runner's
-            //     standardInput (`--requirement /dev/stdin`). A CLI `--hash`
-            //     never reaches pip at all (its parser exits 2), so only a
-            //     real digest-verified guest install proves the contract.
-            //     Order: uninstall → WRONG-but-canonical digest must be
-            //     refused and leave NOTHING installed → the verified wheel
-            //     digest must install and compute at exact precision.
+            //     standardInput to a pin-free guest wrapper that writes an
+            //     owned temporary requirements file and invokes pip with
+            //     that REAL path. `/dev/stdin` is never assumed — this is
+            //     the exact path the 2026-10-27 real guest broke on (pip
+            //     exit 1 "Could not open requirements file: '/dev/stdin'").
+            //     A CLI `--hash` never reaches pip at all (its parser exits
+            //     2), so only a real digest-verified guest install proves
+            //     the contract. Order: uninstall → WRONG-but-canonical
+            //     digest must be refused BY PIP'S OWN HASH VERDICT (the
+            //     failure text must show the mismatch, not a generic or
+            //     transport error) and leave NOTHING installed → the
+            //     verified wheel digest must install and compute at exact
+            //     precision.
             phase("hashmode.uninstall.before")
             let preHashUninstall = await installer.uninstall(distribution: "mpmath", environment: env, cancellation: nil)
             guard case .ok = preHashUninstall else {
@@ -375,11 +386,36 @@ struct SkillDependencyGuestQualificationTests {
                 cancellation: nil,
                 environment: env
             )
-            guard case .failed = wrongHashOutcome else {
+            guard case .failed(let wrongHashMessage) = wrongHashOutcome else {
                 Issue.record("guest pip ACCEPTED a wrong sha256 pin in hash mode — digest verification is not real: \(bounded(wrongHashOutcome.describeForQualification()))")
                 await cleanup()
                 return
             }
+            // The refusal must be PIP'S OWN hash verdict, not merely "some
+            // failure": the 2026-10-27 run reached this leg while the whole
+            // transport was already broken (/dev/stdin), and a bare
+            // `.failed` still passed. Require pip's mismatch wording and
+            // explicitly reject transport-shaped failures instead.
+            let wrongNormalized = wrongHashMessage.lowercased()
+            let hashVerdictMarkers = [
+                "the packages do not match the hashes",
+                "expected sha256",
+                "has the wrong hash",
+            ]
+            let transportFailureMarkers = [
+                "could not open requirements file",
+                "/dev/stdin",
+                "floe-pip-hash-transport:",
+                "no such option",
+                "no module named",
+                "traceback (most recent call last)",
+            ]
+            let matchedVerdict = hashVerdictMarkers.first { wrongNormalized.contains($0) }
+            #expect(matchedVerdict != nil,
+                    "the wrong-digest install failed, but NOT with pip's own hash-mismatch verdict — the leg cannot pass on a generic or transport failure: \(bounded(wrongHashMessage))")
+            #expect(transportFailureMarkers.first { wrongNormalized.contains($0) } == nil,
+                    "the wrong-digest refusal carries a transport-failure marker; the hash verdict must stand on its own: \(bounded(wrongHashMessage))")
+            print("FLOE_DEPGUEST_HASHMODE_WRONGREFUSED marker=\(matchedVerdict ?? "none") tail=\(bounded(wrongHashMessage, limit: 220))")
             let wrongImport = try await guest([venvPython, "-c", "import mpmath"], timeout: 120, maxBytes: 4 * 1024)
             #expect(wrongImport.exitCode != 0,
                     "the refused wrong-hash install must leave mpmath NOT installed, import exit was \(wrongImport.exitCode)")

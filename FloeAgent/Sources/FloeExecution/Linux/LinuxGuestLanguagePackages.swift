@@ -166,12 +166,16 @@ public struct LinuxGuestLanguagePackages: Sendable {
     ///   digest level — verified bytes, not just a version readback. pip only
     ///   accepts `--hash` INSIDE a requirements file (a CLI `--hash` is
     ///   rejected with exit 2 "no such option"), so each requirement line is
-    ///   fed to the guest pip through the runner's standardInput with
-    ///   `--requirement /dev/stdin`; the pins never enter argv. An empty map
-    ///   keeps the command byte-for-byte what it is today with no stdin. A
-    ///   malformed digest, an unpinned or injection-shaped spec, a duplicate
-    ///   project, an oversized pin set or a contradictory pin map fails closed
-    ///   BEFORE any guest command (even the readiness probe) is issued.
+    ///   fed through the runner's standardInput to a pin-free guest wrapper
+    ///   that materializes it as an owned temporary requirements file and
+    ///   runs the venv's own pip with `--require-hashes` and `--requirement`
+    ///   pointed at that real path; `/dev/stdin` is never assumed — the actual pinned guest
+    ///   has no such path (2026-10-27 real-guest regression). The pins never
+    ///   enter any argv. An empty map keeps the command byte-for-byte what
+    ///   it is today with no stdin. A malformed digest, an unpinned or
+    ///   injection-shaped spec, a duplicate project, an oversized pin set or
+    ///   a contradictory pin map fails closed BEFORE any guest command (even
+    ///   the readiness probe) is issued.
     public func pythonInstall(
         specs: [String],
         environment: ToolEnvironment,
@@ -184,8 +188,10 @@ public struct LinuxGuestLanguagePackages: Sendable {
         // Signed-lock hash mode is validated FIRST, before this call touches
         // the guest at all: pip's own grammar accepts `--hash` only inside a
         // requirements file, so every requirement-plus-pins line travels as
-        // the runner's standardInput while argv carries
-        // `--require-hashes --requirement /dev/stdin`. Identities are exact
+        // the runner's standardInput to the pin-free wrapper program below,
+        // which materializes it inside the guest as an owned temporary
+        // requirements file and runs the venv's own pip against that real
+        // path. Identities are exact
         // `name==version` pins or the request fails closed — options,
         // whitespace, newlines, duplicate projects, oversized pin sets and
         // contradictory pin maps never reach the guest. With an empty pin map
@@ -284,15 +290,27 @@ public struct LinuxGuestLanguagePackages: Sendable {
             else { return [] }
             return ["--find-links", findLinksGuestPath]
         }()
-        // The (already fully validated) hash-mode transport: the requirements
-        // lines with their `--hash` pins go to pip on standardInput; argv only
-        // names the file. The no-hash command stays byte-for-byte the plain one.
-        let argv = ["/usr/bin/env"]
-            + (LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
-            + [venv.pythonPath, "-m", "pip", "install", "--disable-pip-version-check", "--no-input"]
-            + (requireHashesMode ? ["--require-hashes"] : [])
-            + findLinks
-            + (requireHashesMode ? ["--requirement", "/dev/stdin"] : specs)
+        // The (already fully validated) hash-mode transport. The real pinned
+        // guest has NO `/dev/stdin` symlink (2026-10-27 regression: pip exit 1
+        // "Could not open requirements file: [Errno 2] No such file or
+        // directory: '/dev/stdin'"), and pip opens requirements only by real
+        // filesystem path, so the requirements bytes go to the runner's
+        // standardInput and a fixed, pin-free wrapper program (passed with
+        // `-c`, never containing a spec or a digest) reads fd 0, materializes
+        // the payload as an owned 0600 temporary requirements file inside the
+        // guest and runs THIS interpreter's own pip with
+        // `--require-hashes --requirement <that real path>` — the identical
+        // pip grammar, with the pins in no argv — propagating pip's exit code
+        // and removing the file in finally, including under cancellation.
+        // The no-hash command stays byte-for-byte the plain one.
+        let pipProgram: [String]
+        if requireHashesMode {
+            pipProgram = [venv.pythonPath, "-c", Self.pythonHashTransportSource(findLinks: findLinks)]
+        } else {
+            pipProgram = [venv.pythonPath, "-m", "pip", "install",
+                          "--disable-pip-version-check", "--no-input"] + findLinks + specs
+        }
+        let argv = ["/usr/bin/env"] + (LinuxGuestEnvironmentEncoding.argv(variables) ?? []) + pipProgram
         let result: LinuxCommandResult
         if let deadline {
             result = try await runner.run(
@@ -321,6 +339,99 @@ public struct LinuxGuestLanguagePackages: Sendable {
             throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_exit_code", result.exitCode) + bounded(output))
         }
         return output
+    }
+
+    /// The deterministic, pin-free guest-side transport program for pip
+    /// hash mode. It is passed to the venv interpreter with `-c`; the
+    /// requirement-plus-pins payload arrives separately on the runner's
+    /// standardInput (fd 0) as exactly the bytes `pythonInstall` validated.
+    /// The program re-checks that payload shape fail-closed (newline-
+    /// terminated stream, every line still carrying its ` --hash=sha256:`
+    /// pin — a broken transport can never silently install less than the
+    /// signed closure), materializes it as an owned temporary file
+    /// (`mkdtemp` 0700 + `O_CREAT|O_EXCL` 0600, fsynced) inside the guest,
+    /// invokes pip with the identical grammar (`-m pip install
+    /// --disable-pip-version-check --no-input --require-hashes
+    /// [--find-links …] --requirement <real path>`) through the SAME
+    /// interpreter (`sys.executable`), propagates pip's exit code, and
+    /// deletes the file in `finally` — including when SIGINT/SIGTERM cancel
+    /// the run. No `/dev/stdin` path and no spec or digest material ever
+    /// appear in any argv; a payload that fails re-check exits 2 with the
+    /// `floe-pip-hash-transport:` marker instead of reaching pip.
+    /// `findLinks` is either empty or exactly the already-charset-validated
+    /// `["--find-links", <guest path>]` (no quote, backslash or whitespace
+    /// is possible), so the embedded Python literal needs no other surface.
+    static func pythonHashTransportSource(findLinks: [String]) -> String {
+        precondition(findLinks.isEmpty
+                     || (findLinks.count == 2 && findLinks.first == "--find-links"))
+        let findLinksLiteral = findLinks.isEmpty
+            ? "[]"
+            : "[\"--find-links\", \"\(findLinks[1])\"]"
+        return """
+        import os
+        import signal
+        import subprocess
+        import sys
+        import tempfile
+
+        MARKER = "floe-pip-hash-transport"
+        FIND_LINKS = \(findLinksLiteral)
+
+        def refuse(reason):
+            sys.stderr.write(MARKER + ": " + reason + "\\n")
+            sys.stderr.flush()
+            raise SystemExit(2)
+
+        payload = sys.stdin.buffer.read()
+        if not payload.strip():
+            refuse("empty requirements payload")
+        if not payload.endswith(b"\\n"):
+            refuse("requirements payload is not newline terminated")
+        lines = payload.split(b"\\n")[:-1]
+        if not lines:
+            refuse("requirements payload has no line")
+        for line in lines:
+            if b" --hash=sha256:" not in line:
+                refuse("a requirements line lost its sha256 pin")
+
+        directory = tempfile.mkdtemp(prefix="floe-pip-req-")
+        path = os.path.join(directory, "requirements.txt")
+
+        def cleanup():
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+
+        def interrupt(signum, frame):
+            raise SystemExit(128 + signum)
+
+        for number in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(number, interrupt)
+            except (OSError, ValueError):
+                pass
+
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            completed = subprocess.run([sys.executable, "-m", "pip", "install",
+                                       "--disable-pip-version-check", "--no-input",
+                                       "--require-hashes"] + FIND_LINKS
+                                      + ["--requirement", path],
+                                      stdin=subprocess.DEVNULL)
+            raise SystemExit(completed.returncode)
+        finally:
+            cleanup()
+
+        """
     }
 
     public func pythonUninstall(

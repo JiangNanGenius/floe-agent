@@ -172,11 +172,18 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         }
     }
 
-    /// The real pip grammar: `--hash` is a requirements-FILE option only; as a
-    /// CLI option pip exits 2 with "no such option: --hash". Hash mode must
-    /// therefore feed every `spec --hash=sha256:...` line through the runner's
-    /// standardInput with `--requirement /dev/stdin`, never through argv.
-    func testPythonInstallHashModeFeedsRequirementPinsOnStdinNotArgv() async throws {
+    /// The real pip grammar AND the real guest constraint: `--hash` is a
+    /// requirements-FILE option only (a CLI `--hash` is rejected with exit 2
+    /// "no such option"), and the pinned TinyEMU guest has NO `/dev/stdin`
+    /// path (2026-10-27 real-guest regression: pip exits 1 "Could not open
+    /// requirements file: [Errno 2] No such file or directory: '/dev/stdin'").
+    /// Hash mode therefore feeds the exact requirement-plus-pins bytes through
+    /// the runner's standardInput to a pin-free wrapper program
+    /// (`python3 -c WRAPPER`); the wrapper materializes them as an owned 0600
+    /// temporary requirements file INSIDE the guest and runs the venv's own
+    /// pip with `--require-hashes --requirement <that real path>`. The pins
+    /// never enter any argv and no `/dev/stdin` dependency remains.
+    func testPythonInstallHashModeFeedsPinsOnStdinThroughOwnedTempFileTransport() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }
         try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
@@ -193,26 +200,57 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             cancellation: nil)
 
         let install = try XCTUnwrap(runner.calls.first { call in
-            call.argv.contains("-m") && call.argv.contains("pip") && call.argv.contains("install")
+            call.argv.contains("-c") && call.argv.contains(where: { $0.contains("floe-pip-hash-transport") })
         })
-        // The exact bytes pip must see on stdin: one requirements line with
-        // its pins trailing, newline-terminated.
+        // The exact bytes the guest transport must read on stdin: one
+        // requirements line with its pins trailing, newline-terminated.
         XCTAssertEqual(install.standardInput,
                        "demo==1.0 --hash=sha256:\(digestA) --hash=sha256:\(digestB)\n")
-        XCTAssertTrue(install.argv.contains("--require-hashes"), install.joined)
-        XCTAssertTrue(install.argv.contains("--requirement"), install.joined)
-        XCTAssertTrue(install.argv.contains("/dev/stdin"), install.joined)
-        XCTAssertFalse(install.argv.contains { $0.hasPrefix("--hash") }, install.joined)
+        // The outer command is `/usr/bin/env <vars> python3 -c WRAPPER`: it
+        // never names /dev/stdin, never carries a spec, a digest or pip's own
+        // hash grammar — those live in the guest transport and the file it
+        // writes, exactly as pip requires.
+        XCTAssertEqual(install.argv.first, "/usr/bin/env")
+        XCTAssertTrue(install.argv.contains("/floe/env/python/venv/bin/python3"), install.joined)
+        XCTAssertFalse(install.joined.contains("/dev/stdin"), install.joined)
+        XCTAssertFalse(install.joined.contains(digestA) || install.joined.contains(digestB), install.joined)
         XCTAssertFalse(install.argv.contains("demo==1.0"), install.joined)
-        XCTAssertFalse(install.argv.contains { $0.contains(digestA) || $0.contains(digestB) }, install.joined)
-        // find-links, the index/cache env and the plain install flags all
-        // survive the transport change unchanged.
-        XCTAssertTrue(install.argv.contains("--find-links"), install.joined)
-        XCTAssertTrue(install.argv.contains("/floe/cache/pip/official-wheels"), install.joined)
+        XCTAssertFalse(install.argv.contains { $0.hasPrefix("--hash") }, install.joined)
+        // The env and cache plumbing is unchanged by the transport.
         XCTAssertTrue(install.argv.contains("PIP_INDEX_URL=https://mirror.example.com/simple/"), install.joined)
+        XCTAssertTrue(install.argv.contains("PIP_CACHE_DIR=/floe/env/cache/pip"), install.joined)
+        // The wrapper program: pip's identical grammar against a real guest
+        // filesystem path, an owned 0600 O_EXCL temp file with fsync,
+        // this interpreter's own pip via sys.executable, pip's exit code
+        // propagated, finally cleanup wired to SIGINT/SIGTERM cancellation,
+        // the fail-closed payload re-check, and no pin material inside it.
+        let transport = try XCTUnwrap(install.argv.first { $0.contains("floe-pip-hash-transport") })
+        for required in [
+            "\"--require-hashes\"",
+            "\"--requirement\"",
+            "\"--disable-pip-version-check\"",
+            "\"--no-input\"",
+            "tempfile.mkdtemp(prefix=\"floe-pip-req-\")",
+            "os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600",
+            "os.fsync",
+            "sys.executable",
+            "stdin=subprocess.DEVNULL",
+            "raise SystemExit(completed.returncode)",
+            "finally:",
+            "cleanup()",
+            "signal.SIGTERM",
+            "signal.SIGINT",
+            " --hash=sha256:",
+            "FIND_LINKS = [\"--find-links\", \"/floe/cache/pip/official-wheels\"]",
+        ] {
+            XCTAssertTrue(transport.contains(required), "transport must contain \(required)")
+        }
+        XCTAssertFalse(transport.contains("/dev/stdin"))
+        XCTAssertFalse(transport.contains("demo==1.0"))
 
         // Full-closure multi-spec through the explicit-deadline branch: one
-        // line per exact pin in spec order, everything still on stdin.
+        // line per exact pin in spec order, everything still on stdin, and
+        // the no-find-links transport literal stays empty.
         _ = try await packages.pythonInstall(
             specs: ["requests==2.32.4", "demo==1.0"],
             environment: environment,
@@ -221,11 +259,14 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
             cancellation: nil)
         await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
 
-        let closure = try XCTUnwrap(runner.calls.last { $0.argv.contains("--require-hashes") })
+        let closure = try XCTUnwrap(runner.calls.last { call in
+            call.argv.contains(where: { $0.contains("floe-pip-hash-transport") })
+        })
         XCTAssertEqual(closure.standardInput,
                        "requests==2.32.4 --hash=sha256:\(digestB)\ndemo==1.0 --hash=sha256:\(digestA)\n")
-        XCTAssertFalse(closure.argv.contains { $0.hasPrefix("--hash") }, closure.joined)
-        XCTAssertFalse(closure.argv.contains("--find-links"), closure.joined)
+        XCTAssertFalse(closure.joined.contains("--find-links"), closure.joined)
+        let closureTransport = try XCTUnwrap(closure.argv.first { $0.contains("floe-pip-hash-transport") })
+        XCTAssertTrue(closureTransport.contains("FIND_LINKS = []"))
     }
 
     func testPythonInstallNoHashKeepsThePlainArgvByteForByteAndNilStdin() async throws {
