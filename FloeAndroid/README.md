@@ -40,6 +40,17 @@ Release availability, actual device coverage and remaining limits are recorded i
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
 
+## Corresponding-source packaging
+
+The source-packaging policy is versioned separately from the immutable APK
+source. Linux producer 1.2.0 accepts an optional `--host-run-mapping` private
+JSON file for same-length build-path redaction. The archive records rule ids,
+counts and original/public hashes; mapping values and its path stay private.
+Residual host paths fail validation, including when no mapping is provided.
+Office producer 1.0.1 includes the shipped Writer viewport semantic check in
+its exact source layout. These packaging changes do not replace Alpha13's APK,
+tag or verified release assets.
+
 ## G05-R1 native Office preview
 
 The App embeds a fixed official Collabora 26.04.4.2 ARM64 native producer, with
@@ -140,6 +151,15 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 
 ## Android Alpha
+
+### Alpha13 / G05-R2 manual Office editing
+
+[Download Alpha13](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
+— build 15, immutable APK source `64ef0f57dcb34c6e0fe4135f80a98add46003df7`.
+The Full ARM64 APK, two-line SHA256SUMS and final Linux/IDE/Office source archive
+were publicly downloaded and hash-verified. Manual editing and save-copy/reopen
+representative coverage is described above; AI precise edits and PDF/printing
+remain in the next batch. Alpha12 and iOS Latest are preserved.
 
 ### Alpha12 / G05-R1 offline Office preview
 
