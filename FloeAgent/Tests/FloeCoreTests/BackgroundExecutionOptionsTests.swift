@@ -26,7 +26,8 @@ struct BackgroundExecutionOptionsTests {
     @Test("Screen feedback enabling pulls in the WHOLE prerequisite chain (PiP, audio, enhanced)")
     func feedbackEnablesFullChain() {
         var options = BackgroundExecutionOptions(enhancedBackgroundEnabled: false)
-        #expect(options.setScreenFeedbackEnabled(true))
+        let mutationResult29 = options.setScreenFeedbackEnabled(true)
+        #expect(mutationResult29)
         #expect(options.pictureInPictureEnabled)
         #expect(options.audioEnabled)
         #expect(options.screenFeedbackEnabled)
@@ -35,7 +36,8 @@ struct BackgroundExecutionOptionsTests {
         #expect(options.enhancedBackgroundEnabled)
         // Screen feedback has no dependents: turning it off is always
         // allowed and changes nothing else.
-        #expect(options.setScreenFeedbackEnabled(false))
+        let mutationResult38 = options.setScreenFeedbackEnabled(false)
+        #expect(mutationResult38)
         #expect(options.pictureInPictureEnabled)
         #expect(options.audioEnabled)
         #expect(options.enhancedBackgroundEnabled)
@@ -47,25 +49,32 @@ struct BackgroundExecutionOptionsTests {
         var options = BackgroundExecutionOptions(legacy: .screenShare)
         #expect(options.screenFeedbackEnabled)
         // PiP off is refused while screen feedback presents inside it.
-        #expect(!options.setPictureInPictureEnabled(false))
+        let mutationResult50 = options.setPictureInPictureEnabled(false)
+        #expect(!mutationResult50)
         #expect(options.pictureInPictureEnabled)
         #expect(options.screenFeedbackEnabled)
         // Audio off is refused while PiP/feedback ride on it.
-        #expect(!options.setAudioEnabled(false))
+        let mutationResult54 = options.setAudioEnabled(false)
+        #expect(!mutationResult54)
         #expect(options.audioEnabled)
         // Enhanced off is refused while ANY dependent is active.
-        #expect(!options.setEnhancedBackgroundEnabled(false))
+        let mutationResult57 = options.setEnhancedBackgroundEnabled(false)
+        #expect(!mutationResult57)
         #expect(options.enhancedBackgroundEnabled)
         // Nothing was silently cascaded off — the refusal is a no-op.
         #expect(options == BackgroundExecutionOptions(legacy: .screenShare))
         // Clearing dependents deepest-first unlocks each prerequisite.
-        #expect(options.setScreenFeedbackEnabled(false))
+        let mutationResult62 = options.setScreenFeedbackEnabled(false)
+        #expect(mutationResult62)
         #expect(options.pictureInPictureEnabled) // PiP itself stays on
-        #expect(options.setPictureInPictureEnabled(false))
+        let mutationResult64 = options.setPictureInPictureEnabled(false)
+        #expect(mutationResult64)
         #expect(!options.pictureInPictureEnabled)
-        #expect(options.setAudioEnabled(false))
+        let mutationResult66 = options.setAudioEnabled(false)
+        #expect(mutationResult66)
         #expect(!options.audioEnabled)
-        #expect(options.setEnhancedBackgroundEnabled(false))
+        let mutationResult68 = options.setEnhancedBackgroundEnabled(false)
+        #expect(mutationResult68)
         #expect(!options.enhancedBackgroundEnabled)
     }
 
@@ -169,12 +178,17 @@ struct BackgroundExecutionOptionsTests {
         #expect(options.taskLiveActivityEnabled)
         #expect(!options.audioEnabled)
         // Chain mutations never touch it, and it never touches the chain.
-        #expect(options.setScreenFeedbackEnabled(true))
+        let mutationResult172 = options.setScreenFeedbackEnabled(true)
+        #expect(mutationResult172)
         #expect(options.taskLiveActivityEnabled)
-        #expect(options.setScreenFeedbackEnabled(false))
-        #expect(options.setPictureInPictureEnabled(false))
-        #expect(options.setAudioEnabled(false))
-        #expect(options.setEnhancedBackgroundEnabled(false))
+        let mutationResult174 = options.setScreenFeedbackEnabled(false)
+        #expect(mutationResult174)
+        let mutationResult175 = options.setPictureInPictureEnabled(false)
+        #expect(mutationResult175)
+        let mutationResult176 = options.setAudioEnabled(false)
+        #expect(mutationResult176)
+        let mutationResult177 = options.setEnhancedBackgroundEnabled(false)
+        #expect(mutationResult177)
         #expect(options.taskLiveActivityEnabled)
         options.setTaskLiveActivityEnabled(false)
         #expect(!options.taskLiveActivityEnabled)

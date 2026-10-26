@@ -46,14 +46,14 @@ struct BackgroundWorkSessionTests {
         controller.qualificationContext = { [weak box] in
             (foreground: box?.foreground ?? true, loaded: box?.loaded ?? true)
         }
-        controller.submitQualification = { [weak box] stage, progress in
+        controller.submitQualification = { [weak box] (stage: String, progress: Int64) in
             guard let box else { return false }
             box.submitCount += 1
             box.lastStage = stage
             box.lastProgress = progress
             return box.submitAccepts
         }
-        controller.updateQualification = { [weak box] _, _ in
+        controller.updateQualification = { [weak box] (_: String, _: Int64) in
             box?.updateCount += 1
         }
         controller.releaseQualification = { [weak box] in
@@ -117,6 +117,7 @@ struct BackgroundWorkSessionTests {
 
     private final class Box {
         var counts = BackgroundWorkSessionCounts()
+        var countsFails = false
         var passCount = 0
         var holdPassOpen = false
         var published: [BackgroundWorkSessionSnapshot] = []
@@ -559,14 +560,19 @@ struct BackgroundRefreshWakeTests {
         fence.begin(first)
         #expect(fence.owns(first))
         #expect(!fence.owns(second))
-        #expect(fence.complete(first))    // the owner path wins
-        #expect(!fence.complete(first))   // never a second completion
+        let mutationResult562 = fence.complete(first)
+        #expect(mutationResult562)    // the owner path wins
+        let mutationResult563 = fence.complete(first)
+        #expect(!mutationResult563)   // never a second completion
         fence.begin(second)               // a new delivery takes the slot
         #expect(fence.owns(second))
         #expect(!fence.owns(first))       // the superseded generation owns nothing
-        #expect(!fence.complete(first))   // its late body/expiration path is a hard no-op
-        #expect(fence.complete(second))
-        #expect(!fence.complete(second))
+        let mutationResult567 = fence.complete(first)
+        #expect(!mutationResult567)   // its late body/expiration path is a hard no-op
+        let mutationResult568 = fence.complete(second)
+        #expect(mutationResult568)
+        let mutationResult569 = fence.complete(second)
+        #expect(!mutationResult569)
         #expect(fence.activeID == nil)
     }
 

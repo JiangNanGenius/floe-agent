@@ -29,16 +29,14 @@ struct BackgroundDownloadSettlementTests {
     }
 
     private func waitUntil(
-        _ condition: @Sendable () -> Bool,
-        file: StaticString = #filePath,
-        line: UInt = #line
+        _ condition: @Sendable () -> Bool
     ) async {
         for _ in 0..<5_000 {
             if condition() { return }
             await Task.yield()
             try? await Task.sleep(nanoseconds: 1_000_000)
         }
-        Issue.record("condition not reached", file: file, line: line)
+        Issue.record("condition not reached")
     }
 
     @MainActor

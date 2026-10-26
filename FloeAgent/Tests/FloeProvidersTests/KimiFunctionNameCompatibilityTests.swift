@@ -47,7 +47,7 @@ struct KimiFunctionNameCompatibilityTests {
                         toolNameCompatibility: toolNameCompatibility)
     }
 
-    private func model(_ id: String, capabilities: [ModelCapability] = [.text, .tools]) -> ModelProfile {
+    private func model(_ id: String, capabilities: ModelCapabilities = [.text, .tools]) -> ModelProfile {
         ModelProfile(providerID: UUID(), remoteModelID: id, displayName: id,
                      limits: .init(contextTokens: 4096, maxOutputTokens: 1024),
                      capabilities: capabilities)

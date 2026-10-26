@@ -21,8 +21,9 @@ import FloeCore
 
 private final class InspectorStubURLProtocol: URLProtocol, @unchecked Sendable {
     private static let lock = NSLock()
-    private static var routes: [String: (Int, Data)] = [:]
-    private static var requested: [String] = []
+    // Every access is protected by the static lock below.
+    nonisolated(unsafe) private static var routes: [String: (Int, Data)] = [:]
+    nonisolated(unsafe) private static var requested: [String] = []
 
     static func reset(_ routes: [String: (Int, Data)]) {
         lock.withLock {
