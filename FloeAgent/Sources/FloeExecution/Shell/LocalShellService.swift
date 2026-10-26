@@ -71,6 +71,12 @@ public actor LocalShellService {
     private let backend: any LocalShellBackend
     private let journal: ShellOperationJournal
     private let configuration: Configuration
+    /// One-time 600 s host-monotonic duration advisory for unlimited
+    /// foreground runs (nil keeps this module platform-independent; the app
+    /// injects the monitor whose sink delivers through the existing durable
+    /// outbox). Job-wrapped runs are owned by the job monitor instead, so one
+    /// unit of work never advises twice.
+    private let durationReminder: LongRunDurationReminder?
     private let environmentDefaults: [String: String]
     private let rootProvider: @Sendable () async -> URL?
 
@@ -79,6 +85,7 @@ public actor LocalShellService {
         policy: ShellCommandPolicy = ShellCommandPolicy(),
         journal: ShellOperationJournal = ShellOperationJournal(),
         configuration: Configuration = Configuration(),
+        durationReminder: LongRunDurationReminder? = nil,
         environmentDefaults: [String: String] = [:],
         rootProvider: @escaping @Sendable () async -> URL?
     ) {
@@ -86,6 +93,7 @@ public actor LocalShellService {
         self.policy = policy
         self.journal = journal
         self.configuration = configuration
+        self.durationReminder = durationReminder
         self.environmentDefaults = environmentDefaults
         self.rootProvider = rootProvider
     }
@@ -245,8 +253,27 @@ public actor LocalShellService {
             runID: context.runID,
             toolEnvironment: context.environment
         )
+        // One-time 600 s duration advisory for an unlimited FOREGROUND run.
+        // A job-wrapped run (isBackground) is owned by the job-side monitor,
+        // so one unit of work can never advise twice; the identity is the
+        // runtime-issued run id + client-scoped session token, never a
+        // model-supplied alias, so unrelated commands/sessions cannot
+        // collide. Arming is observe-only: it cannot affect the run.
+        let reminderKey: String? = (!isBackground && resolved.deadline == .unlimited && durationReminder != nil)
+            ? "shell.\(context.runID.uuidString).\(context.clientScopedSessionToken)"
+            : nil
+        if let reminderKey {
+            await durationReminder?.begin(
+                key: reminderKey,
+                conversationID: context.conversationID,
+                runID: context.runID,
+                jobID: nil,
+                label: "exec.shell"
+            )
+        }
         let started = Date()
         let outcome = await backend.run(request, cancellation: context.cancellation)
+        if let reminderKey { await durationReminder?.end(key: reminderKey) }
         let durationMs = Int(Date().timeIntervalSince(started) * 1000)
         await record(outcome: outcome, command: command, cwd: cwd, context: context, durationMs: durationMs)
         return .outcome(outcome)

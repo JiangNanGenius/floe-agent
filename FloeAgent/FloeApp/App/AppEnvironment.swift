@@ -35,6 +35,36 @@ import Combine
 import FloeOfficeNative
 #endif
 
+/// Late-binding relay for the one-time long-run duration advisory sink.
+/// Mirrors the existing `LocalServiceReadyRelay` idiom: the monitor is
+/// constructed during `AppEnvironment.init` — before the job service, the
+/// coordinator and `self` are fully initialized — so its sink captures ONLY
+/// this relay (Swift 6 refuses a `self` capture, weak or not, before every
+/// stored property exists). The real handler is installed exactly once
+/// after the services are wired; a milestone that arrives before
+/// installation is dropped silently (it cannot in practice: the threshold is
+/// 600 s and installation happens at startup).
+final class DurationAdvisoryRelay: @unchecked Sendable {
+    typealias Handler = @Sendable (
+        LongRunAdvisoryMilestone, @escaping LongRunDurationReminder.DeliveryFence
+    ) async -> Void
+
+    private let lock = NSLock()
+    private var handler: Handler?
+
+    func install(_ handler: @escaping Handler) {
+        lock.withLock { self.handler = handler }
+    }
+
+    func deliver(
+        _ milestone: LongRunAdvisoryMilestone,
+        fence: @escaping LongRunDurationReminder.DeliveryFence
+    ) async {
+        let handler = lock.withLock { self.handler }
+        await handler?(milestone, fence)
+    }
+}
+
 /// Owns the app's long-lived services and stores. Created once at launch and
 /// injected through the SwiftUI environment. All stores are protocol-typed so
 /// tests and previews can substitute in-memory doubles.
@@ -107,6 +137,16 @@ final class AppEnvironment: ObservableObject {
     /// so shell runs in a `runtime == .linux` environment execute inside that
     /// environment's guest instead of the native substrate.
     let localShellService: LocalShellService
+    /// One-time long-run duration advisory monitor (new time policy
+    /// 2026-10-26: default execution is unlimited; ONE reminder at 600
+    /// seconds of host monotonic elapsed execution, work continues). Shared
+    /// by the foreground shell service and the background job service so one
+    /// unit of work never advises twice. Observe-only: it never changes any
+    /// run/job/command state.
+    private let durationReminder: LongRunDurationReminder
+    /// Late-binding sink relay (see `DurationAdvisoryRelay`): keeps the
+    /// monitor's sink free of any `self` capture during init.
+    private let durationAdvisoryRelay: DurationAdvisoryRelay
     let shellSessionCenter: ShellSessionCenter
     /// One TinyEMU guest service for the whole app: the registry owns exactly
     /// one guest per `runtime == .linux` environment and is the single place
@@ -936,9 +976,15 @@ final class AppEnvironment: ObservableObject {
                 )
             }
         )
+        let advisoryRelay = DurationAdvisoryRelay()
+        self.durationAdvisoryRelay = advisoryRelay
+        self.durationReminder = LongRunDurationReminder { [relay = advisoryRelay] milestone, fence in
+            await relay.deliver(milestone, fence: fence)
+        }
         self.localShellService = LocalShellService(
             backend: shellBackend,
             policy: shellPolicy,
+            durationReminder: durationReminder,
             environmentDefaults: Self.localShellEnvironment(),
             rootProvider: WorkspaceCenter.toolRootProvider
         )
@@ -1163,6 +1209,19 @@ final class AppEnvironment: ObservableObject {
     /// with the outcome; a finished run leaves a durable queued input the user
     /// can see and act on. A local notification always mirrors the outcome.
     private func handleBackgroundJobTerminal(_ job: BackgroundJob) async {
+        // Terminal close of this job/operation: withdraw a still-QUEUED
+        // duration advisory so no late "still running" reminder outlives the
+        // actual end. The liveness answer is the same trusted lease/member
+        // read the delivery gate uses, so a grouped operation mid-handoff
+        // keeps its queued advisory until the owner closes the lease.
+        // Already-posted OS alerts are the accepted non-atomic window; this
+        // only forbids known-terminal late delivery.
+        if let service = backgroundJobService,
+           await service.advisoryTargetIsLive(
+               jobID: job.id, advisoryGroupID: job.advisoryGroupID) == false {
+            await backgroundRunCoordinator.discardPendingDurationAdvisory(
+                ownershipKey: "job.\((job.advisoryGroupID ?? job.id).uuidString)")
+        }
         let evidence = job.resultSummary ?? job.lastError ?? job.state.rawValue
         let events = (try? await runStore.events(runID: job.runID, afterSequence: 0, limit: 32)) ?? []
         let isStandaloneService = events.contains {
@@ -1239,6 +1298,55 @@ final class AppEnvironment: ObservableObject {
                 "backgroundService ready steer failed jobID=\(jobID.uuidString) error=\(error.localizedDescription)"
             )
         }
+    }
+
+    /// Delivery sink for the one-time long-run duration advisory, in strict
+    /// order: (1) store-backed liveness for job/group milestones (a trusted
+    /// lease covers phase-handoff gaps; anything unreadable drops silently —
+    /// nothing alerts after actual completion/cancel); (2) the monitor's
+    /// DELIVERY FENCE immediately before the enqueue, which cancels the
+    /// delivery when the unit of work ended while this sink task was in
+    /// flight (the foreground shell case — proven by fence tests, not by
+    /// comment); (3) the durable outbox enqueue; (4) only AFTER the enqueue
+    /// succeeded, the best-effort durable marker, so a skipped or failed
+    /// delivery never leaves a marker claiming it happened. Permission or
+    /// storage failures stay diagnostics and can never fail the running
+    /// job or command.
+    private func deliverDurationAdvisory(
+        _ milestone: LongRunAdvisoryMilestone,
+        fence: @escaping LongRunDurationReminder.DeliveryFence
+    ) async {
+        if let jobID = milestone.jobID {
+            guard let service = backgroundJobService,
+                  await service.advisoryTargetIsLive(
+                      jobID: jobID, advisoryGroupID: milestone.advisoryGroupID) else { return }
+            guard await fence() else { return }
+            let accepted = await backgroundRunCoordinator.enqueueDurationAdvisory(
+                ownershipKey: milestone.ownershipKey,
+                conversationID: milestone.conversationID,
+                runID: milestone.runID,
+                jobID: jobID,
+                advisoryGroupID: milestone.advisoryGroupID,
+                deliveryFence: fence
+            )
+            if accepted {
+                await service.markDurationAdvisoryEnqueued(jobID: jobID, at: milestone.firedAt)
+            }
+        } else {
+            guard await fence() else { return }
+            await backgroundRunCoordinator.enqueueDurationAdvisory(
+                ownershipKey: milestone.ownershipKey,
+                conversationID: milestone.conversationID,
+                runID: milestone.runID,
+                jobID: nil,
+                advisoryGroupID: nil,
+                deliveryFence: fence
+            )
+        }
+    }
+
+    func durationAdvisoryWorkIsActive(ownershipKey: String) async -> Bool {
+        await durationReminder.workIsActive(key: ownershipKey)
     }
 
     /// Registers every tool the agent can see, in one place and in a
@@ -1657,6 +1765,7 @@ final class AppEnvironment: ObservableObject {
             onTerminal: { [weak self] job in
                 await self?.handleBackgroundJobTerminal(job)
             },
+            durationReminder: durationReminder,
             downloadHandler: { job, context in
                 try await jobDownloads.take(job: job, context: context)
             },
@@ -1667,6 +1776,11 @@ final class AppEnvironment: ObservableObject {
                 await jobDownloads.hasLiveTask(jobID: jobID)
             }
         )
+        // Install the real advisory sink now that every service it touches
+        // exists (same late-binding point as the local-service ready relay).
+        durationAdvisoryRelay.install { [weak self] milestone, fence in
+            await self?.deliverDurationAdvisory(milestone, fence: fence)
+        }
         if let backgroundJobService {
             registerLocalServiceCommand(service: backgroundJobService, store: BackgroundJobStore(database: database))
             // First verified readiness of a long-lived service settles its

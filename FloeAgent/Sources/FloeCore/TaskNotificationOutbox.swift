@@ -22,11 +22,17 @@ public enum TaskTerminalEventKind: String, Sendable, Codable, CaseIterable, Hash
     /// Waiting on the user (tool approval, browser takeover, …): actionable,
     /// so it is delivered even though the run is not finished.
     case actionRequired
+    /// One-time "still running" advisory for default-unlimited long work
+    /// (new time policy 2026-10-26): the unit has passed 600 seconds of host
+    /// monotonic elapsed execution and simply CONTINUES. Never a terminal
+    /// claim, never waiting on the user; the stable ownership identifier
+    /// makes repeated publications replace instead of stack.
+    case durationAdvisory
 
     public var isTerminal: Bool {
         switch self {
         case .completed, .failed, .cancelled: true
-        case .actionRequired: false
+        case .actionRequired, .durationAdvisory: false
         }
     }
 }
@@ -61,6 +67,17 @@ public struct TaskTerminalEvent: Sendable, Codable, Hashable, Identifiable {
     public let body: String
     public let createdAt: Date
     public let deepLink: BackgroundWorkDeepLink
+    /// Backward-compatible OPTIONAL re-validation targets for a queued
+    /// `.durationAdvisory` event (nil for every other kind and for events
+    /// persisted before these fields existed — synthesized Codable treats
+    /// them as decode-if-present, so old outbox bytes decode unchanged and
+    /// old readers ignore the new keys). They let the authorization-flush
+    /// re-check ask the authoritative owner (job service / work registry)
+    /// whether the reminder's target is STILL live instead of parsing the
+    /// identifier string.
+    public var durationTargetJobID: UUID?
+    public var durationTargetGroupID: UUID?
+    public var durationTargetRunID: UUID?
 
     public var id: String { identifier }
 
@@ -124,6 +141,40 @@ public struct TaskTerminalEvent: Sendable, Codable, Hashable, Identifiable {
                 runID: runID
             )
         )
+    }
+
+    /// One-time long-run duration advisory. `ownershipKey` is the
+    /// runtime-issued advisory identity (`job.<uuid>` for a job or a trusted
+    /// native advisory group, `shell.<runID>.<token>` for a foreground run),
+    /// so re-publications of the same unit of work REPLACE instead of stack
+    /// and one operation can never alert twice. The body is caller-composed
+    /// (the app layer owns locale); this event never claims a terminal
+    /// state.
+    public static func durationAdvisory(
+        ownershipKey: String,
+        title: String,
+        body: String,
+        deepLink: BackgroundWorkDeepLink,
+        jobID: UUID? = nil,
+        advisoryGroupID: UUID? = nil,
+        createdAt: Date = Date()
+    ) -> TaskTerminalEvent {
+        var event = TaskTerminalEvent(
+            identifier: "duration.advisory.\(ownershipKey)",
+            kind: .durationAdvisory,
+            title: TaskNotificationContentBounds.truncating(
+                title, to: TaskNotificationContentBounds.maximumTitleCharacters
+            ),
+            body: TaskNotificationContentBounds.truncating(
+                body, to: TaskNotificationContentBounds.maximumBodyCharacters
+            ),
+            createdAt: createdAt,
+            deepLink: deepLink
+        )
+        event.durationTargetJobID = jobID
+        event.durationTargetGroupID = advisoryGroupID
+        event.durationTargetRunID = deepLink.runID
+        return event
     }
 
     /// Persistent terminal alert for one Linux environment session, scoped to
@@ -203,17 +254,25 @@ public struct TaskNotificationEventGate: Sendable, Equatable {
     public var notifiesFailed: Bool
     public var notifiesCancelled: Bool
     public var notifiesActionRequired: Bool
+    /// The one-time long-run duration advisory follows the conversation's
+    /// stage-notification preference (it is a mid-run checkpoint while the
+    /// work continues). Defaults true so existing gate constructions keep
+    /// compiling and the human-policy reminder is on unless the user turned
+    /// stage notifications off.
+    public var notifiesDurationAdvisory: Bool
 
     public init(
         notifiesCompleted: Bool,
         notifiesFailed: Bool,
         notifiesCancelled: Bool,
-        notifiesActionRequired: Bool
+        notifiesActionRequired: Bool,
+        notifiesDurationAdvisory: Bool = true
     ) {
         self.notifiesCompleted = notifiesCompleted
         self.notifiesFailed = notifiesFailed
         self.notifiesCancelled = notifiesCancelled
         self.notifiesActionRequired = notifiesActionRequired
+        self.notifiesDurationAdvisory = notifiesDurationAdvisory
     }
 
     /// Everything off: used when no durable task record exists.
@@ -221,7 +280,8 @@ public struct TaskNotificationEventGate: Sendable, Equatable {
         notifiesCompleted: false,
         notifiesFailed: false,
         notifiesCancelled: false,
-        notifiesActionRequired: false
+        notifiesActionRequired: false,
+        notifiesDurationAdvisory: false
     )
 
     public func allows(_ kind: TaskTerminalEventKind) -> Bool {
@@ -230,6 +290,7 @@ public struct TaskNotificationEventGate: Sendable, Equatable {
         case .failed: notifiesFailed
         case .cancelled: notifiesCancelled
         case .actionRequired: notifiesActionRequired
+        case .durationAdvisory: notifiesDurationAdvisory
         }
     }
 }

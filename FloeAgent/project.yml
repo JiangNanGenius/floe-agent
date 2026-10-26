@@ -735,6 +735,9 @@ targets:
       - path: Tests/FloeSkillsTests/SkillCreateToolTests.swift
       - path: Tests/FloeExecutionTests/LocalShellLargeScriptTests.swift
       - path: Tests/FloeExecutionTests/ShellExecutionDeadlinePolicyTests.swift
+      - path: Tests/FloeExecutionTests/LongRunDurationReminderTests.swift
+      - path: Tests/FloeExecutionTests/BackgroundJobDurationReminderTests.swift
+      - path: Tests/FloeCoreTests/TaskNotificationDurationAdvisoryTests.swift
       - path: Tests/FloeAppTests/RoutingShellTimeoutTests.swift
       - path: Tests/FloeAppTests/SkillRuntimeComponentTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolResultCaptureTests.swift

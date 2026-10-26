@@ -64,6 +64,16 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
     public var lastError: String?
     public var workspaceRootPath: String?
     public var environmentID: String?
+    /// Trusted native parent-operation identity for the one-time long-run
+    /// duration advisory (e.g. one MCP creation record across its bound
+    /// build-phase jobs): phases of ONE operation share the advisory
+    /// ownership key, so a phase handoff neither resets the 600-second
+    /// threshold nor duplicates the advisory, while distinct independent
+    /// jobs stay distinct. Only a `.nativeService` submission may bind it —
+    /// a model/runtime payload can never supply this alias. Nil for ordinary
+    /// jobs (per-job advisory identity). Never affects state, payload
+    /// binding, provenance or terminal semantics.
+    public var advisoryGroupID: UUID?
     public var retryCount: Int
     public var createdAt: Date
     public var updatedAt: Date
@@ -87,6 +97,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         lastError: String? = nil,
         workspaceRootPath: String? = nil,
         environmentID: String? = nil,
+        advisoryGroupID: UUID? = nil,
         retryCount: Int = 0,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
@@ -109,6 +120,7 @@ public struct BackgroundJob: Codable, Sendable, Equatable, Identifiable {
         self.lastError = lastError
         self.workspaceRootPath = workspaceRootPath
         self.environmentID = environmentID
+        self.advisoryGroupID = advisoryGroupID
         self.retryCount = retryCount
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -136,9 +148,9 @@ public actor BackgroundJobStore {
                     id, conversation_id, run_id, tool_call_id, kind, target_tool,
                     payload_json, state, progress_json, result_summary,
                     result_digest, result_path, output_path, output_bytes, last_error,
-                    workspace_root_path, environment_id, retry_count,
+                    workspace_root_path, environment_id, advisory_group_id, retry_count,
                     created_at, updated_at, completed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     state=excluded.state, progress_json=excluded.progress_json,
                     result_summary=excluded.result_summary, result_digest=excluded.result_digest,
@@ -146,6 +158,7 @@ public actor BackgroundJobStore {
                     output_path=COALESCE(excluded.output_path, background_jobs.output_path),
                     output_bytes=COALESCE(excluded.output_bytes, background_jobs.output_bytes),
                     last_error=excluded.last_error,
+                    advisory_group_id=COALESCE(background_jobs.advisory_group_id, excluded.advisory_group_id),
                     retry_count=excluded.retry_count,
                     updated_at=excluded.updated_at, completed_at=excluded.completed_at
                 """, arguments: [
@@ -153,7 +166,7 @@ public actor BackgroundJobStore {
                     job.toolCallID, job.kind.rawValue, job.targetTool, job.payloadJSON,
                     job.state.rawValue, job.progressJSON, job.resultSummary, job.resultDigest,
                     job.resultPath, job.outputPath, job.outputBytes, job.lastError,
-                    job.workspaceRootPath, job.environmentID, job.retryCount,
+                    job.workspaceRootPath, job.environmentID, job.advisoryGroupID?.uuidString, job.retryCount,
                     job.createdAt, job.updatedAt, job.completedAt
                 ])
         }
@@ -257,6 +270,22 @@ public actor BackgroundJobStore {
         }
     }
 
+    /// True while any member of one trusted native advisory group is still
+    /// non-terminal. Used by the duration-advisory sink's liveness gate and
+    /// by group end-of-work bookkeeping; a phased operation stays "live"
+    /// between bound phase handoffs, so its advisory is never dropped or
+    /// duplicated at a phase boundary.
+    public func hasActiveJobs(advisoryGroupID: UUID) async throws -> Bool {
+        try await database.reader { db in
+            try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM (
+                    SELECT 1 FROM background_jobs
+                    WHERE advisory_group_id=? AND state IN ('queued','running') LIMIT 1
+                )
+                """, arguments: [advisoryGroupID.uuidString]).map { $0 > 0 } ?? false
+        }
+    }
+
     /// Non-terminal jobs across all conversations, used to mark interrupted
     /// work after a process restart.
     public func activeJobs(limit: Int = 200) async throws -> [BackgroundJob] {
@@ -292,7 +321,9 @@ public actor BackgroundJobStore {
             resultPath: row["result_path"],
             outputPath: row["output_path"], outputBytes: row["output_bytes"],
             lastError: row["last_error"],
-            workspaceRootPath: row["workspace_root_path"], environmentID: row["environment_id"], retryCount: row["retry_count"],
+            workspaceRootPath: row["workspace_root_path"], environmentID: row["environment_id"],
+            advisoryGroupID: (row["advisory_group_id"] as String?).flatMap(UUID.init(uuidString:)),
+            retryCount: row["retry_count"],
             createdAt: row["created_at"], updatedAt: row["updated_at"],
             completedAt: row["completed_at"]
         )

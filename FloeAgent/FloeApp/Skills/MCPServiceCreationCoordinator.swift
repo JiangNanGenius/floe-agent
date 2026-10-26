@@ -87,6 +87,11 @@ struct MCPServiceCreationRecord: Codable, Identifiable, Equatable, Sendable {
 
 @MainActor
 protocol MCPServiceCreationBackend: AnyObject {
+    /// Releases the trusted advisory-group lease of one creation record when
+    /// the record reaches an owner-terminal phase (the one-time duration
+    /// advisory's operation lifecycle). The default no-op keeps existing
+    /// conformers and test doubles source-compatible.
+    func releaseAdvisoryLease(recordID: UUID) async
     func resolve(_ record: MCPServiceCreationRecord) async throws -> MCPServiceCreationBinding
     func prepare(_ record: MCPServiceCreationRecord, template: MCPServiceTemplate.VerifiedPackage) async throws
     /// Uses a persisted run if present; never repeats a possibly accepted request.
@@ -381,6 +386,15 @@ final class MCPServiceCreationCoordinator: ObservableObject {
         if let index = records.firstIndex(where: { $0.id == record.id }) { records[index] = record }
     }
     private func persist(_ record: MCPServiceCreationRecord) async throws {
+        // Owner-terminal phase (ready/added/stopped/failed/interrupted):
+        // release the trusted advisory-group lease so the duration-advisory
+        // liveness answer falls back to the real job rows and any queued
+        // advisory of a CLOSED operation is withdrawn. Idempotent; success
+        // phases normally arrive here after the build driver already
+        // released, which is a harmless no-op.
+        if !record.phase.isProcessing {
+            await backend.releaseAdvisoryLease(recordID: record.id)
+        }
         // A view can cancel while an earlier settings write is suspended.
         // Serialize actual writes in the same order as actor state changes,
         // so an old phase cannot land after the stop/commit receipt.

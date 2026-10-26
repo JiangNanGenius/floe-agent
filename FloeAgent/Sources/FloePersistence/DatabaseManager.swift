@@ -95,6 +95,7 @@ public actor DatabaseManager {
         V51ChatPreferences.register(into: &migrator)
         V52PersonalizationRetention.register(into: &migrator)
         V53ConversationVisibility.register(into: &migrator)
+        V54JobAdvisoryGroups.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

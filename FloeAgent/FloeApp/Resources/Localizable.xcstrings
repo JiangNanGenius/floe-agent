@@ -490,6 +490,40 @@
         }
       }
     },
+    "app.app_environment.background_task_still_running_body": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A long-running task has been executing for 10 minutes and will continue. You can check its progress or stop it at any time."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一个长时任务已执行 10 分钟，将继续执行；可随时查看进度或停止。"
+          }
+        }
+      }
+    },
+    "app.app_environment.background_task_still_running_title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Task still running"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "任务仍在执行"
+          }
+        }
+      }
+    },
     "app.floe_agent_app.archive": {
       "extractionState": "manual",
       "localizations": {

@@ -372,6 +372,16 @@ public struct NativeJobProgressDocument: Sendable, Equatable, Codable {
     public var prepared: NativeJobPreparationSummary?
     public var progress: NativeJobProgress?
     public var cancellationRequested: Bool?
+    /// When the one-time long-run duration advisory (600 s host monotonic
+    /// elapsed) was DURABLY ENQUEUED for this job/its advisory group. Written
+    /// strictly AFTER the outbox enqueue was accepted, so a skipped or failed
+    /// delivery never leaves a marker claiming it happened — and "queued" is
+    /// never called "delivered". Additive optional field: old documents
+    /// decode unchanged (schema stays 1) and a missing value simply means
+    /// "no advisory was enqueued". Diagnostics and idempotence backstop only
+    /// — the authoritative dedupe lives in the monitor's fired-key set and
+    /// the outbox's stable identifier.
+    public var durationAdvisoryEnqueuedAt: Date?
     public var updatedAt: Date?
 
     public init(schema: Int = NativeJobProgressDocument.currentSchema,
@@ -379,12 +389,14 @@ public struct NativeJobProgressDocument: Sendable, Equatable, Codable {
                 prepared: NativeJobPreparationSummary? = nil,
                 progress: NativeJobProgress? = nil,
                 cancellationRequested: Bool? = nil,
+                durationAdvisoryEnqueuedAt: Date? = nil,
                 updatedAt: Date? = nil) {
         self.schema = schema
         self.origin = origin
         self.prepared = prepared
         self.progress = progress
         self.cancellationRequested = cancellationRequested
+        self.durationAdvisoryEnqueuedAt = durationAdvisoryEnqueuedAt
         self.updatedAt = updatedAt
     }
 
@@ -444,6 +456,19 @@ public actor NativeJobProgressRecorder {
         } else {
             scheduleFlush()
         }
+    }
+
+    /// Records that the one-time long-run duration advisory was DURABLY
+    /// ENQUEUED (called strictly after the outbox accepted it) WITHOUT
+    /// touching execution state: no stage change, no terminal claim, no unit
+    /// reset. Best-effort by contract — the store only persists while the
+    /// job is running, and a failure here can never fail the job (the
+    /// durable outbox identifier is the delivery-side dedupe).
+    public func markDurationAdvisoryEnqueued(at date: Date = Date()) async {
+        guard !finished else { return }
+        document.durationAdvisoryEnqueuedAt = date
+        document.updatedAt = date
+        await write()
     }
 
     public func markCancellationRequested(note: String? = nil) async {

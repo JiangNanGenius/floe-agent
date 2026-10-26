@@ -845,6 +845,9 @@ public func registerBackgroundJobTools(
     policy: NativeJobActionPolicy = .default,
     adapters: [String: NativeJobServiceAdapter] = [:],
     onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
+    /// One-time long-run duration advisory monitor (600 s host monotonic
+    /// elapsed); nil keeps the service silent (tests/SPM hosts).
+    durationReminder: LongRunDurationReminder? = nil,
     downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
     downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
     downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil,
@@ -865,6 +868,7 @@ public func registerBackgroundJobTools(
         policy: policy,
         adapters: adapters,
         onTerminal: onTerminal,
+        durationReminder: durationReminder,
         downloadHandler: downloadHandler,
         downloadCancelHandler: downloadCancelHandler,
         downloadTaskLiveness: downloadTaskLiveness,

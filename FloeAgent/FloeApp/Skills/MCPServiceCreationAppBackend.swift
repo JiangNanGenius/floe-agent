@@ -232,6 +232,12 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
     /// the persisted `buildJobID` anchor is never rewritten here (re-entry
     /// re-traverses the completed bound phases instead of replaying them).
     func waitForBuild(_ record: MCPServiceCreationRecord) async throws {
+        // The trusted advisory-group lease spans the whole phased build:
+        // group liveness stays true across phase-handoff gaps (a fired
+        // duration advisory is never swallowed between two bound phases),
+        // and the lease is released exactly once at this driver's terminal
+        // exit — success, failure, cancellation or ownership refusal.
+        defer { scheduleAdvisoryLeaseRelease(record.id) }
         guard let id = record.buildJobID, let binding = record.binding else { throw ownershipError() }
         var currentID = id
         while true {
@@ -353,6 +359,11 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
     }
 
     func stop(_ record: MCPServiceCreationRecord) async throws {
+        // Stop is a terminal exit for the trusted operation even when the
+        // build driver is not (or no longer) running: release the advisory
+        // group lease so a queued duration advisory cannot read a stopped
+        // creation as live.
+        defer { scheduleAdvisoryLeaseRelease(record.id) }
         stopping.insert(record.id)
         if let client = clients.removeValue(forKey: record.id) { await client.disconnect() }
         await environment.conversationCenter.cancel(runID: record.runID)
@@ -526,10 +537,40 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
         throw CancellationError()
     }
 
+    /// Trusted-operation lease release (protocol entry, called by the
+    /// coordinator when the record reaches an owner-terminal phase): drops
+    /// the lease AND withdraws any still-queued duration advisory of this
+    /// operation, so a late "still running" reminder never outlives the
+    /// actual end. Never touches job state, payload binding or terminals.
+    func releaseAdvisoryLease(recordID: UUID) async {
+        guard let jobs = environment.backgroundJobService else { return }
+        await jobs.releaseAdvisoryGroupLease(groupID: recordID)
+        await environment.backgroundRunCoordinator.discardPendingDurationAdvisory(
+            ownershipKey: "job.\(recordID.uuidString)")
+    }
+
+    /// Fire-and-forget variant for `defer` sites (the build driver's terminal
+    /// exits cannot await): a delayed release merely widens the tiny window
+    /// in which a queued advisory may still read the group as live, and the
+    /// coordinator's terminal-phase release is the authoritative close.
+    private func scheduleAdvisoryLeaseRelease(_ recordID: UUID) {
+        Task { [weak self] in
+            await self?.releaseAdvisoryLease(recordID: recordID)
+        }
+    }
+
     /// Submits one bounded owned build phase. Same explicit run, toolCall
     /// keying by the deterministic per-record phase ID, environment, root
-    /// lease, workspace ceiling, native submission source, 600s timeout and
-    /// output bound as the previous single build row. No timeout is raised.
+    /// lease, workspace ceiling, native submission source, payload bytes and
+    /// output bound as the previous single build row. The payload's literal
+    /// `timeout: 600` is preserved BYTE-IDENTICAL (row validation binds those
+    /// exact bytes); under the new time policy (2026-10-26) a bare number is
+    /// an advisory hint, so the phase's effective execution is unlimited
+    /// instead of the old app-default 600 s kill — no payload edit, no phase
+    /// replay, and terminal historical rows stay terminal. The record id is
+    /// bound as the trusted native advisory group so the phases of ONE
+    /// creation share one 600 s reminder identity (no per-phase reset or
+    /// duplicate advisory).
     /// The payload is taken from the single `expectedBuildPayload` source, so
     /// the bytes submitted here are exactly the bytes later rows are validated
     /// against and the two can never drift apart.
@@ -544,7 +585,10 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
             targetTool: "exec.shell", payloadJSON: JSONEncoder().encode(args), scope: .local,
             workspaceRootURL: binding.root, allowedWorkspacePaths: [],
             environmentID: record.request.environmentID, submissionSource: .nativeService,
-            waitForCompletion: false)
+            waitForCompletion: false,
+            // Trusted native parent-operation advisory identity (never a
+            // model-supplied alias): one creation record = one advisory.
+            advisoryGroupID: record.id)
         try verifyOwned(job, record: record, tool: "exec.shell")
         try await settleLateSubmission(job, record: record)
         return job.id

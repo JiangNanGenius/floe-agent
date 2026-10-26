@@ -79,6 +79,10 @@ public actor BackgroundJobService {
     /// required finite job is outstanding.
     private let registerDependency: DependencyRegistrar?
     private let resolveDependency: DependencyResolver?
+    /// One-time long-run duration advisory monitor (600 s host monotonic
+    /// elapsed). App-injected; nil keeps tests/SPM hosts silent. Observe-only:
+    /// arming, firing or dropping an advisory never changes job state.
+    private let durationReminder: LongRunDurationReminder?
     /// App-injected owner for download jobs backed by a background URLSession.
     /// Returning true transfers persistence/completion ownership to the handler.
     private let downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)?
@@ -88,6 +92,13 @@ public actor BackgroundJobService {
     /// Launch reconciliation only interrupts download jobs whose task is gone.
     private let downloadTaskLiveness: (@Sendable (UUID) async -> Bool)?
 
+    /// Trusted native advisory-group leases. A grouped submit acquires the
+    /// lease for its group; the owning native flow (e.g. the MCP creation
+    /// build driver) releases it when the OPERATION reaches its terminal
+    /// exit. The lease — not an inference from currently-active member rows —
+    /// keeps the group liveness answer true across phase-handoff gaps, so a
+    /// fired advisory between two bound phases is never swallowed.
+    private var advisoryGroupLeases: Set<UUID> = []
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var cancellations: [UUID: CancellationToken] = [:]
     private var preparedOperations: [UUID: any NativeJobPreparedOperation] = [:]
@@ -100,6 +111,7 @@ public actor BackgroundJobService {
         policy: NativeJobActionPolicy = .default,
         adapters: [String: NativeJobServiceAdapter] = [:],
         onTerminal: @escaping @Sendable (BackgroundJob) async -> Void = { _ in },
+        durationReminder: LongRunDurationReminder? = nil,
         downloadHandler: (@Sendable (BackgroundJob, BackgroundJobDownloadContext) async throws -> Bool)? = nil,
         downloadCancelHandler: (@Sendable (UUID) async -> Void)? = nil,
         downloadTaskLiveness: (@Sendable (UUID) async -> Bool)? = nil,
@@ -112,6 +124,7 @@ public actor BackgroundJobService {
         self.policy = policy
         self.adapters = adapters
         self.onTerminal = onTerminal
+        self.durationReminder = durationReminder
         self.downloadHandler = downloadHandler
         self.downloadCancelHandler = downloadCancelHandler
         self.downloadTaskLiveness = downloadTaskLiveness
@@ -155,8 +168,25 @@ public actor BackgroundJobService {
         /// the job reaches a terminal state (finite jobs) or a long-lived
         /// service is verifiably ready. `false` is an explicit fire-and-forget
         /// submission: the run may finish and the job continues independently.
-        waitForCompletion: Bool = true
+        waitForCompletion: Bool = true,
+        /// Trusted native parent-operation identity for the one-time long-run
+        /// duration advisory (e.g. one MCP creation record across its bound
+        /// build phases): the group shares ONE advisory ownership key, so a
+        /// phase handoff neither resets the 600-second threshold nor
+        /// duplicates the advisory. Only a `.nativeService` submission may
+        /// bind it; a model/runtime submission carrying a group is refused —
+        /// a model-supplied alias is not ownership.
+        advisoryGroupID: UUID? = nil
     ) async throws -> BackgroundJob {
+        if advisoryGroupID != nil, submissionSource != .nativeService {
+            throw FloeError.validationFailed(
+                "advisoryGroupID is reserved for trusted native submissions; a runtime/model call can never bind advisory ownership")
+        }
+        if let advisoryGroupID {
+            // The first grouped member opens the operation's lease; later
+            // members are idempotent (set semantics).
+            advisoryGroupLeases.insert(advisoryGroupID)
+        }
         guard !RetiredExecutionTools.contains(targetTool) else {
             throw FloeError.validationFailed("This execution tool was removed. Inspect existing outputs first, then use exec.shell in the task Linux environment; long commands use jobs.submit.")
         }
@@ -314,7 +344,8 @@ public actor BackgroundJobService {
             targetTool: targetTool, payloadJSON: payloadJSON,
             progressJSON: progressDocument.encoded(),
             workspaceRootPath: workspaceRootURL?.path,
-            environmentID: environmentID
+            environmentID: environmentID,
+            advisoryGroupID: advisoryGroupID
         )
         let persisted: BackgroundJob
         do {
@@ -374,6 +405,28 @@ public actor BackgroundJobService {
         let token = CancellationToken()
         cancellations[job.id] = token
         if let prepared { preparedOperations[job.id] = prepared }
+        // One-time long-run duration advisory. Armed for finite tool work
+        // (jobs.submit exec.shell AND native long-operation adapters).
+        // Skipped by design for `.download` (system-owned URLSession
+        // lifecycle that survives relaunch — an in-process monotonic timer
+        // would be dishonest) and for `exec.localService` (indefinite by
+        // design with its own ready/terminal notifications). A grouped
+        // operation arms ONE key for the whole operation: `begin` is
+        // idempotent, so later phases neither reset the threshold nor
+        // duplicate the advisory, and distinct independent jobs stay
+        // distinct. Arming is observe-only and cannot fail the job.
+        if durationReminder != nil, job.kind == .tool, job.targetTool != "exec.localService" {
+            Task { [durationReminder] in
+                await durationReminder?.begin(
+                    key: Self.advisoryKey(job: job),
+                    conversationID: job.conversationID,
+                    runID: job.runID,
+                    jobID: job.id,
+                    advisoryGroupID: job.advisoryGroupID,
+                    label: job.targetTool
+                )
+            }
+        }
         let recorder = NativeJobProgressRecorder(store: store, jobID: job.id, document: progressDocument)
         progressRecorders[job.id] = recorder
         let registry = self.registry
@@ -552,6 +605,51 @@ public actor BackgroundJobService {
         try await store.job(id: id)
     }
 
+    /// The trusted native owner lease is authoritative across phase handoffs
+    /// and after its terminal exit. A still-draining member cannot revive it.
+    public func advisoryGroupIsLive(groupID: UUID) -> Bool {
+        advisoryGroupLeases.contains(groupID)
+    }
+
+    public func advisoryTargetIsLive(jobID: UUID, advisoryGroupID: UUID?) async -> Bool {
+        if let advisoryGroupID {
+            return advisoryGroupIsLive(groupID: advisoryGroupID)
+        }
+        guard let job = try? await store.job(id: jobID) else { return false }
+        return !job.state.isTerminal
+    }
+
+    /// Legacy queued identifiers may name a held group lease or a single job.
+    /// Closed groups never fall back to the state of their draining members.
+    public func advisoryKeyIsLive(_ keyID: UUID) async -> Bool {
+        if advisoryGroupLeases.contains(keyID) { return true }
+        guard let job = try? await store.job(id: keyID) else { return false }
+        return !job.state.isTerminal
+    }
+
+    /// Releases the trusted operation lease once the owning native flow
+    /// reaches its terminal exit. Idempotent; never touches job state.
+    public func releaseAdvisoryGroupLease(groupID: UUID) {
+        advisoryGroupLeases.remove(groupID)
+    }
+
+    /// True while the trusted operation lease is held (test/diagnostics).
+    public func holdsAdvisoryGroupLease(groupID: UUID) -> Bool {
+        advisoryGroupLeases.contains(groupID)
+    }
+
+    /// Best-effort durable marker that the one-time advisory was DURABLY
+    /// ENQUEUED — called strictly after the outbox accepted the event, so a
+    /// queued reminder is never recorded as delivered (diagnostics +
+    /// idempotence backstop; the authoritative dedupe is the monitor's fired
+    /// key plus the outbox identifier). The recorder persists only while the
+    /// job is running and a failure never propagates: the running job and
+    /// the notification outcome are both unaffected.
+    public func markDurationAdvisoryEnqueued(jobID: UUID, at date: Date) async {
+        guard let recorder = progressRecorders[jobID] else { return }
+        await recorder.markDurationAdvisoryEnqueued(at: date)
+    }
+
     /// Resolve ownership from the durable run, not a caller-supplied task ID.
     public func ownedJob(id: UUID, runID: UUID) async throws -> BackgroundJob {
         guard let owner = try await store.conversationID(runID: runID),
@@ -676,11 +774,30 @@ public actor BackgroundJobService {
         return text.contains("cancelled") || text.contains("canceled")
     }
 
+    /// The advisory ownership key of one job: the trusted native group when
+    /// bound, otherwise the job itself. Runtime-issued identities only.
+    static func advisoryKey(job: BackgroundJob) -> String {
+        "job.\((job.advisoryGroupID ?? job.id).uuidString)"
+    }
+
     private func jobDidFinish(_ job: BackgroundJob) {
         runningTasks[job.id] = nil
         cancellations[job.id] = nil
         preparedOperations[job.id] = nil
         progressRecorders[job.id] = nil
+        // Disarm the advisory for an UNGROUPED job at its terminal state (no
+        // alert after completion/cancel). A grouped key is deliberately NOT
+        // ended here: sibling phases of one operation may still be running or
+        // about to be submitted, and the monitor's own fire-time bookkeeping
+        // plus the sink's group-liveness gate make a late fire harmless
+        // (dropped silently, entry removed). The armed entry's lifetime is
+        // bounded by the threshold measured from the operation's first begin.
+        if durationReminder != nil, job.advisoryGroupID == nil,
+           job.kind == .tool, job.targetTool != "exec.localService" {
+            Task { [durationReminder] in
+                await durationReminder?.end(key: Self.advisoryKey(job: job))
+            }
+        }
         if let resolveDependency {
             let state = Self.dependencyState(for: job.state)
             let note = job.lastError ?? "job \(job.state.rawValue)"
@@ -694,6 +811,16 @@ public actor BackgroundJobService {
         cancellations[id] = nil
         preparedOperations[id] = nil
         progressRecorders[id] = nil
+        if let durationReminder {
+            // Same ungrouped-only disarm rule as `jobDidFinish(_:)`; the job
+            // row is re-read for its honest group/kind identity.
+            Task { [store] in
+                guard let job = try? await store.job(id: id) else { return }
+                guard job.advisoryGroupID == nil, job.kind == .tool,
+                      job.targetTool != "exec.localService" else { return }
+                await durationReminder.end(key: Self.advisoryKey(job: job))
+            }
+        }
         if let resolveDependency {
             Task { [store] in
                 guard let job = try? await store.job(id: id) else { return }

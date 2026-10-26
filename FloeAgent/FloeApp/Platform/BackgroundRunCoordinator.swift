@@ -1666,7 +1666,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             notifiesCompleted: policy.shouldNotifyTerminal(succeeded: true),
             notifiesFailed: policy.shouldNotifyTerminal(succeeded: false),
             notifiesCancelled: policy.shouldNotifyCancellation,
-            notifiesActionRequired: policy.shouldNotifyActionRequired
+            notifiesActionRequired: policy.shouldNotifyActionRequired,
+            // The one-time long-run duration advisory is a mid-run
+            // checkpoint while the work continues: it follows the user's
+            // stage-notification preference (default policy `.stages` keeps
+            // the human-policy reminder on).
+            notifiesDurationAdvisory: policy.shouldNotifyStages
         )
     }
 
@@ -1679,6 +1684,23 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         notificationAuthorization = state
         let presentable = notificationOutbox.takePresentable(canPresent: state.canPresentAlert)
         for event in presentable {
+            if event.kind == .durationAdvisory {
+                // A QUEUED duration advisory is re-validated against the
+                // CURRENT target liveness before it may post: a reminder
+                // whose work actually finished while notification
+                // authorization was missing is expired and must never be
+                // delivered late (no stale "still running" alert after real
+                // completion/cancel). The dropped event is not re-queued.
+                if await queuedAdvisoryIsStillLive(event) {
+                    post(event)
+                } else {
+                    notificationOutbox.discard(identifier: event.identifier)
+                    persistNotificationOutbox()
+                    FloeLogger(category: .app).info(
+                        "durationAdvisoryExpired identifier=\(event.identifier)")
+                }
+                continue
+            }
             post(event)
         }
         if !state.canPresentAlert, let first = notificationOutbox.pending.first {
@@ -1699,12 +1721,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// flushed by `refreshNotificationAuthorizationAndFlush`, never dropped.
     /// Foreground and background both go through UNUserNotificationCenter; in
     /// the foreground `willPresent` shows the system banner.
+    @discardableResult
     func enqueueTerminalNotification(
         event: TaskTerminalEvent,
         policy: TaskNotificationPolicy? = nil
-    ) {
+    ) -> Bool {
         let gate = Self.eventGate(for: policy)
-        guard gate.allows(event.kind) else { return }
+        guard gate.allows(event.kind) else { return false }
         let disposition = notificationOutbox.enqueue(
             event,
             canPresent: notificationAuthorization.canPresentAlert
@@ -1723,6 +1746,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             )
         }
         persistNotificationOutbox()
+        switch disposition {
+        case .presentNow: return true
+        case .queuedForAuthorization, .replacedQueuedEvent:
+            return notificationOutbox.pending.contains { $0.identifier == event.identifier }
+        }
     }
 
     private func post(_ event: TaskTerminalEvent) {
@@ -1766,6 +1794,94 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     private func persistNotificationOutbox() {
         TaskNotificationOutboxStore.save(notificationOutbox)
+    }
+
+    /// Recheck queued reminders against their own operation, never merely
+    /// against a parent run which can outlive an individual command.
+    private func queuedAdvisoryIsStillLive(_ event: TaskTerminalEvent) async -> Bool {
+        let prefix = "duration.advisory."
+        guard event.identifier.hasPrefix(prefix) else { return false }
+        let ownershipKey = String(event.identifier.dropFirst(prefix.count))
+        if ownershipKey.hasPrefix("shell.") {
+            return await environment.durationAdvisoryWorkIsActive(ownershipKey: ownershipKey)
+        }
+        if let groupID = event.durationTargetGroupID {
+            guard let service = environment.backgroundJobService else { return false }
+            return await service.advisoryGroupIsLive(groupID: groupID)
+        }
+        if let jobID = event.durationTargetJobID {
+            guard let service = environment.backgroundJobService else { return false }
+            return await service.advisoryKeyIsLive(jobID)
+        }
+        if ownershipKey.hasPrefix("job."),
+           let uuid = UUID(uuidString: String(ownershipKey.dropFirst("job.".count))) {
+            guard let service = environment.backgroundJobService else { return false }
+            return await service.advisoryKeyIsLive(uuid)
+        }
+        return false
+    }
+
+    /// One-time long-run duration advisory (new time policy: default
+    /// execution is unlimited; ONE reminder at 600 seconds of host monotonic
+    /// elapsed execution while the work simply continues). The caller
+    /// (AppEnvironment's sink) has already applied the liveness gate, so this
+    /// never alerts for finished/cancelled work. Policy gates creation and
+    /// authorization gates delivery through the SAME durable outbox as
+    /// terminal events: the stable `duration.advisory.<ownershipKey>`
+    /// identifier replaces instead of stacks, a blocked authorization queues
+    /// the reminder for the next flush, and permission/storage failures stay
+    /// diagnostics — the running job is never touched.
+    @discardableResult
+    func enqueueDurationAdvisory(
+        ownershipKey: String,
+        conversationID: UUID?,
+        runID: UUID?,
+        jobID: UUID?,
+        advisoryGroupID: UUID?,
+        deliveryFence: @escaping @Sendable () async -> Bool
+    ) async -> Bool {
+        guard let conversationID else {
+            FloeLogger(category: .app).info(
+                "durationAdvisoryDropped reason=noConversation key=\(ownershipKey)")
+            return false
+        }
+        let policy = try? await SQLiteWorkspaceStore(database: environment.database)
+            .taskPolicy(conversationID: conversationID)
+        guard await deliveryFence() else { return false }
+        return enqueueTerminalNotification(
+            event: .durationAdvisory(
+                ownershipKey: ownershipKey,
+                title: FloeL10n.l("app.app_environment.background_task_still_running_title"),
+                body: FloeL10n.l("app.app_environment.background_task_still_running_body"),
+                deepLink: BackgroundWorkDeepLink(
+                    kind: .modelRun,
+                    conversationID: conversationID,
+                    runID: runID
+                ),
+                // Backward-compatible re-validation targets for the queued
+                // advisory flush (no identifier parsing needed).
+                jobID: jobID,
+                advisoryGroupID: advisoryGroupID
+            ),
+            policy: policy?.notificationPolicy
+        )
+    }
+
+    /// Withdraws a still-QUEUED (authorization-blocked) duration advisory
+    /// for one ownership key when its owning operation reaches its terminal
+    /// close, so a late "still running" reminder never outlives the actual
+    /// end of the work. An alert already handed to the OS is the accepted
+    /// non-atomic window; this forbids only KNOWN-terminal late delivery.
+    /// Ordinary terminal notifications are never touched.
+    func discardPendingDurationAdvisory(ownershipKey: String) {
+        let identifier = "duration.advisory.\(ownershipKey)"
+        let before = notificationOutbox.pendingCount
+        notificationOutbox.discard(identifier: identifier)
+        if notificationOutbox.pendingCount != before {
+            persistNotificationOutbox()
+            FloeLogger(category: .app).info(
+                "durationAdvisoryWithdrawn identifier=\(identifier)")
+        }
     }
 
     /// Real authorization plus the last scheduling failure/success for the
