@@ -477,6 +477,7 @@
 		7FF25E2B1292CF6D209DF273 /* RemoteVideoTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E1119B75277D02189270CF0 /* RemoteVideoTools.swift */; };
 		7FF5273B50A764C21F4113FA /* NotesAgentTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3643698ECE842C34421E377 /* NotesAgentTools.swift */; };
 		8060EE1EC582A8FA0E81829B /* OfficeInkCardLoopFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F75EFD200A985777AC9E9C2 /* OfficeInkCardLoopFixture.swift */; };
+		809C0C37A9309B9BC62FE6B2 /* LinuxGuestLoopbackProvisioningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9510D1D779925FDCB28E153C /* LinuxGuestLoopbackProvisioningTests.swift */; };
 		80B01593D778B863445C3AB9 /* MCPServiceTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26EC38497832599C27DEBCB /* MCPServiceTemplateTests.swift */; };
 		80CC18DA42562A75DA3A2B8C /* StorageDataManagementUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F00FE870F600026D4457980 /* StorageDataManagementUITests.swift */; };
 		80F0C36814D20EE8E41C4F8F /* CapabilityExecutionRouterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE6C8028BD08725BB2E7F7A4 /* CapabilityExecutionRouterTests.swift */; };
@@ -1534,6 +1535,7 @@
 		94887B9B21A13FC868134B1E /* WidgetTaskSnapshotCodecTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTaskSnapshotCodecTests.swift; sourceTree = "<group>"; };
 		94E85B49344D2CF8C81020AE /* ChildRunResumeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChildRunResumeTests.swift; sourceTree = "<group>"; };
 		94F011DCFAB5ED310BF8AD02 /* ChatAutomaticReadControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAutomaticReadControllerTests.swift; sourceTree = "<group>"; };
+		9510D1D779925FDCB28E153C /* LinuxGuestLoopbackProvisioningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxGuestLoopbackProvisioningTests.swift; sourceTree = "<group>"; };
 		951E4559DE7BAC0CAEB76029 /* TaskScheduleToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskScheduleToolTests.swift; sourceTree = "<group>"; };
 		953DD1FDE34A0EA19D81E0AE /* DesignWorkModeSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignWorkModeSection.swift; sourceTree = "<group>"; };
 		95A8E32A62F993F42084705E /* FloeShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeShortcuts.swift; sourceTree = "<group>"; };
@@ -3624,6 +3626,7 @@
 				CDE7C9846D09A655344648AA /* JobOutputPagingTests.swift */,
 				539F31408E05AE89AC0A3FA5 /* LinuxGuestBackendTests.swift */,
 				7E9DE1B1F43C125C8CFCDDDE /* LinuxGuestConsoleSinkTests.swift */,
+				9510D1D779925FDCB28E153C /* LinuxGuestLoopbackProvisioningTests.swift */,
 				2A584E0DC8FB3226A9FB3E98 /* LinuxGuestPythonFastProvisionTests.swift */,
 				499090BEA6BF5C7682346703 /* LinuxGuestTransientOwnershipTests.swift */,
 				C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */,
@@ -4688,6 +4691,7 @@
 				FCD2E354FB678A9A1CB365D9 /* LinuxComponentUpdatePolicyTests.swift in Sources */,
 				C5CB4AFD633CF0A3AA9032D2 /* LinuxGuestBackendTests.swift in Sources */,
 				C123AF9288872B54F842F1D8 /* LinuxGuestConsoleSinkTests.swift in Sources */,
+				809C0C37A9309B9BC62FE6B2 /* LinuxGuestLoopbackProvisioningTests.swift in Sources */,
 				1AD2CFB82DA3486476563058 /* LinuxGuestPythonFastProvisionTests.swift in Sources */,
 				05C4384FBAAE510433790B53 /* LinuxGuestTransientOwnershipTests.swift in Sources */,
 				98877EBD8DADE3ACA158D43C /* LinuxSoftRestartTests.swift in Sources */,

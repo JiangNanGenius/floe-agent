@@ -212,11 +212,11 @@ struct FakeImageResolver: LinuxGuestImageResolving {
     }
 }
 
-private func makeDescriptor(id: String, imageID: String = "test-image") -> LinuxGuestEnvironmentDescriptor {
+func makeDescriptor(id: String, imageID: String = "test-image") -> LinuxGuestEnvironmentDescriptor {
     LinuxGuestEnvironmentDescriptor(id: id, ownerID: "owner", imageID: imageID)
 }
 
-private func makeImage(qualified: Bool = true) -> LinuxGuestImage {
+func makeImage(qualified: Bool = true) -> LinuxGuestImage {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("floe-linux-test-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -241,11 +241,11 @@ private func makeImage(qualified: Bool = true) -> LinuxGuestImage {
     )
 }
 
-private func caps(_ token: String) -> [Data] {
+func caps(_ token: String) -> [Data] {
     [Data("\u{1e}FLOE-CAPS \(token) runner=2.0.0 protocol=3 maxCommands=8 maxSessions=4\u{1e}\u{1e}FLOE-END \(token) 0\u{1e}".utf8)]
 }
 
-private func reply(_ token: String, stdout: String = "hi", stderr: String = "oops", exit: Int32 = 0) -> [Data] {
+func reply(_ token: String, stdout: String = "hi", stderr: String = "oops", exit: Int32 = 0) -> [Data] {
     var data = Data()
     data.append(Data("\u{1e}FLOE-BEGIN \(token)\u{1e}\u{1e}FLOE-OUT \(token)\u{1e}".utf8))
     data.append(Data(stdout.utf8))

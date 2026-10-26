@@ -305,6 +305,11 @@ public actor TinyEMULinuxGuestRegistry {
         /// anything, so a stale operation can never resurrect the old handle or
         /// mutate a replacement session.
         var generation: UInt64
+        /// Result of this boot's one-shot loopback provisioning frame
+        /// (LinuxGuestLoopbackProvisioning). nil only when the frame never
+        /// ran — e.g. a quarantined survivor that predates it. Diagnostics
+        /// only: it never gates availability or the reported network status.
+        var loopbackProvisioning: LinuxGuestLoopbackProvisioningOutcome? = nil
     }
 
     private let environments: any LinuxGuestEnvironmentProviding
@@ -334,6 +339,12 @@ public actor TinyEMULinuxGuestRegistry {
     /// grew the raw container. The guest still runs at its previous
     /// capacity; the UI surfaces this as a repair state.
     private var diskResizeFailures: [String: String] = [:]
+    /// Loopback provisioning record: the session generation for which the
+    /// one per-boot repair frame was evaluated, plus its outcome. A fresh
+    /// boot mints a fresh generation (see `Session.generation`), so every
+    /// real boot re-evaluates exactly once and a mark from an older
+    /// generation is never read as current.
+    private var loopbackProvisioning: [String: LinuxGuestLoopbackProvisioningRecord] = [:]
     private var terminalSessions: [String: TerminalSession] = [:]
     /// Environments whose start is in flight. The actor is reentrant across
     /// awaits, so without this a concurrent start of the same environment
@@ -817,6 +828,13 @@ public actor TinyEMULinuxGuestRegistry {
     private func nextSessionGeneration() -> UInt64 {
         sessionGenerationCounter &+= 1
         return sessionGenerationCounter
+    }
+
+    /// One evaluated loopback-provisioning frame, keyed by the session
+    /// generation it ran for.
+    private struct LinuxGuestLoopbackProvisioningRecord: Sendable {
+        var generation: UInt64
+        var outcome: LinuxGuestLoopbackProvisioningOutcome
     }
 
     /// Mints the owner token for the next lifecycle operation.
@@ -1565,6 +1583,68 @@ public actor TinyEMULinuxGuestRegistry {
             throw stopError
         }
 
+        // One-shot guest loopback provisioning for this real boot. The
+        // pinned image's PID 1 runner configures eth0 only, so a fresh boot
+        // has `lo` down with no 127.0.0.1 and guest-local 127.0.0.1 clients
+        // (local-service supervisor checks, webapp self-fetches) leak their
+        // SYN out eth0 into slirp. Validate and, when needed, repair this
+        // BEFORE the session registers, so no exec/local-service workload
+        // can observe the unprovisioned state. Bounded, idempotent and
+        // guest-local only; the outcome is recorded and logged, and never
+        // fails the start (a poisoned console — the one unrecoverable case —
+        // abandons the boot under the existing channel contract below).
+        let launchGeneration = nextSessionGeneration()
+        let loopbackOutcome = await provisionGuestLoopback(
+            environmentID: environmentID,
+            channel: sessionChannel,
+            generation: launchGeneration
+        )
+        if case .failedCommandUnavailable = loopbackOutcome,
+           await sessionChannel.isPoisoned {
+            // The single console is in an unknown state and the channel
+            // contract never reuses it: abandon this boot exactly like a
+            // failed runner upgrade so the next start cold-boots a fresh
+            // guest, instead of registering a session whose every later
+            // command would throw. The loopback attempt is never reported
+            // as the start's cause.
+            let consoleError = LinuxGuestError.consoleUnavailable(
+                "the guest console became unavailable during startup loopback provisioning; a fresh guest is cold-started on the next run"
+            )
+            lastErrors[environmentID] = consoleError.localizedDescription
+            quarantinedByFailure = await abandonFailedStart(
+                environmentID: environmentID,
+                descriptor: bootDescriptor,
+                image: runtimeImage,
+                handle: handle,
+                channel: sessionChannel,
+                taskID: taskID,
+                error: consoleError,
+                shareAccessLease: &shareAccessLease,
+                runtimeID: admission?.runtimeID
+            )
+            throw consoleError
+        }
+        if pendingStops.remove(environmentID) != nil {
+            // A stop that landed while the provisioning frame ran owns the
+            // same contract as a stop during the upgrade window above:
+            // abandon this boot instead of registering a guest the caller
+            // already asked to stop.
+            let stopError = LinuxGuestError.startFailed("the guest start was stopped before it completed")
+            lastErrors[environmentID] = stopError.localizedDescription
+            quarantinedByFailure = await abandonFailedStart(
+                environmentID: environmentID,
+                descriptor: bootDescriptor,
+                image: runtimeImage,
+                handle: handle,
+                channel: sessionChannel,
+                taskID: taskID,
+                error: stopError,
+                shareAccessLease: &shareAccessLease,
+                runtimeID: admission?.runtimeID
+            )
+            throw stopError
+        }
+
         var session = Session(
             descriptor: bootDescriptor,
             image: runtimeImage,
@@ -1576,8 +1656,9 @@ public actor TinyEMULinuxGuestRegistry {
             runtimeID: admission?.runtimeID,
             networkStatus: LinuxGuestNetworkStatus.from(capabilities: negotiatedCapabilities),
             shareAccessLease: shareAccessLease,
-            generation: nextSessionGeneration()
+            generation: launchGeneration
         )
+        session.loopbackProvisioning = loopbackOutcome
         do {
             // Requested forwards are part of the start contract: if the
             // engine cannot honor them, the caller must hear it now.
@@ -1626,6 +1707,68 @@ public actor TinyEMULinuxGuestRegistry {
             // degraded network is recorded and surfaced, never smoothed over.
             lastErrors[environmentID] = "Linux guest network \(network.rawValue): \(diagnostic)"
         }
+    }
+
+    /// Runs the one per-boot guest loopback provisioning frame and records
+    /// its outcome. Deliberately NOT routed through `self.run`: this seam
+    /// sits before the session exists, and re-entering the public command
+    /// path would consult session state that is not registered yet. The
+    /// channel is driven directly under the same exclusive-start ownership
+    /// that serializes the runner upgrade and disk resize above, so exactly
+    /// one frame runs per real boot and nothing else can share the console
+    /// at this point. Every path resolves to a recorded outcome — this
+    /// method never throws, never fails the start, and never writes
+    /// `lastErrors` (a degraded loopback degrades localhost workloads only,
+    /// exactly like today; the `net=` vocabulary stays the runner's).
+    private func provisionGuestLoopback(
+        environmentID: String,
+        channel: LinuxGuestCommandChannel,
+        generation: UInt64
+    ) async -> LinuxGuestLoopbackProvisioningOutcome {
+        if let record = loopbackProvisioning[environmentID], record.generation == generation {
+            // Same-generation re-entry (a future retry seam): the frame ran
+            // once for this boot and its answer stands.
+            return record.outcome
+        }
+        let outcome: LinuxGuestLoopbackProvisioningOutcome
+        do {
+            let result = try await channel.run(
+                argv: ["/bin/sh", "-c", LinuxGuestLoopbackProvisioning.shellCommand],
+                timeout: LinuxGuestLoopbackProvisioning.commandTimeout,
+                maxOutputBytes: LinuxGuestLoopbackProvisioning.maxOutputBytes,
+                cancellation: nil
+            )
+            outcome = LinuxGuestLoopbackProvisioning.outcome(from: result)
+        } catch {
+            outcome = .failedCommandUnavailable
+        }
+        loopbackProvisioning[environmentID] = LinuxGuestLoopbackProvisioningRecord(
+            generation: generation, outcome: outcome
+        )
+        switch outcome {
+        case .provisioned:
+            FloeLogger(category: .tools).info(
+                "Linux guest loopback provisioned environment=\(environmentID) generation=\(generation)"
+            )
+        case .skippedAlreadyHealthy:
+            FloeLogger(category: .tools).info(
+                "Linux guest loopback already healthy environment=\(environmentID) generation=\(generation)"
+            )
+        case .failedNoProvisioningTool, .failedRepairRejected, .failedUnrecognized,
+             .failedCommandUnavailable:
+            FloeLogger(category: .tools).error(
+                "Linux guest loopback provisioning unavailable environment=\(environmentID) generation=\(generation) outcome=\(outcome.rawValue); guest-local 127.0.0.1 workloads may time out until loopback is available"
+            )
+        }
+        return outcome
+    }
+
+    /// Test and diagnostic readback of this environment's most recent
+    /// loopback provisioning outcome (nil before the first evaluated boot).
+    func loopbackProvisioningOutcome(
+        environmentID: String
+    ) async -> LinuxGuestLoopbackProvisioningOutcome? {
+        loopbackProvisioning[environmentID]?.outcome
     }
 
     /// Builds the bootable image for a Runtime v2 start: boot artifacts

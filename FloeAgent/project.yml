@@ -953,6 +953,9 @@ targets:
       # Linux command timeout/reap and internal Python compatibility use the
       # production App-linked execution module; no second package build.
       - path: Tests/FloeExecutionTests/LinuxGuestBackendTests.swift
+      # Per-boot guest loopback startup provisioning: scripted-console
+      # regression for the registry seam (no engine, no image).
+      - path: Tests/FloeExecutionTests/LinuxGuestLoopbackProvisioningTests.swift
       - path: Tests/FloeExecutionTests/GuestPythonRuntimeTests.swift
       # G2 integration of the K storage repair: the changed accounting
       # (device-scoped clone-stream dedup, file counts), report builder and
