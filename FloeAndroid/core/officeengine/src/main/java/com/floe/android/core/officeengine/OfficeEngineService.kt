@@ -331,6 +331,9 @@ class OfficeEngineService : Service() {
         /** Bounded first-arming diagnostic per mount (not per event). */
         private var loadGeometryGateDiagnosed = false
 
+        /** One accepted numeric geometry fact per mount, even if JS retries. */
+        private val viewportGeometryDiagnosed = AtomicBoolean(false)
+
         /**
          * Single initial-load funnel for BOTH load branches (attachWebView's
          * pending consumption and the already-attached view race in runOpen).
@@ -567,6 +570,15 @@ class OfficeEngineService : Service() {
             if (retired || presentationSuperseded) return false
             if (OfficeReadOnlyProtocol.command(message) == OfficeRenderWitness.COMMAND) {
                 observeRendererWitness(message)
+                return false
+            }
+            if (OfficeReadOnlyProtocol.command(message) == OfficeViewportGeometry.COMMAND) {
+                if (current !== this@Session) return false
+                OfficeViewportGeometry.diagnosticDetail(message)?.let { detail ->
+                    if (viewportGeometryDiagnosed.compareAndSet(false, true)) {
+                        recordDiagnostic(OfficeSessionDiagnostics.KIND_LIFECYCLE, detail)
+                    }
+                }
                 return false
             }
             if (message == "HULLO" && !hulloClaimed.compareAndSet(false, true)) return false

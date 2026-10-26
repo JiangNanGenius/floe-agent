@@ -403,6 +403,9 @@ object CoolMessageGate {
             "BYE" -> Outcome(Decision.BLOCK_WITHOUT_NOTICE, "bye")
             "HULLO" -> Outcome(Decision.FORWARD)
             OfficeRenderWitness.COMMAND -> Outcome(Decision.BLOCK_WITHOUT_NOTICE)
+            // Numeric-only one-shot layout fact; consumed by the session's
+            // bounded diagnostics and never sent to native.
+            OfficeViewportGeometry.COMMAND -> Outcome(Decision.BLOCK_WITHOUT_NOTICE)
             // The native save ack (kit postDirectMessage, Android): consume
             // quietly; NEVER forward it back into native and never treat it
             // as proof (the page shares this entry point).

@@ -76,7 +76,7 @@
   },
   "floeOverlay": {
     "manifest": "core/officeengine/asset-overlays.json in matching Floe source",
-    "operationCount": 143,
+    "operationCount": 144,
     "sourceFileRecords": [
       {
         "path": "share/registry/floe-preview-policy.xcd",
@@ -592,7 +592,7 @@
         "path": "dist/cool.html",
         "operation": "replace",
         "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
-        "newSha256": "880708fefbc06e72bf339097e7a396f8d340fa0aa6a92c912c10dc7279720a35"
+        "newSha256": "5bb079547f7c95fb88f7d1716e73acfa78844180d590137fb606b18e275761b9"
       },
       {
         "path": "notices/index.html",
@@ -929,6 +929,12 @@
         "operation": "add",
         "originalSha256": null,
         "newSha256": "32390bba3efab8fed6ed70e7b1589dafa7fa2966a0609a8195d83db1b1838a0f"
+      },
+      {
+        "path": "dist/floe-writer-viewport-sync.js",
+        "operation": "add",
+        "originalSha256": null,
+        "newSha256": "3ae240504f38f4a739d2d9d1dc432d302ba2fadb017ce08bd484900d6310910e"
       }
     ],
     "selfEntry": "Own digest excluded to avoid circular hash; it is present in the source overlay manifest."
