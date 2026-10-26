@@ -21,6 +21,7 @@ struct HostListView: View {
     @State private var activeVNCSession: UUID?
     @State private var agentUpdateCandidate: RemoteHostProfile?
     @State private var advancedLinkCandidate: RemoteHostProfile?
+    @State private var sharedSkillsHost: RemoteHostProfile?
 
     init(center: RemoteSessionCenter) {
         self.center = center
@@ -64,6 +65,9 @@ struct HostListView: View {
         }
         .navigationDestination(item: $activeVNCSession) { sessionID in
             VNCView(sessionID: sessionID, center: center)
+        }
+        .navigationDestination(item: $sharedSkillsHost) { host in
+            RemoteSharedSkillsView(host: host, center: center)
         }
         .confirmationDialog("hosts.host_list_view.update_the_floe_daemon",
             isPresented: Binding(
@@ -128,7 +132,8 @@ struct HostListView: View {
                     onConnectTerminal: { connectTerminal(host) },
                     onConnectVNC: { endpoint in connectVNC(host, endpoint: endpoint) },
                     onUpdateAgent: { agentUpdateCandidate = host },
-                    onPairAdvancedLink: { advancedLinkCandidate = host }
+                    onPairAdvancedLink: { advancedLinkCandidate = host },
+                    onManageSkills: { sharedSkillsHost = host }
                 )
                 .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                 .listRowBackground(Color.clear)
@@ -177,6 +182,7 @@ private struct HostRow: View {
     let onConnectVNC: (VNCEndpoint) -> Void
     let onUpdateAgent: () -> Void
     let onPairAdvancedLink: () -> Void
+    let onManageSkills: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -245,6 +251,9 @@ private struct HostRow: View {
                 if host.hasSSHConnection {
                     Spacer(minLength: 0)
                     Menu {
+                        Button(action: onManageSkills) {
+                            Label("remote.skills.title", systemImage: "puzzlepiece.extension")
+                        }
                         if host.isRemoteExecutionEnvironment {
                             Button(action: onUpdateAgent) {
                                 Label("hosts.host_list_view.update_floe_daemon", systemImage: "arrow.triangle.2.circlepath")
