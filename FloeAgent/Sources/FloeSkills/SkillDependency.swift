@@ -433,7 +433,7 @@ public enum SkillDependency {
                 }
                 architectures.append(arch)
             }
-            guard let requirementArray = targetRequirements(profileObject["requirements"]),
+            guard let requirementArray = try targetRequirements(profileObject["requirements"]),
                   !requirementArray.isEmpty else {
                 throw SkillDependencyError.invalidField("\(path).requirements")
             }
