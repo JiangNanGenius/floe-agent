@@ -427,12 +427,14 @@ struct PiPAudioPreferencesTests {
         #expect(options.audioEnabled) // ... and the audio prerequisite
         #expect(options.enhancedBackgroundEnabled) // ... and the enhanced root
         // PiP off is REFUSED while screen feedback still depends on it.
-        #expect(!options.setPictureInPictureEnabled(false))
+        let mutationResult430 = options.setPictureInPictureEnabled(false)
+        #expect(!mutationResult430)
         #expect(options.pictureInPictureEnabled)
         #expect(options.screenFeedbackEnabled)
         // Clearing the dependent first unlocks the prerequisite.
         options.setScreenFeedbackEnabled(false)
-        #expect(options.setPictureInPictureEnabled(false))
+        let mutationResult435 = options.setPictureInPictureEnabled(false)
+        #expect(mutationResult435)
         #expect(!options.pictureInPictureEnabled)
         // Enhanced stays on (disabling a prerequisite never cascaded it off,
         // and nothing above it was turned off).

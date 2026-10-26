@@ -84,11 +84,13 @@ struct ProviderFormSpecAppTests {
             providerID: providerID
         )
         // Existing row preserved byte-for-byte (disabled + explicit bits).
-        #expect(outcome.models.contains(where: {
-            $0.id == existing.id && $0.isEnabled == false
-                && $0.capabilities == [.imageGeneration]
-                && $0.explicitCapabilities == [.imageGeneration]
-        }))
+        let expectedCapabilities = ModelCapabilities.imageGeneration
+        let preservedExistingRow = outcome.models.contains { model in
+            model.id == existing.id && model.isEnabled == false
+                && model.capabilities == expectedCapabilities
+                && model.explicitCapabilities == expectedCapabilities
+        }
+        #expect(preservedExistingRow)
         // No duplicate for the already-known verified ID.
         #expect(outcome.models.filter { $0.remoteModelID == "gpt-image-2" }.count == 1)
         // The verified manifest model is added with the role contract.
