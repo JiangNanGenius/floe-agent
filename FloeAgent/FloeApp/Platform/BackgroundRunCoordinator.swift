@@ -414,7 +414,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// The system task owned by the CURRENT refresh generation. Cleared
     /// together with the fence, so a completion always targets the instance
     /// whose generation still owns the slot.
-    private weak var activeRefreshTask: BGAppRefreshTask?
+    private var activeRefreshTask: BGAppRefreshTask?
     private var processingWork: Task<Void, Never>?
     private var mediaRefreshWork: Task<Void, Never>?
     private var mediaProcessingWork: Task<Void, Never>?
