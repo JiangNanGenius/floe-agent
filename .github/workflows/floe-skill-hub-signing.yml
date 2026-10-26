@@ -1,7 +1,8 @@
 name: floe-skill-hub-signing
-# DATA-ONLY publication signing bridge (prepared patch; DO NOT enable before
-# the root pins the reviewed tooling commit below and the launch gate is
-# genuinely satisfied).
+# DATA-ONLY publication signing bridge (the root has substituted the exact
+# reviewed tooling commit into the literal pin below; catalog publication
+# still runs only behind the launch gate enforced inside that trusted
+# tooling).
 #
 # What this workflow does: it fetches ONLY two read-only snapshots of the
 # public-facing content repository JiangNanGenius/floe-skill-hub — the
@@ -20,11 +21,16 @@ name: floe-skill-hub-signing
 # Mode semantics: the reviews mode signs stage-honest review-record
 # envelopes for content that is packaged+reviewed on a staging branch (this
 # is BEFORE catalog qualification flags and promotes nothing); catalog
-# publication signing refuses unless the launch gate is genuinely satisfied
-# (>=40 unique qualified iOS offers, all nine pinned mandatory deep
-# adaptations present in both feeds with guest-qualified script bindings,
-# exact Android coverage). The signing key value never appears in logs or in
-# the canonical receipt (only the key ID).
+# publication signing refuses unless the Root-approved staged-opening launch
+# gate (policy incremental-2026-10-27) is genuinely satisfied: each feed must
+# be EXACTLY the qualified download-eligible rows advertising that channel
+# (the four App-provided builtin ids are excluded by exact ID and an empty
+# feed is always refused), per-item trust is unchanged (frozen adaptations,
+# guest-verified script bindings where offered, both-channel presence for
+# every offered pinned mandatory deep ID, and H6), and the retired
+# >=40/all-nine batch rule survives only as informational complete-selection
+# coverage metadata. The signing key value never appears in logs or in the
+# canonical receipt (only the key ID).
 #
 # Integration boundary: this file lives in the ORIGINAL App repository
 # (JiangNanGenius/floe-agent) because that is where the existing
@@ -55,10 +61,12 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # NON-DISPATCHABLE until the root substitutes the exact reviewed 40-hex
-  # tooling commit HERE (after the bridge code lands on the Hub default
-  # branch and the root has verified that commit):
-  TOOLING_COMMIT: 647d8a7e59c8020d297a01a8c42382bcde46fb2c
+  # Root-substituted reviewed tooling pin: f7480044aaf5c22d19f55a083a513482261f1d39
+  # ("Publish qualified download offers without duplicating App builtins",
+  # Hub byte tree 1edcaaae21ee3668d91e592be52f984a1eacd709), committed on the
+  # Hub default branch and independently verified by the root before this
+  # transport was cut.
+  TOOLING_COMMIT: f7480044aaf5c22d19f55a083a513482261f1d39
 
 jobs:
   sign:
