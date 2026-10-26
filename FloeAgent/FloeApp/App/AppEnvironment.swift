@@ -667,12 +667,14 @@ final class AppEnvironment: ObservableObject {
     private let externalAutomationGate = FloeSingleFlightGate()
     private var bootstrapDidCompleteSuccessfully = false
     private var externalAutomationReady = false
+    private var backgroundDownloadInitialization: Task<Void, Never>?
     #if DEBUG
     /// Hosted-qualification observability only: how many times the launch
     /// body and the shared external-automation body actually executed. Product
     /// code never reads these; they let tests prove join/skip/retry instead of
     /// inferring it from timing.
     private(set) var bootstrapExecutionCount = 0
+    var isBackgroundDownloadInitializationRunning: Bool { backgroundDownloadInitialization != nil }
     private(set) var externalAutomationExecutionCount = 0
     #endif
 
@@ -1093,7 +1095,11 @@ final class AppEnvironment: ObservableObject {
             registry: environmentRegistry,
             cas: containerCAS,
             hooks: ContainerLifecycle.Hooks(
-                stopSessions: { [weak self, linuxGuests] id in
+                stopSessions: { [weak self, linuxGuests, skillRuntimeComponents, skillDependencies] id in
+                    // The lifecycle invokes this hook before cancelJobs. Join
+                    // dependency workers while their guest is still available.
+                    await skillRuntimeComponents.releaseEnvironment(id)
+                    await skillDependencies.releaseEnvironment(id)
                     // A stopped environment must not keep a guest running:
                     // its console would keep executing with the layer frozen.
                     await linuxGuests.stopGuest(environmentID: id)
@@ -2706,6 +2712,30 @@ final class AppEnvironment: ObservableObject {
         if bootstrapDidCompleteSuccessfully {
             bootstrapError = nil
         }
+    }
+
+    /// A download wake joins the existing launch/configuration pipeline,
+    /// even when no SwiftUI scene is constructed. Ownership belongs to the
+    /// app service so the wake's bounded waiter cannot cancel initialization
+    /// another scene or Intent is joining. This does not launch an Agent or
+    /// request continued-processing qualification.
+    func startBackgroundDownloadInitialization() {
+        guard !backgroundDownloadAutomationReady, backgroundDownloadInitialization == nil else { return }
+        backgroundDownloadInitialization = Task { [weak self] in
+            guard let self else { return }
+            defer { self.backgroundDownloadInitialization = nil }
+            do { try await self.ensureReadyForExternalAutomation() }
+            catch {
+                FloeLogger(category: .app).warning(
+                    "downloadWakeInitializationDeferred errorType=\(String(describing: type(of: error)))")
+            }
+        }
+    }
+
+    var backgroundDownloadAutomationReady: Bool {
+        externalAutomationReady && bootstrapDidCompleteSuccessfully
+            && !isEphemeral && persistenceReady && bootstrapError == nil
+            && settingsCenter.launchPreferencesLoaded
     }
 
     /// Shared readiness for App Intents/Shortcuts automation. Joins the

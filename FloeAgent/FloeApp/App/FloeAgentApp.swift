@@ -40,16 +40,23 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
         handleEventsForBackgroundURLSession identifier: String,
         completionHandler: @escaping () -> Void
     ) {
+        // All callbacks join the one process-owned graph. Registering the
+        // bootstrap atomically with each completion accounts for cold launch
+        // before UIKit can release this background execution opportunity.
+        let bootstrap: @Sendable () async -> Void = {
+            await FloeAgentApp.liveEnvironment.backgroundRunCoordinator.runDownloadWakeBootstrap()
+        }
         if identifier == WhisperDownloadCoordinator.identifier {
-            WhisperDownloadCoordinator.shared.registerBackgroundCompletion(completionHandler)
+            WhisperDownloadCoordinator.shared.registerBackgroundCompletion(completionHandler, bootstrap: bootstrap)
         } else if identifier == MediaArtifactDownloadCoordinator.sessionIdentifier {
-            MediaArtifactBackgroundEvents.shared.register(completionHandler)
+            MediaArtifactBackgroundEvents.shared.register(completionHandler, bootstrap: bootstrap)
         } else if identifier == JobDownloadCoordinator.sessionIdentifier {
-            JobDownloadBackgroundEvents.shared.register(completionHandler)
+            JobDownloadBackgroundEvents.shared.register(completionHandler, bootstrap: bootstrap)
         } else {
             LocalModelBackgroundEvents.shared.register(
                 identifier: identifier,
-                completion: completionHandler
+                completion: completionHandler,
+                bootstrap: bootstrap
             )
         }
     }
@@ -59,7 +66,7 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
 struct FloeAgentApp: App {
     // App reconstruction must not open another database/service graph while
     // SwiftUI retains the original StateObject and system action dependency.
-    @MainActor private static let liveEnvironment = AppEnvironment.live()
+    @MainActor fileprivate static let liveEnvironment = AppEnvironment.live()
     @UIApplicationDelegateAdaptor(FloeApplicationDelegate.self) private var applicationDelegate
     @StateObject private var environment: AppEnvironment
     @StateObject private var router: AppRouter

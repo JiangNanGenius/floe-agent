@@ -242,6 +242,44 @@ struct FloeShortcutsInitializationTests {
         #expect(environment.externalAutomationExecutionCount == 0)
     }
 
+    @Test("Cold download entry initializes configuration once without starting a run",
+          .enabled(if: FloeEntryQualificationSupport.isRequested))
+    func actualColdDownloadEntryJoinsReadinessAndRetriesFailure() async throws {
+        let environment = try #require(AppEnvironment.qualificationLaunchEnvironment)
+        defer { FloeEntryQualification.releaseSceneBootstrapBarrier() }
+        try #require(await FloeEntryQualification.waitForSceneBootstrapBarrier())
+        #expect(environment.bootstrapExecutionCount == 0)
+        let before = try await environment.conversationStore.conversations(includeArchived: true).count
+        #expect(!environment.backgroundDownloadAutomationReady)
+        // The fixture injects one real launch failure. An early wake cannot
+        // treat default preferences or an uninitialized model list as ready.
+        environment.startBackgroundDownloadInitialization()
+        for _ in 0..<8 { environment.startBackgroundDownloadInitialization() }
+        let firstDeadline = Date().addingTimeInterval(30)
+        while environment.isBackgroundDownloadInitializationRunning && Date() < firstDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(!environment.isBackgroundDownloadInitializationRunning)
+        #expect(environment.bootstrapExecutionCount == 1)
+        #expect(!environment.backgroundDownloadAutomationReady)
+        #expect(environment.bootstrapError != nil)
+        environment.startBackgroundDownloadInitialization()
+        for _ in 0..<8 { environment.startBackgroundDownloadInitialization() }
+        let retryDeadline = Date().addingTimeInterval(90)
+        while environment.isBackgroundDownloadInitializationRunning && Date() < retryDeadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try #require(!environment.isBackgroundDownloadInitializationRunning)
+        #expect(environment.backgroundDownloadAutomationReady)
+        #expect(environment.bootstrapExecutionCount == 2)
+        #expect(environment.externalAutomationExecutionCount == 1)
+        environment.startBackgroundDownloadInitialization()
+        await Task.yield()
+        #expect(!environment.isBackgroundDownloadInitializationRunning)
+        #expect(environment.bootstrapExecutionCount == 2)
+        #expect(try await environment.conversationStore.conversations(includeArchived: true).count == before)
+    }
+
     // MARK: - Actual App / Intent entry (hosted, ordered)
     //
     // The hosted App must launch with FLOE_S3A_ENTRY_QUALIFICATION=1. The scene
