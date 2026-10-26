@@ -105,7 +105,7 @@ public actor LongRunDurationReminder {
     /// Receives a fired milestone plus its delivery fence. Non-throwing by
     /// contract: delivery, permission and storage failures are the sink's
     /// own diagnostics and can never propagate into execution.
-    public typealias Sink = @Sendable (LongRunAdvisoryMilestone, DeliveryFence) async -> Void
+    public typealias Sink = @Sendable (LongRunAdvisoryMilestone, @escaping DeliveryFence) async -> Void
 
     /// Sleeps `seconds` on the host monotonic clock. Returns false when the
     /// sleep was interrupted by cancellation (the armed task was ended).
