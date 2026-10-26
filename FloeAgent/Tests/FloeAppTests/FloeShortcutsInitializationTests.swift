@@ -253,6 +253,7 @@ struct FloeShortcutsInitializationTests {
         #expect(!environment.backgroundDownloadAutomationReady)
         // The fixture injects one real launch failure. An early wake cannot
         // treat default preferences or an uninitialized model list as ready.
+        FloeEntryQualification.armBootstrapFailureOnce()
         environment.startBackgroundDownloadInitialization()
         for _ in 0..<8 { environment.startBackgroundDownloadInitialization() }
         let firstDeadline = Date().addingTimeInterval(30)
