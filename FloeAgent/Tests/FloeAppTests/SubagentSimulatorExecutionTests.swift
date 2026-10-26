@@ -4372,6 +4372,7 @@ extension SubagentSimulatorExecutionTests {
         try #require(size.width == 1200 && size.height == 1200,
                      "Canvas pixel dimensions differ from the declared 1200x1200")
         let file = root.appendingPathComponent("art-out/observed-\(tag).png")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try bytes.write(to: file, options: .atomic)
         return FloeDigest.sha256Hex(bytes)
     }
