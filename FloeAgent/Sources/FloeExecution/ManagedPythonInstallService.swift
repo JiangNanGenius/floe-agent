@@ -85,9 +85,16 @@ public struct ManagedPythonInstallService: Sendable {
         return nil
     }
 
+    /// - Parameters:
+    ///   - deadline: explicit execution deadline inherited from the calling
+    ///     run (the exec.shell legacy `packages` pre-install passes its
+    ///     resolved deadline, so a default-unlimited call never hits a
+    ///     hidden install budget). `nil` keeps the legacy bounded budget for
+    ///     the separate package-UI/provisioning callers.
     public func install(
         specs: [String],
         timeout: TimeInterval = 30,
+        deadline: ShellExecutionDeadline? = nil,
         maxOutputBytes: Int = 64 * 1024,
         cancellation: CancellationToken?,
         environment: ToolEnvironment? = nil
@@ -111,6 +118,7 @@ public struct ManagedPythonInstallService: Sendable {
                 specs: uniqueSpecs,
                 environment: environment,
                 timeout: timeout,
+                deadline: deadline,
                 cancellation: cancellation
             )
             let verification = await linux.pythonVerification(specs: uniqueSpecs, environment: environment)

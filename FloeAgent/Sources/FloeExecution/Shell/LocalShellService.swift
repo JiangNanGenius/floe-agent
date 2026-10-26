@@ -9,33 +9,54 @@ import FloeTools
 
 public actor LocalShellService {
     public struct Configuration: Sendable {
-        public var defaultTimeout: TimeInterval
-        public var maxTimeout: TimeInterval
-        public var backgroundTimeout: TimeInterval
+        /// The deadline used when the caller states none. New explicit human
+        /// policy (2026-10-26): default execution is UNLIMITED — the old
+        /// default-10/foreground-120/background-600 application deadlines
+        /// are removed, and a bare model number is advisory (never a kill).
+        public var defaultDeadline: ShellExecutionDeadline
         /// How long a caller queues behind another engine worker before the
         /// command is reported as not-started. Kept separate from the
-        /// execution timeout so gate starvation never fakes a run timeout.
+        /// execution deadline so gate starvation never fakes a run timeout.
+        /// This is a queue/handshake safety budget, not an execution cap.
         public var gateWaitTimeout: TimeInterval
         public var defaultMaxOutputBytes: Int
         public var maxOutputBytes: Int
         public var maximumStdinBytes: Int
 
         public init(
-            defaultTimeout: TimeInterval = 10,
-            maxTimeout: TimeInterval = 120,
-            backgroundTimeout: TimeInterval = 600,
+            defaultDeadline: ShellExecutionDeadline = .unlimited,
             gateWaitTimeout: TimeInterval = 5,
             defaultMaxOutputBytes: Int = 64 * 1024,
             maxOutputBytes: Int = 256 * 1024,
             maximumStdinBytes: Int = 256 * 1024
         ) {
-            self.defaultTimeout = defaultTimeout
-            self.maxTimeout = maxTimeout
-            self.backgroundTimeout = backgroundTimeout
+            self.defaultDeadline = defaultDeadline
             self.gateWaitTimeout = gateWaitTimeout
             self.defaultMaxOutputBytes = defaultMaxOutputBytes
             self.maxOutputBytes = maxOutputBytes
             self.maximumStdinBytes = maximumStdinBytes
+        }
+    }
+
+    /// The tool-facing resolution of a requested number + policy: the
+    /// deadline the command actually receives, the number the caller asked
+    /// for (receipt only) and the honest reason the two differ.
+    public struct ResolvedDeadline: Sendable, Equatable {
+        public var deadline: ShellExecutionDeadline
+        public var requestedSeconds: TimeInterval?
+        /// `default` (nothing requested), `advisoryDefault` (a bare number is
+        /// an advisory hint under the new policy — execution stays
+        /// unlimited), `advisoryPolicy` (explicit `timeoutPolicy:"advisory"`),
+        /// `none` (a hard deadline honored as requested), `minimumFloor` (the
+        /// backend's documented floor raised it) or `invalidHard` (a hard
+        /// value that failed checked representability; the service fails safe
+        /// to the default policy instead of inventing a kill or a fake cap).
+        public var clampReason: String
+
+        public init(deadline: ShellExecutionDeadline, requestedSeconds: TimeInterval?, clampReason: String) {
+            self.deadline = deadline
+            self.requestedSeconds = requestedSeconds
+            self.clampReason = clampReason
         }
     }
 
@@ -69,17 +90,47 @@ public actor LocalShellService {
         self.rootProvider = rootProvider
     }
 
-    /// Clamps requested limits to the compiled ceilings, then lets the
-    /// backend apply its own documented timeout floor (the Linux guest
-    /// runner enforces a 1-second minimum; generic backends keep the service
-    /// value unchanged). The result is the deadline the command actually
-    /// receives, so the tool receipt and this service never disagree with the
-    /// backend. Exposed for tests.
-    public nonisolated func normalizedTimeout(_ requested: TimeInterval?, isBackground: Bool) -> TimeInterval {
-        let ceiling = isBackground ? configuration.backgroundTimeout : configuration.maxTimeout
-        let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? configuration.defaultTimeout
-        let serviceValue = max(0.05, min(value, ceiling))
-        return backend.normalizedRunTimeout(serviceValue)
+    /// Resolves the requested number + policy into the deadline the command
+    /// actually receives, then lets the backend apply its own documented
+    /// floor (the Linux guest runner enforces a 1-second minimum on real
+    /// deadlines; generic backends keep the service value unchanged). New
+    /// time policy: an omitted number keeps the configured default
+    /// (unlimited); a bare number is an ADVISORY hint and never kills; only
+    /// `timeoutPolicy:"hard"` produces a real deadline, honored at its exact
+    /// finite value within checked host-monotonic representability (never a
+    /// silent clamp to a product cap, never infinity, never a fake huge
+    /// number). The result is what the backend receives, so the tool receipt
+    /// and this service never disagree. Exposed for tests.
+    public nonisolated func resolvedDeadline(
+        _ requested: TimeInterval?,
+        policy: ShellTimeoutPolicy
+    ) -> ResolvedDeadline {
+        guard let requested, requested.isFinite, requested > 0 else {
+            // Omitted (or an invalid value that tool validation already
+            // refused upstream): the configured default policy applies.
+            return ResolvedDeadline(
+                deadline: configuration.defaultDeadline,
+                requestedSeconds: (requested?.isFinite == true) ? requested : nil,
+                clampReason: "default")
+        }
+        switch policy {
+        case .advisory:
+            return ResolvedDeadline(deadline: .unlimited, requestedSeconds: requested, clampReason: "advisoryDefault")
+        case .hard:
+            guard let checked = ShellExecutionDeadline.validated(seconds: requested) else {
+                // Unrepresentable on the host monotonic clock: fail safe to
+                // the default policy instead of inventing a kill or a cap.
+                return ResolvedDeadline(
+                    deadline: configuration.defaultDeadline,
+                    requestedSeconds: requested,
+                    clampReason: "invalidHard")
+            }
+            let enforced = backend.normalizedRunDeadline(checked)
+            return ResolvedDeadline(
+                deadline: enforced,
+                requestedSeconds: requested,
+                clampReason: enforced == checked ? "none" : "minimumFloor")
+        }
     }
 
     public nonisolated func normalizedOutputCap(_ requested: Int?) -> Int {
@@ -101,7 +152,8 @@ public actor LocalShellService {
         cwd: String,
         environment: [String: String],
         stdin: String?,
-        timeout: TimeInterval?,
+        requestedTimeout: TimeInterval?,
+        timeoutPolicy: ShellTimeoutPolicy = .advisory,
         maxOutputBytes: Int?,
         isBackground: Bool,
         context: ToolContext
@@ -179,13 +231,14 @@ public actor LocalShellService {
         // uses the same token so a reviewer can correlate the run's request
         // with its recorded outcome. The provider-visible call id is
         // unchanged (it is still journaled in `toolCallID`).
+        let resolved = resolvedDeadline(requestedTimeout, policy: timeoutPolicy)
         let request = ShellRunRequest(
             command: command,
             cwd: cwd,
             rootURL: root,
             environment: mergedEnvironment,
             stdin: stdin,
-            timeout: normalizedTimeout(timeout, isBackground: isBackground),
+            deadline: resolved.deadline,
             gateTimeout: normalizedGateWait(nil),
             maxOutputBytes: normalizedOutputCap(maxOutputBytes),
             sessionID: context.clientScopedSessionToken,

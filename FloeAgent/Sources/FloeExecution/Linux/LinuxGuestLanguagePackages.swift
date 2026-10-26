@@ -139,10 +139,18 @@ public struct LinuxGuestLanguagePackages: Sendable {
 
     // MARK: - Python (real pip inside the shared venv)
 
+    /// - Parameters:
+    ///   - deadline: explicit execution deadline from the calling run. When
+    ///     present it REPLACES the legacy bounded install budget (no hidden
+    ///     command deadline remains on the default-unlimited exec.shell
+    ///     packages path); `nil` keeps the historical bounded budget for the
+    ///     package-UI and provisioning callers, which are separate confirmed
+    ///     flows with their own progress/cancel UX.
     public func pythonInstall(
         specs: [String],
         environment: ToolEnvironment,
         timeout: TimeInterval = 180,
+        deadline: ShellExecutionDeadline? = nil,
         cancellation: CancellationToken?
     ) async throws -> String {
         try await requireRunning(environment.id)
@@ -176,16 +184,29 @@ public struct LinuxGuestLanguagePackages: Sendable {
             + (LinuxGuestEnvironmentEncoding.argv(variables) ?? [])
             + [venv.pythonPath, "-m", "pip", "install", "--disable-pip-version-check", "--no-input"]
             + specs
-        let effectiveTimeout = min(600, max(timeout, 120))
-        let result = try await runner.run(
-            environmentID: environment.id,
-            argv: argv,
-            workingDirectory: nil,
-            standardInput: nil,
-            timeout: effectiveTimeout,
-            maxOutputBytes: 256 * 1024,
-            cancellation: cancellation
-        )
+        let result: LinuxCommandResult
+        if let deadline {
+            result = try await runner.run(
+                environmentID: environment.id,
+                argv: argv,
+                workingDirectory: nil,
+                standardInput: nil,
+                deadline: deadline,
+                maxOutputBytes: 256 * 1024,
+                cancellation: cancellation
+            )
+        } else {
+            let effectiveTimeout = min(600, max(timeout, 120))
+            result = try await runner.run(
+                environmentID: environment.id,
+                argv: argv,
+                workingDirectory: nil,
+                standardInput: nil,
+                timeout: effectiveTimeout,
+                maxOutputBytes: 256 * 1024,
+                cancellation: cancellation
+            )
+        }
         let output = result.stderr.isEmpty ? result.stdout : result.stdout + "\n" + result.stderr
         guard result.exitCode == 0 else {
             throw FloeError.validationFailed(FloeL10n.l("execution.linux_guest_language_packages.pip_exit_code", result.exitCode) + bounded(output))

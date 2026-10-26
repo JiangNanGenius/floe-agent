@@ -36,14 +36,15 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         self.limits = limits
     }
 
-    /// The guest runner documents a 1-second minimum command timeout and a
-    /// 1800-second maximum (`LinuxGuestLimits.clampedTimeout`,
-    /// LinuxGuestService.swift): reporting that real clamp here keeps the
-    /// exec.shell receipt honest about the deadline the command actually
-    /// received, instead of claiming the service's generic 0.05 floor that
-    /// the guest would immediately override.
-    public func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval {
-        limits.clampedTimeout(requested)
+    /// The guest runner documents a 1-second minimum for a real finite
+    /// deadline (`LinuxGuestLimits.executionDeadline`, LinuxGuestService.swift):
+    /// reporting that real floor here keeps the exec.shell receipt honest
+    /// about the deadline the command actually received. `.unlimited` stays
+    /// `.unlimited` — the EXEC wire payload carries no duration field, so the
+    /// pinned guest runner needs no change and no cap ever stands in for the
+    /// policy default.
+    public func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
+        limits.executionDeadline(requested)
     }
 
     public func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
@@ -58,7 +59,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
         }
 
         let started = Date()
-        let timeout = limits.clampedTimeout(request.timeout)
+        let deadline = limits.executionDeadline(request.deadline)
         let maxOutput = limits.clampedOutputBytes(request.maxOutputBytes)
         do {
             // The environment's shared Python venv and Node prefix come first
@@ -96,7 +97,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
                     argv: ["/bin/sh", "-c", command],
                     workingDirectory: workingDirectory,
                     standardInput: request.stdin,
-                    timeout: timeout,
+                    deadline: deadline,
                     maxOutputBytes: maxOutput,
                     cancellation: cancellation
                 )
@@ -117,7 +118,7 @@ public struct LinuxGuestShellBackend: LocalShellBackend {
                     request: request,
                     workingDirectory: workingDirectory,
                     started: started,
-                    timeout: timeout,
+                    deadline: deadline,
                     maxOutputBytes: maxOutput,
                     limits: limits,
                     cancellation: cancellation
@@ -351,7 +352,7 @@ extension LinuxGuestShellBackend {
         request: ShellRunRequest,
         workingDirectory: String,
         started: Date,
-        timeout: TimeInterval,
+        deadline: ShellExecutionDeadline,
         maxOutputBytes: Int,
         limits: LinuxGuestLimits,
         cancellation: CancellationToken?
@@ -378,24 +379,33 @@ extension LinuxGuestShellBackend {
             )
         }
         if cancellation?.isCancelled == true { throw FloeError.cancelled }
-        // The guest execution shares the run's single wall-clock budget: the
+        // A finite deadline shares the run's single wall-clock budget: the
         // host staging write already consumed part of it, so the guest gets
         // what is left and never a fresh full deadline. A budget exhausted
         // before the guest could start is a real deadline, not a started
-        // command that timed out with empty output.
-        let remaining = timeout - Date().timeIntervalSince(started)
-        // The guest channel's own floor is one second, so a smaller leftover
-        // budget could not be honoured: report the deadline instead of
-        // starting a command that is allowed to outlive it.
-        guard remaining >= 1 else {
-            throw LinuxGuestError.timedOut(seconds: timeout)
+        // command that timed out with empty output. An UNLIMITED deadline
+        // has no budget to consume: staging time is not execution time and
+        // the guest execution stays unlimited.
+        let guestDeadline: ShellExecutionDeadline
+        switch deadline {
+        case .unlimited:
+            guestDeadline = .unlimited
+        case .seconds(let total):
+            let remaining = total - Date().timeIntervalSince(started)
+            // The guest channel's own floor is one second, so a smaller
+            // leftover budget could not be honoured: report the deadline
+            // instead of starting a command that is allowed to outlive it.
+            guard remaining >= 1 else {
+                throw LinuxGuestError.timedOut(seconds: total)
+            }
+            guestDeadline = .seconds(remaining)
         }
         return try await runner.run(
             environmentID: environmentID,
             argv: ["/bin/sh", "-c", wrapper],
             workingDirectory: workingDirectory,
             standardInput: request.stdin,
-            timeout: remaining,
+            deadline: guestDeadline,
             maxOutputBytes: maxOutputBytes,
             cancellation: cancellation
         )

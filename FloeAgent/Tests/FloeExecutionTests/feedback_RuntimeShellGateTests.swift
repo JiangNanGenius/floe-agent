@@ -34,7 +34,7 @@ struct FeedbackRuntimeShellGateTests {
         let service = LocalShellService(backend: backend, journal: journal, rootProvider: { root })
         let context = ToolContext(runID: UUID(), toolCallID: "call-busy", scope: .local, cancellation: CancellationToken())
         let result = await service.run(command: "printf hi", cwd: ".", environment: [:], stdin: nil,
-            timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
+            requestedTimeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.notStarted(let reason)) = result else {
             Issue.record("Busy gate must be reported as notStarted, got \(result)"); return
         }
@@ -67,12 +67,14 @@ struct FeedbackRuntimeShellGateTests {
         #expect(service.normalizedGateWait(nil) == 5)
         #expect(service.normalizedGateWait(30) == 5)
         #expect(service.normalizedGateWait(0.01) == 0.25)
-        // The execution timeout is unchanged and independent.
-        #expect(service.normalizedTimeout(nil, isBackground: false) == 10)
-        #expect(service.normalizedTimeout(999, isBackground: true) == 600)
+        // The execution deadline policy is independent of the gate window:
+        // default unlimited, a bare number advisory, hard = a real deadline.
+        #expect(service.resolvedDeadline(nil, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(999, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(999, policy: .hard).deadline == .seconds(999))
         // Requests carry both values independently.
-        let request = ShellRunRequest(command: "true", cwd: ".", rootURL: URL(fileURLWithPath: "/"), timeout: 2, gateTimeout: 1, sessionID: "s")
-        #expect(request.timeout == 2)
+        let request = ShellRunRequest(command: "true", cwd: ".", rootURL: URL(fileURLWithPath: "/"), deadline: .seconds(2), gateTimeout: 1, sessionID: "s")
+        #expect(request.deadline == .seconds(2))
         #expect(request.gateTimeout == 1)
     }
 
@@ -90,14 +92,14 @@ struct FeedbackRuntimeShellGateTests {
 
         await gate.runWorkerThatOutlivesItsDeadline()
         let first = await service.run(command: "sleep 60", cwd: ".", environment: [:], stdin: nil,
-            timeout: 0.05, maxOutputBytes: 1024, isBackground: false, context: context)
+            requestedTimeout: 0.05, timeoutPolicy: .hard, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.timedOut) = first else {
             Issue.record("Started worker must time out, got \(first)"); return
         }
         // While the quarantined worker lives the gate reports not-started,
         // never timedOut: a second command must not enter the engine.
         let second = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
-            timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
+            requestedTimeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.notStarted(let reason)) = second else {
             Issue.record("Gate still quarantined: expected notStarted, got \(second)"); return
         }
@@ -106,7 +108,7 @@ struct FeedbackRuntimeShellGateTests {
         // Only the worker's own stop releases the gate.
         await gate.finishWorker()
         let third = await service.run(command: "printf after", cwd: ".", environment: [:], stdin: nil,
-            timeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
+            requestedTimeout: 1, maxOutputBytes: 1024, isBackground: false, context: context)
         guard case .outcome(.exited(let code, let stdout, _, _, _, _)) = third else {
             Issue.record("Gate must run again after the worker stopped, got \(third)"); return
         }

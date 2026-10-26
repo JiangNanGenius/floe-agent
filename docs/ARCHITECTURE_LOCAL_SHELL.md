@@ -10,9 +10,9 @@ Model code runs through `exec.shell` in the task-owned Linux environment. Use in
 
 Local execution resolves task/environment ownership through `LocalShellService` / `ShellSessionCenter`, then uses `LinuxGuestShellBackend` and the shared guest lifecycle. Cancellation and timeouts confirm the guest command group has stopped before returning; captured output remains bounded and is sanitized through the existing output path. An unconfirmed stop is not reported as successful. Remote SSH retains its own execution and review path.
 
-`exec.shell` 的命令和脚本不再设置固定字节上限，长脚本也应使用同一入口，并保留工作目录、环境变量、标准输入和真实退出码。输入长度、执行时限与输出容量是独立约束：取消命令长度限制不扩大执行权限，也不取消输出截断或任务取消。`timeoutSeconds` 与 `timeout` 表示同一执行时限；同时提供不同值时明确拒绝，不静默改用默认值。耗时工作继续通过 `jobs.submit` 执行。
+`exec.shell` 的命令和脚本不再设置固定字节上限，长脚本也应使用同一入口，并保留工作目录、环境变量、标准输入和真实退出码。输入长度、执行时限与输出容量是独立约束：取消命令长度限制不扩大执行权限，也不取消输出截断或任务取消。`timeoutSeconds` 与 `timeout` 表示同一执行时限；同时提供不同值时明确拒绝，不静默改用默认值。默认执行不设应用时限：省略 timeout 即运行到自然结束、被取消或失败，运行满 10 分钟时用户收到一次提醒；模型给出的裸数字（包括旧 schema 教的 600）只是建议值，不会触发终止；只有显式 `timeoutPolicy:"hard"` 才是真实截止时间（有限正值，按原值执行，1 秒为 guest 下限）。耗时工作继续通过 `jobs.submit` 执行。
 
-`exec.shell` command and script text has no fixed byte ceiling. Large scripts use the same entry point and preserve cwd, environment, stdin and actual exit status. Command length, execution timeout and captured-output size are separate contracts: removing the command ceiling neither widens authority nor disables bounded output or cancellation. `timeoutSeconds` aliases `timeout`; conflicting values are rejected rather than silently falling back to the default. Long-running work continues to use `jobs.submit`.
+`exec.shell` command and script text has no fixed byte ceiling. Large scripts use the same entry point and preserve cwd, environment, stdin and actual exit status. Command length, execution timeout and captured-output size are separate contracts: removing the command ceiling neither widens authority nor disables bounded output or cancellation. `timeoutSeconds` aliases `timeout`; conflicting values are rejected rather than silently falling back to the default. Execution carries NO application deadline by default: omit `timeout` and the command runs until it finishes, is cancelled, or fails, and the user receives one progress reminder at 10 minutes of runtime. A bare model number (including the old taught default 600) is an advisory hint and never kills; only an explicit `timeoutPolicy:"hard"` request is a real deadline (finite positive value, honored exactly, 1-second guest floor). Long-running work continues to use `jobs.submit`.
 
 ## 历史原生执行实现 / Historical native execution implementation
 
@@ -54,7 +54,7 @@ In a Linux-backend environment the shell itself runs inside the guest, and every
 
 | Surface | Tool / command | Mode |
 |---|---|---|
-| One-shot commands | `exec.shell` | pipelines, redirections, globs, scripts; ≤120 s (600 s under `jobs.submit`) |
+| One-shot commands | `exec.shell` | pipelines, redirections, globs, scripts; no application execution deadline by default (2026-10-26 human policy: one progress reminder to the user at 10 minutes of runtime); a real stop time requires an explicit `timeoutPolicy:"hard"` request |
 | Interactive sessions | `shell.open` / `shell.exchange` / `shell.close` / `shell.signal` | long-lived stdin/stdout, ≤4 sessions, 30 idle minutes |
 | Background | `jobs.submit` targeting `exec.shell` | durable job record, completion steer + notification |
 | Packages | `apt` tool + `pkg` / `apt-get` / `dpkg -l` in the shell | catalog query in-shell; installs always through the reviewed `apt` tool |

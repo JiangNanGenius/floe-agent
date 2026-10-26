@@ -2289,12 +2289,37 @@ public actor TinyEMULinuxGuestRegistry {
             .joined(separator: " ")
     }
 
+    /// Legacy bounded entry. UNCHANGED semantics: internal callers keep
+    /// their explicit budgets, clamped exactly as before.
     public func run(
         environmentID: String,
         argv: [String],
         workingDirectory: String?,
         standardInput: String?,
         timeout: TimeInterval,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        try await run(
+            environmentID: environmentID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            standardInput: standardInput,
+            deadline: .seconds(limits.clampedTimeout(timeout)),
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    /// Explicit-deadline entry (default-unlimited policy). Lifecycle
+    /// ownership, active-command accounting and poison teardown are exactly
+    /// the bounded entry's; only the deadline representation differs.
+    public func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        deadline: ShellExecutionDeadline,
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
@@ -2316,7 +2341,7 @@ public actor TinyEMULinuxGuestRegistry {
                 argv: argv,
                 workingDirectory: workingDirectory,
                 standardInput: standardInput,
-                timeout: timeout,
+                deadline: deadline,
                 maxOutputBytes: maxOutputBytes,
                 cancellation: cancellation
             )
@@ -3626,6 +3651,29 @@ public struct TinyEMULinuxCommandService: LinuxCommandRunning, LinuxGuestControl
             workingDirectory: workingDirectory,
             standardInput: standardInput,
             timeout: timeout,
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    /// Production override of the protocol's fail-closed default: the pinned
+    /// TinyEMU runner supports unlimited EXEC (the deadline is host-side
+    /// only), so the real deadline path is used instead of the refusal.
+    public func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        try await registry.run(
+            environmentID: environmentID,
+            argv: argv,
+            workingDirectory: workingDirectory,
+            standardInput: standardInput,
+            deadline: deadline,
             maxOutputBytes: maxOutputBytes,
             cancellation: cancellation
         )

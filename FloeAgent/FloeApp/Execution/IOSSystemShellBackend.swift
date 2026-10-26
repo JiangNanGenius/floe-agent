@@ -24,12 +24,24 @@ final class IOSSystemShellBackend: LocalShellBackend, @unchecked Sendable {
     }
 
     private static func runBlocking(_ request: ShellRunRequest, directory: URL, cancellation: CancellationToken?) -> ShellRunOutcome {
+            // The native ios_system engine runs bounded commands only, and
+            // production exec.shell routing never dispatches a one-shot run
+            // here (a Linux environment is required). Fail closed honestly
+            // for the default-unlimited policy instead of substituting an
+            // invented cap.
+            let engineTimeout: TimeInterval
+            switch request.deadline {
+            case .seconds(let timeout):
+                engineTimeout = timeout
+            case .unlimited:
+                return .failed(message: "The native on-device shell engine runs bounded commands only; unlimited execution requires the task's Linux environment")
+            }
             let started = DispatchTime.now().uptimeNanoseconds
             var stdout: NSString?, stderr: NSString?
             var code: Int32 = 125
             let escaped = request.command.replacingOccurrences(of: "'", with: "'\\''")
             let command = "dash -c '\(escaped)'"
-            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.stdin.map { Data($0.utf8) }, request.timeout, request.gateTimeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
+            let status = FloeShellRunCommand(command, request.rootURL.path, directory.path, request.sessionID, (request.toolEnvironment?.variables ?? [:]).merging(request.environment) { _, user in user }, request.stdin.map { Data($0.utf8) }, engineTimeout, request.gateTimeout, UInt(max(1, request.maxOutputBytes)), { cancellation?.isCancelled == true }, &stdout, &stderr, &code)
             let duration = Int((DispatchTime.now().uptimeNanoseconds - started) / 1_000_000)
             let out = stdout as String? ?? "", err = stderr as String? ?? ""
             if cancellation?.isCancelled == true { return .cancelled }

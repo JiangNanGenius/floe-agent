@@ -142,10 +142,15 @@ struct LocalShellValidationTests {
         let backend = RecordingShellBackend()
         let service = LocalShellService(backend: backend, rootProvider: { FileManager.default.temporaryDirectory })
         let context = ToolContext(runID: UUID(), scope: .local, cancellation: CancellationToken())
-        _ = await service.run(command: "pwd", cwd: "../escape", environment: [:], stdin: nil, timeout: 1, maxOutputBytes: 5, isBackground: false, context: context)
+        _ = await service.run(command: "pwd", cwd: "../escape", environment: [:], stdin: nil, requestedTimeout: 1, maxOutputBytes: 5, isBackground: false, context: context)
         #expect(await backend.runs == 0)
-        #expect(service.normalizedTimeout(.infinity, isBackground: false) == 10)
-        #expect(service.normalizedTimeout(999, isBackground: true) == 600)
+        // New time policy: an omitted or invalid number keeps the default
+        // unlimited policy (never a surprise kill); a bare number is an
+        // advisory hint; only an explicit hard policy is a real deadline.
+        #expect(service.resolvedDeadline(.infinity, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(999, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(999, policy: .advisory).clampReason == "advisoryDefault")
+        #expect(service.resolvedDeadline(999, policy: .hard).deadline == .seconds(999))
     }
 }
 

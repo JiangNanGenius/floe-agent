@@ -393,7 +393,7 @@ import FloeTools
                 toolCallID: "network-pip-" + name + "-" + UUID().uuidString,
                 targetTool: "exec.shell",
                 payloadJSON: JSONSerialization.data(withJSONObject: ["command": command, "cwd": ".",
-                    "timeout": timeout, "maxOutputBytes": 24_576]),
+                    "timeout": timeout, "timeoutPolicy": "hard", "maxOutputBytes": 24_576]),
                 scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
                 environmentID: id, waitForCompletion: false)
             jobIDs.append(job.id)
@@ -681,7 +681,7 @@ import FloeTools
                 toolCallID: "shared-venv-office-" + name + "-" + UUID().uuidString,
                 targetTool: "exec.shell",
                 payloadJSON: JSONSerialization.data(withJSONObject: ["command": command, "cwd": ".",
-                    "timeout": timeout, "maxOutputBytes": 24_576]),
+                    "timeout": timeout, "timeoutPolicy": "hard", "maxOutputBytes": 24_576]),
                 scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
                 environmentID: id, allowedToolNames: ["exec.shell"],
                 submissionSource: .nativeService, waitForCompletion: false)
@@ -1057,7 +1057,7 @@ import FloeTools
             let lease = try await ToolEnvironmentRouting.shared.acquire(context)
             do {
                 let tool = LocalShellTool(shell: app.localShellService)
-                let args = LocalShellTool.Arguments(command: command, cwd: ".", timeout: timeout, maxOutputBytes: 16_384)
+                let args = LocalShellTool.Arguments(command: command, cwd: ".", timeout: timeout, timeoutPolicy: "hard", maxOutputBytes: 16_384)
                 try tool.validate(args)
                 let output = try await tool.execute(args, context: lease.context)
                 await lease.finish()
@@ -1133,7 +1133,7 @@ import FloeTools
             python3 -c 'import sys,importlib.metadata;sys.path.insert(0,"/workspace/qualification/site");import floe_install_probe;assert floe_install_probe.VALUE=="FLOE_PIP_QUALIFICATION_OK";assert importlib.metadata.version("floe-install-probe")=="0.0.1";print("OFFLINE_PIP_IMPORT_OK",floe_install_probe.__file__)'
             """#
             let job = try await jobs.submit(runID: runID, toolCallID: "pip-install-once-" + UUID().uuidString,
-                targetTool: "exec.shell", payloadJSON: JSONSerialization.data(withJSONObject: ["command": install, "timeout": 180, "maxOutputBytes": 16_384]),
+                targetTool: "exec.shell", payloadJSON: JSONSerialization.data(withJSONObject: ["command": install, "timeout": 180, "timeoutPolicy": "hard", "maxOutputBytes": 16_384]),
                 scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [], environmentID: id, waitForCompletion: false)
             jobID = job.id; evidence["jobID"] = job.id.uuidString
             let finished = try await waitForTerminal(jobs, id: job.id, seconds: 210)

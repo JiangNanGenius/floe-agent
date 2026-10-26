@@ -2035,11 +2035,40 @@ public actor LinuxGuestCommandChannel {
 
     // MARK: commands
 
+    /// Legacy bounded EXEC entry. Semantics are UNCHANGED: `timeout` receives
+    /// the historical documented clamp (nil → `defaultCommandTimeout`, max
+    /// `maxCommandTimeout`), so the internal control/preparation callers keep
+    /// their exact budgets. New callers state a `ShellExecutionDeadline`.
     public func run(
         argv: [String],
         workingDirectory: String? = nil,
         standardInput: String? = nil,
         timeout: TimeInterval? = nil,
+        maxOutputBytes: Int? = nil,
+        cancellation: CancellationToken? = nil
+    ) async throws -> LinuxCommandResult {
+        try await run(
+            argv: argv,
+            workingDirectory: workingDirectory,
+            standardInput: standardInput,
+            deadline: .seconds(limits.clampedTimeout(timeout)),
+            maxOutputBytes: maxOutputBytes,
+            cancellation: cancellation
+        )
+    }
+
+    /// EXEC under an explicit execution deadline. `.unlimited` arms NO host
+    /// watchdog: the command runs until it exits or the cancellation path
+    /// below drains it. The pinned guest runner's EXEC payload carries no
+    /// duration field, so nothing changes on the wire and the guest's own
+    /// cancel-grace/abandon deadlines are preserved. The startup watchdog,
+    /// interrupt-recovery window, framing and every safety budget below stay
+    /// exactly as before — only the execution-deadline timer is conditional.
+    public func run(
+        argv: [String],
+        workingDirectory: String? = nil,
+        standardInput: String? = nil,
+        deadline: ShellExecutionDeadline,
         maxOutputBytes: Int? = nil,
         cancellation: CancellationToken? = nil
     ) async throws -> LinuxCommandResult {
@@ -2089,7 +2118,7 @@ public actor LinuxGuestCommandChannel {
             pendingInterrupts.removeValue(forKey: token)
         }
 
-        let effectiveTimeout = limits.clampedTimeout(timeout)
+        let effectiveDeadline = limits.executionDeadline(deadline)
         let effectiveLimit = limits.clampedOutputBytes(maxOutputBytes)
         // Command and stdin travel in one reassembled envelope but answer to
         // different budgets: the command portion is protocol-safety bounded
@@ -2118,20 +2147,30 @@ public actor LinuxGuestCommandChannel {
             )
         }
 
-        // Interrupt bookkeeping: timeout/cancellation tasks record the
+        // Interrupt bookkeeping: deadline/cancellation tasks record the
         // pending error and signal the guest; the token stays registered and
         // the caller keeps consuming until END (reaped) or FAILED (poison).
         // A bounded stop-recovery window after the signal covers a guest
-        // that answers neither.
-        let timeoutTask = Task {
-            try? await Task.sleep(for: .seconds(effectiveTimeout))
-            guard !Task.isCancelled else { return }
-            await self.requestInterrupt(
-                token: token,
-                error: LinuxGuestError.timedOut(seconds: effectiveTimeout)
-            )
+        // that answers neither. Under the default-unlimited policy the
+        // deadline watchdog exists ONLY for a real finite deadline; with
+        // `.unlimited` no host timer is armed and the cancellation task
+        // below is the only stop path (real cancellation still drains the
+        // guest process group before cleanup and terminal state).
+        let timeoutTask: Task<Void, Never>?
+        switch effectiveDeadline {
+        case .seconds(let seconds):
+            timeoutTask = Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard !Task.isCancelled else { return }
+                await self.requestInterrupt(
+                    token: token,
+                    error: LinuxGuestError.timedOut(seconds: seconds)
+                )
+            }
+        case .unlimited:
+            timeoutTask = nil
         }
-        defer { timeoutTask.cancel() }
+        defer { timeoutTask?.cancel() }
 
         let cancellationTask = Task {
             while !Task.isCancelled {

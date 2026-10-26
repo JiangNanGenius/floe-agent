@@ -39,13 +39,34 @@ public protocol LinuxCommandRunning: Sendable {
     /// state lives inside the guest; the UI uses it to say "start the Linux
     /// environment" instead of "no Linux environment exists".
     func ownsLinuxEnvironment(environmentID: String) async -> Bool
-    /// Executes argv inside the environment's Linux guest with bounded output.
+    /// Executes argv inside the environment's Linux guest with bounded
+    /// output under a real finite deadline. This bounded entry keeps its
+    /// exact legacy semantics for the internal control/preparation callers
+    /// that state their own budgets.
     func run(
         environmentID: String,
         argv: [String],
         workingDirectory: String?,
         standardInput: String?,
         timeout: TimeInterval,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult
+
+    /// Executes argv under an explicit execution deadline. `.unlimited`
+    /// means the host arms no watchdog: the command runs until it exits, the
+    /// cancellation token drains, or the console fails — the pinned guest
+    /// runner's EXEC payload carries no duration field, so nothing changes
+    /// on the wire. The default implementation forwards `.seconds` to the
+    /// bounded entry and FAILS CLOSED on `.unlimited`, so a conformer that
+    /// has not migrated can never silently fake unlimited execution; the
+    /// production TinyEMU service overrides it with the real deadline path.
+    func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        deadline: ShellExecutionDeadline,
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult
@@ -59,6 +80,35 @@ public extension LinuxCommandRunning {
     /// and the override is the one that runs because this is a protocol
     /// requirement (extension-only methods would dispatch statically).
     func ownsLinuxEnvironment(environmentID: String) async -> Bool { false }
+
+    /// Fail-closed deadline default (see the protocol documentation): a
+    /// finite deadline forwards to the bounded entry; `.unlimited` throws
+    /// rather than pretending a not-migrated runner has no watchdog.
+    func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        switch deadline {
+        case .seconds(let timeout):
+            return try await run(
+                environmentID: environmentID,
+                argv: argv,
+                workingDirectory: workingDirectory,
+                standardInput: standardInput,
+                timeout: timeout,
+                maxOutputBytes: maxOutputBytes,
+                cancellation: cancellation
+            )
+        case .unlimited:
+            throw FloeError.invalidConfiguration(
+                "this Linux command runner does not support unlimited execution deadlines; the pinned TinyEMU guest runner does (the deadline is host-side only)")
+        }
+    }
 }
 
 /// Shell-facing router for the Linux package command names. It owns the

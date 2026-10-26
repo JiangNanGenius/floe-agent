@@ -7,6 +7,97 @@ import Foundation
 import FloeCore
 import FloeTools
 
+/// The execution deadline of one shell run.
+///
+/// New explicit human policy (2026-10-26): default long-running execution
+/// has NO application execution deadline. `.unlimited` means exactly that —
+/// the run ends only by its own completion, real cancellation (which still
+/// drains before cleanup and terminal state) or a real failure. It is a
+/// typed case, never `Double.infinity`, never `0`, never an absurd huge fake
+/// cap, and it is JSON-safe. The deadline never crosses the guest wire: the
+/// pinned floe-exec EXEC payload carries no timeout field, so enforcement is
+/// purely the presence or absence of the host-side watchdog
+/// (`LinuxGuestCommandChannel`).
+public enum ShellExecutionDeadline: Sendable, Equatable, Hashable, Codable {
+    /// No application execution deadline (the policy default).
+    case unlimited
+    /// A real finite deadline in seconds. Produced only by an explicit
+    /// `timeoutPolicy:"hard"` tool request or by an internal caller that
+    /// states its own bounded budget explicitly.
+    case seconds(TimeInterval)
+
+    /// Host monotonic representability horizon: the watchdog sleeps on
+    /// `ContinuousClock`, whose instant arithmetic is 64-bit nanoseconds.
+    /// This is an IMPLEMENTATION conversion bound with a real reason (about
+    /// 292 years), NOT a product duration cap — genuine finite user
+    /// deadlines are honored at their exact value below it, and values above
+    /// it are rejected at validation with the conversion reason rather than
+    /// silently clamped.
+    public static let maximumRepresentableSeconds: TimeInterval =
+        TimeInterval(Int64.max / 1_000_000_000)
+
+    /// Checked finite deadline. Rejects NaN/±infinity/non-positive values and
+    /// values beyond the host monotonic representability horizon.
+    public static func validated(seconds value: TimeInterval) -> ShellExecutionDeadline? {
+        guard value.isFinite, value > 0, value <= maximumRepresentableSeconds else { return nil }
+        return .seconds(value)
+    }
+
+    /// Receipt-safe text: `unlimited` or the finite seconds. Never renders
+    /// infinity.
+    public var receiptText: String {
+        switch self {
+        case .unlimited: return "unlimited"
+        case .seconds(let value): return String(value)
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let text = try? container.decode(String.self) {
+            guard text == "unlimited" else {
+                throw DecodingError.dataCorruptedError(
+                    in: container, debugDescription: "unknown deadline encoding: \(text)")
+            }
+            self = .unlimited
+            return
+        }
+        let value = try container.decode(TimeInterval.self)
+        guard value.isFinite, value > 0 else {
+            throw DecodingError.dataCorruptedError(
+                in: container, debugDescription: "deadline seconds must be finite and > 0")
+        }
+        self = .seconds(value)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .unlimited: try container.encode("unlimited")
+        case .seconds(let value):
+            guard value.isFinite, value > 0 else {
+                throw EncodingError.invalidValue(value, EncodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: "deadline seconds must be finite and > 0"))
+            }
+            try container.encode(value)
+        }
+    }
+}
+
+/// Provenance of a tool-supplied timeout number. A bare number NEVER
+/// establishes human intent — old schemas taught models to send 10/120/600/
+/// 1800 as defaults, so without an explicit `"hard"` request a number stays
+/// an advisory hint and execution remains unlimited. Only a real
+/// user-requested stop time is `"hard"`.
+public enum ShellTimeoutPolicy: String, Sendable, Codable, Equatable, Hashable {
+    /// A genuine user-requested deadline: the command really stops at that
+    /// time (existing timedOut semantics, exit 124).
+    case hard
+    /// An intended duration only: journaled in the receipt, never kills.
+    case advisory
+}
+
 /// One bounded, non-interactive shell invocation.
 public struct ShellRunRequest: Sendable {
     /// Shell command string. Pipelines, redirections and globs are resolved
@@ -20,8 +111,10 @@ public struct ShellRunRequest: Sendable {
     public var environment: [String: String]
     /// Optional stdin content (≤256 KiB enforced by the tool).
     public var stdin: String?
-    /// Wall-clock timeout in seconds.
-    public var timeout: TimeInterval
+    /// The execution deadline this run receives. `.unlimited` (the policy
+    /// default) means no application execution deadline: the backend arms no
+    /// host watchdog and the guest wire is unchanged.
+    public var deadline: ShellExecutionDeadline
     /// Bounded wait for the engine's process-wide run gate. A command that
     /// cannot start inside this window is reported as not-started, never as an
     /// execution timeout. It does not consume `timeout`.
@@ -39,7 +132,7 @@ public struct ShellRunRequest: Sendable {
         rootURL: URL,
         environment: [String: String] = [:],
         stdin: String? = nil,
-        timeout: TimeInterval = 10,
+        deadline: ShellExecutionDeadline = .unlimited,
         gateTimeout: TimeInterval = 5,
         maxOutputBytes: Int = 64 * 1024,
         sessionID: String,
@@ -51,7 +144,7 @@ public struct ShellRunRequest: Sendable {
         self.rootURL = rootURL
         self.environment = environment
         self.stdin = stdin
-        self.timeout = timeout
+        self.deadline = deadline
         self.gateTimeout = gateTimeout
         self.maxOutputBytes = maxOutputBytes
         self.sessionID = sessionID
@@ -556,16 +649,17 @@ public final class ShellGuestRunShapeCenter: @unchecked Sendable {
 public protocol LocalShellBackend: Sendable {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome
 
-    /// The timeout this backend will actually enforce for one run, given the
-    /// service-normalized value. Synchronous and read-only so the tool
+    /// The deadline this backend will actually enforce for one run, given
+    /// the service-normalized value. Synchronous and read-only so the tool
     /// receipt and the journal can name the same deadline the command truly
     /// receives. The default is identity: backends without a stricter
-    /// documented floor (the native and generic engines) keep the service
-    /// value unchanged, so no existing non-Linux behavior moves. Backends
-    /// with a documented minimum (the Linux guest runner,
-    /// `LinuxGuestLimits.clampedTimeout`) override this so a backend-side
+    /// documented floor keep the service value unchanged, and `.unlimited`
+    /// always stays `.unlimited` (no backend may substitute a large fake cap
+    /// or its bounded clamp for the policy default). Backends with a
+    /// documented minimum (the Linux guest runner, 1-second floor via
+    /// `LinuxGuestLimits.executionDeadline`) override this so a backend-side
     /// floor is never mistaken for the caller's own value.
-    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval
+    func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline
 
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult
     func exchangeSession(_ request: ShellExchangeRequest, cancellation: CancellationToken?) async throws -> ShellExchangeResult
@@ -578,9 +672,9 @@ public extension LocalShellBackend {
     func signalSession(sessionID: String, signal: ShellSignal) async {}
     func resizeSession(sessionID: String, columns: Int, rows: Int) async {}
 
-    /// Identity default: the service-normalized timeout is what the backend
-    /// enforces. Linux overrides this with its real documented clamp.
-    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval { requested }
+    /// Identity default: the service-normalized deadline is what the backend
+    /// enforces. Linux overrides this with its real documented floor.
+    func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline { requested }
 }
 
 /// Honest failure when the app has not injected a shell engine (for example

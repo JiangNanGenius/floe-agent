@@ -1005,10 +1005,13 @@ final class LinuxGuestShellBackendTests: XCTestCase {
         let context = ToolContext(runID: UUID(), toolCallID: "timeout-output", workspaceRootURL: root,
             cancellation: CancellationToken(), environmentID: "own",
             environment: ToolEnvironment(id: "own", writableLayerURL: root, layerURLs: [root], variables: [:]))
-        let result = try await tool.execute(.init(command: "printf probe", timeout: 180), context: context)
+        // New time policy: a bare number is advisory (never kills), so this
+        // partial-timeout contract uses an explicit hard deadline; the old
+        // foreground 120 s application ceiling no longer exists.
+        let result = try await tool.execute(.init(command: "printf probe", timeout: 180, timeoutPolicy: "hard"), context: context)
         XCTAssertEqual(result.exitStatus, 124)
         XCTAssertTrue(result.summary.contains("status=timedOut"))
-        XCTAssertTrue(result.summary.contains("effectiveTimeoutSeconds=120"))
+        XCTAssertTrue(result.summary.contains("effectiveTimeoutSeconds=180.0"))
         XCTAssertTrue(result.summary.contains("download-progress"))
         XCTAssertTrue(result.summary.contains("source-error"))
         XCTAssertTrue(result.summary.contains("[output truncated]"))

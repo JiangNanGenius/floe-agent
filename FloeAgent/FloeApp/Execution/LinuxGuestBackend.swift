@@ -637,8 +637,8 @@ struct RoutingLocalShellBackend: LocalShellBackend {
         self.prepareNativeComponents = prepareNativeComponents
     }
 
-    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval {
-        guestBackend.normalizedRunTimeout(requested)
+    func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
+        guestBackend.normalizedRunDeadline(requested)
     }
 
     /// Activates the guest; when the failure is an unqualified image and a

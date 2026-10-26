@@ -266,9 +266,35 @@ public struct LinuxGuestLimits: Sendable, Equatable {
         max(1024, min(maxOutputBytes, requested ?? defaultMaxOutputBytes))
     }
 
+    /// Legacy bounded clamp. UNCHANGED semantics for the internal control and
+    /// preparation callers that state their own budgets (SPAWN/KILL/ALIVE
+    /// control exchanges, service starts, provisioning); it is no longer the
+    /// EXEC execution-deadline path. `maxCommandTimeout` (1800) must never be
+    /// used to synthesize "unlimited" — unlimited is the absence of a host
+    /// watchdog, not a cap.
     public func clampedTimeout(_ requested: TimeInterval?) -> TimeInterval {
         let value = requested.flatMap { $0.isFinite ? $0 : nil } ?? defaultCommandTimeout
         return max(1, min(maxCommandTimeout, value))
+    }
+
+    /// Resolves the EXEC execution deadline under the default-unlimited
+    /// policy. `.unlimited` is returned as-is (the pinned guest runner has no
+    /// duration field; the host simply arms no watchdog). A finite deadline
+    /// keeps its exact value under the documented 1-second guest floor and
+    /// checked host representability; an invalid finite value fails safe to
+    /// the policy default instead of inventing a surprise kill. No product
+    /// duration cap is applied here.
+    public func executionDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline {
+        switch requested {
+        case .unlimited:
+            return .unlimited
+        case .seconds(let value):
+            guard value.isFinite, value > 0,
+                  value <= ShellExecutionDeadline.maximumRepresentableSeconds else {
+                return .unlimited
+            }
+            return .seconds(max(1, value))
+        }
     }
 }
 

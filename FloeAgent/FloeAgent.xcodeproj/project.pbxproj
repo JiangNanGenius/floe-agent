@@ -555,6 +555,7 @@
 		975210DE231CF38FA4774942 /* DesignAdapterReopenTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B407869D6B20C61E00C30E0 /* DesignAdapterReopenTests.swift */; };
 		975D47F8A5F29CD5FFEC2B90 /* LiveOfficeAssistantQualificationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DE386B29B9950903B2530C0 /* LiveOfficeAssistantQualificationTests.swift */; };
 		97D3E78758C847D8E6B7F1BB /* RARArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98F7FF2A3CFA32D12C9C5B83 /* RARArchiveService.swift */; };
+		986B663558304D55FEB07816 /* ShellExecutionDeadlinePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77E44933245EB5AA1228BEB /* ShellExecutionDeadlinePolicyTests.swift */; };
 		987CEBC56B6B819D8AEFB280 /* FoldableLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B059791171B82A3139340721 /* FoldableLayoutTests.swift */; };
 		98877EBD8DADE3ACA158D43C /* LinuxSoftRestartTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3EB8F799548AC5D70A47CBB /* LinuxSoftRestartTests.swift */; };
 		98E3ACAC514AD4BFBEBF79D9 /* CanvasExternalImportCommitter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18FC6E0554AD276EFE39C9BA /* CanvasExternalImportCommitter.swift */; };
@@ -1728,6 +1729,7 @@
 		C71624FFDB9B76CB148DA3CE /* WorkspaceCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCanvasView.swift; sourceTree = "<group>"; };
 		C7509CFCDC86E59C7EDD8344 /* VoiceConversationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceConversationTests.swift; sourceTree = "<group>"; };
 		C77DCA9FFD00F05CA6E73BF9 /* ContactsReadToolsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContactsReadToolsTests.swift; sourceTree = "<group>"; };
+		C77E44933245EB5AA1228BEB /* ShellExecutionDeadlinePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellExecutionDeadlinePolicyTests.swift; sourceTree = "<group>"; };
 		C7930B11AFD4949FC77955BB /* LinuxBootAssetUpdatePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinuxBootAssetUpdatePolicy.swift; sourceTree = "<group>"; };
 		C81C0D32D5167001CC566072 /* CredentialDescriptorSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CredentialDescriptorSyncTests.swift; sourceTree = "<group>"; };
 		C844E165557C4A8A457C76CA /* DocumentIntakeImporting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentIntakeImporting.swift; sourceTree = "<group>"; };
@@ -3638,6 +3640,7 @@
 				8B04D7DD1035E02FD30F6A99 /* MailMutationJournalTests.swift */,
 				3195240E7F98D70A42B085B3 /* NativeJobPolicyTests.swift */,
 				4D4C91464F30E0BA687EEFF7 /* ProfessionalWebSearchRoutingTests.swift */,
+				C77E44933245EB5AA1228BEB /* ShellExecutionDeadlinePolicyTests.swift */,
 				951E4559DE7BAC0CAEB76029 /* TaskScheduleToolTests.swift */,
 				E276D6AEE59639A0A823A15F /* VolcengineDirectGatewayEnvelopeTests.swift */,
 				B5A97C31E43C60FBDEE1D16D /* WebSearchResultBudgetTests.swift */,
@@ -4806,6 +4809,7 @@
 				EDA551C882B0AC33B9799617 /* SharedDocumentsStoreTests.swift in Sources */,
 				63D6BA6441EF7669C65C48F8 /* SharedEnvironmentConcurrencyTests.swift in Sources */,
 				6120F47170CBD36FD1EB9CFF /* ShellCoreUtilityTests.swift in Sources */,
+				986B663558304D55FEB07816 /* ShellExecutionDeadlinePolicyTests.swift in Sources */,
 				097FCE34E514874A9E8CE370 /* ShortcutInboxHandoffTests.swift in Sources */,
 				9DA83029502B914F3C0E691E /* ShortcutInboxStoreTests.swift in Sources */,
 				DFF078C8D377847A32A9038A /* SilentSpeechPlaybackTests.swift in Sources */,

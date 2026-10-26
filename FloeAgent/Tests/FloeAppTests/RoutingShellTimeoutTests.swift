@@ -16,16 +16,32 @@ private struct TimeoutOnlyGuestRunner: LinuxCommandRunning {
     }
 }
 
-@Suite("App routed shell timeout receipts")
+@Suite("App routed shell deadline receipts")
 struct RoutingShellTimeoutTests {
-    @Test("The real App router forwards the configured guest clamp before rendering a receipt")
+    @Test("The real App router forwards the guest deadline resolution before rendering a receipt")
     func forwardsActualGuestLimits() {
         let backend = RoutingLocalShellBackend(native: UnavailableShellBackend(),
-            guests: TimeoutOnlyGuestRunner(), limits: LinuxGuestLimits(maxCommandTimeout: 90))
+            guests: TimeoutOnlyGuestRunner(), limits: LinuxGuestLimits())
         let service = LocalShellService(backend: backend, rootProvider: { nil })
-        #expect(service.normalizedTimeout(0.01, isBackground: false) == 1)
-        #expect(service.normalizedTimeout(300, isBackground: false) == 90)
-        #expect(service.normalizedTimeout(300, isBackground: true) == 90)
+        // The guest's documented 1-second floor applies to real finite
+        // deadlines and the receipt must name it.
+        #expect(service.resolvedDeadline(0.01, policy: .hard).deadline == .seconds(1))
+        #expect(service.resolvedDeadline(0.01, policy: .hard).clampReason == "minimumFloor")
+        // An explicit hard deadline is honored at its exact value: no
+        // foreground/background product ceiling exists anymore.
+        #expect(service.resolvedDeadline(300, policy: .hard).deadline == .seconds(300))
+        #expect(service.resolvedDeadline(300, policy: .hard).clampReason == "none")
+        #expect(service.resolvedDeadline(7_200, policy: .hard).deadline == .seconds(7_200))
+        // The policy default and ANY bare number (including the legacy taught
+        // 600) stay unlimited: advisory hints never kill.
+        #expect(service.resolvedDeadline(nil, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(300, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(600, policy: .advisory).deadline == .unlimited)
+        #expect(service.resolvedDeadline(600, policy: .advisory).clampReason == "advisoryDefault")
+        // Unlimited must never be synthesized as a cap by the router: the
+        // guest backend reports it as-is.
+        #expect(backend.normalizedRunDeadline(.unlimited) == .unlimited)
+        #expect(backend.normalizedRunDeadline(.seconds(4_800)) == .seconds(4_800))
     }
 }
 #endif

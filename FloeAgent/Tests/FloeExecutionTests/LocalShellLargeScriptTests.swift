@@ -193,7 +193,7 @@ final class LocalShellLargeScriptTests: XCTestCase {
 
         let hugeBody = makeScript(bytes: 2 * 1024 * 1024)
         let staged = try await fixture.tool.execute(
-            .init(command: hugeBody, timeout: 60),
+            .init(command: hugeBody, timeout: 60, timeoutPolicy: "hard"),
             context: makeContext(fixture.root)
         )
         XCTAssertEqual(staged.exitStatus, 7)
@@ -222,7 +222,7 @@ final class LocalShellLargeScriptTests: XCTestCase {
         runner.workspaceRoot = fixture.root
         let body = makeScript(bytes: 512 * 1024)
         _ = try await fixture.tool.execute(
-            .init(command: body, stdin: "line-1\n中文 stdin\n", timeout: 30),
+            .init(command: body, stdin: "line-1\n中文 stdin\n", timeout: 30, timeoutPolicy: "hard"),
             context: makeContext(fixture.root)
         )
         let invocation = try XCTUnwrap(runner.recorded.first)
@@ -239,7 +239,7 @@ final class LocalShellLargeScriptTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         runner.workspaceRoot = fixture.root
         let result = try await fixture.tool.execute(
-            .init(command: "printf ok", timeoutSeconds: 60),
+            .init(command: "printf ok", timeoutSeconds: 60, timeoutPolicy: "hard"),
             context: makeContext(fixture.root)
         )
         XCTAssertEqual(result.exitStatus, 0)
@@ -265,26 +265,29 @@ final class LocalShellLargeScriptTests: XCTestCase {
         )
     }
 
-    func testTimeoutReceiptNamesTheForegroundAndMinimumClamps() async throws {
+    func testTimeoutReceiptNamesHardDeadlinesAndTheMinimumFloor() async throws {
         let runner = RecordingLinuxRunner(workspaceRoot: URL(fileURLWithPath: NSTemporaryDirectory()))
         let fixture = try makeFixture(runner: runner)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         runner.workspaceRoot = fixture.root
+        // An explicit hard deadline is honored at its exact value: the old
+        // foreground 120 s application ceiling no longer exists.
         let clamped = try await fixture.tool.execute(
-            .init(command: "printf ok", timeout: 300),
+            .init(command: "printf ok", timeout: 300, timeoutPolicy: "hard"),
             context: makeContext(fixture.root)
         )
-        XCTAssertEqual(runner.recorded.first?.timeout ?? 0, 120, accuracy: 0.001)
+        XCTAssertEqual(runner.recorded.first?.timeout ?? 0, 300, accuracy: 0.001)
         XCTAssertTrue(clamped.summary.contains("timeoutRequestedSeconds=300"))
-        XCTAssertTrue(clamped.summary.contains("effectiveTimeoutSeconds=120"))
-        XCTAssertTrue(clamped.summary.contains("timeoutClamp=foregroundCeiling"))
+        XCTAssertTrue(clamped.summary.contains("timeoutPolicy=hard"))
+        XCTAssertTrue(clamped.summary.contains("effectiveTimeoutSeconds=300.0"))
+        XCTAssertTrue(clamped.summary.contains("timeoutClamp=none"))
 
         let floored = try await fixture.tool.execute(
-            .init(command: "printf ok", timeout: 0.01),
+            .init(command: "printf ok", timeout: 0.01, timeoutPolicy: "hard"),
             context: makeContext(fixture.root)
         )
-        // The Linux guest runner documents a 1-second minimum command
-        // timeout (LinuxGuestLimits.clampedTimeout, LinuxGuestService.swift):
+        // The Linux guest runner documents a 1-second minimum real deadline
+        // (LinuxGuestLimits.executionDeadline, LinuxGuestService.swift):
         // the service's generic 0.05 floor applies first, then the backend
         // clamps to its real floor — that clamped value is the deadline the
         // command actually receives and the receipt must name it.
@@ -410,7 +413,7 @@ final class LocalShellLargeScriptTests: XCTestCase {
             command: makeScript(bytes: 256 * 1024),
             cwd: ".",
             rootURL: cancelledRoot,
-            timeout: 30,
+            deadline: .seconds(30),
             sessionID: "cancel-\(UUID().uuidString)",
             runID: UUID(),
             toolEnvironment: ToolEnvironment(

@@ -22,6 +22,13 @@ public struct LocalShellTool: AgentTool {
         /// Alias for `timeout`. Rejected when both are present with
         /// different values; equal duplicates are accepted.
         public var timeoutSeconds: Double?
+        /// Provenance of the requested number: `"hard"` is a real
+        /// user-requested stop time; `"advisory"` (the default when a number
+        /// is present without this field) records an intended duration and
+        /// never kills. A bare number alone never establishes human intent —
+        /// old schemas taught models 10/120/600/1800 defaults and those must
+        /// not restore the old application deadline.
+        public var timeoutPolicy: String?
         public var maxOutputBytes: Int?
         /// Legacy managed dependency input; prefer python3 -m pip in the command.
         public var packages: [String]?
@@ -36,6 +43,7 @@ public struct LocalShellTool: AgentTool {
             stdin: String? = nil,
             timeout: Double? = nil,
             timeoutSeconds: Double? = nil,
+            timeoutPolicy: String? = nil,
             maxOutputBytes: Int? = nil,
             packages: [String]? = nil,
             packagePurpose: String? = nil,
@@ -48,6 +56,7 @@ public struct LocalShellTool: AgentTool {
             self.stdin = stdin
             self.timeout = timeout
             self.timeoutSeconds = timeoutSeconds
+            self.timeoutPolicy = timeoutPolicy
             self.maxOutputBytes = maxOutputBytes
             self.packages = packages
             self.packagePurpose = packagePurpose
@@ -84,11 +93,34 @@ public struct LocalShellTool: AgentTool {
                 }
             }
         }
+
+        /// Canonical policy for the requested number. Absent/empty means
+        /// `.advisory`: under the new time policy a bare number never
+        /// establishes a human deadline, so legacy taught values (including
+        /// exactly 600) stay advisory and execution remains unlimited.
+        /// `"hard"` requires a number and produces the only real deadline.
+        public var resolvedTimeoutPolicy: ShellTimeoutPolicy {
+            get throws {
+                guard let raw = timeoutPolicy?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                      !raw.isEmpty else { return .advisory }
+                guard let policy = ShellTimeoutPolicy(rawValue: raw) else {
+                    throw FloeError.validationFailed(
+                        "timeoutPolicy must be \"hard\" (a real user-requested deadline) or \"advisory\" (an intended duration that never kills)"
+                    )
+                }
+                if policy == .hard, try resolvedTimeout == nil {
+                    throw FloeError.validationFailed(
+                        "timeoutPolicy \"hard\" requires a timeout (or timeoutSeconds) number; omit both for the default unlimited execution"
+                    )
+                }
+                return policy
+            }
+        }
     }
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. There is no application-level command-length limit: an oversized script body is staged as a file inside the task's guest workspace and executed as guest /bin/sh code, while stdin stays a separate bounded channel. The requested and effective timeout are reported with the clamp reason (foreground max 120 seconds; jobs max 600); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
+        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. There is no application-level command-length limit: an oversized script body is staged as a file inside the task's guest workspace and executed as guest /bin/sh code, while stdin stays a separate bounded channel. Commands run with NO application execution deadline by default: omit timeout and the command runs until it finishes, is cancelled, or fails, and the user receives one progress reminder after 10 minutes of runtime. The requested number, its policy and the effective deadline are reported with the reason (effectiveTimeoutSeconds=unlimited for the default and advisory cases); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line or whole script body. No application-level length cap: large scripts are staged as a file inside the task's guest workspace, so pipelines, redirections and loops all run as guest /bin/sh code."},
@@ -96,8 +128,9 @@ public struct LocalShellTool: AgentTool {
       "cwd":{"type":"string","description":"Workspace-relative working directory (default: session cwd or workspace root)"},
       "env":{"type":"object","additionalProperties":{"type":"string"},"description":"Extra environment variables for this run only"},
       "stdin":{"type":"string","description":"Optional stdin content (max 256 KiB)"},
-      "timeout":{"type":"number","description":"Wall-clock timeout seconds (default 10, max 120; 600 for jobs.submit background jobs). Canonical name; timeoutSeconds is an accepted alias."},
+      "timeout":{"type":"number","description":"Duration seconds. ADVISORY by default: it is recorded in the receipt but the command is NOT killed, because default execution is unlimited. Pair with timeoutPolicy=hard for a real user-requested stop time. Canonical name; timeoutSeconds is an accepted alias."},
       "timeoutSeconds":{"type":"number","description":"Alias for timeout. If both are present they must be equal."},
+      "timeoutPolicy":{"type":"string","enum":["hard","advisory"],"description":"hard = a real deadline the USER asked for: the command stops at that time (exit 124). advisory (default) = intended duration only; execution stays unlimited. Use hard ONLY for an actual user-requested deadline; a bare timeout number (including the old taught default 600) never kills."},
       "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"}},
      "additionalProperties":false}
     """#
@@ -137,6 +170,13 @@ public struct LocalShellTool: AgentTool {
         if let timeout = try args.resolvedTimeout, !timeout.isFinite || timeout <= 0 {
             throw FloeError.validationFailed("timeout must be > 0")
         }
+        let policy = try args.resolvedTimeoutPolicy
+        if policy == .hard, let timeout = try args.resolvedTimeout,
+           timeout > ShellExecutionDeadline.maximumRepresentableSeconds {
+            throw FloeError.validationFailed(
+                "timeout exceeds the representable host monotonic clock horizon (\(ShellExecutionDeadline.maximumRepresentableSeconds) seconds); omit timeout for unlimited execution"
+            )
+        }
         if let maxOutputBytes = args.maxOutputBytes, maxOutputBytes <= 0 {
             throw FloeError.validationFailed("maxOutputBytes must be > 0")
         }
@@ -163,6 +203,13 @@ public struct LocalShellTool: AgentTool {
         guard let command = args.resolvedCommand else {
             throw FloeError.validationFailed("command must not be empty")
         }
+        // Resolve the deadline BEFORE any side effect: the legacy managed
+        // packages pre-install inherits this call's resolved deadline, so a
+        // default-unlimited call never hits a hidden install budget and an
+        // explicit hard deadline is the only real bound.
+        let requestedTimeout = try args.resolvedTimeout
+        let timeoutPolicy = try args.resolvedTimeoutPolicy
+        let resolved = shell.resolvedDeadline(requestedTimeout, policy: timeoutPolicy)
         var installOutput = ""
         if let packages = args.packages, !packages.isEmpty {
             guard let pythonInstaller else {
@@ -170,7 +217,7 @@ public struct LocalShellTool: AgentTool {
             }
             let outcome = await pythonInstaller.install(
                 specs: packages,
-                timeout: 30,
+                deadline: resolved.deadline,
                 maxOutputBytes: 64 * 1024,
                 cancellation: context.cancellation,
                 environment: context.environment
@@ -188,13 +235,13 @@ public struct LocalShellTool: AgentTool {
         }
         let isBackground = context.toolCallID?.hasPrefix("jobs.") == true
         let cwd = args.cwd ?? "."
-        let requestedTimeout = try args.resolvedTimeout
         let result = await shell.run(
             command: command,
             cwd: cwd,
             environment: args.env ?? [:],
             stdin: args.stdin,
-            timeout: requestedTimeout,
+            requestedTimeout: requestedTimeout,
+            timeoutPolicy: timeoutPolicy,
             maxOutputBytes: args.maxOutputBytes,
             isBackground: isBackground,
             context: context
@@ -209,8 +256,8 @@ public struct LocalShellTool: AgentTool {
                 command: command,
                 cwd: cwd,
                 installOutput: installOutput,
-                requestedTimeout: requestedTimeout,
-                effectiveTimeout: shell.normalizedTimeout(requestedTimeout, isBackground: isBackground),
+                resolved: resolved,
+                requestedPolicy: timeoutPolicy,
                 isBackground: isBackground
             )
         }
@@ -221,8 +268,8 @@ public struct LocalShellTool: AgentTool {
         command: String,
         cwd: String,
         installOutput: String,
-        requestedTimeout: TimeInterval?,
-        effectiveTimeout: TimeInterval,
+        resolved: LocalShellService.ResolvedDeadline,
+        requestedPolicy: ShellTimeoutPolicy,
         isBackground: Bool
     ) -> ToolExecutionOutput {
         func prefix() -> String {
@@ -230,25 +277,16 @@ public struct LocalShellTool: AgentTool {
             if !installOutput.isEmpty { header += "--- managed packages ---\n\(installOutput)\n" }
             return header
         }
-        /// Requested/effective/clamp receipt. The effective value is the one
-        /// the guest command actually received; the reason names why it
-        /// differs from the request so a clamped deadline is never mistaken
-        /// for the model's own value.
+        /// Requested/policy/effective/clamp receipt. The effective value is
+        /// the deadline the guest command actually received (`unlimited` =
+        /// no application execution deadline); the reason names why it
+        /// differs from the request, so an advisory legacy number is never
+        /// mistaken for a real deadline and the default-unlimited policy is
+        /// visible in every result.
         func timeoutReceipt() -> String {
-            let requested = requestedTimeout.map { String($0) } ?? "none"
-            let reason: String
-            if let requestedTimeout {
-                if requestedTimeout < effectiveTimeout {
-                    reason = "minimumFloor"
-                } else if requestedTimeout > effectiveTimeout {
-                    reason = isBackground ? "backgroundCeiling" : "foregroundCeiling"
-                } else {
-                    reason = "none"
-                }
-            } else {
-                reason = "default"
-            }
-            return "timeoutRequestedSeconds=\(requested) effectiveTimeoutSeconds=\(effectiveTimeout) timeoutClamp=\(reason)"
+            let requested = resolved.requestedSeconds.map { String($0) } ?? "none"
+            let policyText = resolved.requestedSeconds == nil ? "default" : requestedPolicy.rawValue
+            return "timeoutRequestedSeconds=\(requested) timeoutPolicy=\(policyText) effectiveTimeoutSeconds=\(resolved.deadline.receiptText) timeoutClamp=\(resolved.clampReason)"
         }
         switch outcome {
         case .exited(let code, let stdout, let stderr, let truncated, let stderrTruncated, let durationMs):

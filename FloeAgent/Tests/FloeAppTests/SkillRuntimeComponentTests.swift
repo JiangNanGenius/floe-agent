@@ -354,7 +354,7 @@ private struct StubNativeShellBackend: LocalShellBackend {
     func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
         .failed(message: "native backend unused in this test")
     }
-    func normalizedRunTimeout(_ requested: TimeInterval) -> TimeInterval { requested }
+    func normalizedRunDeadline(_ requested: ShellExecutionDeadline) -> ShellExecutionDeadline { requested }
     func openSession(_ request: ShellOpenRequest, cancellation: CancellationToken?) async throws -> ShellOpenResult {
         throw LinuxGuestError.consoleUnavailable("unused")
     }
@@ -1455,6 +1455,7 @@ private func makePreparedChain(
                 SkillRuntimeComponentCenter.engineEnvironmentVariable: "/evil/override",
                 "MARKER": "1"
             ],
+            deadline: .seconds(10),
             sessionID: "routing-session",
             toolEnvironment: ToolEnvironment(
                 id: "env-routing", writableLayerURL: workspace, layerURLs: [], variables: [:]
