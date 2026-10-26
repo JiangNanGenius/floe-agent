@@ -14,6 +14,7 @@ struct SaveImageToPhotosButton: View {
     @State private var saving = false
     @State private var saved = false
     @State private var failure: String?
+    @State private var needsSettings = false
     @State private var operationID = UUID()
 
     var body: some View {
@@ -33,6 +34,13 @@ struct SaveImageToPhotosButton: View {
         .alert("files.photos.failed", isPresented: Binding(
             get: { failure != nil }, set: { if !$0 { failure = nil } }
         )) {
+            if needsSettings {
+                Button("settings.title") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
             Button("action.done", role: .cancel) { failure = nil }
         } message: { Text(failure ?? "") }
         .onChange(of: imageURL) { _, _ in
@@ -44,11 +52,13 @@ struct SaveImageToPhotosButton: View {
     private func save(requestID: UUID) async {
         guard !saving else { return }
         saving = true
+        needsSettings = false
         defer { if operationID == requestID { saving = false } }
         let target = imageURL
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard operationID == requestID, !Task.isCancelled else { return }
         guard status == .authorized || status == .limited else {
+            needsSettings = true
             failure = FloeL10n.l("files.photos.permission")
             return
         }
@@ -61,7 +71,8 @@ struct SaveImageToPhotosButton: View {
             }
             guard let source = CGImageSourceCreateWithData(data as CFData, nil),
                   CGImageSourceGetCount(source) > 0 else {
-                throw CocoaError(.fileReadUnknown)
+                failure = FloeL10n.l("files.photos.unsupported")
+                return
             }
             try await PHPhotoLibrary.shared().performChanges {
                 let request = PHAssetCreationRequest.forAsset()

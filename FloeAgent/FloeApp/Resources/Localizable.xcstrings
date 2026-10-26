@@ -99636,6 +99636,23 @@
           }
         }
       }
+    },
+    "files.photos.unsupported": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This format cannot be added to Photos. Export the file instead."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此格式无法存入照片，请导出文件。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
