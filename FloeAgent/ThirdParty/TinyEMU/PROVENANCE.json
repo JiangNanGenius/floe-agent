@@ -87,6 +87,11 @@
     "file": "patches/0019-fs-open-dir-detect.patch",
     "purpose": "Detect the open kind in fs_open from the fid's real file type (S_ISDIR) instead of relying on the guest's O_DIRECTORY flag bit: Linux >= 6.18 net/9p masks Tlopen mode with P9L_MODE_MASK (0x1fff) before sending, so O_DIRECTORY (0x10000) never arrives and directories were opened as regular files, making fs_readdir answer -P9_EPROTO (guest-visible 'ls: reading directory ... Protocol error') while reads/writes/exec on known paths worked. The explicit O_DIRECTORY flag is still honored as an ENOTDIR refusal; FIFO/device nodes remain EOPNOTSUPP per patch 0007.",
     "applies_to": "fs_disk.c of the pinned tarball (after 0003 + 0007)"
+   },
+   {
+    "file": "patches/0020-slirp-quiet-debug-default.patch",
+    "purpose": "Default DEBUG builds to DBG_ERROR only. Preserve error diagnostics and explicit verbose-debug capability without per-packet DBG_CALL/DBG_MISC fprintf+fflush traffic observed during actual guest network qualification. No measured speedup is claimed.",
+    "applies_to": "slirp/misc.c of the pinned tarball"
    }
   ],
   "trimmed_out": [

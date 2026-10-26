@@ -35,6 +35,7 @@ fetched and hash-verified by `fetch_source.sh` (see `PROVENANCE.json`).
 | `patches/0007-9p-export-root-containment.patch` | fd-based 9p export-root containment + special files are metadata-only (`EOPNOTSUPP`) |
 | `patches/0008-recoverable-guest-fault-paths.patch` | guest-reachable virtio aborts/unchecked allocations become device errors |
 | `patches/0011-slirp-no-sigpipe.patch` | per-socket/per-send SIGPIPE suppression for closed preview/network connections; preserves host signal policy |
+| `patches/0020-slirp-quiet-debug-default.patch` | retain network error diagnostics; disable verbose per-buffer traces by default in DEBUG builds |
 | `adapter/floe_vm.h` / `floe_vm.c` | embeddable C API: VM create / run slice / console bytes in+out / disk / 9p / slirp net / stop+destroy |
 | `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host`, `lifecycle_test`, `two_vm_test`, `containment_test` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
 | `adapter/macos/` | macOS-only build shims (byteswap/statfs/if_tun); Linux needs none |
@@ -81,6 +82,8 @@ Isolation / lifecycle contract (details and evidence:
 The qualification host + scripts + measured results live in
 `FloeAgent/Qualification/TinyEMULinux/`.
 
+DEBUG builds retain slirp error diagnostics by default; verbose call and buffer traces remain available through the debug mask. This avoids flushing a log entry for every network buffer.
+
 ## 中文说明
 
 TinyEMU 是 Fabrice Bellard 的 MIT 许可 RISC-V 全系统模拟器（纯解释执行，
@@ -114,3 +117,5 @@ virtio 控制台、virtio-blk 磁盘、virtio-9p 宿主共享目录与 slirp 用
 ### Disconnected preview regression
 
 `bash FloeAgent/Qualification/TinyEMULinux/run_slirp_sigpipe_test.sh <task-scratch>` compiles the actual vendored send paths and verifies normal delivery plus disconnected/invalid sockets with the default SIGPIPE disposition. This is a host networking regression, not full-App or physical-iPad acceptance.
+
+调试构建默认保留 slirp 错误诊断；详细调用和缓冲区跟踪仍可通过调试掩码启用，避免每个网络缓冲区都触发日志刷新。

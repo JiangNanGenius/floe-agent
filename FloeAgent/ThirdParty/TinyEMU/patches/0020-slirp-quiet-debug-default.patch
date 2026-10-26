@@ -1,0 +1,12 @@
+--- a/slirp/misc.c
++++ b/slirp/misc.c
+@@ -8,7 +8,8 @@
+ #include "slirp.h"
+ 
+ #ifdef DEBUG
+-int slirp_debug = DBG_CALL|DBG_MISC|DBG_ERROR;
++/* Keep errors visible without flushing a trace for every network buffer. */
++int slirp_debug = DBG_ERROR;
+ #endif
+ 
+ struct quehead {
