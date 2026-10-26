@@ -19,6 +19,10 @@ struct SaveImageToPhotosButton: View {
 
     var body: some View {
         Button {
+            guard !saving else { return }
+            // Claim the action synchronously; a second tap must not replace
+            // the first operation's identity before its Task starts.
+            saving = true
             let requestID = UUID()
             operationID = requestID
             Task { await save(requestID: requestID) }
@@ -50,10 +54,9 @@ struct SaveImageToPhotosButton: View {
     }
 
     private func save(requestID: UUID) async {
-        guard !saving else { return }
-        saving = true
-        needsSettings = false
         defer { if operationID == requestID { saving = false } }
+        guard operationID == requestID, !Task.isCancelled else { return }
+        needsSettings = false
         let target = imageURL
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard operationID == requestID, !Task.isCancelled else { return }
