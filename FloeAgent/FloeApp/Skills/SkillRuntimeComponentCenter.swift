@@ -708,7 +708,10 @@ actor SkillRuntimeComponentCenter {
         }
         func reauthorize() async -> Bool {
             guard let current = await lateBindings.authorization?(plan.skillID),
-                  Self.matchesPlan(current, plan) else { return false }
+                  Self.matchesPlan(current, plan) else {
+                setState(environmentID, componentID) { $0.sourceAuthorized = false }
+                return false
+            }
             setState(environmentID, componentID) { $0.sourceAuthorized = true }
             return true
         }

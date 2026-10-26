@@ -130,7 +130,11 @@ private func makeStagedSkillFixture(
         id: "impeccable-fixture", version: "1.0.0",
         capabilities: capabilities, tools: [], scriptRuntime: .none
     )
-    try JSONEncoder().encode(manifest).write(to: packageRoot.appendingPathComponent("floe.json"), options: .atomic)
+    // Equal installed packages in different environments have equal bytes;
+    // unordered JSON encoding must not invent different authority digests.
+    let manifestEncoder = JSONEncoder()
+    manifestEncoder.outputFormatting = [.sortedKeys]
+    try manifestEncoder.encode(manifest).write(to: packageRoot.appendingPathComponent("floe.json"), options: .atomic)
     let reference = packageRoot.appendingPathComponent("references/engine-dependency.json", isDirectory: false)
     try FileManager.default.createDirectory(at: reference.deletingLastPathComponent(), withIntermediateDirectories: true)
     try descriptorBytes.write(to: reference, options: .atomic)
@@ -1005,6 +1009,8 @@ private func makePreparedChain(
         let stagedB = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
         let authorityA = makeAuthority(fixture: stagedA, descriptorBytes: component.descriptorBytes)
         let authorityB = makeAuthority(fixture: stagedB, descriptorBytes: component.descriptorBytes)
+        try #require(authorityA.contentDigest == authorityB.contentDigest,
+                     "Shared-environment fixtures must carry identical installed package bytes")
         let harness = makeHarness(
             layers: [stagedA.environmentID: stagedA.layer, stagedB.environmentID: stagedB.layer],
             pathMaps: [stagedA.environmentID: stagedA.pathMap, stagedB.environmentID: stagedB.pathMap]
@@ -1135,6 +1141,8 @@ private func makePreparedChain(
         let stagedB = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
         let authorityA = makeAuthority(fixture: stagedA, descriptorBytes: component.descriptorBytes)
         let authorityB = makeAuthority(fixture: stagedB, descriptorBytes: component.descriptorBytes)
+        try #require(authorityA.contentDigest == authorityB.contentDigest,
+                     "Shared-environment fixtures must carry identical installed package bytes")
         let harness = makeHarness(
             layers: [stagedA.environmentID: stagedA.layer, stagedB.environmentID: stagedB.layer],
             pathMaps: [stagedA.environmentID: stagedA.pathMap, stagedB.environmentID: stagedB.pathMap]
@@ -1190,6 +1198,8 @@ private func makePreparedChain(
         let stagedB = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
         let authorityA = makeAuthority(fixture: stagedA, descriptorBytes: component.descriptorBytes)
         let authorityB = makeAuthority(fixture: stagedB, descriptorBytes: component.descriptorBytes)
+        try #require(authorityA.contentDigest == authorityB.contentDigest,
+                     "Shared-environment fixtures must carry identical installed package bytes")
         let harness = makeHarness(
             layers: [stagedA.environmentID: stagedA.layer, stagedB.environmentID: stagedB.layer],
             pathMaps: [stagedA.environmentID: stagedA.pathMap, stagedB.environmentID: stagedB.pathMap]

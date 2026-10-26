@@ -5742,7 +5742,11 @@ extension SubagentSimulatorExecutionTests {
                 "DIAG_PROBE phase=after target=127.0.0.1 proxy=off timeout=4 result=ok")
             let before127OK = p4.outputSummary.contains(
                 "DIAG_PROBE phase=before target=127.0.0.1 proxy=off timeout=4 result=ok")
-            if before127OK {
+            if !p4.outputSummary.contains("DIAG_PROBE phase=before ")
+                || !p4.outputSummary.contains("DIAG_PROBE phase=after ") {
+                evidence["verdict"] = "inconclusive: the foreground command returned no complete matrix; "
+                    + "loopback repair effect cannot be inferred from missing output"
+            } else if before127OK {
                 evidence["verdict"] = "loopback self-HTTP already healthy at probe time; "
                     + "the timeout cause is not lo state alone in this generation"
             } else if after127OK {
