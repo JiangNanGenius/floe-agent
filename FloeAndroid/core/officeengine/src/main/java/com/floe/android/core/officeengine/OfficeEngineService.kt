@@ -167,6 +167,14 @@ class OfficeEngineService : Service() {
         @Volatile var editPermissionEstablished = false
             private set
 
+        /**
+         * First host-bridge `hideProgressbar` consumption recorded once (the
+         * pinned bundle posts it on every document load AND on every
+         * MobileWizard window open; unbounded entries would evict real
+         * diagnostic facts from the bounded history).
+         */
+        private val hostUiProgressConsumed = AtomicBoolean(false)
+
         /** Kit `statechanged:` `.uno:ModifiedStatus` fact (null until first frame). */
         @Volatile var documentModified: Boolean? = null
             private set
@@ -477,6 +485,17 @@ class OfficeEngineService : Service() {
                         )
                         null -> when {
                             message.startsWith("MOBILEWIZARD") -> mobileWizardVisible = rest.trim() == "show"
+                            // Upstream-parity host-bridge consumption (gate
+                            // BLOCK_WITHOUT_NOTICE): kept as ONE inspectable
+                            // fact; never a notice, never an error, never
+                            // readiness evidence.
+                            message.startsWith("hideProgressbar") ->
+                                if (hostUiProgressConsumed.compareAndSet(false, true)) {
+                                    recordDiagnostic(
+                                        OfficeSessionDiagnostics.KIND_STATE,
+                                        "host UI hideProgressbar consumed",
+                                    )
+                                }
                         }
                     }
                     return false

@@ -37,7 +37,7 @@
     <string name="office_viewer_edit_cd">编辑文档</string>
     <string name="office_viewer_view_cd">返回查看</string>
     <string name="office_viewer_more_cd">更多操作</string>
-    <string name="office_viewer_edit_info">你正在编辑私有工作副本；应用完成保存前，原文件不会改变。</string>
+    <string name="office_viewer_edit_info">编辑副本。使用“存为副本”保留你的更改，原文件不变。</string>
     <string name="office_viewer_dirty_title">要保存更改吗？</string>
     <string name="office_viewer_dirty_message">当前工作副本有未保存的更改。</string>
     <string name="office_action_save_close">存副本并关闭</string>

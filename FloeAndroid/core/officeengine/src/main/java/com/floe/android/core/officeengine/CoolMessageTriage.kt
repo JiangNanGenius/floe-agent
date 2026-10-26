@@ -290,6 +290,16 @@ object CoolMessageTriage {
  * never forwarded back into native; it is also never treated as save proof
  * (the page shares this entry point and could forge the string — see
  * OfficeSaveProtocol).
+ *
+ * Host-bridge parity (Alpha13 repair 2026-10-26): every message the pinned
+ * upstream LOActivity consumes Java-side in beforeMessageFromWebView (BYE,
+ * PRINT, SAVE, downloadas, exportfile, DIM_SCREEN, LIGHT_SCREEN,
+ * MOBILEWIZARD, HYPERLINK, EDITMODE, REQUESTFILECOPY, hideProgressbar) is
+ * intercepted here or in the session — none may reach the kit, which answers
+ * unknown non-protocol tokens with a `kind=unknown` error frame. Everything
+ * upstream FORWARDS (lowercase protocol traffic and the clipboard/dialog
+ * bridge tokens) keeps the same forwarding behaviour here; nothing is
+ * swallowed broadly and real native errors stay inspectable.
  */
 object CoolMessageGate {
 
@@ -399,6 +409,26 @@ object CoolMessageGate {
             "HYPERLINK" -> Outcome(Decision.BLOCK_ROUTE, "linkBlocked")
             "MOBILEWIZARD" -> Outcome(Decision.BLOCK_WITHOUT_NOTICE, null) // tracked by the session
             "DIM_SCREEN", "LIGHT_SCREEN" -> Outcome(Decision.BLOCK_WITHOUT_NOTICE, null)
+            // Android host-bridge UI notice, NOT a protocol command: the pinned
+            // mobile bundle posts a bare `hideProgressbar` through
+            // window.postMobileMessage when a document finishes loading
+            // (bundle.js Map.js:365 docloaded handler, guarded by
+            // ThisIsTheAndroidApp) and again on every MobileWizard window
+            // open (bundle.js MobileWizardWindow.js:496). Upstream consumes it
+            // Java-side and NEVER forwards it (beforeMessageFromWebView
+            // `case "hideProgressbar"` -> dismiss progress -> return false,
+            // release-source LOActivity.java:1567-1578). This session has no
+            // JS-driven progress dialog — the host chrome is driven by the
+            // native `progress:` frames — so it is consumed quietly in BOTH
+            // modes (preview previously emitted a spurious editModeBlocked
+            // notice on every load). Forwarding it is a real fault: the pinned
+            // in-process ClientSession does not know the command and answers
+            // `error: cmd=hideProgressbar kind=unknown` (ClientSession.cpp:1735
+            // at the pinned online revision), which both the page (AlertDialog +
+            // broken modal focus) and this module (fatal non-save ERROR branch)
+            // would read as a document failure — the actual Alpha13 tablet
+            // FAILED session of 2026-10-26.
+            "hideProgressbar" -> Outcome(Decision.BLOCK_WITHOUT_NOTICE, null)
             "loadwithpassword" -> Outcome(Decision.FORWARD) // kit drives its own wizard
             "uno" -> {
                 val unoCommand = rest.split(" ", limit = 2).first()

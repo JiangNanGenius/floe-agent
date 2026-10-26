@@ -37,7 +37,7 @@
     <string name="office_viewer_edit_cd">Edit document</string>
     <string name="office_viewer_view_cd">Return to viewing</string>
     <string name="office_viewer_more_cd">More actions</string>
-    <string name="office_viewer_edit_info">You are editing a private working copy. The original document stays unchanged until the app saves it.</string>
+    <string name="office_viewer_edit_info">Edit a copy. Use Save Copy to keep your changes. The original stays unchanged.</string>
     <string name="office_viewer_dirty_title">Save your changes?</string>
     <string name="office_viewer_dirty_message">This working copy has unsaved changes.</string>
     <string name="office_action_save_close">Save Copy and close</string>

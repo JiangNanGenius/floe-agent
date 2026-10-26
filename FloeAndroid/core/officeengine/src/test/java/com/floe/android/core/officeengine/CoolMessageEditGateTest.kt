@@ -116,6 +116,40 @@ class CoolMessageEditGateTest {
     }
 
     @Test
+    fun hostBridgeHideProgressbarIsConsumedInBothModes() {
+        // The pinned mobile bundle posts a bare window.postMobileMessage
+        // ("hideProgressbar") on every document load (Map.js:365 docloaded,
+        // ThisIsTheAndroidApp guard) and every MobileWizard open
+        // (MobileWizardWindow.js:496). Upstream Java consumes it and NEVER
+        // forwards it (beforeMessageFromWebView case "hideProgressbar" ->
+        // return false, release-source LOActivity.java:1567-1578). Forwarding
+        // it made the pinned kit answer error: cmd=hideProgressbar
+        // kind=unknown (ClientSession.cpp:1735) — the actual Alpha13 tablet
+        // FAILED session of 2026-10-26.
+        for (mode in listOf(CoolMessageGate.Mode.READ_ONLY, CoolMessageGate.Mode.EDITABLE)) {
+            val outcome = CoolMessageGate.decide("hideProgressbar", mode)
+            assertEquals(mode.toString(), CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE, outcome.decision)
+            assertNull(mode.toString(), outcome.noticeKey)
+        }
+        // Same-boundary audit: the remaining upstream-consumed host messages
+        // keep their existing consumption on this side too.
+        assertEquals(CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE, editable("EDITMODE on").decision)
+        assertEquals(CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE, editable("MOBILEWIZARD show").decision)
+        assertEquals(CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE, editable("DIM_SCREEN").decision)
+        assertEquals(CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE, editable("LIGHT_SCREEN").decision)
+        assertEquals(CoolMessageGate.Decision.BLOCK_ROUTE, editable("PRINT").decision)
+        assertEquals(CoolMessageGate.Decision.BLOCK_ROUTE, editable("REQUESTFILECOPY").decision)
+        // This is a routing repair, NOT a swallow: bridge tokens upstream
+        // forwards keep forwarding exactly like the official app; anything
+        // that truly reaches the kit still surfaces as its own error frame
+        // (see hideProgressbarErrorFrameStaysFatalAndTyped below).
+        assertEquals(CoolMessageGate.Decision.FORWARD, editable("PASTE {\"type\":\"text\"}").decision)
+        assertEquals(CoolMessageGate.Decision.FORWARD, editable("SETDARKMODE 1").decision)
+        assertEquals(CoolMessageGate.Decision.FORWARD, editable("CLOSE_WINDOW id=2").decision)
+        assertEquals(CoolMessageGate.Decision.FORWARD, editable("textviewcontent 5").decision)
+    }
+
+    @Test
     fun backwardCompatibleBooleanOverloadMatchesModes() {
         assertEquals(
             CoolMessageGate.decide("save dontTerminateEdit=1", readOnly = false).decision,
@@ -235,6 +269,20 @@ class CoolMessageTriageR2Test {
         val legacy = CoolMessageTriage.classify(msg("error: format-error.html"))
         assertEquals(CoolMessageTriage.Kind.ERROR, legacy.kind)
         assertNull(legacy.error?.cmd)
+    }
+
+    @Test
+    fun hideProgressbarErrorFrameStaysFatalAndTyped() {
+        // The gate now consumes the host UI message, so this frame must no
+        // longer be produced at all; but if a frame like this ever arrives
+        // from the producer it must stay a typed, NON-save (therefore fatal
+        // at the service) ERROR fact — the Alpha13 repair routes messages,
+        // it does not swallow errors.
+        val frame = CoolMessageTriage.classify(msg("error: cmd=hideProgressbar kind=unknown"))
+        assertEquals(CoolMessageTriage.Kind.ERROR, frame.kind)
+        assertEquals("hideProgressbar", frame.error?.cmd)
+        assertEquals("unknown", frame.error?.kind)
+        assertFalse(OfficeSaveProtocol.isSaveRelatedError(frame.error?.cmd, frame.error?.kind))
     }
 
     @Test
