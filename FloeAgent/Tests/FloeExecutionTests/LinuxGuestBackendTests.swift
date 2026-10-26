@@ -1827,3 +1827,127 @@ final class LinuxGuestNetworkReadinessTests: XCTestCase {
         XCTAssertNil(LinuxGuestNetworkStatus.from(capabilities: nil))
     }
 }
+
+// MARK: - Section ownership (foreground output vs concurrent control exchange)
+
+/// The guest runner announces a section once and keeps writing unmarked bytes
+/// until the owner or the section kind changes (floe_exec.c ensure_section).
+/// These cases pin the router to the runner's exact release rule with real
+/// token framing: only the owning token's END/FAILED may release the section.
+final class LinuxGuestSectionOwnershipTests: XCTestCase {
+    /// Waits until `count` frames with `name` reached the console and returns
+    /// their tokens in arrival order.
+    private func tokens(_ console: TestLinuxGuestConsole, name: String, count: Int,
+                        timeout: TimeInterval = 5) async throws -> [String] {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let found = TestLinuxGuestConsole.tokens(in: console.written, name: name)
+            if found.count >= count { return found }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return TestLinuxGuestConsole.tokens(in: console.written, name: name)
+    }
+
+    func testControlExchangeEndDoesNotStrandInFlightCommandOutput() async throws {
+        // Shape: BEGIN <cmd>, payload, one REAL spawnService control exchange
+        // (BEGIN-less PID + END on its own ctl token), more payload, END.
+        // The command's stdout must survive the foreign END untouched.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            if token.hasPrefix("hello-") { return caps(token) }
+            if token.hasPrefix("ctl-") {
+                return [Data("\u{1e}FLOE-PID \(token) 91\u{1e}\u{1e}FLOE-END \(token) 0\u{1e}".utf8)]
+            }
+            return [Data("\u{1e}FLOE-BEGIN \(token)\u{1e}".utf8)]
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        let command = Task {
+            try await channel.run(argv: ["/bin/sh", "-c", "printf markers"], timeout: 10)
+        }
+        let exec = try await tokens(console, name: "EXEC", count: 1)
+        XCTAssertEqual(exec.count, 1)
+        guard let token = exec.first else { return XCTFail("no EXEC token") }
+        console.push([Data("first\n".utf8)])
+        let pid = try await channel.spawnService(argv: ["/bin/sh", "-c", "sleep 30"],
+                                                 logPath: "/workspace/diag.log", timeout: 5)
+        XCTAssertEqual(pid, 91)
+        console.push([Data("second\n".utf8)])
+        console.push([Data("\u{1e}FLOE-END \(token) 0\u{1e}".utf8)])
+        let result = try await command.value
+        XCTAssertEqual(result.stdout, "first\nsecond\n",
+                       "a control exchange ending on its own token must not strand in-flight stdout")
+        XCTAssertEqual(result.exitCode, 0)
+        let diagnostics = await channel.routerDiagnostics
+        XCTAssertEqual(diagnostics.unownedSectionBytes, 0,
+                       "no payload may be dropped while a live command owns the section")
+        XCTAssertEqual(diagnostics.foreignEndEvents, 1)
+    }
+
+    func testSiblingCommandEndDoesNotStrandOtherCommandOutput() async throws {
+        // Shape: BEGIN b, BEGIN a (a is now the announced owner), b's payload,
+        // b's own END, then a's payload unmarked. The runner does NOT
+        // re-announce a after b's END; a's bytes must still reach a.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            token.hasPrefix("hello-") ? caps(token) : []
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        async let b = channel.run(argv: ["/bin/sh", "-c", "printf b"], timeout: 10)
+        async let a = channel.run(argv: ["/bin/sh", "-c", "printf a"], timeout: 10)
+        let exec = try await tokens(console, name: "EXEC", count: 2)
+        XCTAssertEqual(exec.count, 2)
+        guard exec.count == 2 else { return XCTFail("two EXEC tokens required") }
+        let (bToken, aToken) = (exec[0], exec[1])
+        var stream = Data()
+        stream.append(Data("\u{1e}FLOE-BEGIN \(bToken)\u{1e}b-1".utf8))
+        stream.append(Data("\u{1e}FLOE-BEGIN \(aToken)\u{1e}a-1".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(bToken) 0\u{1e}".utf8))
+        stream.append(Data("a-2".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(aToken) 0\u{1e}".utf8))
+        console.push([stream])
+        let resultB = try await b
+        let resultA = try await a
+        // The task/token mapping is not deterministic, so assert by content:
+        // each token sees exactly its own bytes and nothing from the other.
+        XCTAssertEqual(Set([resultA.stdout, resultB.stdout]), Set(["b-1", "a-1a-2"]),
+                       "another command's END must not sever the announced owner's unmarked stream")
+        XCTAssertEqual(resultA.exitCode, 0)
+        XCTAssertEqual(resultB.exitCode, 0)
+        let diagnostics = await channel.routerDiagnostics
+        XCTAssertEqual(diagnostics.unownedSectionBytes, 0)
+        XCTAssertEqual(diagnostics.foreignEndEvents, 1)
+    }
+
+    func testOwnEndReleasesSectionAndLateBytesNeverLeakIntoNextCommand() async throws {
+        // Shape: BEGIN a, payload, a's own END, then late unmarked bytes from
+        // a's finished process, then a second command. The owning END must
+        // release the section (bytes after it are unowned, counted, dropped),
+        // and none of them may be attributed to the next command's token.
+        let console = TestLinuxGuestConsole()
+        console.setHandler { token in
+            token.hasPrefix("hello-") ? caps(token) : []
+        }
+        let channel = LinuxGuestCommandChannel(transport: console)
+        async let b = channel.run(argv: ["/bin/sh", "-c", "printf b"], timeout: 10)
+        async let a = channel.run(argv: ["/bin/sh", "-c", "printf a"], timeout: 10)
+        let exec = try await tokens(console, name: "EXEC", count: 2)
+        XCTAssertEqual(exec.count, 2)
+        guard exec.count == 2 else { return XCTFail("two EXEC tokens required") }
+        let (aToken, bToken) = (exec[0], exec[1])
+        var stream = Data()
+        stream.append(Data("\u{1e}FLOE-BEGIN \(aToken)\u{1e}a-1".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(aToken) 0\u{1e}".utf8))
+        stream.append(Data("late-a-tail".utf8))
+        stream.append(Data("\u{1e}FLOE-BEGIN \(bToken)\u{1e}b-1".utf8))
+        stream.append(Data("\u{1e}FLOE-END \(bToken) 0\u{1e}".utf8))
+        console.push([stream])
+        let resultA = try await a
+        let resultB = try await b
+        XCTAssertEqual(Set([resultA.stdout, resultB.stdout]), Set(["a-1", "b-1"]),
+                       "bytes after a released section must never be attributed to the next token")
+        let diagnostics = await channel.routerDiagnostics
+        XCTAssertEqual(diagnostics.unownedSectionBytes, "late-a-tail".utf8.count)
+        XCTAssertEqual(diagnostics.unownedSectionEvents, 1)
+        XCTAssertEqual(diagnostics.foreignEndEvents, 0)
+    }
+}

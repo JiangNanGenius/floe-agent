@@ -5793,19 +5793,89 @@ extension SubagentSimulatorExecutionTests {
             // return its marker line while the real localService is running.
             // Strict by design — an empty result here reproduces the channel
             // defect with this harness as the witness.
+
+            // Witness block. Every phase below must still answer through the
+            // ordinary exec.shell stdout contract: the original strict marker
+            // assertion is retained verbatim at the end of the block, and no
+            // sidecar file is ever substituted for tool stdout. The witnesses
+            // only distinguish WHERE the loss is (guest completion, exit
+            // status, payload capture) and are recorded immediately, so they
+            // survive the failing assertion through the existing evidence
+            // paths (workspace sidecar + QualificationEvidence JSON).
+            var witnesses: [[String: String]] = []
+            func readSidecar(_ name: String) -> String {
+                let path = root.appendingPathComponent(name)
+                guard let text = try? String(contentsOf: path, encoding: .utf8) else { return "missing" }
+                return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            func record(_ tag: String, _ marker: String, _ result: ToolResult, sidecar: String = "-") {
+                let summary = result.outputSummary
+                witnesses.append([
+                    "tag": tag,
+                    "status": String(describing: result.status),
+                    "summaryBytes": String(summary.utf8.count),
+                    "summarySHA256": FloeDigest.sha256Hex(Data(summary.utf8)),
+                    "hasMarker": summary.contains(marker) ? "yes" : "no",
+                    "reportsExit7": summary.hasPrefix("exit=7 ") ? "yes" : "no",
+                    "sidecar": sidecar,
+                ])
+                guard let encoded = try? JSONEncoder().encode(witnesses) else { return }
+                let json = String(decoding: encoded, as: UTF8.self)
+                evidence["p5Witnesses"] = json
+                try? Data(json.utf8).write(
+                    to: root.appendingPathComponent("diag-witnesses.json"), options: .atomic)
+            }
+            let driverMarkers = ["FLOE_ENGINE label=diag-a ", "FLOE_ENGINE label=diag-b "]
+            let runEngineProbe = "run_engine() { label=\"$1\"; shift; start=$(date +%s%N); "
+                + "\"$@\" >/dev/null 2>&1 & pid=$!; wait \"$pid\"; rc=$?; end=$(date +%s%N); "
+                + "echo \"FLOE_ENGINE label=$label rc=$rc elapsed_ms=$(( (end - start) / 1000000 )) vmhwm_kb=unavailable\"; }; "
+                + "run_engine diag-a python3 -c 'import time;time.sleep(1)'; "
+                + "run_engine diag-b python3 -c 'import time;time.sleep(1)'"
+
             let p5 = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "diag-p5-channel",
-                command: "run_engine() { label=\"$1\"; shift; start=$(date +%s%N); "
-                    + "\"$@\" >/dev/null 2>&1 & pid=$!; wait \"$pid\"; rc=$?; end=$(date +%s%N); "
-                    + "echo \"FLOE_ENGINE label=$label rc=$rc elapsed_ms=$(( (end - start) / 1000000 )) vmhwm_kb=unavailable\"; }; "
-                    + "run_engine diag-a python3 -c 'import time;time.sleep(1)'; "
-                    + "run_engine diag-b python3 -c 'import time;time.sleep(1)'",
-                timeout: 120)
+                command: runEngineProbe, timeout: 120)
             try #require(p5.status == .ok, "Foreground channel probe must run: \(p5.outputSummary)")
-            try #require(p5.outputSummary.contains("FLOE_ENGINE label=diag-a ")
-                            && p5.outputSummary.contains("FLOE_ENGINE label=diag-b "),
-                         "Foreground exec.shell must return the driver markers while a localService runs (empty stdout here reproduces the small-round1 finding): \(p5.outputSummary.prefix(400))")
-            evidence["p5ChannelForegroundWithService"] = "markers-present"
+            record("withService", "FLOE_ENGINE label=diag-a ", p5)
+
+            // W1: real non-zero exit witness. Predicted under the ownership
+            // defect: `exit=7` is reported truthfully while the marker line is
+            // lost. A missing or wrong status, or a `missing` completion
+            // sidecar below, is a different failure than payload loss.
+            let p5w = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p5-exit7",
+                command: "printf 'FLOE_ENGINE label=exit7 rc=0 elapsed_ms=0 vmhwm_kb=unavailable\n'; exit 7",
+                timeout: 60)
+            record("exit7", "FLOE_ENGINE label=exit7 ", p5w)
+
+            // W2: owned sidecar completion witness. The marker file is created
+            // by the guest command itself inside THIS run's workspace share
+            // (cwd "."), so `COMPLETE` proves the guest ran the whole command
+            // to its own end even if the receipt loses stdout; `missing`
+            // points at premature completion or a wrong exit instead.
+            let p5s = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p5-sidecar",
+                command: "printf 'FLOE_ENGINE label=slow rc=0 elapsed_ms=0 vmhwm_kb=unavailable\n'; "
+                    + "sleep 2; printf 'COMPLETE\\n' > diag-p5-sidecar.txt",
+                timeout: 60)
+            record("sidecar", "FLOE_ENGINE label=slow ", p5s,
+                   sidecar: readSidecar("diag-p5-sidecar.txt"))
+
+            // W3: the CAUSE.md §3 C1 discriminator. This probe changes the
+            // section kind first (stderr), which makes the runner re-announce
+            // its OUT section before the marker line. It is race-free: the 2 s
+            // sleep guarantees at least one supervisor ALIVE poll lands
+            // between the stderr write and the marker, and there is no retry
+            // loop and no timeout change. Predicted to return its marker even
+            // before any repair; `missing` here would falsify the ownership
+            // cause.
+            let p5e = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p5-stderr-first",
+                command: "printf 'DIAG_ERR_FIRST\\n' >&2; sleep 2; "
+                    + "printf 'FLOE_ENGINE label=stderrfirst rc=0 elapsed_ms=0 vmhwm_kb=unavailable\n'; "
+                    + "printf 'DIAG_ERR_POST\\n' >&2",
+                timeout: 60)
+            record("stderrFirst", "FLOE_ENGINE label=stderrfirst ", p5e)
 
             // P6: production cancellation with endpoint closure (guest side
             // now checks the loopback target as the committed test does).
@@ -5829,6 +5899,44 @@ extension SubagentSimulatorExecutionTests {
             catch { hostGone = true }
             try #require(hostGone, "the cancelled fixture endpoint must not stay reachable from the host")
             evidence["p6Cancellation"] = "settled-closed"
+
+            // W4: after-close witness with the identical command shape.
+            // The managed service is cancelled and settled, so no
+            // supervisor poll can clear the section any more: this shows
+            // whether foreground ownership restores when the service
+            // closes. Same strict marker contract, no loops.
+            let p5c = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p5-after-close",
+                command: runEngineProbe, timeout: 120)
+            record("afterClose", "FLOE_ENGINE label=diag-a ", p5c)
+
+            // The original strict assertions, unchanged in wording and
+            // binding force, plus the witness gates. Every marker must be
+            // real bytes in the ordinary tool receipt: no host-file
+            // substitution, no cap or timeout relaxation, no retry loop.
+            let p5Markers = driverMarkers.allSatisfy { p5.outputSummary.contains($0) }
+            let p5cMarkers = driverMarkers.allSatisfy { p5c.outputSummary.contains($0) }
+            try #require(p5Markers,
+                Comment(rawValue: "Foreground exec.shell must return the driver markers while a localService runs "
+                    + "(empty stdout here reproduces the small-round1 finding): \(p5.outputSummary.prefix(400))"))
+            try #require(p5cMarkers,
+                Comment(rawValue: "Foreground exec.shell must return the same driver markers after the localService "
+                    + "closed; if it does not, the loss is not service-poll ownership: "
+                    + "\(p5c.outputSummary.prefix(400))"))
+            try #require(p5w.outputSummary.hasPrefix("exit=7 ")
+                            && p5w.outputSummary.contains("FLOE_ENGINE label=exit7 "),
+                         Comment(rawValue: "exit-7 witness must report the real non-zero status and its marker: "
+                             + "\(p5w.outputSummary.prefix(400))"))
+            try #require(p5s.outputSummary.contains("FLOE_ENGINE label=slow ")
+                            && readSidecar("diag-p5-sidecar.txt") == "COMPLETE",
+                         Comment(rawValue: "slow probe must return its marker; the owned completion sidecar must "
+                             + "prove the guest ran the command to its own end: "
+                             + "\(p5s.outputSummary.prefix(400))"))
+            try #require(p5e.outputSummary.contains("FLOE_ENGINE label=stderrfirst "),
+                         Comment(rawValue: "stderr-first probe must return its marker after the section kind "
+                             + "re-announcement: \(p5e.outputSummary.prefix(400))"))
+            evidence["p5ChannelForegroundWithService"] = "markers-present"
+            evidence["p5ChannelForegroundAfterClose"] = "markers-present"
 
             let p1After = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "diag-p1-after",

@@ -18,6 +18,13 @@
 //   \x1eFLOE-END <token> <exit code>\x1e
 //   \x1eFLOE-FAILED <token> <reason>\x1e   (process abandoned alive; never END)
 //
+// Section ownership: the runner keeps ONE console-wide owner and only
+// re-announces OUT/ERR when that owner or the section kind changes
+// (floe_exec.c ensure_section/section_release). The router mirrors that
+// rule exactly: END/FAILED releases the section only when the ending
+// token owns it, so a control exchange (SPAWN/KILL/ALIVE) or a sibling
+// command ending can never strand an in-flight command's unmarked bytes.
+//
 // Capability negotiation (protocol 3): the host sends
 //   \x1eFLOE-HELLO <token> [archive=<actions>]\x1e
 // and the runner answers
@@ -1760,12 +1767,44 @@ public actor LinuxGuestCommandChannel {
 
     /// Token whose output section currently owns unmarked bytes. Kept
     /// router-side so a chunk without any marker still reaches the command
-    /// that is printing.
+    /// that is printing. This mirrors the runner's single global owner: only
+    /// that owner's own END/FAILED releases it (routeMarkerFrame).
     private var sectionOwner: String?
 
+    /// Bounded, secret-free router counters for the focused regressions and
+    /// diagnostics. Counts and byte totals only — never payload, tokens or
+    /// command text — so they are safe to assert on and to log.
+    struct RouterDiagnostics: Equatable {
+        /// Payload bytes that arrived while no token owned the section.
+        var unownedSectionBytes = 0
+        var unownedSectionEvents = 0
+        /// Payload bytes for a section owner whose stream is already gone.
+        var staleOwnerSectionBytes = 0
+        var staleOwnerSectionEvents = 0
+        /// END/FAILED from a token that did not own a section someone else
+        /// owned. Non-zero is normal (control exchanges, sibling commands);
+        /// those frames must never strand live output any more.
+        var foreignEndEvents = 0
+    }
+
+    private var routerDiagnosticsState = RouterDiagnostics()
+
+    /// Diagnostic/test seam only: routing never reads these counters (the
+    /// same contract as `liveTokenCount`).
+    var routerDiagnostics: RouterDiagnostics { routerDiagnosticsState }
+
     private func routeSectionBytes(_ bytes: Data) async {
-        guard !bytes.isEmpty, let owner = sectionOwner,
-              let stream = tokenStreams[owner] else { return }
+        guard !bytes.isEmpty else { return }
+        guard let owner = sectionOwner else {
+            routerDiagnosticsState.unownedSectionBytes += bytes.count
+            routerDiagnosticsState.unownedSectionEvents += 1
+            return
+        }
+        guard let stream = tokenStreams[owner] else {
+            routerDiagnosticsState.staleOwnerSectionBytes += bytes.count
+            routerDiagnosticsState.staleOwnerSectionEvents += 1
+            return
+        }
         await stream.push(bytes)
     }
 
@@ -1828,7 +1867,19 @@ public actor LinuxGuestCommandChannel {
             await forwardMarker(name, token: token)
         case "END", "FAILED", "PID", "CAPS":
             if name == "END" || name == "FAILED" {
-                sectionOwner = nil
+                // Release the section only when this token owns it — the
+                // exact condition the runner applies before it clears its
+                // own owner (floe_exec.c section_release). A control exchange
+                // ending on its own token, or a sibling command ending, must
+                // leave the in-flight owner's bytes routable: the runner does
+                // not re-announce them, and dropping them here is how a real
+                // foreground command came back exit=0 with empty stdout while
+                // an exec.localService supervisor poll (every 2 s) ran.
+                if sectionOwner == token {
+                    sectionOwner = nil
+                } else if sectionOwner != nil {
+                    routerDiagnosticsState.foreignEndEvents += 1
+                }
                 // The guest command is over (reaped or quarantined): its
                 // pending host work is no longer wanted.
                 cancelHostRequest(token: token)
@@ -2514,6 +2565,7 @@ public actor LinuxGuestCommandChannel {
     func resetRouterState() async {
         routerPending.removeAll(keepingCapacity: false)
         sectionOwner = nil
+        routerDiagnosticsState = RouterDiagnostics()
         // Reboot boundary: host work captured before the reset belongs to the
         // old boot's tokens and its reply must never be written into the new
         // runner's console. The generation bump makes a completion that is

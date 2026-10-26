@@ -559,7 +559,7 @@ struct MCPServiceCreationTests {
             // The real persisted type, exactly as `submit` stores it.
             let job = BackgroundJob(conversationID: conversationID, runID: runID, toolCallID: call,
                                     kind: .tool, targetTool: "exec.shell",
-                                    payloadJSON: JSONEncoder().encode(expected), state: .completed)
+                                    payloadJSON: try JSONEncoder().encode(expected), state: .completed)
             #expect(MCPServiceCreationAppBackend.matchesNativeBuildPayload(
                 job.payloadJSON, callID: call, recordID: recordID, projectRelativePath: relative))
             // The tool's own canonical aliases carry the identical fixed
@@ -567,14 +567,15 @@ struct MCPServiceCreationTests {
             // and `timeoutSeconds` equal to the canonical `timeout`.
             let aliased = LocalShellTool.Arguments(script: expected.command, cwd: expected.cwd,
                                                    timeoutSeconds: 600, maxOutputBytes: 262_144)
+            let aliasBytes = try JSONEncoder().encode(aliased)
             #expect(MCPServiceCreationAppBackend.matchesNativeBuildPayload(
-                JSONEncoder().encode(aliased), callID: call, recordID: recordID,
+                aliasBytes, callID: call, recordID: recordID,
                 projectRelativePath: relative))
         }
         let service = MCPServiceCreationAppBackend.expectedServicePayload(projectRelativePath: relative, port: 8080)
         let serviceJob = BackgroundJob(conversationID: conversationID, runID: runID,
                                        toolCallID: "mcp.service." + recordID.uuidString, kind: .tool,
-                                       targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(service))
+                                       targetTool: "exec.localService", payloadJSON: try JSONEncoder().encode(service))
         #expect(MCPServiceCreationAppBackend.matchesNativeServicePayload(
             serviceJob.payloadJSON, projectRelativePath: relative, port: 8080))
     }
@@ -589,61 +590,63 @@ struct MCPServiceCreationTests {
             callID: installCall, recordID: recordID, projectRelativePath: relative))
         let expectedLegacy = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
             callID: legacyCall, recordID: recordID, projectRelativePath: relative))
-        func buildPayload(_ mutate: (inout LocalShellTool.Arguments) -> Void) -> Data {
+        func buildPayload(_ mutate: (inout LocalShellTool.Arguments) -> Void) throws -> Data {
             var args = expected
             mutate(&args)
-            return JSONEncoder().encode(args)
+            return try JSONEncoder().encode(args)
         }
         func bound(_ bytes: Data, _ call: String) -> Bool {
             MCPServiceCreationAppBackend.matchesNativeBuildPayload(bytes, callID: call, recordID: recordID,
                                                                    projectRelativePath: relative)
         }
         func refused(_ bytes: Data, _ label: String) {
-            #expect(!bound(bytes, installCall), "install slot must refuse: " + label)
+            #expect(!bound(bytes, installCall), Comment(rawValue: "install slot must refuse: " + label))
         }
         // The echo-done row that "completes" the install slot is refused, and
         // so is every quieter drift of the fixed bounds or injected inputs:
         // none of them may count as a finished phase or authorize a new one.
-        refused(buildPayload { $0.command = "echo done" }, "echo done")
-        refused(buildPayload { $0.command = "npm ci && npm run build && node --test tests/http.test.mjs" },
+        refused(try buildPayload { $0.command = "echo done" }, "echo done")
+        refused(try buildPayload { $0.command = "npm ci && npm run build && node --test tests/http.test.mjs" },
                 "one-line fake equivalent")
-        refused(buildPayload { $0.command = "set -eu\nnode --test tests/http.test.mjs" }, "truncated phase")
+        refused(try buildPayload { $0.command = "set -eu\nnode --test tests/http.test.mjs" }, "truncated phase")
         // Another genuine phase command is still not THIS slot's command.
-        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.compileCommand }, "compile bytes in the install slot")
-        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.testCommand }, "test bytes in the install slot")
-        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.buildCommand }, "monolithic bytes in the install slot")
+        refused(try buildPayload { $0.command = MCPServiceCreationAppBackend.compileCommand }, "compile bytes in the install slot")
+        refused(try buildPayload { $0.command = MCPServiceCreationAppBackend.testCommand }, "test bytes in the install slot")
+        refused(try buildPayload { $0.command = MCPServiceCreationAppBackend.buildCommand }, "monolithic bytes in the install slot")
         // Drifted or missing bounds and injected inputs are refused, even an
         // empty channel: this backend writes those keys never, not empty.
-        refused(buildPayload { $0.cwd = "MCPServices/other-project/node-http" }, "other project cwd")
-        refused(buildPayload { $0.cwd = nil }, "missing cwd")
-        refused(buildPayload { $0.timeout = 30 }, "shortened timeout")
-        refused(buildPayload { $0.timeout = nil }, "missing timeout")
-        refused(buildPayload { $0.timeout = 600; $0.timeoutSeconds = 30 }, "disagreeing timeout alias")
-        refused(buildPayload { $0.maxOutputBytes = 24_576 }, "smaller output bound")
-        refused(buildPayload { $0.maxOutputBytes = nil }, "missing output bound")
-        refused(buildPayload { $0.env = ["PATH": "/tmp/evil/bin"] }, "injected environment")
-        refused(buildPayload { $0.env = [:] }, "empty environment key")
-        refused(buildPayload { $0.stdin = "yes" }, "injected stdin")
-        refused(buildPayload { $0.packages = ["requests==2.0"] }, "package install channel")
-        refused(buildPayload { $0.packages = [] }, "empty package channel")
-        refused(buildPayload { $0.packagePurpose = "install" }, "package purpose")
-        refused(buildPayload { $0.packageCapabilities = ["network"] }, "package capabilities")
+        refused(try buildPayload { $0.cwd = "MCPServices/other-project/node-http" }, "other project cwd")
+        refused(try buildPayload { $0.cwd = nil }, "missing cwd")
+        refused(try buildPayload { $0.timeout = 30 }, "shortened timeout")
+        refused(try buildPayload { $0.timeout = nil }, "missing timeout")
+        refused(try buildPayload { $0.timeout = 600; $0.timeoutSeconds = 30 }, "disagreeing timeout alias")
+        refused(try buildPayload { $0.maxOutputBytes = 24_576 }, "smaller output bound")
+        refused(try buildPayload { $0.maxOutputBytes = nil }, "missing output bound")
+        refused(try buildPayload { $0.env = ["PATH": "/tmp/evil/bin"] }, "injected environment")
+        refused(try buildPayload { $0.env = [:] }, "empty environment key")
+        refused(try buildPayload { $0.stdin = "yes" }, "injected stdin")
+        refused(try buildPayload { $0.packages = ["requests==2.0"] }, "package install channel")
+        refused(try buildPayload { $0.packages = [] }, "empty package channel")
+        refused(try buildPayload { $0.packagePurpose = "install" }, "package purpose")
+        refused(try buildPayload { $0.packageCapabilities = ["network"] }, "package capabilities")
         // A second, different command smuggled in the `script` alias is not the
         // canonical identical-bytes form.
-        refused(buildPayload { $0.script = "echo done" }, "second command in the script alias")
+        refused(try buildPayload { $0.script = "echo done" }, "second command in the script alias")
         // Undecodable or wrongly shaped bodies are not receipts.
         refused(Data("not-json".utf8), "undecodable body")
         refused(Data("[]".utf8), "wrongly shaped body")
         refused(Data(), "empty body")
+        let expectedBytes = try JSONEncoder().encode(expected)
+        let legacyBytes = try JSONEncoder().encode(expectedLegacy)
         // Slot cross-binding: the legacy payload cannot fill a phase slot and a
         // phase payload cannot fill the legacy slot; another record's install
         // slot binds nothing here at all.
-        #expect(!bound(JSONEncoder().encode(expectedLegacy), installCall), "legacy payload cannot fill the install slot")
-        #expect(!bound(JSONEncoder().encode(expected), legacyCall), "install payload cannot fill the legacy slot")
-        #expect(!bound(JSONEncoder().encode(expected), "mcp.build.install." + UUID().uuidString),
+        #expect(!bound(legacyBytes, installCall), "legacy payload cannot fill the install slot")
+        #expect(!bound(expectedBytes, legacyCall), "install payload cannot fill the legacy slot")
+        #expect(!bound(expectedBytes, "mcp.build.install." + UUID().uuidString),
                 "another record's install slot binds nothing here")
         // The genuine install payload is still bound (no over-rejection).
-        #expect(bound(JSONEncoder().encode(expected), installCall))
+        #expect(bound(expectedBytes, installCall))
     }
 
     @Test("A drifted service payload cannot keep or start the owned service")
@@ -651,28 +654,33 @@ struct MCPServiceCreationTests {
         let recordID = UUID()
         let relative = "MCPServices/" + recordID.uuidString.lowercased()
         let expected = MCPServiceCreationAppBackend.expectedServicePayload(projectRelativePath: relative, port: 8080)
-        func servicePayload(_ mutate: (inout LocalServiceTool.Arguments) -> Void) -> Data {
+        func servicePayload(_ mutate: (inout LocalServiceTool.Arguments) -> Void) throws -> Data {
             var args = expected
             mutate(&args)
-            return JSONEncoder().encode(args)
+            return try JSONEncoder().encode(args)
         }
         func bound(_ bytes: Data) -> Bool {
             MCPServiceCreationAppBackend.matchesNativeServicePayload(bytes, projectRelativePath: relative, port: 8080)
         }
-        #expect(bound(JSONEncoder().encode(expected)))
-        #expect(!bound(servicePayload { $0.port = 8081 }))
-        #expect(!bound(servicePayload { $0.entry = relative + "/node-http/other-start.mjs" }))
-        #expect(!bound(servicePayload { $0.entry = "MCPServices/other/node-http/floe-start.mjs" }))
-        #expect(!bound(servicePayload { $0.runtime = "python" }))
-        #expect(!bound(servicePayload { $0.arguments = ["--argv0", "./evil.js"] }))
-        #expect(!bound(servicePayload { $0.cwd = relative }))
-        #expect(!bound(servicePayload { $0.cwd = nil }))
+        func refusedService(_ mutate: (inout LocalServiceTool.Arguments) -> Void) throws {
+            let bytes = try servicePayload(mutate)
+            #expect(!bound(bytes))
+        }
+        let expectedBytes = try JSONEncoder().encode(expected)
+        #expect(bound(expectedBytes))
+        try refusedService { $0.port = 8081 }
+        try refusedService { $0.entry = relative + "/node-http/other-start.mjs" }
+        try refusedService { $0.entry = "MCPServices/other/node-http/floe-start.mjs" }
+        try refusedService { $0.runtime = "python" }
+        try refusedService { $0.arguments = ["--argv0", "./evil.js"] }
+        try refusedService { $0.cwd = relative }
+        try refusedService { $0.cwd = nil }
         #expect(!bound(Data("not-json".utf8)))
         // A different record's directory is a different payload.
+        let otherBytes = try JSONEncoder().encode(MCPServiceCreationAppBackend.expectedServicePayload(
+            projectRelativePath: "MCPServices/" + UUID().uuidString.lowercased(), port: 8080))
         #expect(!MCPServiceCreationAppBackend.matchesNativeServicePayload(
-            JSONEncoder().encode(MCPServiceCreationAppBackend.expectedServicePayload(
-                projectRelativePath: "MCPServices/" + UUID().uuidString.lowercased(), port: 8080)),
-            projectRelativePath: relative, port: 8080))
+            otherBytes, projectRelativePath: relative, port: 8080))
     }
 }
 #endif
