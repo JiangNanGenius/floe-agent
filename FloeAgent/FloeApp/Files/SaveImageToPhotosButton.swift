@@ -38,7 +38,7 @@ struct SaveImageToPhotosButton: View {
         .onChange(of: imageURL) { _, _ in
             operationID = UUID(); saving = false; saved = false; failure = nil
         }
-        .onDisappear { operationID = UUID() }
+        .onDisappear { operationID = UUID(); saving = false }
     }
 
     private func save(requestID: UUID) async {

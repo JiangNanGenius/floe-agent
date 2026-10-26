@@ -59,7 +59,8 @@ public actor CloudWorkspaceService {
         method: String,
         endpoint: String,
         queryPath: String? = nil,
-        body: Data? = nil
+        body: Data? = nil,
+        ensureAgentReadiness: Bool = true
     ) async throws -> Data {
         // An enrolled advanced link is an explicit no-port-22 transport
         // choice. Never turn an mTLS request into an implicit SSH update or
@@ -74,7 +75,7 @@ public actor CloudWorkspaceService {
         // in this app process, check the installed version and atomically
         // upgrade/rollback through verified SSH when it is stale or missing.
         // Subsequent requests use the readiness actor's per-host cache.
-        if let readiness {
+        if ensureAgentReadiness, let readiness {
             let status = try await readiness.ensureReady(hostID: hostID)
             if status.action == .updated,
                let stale = connections.removeValue(forKey: status.hostID) {
