@@ -50,6 +50,7 @@ private final class MCPServiceTestBackend: MCPServiceCreationBackend {
     var failWaitBuild: Error?
     var stopFailuresRemaining = 0
     var savedIDs: Set<UUID> = []
+    var releasedAdvisoryLeases: Set<UUID> = []
     var onSaveCommit: (() async -> Void)?
     var calls: [(String, MCPServiceCreationRecord)] = []
     let buildID = UUID(), serviceID = UUID()
@@ -107,6 +108,9 @@ private final class MCPServiceTestBackend: MCPServiceCreationBackend {
         }
         await generationGate?.open(); await verificationGate?.open()
     }
+    func releaseAdvisoryLease(recordID: UUID) async {
+        releasedAdvisoryLeases.insert(recordID)
+    }
     func release(_ record: MCPServiceCreationRecord) { calls.append(("release", record)) }
 }
 
@@ -141,6 +145,7 @@ struct MCPServiceCreationTests {
         #expect(decoded.binding != nil)
         #expect(decoded.phase == .generating)
         await center.cancelSelected()
+        #expect(backend.releasedAdvisoryLeases.contains(record.id))
     }
 
     @Test("Every stage keeps the same task, run, environment and project")

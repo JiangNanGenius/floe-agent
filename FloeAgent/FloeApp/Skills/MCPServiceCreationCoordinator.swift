@@ -388,7 +388,7 @@ final class MCPServiceCreationCoordinator: ObservableObject {
     private func persist(_ record: MCPServiceCreationRecord) async throws {
         // Owner-terminal phase (ready/added/stopped/failed/interrupted):
         // release the trusted advisory-group lease so the duration-advisory
-        // liveness answer falls back to the real job rows and any queued
+        // liveness answer closes even while a member drains; any queued
         // advisory of a CLOSED operation is withdrawn. Idempotent; success
         // phases normally arrive here after the build driver already
         // released, which is a harmless no-op.
