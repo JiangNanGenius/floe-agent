@@ -1999,10 +1999,16 @@ extension SubagentSimulatorExecutionTests {
             let sympyReport = try JSONSerialization.jsonObject(with: sympyBytes) as? [String: Any]
             try #require(sympyReport?["ok"] as? Bool == true,
                          "SymPy verifier ok is not true: \(String(decoding: sympyBytes, as: UTF8.self).prefix(600))")
+            evidence["sympyReport"] = String(decoding: sympyBytes, as: UTF8.self)
+            evidence["sympyReportSHA256"] = FloeDigest.sha256Hex(sympyBytes)
             let sympyChecks = sympyReport?["results"] as? [String: Any] ?? [:]
-            for name in ["derivative", "solve", "ode", "exact_rational", "integral", "simplify"] {
-                try #require(sympyChecks[name] as? Bool == true, "SymPy check \(name) did not pass")
+            // The frozen verifier serializes str(result), not JSON booleans.
+            // Require every declared check and an empty failure list.
+            for name in ["derivative", "solve", "ode", "exact_rational", "integral", "simplify", "matrix_det", "latex"] {
+                try #require(sympyChecks[name] as? String == "True", "SymPy check \(name) did not pass")
             }
+            try #require((sympyReport?["failures"] as? [String])?.isEmpty == true,
+                         "SymPy verifier reported failures")
             try #require(sympyChecks["version"] as? String == "1.14.0",
                          "Guest sympy version is not the pinned 1.14.0: \(String(describing: sympyChecks["version"]))")
             print("FLOE_SKILLHUB_SYMPY sha256=\(FloeDigest.sha256Hex(sympyBytes)) checks=derivative,solve,ode")
@@ -2106,6 +2112,14 @@ extension SubagentSimulatorExecutionTests {
                          "Env-prefix purge failed; prefix retained at /floe/env/python/skill-qualification: \(evidence["sitePurge"] ?? "unknown")")
             ownedSitePrefixCreated = false
             print("FLOE_SKILLHUB_PURGE \(String((evidence["sitePurge"] ?? "").prefix(200)))")
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+                .appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            let successEvidence = support.appendingPathComponent("python-completed-\(runID.uuidString).json")
+            try JSONEncoder().encode(evidence).write(to: successEvidence, options: .atomic)
+            print("FLOE_SKILLHUB_PYTHON_EVIDENCE=\(successEvidence.path)")
             await finish()
         } catch {
             evidence["failure"] = String(describing: error)
