@@ -78,21 +78,13 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # Root-substituted reviewed tooling pin: f351591c51e3c07e706fc8c90f2f547b3f6760fd
-  # ("Align dependency-declaration mirror with the probed native decoder"),
-  # Hub byte tree 3dc3d487465f0fbebc6462816731ac0ac34f3033, parent
-  # fe9db33fa518c247fd871fd8ffbd0f67eba76056 (the reviewed dependency-v1 +
-  # publication-immutability guard), committed on the Hub default branch.
-  # This T4 corrects ONLY the producer-side declaration mirror against an
-  # executable component probe of the unchanged native authority; the
-  # immutability/signer/ledger gates, feeds, keys, packages and reviews are
-  # blob-identical to fe9. Focused evidence at T4: 35+26+41 = 102 tests OK,
-  # gen_schemas --check + check_catalog + release rebuild byte-identical at
-  # frozen X; retained history: the original worker 51 focused tests, the
-  # 264-run/8-baseline-only-failure full suite and Root's 97 actual tests at
-  # fe9. The transport pin was substituted by the root-owned activation job
-  # before this transport was cut.
-  TOOLING_COMMIT: f351591c51e3c07e706fc8c90f2f547b3f6760fd
+  # Reviewed tooling pin b65ae5ef1d20d65e25b882762b487f656377f5a7, tree 1ffa63dcc45e9ed5ec6e914c9a27d19e12bd41f6.
+  # Executable producer/signer modules are blob-identical to reviewed T4
+  # f351591c (102 focused checks and the authentic guarded signing runs).
+  # This revision appends the verified 32-offer publication to the cumulative
+  # ledger and aligns author guidance with frozen Main commit e3fc4b8e.
+  # The same strict live-Y resolver, key scope and data-only guards remain.
+  TOOLING_COMMIT: b65ae5ef1d20d65e25b882762b487f656377f5a7
 
 jobs:
   sign:
