@@ -25,6 +25,12 @@ struct OfficialSkillMigrationTests {
         let manifest = SkillManifest(id: "migration-fixture", version: "1.0.0",
             capabilities: [SkillCapability.remoteExecution.rawValue], tools: ["exec.shell"], scriptRuntime: .remote)
         try JSONEncoder().encode(manifest).write(to: root.appendingPathComponent("floe.json"))
+        // The production package validator requires a real script whenever
+        // remote script runtime is declared. Keep the fixture valid before
+        // testing live-byte/grant authority; the script is never executed.
+        let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+        try Data("print('fixture')\n".utf8).write(to: scripts.appendingPathComponent("check.py"))
         try Data("---\nname: migration-fixture\ndescription: Fixture\n---\n# Fixture\n".utf8)
             .write(to: root.appendingPathComponent("SKILL.md"))
         let declaration = #"{"schemaVersion":1,"profiles":[{"id":"linux","target":{"os":"linux","architectures":["riscv64"]},"requirements":[{"kind":"apt","name":"hello","version":"2.10-5","purpose":"Fixture","required":true}]}]}"#
