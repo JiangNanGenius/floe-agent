@@ -1945,6 +1945,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         case .failed: String(localized: "background.event.failed")
         case .cancelled: String(localized: "background.event.cancelled")
         case .actionRequired: String(localized: "background.event.approval")
+        case .durationAdvisory: FloeL10n.l("app.app_environment.background_task_still_running_title")
         }
         let detail: String
         if let trimmed = resultMessage?
