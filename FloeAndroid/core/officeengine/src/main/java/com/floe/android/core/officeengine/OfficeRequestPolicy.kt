@@ -26,6 +26,11 @@ object OfficeRequestPolicy {
     /**
      * Shape checks that need no filesystem access. Returns null when valid,
      * otherwise a fail-closed [OfficeException].
+     *
+     * R2: EDIT is an accepted explicit host request. Shape rules are the same
+     * for both permissions; the additional EDIT fact — the staged file must
+     * be a WRITABLE working copy (never a read-only R1 snapshot) — needs the
+     * real File and is enforced fail-closed in the engine open pipeline.
      */
     fun validateShape(
         sessionToken: String,
@@ -46,8 +51,8 @@ object OfficeRequestPolicy {
         displayName.isBlank() || displayName.length > 240 || displayName.contains('/') ||
             displayName.contains('\\') || displayName.contains('\u0000') ->
             OfficeException(OfficeFailureCode.UNSUPPORTED_FORMAT, "displayName must be an inert label")
-        permission != OfficePermission.READ_ONLY ->
-            OfficeException(OfficeFailureCode.ROUTE_UNAVAILABLE, "R1 viewer authority is READ_ONLY")
+        permission != OfficePermission.READ_ONLY && permission != OfficePermission.EDIT ->
+            OfficeException(OfficeFailureCode.ROUTE_UNAVAILABLE, "unknown permission")
         else -> null
     }
 
@@ -124,4 +129,155 @@ object OfficeRequestPolicy {
      * derived from the verified canonical staged path only).
      */
     fun engineLoadUrl(canonicalStagedPath: String): String = "file://" + canonicalStagedPath
+
+    // ------------------------------------------------------------------
+    // R2: save/export shape rules and real output verification
+    // ------------------------------------------------------------------
+
+    /**
+     * Export format tokens accepted by [OfficeSaveOperation.STAGED_EXPORT].
+     * Mirrors the pinned producer's own save-as formats (upstream
+     * LOActivity.java REQUEST_SAVEAS_* / getFormatForRequestCode) narrowed to
+     * this stage's scope: the three OOXML container formats, their ODF
+     * equivalents and PDF. The token doubles as the output file extension —
+     * the pinned LOKit saveAs derives the export filter from the target URL
+     * extension (upstream creates the temp file as "." + format), so the
+     * module ALWAYS writes the staged output with this exact extension.
+     */
+    val EXPORT_FORMATS: Set<String> = setOf("docx", "xlsx", "pptx", "odt", "ods", "odp", "pdf")
+
+    private val ZIP_CONTAINER_FORMATS: Set<String> = setOf("docx", "xlsx", "pptx", "odt", "ods", "odp")
+
+    private val OP_ID_REGEX = Regex("^[A-Za-z0-9_-]{1,64}$")
+
+    /** Real leading bytes expected for a verified export output. */
+    fun expectedMagic(format: String): ByteArray =
+        if (format == "pdf") "%PDF-".toByteArray(Charsets.US_ASCII)
+        else byteArrayOf(0x50, 0x4B, 0x03, 0x04) // ZIP local file header (OOXML + ODF)
+
+    /**
+     * Pure shape validation for one host save/export operation. Returns null
+     * when valid; otherwise the fail-closed exception. Cross-process
+     * submissions are re-validated through this same function on the engine
+     * side (never trusted from the parcel).
+     */
+    fun validateSaveRequestShape(
+        opId: String,
+        sessionToken: String,
+        generation: Long,
+        operation: OfficeSaveOperation,
+        format: String?,
+        options: String?,
+        suggestedName: String?,
+    ): OfficeException? = when {
+        !OP_ID_REGEX.matches(opId) ->
+            OfficeException(OfficeFailureCode.INTERNAL, "opId must be 1..64 chars of [A-Za-z0-9_-]")
+        sessionToken.isBlank() || sessionToken.length > 256 ->
+            OfficeException(OfficeFailureCode.INTERNAL, "sessionToken must be 1..256 chars")
+        generation < 1L ->
+            OfficeException(OfficeFailureCode.INTERNAL, "generation must be positive")
+        operation == OfficeSaveOperation.STAGED_EXPORT &&
+            (format == null || format.lowercase(Locale.ROOT) !in EXPORT_FORMATS) ->
+            OfficeException(OfficeFailureCode.UNSUPPORTED_FORMAT, "export format outside the pinned allowlist")
+        operation == OfficeSaveOperation.WORKING_COPY_FLUSH && format != null ->
+            OfficeException(OfficeFailureCode.INTERNAL, "flush operations carry no format")
+        options != null && (options.length > OfficeSaveRequest.MAX_OPTIONS_CHARS ||
+            options.any { it.code < 0x20 || it == '\u007f' } ||
+            options.contains("TakeOwnership")) ->
+            // Inert passthrough, but never an ownership transfer: the loaded
+            // document identity must not move (upstream uses TakeOwnership
+            // only for its own copy-switch flow, which this module never does).
+            OfficeException(OfficeFailureCode.INTERNAL, "options must be inert and bounded")
+        suggestedName != null && (suggestedName.isBlank() || suggestedName.length > 240 ||
+            suggestedName.contains('/') || suggestedName.contains('\\') ||
+            suggestedName.contains('\u0000') || suggestedName.contains('|')) ->
+            OfficeException(OfficeFailureCode.INTERNAL, "suggestedName must be an inert label")
+        else -> null
+    }
+
+    /** Result of the real post-write output verification (never a void-success). */
+    data class OutputVerification(
+        val failure: OfficeSaveFailureCode?,
+        val sha256: String?,
+        val bytes: Long,
+    ) {
+        val verified: Boolean get() = failure == null
+    }
+
+    /**
+     * Verifies one staged export output AFTER the synchronous JNI saveAs
+     * returned: regular file, non-empty, within the module byte cap, format
+     * magic present, and a full bounded read producing the receipt digest.
+     * Any failure names the exact honest reason; the failed partial file is
+     * the CALLER's to remove (only files this op attempt created).
+     */
+    fun verifyStagedOutput(file: File, format: String): OutputVerification {
+        if (!file.exists() || !file.isFile) {
+            return OutputVerification(OfficeSaveFailureCode.OUTPUT_MISSING, null, 0L)
+        }
+        val length = file.length()
+        if (length <= 0L) {
+            return OutputVerification(OfficeSaveFailureCode.OUTPUT_EMPTY, null, 0L)
+        }
+        if (length > MAX_STAGED_BYTES) {
+            return OutputVerification(OfficeSaveFailureCode.OUTPUT_TOO_LARGE, null, length)
+        }
+        val magic = expectedMagic(format)
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            var magicOk = true
+            var magicPos = 0
+            var total = 0L
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(1 shl 16)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    total += read
+                    if (total > MAX_STAGED_BYTES) {
+                        return OutputVerification(OfficeSaveFailureCode.OUTPUT_TOO_LARGE, null, total)
+                    }
+                    for (i in 0 until read) {
+                        if (magicPos < magic.size) {
+                            if (buffer[i] != magic[magicPos]) magicOk = false
+                            magicPos++
+                        } else break
+                    }
+                    md.update(buffer, 0, read)
+                }
+            }
+            if (magicPos < magic.size || !magicOk) {
+                return OutputVerification(OfficeSaveFailureCode.OUTPUT_TYPE_MISMATCH, null, total)
+            }
+            OutputVerification(null, md.digest().joinToString("") { "%02x".format(it) }, total)
+        } catch (e: Exception) {
+            OutputVerification(OfficeSaveFailureCode.OUTPUT_UNREADABLE, null, length)
+        }
+    }
+
+    /**
+     * Whole-file digest re-read used as the WORKING_COPY_FLUSH byte proof
+     * after a native success ack. Returns null when the working copy is not
+     * a readable regular file anymore (the receipt then honestly fails with
+     * ACK_WITHOUT_VERIFIABLE_BYTES instead of claiming a flush).
+     */
+    fun digestWorkingCopy(file: File): Pair<String, Long>? {
+        if (!file.isFile) return null
+        return try {
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            var total = 0L
+            file.inputStream().buffered().use { input ->
+                val buffer = ByteArray(1 shl 20)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read <= 0) break
+                    total += read
+                    md.update(buffer, 0, read)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) } to total
+        } catch (e: Exception) {
+            null
+        }
+    }
 }

@@ -22,7 +22,14 @@ enum class OfficeDocumentFormat(val fileExtension: String, val mime: String) {
     PPTX("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
 }
 
-/** R1 authority is READ_ONLY. EDIT is a reserved seam, refused until R2 exists. */
+/**
+ * READ_ONLY is the default preview authority (R1 semantics unchanged).
+ * EDIT (R2) is an explicit trusted-host request that REQUIRES the staged
+ * file to be a separately owned MUTABLE WORKING COPY: the engine open
+ * pipeline fail-closes on a non-writable staged file, so an immutable R1
+ * snapshot or a read-only provider original can never be mounted editable
+ * or saved over.
+ */
 enum class OfficePermission { READ_ONLY, EDIT }
 
 /**
@@ -67,11 +74,10 @@ data class OfficePreviewRequest internal constructor(
     val sourceRevision: String?,
 ) : Parcelable {
 
-    init {
-        require(permission == OfficePermission.READ_ONLY) {
-            "G05-R1 viewer authority is READ_ONLY; EDIT is reserved for R2"
-        }
-    }
+    // R2: EDIT is delivered (was a reserved seam refused in R1). Shape rules
+    // live in OfficeRequestPolicy.validateShape; the writable-working-copy
+    // requirement for EDIT is enforced against the real File in the engine
+    // open pipeline (fail-closed), never from the parcel alone.
 
     /**
      * Server-side revalidation after unmarshalling: shape rules again, and

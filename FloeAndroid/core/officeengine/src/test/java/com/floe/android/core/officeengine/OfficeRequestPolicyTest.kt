@@ -51,11 +51,18 @@ class OfficeRequestPolicyTest {
     }
 
     @Test
-    fun shapeValidationRefusesEditPermissionInR1() {
-        val failure = OfficeRequestPolicy.validateShape(
-            "tok", "/x/y.docx", "a".repeat(64), 10, "n", OfficePermission.EDIT,
+    fun shapeValidationAcceptsExplicitEditRequestInR2() {
+        // R1 reserved EDIT and refused it at shape level; R2 delivers the
+        // seam: EDIT is an explicit trusted-host request. The additional
+        // EDIT admission fact (a WRITABLE working copy, never an immutable
+        // snapshot) needs the real File and is enforced fail-closed in the
+        // engine open pipeline — see OfficeRequestPolicyR2Test and
+        // OfficeEngineService.runOpen.
+        assertNull(
+            OfficeRequestPolicy.validateShape(
+                "tok", "/x/y.docx", "a".repeat(64), 10, "n", OfficePermission.EDIT,
+            ),
         )
-        assertEquals(OfficeFailureCode.ROUTE_UNAVAILABLE, (failure as OfficeException).code)
     }
 
     @Test

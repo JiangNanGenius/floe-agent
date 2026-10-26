@@ -1,9 +1,15 @@
-# :core:officeengine — G05-R1 embedded Office engine (preview)
+# :core:officeengine — embedded Office engine (R1 preview + R2 manual editing)
 
-Reusable embedded Android Office viewer built on the pinned, signature-
+Reusable embedded Android Office viewer/editor built on the pinned, signature-
 verified Collabora Office Mobile 26.04.4.2/code937 ARM64 payload. See
 [PROVENANCE.md](PROVENANCE.md) for identity, license obligations and the
-honest unproven list. R1 = offline preview only: DOCX/XLSX/PPTX, read-only routes, no save/export/edit. Representative offline display was observed for all three formats; editing, saving and complete device coverage remain separate qualifications.
+honest unproven list. R1 = offline preview: DOCX/XLSX/PPTX, read-only routes,
+no save/export/edit. R2 (this source batch) adds the explicit trusted-host
+EDIT session over a separately owned mutable working copy, typed save/export
+receipts from the real pinned producer callbacks, the generic host save-target
+seam and bounded RAM-only diagnostics. Representative offline display was
+observed for all three formats in R1; R2 editing/save is source-complete and
+awaits Main's concentrated compile + device qualification.
 
 ## Process and host wiring (Main integration)
 
@@ -83,12 +89,91 @@ are never written by R1.
 - The mobile engine carries one active document per native lifetime — that
   limit is real and surfaced, not hidden.
 
+## R2: manual editing, typed save outcomes and the host save seam
+
+- **EDIT admission**: `OfficePreviewRequest.of(..., permission = OfficePermission.EDIT)`
+  is the explicit trusted-host request. The open pipeline fail-closes unless the
+  staged file is a WRITABLE working copy (canonical, digest-verified, inside app
+  data) — an immutable R1 snapshot or provider original can never be mounted
+  editable. Preview defaults and all R1 call sites are unchanged.
+- **READY_EDITABLE** is an honest edited-ready variant: the R1 render witnesses
+  PLUS the ordered `.uno:ReadOnly` barrier reply after the real kit command
+  `setviewreadonly value=false`, PLUS unmasked server permission frames
+  (`perm: edit` / `filemode:{readOnly:false}`), PLUS no modify-password
+  protection. Protected/denied/unconfirmed EDIT mounts DEGRADE to
+  READY_READ_ONLY with an explicit notice — never a fake editable claim. The
+  host edit toggle drives the pinned page entry (`_proceedEditMode` /
+  `_enterReadOnlyMode`) through a guarded injection; the page's own
+  `EDITMODE on/off` message is the page-state witness.
+- **Working-copy flush** (`WORKING_COPY_FLUSH`): the real protocol message
+  `save dontTerminateEdit=1 dontSaveIfUnmodified=<0|1>` (official-app parity).
+  Proof is the kit's `unocommandresult:` `.uno:Save` frame observed on the
+  unforgeable native→page channel, with the pinned `SaveResult` semantics
+  (success→FLUSHED only after a working-copy digest re-read; `unmodified`→
+  UNMODIFIED; else FAILED; `error: cmd=save|storage kind=savefailed`→FAILED).
+  No ack within the bounded window (or before mount end) is UNKNOWN — never
+  success-by-sleep. After one lost ack, further flushes are refused
+  (STALE_ACK_QUARANTINE) so a late old callback can never satisfy a new op.
+- **Staged export** (`STAGED_EXPORT`, Save Copy): the pinned synchronous JNI
+  `saveAs` writes a FRESH op-owned file under
+  `noBackupFilesDir/floe-office-outputs/<generation>/`, then bounded real
+  verification (regular, 1..256 MiB, whole read, format magic, SHA-256)
+  produces `OUTPUT_READY{path,sha,bytes}`. Void return alone is never success;
+  there is no async saveAs ack in the pinned producer (reported, not faked).
+  No flush prerequisite — it exports the current in-memory document. Failed
+  partials of THIS attempt are removed; the working copy and all previously
+  verified outputs are retained on every non-success path.
+- **Host save-target seam** (no SAF logic in the module): the App prepares the
+  CREATE_DOCUMENT Intent (`OfficeHostSaveChannel.parentBinder.onPrepare`), the
+  FOREGROUND viewer Activity launches it via StartActivityForResult (the
+  background App must not assume BAL permission) and forwards the ACTUAL
+  uri+flags+op identity back (`onPickResult`). Picker acceptance means
+  "accepted for processing" only. The App settles the truth asynchronously via
+  `settleHostSaveCopy(opId, token, generation, COPY_SAVED|COPY_FAILED|
+  COPY_CANCELLED)` — accepted exactly once per known pending op; only
+  COPY_SAVED may display a saved-to-destination outcome or close a dirty
+  editor. Native FLUSHED/UNMODIFIED/ModifiedStatus describe the PRIVATE
+  working copy and never authorize a close.
+- **App-process command surface**: bind `OfficeEngineCommands.bindIntent`
+  (distinct explicit action; extras never multiplex binders) →
+  `submitSave/cancelSave/requestEdit/requestEditHistory/readState/
+  readDiagnostics/settleHostSaveCopy/readGeneration/registerHostChannel`.
+  Same-UID + descriptor + exact token/generation fences on every transaction.
+  Receipts/edit-state also push to the App channel; OUTPUT_READY is delivered
+  to the App channel BEFORE the in-process listener so a viewer-initiated
+  prepare can never outrun the App's receipt storage (real happens-before).
+- **Dirty-close guard**: once editing was entered or the kit reports the copy
+  modified, Back opens an explicit sheet — "Save Copy and close" (closes only
+  after the verified App settlement), "Discard changes" or "Keep editing".
+  During a close-save the document input is frozen (IME hidden, focus cleared,
+  owned busy cover) so no later edit is silently discarded.
+- **Close facts**: `OfficeViewerOutcome` adds `dirtyAtClose`,
+  `editPermissionEstablished`, `saveReceiptCount` and bounded
+  `saveReceiptDescriptors` (parse via `OfficeSaveReceipt.fromDescriptorLine`).
+  R1 close semantics (ack-before-BYE, owner binding, uncertain-close) are
+  unchanged; a pending flush at mount end settles UNKNOWN and every staged
+  artifact is retained.
+- **Diagnostics**: `OfficeSessionDiagnostics` keeps a bounded (64 events /
+  16 KiB / 240 chars) RAM-only per-session history — startup `onJsError`
+  facts survive later generic notices (R1 C8 lesson). Readable only through
+  the viewer's explicit local Technical details sheet or the fenced
+  `readDiagnostics` transaction; never logged, persisted or put in results.
+
 ## Not proven here (device gates for Main)
 
 native dlopen + libc++ ABI equivalence; three-format actual rendering;
 engine-kernel macro auto-execution and external-reference auto-update
 behaviour (see PROVENANCE.md); merged-manifest review with the App;
-`--write-locks` generation for this module.
+`--write-locks` generation for this module. R2 adds: EDIT admission on a real
+mutable working copy; on-device observation of `perm: edit`/`filemode:`
+frames for the mobile integration; the flush ack roundtrip and its timeout
+path; export artifact verification for all three formats; the host-picker
+handoff against Main's real SafGateway flow; close/cancel quiescence with a
+save in flight; both bind orders (Activity-first and App-first) against the
+cached-binder identity fix. Undo/redo state strings are chrome information
+only; a forced full-recalc-before-save command is deliberately NOT shipped
+(Calc live-recalculates dependents; no pinned producer command was proven —
+reported instead of guessed).
 
 ## Parent owner and close results
 

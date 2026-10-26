@@ -73,6 +73,33 @@ class OfficeEngineService : Service() {
 
         /** Terminal for one exact mount, delivered exactly once. */
         fun onTerminal(outcome: OfficeViewerOutcome)
+
+        /**
+         * One typed save/export receipt for the exact mount (R2). Delivered
+         * on the main thread, once per state transition of an operation:
+         * the synchronous SUBMITTED/REJECTED acknowledgement is ALSO
+         * returned from [OfficeEngineService.submitSaveOperation]; terminal
+         * states (FLUSHED/UNMODIFIED/OUTPUT_READY/FAILED/CANCELLED/UNKNOWN)
+         * arrive here exactly once. Default no-op keeps R1 hosts compiling.
+         */
+        fun onSaveReceipt(receipt: OfficeSaveReceipt) {}
+
+        /**
+         * Live edit/dirty/undo projection for the exact mount (R2). Observed
+         * facts only — never a readiness claim. Default no-op keeps R1 hosts
+         * compiling.
+         */
+        fun onEditState(state: OfficeEditState) {}
+
+        /**
+         * The App settled one Save-Copy handoff after its REAL provider
+         * write + readback (R2, Main integration decision 2026-10-26). Only
+         * this event may make the viewer display a terminal copy outcome; a
+         * picker-result acceptance means "accepted for processing" and the
+         * module's own OUTPUT_READY receipt stays a private artifact fact.
+         * Default no-op keeps R1 hosts compiling.
+         */
+        fun onHostSaveSettlement(settlement: OfficeHostSaveSettlement) {}
     }
 
     inner class LocalBinder : Binder() {
@@ -84,6 +111,7 @@ class OfficeEngineService : Service() {
         val generation: Long,
         val closeAck: android.os.IBinder?,
         val viewerIncarnation: Long,
+        val hostSaveChannel: android.os.IBinder?,
     ) : EngineBridge, MobileSocket.SocketHost {
         val host = LOActivity(this)
         val cancelled = AtomicBoolean(false)
@@ -93,12 +121,127 @@ class OfficeEngineService : Service() {
         @Volatile var retired = false
             private set
         @Volatile var presentationSuperseded = false
-        private val readOnlyPolicyQueued = AtomicBoolean(false)
-        @Volatile var readOnlyBarrierObserved = false
+        private val permissionPolicyQueued = AtomicBoolean(false)
+
+        /**
+         * The ordered native reply to the service-issued permission command
+         * arrived (R1: setviewreadonly true; R2 EDIT: setviewreadonly false).
+         * The kit processes document messages serially, so this reply proves
+         * our permission command was already applied — it is an ordering
+         * barrier, not a view-permission getter.
+         */
+        @Volatile var permissionBarrierObserved = false
             private set
         @Volatile var nativeLoadReadOnly: Boolean? = null
             private set
         private var loadForwarded = false
+
+        // --- R2 editable-session facts (observed native/page truth only) ---
+
+        /** True when this mount was explicitly requested with EDIT permission. */
+        val editable: Boolean get() = request.permission == OfficePermission.EDIT
+
+        /** Canonical staged file (working copy in EDIT); set during open. */
+        @Volatile var workingCopyFile: File? = null
+
+        /** Server `perm:` frame value ("edit"/"readonly") — unmasked native truth. */
+        @Volatile var nativePerm: String? = null
+            private set
+
+        /** Server `filemode:` readOnly fact — unmasked native truth. */
+        @Volatile var nativeFileModeReadOnly: Boolean? = null
+            private set
+
+        /** A modify-password-protected document is not editable in this stage. */
+        @Volatile var hasPasswordToModify = false
+            private set
+
+        /** Host asked for edit mode (intent); the page witness below is the fact. */
+        @Volatile var editRequested = false
+
+        /** Page reported its own EDITMODE on/off (real page-state witness). */
+        @Volatile var pageEditMode = false
+            private set
+
+        /** Full native edit-permission witness set completed for this mount. */
+        @Volatile var editPermissionEstablished = false
+            private set
+
+        /** Kit `statechanged:` `.uno:ModifiedStatus` fact (null until first frame). */
+        @Volatile var documentModified: Boolean? = null
+            private set
+
+        /** Bounded raw `statechanged:` states for chrome (.uno:Undo/.uno:Redo). */
+        private val commandStates = LinkedHashMap<String, String>()
+
+        /** Bounded per-session RAM-only diagnostic history (explicit local view). */
+        val diagnostics = OfficeSessionDiagnostics()
+
+        /** Pure save state machine (one pending flush; exports serialized). */
+        val saveCoordinator = OfficeSaveCoordinator()
+
+        /** Receipts issued for this mount, bounded; feeds the close outcome extras. */
+        private val issuedReceipts = ArrayList<OfficeSaveReceipt>()
+
+        /** Pending flush timeout tasks, keyed by opId (armed on main handler). */
+        private val flushTimeoutTasks = HashMap<String, Runnable>()
+
+        /**
+         * Serializes the blocking JNI saveAs against the fatal BYE path: an
+         * export either completes before the close posts BYE, or waits for
+         * the close to settle and then aborts honestly (never a saveAs on a
+         * document the native lifetime already released).
+         */
+        val nativeCallLock = java.util.concurrent.locks.ReentrantLock()
+
+        fun commandState(name: String): String? = synchronized(commandStates) { commandStates[name] }
+
+        fun recordCommandState(name: String, state: String?) {
+            if (state == null) return
+            synchronized(commandStates) {
+                commandStates.remove(name)
+                commandStates[name] = state
+                while (commandStates.size > MAX_COMMAND_STATES) {
+                    val oldest = commandStates.keys.iterator().next()
+                    commandStates.remove(oldest)
+                }
+            }
+        }
+
+        fun recordDiagnostic(kind: String, detail: String?) {
+            diagnostics.record(android.os.SystemClock.elapsedRealtime(), kind, detail)
+        }
+
+        fun rememberReceipt(receipt: OfficeSaveReceipt) {
+            synchronized(issuedReceipts) {
+                issuedReceipts.add(receipt)
+                while (issuedReceipts.size > OfficeViewerOutcome.MAX_RECEIPT_DESCRIPTORS) {
+                    issuedReceipts.removeAt(0)
+                }
+            }
+        }
+
+        fun receiptDescriptors(): List<String> = synchronized(issuedReceipts) {
+            issuedReceipts.map { it.descriptorLine() }
+        }
+
+        fun armFlushTimeout(opId: String, task: Runnable) {
+            synchronized(flushTimeoutTasks) { flushTimeoutTasks[opId] = task }
+        }
+
+        fun disarmFlushTimeout(opId: String) {
+            val task = synchronized(flushTimeoutTasks) { flushTimeoutTasks.remove(opId) }
+            if (task != null) mainHandler.removeCallbacks(task)
+        }
+
+        fun disarmAllFlushTimeouts() {
+            val tasks = synchronized(flushTimeoutTasks) {
+                val copy = flushTimeoutTasks.values.toList()
+                flushTimeoutTasks.clear()
+                copy
+            }
+            tasks.forEach { mainHandler.removeCallbacks(it) }
+        }
         private val rendererDrawVerified = AtomicBoolean(false)
         private val witnessNonce get() = request.sessionToken + ":" + generation
         private var witnessInjectionAttempts = 0
@@ -169,6 +312,7 @@ class OfficeEngineService : Service() {
 
         fun setState(next: OfficeViewerState) {
             state = next
+            recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "state=${next.name}")
             publishProgress()
         }
 
@@ -184,7 +328,7 @@ class OfficeEngineService : Service() {
                                 percent = lastPercent,
                                 documentWitness = if (
                                     witnessWidthTwip > 0 && witnessHeightTwip > 0 &&
-                                    tileDeliveryCount > 0 && paintedFrameVerified && readOnlyBarrierObserved && rendererDrawVerified.get()
+                                    tileDeliveryCount > 0 && paintedFrameVerified && permissionBarrierObserved && rendererDrawVerified.get()
                                 ) {
                                     OfficeDocumentWitness(
                                         widthTwip = witnessWidthTwip,
@@ -192,8 +336,9 @@ class OfficeEngineService : Service() {
                                         tileDeliveryCount = tileDeliveryCount,
                                         paintedFrameVerified = true,
                                         tilesInvalidateCount = tilesInvalidateCount,
-                                        readOnlyBarrierObserved = readOnlyBarrierObserved,
+                                        readOnlyBarrierObserved = permissionBarrierObserved && !editable,
                                         rendererDrawVerified = rendererDrawVerified.get(),
+                                        editPermissionObserved = editPermissionEstablished,
                                     )
                                 } else {
                                     null
@@ -208,6 +353,12 @@ class OfficeEngineService : Service() {
         }
 
         fun notifyNotice(key: String, detail: String?) {
+            // The bounded history survives later notices overwriting the
+            // transient row (R1 C8 lesson: startup facts stayed lost).
+            recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_NOTICE,
+                key + (detail?.let { ": " + it.take(120) } ?: ""),
+            )
             mainHandler.post {
                 if (retired || presentationSuperseded || current !== this@Session) return@post
                 listeners.forEach { runCatching { it.onNotice(request.sessionToken, generation, key, detail) } }
@@ -237,6 +388,14 @@ class OfficeEngineService : Service() {
         /** Delivers the terminal result exactly once for this mount. */
         fun deliverTerminal(closedCleanly: Boolean, failure: OfficeFailureCode?, message: String?) {
             if (!terminalDelivered.compareAndSet(false, true)) return
+            // A flush still awaiting its native ack can never receive one
+            // after this mount ends: settle it UNKNOWN (honest — the App must
+            // not read it as committed nor as certainly-not-written) BEFORE
+            // the outcome snapshots the receipt list.
+            disarmAllFlushTimeouts()
+            saveCoordinator.onMountTerminal()?.let { outcome ->
+                this@OfficeEngineService.completeFlush(this@Session, outcome)
+            }
             val outcome = OfficeViewerOutcome(
                 sessionToken = request.sessionToken,
                 closedCleanly = closedCleanly,
@@ -245,6 +404,14 @@ class OfficeEngineService : Service() {
                 witnessWidthTwip = witnessWidthTwip,
                 witnessHeightTwip = witnessHeightTwip,
                 generation = generation,
+                dirtyAtClose = documentModified == true,
+                editPermissionEstablished = editPermissionEstablished,
+                saveReceiptCount = receiptDescriptors().size,
+                saveReceiptDescriptors = receiptDescriptors(),
+            )
+            recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_LIFECYCLE,
+                "terminal closedCleanly=$closedCleanly failure=${failure?.name} dirty=${documentModified}",
             )
             val recipients = listeners.toList()
             mainHandler.post {
@@ -272,8 +439,33 @@ class OfficeEngineService : Service() {
                     loadForwarded = true
                 }
             }
-            if (!readOnlyBarrierObserved && OfficeReadOnlyProtocol.isInteraction(message)) return false
-            val outcome = CoolMessageGate.decide(message, readOnly = true)
+            // The page's own edit-mode notice (pinned Android behaviour: the
+            // bundle posts EDITMODE on/off around _enterEditMode /
+            // _enterReadOnlyMode). Real page-state witness; consumed here and
+            // never forwarded (it is not a native protocol command).
+            if (OfficeReadOnlyProtocol.command(message) == "EDITMODE") {
+                val on = message.substringAfter(' ', "").trim() == "on"
+                if (editable) {
+                    pageEditMode = on
+                    recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "page EDITMODE=$on")
+                    publishEditState()
+                }
+            }
+            // The native save ack (kit postDirectMessage on Android) shares
+            // this entry point with page messages, so it is recorded as a
+            // diagnostic fact ONLY — completion proof is the unforgeable
+            // native→page `unocommandresult:` frame (see OfficeSaveProtocol).
+            if (message.startsWith("SAVE ")) {
+                recordDiagnostic(
+                    OfficeSessionDiagnostics.KIND_SAVE,
+                    "native SAVE ack observed: " + message.removePrefix("SAVE ").take(160),
+                )
+            }
+            if (!permissionBarrierObserved && OfficeReadOnlyProtocol.isInteraction(message)) return false
+            val outcome = CoolMessageGate.decide(
+                message,
+                if (editable) CoolMessageGate.Mode.EDITABLE else CoolMessageGate.Mode.READ_ONLY,
+            )
             val rest = message.substringAfter(' ', "")
             when (outcome.decision) {
                 CoolMessageGate.Decision.BLOCK_WITHOUT_NOTICE -> {
@@ -318,9 +510,13 @@ class OfficeEngineService : Service() {
         override fun onMessageToJs(message: ByteArray) {
             if (retired) return
             OfficeReadOnlyProtocol.barrierReport(message)?.let { loadReadOnly ->
-                if (readOnlyPolicyQueued.get()) {
+                if (permissionPolicyQueued.get()) {
                     nativeLoadReadOnly = loadReadOnly
-                    readOnlyBarrierObserved = true
+                    permissionBarrierObserved = true
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_PERMISSION,
+                        "barrier .uno:ReadOnly=$loadReadOnly editable=$editable",
+                    )
                     maybePromoteReady()
                 }
             }
@@ -335,7 +531,7 @@ class OfficeEngineService : Service() {
                 CoolMessageTriage.Kind.STATUS -> triage.shape?.let { shape ->
                     witnessWidthTwip = shape.widthTwip
                     witnessHeightTwip = shape.heightTwip
-                    establishNativeReadOnly()
+                    establishNativePermission()
                     maybePromoteReady()
                 }
                 CoolMessageTriage.Kind.TILE_DELIVERY -> {
@@ -346,33 +542,111 @@ class OfficeEngineService : Service() {
                     // Redraw request ONLY (diagnostic; never readiness proof).
                     if (tilesInvalidateCount < Int.MAX_VALUE) tilesInvalidateCount++
                 }
+                CoolMessageTriage.Kind.STATE_CHANGED -> triage.stateChange?.let { change ->
+                    recordCommandState(change.commandName, change.state)
+                    if (change.commandName == ".uno:ModifiedStatus") {
+                        documentModified = change.state == "true"
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_STATE,
+                            "ModifiedStatus=${change.state}",
+                        )
+                    }
+                    publishEditState()
+                }
+                CoolMessageTriage.Kind.UNO_COMMAND_RESULT -> triage.commandResult?.let { result ->
+                    if (result.commandName == OfficeSaveProtocol.SAVE_COMMAND_NAME) {
+                        // The unforgeable native→page channel: this frame can
+                        // only originate from the pinned kit (send2JS), which
+                        // makes it the flush completion evidence.
+                        val (flushOutcome, external) = saveCoordinator.onNativeSaveResult(
+                            commandName = result.commandName ?: OfficeSaveProtocol.SAVE_COMMAND_NAME,
+                            success = result.success,
+                            resultValue = result.resultValue,
+                            isAutosave = result.isAutosave,
+                        )
+                        if (flushOutcome != null) {
+                            // Never throw across the JNI callback boundary:
+                            // a shutdown control lane (teardown) drops the
+                            // completion quietly — the mount terminal path
+                            // settles the pending op as UNKNOWN anyway.
+                            runCatching {
+                                controlExecutor.execute { completeFlush(this@Session, flushOutcome) }
+                            }
+                        } else if (external != null) {
+                            recordDiagnostic(
+                                OfficeSessionDiagnostics.KIND_SAVE,
+                                "external .uno:Save result=${external.verdict} autosave=${external.isAutosave}",
+                            )
+                        }
+                    }
+                }
+                CoolMessageTriage.Kind.PERM -> {
+                    nativePerm = triage.perm
+                    recordDiagnostic(OfficeSessionDiagnostics.KIND_PERMISSION, "perm=${triage.perm}")
+                    maybePromoteReady()
+                }
+                CoolMessageTriage.Kind.FILEMODE -> triage.fileMode?.let { mode ->
+                    nativeFileModeReadOnly = mode.readOnly
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_PERMISSION,
+                        "filemode readOnly=${mode.readOnly} editComment=${mode.editComment}",
+                    )
+                    maybePromoteReady()
+                }
+                CoolMessageTriage.Kind.HAS_PASSWORD_TO_MODIFY -> {
+                    hasPasswordToModify = true
+                    recordDiagnostic(OfficeSessionDiagnostics.KIND_PERMISSION, "haspasswordtomodify")
+                    notifyNotice("protectedDocument", null)
+                    maybePromoteReady()
+                }
                 CoolMessageTriage.Kind.ERROR -> {
                     val detail = String(message, Charsets.UTF_8).removePrefix("error:").trim().take(240)
-                    notifyNotice("loadError", detail.ifEmpty { null })
-                    // Honest failure representation (Main decision 2026-10-26):
-                    // a native error means this document is not viewable, so
-                    // leave the opening states (the host must never keep
-                    // displaying "Opening" indefinitely) and keep the actual
-                    // detail in the notice above. Never implies READY, and
-                    // does not fabricate a terminal: the user's own close of
-                    // this state is an acknowledged user close whose result
-                    // stays unclean.
-                    when (state) {
-                        OfficeViewerState.OPENING,
-                        OfficeViewerState.AWAITING_FIRST_RENDER,
-                        OfficeViewerState.READY_READ_ONLY,
-                        -> setState(OfficeViewerState.FAILED)
-                        else -> publishProgress()
+                    val info = triage.error
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_NATIVE_ERROR,
+                        "error cmd=${info?.cmd} kind=${info?.kind}",
+                    )
+                    if (OfficeSaveProtocol.isSaveRelatedError(info?.cmd, info?.kind)) {
+                        // A save failure is an operation outcome, NOT a
+                        // document failure: the mount stays open and usable.
+                        notifyNotice("saveFailed", detail.ifEmpty { null })
+                        saveCoordinator.onSaveErrorFrame(info?.cmd, info?.kind)?.let { flushOutcome ->
+                            runCatching {
+                                controlExecutor.execute { completeFlush(this@Session, flushOutcome) }
+                            }
+                        }
+                    } else {
+                        notifyNotice("loadError", detail.ifEmpty { null })
+                        // Honest failure representation (Main decision 2026-10-26):
+                        // a native error means this document is not viewable, so
+                        // leave the opening states (the host must never keep
+                        // displaying "Opening" indefinitely) and keep the actual
+                        // detail in the notice above. Never implies READY, and
+                        // does not fabricate a terminal: the user's own close of
+                        // this state is an acknowledged user close whose result
+                        // stays unclean.
+                        when (state) {
+                            OfficeViewerState.OPENING,
+                            OfficeViewerState.AWAITING_FIRST_RENDER,
+                            OfficeViewerState.READY_READ_ONLY,
+                            OfficeViewerState.READY_EDITABLE,
+                            -> setState(OfficeViewerState.FAILED)
+                            else -> publishProgress()
+                        }
                     }
                 }
                 else -> Unit
             }
             val s = socket
             if (s != null) {
+                // R1 preview masks the permission frames so the page can
+                // never believe it is writable. An explicit EDIT mount passes
+                // the unmasked native truth through: those frames are the
+                // page's own permission model AND this session's witnesses.
                 val constrained = when {
-                    message.size < 32 && message.toString(Charsets.UTF_8).startsWith("perm:") ->
+                    !editable && message.size < 32 && message.toString(Charsets.UTF_8).startsWith("perm:") ->
                         "perm: readonly".toByteArray()
-                    message.size < 4096 && message.toString(Charsets.UTF_8).startsWith("filemode:") ->
+                    !editable && message.size < 4096 && message.toString(Charsets.UTF_8).startsWith("filemode:") ->
                         "filemode:{\"readOnly\":true,\"editComment\":false,\"manageRedlines\":false,\"viewModeExtensions\":\"\"}".toByteArray()
                     else -> message
                 }
@@ -388,28 +662,45 @@ class OfficeEngineService : Service() {
             }
         }
 
-        private fun establishNativeReadOnly() {
-            if (!readOnlyPolicyQueued.compareAndSet(false, true)) return
+        /**
+         * Issues the real pinned permission command for this mount and the
+         * ordered `.uno:ReadOnly` barrier (kit/ChildSession.cpp
+         * `setviewreadonly` branch). READ_ONLY mounts get the byte-identical
+         * R1 sequence; EDIT mounts get `value=false` — the same command the
+         * page's own Viewing/Editing toggle uses.
+         */
+        private fun establishNativePermission() {
+            if (!permissionPolicyQueued.compareAndSet(false, true)) return
             try {
                 controlExecutor.execute {
                     if (retired || cancelled.get() || current !== this@Session) return@execute
                     try {
                         // Real pinned ChildSession command, not a UI-only permission flag.
-                        host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_READ_ONLY)
+                        host.postMobileMessageNative(
+                            if (editable) {
+                                OfficeReadOnlyProtocol.SET_VIEW_EDITABLE
+                            } else {
+                                OfficeReadOnlyProtocol.SET_VIEW_READ_ONLY
+                            },
+                        )
                         host.postMobileMessageNative(OfficeReadOnlyProtocol.QUERY_BARRIER)
                     } catch (_: Throwable) {
-                        transportFailed("readonly-policy")
+                        transportFailed(if (editable) "edit-policy" else "readonly-policy")
                     }
                 }
             } catch (_: java.util.concurrent.RejectedExecutionException) {
-                transportFailed("readonly-policy-unavailable")
+                transportFailed(if (editable) "edit-policy-unavailable" else "readonly-policy-unavailable")
             }
         }
 
         private fun maybePromoteReady() {
             if (state != OfficeViewerState.AWAITING_FIRST_RENDER) return
-            if (witnessWidthTwip <= 0 || witnessHeightTwip <= 0 || tileDeliveryCount <= 0 || !readOnlyBarrierObserved) return
+            if (witnessWidthTwip <= 0 || witnessHeightTwip <= 0 || tileDeliveryCount <= 0 || !permissionBarrierObserved) return
             if (paintedFrameVerified && rendererDrawVerified.get()) {
+                if (editable) {
+                    promoteEditableOrDegrade()
+                    return
+                }
                 lastPercent = null
                 lastPhaseText = null
                 setState(OfficeViewerState.READY_READ_ONLY)
@@ -424,6 +715,72 @@ class OfficeEngineService : Service() {
                 }, PAINT_PROBE_DELAY_MS)
             }
         }
+
+        /**
+         * Honest edited-ready promotion (Main contract 2026-10-26): an EDIT
+         * mount claims READY_EDITABLE only with the real native permission
+         * witnesses — server-originated `perm: edit` and/or
+         * `filemode:{readOnly:false}` (unmasked), the ordered barrier reply
+         * after our `setviewreadonly value=false`, and a `.uno:ReadOnly`
+         * answer of false (the load itself is not read-only). A protected
+         * document, a read-only answer, or missing permission frames degrade
+         * the mount to READY_READ_ONLY with an explicit notice: viewable,
+         * honestly not editable, working copy untouched.
+         */
+        private fun promoteEditableOrDegrade() {
+            val permGranted = nativePerm == "edit" || nativeFileModeReadOnly == false
+            val permDenied = nativePerm == "readonly" || nativeFileModeReadOnly == true
+            when {
+                hasPasswordToModify -> degradeToReadOnly("protectedDocument")
+                permDenied || nativeLoadReadOnly == true -> degradeToReadOnly("editPermissionDenied")
+                permGranted && nativeLoadReadOnly == false -> {
+                    editPermissionEstablished = true
+                    lastPercent = null
+                    lastPhaseText = null
+                    recordDiagnostic(
+                        OfficeSessionDiagnostics.KIND_PERMISSION,
+                        "edit permission established (perm=$nativePerm fileModeReadOnly=$nativeFileModeReadOnly barrier=$nativeLoadReadOnly)",
+                    )
+                    setState(OfficeViewerState.READY_EDITABLE)
+                    publishEditState()
+                }
+                else -> degradeToReadOnly("editPermissionUnconfirmed")
+            }
+        }
+
+        private fun degradeToReadOnly(noticeKey: String) {
+            editPermissionEstablished = false
+            recordDiagnostic(OfficeSessionDiagnostics.KIND_PERMISSION, "edit refused: $noticeKey")
+            notifyNotice(noticeKey, null)
+            lastPercent = null
+            lastPhaseText = null
+            setState(OfficeViewerState.READY_READ_ONLY)
+            publishEditState()
+        }
+
+        /** Publishes the observed edit/dirty/undo projection (never a claim). */
+        fun publishEditState() {
+            val snapshot = editStateSnapshot()
+            mainHandler.post {
+                if (retired || presentationSuperseded || current !== this@Session) return@post
+                listeners.forEach { l -> runCatching { l.onEditState(snapshot) } }
+                this@OfficeEngineService.appHostChannel?.let { channel ->
+                    OfficeHostSaveChannel.postEditState(channel, snapshot)
+                }
+            }
+        }
+
+        fun editStateSnapshot(): OfficeEditState = OfficeEditState(
+            sessionToken = request.sessionToken,
+            generation = generation,
+            stateName = state.name,
+            editRequested = editRequested,
+            pageEditMode = pageEditMode,
+            editPermissionEstablished = editPermissionEstablished,
+            documentModified = documentModified,
+            undoState = commandState(".uno:Undo"),
+            redoState = commandState(".uno:Redo"),
+        )
 
         private fun observeRendererWitness(message: String): Boolean {
             val report = OfficeRenderWitness.parse(message) ?: return false
@@ -484,6 +841,9 @@ class OfficeEngineService : Service() {
 
         override fun onJsError(message: String) {
             Log.e(TAG, "Office page reported an error (generation $generation)")
+            // Bounded history keeps this fact alive even when later generic
+            // notices overwrite the transient notice row (R1 C8 lesson).
+            recordDiagnostic(OfficeSessionDiagnostics.KIND_JS_ERROR, message)
             notifyNotice("jsError", message.take(3072))
         }
 
@@ -509,6 +869,7 @@ class OfficeEngineService : Service() {
         override fun transportFailed(reason: String) {
             if (retired) return
             Log.e(TAG, "transport failed ($generation): $reason")
+            recordDiagnostic(OfficeSessionDiagnostics.KIND_TRANSPORT, reason)
             notifyNotice("transportFailed", reason)
             // A live-session transport failure can never imply readiness:
             // settle the exact mount once via the normal BYE path, carrying
@@ -546,6 +907,17 @@ class OfficeEngineService : Service() {
     private var lastGeneration = 0L
     @Volatile private var darkAppearanceOverride: Boolean? = null
 
+    /**
+     * App-process event channel registered by a cross-process bind carrying
+     * [OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL] (same UID only;
+     * the Service is not exported). Receives typed save receipts, edit-state
+     * snapshots and the save-target handoff transactions. Volatile single
+     * registration: a rebind replaces it, and every event is fenced by the
+     * exact session token + generation anyway.
+     */
+    @Volatile
+    private var appHostChannel: android.os.IBinder? = null
+
     private val rendererWitnessScript: String by lazy {
         assets.open("floe-office/renderer-witness.js").bufferedReader(Charsets.UTF_8).use { it.readText() }.also {
             require(it.length in 1..32768 && it.split("__FLOE_NONCE_JSON__").size == 2) { "Invalid renderer witness asset" }
@@ -582,7 +954,52 @@ class OfficeEngineService : Service() {
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder = LocalBinder()
+    /**
+     * Same-process viewers get the direct [LocalBinder] (R1 contract).
+     *
+     * The App (default) process binds with the DISTINCT explicit action
+     * [OfficeEngineCommandsPolicy.ACTION_ENGINE_COMMANDS] and receives the
+     * narrow command binder. Selection is by ACTION, never by extras:
+     * Intent.filterEquals ignores extras and Android caches the first
+     * onBind binder per bind identity, so an extras-only switch could hand
+     * either binder to the wrong client depending on bind order (Main
+     * integration review 2026-10-26). Defence in depth: the Service is not
+     * exported, and the calling UID is re-checked here AND inside every
+     * transaction.
+     */
+    override fun onBind(intent: Intent?): IBinder {
+        if (intent?.action == OfficeEngineCommandsPolicy.ACTION_ENGINE_COMMANDS) {
+            if (android.os.Binder.getCallingUid() != android.os.Process.myUid()) {
+                Log.e(TAG, "refused cross-process engine bind from a foreign UID")
+                return LocalBinder()
+            }
+            intent.extras?.getBinder(OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL)?.let {
+                appHostChannel = it
+            }
+            return OfficeEngineCommandBinder(this)
+        }
+        return LocalBinder()
+    }
+
+    override fun onUnbind(intent: Intent?): Boolean {
+        // Only the command-action binding owns the App host channel; the
+        // viewer's plain LocalBinder bind never touches it.
+        if (intent?.action == OfficeEngineCommandsPolicy.ACTION_ENGINE_COMMANDS) {
+            appHostChannel = null
+        }
+        return super.onUnbind(intent)
+    }
+
+    /**
+     * Explicit (re)registration of the App host save-channel over an
+     * already-cached command binding (onBind is not re-invoked for repeat
+     * binds of the same identity). Same-UID is enforced by the command
+     * binder before this is reached; null clears.
+     */
+    internal fun registerHostChannelFromBinder(channel: android.os.IBinder?): Boolean {
+        appHostChannel = channel
+        return true
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int =
         START_NOT_STICKY
@@ -677,6 +1094,7 @@ class OfficeEngineService : Service() {
         request: OfficePreviewRequest,
         closeAck: android.os.IBinder?,
         viewerIncarnation: Long,
+        hostSaveChannel: android.os.IBinder? = null,
     ) {
         if (processRecoveryRequired.get()) {
             failFast(request, OfficeFailureCode.ENGINE_BUSY, "Office process recovery pending")
@@ -711,7 +1129,7 @@ class OfficeEngineService : Service() {
                     return@execute
                 }
             }
-            runOpen(request, closeAck, viewerIncarnation)
+            runOpen(request, closeAck, viewerIncarnation, hostSaveChannel)
         }
     }
 
@@ -766,7 +1184,9 @@ class OfficeEngineService : Service() {
     /** UI-driven night mode re-theming hook (parity with upstream updateDarkMode). */
     fun onNightModeChanged(dark: Boolean) {
         val session = current ?: return
-        if (session.state != OfficeViewerState.READY_READ_ONLY) return
+        if (session.state != OfficeViewerState.READY_READ_ONLY &&
+            session.state != OfficeViewerState.READY_EDITABLE
+        ) return
         runCatching { session.host.sendToJs(if (dark) "mobile: darkthemeactivated" else "mobile: lightthemeactivated") }
     }
 
@@ -805,6 +1225,693 @@ class OfficeEngineService : Service() {
     }
 
     // ------------------------------------------------------------------
+    // R2: typed save/export operations, edit toggle, host bindings
+    // ------------------------------------------------------------------
+
+    /**
+     * Submits one typed save/export operation for the EXACT live mount.
+     * Returns the synchronous acknowledgement receipt (SUBMITTED or a
+     * REJECTED with the honest reason); the terminal receipt arrives via
+     * [OfficeEngineListener.onSaveReceipt] / the App host channel exactly
+     * once. Never throws; never fabricates success.
+     */
+    fun submitSaveOperation(op: OfficeSaveRequest): OfficeSaveReceipt {
+        val session = current
+        if (session == null || session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != op.sessionToken || session.generation != op.generation
+        ) {
+            return rejectedReceipt(op, OfficeSaveFailureCode.SESSION_MISMATCH, "no live mount for this exact identity")
+        }
+        if (session.cancelled.get() || session.state == OfficeViewerState.CLOSING ||
+            session.state == OfficeViewerState.CLOSED || processRecoveryRequired.get()
+        ) {
+            return rejectedReceipt(op, OfficeSaveFailureCode.SESSION_ENDING, "mount is closing")
+        }
+        return when (op.operation) {
+            OfficeSaveOperation.WORKING_COPY_FLUSH -> {
+                if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) {
+                    return rejectedReceipt(op, OfficeSaveFailureCode.NOT_EDITABLE, "mount is not editable-ready")
+                }
+                when (session.saveCoordinator.submitFlush(op.opId, op.saveIfUnmodified)) {
+                    OfficeSaveCoordinator.SubmitDecision.ACCEPTED -> {
+                        val receipt = receiptFor(
+                            session, op, OfficeSaveState.SUBMITTED, null, null,
+                            attestation = "accepted",
+                        )
+                        dispatchReceipt(session, receipt)
+                        controlExecutor.execute { runFlush(session, op) }
+                        receipt
+                    }
+                    OfficeSaveCoordinator.SubmitDecision.REJECTED_BUSY ->
+                        rejectedReceipt(op, OfficeSaveFailureCode.FLUSH_ALREADY_IN_FLIGHT, "a flush is awaiting its native ack")
+                    OfficeSaveCoordinator.SubmitDecision.REJECTED_STALE_ACK_RISK ->
+                        rejectedReceipt(op, OfficeSaveFailureCode.STALE_ACK_QUARANTINE, "a previous flush ack went missing; export remains available")
+                }
+            }
+            OfficeSaveOperation.STAGED_EXPORT -> {
+                if (session.state != OfficeViewerState.READY_EDITABLE) {
+                    return rejectedReceipt(op, OfficeSaveFailureCode.NOT_EDITABLE, "mount is not editable-ready")
+                }
+                if (!session.saveCoordinator.beginExport(op.opId)) {
+                    return rejectedReceipt(op, OfficeSaveFailureCode.EXPORT_ALREADY_IN_FLIGHT, "another export holds the control lane")
+                }
+                val receipt = receiptFor(
+                    session, op, OfficeSaveState.SUBMITTED, null, null,
+                    attestation = "accepted",
+                )
+                dispatchReceipt(session, receipt)
+                controlExecutor.execute { runExport(session, op) }
+                receipt
+            }
+        }
+    }
+
+    /**
+     * Honest cancel: only a not-yet-dispatched operation can be cancelled
+     * (the pinned producer has no save-cancel command). After dispatch the
+     * operation stays pending until its real ack/error, the bounded timeout
+     * (UNKNOWN) or mount end (UNKNOWN); an export in its JNI/IO section runs
+     * to quiescence and its receipt carries cancelRequested=true.
+     */
+    fun cancelSaveOperation(sessionToken: String, generation: Long, opId: String): OfficeSaveCoordinator.CancelDecision {
+        val session = current ?: return OfficeSaveCoordinator.CancelDecision.UNKNOWN_OP
+        if (session.request.sessionToken != sessionToken || session.generation != generation) {
+            return OfficeSaveCoordinator.CancelDecision.UNKNOWN_OP
+        }
+        val decision = session.saveCoordinator.requestCancel(opId)
+        session.recordDiagnostic(OfficeSessionDiagnostics.KIND_SAVE, "cancel op=$opId -> $decision")
+        if (decision == OfficeSaveCoordinator.CancelDecision.CANCELLED_BEFORE_DISPATCH) {
+            val receipt = OfficeSaveReceipt(
+                opId = opId,
+                sessionToken = sessionToken,
+                generation = generation,
+                operation = OfficeSaveOperation.WORKING_COPY_FLUSH,
+                state = OfficeSaveState.CANCELLED,
+                format = null,
+                suggestedName = null,
+                expectedBaseSha256 = session.request.sha256,
+                workingCopySha256 = null,
+                workingCopyBytes = 0L,
+                outputDocumentPath = null,
+                outputSha256 = null,
+                outputBytes = 0L,
+                failure = OfficeSaveFailureCode.CANCELLED_BEFORE_DISPATCH,
+                message = "cancelled before dispatch; working copy untouched",
+                cancelRequested = true,
+                attestation = "cancel-before-dispatch",
+                submittedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+                completedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+            )
+            dispatchReceipt(session, receipt)
+        }
+        return decision
+    }
+
+    /**
+     * Host-driven edit-mode toggle for the exact mount. Requires the full
+     * native edit-permission witness set (READY_EDITABLE). Issues the real
+     * pinned kit command (`setviewreadonly value=false|true`) on the control
+     * lane and drives the pinned page entry (`_proceedEditMode` /
+     * `_enterReadOnlyMode`) through a guarded injection; a missing page hook
+     * is an honest refusal notice, never a fake edit state. The authoritative
+     * page fact arrives as the page's own EDITMODE message.
+     */
+    fun requestEdit(sessionToken: String, generation: Long, enable: Boolean): Boolean {
+        val session = current ?: return false
+        if (session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != sessionToken || session.generation != generation
+        ) return false
+        if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) return false
+        session.editRequested = enable
+        session.recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "host requestEdit enable=$enable")
+        controlExecutor.execute {
+            if (session.retired || session.cancelled.get() || current !== session) return@execute
+            runCatching {
+                session.host.postMobileMessageNative(
+                    if (enable) OfficeReadOnlyProtocol.SET_VIEW_EDITABLE else OfficeReadOnlyProtocol.SET_VIEW_READ_ONLY,
+                )
+            }.onFailure { session.transportFailed("edit-toggle") }
+        }
+        mainHandler.post {
+            if (session.retired || session.presentationSuperseded || current !== session) return@post
+            val view = session.webView
+            if (view == null) {
+                session.editRequested = !enable
+                session.notifyNotice("editEntryUnavailable", null)
+                session.publishEditState()
+                return@post
+            }
+            val script = if (enable) {
+                OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT
+            } else {
+                OfficeReadOnlyProtocol.PAGE_ENTER_VIEW_SCRIPT
+            }
+            runCatching {
+                view.evaluateJavascript(script) { raw ->
+                    if (session.retired || session.presentationSuperseded || current !== session) return@evaluateJavascript
+                    val ok = raw?.trim('"') == "true"
+                    if (!ok) {
+                        // The pinned page hook is absent or threw: honest
+                        // refusal — the kit view permission alone is NOT an
+                        // edit-mode claim while the page stays in viewing.
+                        session.editRequested = !enable
+                        session.notifyNotice("editEntryUnavailable", null)
+                        session.recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_STATE,
+                            "page edit entry unavailable (enable=$enable)",
+                        )
+                    }
+                    session.publishEditState()
+                }
+            }.onFailure {
+                session.editRequested = !enable
+                session.notifyNotice("editEntryUnavailable", null)
+                session.publishEditState()
+            }
+        }
+        return true
+    }
+
+    /** Runs one real `.uno:Undo`/`.uno:Redo` through the service (editable mounts only). */
+    fun requestEditHistory(sessionToken: String, generation: Long, redo: Boolean): Boolean {
+        val session = current ?: return false
+        if (session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != sessionToken || session.generation != generation
+        ) return false
+        if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) return false
+        controlExecutor.execute {
+            if (session.retired || session.cancelled.get() || current !== session) return@execute
+            runCatching {
+                session.host.postMobileMessageNative(
+                    if (redo) "uno .uno:Redo" else "uno .uno:Undo",
+                )
+            }.onFailure { session.transportFailed("edit-history") }
+        }
+        return true
+    }
+
+    /** Observed edit-state snapshot for the exact mount (null when fenced/absent). */
+    fun editState(sessionToken: String, generation: Long): OfficeEditState? {
+        val session = current ?: return null
+        if (session.request.sessionToken != sessionToken || session.generation != generation) return null
+        return session.editStateSnapshot()
+    }
+
+    /**
+     * Native mount generation for an exact live session token (0 when no
+     * live mount). Deterministic acquisition path for the App adapter: every
+     * fenced command needs the generation, and the token is App-minted.
+     */
+    fun currentGenerationFor(sessionToken: String): Long {
+        val session = current ?: return 0L
+        if (session.retired || session.request.sessionToken != sessionToken) return 0L
+        return session.generation
+    }
+
+    /**
+     * App→module Save-Copy settlement (Main integration decision 2026-10-26).
+     * Narrow and fenced by the exact op + session token + native mount
+     * generation: a stale or foreign settlement is refused, never applied.
+     * The module records and forwards the verdict honestly; it never derives
+     * COPY_SAVED from its own receipts, a picker acceptance or any native
+     * fact — only the App's real provider transaction may settle.
+     */
+    fun settleHostSaveCopy(settlement: OfficeHostSaveSettlement): Boolean {
+        val session = current ?: return false
+        if (session.retired || session.presentationSuperseded ||
+            session.request.sessionToken != settlement.sessionToken ||
+            session.generation != settlement.generation
+        ) return false
+        if (!OfficeHostSaveHandoffPolicy.validOpId(settlement.opId)) return false
+        session.recordDiagnostic(
+            OfficeSessionDiagnostics.KIND_SAVE,
+            "host settlement op=${settlement.opId} -> ${settlement.verdict.name}",
+        )
+        val recipients = listeners.toList()
+        mainHandler.post {
+            if (session.retired || session.presentationSuperseded || current !== session) return@post
+            recipients.forEach { l -> runCatching { l.onHostSaveSettlement(settlement) } }
+        }
+        return true
+    }
+
+    internal fun settleHostSaveFromBinder(
+        opId: String,
+        sessionToken: String,
+        generation: Long,
+        verdictName: String?,
+        message: String?,
+    ): Boolean {
+        val verdict = runCatching { OfficeHostSaveVerdict.valueOf(verdictName ?: "") }.getOrNull()
+            ?: return false
+        return settleHostSaveCopy(
+            OfficeHostSaveSettlement(
+                opId = opId,
+                sessionToken = sessionToken,
+                generation = generation,
+                verdict = verdict,
+                message = message?.take(240),
+                settledAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+            ),
+        )
+    }
+
+    /** Bounded RAM-only diagnostic snapshot for the exact mount. */
+    fun diagnosticsSnapshot(sessionToken: String, generation: Long): List<OfficeSessionDiagnostics.Event>? {
+        val session = current ?: return null
+        if (session.request.sessionToken != sessionToken || session.generation != generation) return null
+        return session.diagnostics.snapshot()
+    }
+
+    // --- narrow command-binder entry points (same-UID cross-process) ---
+
+    internal fun submitSaveFromBinder(
+        opId: String,
+        sessionToken: String,
+        generation: Long,
+        operationName: String?,
+        format: String?,
+        options: String?,
+        suggestedName: String?,
+        saveIfUnmodified: Boolean,
+    ): Int {
+        val operation = runCatching { OfficeSaveOperation.valueOf(operationName ?: "") }.getOrNull()
+            ?: return OfficeEngineCommandsPolicy.SUBMIT_REJECTED_SHAPE
+        val op = OfficeSaveRequest.of(
+            opId, sessionToken, generation, operation, format, options, suggestedName, saveIfUnmodified,
+        ).getOrNull() ?: return OfficeEngineCommandsPolicy.SUBMIT_REJECTED_SHAPE
+        val receipt = submitSaveOperation(op)
+        return when (receipt.state) {
+            OfficeSaveState.SUBMITTED -> OfficeEngineCommandsPolicy.SUBMIT_ACCEPTED
+            OfficeSaveState.REJECTED -> when (receipt.failure) {
+                OfficeSaveFailureCode.SESSION_MISMATCH -> OfficeEngineCommandsPolicy.SUBMIT_REJECTED_SESSION
+                OfficeSaveFailureCode.FLUSH_ALREADY_IN_FLIGHT,
+                OfficeSaveFailureCode.EXPORT_ALREADY_IN_FLIGHT,
+                -> OfficeEngineCommandsPolicy.SUBMIT_REJECTED_BUSY
+                OfficeSaveFailureCode.SESSION_ENDING -> OfficeEngineCommandsPolicy.SUBMIT_REJECTED_SESSION
+                else -> OfficeEngineCommandsPolicy.SUBMIT_REJECTED_STATE
+            }
+            else -> OfficeEngineCommandsPolicy.SUBMIT_ACCEPTED
+        }
+    }
+
+    internal fun cancelSaveFromBinder(opId: String, sessionToken: String, generation: Long): Int =
+        when (cancelSaveOperation(sessionToken, generation, opId)) {
+            OfficeSaveCoordinator.CancelDecision.UNKNOWN_OP -> OfficeEngineCommandsPolicy.CANCEL_UNKNOWN_OP
+            OfficeSaveCoordinator.CancelDecision.CANCELLED_BEFORE_DISPATCH ->
+                OfficeEngineCommandsPolicy.CANCEL_CANCELLED_BEFORE_DISPATCH
+            OfficeSaveCoordinator.CancelDecision.STILL_IN_FLIGHT -> OfficeEngineCommandsPolicy.CANCEL_STILL_IN_FLIGHT
+        }
+
+    internal fun requestEditFromBinder(sessionToken: String, generation: Long, enable: Boolean): Boolean =
+        requestEdit(sessionToken, generation, enable)
+
+    internal fun requestEditHistoryFromBinder(sessionToken: String, generation: Long, redo: Boolean): Boolean =
+        requestEditHistory(sessionToken, generation, redo)
+
+    internal fun editStateFromBinder(sessionToken: String, generation: Long): OfficeEditState? =
+        editState(sessionToken, generation)
+
+    internal fun diagnosticsFromBinder(
+        sessionToken: String,
+        generation: Long,
+    ): List<OfficeSessionDiagnostics.Event>? = diagnosticsSnapshot(sessionToken, generation)
+
+    // --- save execution (control lane) ---
+
+    /**
+     * Dispatches one working-copy flush through the REAL protocol message
+     * (upstream parity: the official app posts the same "save ..." string via
+     * postMobileMessageNative). Completion is the kit's `.uno:Save`
+     * unocommandresult observed on the native→page channel; this method only
+     * dispatches and arms the bounded watchdog.
+     */
+    private fun runFlush(session: Session, op: OfficeSaveRequest) {
+        if (session.retired || session.cancelled.get() || current !== session) {
+            // The mount vanished between submit and lane execution: nothing
+            // was dispatched, so this is an honest pre-dispatch cancel.
+            if (session.saveCoordinator.requestCancel(op.opId) ==
+                OfficeSaveCoordinator.CancelDecision.CANCELLED_BEFORE_DISPATCH
+            ) {
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.CANCELLED,
+                        OfficeSaveFailureCode.CANCELLED_BEFORE_DISPATCH, "mount ended before dispatch",
+                        attestation = "cancel-before-dispatch", cancelRequested = true,
+                    ),
+                )
+            }
+            return
+        }
+        try {
+            session.host.postMobileMessageNative(OfficeSaveProtocol.flushMessage(op.saveIfUnmodified))
+            session.saveCoordinator.markFlushDispatched(op.opId)
+            session.recordDiagnostic(OfficeSessionDiagnostics.KIND_SAVE, "flush dispatched op=${op.opId}")
+            armFlushTimeout(session, op)
+        } catch (t: Throwable) {
+            session.saveCoordinator.abortDispatch(op.opId, t.javaClass.simpleName)?.let { outcome ->
+                completeFlush(session, outcome)
+            }
+        }
+    }
+
+    private fun armFlushTimeout(session: Session, op: OfficeSaveRequest) {
+        val task = Runnable {
+            session.saveCoordinator.onTimeout(op.opId)?.let { outcome ->
+                controlExecutor.execute { completeFlush(session, outcome) }
+            }
+        }
+        session.armFlushTimeout(op.opId, task)
+        mainHandler.postDelayed(task, SAVE_ACK_TIMEOUT_MS)
+    }
+
+    /**
+     * Settles one flush verdict into its typed receipt. WRITTEN_ACK is only
+     * a FLUSHED receipt after the working copy was actually re-read and
+     * digested (real bytes, not the ack alone); an unreadable working copy
+     * after a "success" ack is the honest ACK_WITHOUT_VERIFIABLE_BYTES
+     * failure.
+     */
+    private fun completeFlush(session: Session, outcome: OfficeSaveCoordinator.FlushOutcome) {
+        session.disarmFlushTimeout(outcome.opId)
+        val op = OfficeSaveRequest(
+            opId = outcome.opId,
+            sessionToken = session.request.sessionToken,
+            generation = session.generation,
+            operation = OfficeSaveOperation.WORKING_COPY_FLUSH,
+            format = null,
+            options = null,
+            suggestedName = null,
+            saveIfUnmodified = false,
+        )
+        val file = session.workingCopyFile
+        when (outcome.verdict) {
+            OfficeSaveCoordinator.FlushVerdict.WRITTEN_ACK -> {
+                val digest = file?.let { OfficeRequestPolicy.digestWorkingCopy(it) }
+                if (digest == null) {
+                    dispatchReceipt(
+                        session,
+                        receiptFor(
+                            session, op, OfficeSaveState.FAILED,
+                            OfficeSaveFailureCode.ACK_WITHOUT_VERIFIABLE_BYTES,
+                            "native acked success but the working copy is not a readable regular file",
+                            attestation = "uno-ack-unverified", cancelRequested = outcome.cancelRequested,
+                        ),
+                    )
+                } else {
+                    dispatchReceipt(
+                        session,
+                        receiptFor(
+                            session, op, OfficeSaveState.FLUSHED, null, null,
+                            attestation = "uno-ack+working-copy-digest",
+                            workingCopySha256 = digest.first,
+                            workingCopyBytes = digest.second,
+                            cancelRequested = outcome.cancelRequested,
+                        ),
+                    )
+                }
+            }
+            OfficeSaveCoordinator.FlushVerdict.UNMODIFIED -> {
+                // Honest no-op: core wrote nothing. The current digest is
+                // re-read so the App can compare against its base cheaply.
+                val digest = file?.let { OfficeRequestPolicy.digestWorkingCopy(it) }
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.UNMODIFIED, null, outcome.detail,
+                        attestation = "uno-ack-unmodified",
+                        workingCopySha256 = digest?.first,
+                        workingCopyBytes = digest?.second ?: 0L,
+                        cancelRequested = outcome.cancelRequested,
+                    ),
+                )
+            }
+            OfficeSaveCoordinator.FlushVerdict.NATIVE_FAILED -> dispatchReceipt(
+                session,
+                receiptFor(
+                    session, op, OfficeSaveState.FAILED,
+                    if (outcome.detail?.startsWith("error:") == true) {
+                        OfficeSaveFailureCode.NATIVE_ERROR
+                    } else {
+                        OfficeSaveFailureCode.NATIVE_REJECTED
+                    },
+                    outcome.detail,
+                    attestation = "native-failure",
+                    cancelRequested = outcome.cancelRequested,
+                ),
+            )
+            OfficeSaveCoordinator.FlushVerdict.DISPATCH_FAILED -> dispatchReceipt(
+                session,
+                receiptFor(
+                    session, op, OfficeSaveState.FAILED,
+                    OfficeSaveFailureCode.INTERNAL, outcome.detail,
+                    attestation = "dispatch-failed",
+                    cancelRequested = outcome.cancelRequested,
+                ),
+            )
+            OfficeSaveCoordinator.FlushVerdict.NO_PROOF -> dispatchReceipt(
+                session,
+                receiptFor(
+                    session, op, OfficeSaveState.UNKNOWN,
+                    when (outcome.detail) {
+                        "timeout-without-ack" -> OfficeSaveFailureCode.TIMEOUT_WITHOUT_ACK
+                        "mount-ended-without-ack" -> OfficeSaveFailureCode.MOUNT_ENDED_WITHOUT_ACK
+                        else -> OfficeSaveFailureCode.AUTOSAVE_ACK_COLLISION
+                    },
+                    outcome.detail,
+                    attestation = "no-proof",
+                    cancelRequested = outcome.cancelRequested,
+                ),
+            )
+        }
+        session.publishEditState()
+    }
+
+    /**
+     * Runs one staged export on the serialized control lane: synchronous JNI
+     * saveAs into a FRESH op-owned file under the module-private outputs
+     * root, then bounded real verification (regular file, 1..256 MiB, whole
+     * read, format magic, digest). Void return alone is never success. The
+     * working copy and every previously verified output are retained on all
+     * paths; only THIS attempt's own unverified partial file is removed.
+     */
+    private fun runExport(session: Session, op: OfficeSaveRequest) {
+        try {
+            if (session.retired || session.cancelled.get() || current !== session ||
+                session.state == OfficeViewerState.CLOSING || session.state == OfficeViewerState.CLOSED
+            ) {
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.CANCELLED,
+                        OfficeSaveFailureCode.CANCELLED_BEFORE_DISPATCH, "mount ended before export",
+                        attestation = "cancel-before-dispatch", cancelRequested = true,
+                    ),
+                )
+                return
+            }
+            val format = op.format ?: run {
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.REJECTED,
+                        OfficeSaveFailureCode.INVALID_REQUEST, "export without format",
+                        attestation = "rejected",
+                    ),
+                )
+                return
+            }
+            val baseDir = File(noBackupFilesDir, "$OUTPUTS_DIR/${session.generation}")
+            val canonicalBase = runCatching {
+                if (!baseDir.isDirectory && !baseDir.mkdirs()) return@runCatching null
+                baseDir.canonicalFile
+            }.getOrNull()
+            val noBackupCanonical = runCatching { noBackupFilesDir.canonicalPath }.getOrNull()
+            if (canonicalBase == null || noBackupCanonical == null ||
+                !canonicalBase.path.startsWith(noBackupCanonical.removeSuffix("/") + "/")
+            ) {
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.FAILED,
+                        OfficeSaveFailureCode.INTERNAL, "staged output root unavailable",
+                        attestation = "output-root-failed",
+                    ),
+                )
+                return
+            }
+            val outFile = File(canonicalBase, op.opId + "-" + android.os.SystemClock.elapsedRealtime() + "." + format)
+            if (outFile.exists()) {
+                // Unique names make this practically impossible; never
+                // overwrite an existing artifact — refuse honestly instead.
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.FAILED,
+                        OfficeSaveFailureCode.INTERNAL, "staged output name collision",
+                        attestation = "output-collision",
+                    ),
+                )
+                return
+            }
+            session.recordDiagnostic(OfficeSessionDiagnostics.KIND_SAVE, "export start op=${op.opId} format=$format")
+            var threw: Throwable? = null
+            // Serialize the blocking JNI saveAs against the fatal BYE path.
+            session.nativeCallLock.lock()
+            try {
+                if (session.retired || session.cancelled.get() || current !== session) {
+                    dispatchReceipt(
+                        session,
+                        receiptFor(
+                            session, op, OfficeSaveState.CANCELLED,
+                            OfficeSaveFailureCode.CANCELLED_BEFORE_DISPATCH, "mount ended before JNI saveAs",
+                            attestation = "cancel-before-dispatch", cancelRequested = true,
+                        ),
+                    )
+                    return
+                }
+                try {
+                    // Upstream parity: File.toURI() form, format token as the
+                    // filter argument, NO TakeOwnership (the loaded document
+                    // identity never moves).
+                    session.host.saveAs(outFile.toURI().toString(), format, op.options)
+                } catch (t: Throwable) {
+                    threw = t
+                }
+            } finally {
+                session.nativeCallLock.unlock()
+            }
+            val cancelRequested = session.saveCoordinator.isExportCancelRequested(op.opId)
+            if (threw != null) {
+                runCatching { if (outFile.exists()) outFile.delete() }
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.FAILED,
+                        OfficeSaveFailureCode.INTERNAL, threw.javaClass.simpleName,
+                        attestation = "jni-saveas-threw", cancelRequested = cancelRequested,
+                    ),
+                )
+                return
+            }
+            val verification = OfficeRequestPolicy.verifyStagedOutput(outFile, format)
+            if (!verification.verified) {
+                // Only THIS attempt's own unverified partial file is removed;
+                // the working copy and prior verified outputs are retained.
+                runCatching { if (outFile.exists()) outFile.delete() }
+                dispatchReceipt(
+                    session,
+                    receiptFor(
+                        session, op, OfficeSaveState.FAILED,
+                        verification.failure ?: OfficeSaveFailureCode.INTERNAL,
+                        "output verification failed (${verification.failure?.name})",
+                        attestation = "output-verification-failed", cancelRequested = cancelRequested,
+                    ),
+                )
+                return
+            }
+            dispatchReceipt(
+                session,
+                receiptFor(
+                    session, op, OfficeSaveState.OUTPUT_READY, null, null,
+                    attestation = "jni-saveas-sync+output-verified",
+                    outputDocumentPath = outFile.canonicalPath,
+                    outputSha256 = verification.sha256,
+                    outputBytes = verification.bytes,
+                    cancelRequested = cancelRequested,
+                ),
+            )
+        } finally {
+            session.saveCoordinator.endExport(op.opId)
+        }
+    }
+
+    private fun receiptFor(
+        session: Session,
+        op: OfficeSaveRequest,
+        state: OfficeSaveState,
+        failure: OfficeSaveFailureCode?,
+        message: String?,
+        attestation: String,
+        workingCopySha256: String? = null,
+        workingCopyBytes: Long = 0L,
+        outputDocumentPath: String? = null,
+        outputSha256: String? = null,
+        outputBytes: Long = 0L,
+        cancelRequested: Boolean = false,
+    ): OfficeSaveReceipt = OfficeSaveReceipt(
+        opId = op.opId,
+        sessionToken = session.request.sessionToken,
+        generation = session.generation,
+        operation = op.operation,
+        state = state,
+        format = op.format,
+        suggestedName = op.suggestedName,
+        expectedBaseSha256 = session.request.sha256,
+        workingCopySha256 = workingCopySha256,
+        workingCopyBytes = workingCopyBytes,
+        outputDocumentPath = outputDocumentPath,
+        outputSha256 = outputSha256,
+        outputBytes = outputBytes,
+        failure = failure,
+        message = message?.take(240),
+        cancelRequested = cancelRequested,
+        attestation = attestation,
+        submittedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+        completedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+    )
+
+    private fun rejectedReceipt(
+        op: OfficeSaveRequest,
+        failure: OfficeSaveFailureCode,
+        message: String,
+    ): OfficeSaveReceipt = OfficeSaveReceipt(
+        opId = op.opId,
+        sessionToken = op.sessionToken,
+        generation = op.generation,
+        operation = op.operation,
+        state = OfficeSaveState.REJECTED,
+        format = op.format,
+        suggestedName = op.suggestedName,
+        expectedBaseSha256 = null,
+        workingCopySha256 = null,
+        workingCopyBytes = 0L,
+        outputDocumentPath = null,
+        outputSha256 = null,
+        outputBytes = 0L,
+        failure = failure,
+        message = message,
+        cancelRequested = false,
+        attestation = "rejected",
+        submittedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+        completedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
+    )
+
+    /** Delivers one receipt to the App host channel FIRST, then in-process. */
+    private fun dispatchReceipt(session: Session, receipt: OfficeSaveReceipt) {
+        session.rememberReceipt(receipt)
+        session.recordDiagnostic(
+            OfficeSessionDiagnostics.KIND_SAVE,
+            "receipt op=${receipt.opId} ${receipt.operation.name} -> ${receipt.state.name}" +
+                (receipt.failure?.let { " ($it)" } ?: ""),
+        )
+        val recipients = listeners.toList()
+        mainHandler.post {
+            // REAL happens-before (Main ordering constraint 2026-10-26):
+            // postReceipt is a synchronous binder transaction, so the App has
+            // stored the verified OUTPUT_READY facts BEFORE the in-process
+            // listener runs and the viewer may call the host prepare seam.
+            (session.hostSaveChannel ?: appHostChannel)?.let { channel ->
+                OfficeHostSaveChannel.postReceipt(channel, receipt)
+            }
+            if (!session.presentationSuperseded) {
+                recipients.forEach { l -> runCatching { l.onSaveReceipt(receipt) } }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Open pipeline (control thread)
     // ------------------------------------------------------------------
 
@@ -812,6 +1919,7 @@ class OfficeEngineService : Service() {
         request: OfficePreviewRequest,
         closeAck: android.os.IBinder?,
         viewerIncarnation: Long,
+        hostSaveChannel: android.os.IBinder?,
     ) {
         // Re-check ownership under the lock: two begins queued back-to-back
         // must not both mount (the native lifetime carries exactly one
@@ -827,8 +1935,11 @@ class OfficeEngineService : Service() {
             failFast(request, OfficeFailureCode.ENGINE_BUSY, "another Office document holds the engine")
             return
         }
-        val session = Session(request, ++lastGeneration, closeAck, viewerIncarnation)
+        val session = Session(request, ++lastGeneration, closeAck, viewerIncarnation, hostSaveChannel)
         synchronized(sessionLock) { current = session; session.setState(OfficeViewerState.STAGING) }
+        // Publish the initial snapshot so an App-side host channel learns the
+        // exact (token, generation) identity as soon as the mount exists.
+        session.publishEditState()
         try {
             // A valid service owner outlives a view reconstruction. This is
             // not sticky, not a foreground keepalive, and stops on settlement.
@@ -855,6 +1966,24 @@ class OfficeEngineService : Service() {
             failFast(request, OfficeFailureCode.STAGED_FILE_MISMATCH, "staged snapshot digest does not match")
             return
         }
+        // EDIT admission (R2, fail-closed): the staged file must be a
+        // separately owned MUTABLE working copy. A read-only staged snapshot
+        // (R1 stagers setReadOnly) or any non-writable file is refused —
+        // an immutable input or provider original can never be mounted
+        // editable or saved over.
+        if (request.permission == OfficePermission.EDIT && !file.canWrite()) {
+            failFast(
+                request,
+                OfficeFailureCode.STAGED_FILE_MISMATCH,
+                "editable session requires a writable working copy",
+            )
+            return
+        }
+        session.workingCopyFile = runCatching { file.canonicalFile }.getOrNull()
+        session.recordDiagnostic(
+            OfficeSessionDiagnostics.KIND_LIFECYCLE,
+            "open permission=${request.permission} format=${request.format} bytes=${request.lengthBytes}",
+        )
         if (session.cancelled.get()) return
 
         // 2. Engine profile extraction (idempotent, cancellable, service-owned).
@@ -960,7 +2089,11 @@ class OfficeEngineService : Service() {
             .append(documentUrl)
             .append("&closebutton=1")
             .append("&lang=").append(android.net.Uri.encode(languageTag))
-            .append("&permission=readonly")
+            // Upstream parity (LOActivity.java:1283-1285): the page URL
+            // permission parameter is the pinned mobile frontend's initial
+            // permission ("edit" for an editable document, "readonly" for a
+            // protected one). READ_ONLY mounts keep the exact R1 value.
+            .append(if (session.editable) "&permission=edit" else "&permission=readonly")
         if (uiMode == UI_MODE_NOTEBOOKBAR) {
             builder.append("&userinterfacemode=notebookbar")
         }
@@ -1026,7 +2159,17 @@ class OfficeEngineService : Service() {
         }
         // BYE may still block in native code; the independently armed main
         // watchdog bounds that lifetime without blocking either UI or opens.
-        val thrown = runCatching { session.host.postMobileMessageNative("BYE") }.exceptionOrNull()
+        // The native-call lock serializes BYE against an in-flight blocking
+        // JNI saveAs on the control lane (cancel/close quiescence: the export
+        // either finished before BYE, or it waits and then aborts honestly).
+        val thrown = session.nativeCallLock.run {
+            lock()
+            try {
+                runCatching { session.host.postMobileMessageNative("BYE") }.exceptionOrNull()
+            } finally {
+                unlock()
+            }
+        }
         if (thrown != null) {
             Log.e(TAG, "BYE failed for generation ${session.generation}", thrown)
         }
@@ -1207,6 +2350,19 @@ class OfficeEngineService : Service() {
         private const val CLIPBOARD_FILE_NAME = "LibreofficeClipboardFile.data"
         private const val CLIPBOARD_COOL_SIGNATURE = "cool-clip-magic-4a22437e49a8-"
         private const val CLOSE_SETTLE_MS = 20_000L
+
+        /**
+         * Bounded window for the working-copy flush ack. This is a FAILURE
+         * watchdog (honest UNKNOWN on expiry), never a success timer: no
+         * sleep or elapsed time is ever treated as proof of a save.
+         */
+        private const val SAVE_ACK_TIMEOUT_MS = 30_000L
+
+        /** Cap for the raw `statechanged:` command-state map (chrome info). */
+        private const val MAX_COMMAND_STATES = 64
+
+        /** Module-private staged-output root under noBackupFilesDir. */
+        private const val OUTPUTS_DIR = "floe-office-outputs"
 
         // Painted-frame probe schedule (witnesses, not fabricated timeouts:
         // failing probes keep the state honestly at AWAITING_FIRST_RENDER).

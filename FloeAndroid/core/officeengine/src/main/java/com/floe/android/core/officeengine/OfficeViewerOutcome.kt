@@ -24,6 +24,23 @@ enum class OfficeViewerState {
     READY_READ_ONLY,
 
     /**
+     * R2 editable-ready variant — an HONEST edit claim tied to real native
+     * facts, never to a read-only getter alone. Requires, for this exact
+     * mount: the R1 render witnesses (shape + tile delivery + painted frame
+     * + renderer draw), the ordered permission barrier reply after the
+     * service issued the real kit command `setviewreadonly value=false`
+     * (kit/ChildSession.cpp), the server-originated write-permission frames
+     * (`perm: edit` and/or `filemode:{readOnly:false}` — unmasked native
+     * truth, wsd/ClientSession.cpp setReadOnly/sendFileMode), a
+     * non-load-readonly `.uno:ReadOnly` barrier answer, and no
+     * modify-password protection. A degraded EDIT mount (protected document,
+     * missing permission frames) falls back to READY_READ_ONLY with an
+     * explicit notice and `editPermissionEstablished=false` — it never
+     * pretends to be editable.
+     */
+    READY_EDITABLE,
+
+    /**
      * The engine reported a real native `error:` for this mount: the
      * document is not viewable. Honest failure representation (Main
      * decision 2026-10-26) — the host must keep the actual error detail
@@ -66,6 +83,26 @@ data class OfficeViewerOutcome(
     val witnessWidthTwip: Int,
     val witnessHeightTwip: Int,
     val generation: Long = 0L,
+    /**
+     * R2 honest close facts (all default-valued, so every R1 call site and
+     * parcel reader keeps working):
+     *  - [dirtyAtClose] mirrors the kit's last real `statechanged:`
+     *    `.uno:ModifiedStatus` fact (false when never observed — the App must
+     *    treat "never observed" conservatively, this flag never *proves*
+     *    clean);
+     *  - [editPermissionEstablished] is true only when the full native
+     *    edit-permission witness set completed for this mount;
+     *  - [saveReceiptDescriptors] are bounded flat
+     *    [OfficeSaveReceipt.descriptorLine] strings for every receipt issued
+     *    during the mount, so the App can recover staged-output identities
+     *    (paths/sha/bytes) even though the engine process may already be
+     *    gone. The App — never this module — decides what those bytes mean
+     *    for its own commit ledger.
+     */
+    val dirtyAtClose: Boolean = false,
+    val editPermissionEstablished: Boolean = false,
+    val saveReceiptCount: Int = 0,
+    val saveReceiptDescriptors: List<String> = emptyList(),
 ) {
     companion object {
         const val EXTRA_GENERATION = "com.floe.android.office.GENERATION"
@@ -76,6 +113,13 @@ data class OfficeViewerOutcome(
         const val EXTRA_FAILURE_MESSAGE = "com.floe.android.office.FAILURE_MESSAGE"
         const val EXTRA_WITNESS_WIDTH = "com.floe.android.office.WITNESS_WIDTH"
         const val EXTRA_WITNESS_HEIGHT = "com.floe.android.office.WITNESS_HEIGHT"
+        const val EXTRA_DIRTY_AT_CLOSE = "com.floe.android.office.DIRTY_AT_CLOSE"
+        const val EXTRA_EDIT_PERMISSION_ESTABLISHED = "com.floe.android.office.EDIT_PERMISSION_ESTABLISHED"
+        const val EXTRA_SAVE_RECEIPT_COUNT = "com.floe.android.office.SAVE_RECEIPT_COUNT"
+        const val EXTRA_SAVE_RECEIPT_DESCRIPTORS = "com.floe.android.office.SAVE_RECEIPT_DESCRIPTORS"
+
+        /** Bounded descriptor list carried in one Activity result. */
+        const val MAX_RECEIPT_DESCRIPTORS = 24
 
         /** Rebuild the outcome from an Activity result Intent (null if absent). */
         fun fromResultData(data: android.content.Intent?): OfficeViewerOutcome? {
@@ -90,6 +134,13 @@ data class OfficeViewerOutcome(
                 witnessWidthTwip = data.getIntExtra(EXTRA_WITNESS_WIDTH, 0),
                 witnessHeightTwip = data.getIntExtra(EXTRA_WITNESS_HEIGHT, 0),
                 generation = data.getLongExtra(EXTRA_GENERATION, 0L),
+                dirtyAtClose = data.getBooleanExtra(EXTRA_DIRTY_AT_CLOSE, false),
+                editPermissionEstablished = data.getBooleanExtra(EXTRA_EDIT_PERMISSION_ESTABLISHED, false),
+                saveReceiptCount = data.getIntExtra(EXTRA_SAVE_RECEIPT_COUNT, 0),
+                saveReceiptDescriptors = data.getStringArrayListExtra(EXTRA_SAVE_RECEIPT_DESCRIPTORS)
+                    ?.take(MAX_RECEIPT_DESCRIPTORS)
+                    ?.filter { it.isNotEmpty() }
+                    ?: emptyList(),
             )
         }
     }
@@ -129,4 +180,6 @@ data class OfficeDocumentWitness(
     val tilesInvalidateCount: Int,
     val readOnlyBarrierObserved: Boolean = false,
     val rendererDrawVerified: Boolean = false,
+    /** R2: the full native edit-permission witness set completed (see READY_EDITABLE). */
+    val editPermissionObserved: Boolean = false,
 )

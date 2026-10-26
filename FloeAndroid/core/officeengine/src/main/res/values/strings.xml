@@ -31,4 +31,38 @@
     <string name="office_notices_back">Back</string>
     <string name="office_notice_awaiting_render">The preview is taking longer to display. Please wait a moment.</string>
     <string name="office_viewer_details">Technical details</string>
+
+    <!-- G05-R2 manual editing and owned save outcomes -->
+    <string name="office_viewer_editing_cd">Editing</string>
+    <string name="office_viewer_edit_cd">Edit document</string>
+    <string name="office_viewer_view_cd">Return to viewing</string>
+    <string name="office_viewer_more_cd">More actions</string>
+    <string name="office_viewer_edit_info">You are editing a private working copy. The original document stays unchanged until the app saves it.</string>
+    <string name="office_viewer_dirty_title">Save your changes?</string>
+    <string name="office_viewer_dirty_message">This working copy has unsaved changes.</string>
+    <string name="office_action_save_close">Save Copy and close</string>
+    <string name="office_action_discard_close">Discard changes</string>
+    <string name="office_action_keep_editing">Keep editing</string>
+    <string name="office_action_save_copy">Save a Copy…</string>
+    <string name="office_action_undo">Undo</string>
+    <string name="office_action_redo">Redo</string>
+    <string name="office_viewer_details_empty">No diagnostic events recorded.</string>
+    <string name="office_notice_save_flushed">Saved to the working copy.</string>
+    <string name="office_notice_save_unmodified">No changes to save.</string>
+    <string name="office_notice_save_failed">Couldn\'t save. Your working copy is kept.</string>
+    <string name="office_notice_save_unknown">Save result is unknown. Your working copy is kept.</string>
+    <string name="office_notice_copy_staged">Copy staged. Waiting for a save location.</string>
+    <string name="office_notice_copy_handed">Copy handed to the app. Waiting for it to finish saving.</string>
+    <string name="office_notice_copy_saved">Copy saved.</string>
+    <string name="office_notice_copy_failed">The app couldn\'t save the copy. The staged copy is kept.</string>
+    <string name="office_notice_picker_cancelled">Save cancelled. The staged copy is kept.</string>
+    <string name="office_notice_host_unavailable">The app couldn\'t provide a save location.</string>
+    <string name="office_notice_edit_unavailable">Editing isn\'t available right now.</string>
+    <string name="office_notice_protected_document">This document is protected and can\'t be edited here.</string>
+    <string name="office_notice_edit_denied">The document engine won\'t allow editing this file.</string>
+    <string name="office_notice_edit_unconfirmed">Editing couldn\'t be confirmed, so the document stays read-only.</string>
+    <string name="office_notice_edit_entry_unavailable">Couldn\'t enter editing. Please close and reopen the document.</string>
+    <string name="office_busy_exporting">Preparing the copy…</string>
+    <string name="office_busy_awaiting_picker">Choose where to save the copy</string>
+    <string name="office_busy_awaiting_app">Waiting for the app to finish saving…</string>
 </resources>

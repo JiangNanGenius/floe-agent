@@ -15,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,11 +86,112 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     private var closeAck: android.os.IBinder? = null
     private var viewerIncarnation = -1L
 
+    /**
+     * R2 generic host save-target channel (OfficeHostSaveChannel), received
+     * ONLY from this Activity's own launch Intent. The App prepares the
+     * CREATE_DOCUMENT Intent; THIS foreground Activity launches it (the
+     * background App process must not assume background-activity-launch
+     * permission) and forwards the actual URI + returned flags back. The
+     * module never resolves, grants or writes through the URI.
+     */
+    private var hostSaveChannel: android.os.IBinder? = null
+
+    /** Live observed edit state for the exact mount (never a readiness claim). */
+    private var editState: OfficeEditState? by mutableStateOf(null)
+
+    /** Receipts issued for this mount, bounded for the details sheet. */
+    private val saveReceipts = ArrayList<OfficeSaveReceipt>()
+
+    /** Save-target handoff in flight (opId -> format), fenced by opId. */
+    private var pendingHandoffOpId: String? = null
+    private var pendingHandoffFormat: String? = null
+
+    /** Export ops awaiting OUTPUT_READY (opId -> format), fenced by opId. */
+    private val pendingExportFormats = HashMap<String, String>()
+
+    /**
+     * Ops whose picker result was delivered to the App and that now await
+     * the App's real settlement (COPY_SAVED/FAILED/CANCELLED). A settlement
+     * is accepted for a known pending op EXACTLY ONCE; unknown/stale/
+     * duplicate settlements never replace the current notice or close
+     * (Main UI acceptance 2026-10-26).
+     */
+    private val awaitingSettlementOps = HashSet<String>()
+
+    /**
+     * Dirty-sheet "Save Copy and close" state: the export op whose verified
+     * App COPY_SAVED settlement authorizes the close. Native FLUSHED /
+     * UNMODIFIED / ModifiedStatus facts describe the PRIVATE working copy
+     * only and never authorize this close.
+     */
+    private var closeAfterExportOpId: String? = null
+
+    /** Busy-cover phases while a close-save is in flight (input frozen). */
+    private enum class CloseSavePhase { EXPORTING, AWAITING_PICKER, AWAITING_APP }
+    private var closeSavePhase: CloseSavePhase? by mutableStateOf(null)
+
+    /** True once the page reported EDITMODE on at any point in this mount. */
+    private var everEnteredEditMode = false
+
+    private var opCounter = 0
+
     private var progress: OfficeViewerProgress? by mutableStateOf(null)
     private var noticeKey: String? by mutableStateOf(null)
     private var noticeDetail: String? by mutableStateOf(null)
     private var viewerUrl: String? by mutableStateOf(null)
     private var localFailure: Pair<OfficeFailureCode, String?>? by mutableStateOf(null)
+    private var showDirtyCloseSheet by mutableStateOf(false)
+    private var diagnosticEvents: List<OfficeSessionDiagnostics.Event> by mutableStateOf(emptyList())
+
+    /**
+     * System save-target picker launcher. Registered before composition; the
+     * result (including cancellation) is forwarded EXACTLY as returned to
+     * the App capability — the module draws no success conclusion from it.
+     * Delivery means "accepted for processing" ONLY; the honest terminal
+     * outcome arrives later via [onHostSaveSettlement].
+     */
+    private val saveTargetLauncher =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
+            val opId = pendingHandoffOpId
+            val token = request?.sessionToken.orEmpty()
+            pendingHandoffOpId = null
+            pendingHandoffFormat = null
+            if (opId == null) return@registerForActivityResult
+            val uriString = result.data?.data?.toString()
+            val delivered = OfficeHostSaveChannel.deliverPickResult(
+                hostSaveChannel,
+                opId,
+                token,
+                nativeGeneration,
+                result.resultCode,
+                uriString,
+                result.data?.flags ?: 0,
+            )
+            val isCloseSave = closeAfterExportOpId == opId
+            when {
+                result.resultCode != RESULT_OK -> {
+                    // User cancelled the system picker: nothing was granted,
+                    // the staged copy is retained, the editor stays open.
+                    if (isCloseSave) abortCloseSave()
+                    noticeKey = "pickerCancelled"
+                    noticeDetail = null
+                }
+                !delivered -> {
+                    if (isCloseSave) abortCloseSave()
+                    noticeKey = "hostTargetUnavailable"
+                    noticeDetail = null
+                }
+                else -> {
+                    awaitingSettlementOps.add(opId)
+                    if (isCloseSave) {
+                        closeSavePhase = CloseSavePhase.AWAITING_APP
+                    } else {
+                        noticeKey = "copyHandedToApp"
+                        noticeDetail = null
+                    }
+                }
+            }
+        }
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -141,7 +243,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         val current = request ?: return
         if (sessionBegunFor === current) return
         sessionBegunFor = current
-        engine.beginSession(current, closeAck, viewerIncarnation)
+        engine.beginSession(current, closeAck, viewerIncarnation, hostSaveChannel)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -189,6 +291,10 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // putBinder/getBinder pair (API 18+), never the getParcelable family.
         viewerIncarnation = intent.getLongExtra(OfficeCloseAckPolicy.EXTRA_VIEWER_INCARNATION, -1L)
         closeAck = intent.extras?.getBinder(OfficeCloseAckPolicy.EXTRA_CLOSE_ACK)
+        // R2 host save-target channel: same trust model as the close-ack
+        // capability — an inert IBinder reference from our own non-exported
+        // launch Intent, used only for the fenced handoff transactions.
+        hostSaveChannel = intent.extras?.getBinder(OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL)
 
         if (!OfficeWebViewDirectory.ensureOnce()) {
             deliverLocalFailure(OfficeFailureCode.WEBVIEW_ISOLATION_FAILED, null)
@@ -228,7 +334,22 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                     noticeDetail = noticeDetail,
                     failure = localFailure,
                     viewerUrl = viewerUrl,
+                    editableSession = request?.permission == OfficePermission.EDIT,
+                    editState = editState,
+                    diagnosticEvents = diagnosticEvents,
+                    busyPhaseKey = closeSavePhase?.let { phase ->
+                        when (phase) {
+                            CloseSavePhase.EXPORTING -> "exporting"
+                            CloseSavePhase.AWAITING_PICKER -> "picker"
+                            CloseSavePhase.AWAITING_APP -> "app"
+                        }
+                    },
                     onBack = ::performBack,
+                    onToggleEdit = ::toggleEditMode,
+                    onSaveCopy = { startSaveCopy(forClose = false) },
+                    onUndo = { requestEditHistory(redo = false) },
+                    onRedo = { requestEditHistory(redo = true) },
+                    onRefreshDiagnostics = ::refreshDiagnostics,
                     onOpenNotices = {
                         startActivity(Intent(this, OfficeNoticesActivity::class.java).apply {
                             putExtra("com.floe.office.THEME_MODE", intent.getStringExtra("com.floe.office.THEME_MODE"))
@@ -251,6 +372,31 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                         view.destroy()
                     },
                 )
+                // Dirty-close guard (editable mounts): explicit user choice,
+                // honest outcomes only. "Save Copy and close" closes ONLY
+                // after the App's verified COPY_SAVED settlement for that
+                // exact op; export/picker failure, cancellation or UNKNOWN
+                // keeps the editor open with everything retained.
+                FloeActionSheet(
+                    visible = showDirtyCloseSheet,
+                    onDismiss = { showDirtyCloseSheet = false },
+                    maxCardWidth = 420.dp,
+                ) {
+                    Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        FloeText(stringResource(R.string.office_viewer_dirty_title), style = Floe.typography.toolbarTitle)
+                        FloeText(
+                            stringResource(R.string.office_viewer_dirty_message),
+                            color = Floe.colors.secondaryLabel,
+                        )
+                        FloeCapsuleButton(stringResource(R.string.office_action_save_close), onClick = {
+                            startSaveCopy(forClose = true)
+                        })
+                        FloeCapsuleButton(stringResource(R.string.office_action_discard_close), onClick = ::discardAndClose)
+                        FloeCapsuleButton(stringResource(R.string.office_action_keep_editing), onClick = {
+                            showDirtyCloseSheet = false
+                        })
+                    }
+                }
             }
         }
 
@@ -268,11 +414,228 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             )
             return
         }
+        // A close-save is in flight (input frozen, busy cover up): Back is
+        // ignored until the App settles or the flow aborts honestly.
+        if (closeSavePhase != null) return
         if (engine.isMobileWizardVisible(token)) {
             engine.sendMobileWizardBack(token)
-        } else {
-            engine.requestClose(token, "user-back", userInitiated = true)
+            return
         }
+        // Conservative dirty-close guard for editable mounts (Main UI
+        // acceptance 2026-10-26): once editing was entered OR the kit reports
+        // the working copy modified, an ordinary Back never closes silently.
+        // Only the explicit Discard choice or a verified App COPY_SAVED
+        // close-save bypasses it. Native FLUSHED/UNMODIFIED/ModifiedStatus
+        // facts describe the PRIVATE working copy only and never authorize a
+        // close (no original writeback or user-visible recovery exists yet).
+        val state = editState
+        if (request?.permission == OfficePermission.EDIT &&
+            (state?.documentModified == true || everEnteredEditMode) &&
+            closeAfterExportOpId == null
+        ) {
+            showDirtyCloseSheet = true
+            return
+        }
+        engine.requestClose(token, "user-back", userInitiated = true)
+    }
+
+    // --- R2 edit/save flows (module viewer chrome) ---
+
+    private fun newOpId(prefix: String): String {
+        opCounter++
+        val suffix = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+        return "$prefix-$opCounter-$suffix"
+    }
+
+    /** Suggested export name: the display name with the target extension. */
+    private fun suggestedExportName(format: String): String {
+        val base = request?.displayName.orEmpty().substringBeforeLast('.', "document")
+        return (base.ifBlank { "document" } + "." + format).take(240)
+    }
+
+    private fun toggleEditMode() {
+        val token = request?.sessionToken ?: return
+        val engine = service ?: return
+        val enable = editState?.pageEditMode != true
+        if (!engine.requestEdit(token, nativeGeneration, enable)) {
+            noticeKey = "editUnavailable"
+            noticeDetail = null
+        }
+    }
+
+    /**
+     * First-slice Save Copy: exports the CURRENT document (same-format
+     * DOCX/XLSX/PPTX only; ODF/PDF choices stay hidden until separately
+     * qualified) to a module-private staged output, then hands the picker
+     * flow to the App. [forClose] arms the verified-settlement close path:
+     * the editor closes ONLY after the App's real COPY_SAVED settlement for
+     * that exact op.
+     */
+    private fun startSaveCopy(forClose: Boolean) {
+        val token = request?.sessionToken ?: return
+        val format = request?.format?.fileExtension ?: return
+        val opId = newOpId("export")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.STAGED_EXPORT,
+            format = format,
+            suggestedName = suggestedExportName(format),
+        ).getOrNull() ?: run {
+            noticeKey = "saveFailed"
+            noticeDetail = "invalid export request"
+            return
+        }
+        if (forClose) {
+            showDirtyCloseSheet = false
+            closeAfterExportOpId = opId
+            closeSavePhase = CloseSavePhase.EXPORTING
+            // Freeze user document input from export through the settlement
+            // so no later edit is silently discarded (defocus + hide IME;
+            // the busy cover absorbs touches).
+            freezeDocumentInput()
+        }
+        pendingExportFormats[opId] = format
+        val receipt = service?.submitSaveOperation(op) ?: run {
+            pendingExportFormats.remove(opId)
+            if (forClose) abortCloseSave()
+            return
+        }
+        // SUBMITTED/terminal receipts also arrive through onSaveReceipt; only
+        // a synchronous REJECTED (never dispatched to listeners) is applied
+        // here, so one op can never double-record.
+        if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    /** Maps one receipt to the honest transient notice + Save-Copy handoff. */
+    private fun applyReceipt(receipt: OfficeSaveReceipt) {
+        if (receipt.generation != 0L && !accepts(receipt.sessionToken, receipt.generation)) return
+        synchronized(saveReceipts) {
+            saveReceipts.add(receipt)
+            while (saveReceipts.size > OfficeViewerOutcome.MAX_RECEIPT_DESCRIPTORS) saveReceipts.removeAt(0)
+        }
+        val isCloseSave = closeAfterExportOpId == receipt.opId
+        when (receipt.state) {
+            OfficeSaveState.SUBMITTED -> Unit // no notice: terminal states speak
+            OfficeSaveState.FLUSHED -> {
+                // Working-copy fact only — never clears the user-destination
+                // unsaved state and never authorizes a close.
+                noticeKey = "saveFlushed"
+                noticeDetail = null
+            }
+            OfficeSaveState.UNMODIFIED -> {
+                noticeKey = "saveUnmodified"
+                noticeDetail = null
+            }
+            OfficeSaveState.OUTPUT_READY -> {
+                if (isCloseSave) closeSavePhase = CloseSavePhase.AWAITING_PICKER
+                else noticeKey = "copyStaged"
+                beginHostSaveHandoff(receipt)
+            }
+            OfficeSaveState.FAILED, OfficeSaveState.UNKNOWN -> {
+                if (isCloseSave) abortCloseSave()
+                noticeKey = if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed"
+                noticeDetail = (receipt.failure?.name ?: "") + (receipt.message?.let { ": $it" } ?: "")
+            }
+            OfficeSaveState.CANCELLED -> if (isCloseSave) abortCloseSave()
+            OfficeSaveState.REJECTED -> {
+                if (isCloseSave) abortCloseSave()
+                noticeKey = "saveFailed"
+                noticeDetail = receipt.failure?.name
+            }
+        }
+    }
+
+    /**
+     * OUTPUT_READY is a PRIVATE staged artifact, never "Saved". The generic
+     * host seam hands the App the exact op identity so IT can prepare the
+     * system save-target picker; THIS foreground Activity launches it (the
+     * background App must not assume BAL permission) and forwards the actual
+     * URI + returned flags back. No SAF logic lives here.
+     */
+    private fun beginHostSaveHandoff(receipt: OfficeSaveReceipt) {
+        val format = receipt.format ?: pendingExportFormats[receipt.opId] ?: run {
+            if (closeAfterExportOpId == receipt.opId) abortCloseSave()
+            return
+        }
+        val channel = hostSaveChannel
+        val prepared = channel?.let {
+            OfficeHostSaveChannel.requestPrepareTarget(
+                it,
+                receipt.opId,
+                receipt.sessionToken,
+                receipt.generation,
+                format,
+                receipt.suggestedName ?: suggestedExportName(format),
+            )
+        }
+        if (prepared == null) {
+            if (closeAfterExportOpId == receipt.opId) abortCloseSave()
+            noticeKey = "hostTargetUnavailable"
+            noticeDetail = receipt.outputDocumentPath
+            return
+        }
+        pendingHandoffOpId = receipt.opId
+        pendingHandoffFormat = format
+        runCatching { saveTargetLauncher.launch(prepared) }.onFailure {
+            pendingHandoffOpId = null
+            pendingHandoffFormat = null
+            if (closeAfterExportOpId == receipt.opId) abortCloseSave()
+            noticeKey = "hostTargetUnavailable"
+            noticeDetail = receipt.outputDocumentPath
+        }
+    }
+
+    /**
+     * Ends a close-save attempt honestly: the editor stays open, input is
+     * unfrozen, the staged output and working copy are retained, and no
+     * close is authorized.
+     */
+    private fun abortCloseSave() {
+        closeAfterExportOpId = null
+        closeSavePhase = null
+        unfreezeDocumentInput()
+    }
+
+    /**
+     * The ONLY non-settlement close bypass of the dirty guard: an explicit
+     * user Discard. Nothing is auto-saved; the working copy and any staged
+     * outputs stay on disk for the App's recovery ledgers.
+     */
+    private fun discardAndClose() {
+        showDirtyCloseSheet = false
+        request?.sessionToken?.let { service?.requestClose(it, "user-back", userInitiated = true) }
+    }
+
+    private fun freezeDocumentInput() {
+        runCatching {
+            val focused = currentFocus
+            if (focused != null) {
+                (getSystemService(Context.INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager)
+                    ?.hideSoftInputFromWindow(focused.windowToken, 0)
+                focused.clearFocus()
+            }
+        }
+    }
+
+    private fun unfreezeDocumentInput() {
+        // The busy cover is state-driven; focus returns to the page on the
+        // next user interaction (no forced focus stealing).
+        runCatching { viewerView?.requestFocus() }
+    }
+
+    private fun requestEditHistory(redo: Boolean) {
+        val token = request?.sessionToken ?: return
+        if (service?.requestEditHistory(token, nativeGeneration, redo) != true) {
+            noticeKey = "editUnavailable"
+            noticeDetail = null
+        }
+    }
+
+    private fun refreshDiagnostics() {
+        val token = request?.sessionToken ?: return
+        diagnosticEvents = service?.diagnosticsSnapshot(token, nativeGeneration) ?: emptyList()
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -313,7 +676,10 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     override fun onProgress(progress: OfficeViewerProgress) {
         if (!accepts(progress.sessionToken, progress.generation)) return
         this.progress = progress
-        if (progress.state == OfficeViewerState.READY_READ_ONLY && noticeKey == "awaitingRender") {
+        if ((progress.state == OfficeViewerState.READY_READ_ONLY ||
+                progress.state == OfficeViewerState.READY_EDITABLE) &&
+            noticeKey == "awaitingRender"
+        ) {
             noticeKey = null
             noticeDetail = null
         }
@@ -329,6 +695,57 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         if (!accepts(sessionToken, generation)) return
         noticeKey = key
         noticeDetail = detail
+    }
+
+    override fun onSaveReceipt(receipt: OfficeSaveReceipt) {
+        applyReceipt(receipt)
+    }
+
+    override fun onEditState(state: OfficeEditState) {
+        if (!accepts(state.sessionToken, state.generation)) return
+        if (state.pageEditMode) everEnteredEditMode = true
+        editState = state
+    }
+
+    /**
+     * The App's terminal Save-Copy settlement — the ONLY event that may show
+     * a saved-to-destination outcome or authorize a close-save (COPY_SAVED
+     * after the real provider write + readback). Fenced by token+generation
+     * AND the exact pending opId, accepted exactly once per op: unknown,
+     * stale or duplicate settlements are ignored and never replace the
+     * current notice or close the editor (Main UI acceptance 2026-10-26).
+     */
+    override fun onHostSaveSettlement(settlement: OfficeHostSaveSettlement) {
+        if (!accepts(settlement.sessionToken, settlement.generation)) return
+        val known = synchronized(awaitingSettlementOps) { awaitingSettlementOps.remove(settlement.opId) }
+        if (!known) return
+        val isCloseSave = closeAfterExportOpId == settlement.opId
+        when (settlement.verdict) {
+            OfficeHostSaveVerdict.COPY_SAVED -> {
+                if (isCloseSave) {
+                    closeAfterExportOpId = null
+                    closeSavePhase = null
+                    noticeKey = "copySaved"
+                    noticeDetail = null
+                    request?.sessionToken?.let {
+                        service?.requestClose(it, "user-back", userInitiated = true)
+                    }
+                } else {
+                    noticeKey = "copySaved"
+                    noticeDetail = settlement.message?.take(240)
+                }
+            }
+            OfficeHostSaveVerdict.COPY_FAILED -> {
+                if (isCloseSave) abortCloseSave()
+                noticeKey = "copyFailed"
+                noticeDetail = settlement.message?.take(240)
+            }
+            OfficeHostSaveVerdict.COPY_CANCELLED -> {
+                if (isCloseSave) abortCloseSave()
+                noticeKey = "pickerCancelled"
+                noticeDetail = settlement.message?.take(240)
+            }
+        }
     }
 
     override fun onLoadUrl(sessionToken: String, generation: Long, url: String) {
@@ -416,6 +833,19 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             putExtra(OfficeViewerOutcome.EXTRA_WITNESS_WIDTH, outcome.witnessWidthTwip)
             putExtra(OfficeViewerOutcome.EXTRA_WITNESS_HEIGHT, outcome.witnessHeightTwip)
             putExtra(OfficeViewerOutcome.EXTRA_GENERATION, outcome.generation)
+            // R2 honest close facts (all default-safe for R1 readers).
+            putExtra(OfficeViewerOutcome.EXTRA_DIRTY_AT_CLOSE, outcome.dirtyAtClose)
+            putExtra(
+                OfficeViewerOutcome.EXTRA_EDIT_PERMISSION_ESTABLISHED,
+                outcome.editPermissionEstablished,
+            )
+            putExtra(OfficeViewerOutcome.EXTRA_SAVE_RECEIPT_COUNT, outcome.saveReceiptCount)
+            if (outcome.saveReceiptDescriptors.isNotEmpty()) {
+                putStringArrayListExtra(
+                    OfficeViewerOutcome.EXTRA_SAVE_RECEIPT_DESCRIPTORS,
+                    ArrayList(outcome.saveReceiptDescriptors),
+                )
+            }
         }
         val resultCode = if (outcome.failure == null) RESULT_OK else RESULT_CANCELED
         setResult(resultCode, data)
@@ -431,11 +861,23 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
 }
 
 /**
- * Viewer layout: compact Floe toolbar row (Back left, title, contextual info
- * action right), the document content area (engine WebView) below, an honest
- * progress row outside the document viewport until real paint witnesses arrive, an optional notice line
- * for refused routes, and a terminal error view. Native content fills only
- * the content area and never covers the host toolbar.
+ * Viewer layout: compact Floe toolbar row (Back left, title, contextual
+ * actions right), the document content area (engine WebView) below, an
+ * honest progress row outside the document viewport until real paint
+ * witnesses arrive, an optional notice line for refused routes, and a
+ * terminal error view. Native content fills only the content area and never
+ * covers the host toolbar.
+ *
+ * R2 editor chrome (editable mounts only, Main UI contract 2026-10-26):
+ * ONE explicit Edit Copy toggle (the existing square_pencil glyph
+ * FloeIcons.NewTask, matching iOS square.and.pencil) + ellipsis document
+ * menu in the existing toolbar — no floating engine buttons, no new large
+ * command bars, and NO public private-flush save button in this slice (the
+ * flush API remains internal for the App stage). The menu's primary Save
+ * Copy exports the current same format directly; unqualified ODF/PDF
+ * choices stay hidden until separately qualified. A close-save in flight
+ * shows an owned busy cover that absorbs touches so no later edit is
+ * silently discarded.
  */
 @Composable
 private fun OfficeViewerScreen(
@@ -445,31 +887,96 @@ private fun OfficeViewerScreen(
     noticeDetail: String?,
     failure: Pair<OfficeFailureCode, String?>?,
     viewerUrl: String?,
+    editableSession: Boolean,
+    editState: OfficeEditState?,
+    diagnosticEvents: List<OfficeSessionDiagnostics.Event>,
+    busyPhaseKey: String?,
     onBack: () -> Unit,
+    onToggleEdit: () -> Unit,
+    onSaveCopy: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onRefreshDiagnostics: () -> Unit,
     onOpenNotices: () -> Unit,
     createView: (Context) -> COWebView?,
     onViewReady: (COWebView?) -> Unit,
     onViewLeaving: (COWebView) -> Unit,
 ) {
     val state = progress?.state ?: OfficeViewerState.IDLE
+    val editorReady = editableSession &&
+        (state == OfficeViewerState.READY_EDITABLE || editState?.editPermissionEstablished == true)
+    val pageEditing = editState?.pageEditMode == true
     var showInfo by remember { mutableStateOf(false) }
     var showDetails by remember { mutableStateOf(false) }
+    var showEditorMenu by remember { mutableStateOf(false) }
+
     FloeActionSheet(visible = showDetails, onDismiss = { showDetails = false }, maxCardWidth = 560.dp) {
         Column(Modifier.heightIn(max = 440.dp).verticalScroll(rememberScrollState()).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)) {
             FloeText(stringResource(R.string.office_viewer_details), style = Floe.typography.toolbarTitle)
-            // Diagnostic text stays local and is visible only after an explicit action.
+            // Bounded RAM-only session history survives later notices (R1 C8
+            // lesson). Local explicit view only: never logged or persisted.
+            if (diagnosticEvents.isEmpty()) {
+                FloeText(stringResource(R.string.office_viewer_details_empty), style = Floe.typography.metadata,
+                    color = Floe.colors.secondaryLabel)
+            } else {
+                diagnosticEvents.forEach { event ->
+                    FloeText(
+                        text = "${event.elapsedRealtimeMs} ${event.kind} ${event.detail}".trim(),
+                        style = Floe.typography.metadata,
+                        color = Floe.colors.secondaryLabel,
+                    )
+                }
+            }
+            // The transient notice detail stays reachable too.
             FloeText(noticeDetail.orEmpty().take(3072), style = Floe.typography.metadata)
             FloeCapsuleButton(stringResource(R.string.office_viewer_done), onClick = { showDetails = false })
         }
     }
+    FloeActionSheet(visible = showEditorMenu, onDismiss = { showEditorMenu = false }, maxCardWidth = 420.dp) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            FloeCapsuleButton(stringResource(R.string.office_action_save_copy), onClick = {
+                showEditorMenu = false
+                onSaveCopy()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_action_undo), onClick = {
+                showEditorMenu = false
+                onUndo()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_action_redo), onClick = {
+                showEditorMenu = false
+                onRedo()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_viewer_details), onClick = {
+                showEditorMenu = false
+                onRefreshDiagnostics()
+                showDetails = true
+            })
+            FloeCapsuleButton(stringResource(R.string.office_viewer_notices), onClick = {
+                showEditorMenu = false
+                onOpenNotices()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_viewer_done), onClick = { showEditorMenu = false })
+        }
+    }
     FloeActionSheet(visible = showInfo, onDismiss = { showInfo = false }, maxCardWidth = 420.dp) {
         Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            FloeText(stringResource(R.string.office_viewer_readonly_cd), style = Floe.typography.toolbarTitle)
-            FloeText(stringResource(R.string.office_viewer_preview_info), color = Floe.colors.secondaryLabel)
+            FloeText(
+                stringResource(
+                    if (editableSession) R.string.office_viewer_editing_cd else R.string.office_viewer_readonly_cd,
+                ),
+                style = Floe.typography.toolbarTitle,
+            )
+            FloeText(
+                stringResource(
+                    if (editableSession) R.string.office_viewer_edit_info else R.string.office_viewer_preview_info,
+                ),
+                color = Floe.colors.secondaryLabel,
+            )
             if (noticeKey == "jsError" && !noticeDetail.isNullOrBlank()) {
                 FloeCapsuleButton(stringResource(R.string.office_viewer_details), onClick = {
                     showInfo = false
+                    onRefreshDiagnostics()
                     showDetails = true
                 })
             }
@@ -496,11 +1003,32 @@ private fun OfficeViewerScreen(
                 )
             },
             actions = {
-                FloeCircleButton(
-                    icon = FloeIcons.InfoCircle,
-                    contentDescription = stringResource(R.string.office_viewer_readonly_cd),
-                    onClick = { showInfo = true },
-                )
+                if (editorReady) {
+                    // The ONE Office Edit Copy action: existing square_pencil
+                    // glyph (FloeIcons.NewTask), Office-specific description,
+                    // matching the agreed iOS square.and.pencil contract.
+                    FloeCircleButton(
+                        icon = FloeIcons.NewTask,
+                        contentDescription = stringResource(
+                            if (pageEditing) R.string.office_viewer_view_cd else R.string.office_viewer_edit_cd,
+                        ),
+                        onClick = onToggleEdit,
+                    )
+                    FloeCircleButton(
+                        icon = FloeIcons.Ellipsis,
+                        contentDescription = stringResource(R.string.office_viewer_more_cd),
+                        onClick = { showEditorMenu = true },
+                    )
+                } else {
+                    FloeCircleButton(
+                        icon = FloeIcons.InfoCircle,
+                        contentDescription = stringResource(R.string.office_viewer_readonly_cd),
+                        onClick = {
+                            if (editableSession) onRefreshDiagnostics()
+                            showInfo = true
+                        },
+                    )
+                }
             },
             showHairline = true,
         )
@@ -510,6 +1038,7 @@ private fun OfficeViewerScreen(
         // waits on the bounded close/reclaim path. Neither may keep claiming
         // "Opening" indefinitely. Same rows and layout, state condition only.
         if (failure == null && state != OfficeViewerState.READY_READ_ONLY &&
+            state != OfficeViewerState.READY_EDITABLE &&
             state != OfficeViewerState.FAILED && state != OfficeViewerState.CLOSING
         ) {
             Row(
@@ -570,7 +1099,39 @@ private fun OfficeViewerScreen(
                             if (view is COWebView) onViewLeaving(view)
                         },
                     )
-
+                }
+            }
+            // Owned busy cover while a close-save is in flight: absorbs
+            // touches over the engine view (IME already hidden, focus
+            // cleared) so no edit lands between export and the App's
+            // verified settlement. Honest phase text; never a fake success.
+            if (busyPhaseKey != null && failureState == null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Floe.colors.readingSurface.copy(alpha = 0.92f))
+                        .clickable(
+                            interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                            indication = null,
+                            onClick = {},
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        FloeActivityIndicator(modifier = Modifier.size(22.dp))
+                        FloeText(
+                            text = stringResource(
+                                when (busyPhaseKey) {
+                                    "picker" -> R.string.office_busy_awaiting_picker
+                                    "app" -> R.string.office_busy_awaiting_app
+                                    else -> R.string.office_busy_exporting
+                                },
+                            ),
+                            style = Floe.typography.metadata,
+                            color = Floe.colors.secondaryLabel,
+                        )
+                    }
                 }
             }
         }
@@ -580,7 +1141,11 @@ private fun OfficeViewerScreen(
 @Composable
 private fun NoticeGlyph(key: String) {
     val icon = when (key) {
-        "loadError", "transportFailed", "jsError" -> FloeIcons.WarningTriangle
+        "loadError", "transportFailed", "jsError", "saveFailed", "copyFailed",
+        "editPermissionDenied", "protectedDocument", "editEntryUnavailable",
+        -> FloeIcons.WarningTriangle
+        "saveUnknown" -> FloeIcons.WarningTriangle
+        "saveFlushed", "copySaved" -> FloeIcons.CheckCircle
         "macroBlocked" -> FloeIcons.ShieldAlert
         else -> FloeIcons.InfoCircle
     }
@@ -603,6 +1168,22 @@ private fun noticeText(key: String, detail: String?): String {
         "loadError" -> stringResource(R.string.office_notice_load_error)
         "jsError" -> stringResource(R.string.office_notice_internal_error)
         "awaitingRender" -> stringResource(R.string.office_notice_awaiting_render)
+        // R2 editing/save notices (honest wording: staged != saved).
+        "saveFlushed" -> stringResource(R.string.office_notice_save_flushed)
+        "saveUnmodified" -> stringResource(R.string.office_notice_save_unmodified)
+        "saveFailed" -> stringResource(R.string.office_notice_save_failed)
+        "saveUnknown" -> stringResource(R.string.office_notice_save_unknown)
+        "copyStaged" -> stringResource(R.string.office_notice_copy_staged)
+        "copyHandedToApp" -> stringResource(R.string.office_notice_copy_handed)
+        "copySaved" -> stringResource(R.string.office_notice_copy_saved)
+        "copyFailed" -> stringResource(R.string.office_notice_copy_failed)
+        "pickerCancelled" -> stringResource(R.string.office_notice_picker_cancelled)
+        "hostTargetUnavailable" -> stringResource(R.string.office_notice_host_unavailable)
+        "editUnavailable" -> stringResource(R.string.office_notice_edit_unavailable)
+        "protectedDocument" -> stringResource(R.string.office_notice_protected_document)
+        "editPermissionDenied" -> stringResource(R.string.office_notice_edit_denied)
+        "editPermissionUnconfirmed" -> stringResource(R.string.office_notice_edit_unconfirmed)
+        "editEntryUnavailable" -> stringResource(R.string.office_notice_edit_entry_unavailable)
         else -> stringResource(R.string.office_notice_internal_error)
     }
     return base

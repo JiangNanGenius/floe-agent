@@ -14,12 +14,18 @@ package com.floe.android.core.officeengine
  *    dedicated `:floe_office` process (same UID = lifecycle/crash
  *    segregation, NOT a security sandbox). FloeApplication must skip the
  *    default-process bootstrap in that process (Main-owned host change).
- *  - R1 is preview/read-only. Editing, saving, export and print routes are
- *    gated OFF at the message boundary and surface as honest outcomes, not
- *    silently accepted requests. Macro-bearing containers and the
- *    engine's macro/remote-refresh message paths are blocked
- *    (CoolMessageGate); engine-kernel auto-execution itself remains a
- *    device-verification item, honestly unproven statically.
+ *  - R1 (default) is preview/read-only: editing, saving, export and print
+ *    routes stay gated OFF at the message boundary and surface as honest
+ *    outcomes, not silently accepted requests. R2 adds an EXPLICIT
+ *    trusted-host EDIT permission over a separately owned mutable working
+ *    copy plus typed save/export receipts (OfficeSaveReceipt): native saves
+ *    write ONLY the module-owned working copy or a module-private staged
+ *    output — never a user/provider original — and success is attested only
+ *    by the pinned producer's real callbacks plus post-write file
+ *    verification. Macro-bearing containers and the engine's
+ *    macro/remote-refresh message paths remain blocked (CoolMessageGate);
+ *    engine-kernel auto-execution itself remains a device-verification item,
+ *    honestly unproven statically.
  */
 object OfficeEngine {
     /** Exact process name the module manifest pins for Activity + Service + init provider. */
@@ -61,6 +67,53 @@ object OfficeEngine {
         request: OfficePreviewRequest,
     ): android.content.Intent =
         OfficePreviewActivity.intentFor(context, request)
+
+    /**
+     * R2 viewer Intent carrying the exact-session capabilities the App host
+     * mints (all optional; a null capability simply disables that channel):
+     *  - [closeAck]: the [OfficeCloseAck.parentBinder] endpoint so an exact
+     *    user close is acknowledged BEFORE the fatal native BYE;
+     *  - [viewerIncarnation]: the parent-minted opaque incarnation id fencing
+     *    that acknowledgement;
+     *  - [hostSaveChannel]: the [OfficeHostSaveChannel.parentBinder]
+     *    endpoint for the generic save-target handoff (the App prepares the
+     *    CREATE_DOCUMENT Intent; the FOREGROUND viewer Activity launches it
+     *    and forwards the actual URI + returned flags back — the module
+     *    never touches SAF itself) and for cross-process receipt/edit-state
+     *    events.
+     *
+     * Live save/edit COMMANDS from the App process go through
+     * [OfficeEngineCommands.bindIntent] + bindService (same UID, explicit,
+     * non-exported), fenced by exact session token + mount generation.
+     */
+    fun viewerIntent(
+        context: android.content.Context,
+        request: OfficePreviewRequest,
+        closeAck: android.os.IBinder? = null,
+        viewerIncarnation: Long = -1L,
+        hostSaveChannel: android.os.IBinder? = null,
+    ): android.content.Intent =
+        OfficePreviewActivity.intentFor(context, request).apply {
+            // An IBinder is NOT a Parcelable: it travels through the Bundle's
+            // putBinder/getBinder pair (API 18+), never putExtra (the R1
+            // close-ack pattern). Ordinary longs stay putExtra.
+            if (closeAck != null || hostSaveChannel != null) {
+                val capabilities = android.os.Bundle()
+                if (closeAck != null) {
+                    capabilities.putBinder(OfficeCloseAckPolicy.EXTRA_CLOSE_ACK, closeAck)
+                    putExtra(OfficeCloseAckPolicy.EXTRA_VIEWER_INCARNATION, viewerIncarnation)
+                }
+                if (hostSaveChannel != null) {
+                    capabilities.putBinder(
+                        OfficeEngineCommandsPolicy.EXTRA_HOST_SAVE_CHANNEL,
+                        hostSaveChannel,
+                    )
+                }
+                putExtras(capabilities)
+            } else if (viewerIncarnation > 0L) {
+                putExtra(OfficeCloseAckPolicy.EXTRA_VIEWER_INCARNATION, viewerIncarnation)
+            }
+        }
 }
 
 /** Honest, observation-only availability snapshot. */

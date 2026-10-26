@@ -7,11 +7,13 @@ import android.os.IBinder
 import com.floe.android.core.officeengine.OfficeCloseAck
 import com.floe.android.core.officeengine.OfficeCloseAckPolicy
 import com.floe.android.core.officeengine.OfficeEngine
+import com.floe.android.core.officeengine.OfficePermission
 import com.floe.android.core.officeengine.OfficePreviewRequest
 import com.floe.android.core.officeengine.OfficeViewerOutcome
 import com.floe.android.safgateway.SafOperation
 import com.floe.android.safgateway.SafFailure
 import com.floe.android.safgateway.SafOutcome
+import com.floe.android.safgateway.SafUriRef
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
@@ -24,15 +26,28 @@ import kotlinx.coroutines.withContext
 
 /** Main-process, Application-owned preview admission and input lifetime.
  * Native work belongs to the module's Office process. This controller owns
- * only its two input transports and exact platform-launch incarnations.
- * A view remount never cancels staging or invents another native document.
+ * its two input transports, the owned mutable EDIT working copies, the exact
+ * platform-launch incarnations and the Save-Copy host wiring. Both routes
+ * (system picker and workspace) now open a SEPARATELY OWNED writable working
+ * copy staged from the still-verified immutable snapshot; public default
+ * READ_ONLY callers remain safe because the snapshot paths and the module's
+ * READ_ONLY default are unchanged. A view remount never cancels staging,
+ * save IO or invents another native document.
  */
 internal class OfficePreviewController(context: Context, private val scope: CoroutineScope) {
     private val context = context.applicationContext
     private val workspaceRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/workspace")
     private val providerRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/provider")
+    private val workingRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/working")
     private val workspace = WorkspaceOfficeSnapshotStager(workspaceRoot)
     private val provider = OfficeProviderSnapshotStager(this.context, providerRoot)
+    /** R2: separate owned MUTABLE working copy per edit route (never a chmod of
+     * the immutable snapshot or any original; retained after close for recovery). */
+    private val working = OfficeEditableCopyStager(workingRoot)
+    /** Application-owned Save-Copy handoff: exact-session controllers, module
+     * command bind, host channel and the SAF gateway IO it schedules. Views
+     * never own this lifetime. */
+    private val saveCopy = OfficeSaveCopyHost(this.context)
     private val lock = Any()
     private var sequence = 0L
     private var active: Operation? = null
@@ -71,6 +86,16 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         @Volatile var input: File? = null
         @Volatile var sessionToken: String? = null
         @Volatile var providerIO: SafOperation<OfficeProviderSnapshotStager.Snapshot>? = null
+        /** Immutable snapshot staged from the provider/workspace (EDIT routes). */
+        @Volatile var snapshot: File? = null
+        /** Owned mutable working copy handed to the engine (EDIT routes). */
+        @Volatile var workingCopy: File? = null
+        /** True once the route staged an EDIT working copy for this operation. */
+        @Volatile var editable = false
+        /** Provider same-original refusal facts from the source snapshot (null for workspace docs). */
+        @Volatile var saveOriginal: OfficeSaveCopyOriginal? = null
+        /** Set exactly once by settle: fences late Save-Copy/owner-alive reads. */
+        @Volatile var viewEnded = false
     }
 
     private fun current(op: Operation): Boolean = synchronized(lock) {
@@ -114,12 +139,30 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     }
                     is SafOutcome.Success -> {
                         val snapshot = result.value
+                        op.snapshot = snapshot.file
                         op.input = snapshot.file
+                        // EDIT route (Main 2026-10-26): stage a separately owned
+                        // MUTABLE working copy from the verified immutable snapshot.
+                        // The snapshot and the provider original are never chmod'd,
+                        // truncated or overwritten; the same-original refusal below
+                        // uses the snapshot's existing source URI / document id.
+                        val copy = working.stage(
+                            source = snapshot.file, sourceBytes = snapshot.bytes,
+                            sourceSha256 = snapshot.sha256, extension = snapshot.file.extension,
+                            isCurrent = { current(op) },
+                        )
+                        op.workingCopy = copy.file
+                        op.input = copy.file
+                        op.editable = true
+                        op.saveOriginal = OfficeSaveCopyOriginal(
+                            SafUriRef(snapshot.sourceUri), snapshot.sourceDocumentID,
+                        )
                         prepare(op, OfficePreviewRequest.of(
-                            sessionToken = snapshot.sessionID, stagedFilePath = snapshot.file.canonicalPath,
-                            sha256 = snapshot.sha256, lengthBytes = snapshot.bytes,
+                            sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
+                            sha256 = copy.sha256, lengthBytes = copy.bytes,
                             displayName = snapshot.displayName,
                             languageTag = languageTag(),
+                            permission = OfficePermission.EDIT,
                         ))
                     }
                 }
@@ -137,11 +180,27 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         scope.launch(Dispatchers.IO) {
             try {
                 val snapshot = workspace.stage(owner, path) { current(op) }
+                op.snapshot = snapshot.file
                 op.input = snapshot.file
+                // EDIT route: same separately owned mutable working copy from
+                // the verified workspace snapshot. Real task/workspace/epoch/
+                // generation/source facts are carried; none is invented. A
+                // workspace document is not a provider URI, so same-original
+                // refusal does not apply and original overwrite remains
+                // unsupported in this copy-only slice.
+                val copy = working.stage(
+                    source = snapshot.file, sourceBytes = snapshot.bytes,
+                    sourceSha256 = snapshot.sha256, extension = snapshot.file.extension,
+                    isCurrent = { current(op) },
+                )
+                op.workingCopy = copy.file
+                op.input = copy.file
+                op.editable = true
                 prepare(op, OfficePreviewRequest.of(
-                    sessionToken = snapshot.sessionID, stagedFilePath = snapshot.file.canonicalPath,
-                    sha256 = snapshot.sha256, lengthBytes = snapshot.bytes,
+                    sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
+                    sha256 = copy.sha256, lengthBytes = copy.bytes,
                     displayName = path.substringAfterLast('/'), languageTag = languageTag(),
+                    permission = OfficePermission.EDIT,
                     ownerTaskId = owner.taskID, workspaceId = owner.workspaceID,
                     nativeEpoch = owner.nativeEpoch.toString(), hostGeneration = owner.hostGeneration.toString(),
                     sourceLogicalPath = snapshot.logicalPath, sourceId = snapshot.sourceID,
@@ -160,6 +219,19 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         if (request == null) {
             result.exceptionOrNull()?.let { recordFailure(op, it) }
             settle(op, if (op.retired) null else "format"); return
+        }
+        if (op.editable) {
+            // Publish the token before opening the session so ANY settle path
+            // (including a concurrent retirement during open) closes exactly it.
+            op.sessionToken = request.sessionToken
+            // Lock-free liveness closure: the Save-Copy core calls this while
+            // holding its own lock, so it must never re-enter the preview lock.
+            val alive = { !op.retired && !op.viewEnded }
+            if (!saveCopy.beginEditSession(request.sessionToken, request.displayName, op.saveOriginal, alive)) {
+                recordFailure(op, saveCopy.lastDiagnostic() ?: "edit session unavailable")
+                settle(op, if (op.retired) null else "source")
+                return
+            }
         }
         synchronized(lock) {
             if (!current(op)) { settle(op, null); return }
@@ -190,21 +262,21 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
 
     /** Claim immediately before launching, on the UI thread. Admission is
      * fenced again after asynchronous input preparation, not just at click.
-     * The close-intent capability and this launch's opaque incarnation are
-     * attached to the private viewer Intent only (OfficeCloseAckPolicy).
-     * The IBinder travels via Bundle.putBinder (it is not a Parcelable) on
-     * the same non-exported launch Intent that carries the request. */
+     * The R2 viewer Intent carries the existing close-intent capability and
+     * opaque incarnation plus, for EDIT routes, the application-owned
+     * Save-Copy host channel (same trust model: inert IBinder extras on the
+     * non-exported viewer launch Intent only, per OfficeEngine.viewerIntent).
+     * The module owns the Edit affordance, page mode and its own witnesses;
+     * the App only attaches these capabilities and owns files/persistence. */
     fun claimViewer(incarnation: Long): Intent? = synchronized(lock) {
         val op = active?.takeIf { it.id == incarnation && it.phase == Phase.LAUNCH } ?: return null
         if (!current(op)) { settle(op, null); return null }
         val request = mutableState.value.viewer?.request ?: return null
         op.phase = Phase.VIEWING
-        val intent = OfficeEngine.previewIntent(context, request)
-        intent.putExtra(OfficeCloseAckPolicy.EXTRA_VIEWER_INCARNATION, op.id)
-        val extras = intent.extras ?: android.os.Bundle()
-        extras.putBinder(OfficeCloseAckPolicy.EXTRA_CLOSE_ACK, closeAckBinder)
-        intent.replaceExtras(extras)
-        intent
+        OfficeEngine.viewerIntent(
+            context, request, closeAckBinder, op.id,
+            hostSaveChannel = if (op.editable) saveCopy.channel else null,
+        )
     }
 
     fun onViewerResult(incarnation: Long, data: Intent?) {
@@ -261,6 +333,7 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private fun stagingError(op: Operation, error: Throwable): String? = when {
         op.retired -> null
         error is WorkspaceOfficeSnapshotStager.Failure && error.code == "contentTooLarge" -> "tooLarge"
+        error is OfficeEditableCopyStager.Failure && error.code == "contentTooLarge" -> "tooLarge"
         else -> "source"
     }
 
@@ -272,8 +345,24 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         if (active !== op) return
         // A close-intent belongs only to the operation it acknowledged.
         ackedClose = null
-        if (removeInput) op.input?.let { file ->
-            scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+        op.viewEnded = true
+        if (op.editable) {
+            // Close the exact Save-Copy session. Its controller releases only
+            // after scheduled IO drains (quiescence, never a mid-IO clear);
+            // in-flight transfers keep their honest verified outcome.
+            op.sessionToken?.let { saveCopy.endEditSession(it) }
+            // Retention contract: the mutable working copy and any module-
+            // verified outputs are NEVER deleted here — on success, failure,
+            // cancel or process loss they stay the recoverable base (a
+            // user-visible recovery flow is separate pending work). Only the
+            // immutable intermediate snapshot follows removal eligibility.
+            if (removeInput) op.snapshot?.let { file ->
+                scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+            }
+        } else if (removeInput) {
+            op.input?.let { file ->
+                scope.launch(Dispatchers.IO) { removeOwnUnreferencedInput(file) }
+            }
         }
         active = null
         mutableState.value = State(error = error)

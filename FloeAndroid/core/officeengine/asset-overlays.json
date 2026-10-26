@@ -538,7 +538,7 @@
       "originalSha256": null,
       "reason": "Provide an explicitly opened, JavaScript-disabled notices/source entry with local license/notice links and immutable upstream source facts.",
       "source": "notices/index.html",
-      "sha256": "837050517fe2e5a2eb016e737f00ea4608b36d7573aa1105726aaa52fbcf8f75"
+      "sha256": "e9696cb9e39db1ba09f575e6cd9e71083107593d54e348246aa2edb502cbd41a"
     },
     {
       "operation": "add",
@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "038b866921bd332651b27ae24525cec42378a7ff77cbc3fe9895f18e3916a7e1"
+      "sha256": "fb657a55ff0b4457f2b0fe99576b5857a2750126235ed53740aa121b277c2b5d"
     },
     {
       "operation": "replace",
@@ -1038,8 +1038,8 @@
     }
   ],
   "sourceAccess": {
-    "tag": "android/v0.1.0-alpha.12",
-    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.12/floe-android-corresponding-source-0.1.0-alpha.12.tar.gz",
+    "tag": "android/v0.1.0-alpha.13",
+    "archiveUrl": "https://github.com/JiangNanGenius/floe-agent/releases/download/android/v0.1.0-alpha.13/floe-android-corresponding-source-0.1.0-alpha.13.tar.gz",
     "nativeSource": "https://github.com/CollaboraOnline/online.mirror/tree/2333344185931274f9c49d6c12a408cefcef6844",
     "privatePathsExcluded": true
   }

@@ -31,4 +31,38 @@
     <string name="office_notices_back">返回</string>
     <string name="office_notice_awaiting_render">文档预览显示较慢，请稍候。</string>
     <string name="office_viewer_details">技术详情</string>
+
+    <!-- G05-R2 手动编辑与自有保存结果 -->
+    <string name="office_viewer_editing_cd">编辑</string>
+    <string name="office_viewer_edit_cd">编辑文档</string>
+    <string name="office_viewer_view_cd">返回查看</string>
+    <string name="office_viewer_more_cd">更多操作</string>
+    <string name="office_viewer_edit_info">你正在编辑私有工作副本；应用完成保存前，原文件不会改变。</string>
+    <string name="office_viewer_dirty_title">要保存更改吗？</string>
+    <string name="office_viewer_dirty_message">当前工作副本有未保存的更改。</string>
+    <string name="office_action_save_close">存副本并关闭</string>
+    <string name="office_action_discard_close">放弃更改</string>
+    <string name="office_action_keep_editing">继续编辑</string>
+    <string name="office_action_save_copy">存为副本…</string>
+    <string name="office_action_undo">撤销</string>
+    <string name="office_action_redo">重做</string>
+    <string name="office_viewer_details_empty">暂无诊断记录。</string>
+    <string name="office_notice_save_flushed">已保存到工作副本。</string>
+    <string name="office_notice_save_unmodified">没有需要保存的更改。</string>
+    <string name="office_notice_save_failed">保存失败，工作副本已保留。</string>
+    <string name="office_notice_save_unknown">保存结果未知，工作副本已保留。</string>
+    <string name="office_notice_copy_staged">副本已生成，等待选择保存位置。</string>
+    <string name="office_notice_copy_handed">副本已交给应用，等待保存完成。</string>
+    <string name="office_notice_copy_saved">副本已保存。</string>
+    <string name="office_notice_copy_failed">应用保存副本失败，已生成的副本仍保留。</string>
+    <string name="office_notice_picker_cancelled">已取消保存，生成的副本仍保留。</string>
+    <string name="office_notice_host_unavailable">应用未能提供保存位置。</string>
+    <string name="office_notice_edit_unavailable">当前无法编辑。</string>
+    <string name="office_notice_protected_document">此文档受保护，无法在此编辑。</string>
+    <string name="office_notice_edit_denied">文档引擎不允许编辑此文件。</string>
+    <string name="office_notice_edit_unconfirmed">无法确认编辑权限，文档保持只读。</string>
+    <string name="office_notice_edit_entry_unavailable">无法进入编辑模式，请关闭后重新打开。</string>
+    <string name="office_busy_exporting">正在生成副本…</string>
+    <string name="office_busy_awaiting_picker">请选择副本的保存位置</string>
+    <string name="office_busy_awaiting_app">正在等待应用完成保存…</string>
 </resources>
