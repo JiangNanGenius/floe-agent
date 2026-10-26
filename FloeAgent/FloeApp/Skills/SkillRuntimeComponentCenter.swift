@@ -216,10 +216,32 @@ final class SkillRuntimeComponentLateBindings: @unchecked Sendable {
 
 /// Service-owned deployment of allowlisted runtime components. Downloads are
 /// coalesced and owned here (never by a view); per-environment preparation is
-/// coalesced per (environment, component identity); a caller's cancellation
-/// fences only that caller's delivery — the shared service work it merely
-/// awaited is never corrupted by one consumer's reference cancellation, and
-/// `releaseEnvironment` is the only path that cancels + joins in-flight work.
+/// coalesced per (environment, component identity) with explicit subscriber
+/// accounting. Every wait on shared service work is cancellable from the
+/// WAITER side only (both the waiting Swift task's cancellation and the
+/// waiter's `CancellationToken`): a cancelled waiter returns promptly and
+/// never receives bindings or a late ready, but it never cancels the shared
+/// work it merely awaited. The shared preparation continues for the
+/// remaining valid subscribers; when the LAST subscriber cancels, the owned
+/// preparation is cancelled + joined before that caller returns, stopping
+/// further environment staging and fixed probes. The global content-keyed
+/// download outlives individual waiters and even `releaseEnvironment`: its
+/// slot is removed only when the actual shared task settles, so remaining
+/// and late consumers always coalesce instead of starting a duplicate
+/// transfer.
+///
+/// Preparation correctness never depends on the waiter-side 10 ms watcher's
+/// wake latency: every subscribed caller registers its SYNCHRONOUS
+/// cancellation references (the caller `CancellationToken` plus a Swift
+/// waiter-cancel mirror flipped inside the wait's own cancellation handler),
+/// and the owned preparation re-reads ALL live references at each critical
+/// phase boundary (start, post-download/pre-staging, staging entry, every
+/// probe verb, receipt reuse, readiness publication) in the same
+/// actor-synchronous region as that phase's first effect. A cancellation
+/// published before a boundary read is necessarily observed at that
+/// boundary: with zero live demand the phase fences to `cancelled()` before
+/// any staging byte, probe verb or readiness fact, while any remaining valid
+/// subscriber keeps the shared preparation running.
 actor SkillRuntimeComponentCenter {
     typealias EnvironmentResolver = @Sendable (_ environmentID: String) async -> SkillRuntimeComponentEnvironment?
     typealias PathMapProvider = @Sendable (_ environmentID: String) async -> LinuxGuestPathMap?
@@ -243,7 +265,7 @@ actor SkillRuntimeComponentCenter {
     static let skillDirEnvironmentVariable = "IMPECCABLE_SKILL_DIR"
 
     private struct PlanKey: Hashable { let environmentID: String; let runID: UUID }
-    private struct PrepKey: Hashable {
+    private struct PrepKey: Hashable, Sendable {
         let environmentID: String
         let componentVersion: String
         let artifactSHA256: String
@@ -262,16 +284,65 @@ actor SkillRuntimeComponentCenter {
     private var plans: [PlanKey: SkillRuntimeComponentPlan] = [:]
     private var states: [StateKey: SkillRuntimeComponentState] = [:]
     private var readiness: [ReadinessKey: SkillRuntimeComponentReadiness] = [:]
-    /// Per (environment, component identity) in-flight preparation. The
-    /// internal token is cancelled ONLY by `releaseEnvironment`.
-    private var preparations: [PrepKey: (task: Task<SkillRuntimeComponentReadiness?, Never>, token: CancellationToken)] = [:]
+    /// Synchronous cancellation mirror for ONE waiting subscriber. The
+    /// caller-side `cancellableWait` flips it inside its cancellation
+    /// handlers the instant the waiter's Swift task is cancelled — before the
+    /// waiter resumes. `CancellationToken.isCancelled` covers the token-only
+    /// path with the same synchronous visibility; this mirror extends that to
+    /// Swift-task cancellation, which offers no cross-task synchronous read.
+    /// Preparation phase boundaries read both references, so a departing
+    /// waiter is observed at the next boundary without depending on the
+    /// caller-side watcher's wake latency.
+    private final class WaiterCancelMirror: @unchecked Sendable {
+        private let lock = NSLock()
+        private var cancelled = false
+        var isCancelled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return cancelled
+        }
+        func cancel() {
+            lock.lock()
+            cancelled = true
+            lock.unlock()
+        }
+    }
+
+    /// One subscribed caller's live cancellation references. `isCancelled` is
+    /// a synchronous read; it becomes true the instant EITHER the caller's
+    /// CancellationToken or the caller's Swift-waiter cancellation is
+    /// published — never delayed by a poll.
+    private struct SubscriberDemand: Sendable {
+        let token: CancellationToken?
+        let mirror: WaiterCancelMirror
+        var isCancelled: Bool { token?.isCancelled == true || mirror.isCancelled }
+    }
+
+    /// Per (environment, component identity) in-flight preparation with live
+    /// subscriber accounting. The internal token is cancelled ONLY by
+    /// `releaseEnvironment` or by the last-subscriber rule in
+    /// `prepareBindings`; the entry is generation-guarded, so a departed
+    /// waiter can never retire or cancel a newer preparation for the same key.
+    /// `subscribers` maps each subscription identity to that caller's
+    /// synchronous cancellation references; the owned preparation fences its
+    /// critical phases while no record stays live, and the last departing
+    /// subscriber triggers the cancel + JOIN rule in `prepareBindings`.
+    private struct PreparationEntry: Sendable {
+        let generation: UUID
+        let task: Task<SkillRuntimeComponentReadiness?, Never>
+        let token: CancellationToken
+        var subscribers: [UUID: SubscriberDemand]
+    }
+    private var preparations: [PrepKey: PreparationEntry] = [:]
     /// Global content-keyed downloads. Service-owned lifetime: the entry's
     /// token is internal and is NEVER handed to any environment's preparation
     /// or cancelled by a consumer — one environment's cancellation/deletion
     /// must not abort a transfer another environment is awaiting. `Task` is a
     /// value type, so the slot is generation-guarded: an old completion can
-    /// never clear a newly created slot for the same content key.
-    private struct DownloadEntry {
+    /// never clear a newly created slot for the same content key. The slot is
+    /// retired by the task itself when the ACTUAL shared work settles; a
+    /// waiter that abandons its wait early can never remove it.
+    private struct DownloadEntry: Sendable {
         let generation: UUID
         let task: Task<URL, Error>
         let token: CancellationToken
@@ -413,23 +484,102 @@ actor SkillRuntimeComponentCenter {
         }
         let componentID = plan.descriptor.componentID
 
-        let receipt: SkillRuntimeComponentReadiness?
         let key = PrepKey(
             environmentID: environmentID,
             componentVersion: plan.descriptor.componentVersion,
             artifactSHA256: plan.descriptor.artifact.sha256
         )
-        if let inflight = preparations[key] {
-            // Coalesced caller: one consumer's reference cancellation never
-            // corrupts the shared work; it fences only its own delivery.
-            receipt = await inflight.task.value
+        // Subscribe to (or create) the shared per-environment preparation.
+        // There is no suspension point between the plan lookup above and the
+        // subscription below, so it is atomic with respect to
+        // `releaseEnvironment` on this actor: a caller either subscribes
+        // before the release fences the plans, or finds no plan afterwards.
+        // Every subscriber registers its SYNCHRONOUS cancellation references
+        // (caller token + Swift waiter-cancel mirror), which the owned
+        // preparation re-reads at its critical phase boundaries — the demand
+        // fence never waits for the caller-side 10 ms watcher.
+        let subscriptionID = UUID()
+        let waiterMirror = WaiterCancelMirror()
+        let demand = SubscriberDemand(token: cancellation, mirror: waiterMirror)
+        let entry: PreparationEntry
+        if var existing = preparations[key] {
+            // Coalesced caller: one consumer's cancellation never corrupts
+            // the shared work; it fences only its own delivery, and only the
+            // LAST departing subscriber also cancels + joins the owned
+            // preparation (below).
+            existing.subscribers[subscriptionID] = demand
+            preparations[key] = existing
+            entry = existing
         } else {
             let token = CancellationToken()
-            let task = Task { await self.performReadiness(plan: plan, token: token) }
-            preparations[key] = (task, token)
-            receipt = await task.value
+            let generation = UUID()
+            let task = Task {
+                await self.performReadiness(
+                    plan: plan, token: token, prepKey: key, prepGeneration: generation
+                )
+            }
+            entry = PreparationEntry(
+                generation: generation, task: task, token: token,
+                subscribers: [subscriptionID: demand]
+            )
+            preparations[key] = entry
+        }
+
+        // Waiter-side cancellable join of the shared preparation: this
+        // caller's Swift task cancellation or CancellationToken returns
+        // from the wait promptly WITHOUT cancelling the preparation itself.
+        // `onWaiterCancel` flips this subscriber's mirror synchronously in
+        // the wait's cancellation producers, so the preparation's next phase
+        // boundary observes the departure even before this caller resumes.
+        let receipt: SkillRuntimeComponentReadiness?
+        let waiterCancelled: Bool
+        do {
+            receipt = try await Self.cancellableWait(
+                token: cancellation,
+                onWaiterCancel: { waiterMirror.cancel() }
+            ) { await entry.task.value }
+            waiterCancelled = false
+        } catch {
+            // The preparation task never fails; the only error source here
+            // is this waiter's own cancellation.
+            receipt = nil
+            waiterCancelled = true
+        }
+
+        if waiterCancelled {
+            var cancelOwnedPreparation = false
+            if var current = preparations[key], current.generation == entry.generation {
+                current.subscribers[subscriptionID] = nil
+                if current.subscribers.isEmpty {
+                    // Last subscriber cancelled: retire the entry, then
+                    // cancel + JOIN the owned preparation BEFORE this caller
+                    // returns, stopping any further environment staging or
+                    // fixed probes. The join is prompt: every long wait
+                    // inside the preparation is waiter-cancellable, every
+                    // synchronous region fences the token, and every phase
+                    // boundary re-reads live demand. The service-owned
+                    // global download is NOT cancelled and its slot is NOT
+                    // touched — remaining or late consumers of the same bytes
+                    // coalesce on the running transfer.
+                    preparations[key] = nil
+                    cancelOwnedPreparation = true
+                } else {
+                    // Remaining valid subscribers keep the shared
+                    // preparation alive; only THIS delivery is fenced.
+                    preparations[key] = current
+                }
+            }
+            if cancelOwnedPreparation {
+                entry.token.cancel()
+                entry.task.cancel()
+                _ = await entry.task.value
+            }
+        } else if let current = preparations[key], current.generation == entry.generation {
+            // The preparation settled for every subscriber: retire the slot
+            // so the next use revalidates from scratch.
             preparations[key] = nil
         }
+
         guard let receipt else { return nil }
         guard !Self.isFenced(cancellation) else { return nil }
 
@@ -461,23 +611,42 @@ actor SkillRuntimeComponentCenter {
 
     // MARK: - Environment deletion lifecycle
 
-    /// Cancels + joins every in-flight preparation owned by this environment,
-    /// then drops its plans, readiness receipts and state. Called by the
-    /// container lifecycle BEFORE the environment (and its write layer)
-    /// disappears. The global content-keyed download is deliberately left
-    /// running: other consumers may be awaiting it, it is service-owned and
-    /// bounded, and its result is a verified cache fact.
+    /// Fences and removes everything this environment owns — plans,
+    /// preparation subscriptions, readiness receipts and state — and
+    /// cancels + JOINS its in-flight preparations BEFORE returning. Called
+    /// by the container lifecycle BEFORE the environment (and its write
+    /// layer) disappears. The join is prompt and never waits on the
+    /// independent global download: a preparation's wait on the shared
+    /// transfer is cancellable from the waiter side, so the cancelled
+    /// preparation returns while the service-owned download keeps running
+    /// for other environments — its slot is removed only when the actual
+    /// shared task settles and its result is a verified cache fact.
     func releaseEnvironment(_ environmentID: String) async {
+        // Fence first: with the plans gone, no NEW preparation can start for
+        // this environment while the owned ones are cancelled + joined
+        // (prepareBindings requires a recorded plan, and subscription is
+        // atomic with the plan lookup on this actor).
+        plans = plans.filter { $0.key.environmentID != environmentID }
         let owned = preparations.filter { $0.key.environmentID == environmentID }
+        // Retire the owned entries (subscriptions die with them) BEFORE the
+        // joins; already-waiting callers hold value copies of task +
+        // generation, so their generation-guarded cleanups become no-ops.
+        for (key, entry) in owned {
+            if preparations[key]?.generation == entry.generation {
+                preparations[key] = nil
+            }
+        }
         for (_, entry) in owned {
             entry.token.cancel()
             entry.task.cancel()
         }
         for (_, entry) in owned {
+            // Prompt: the preparation's shared-download wait exits on its own
+            // cancellation without touching the independent global transfer.
             _ = await entry.task.value
         }
-        preparations = preparations.filter { $0.key.environmentID != environmentID }
-        plans = plans.filter { $0.key.environmentID != environmentID }
+        // Purge the observed facts only AFTER the joins, so no joined
+        // preparation can write state for this environment post-purge.
         readiness = readiness.filter { $0.key.environmentID != environmentID }
         states = states.filter { $0.key.environmentID != environmentID }
     }
@@ -490,9 +659,31 @@ actor SkillRuntimeComponentCenter {
 
     // MARK: - Readiness pipeline
 
+    /// Synchronous live-demand read for preparation phase boundaries. True
+    /// only while THIS exact preparation generation is still registered and
+    /// at least one subscriber's cancellation references (caller token or
+    /// Swift waiter mirror) stay uncancelled. A retired generation has no
+    /// demand by definition — both retirement paths (`releaseEnvironment`,
+    /// last-subscriber rule) also cancel the preparation token, so this check
+    /// and `isFenced(token)` fail together there. This read is the explicit
+    /// cancellation/phase linearization: a caller cancellation published
+    /// BEFORE a boundary read is NECESSARILY observed at that boundary — no
+    /// sleep or watcher poll is in the causal chain — and the guarded phase
+    /// (staging, one probe verb, a readiness publication) never starts for a
+    /// fully departed demand. A cancellation racing an already-running
+    /// bounded synchronous phase lets that phase finish (no hard-realtime
+    /// promise between two instructions); the next boundary stops the
+    /// sequence.
+    private func hasLiveDemand(prepKey: PrepKey, generation: UUID) -> Bool {
+        guard let entry = preparations[prepKey], entry.generation == generation else { return false }
+        return entry.subscribers.contains { _, demand in !demand.isCancelled }
+    }
+
     private func performReadiness(
         plan: SkillRuntimeComponentPlan,
-        token: CancellationToken
+        token: CancellationToken,
+        prepKey: PrepKey,
+        prepGeneration: UUID
     ) async -> SkillRuntimeComponentReadiness? {
         let environmentID = plan.environmentID
         let descriptor = plan.descriptor
@@ -522,6 +713,10 @@ actor SkillRuntimeComponentCenter {
         }
 
         guard !Self.isFenced(token) else { return cancelled() }
+        // Demand fence at preparation start: a caller that cancelled between
+        // subscribing and this first boundary stops the pipeline before any
+        // phase runs.
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         guard await reauthorize() else {
             plans[PlanKey(environmentID: environmentID, runID: plan.runID)] = nil
             return deferral(SkillRuntimeComponentReason.authorityRevoked)
@@ -567,6 +762,14 @@ actor SkillRuntimeComponentCenter {
         // Re-authorize after the long download await: a disable/uninstall
         // that landed mid-download must not issue a late ready.
         guard !Self.isFenced(token) else { return cancelled() }
+        // Demand fence BEFORE any environment-visible phase: the shared
+        // download is a service-global cache fact that completes for
+        // remaining and late consumers, but staging/probes/publication may
+        // only START for live demand. This read is synchronous with respect
+        // to every subscriber's cancellation references, so a caller token
+        // cancelled before the download settled is NECESSARILY observed
+        // here — independently of the caller-side watcher's wake latency.
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         guard await reauthorize() else {
             plans[PlanKey(environmentID: environmentID, runID: plan.runID)] = nil
             return deferral(SkillRuntimeComponentReason.authorityRevoked)
@@ -576,7 +779,8 @@ actor SkillRuntimeComponentCenter {
         let staged: (url: URL, guestPath: String)
         do {
             staged = try await ensureStagedArtifact(
-                plan: plan, layerURL: layerURL, pathMap: pathMap, token: token
+                plan: plan, layerURL: layerURL, pathMap: pathMap, token: token,
+                prepKey: prepKey, prepGeneration: prepGeneration
             )
         } catch let error as SkillRuntimeComponentFailure {
             return deferral(error.reason)
@@ -590,6 +794,9 @@ actor SkillRuntimeComponentCenter {
         // Re-authorize after staging, before the probe and before any ready
         // delivery.
         guard !Self.isFenced(token) else { return cancelled() }
+        // Demand fence before the probe phase and before receipt reuse (a
+        // readiness publication in its own right).
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         guard await reauthorize() else {
             plans[PlanKey(environmentID: environmentID, runID: plan.runID)] = nil
             return deferral(SkillRuntimeComponentReason.authorityRevoked)
@@ -600,6 +807,10 @@ actor SkillRuntimeComponentCenter {
         //    non-nil guest launch generation.
         let key = ReadinessKey(environmentID: environmentID, componentID: componentID)
         let generation = await launchGenerationProvider(environmentID)
+        // Demand fence in the SAME actor-synchronous region as the reuse
+        // publication below (no suspension between this read and the `probed`
+        // state write): receipt reuse publishes readiness.
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         if let receipt = readiness[key],
            receipt.componentVersion == descriptor.componentVersion,
            receipt.artifactSHA256 == descriptor.artifact.sha256,
@@ -617,13 +828,15 @@ actor SkillRuntimeComponentCenter {
                 runner: runner, environmentID: environmentID,
                 argv: ["/bin/chmod", "0755", enginePath],
                 timeout: Self.chmodTimeout, maxOutputBytes: Self.smallOutputCap,
-                verb: "chmod", token: token
+                verb: "chmod", token: token,
+                prepKey: prepKey, prepGeneration: prepGeneration
             )
             let probe = try await runProbeVerb(
                 runner: runner, environmentID: environmentID,
                 argv: [enginePath, "engine-probe"],
                 timeout: Self.probeTimeout, maxOutputBytes: Self.smallOutputCap,
-                verb: "engine-probe", token: token
+                verb: "engine-probe", token: token,
+                prepKey: prepKey, prepGeneration: prepGeneration
             )
             let expected = SkillRuntimeDependency.expectedProbeStdout(
                 componentVersion: descriptor.componentVersion
@@ -635,7 +848,8 @@ actor SkillRuntimeComponentCenter {
                 runner: runner, environmentID: environmentID,
                 argv: [enginePath, "contract"],
                 timeout: Self.contractTimeout, maxOutputBytes: Self.contractOutputCap,
-                verb: "contract", token: token
+                verb: "contract", token: token,
+                prepKey: prepKey, prepGeneration: prepGeneration
             )
             let contractBytes = Data(contract.stdout.utf8)
             guard FloeDigest.sha256Hex(contractBytes) == descriptor.captureContract.sha256 else {
@@ -655,10 +869,16 @@ actor SkillRuntimeComponentCenter {
 
         // Final fence + authorization before recording readiness facts.
         guard !Self.isFenced(token) else { return cancelled() }
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         guard await reauthorize() else {
             plans[PlanKey(environmentID: environmentID, runID: plan.runID)] = nil
             return deferral(SkillRuntimeComponentReason.authorityRevoked)
         }
+        // Demand fence in the SAME actor-synchronous region as the
+        // publication below (no suspension between this read and the
+        // readiness/state writes): a readiness receipt is never recorded for
+        // a fully departed demand.
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { return cancelled() }
         let receipt = SkillRuntimeComponentReadiness(
             environmentID: environmentID,
             componentID: componentID,
@@ -688,9 +908,17 @@ actor SkillRuntimeComponentCenter {
         timeout: TimeInterval,
         maxOutputBytes: Int,
         verb: String,
-        token: CancellationToken
+        token: CancellationToken,
+        prepKey: PrepKey,
+        prepGeneration: UUID
     ) async throws -> LinuxCommandResult {
         guard !Self.isFenced(token) else { throw CancellationError() }
+        // Demand fence BEFORE each fixed verb is dispatched into the guest:
+        // no verb starts for a fully departed demand. A cancellation landing
+        // while an already-dispatched verb runs cannot un-run it — that
+        // bounded phase completes; the post-run token fence, the next verb's
+        // boundary and the fenced publication stop the sequence.
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { throw CancellationError() }
         let result: LinuxCommandResult
         do {
             result = try await runner.run(
@@ -764,25 +992,37 @@ actor SkillRuntimeComponentCenter {
             // Service-owned token: the shared download is not bound to the
             // first caller's preparation token; `releaseEnvironment` and
             // per-caller cancellation fence only their own preparation and
-            // delivery, never this shared transfer.
+            // delivery, never this shared transfer. The slot is retired by
+            // the task itself when the ACTUAL shared work settles
+            // (generation-guarded): a waiter that abandons its wait early
+            // never removes it, so remaining and late consumers coalesce on
+            // the running transfer instead of starting a duplicate.
             let serviceToken = CancellationToken()
-            let task = Task { try await self.downloadAndCommitToCache(
-                plan: plan, cacheDirectory: cacheDirectory, cacheFile: cacheFile, token: serviceToken
-            ) }
-            entry = DownloadEntry(generation: UUID(), task: task, token: serviceToken)
+            let generation = UUID()
+            let task = Task { () -> URL in
+                defer {
+                    if self.downloads[downloadKey]?.generation == generation {
+                        self.downloads[downloadKey] = nil
+                    }
+                }
+                return try await self.downloadAndCommitToCache(
+                    plan: plan, cacheDirectory: cacheDirectory, cacheFile: cacheFile, token: serviceToken
+                )
+            }
+            entry = DownloadEntry(generation: generation, task: task, token: serviceToken)
             downloads[downloadKey] = entry
         }
+        // Waiter-side cancellable wait: this preparation's own Swift task
+        // cancellation or token returns from the wait promptly — this is
+        // what makes `releaseEnvironment`'s cancel + JOIN prompt — WITHOUT
+        // cancelling the service-owned transfer.
         do {
-            let url = try await entry.task.value
-            if downloads[downloadKey]?.generation == entry.generation {
-                downloads[downloadKey] = nil
-            }
-            return url
-        } catch {
-            if downloads[downloadKey]?.generation == entry.generation {
-                downloads[downloadKey] = nil
-            }
-            throw error
+            return try await Self.cancellableWait(token: token) { try await entry.task.value }
+        } catch is WaiterCancelledError {
+            // This waiter's wait ended early; the shared transfer is still
+            // in flight (or settles alone and retires its own slot). The
+            // slot deliberately stays exactly as it is.
+            throw CancellationError()
         }
     }
 
@@ -900,8 +1140,17 @@ actor SkillRuntimeComponentCenter {
         plan: SkillRuntimeComponentPlan,
         layerURL: URL,
         pathMap: LinuxGuestPathMap,
-        token: CancellationToken
+        token: CancellationToken,
+        prepKey: PrepKey,
+        prepGeneration: UUID
     ) async throws -> (url: URL, guestPath: String) {
+        // Token + demand fences as the FIRST synchronous statements: this
+        // body has no suspension points, so the checks and every filesystem
+        // effect below run as ONE actor region — the staging phase's
+        // linearization point. No staging byte moves and no directory is
+        // created for a cancelled preparation or a fully departed demand.
+        guard !Self.isFenced(token) else { throw CancellationError() }
+        guard hasLiveDemand(prepKey: prepKey, generation: prepGeneration) else { throw CancellationError() }
         let descriptor = plan.descriptor
         guard let reservedRoot = Self.preparedLayerRoot(under: layerURL) else {
             throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.existingRootConflict)
@@ -1009,6 +1258,134 @@ actor SkillRuntimeComponentCenter {
         return SkillWorkspaceResourceStager.verify(
             stagedRoot: hostRoot, bundle: bundle
         )
+    }
+
+    // MARK: - Cancellable waits on service-owned work
+
+    /// Waiter-side early exit from `cancellableWait`. Distinct from the
+    /// watched task's OWN settled errors so a caller can tell "the shared
+    /// task finished with this result" from "my wait ended early; the shared
+    /// task is still running and its slot must stay untouched".
+    private struct WaiterCancelledError: Error, Sendable {}
+
+    /// Lock-protected one-shot continuation box: exactly one resume, by
+    /// whichever producer arrives first (watched-task completion, Swift task
+    /// cancellation, token watcher). Mirrors the single-resume discipline of
+    /// `WhisperModelStore`'s pending transfers.
+    private final class WaitOnceBox<T: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var continuation: CheckedContinuation<T, Error>?
+        private var pending: Result<T, Error>?
+        private var fulfilled = false
+
+        /// True once any producer has produced the result, even before the
+        /// continuation is installed.
+        var isFulfilled: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return fulfilled
+        }
+
+        /// Producer side. Only the FIRST producer resumes the continuation;
+        /// later producers are no-ops. A result that arrives before the
+        /// continuation is installed is stored for `install` to resume once.
+        func fulfill(with result: Result<T, Error>) {
+            lock.lock()
+            guard !fulfilled else {
+                lock.unlock()
+                return
+            }
+            fulfilled = true
+            let waiting = continuation
+            continuation = nil
+            if waiting == nil { pending = result }
+            lock.unlock()
+            waiting?.resume(with: result)
+        }
+
+        /// Consumer side; called exactly once from the continuation body. A
+        /// producer that already fired (for example the cancellation handler
+        /// ran before installation) resumes immediately with its stored
+        /// result — no lost cancellation.
+        func install(_ continuation: CheckedContinuation<T, Error>) {
+            lock.lock()
+            if let pending {
+                self.pending = nil
+                lock.unlock()
+                continuation.resume(with: pending)
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+    }
+
+    /// Cancellation poll interval of the bounded token watcher; polled ONLY
+    /// while a wait is active (the watcher exits as soon as the wait settles
+    /// or the token fires — never an idle permanent poll).
+    static let cancellationPollNanoseconds: UInt64 = 10_000_000 // 10 ms
+
+    /// Awaits `operation` (typically the value of a service-owned
+    /// unstructured task) while remaining cancellable FROM THE WAITER SIDE:
+    /// throws `WaiterCancelledError` early when the waiting Swift task is
+    /// cancelled or when `token` is cancelled. It NEVER cancels the watched
+    /// work itself — the shared download/preparation may legitimately
+    /// outlive this waiter and keep serving other consumers.
+    /// `CancellationToken` has no callback API, so the token side uses a
+    /// bounded watcher whose lifetime equals this active wait. Swift 6:
+    /// one-shot box, exactly one continuation resume, detached watchers
+    /// capture only Sendable values.
+    /// `onWaiterCancel` (when provided) runs synchronously in EVERY
+    /// waiter-side cancellation producer — the Swift-task `onCancel` handler
+    /// and the token watcher — BEFORE the box is fulfilled, so the caller can
+    /// publish a synchronous departure mirror that service-side phase
+    /// boundaries read without waiting on this wait's wake latency. It is
+    /// never invoked when the watched operation itself settles the wait.
+    private static func cancellableWait<T: Sendable>(
+        token: CancellationToken?,
+        onWaiterCancel: (@Sendable () -> Void)? = nil,
+        _ operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let box = WaitOnceBox<T>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
+                box.install(continuation)
+                // A producer that already fired (for example the waiting task
+                // was cancelled before this wait began) resumed the
+                // continuation inside `install`; no watcher is needed then.
+                guard !box.isFulfilled else { return }
+                Task.detached {
+                    do {
+                        box.fulfill(with: .success(try await operation()))
+                    } catch {
+                        box.fulfill(with: .failure(error))
+                    }
+                }
+                if let token {
+                    Task.detached {
+                        // Bounded monitor: exists only while the wait is
+                        // active; exits on token fire, on settlement, or
+                        // when its own sleep is interrupted.
+                        while !token.isCancelled {
+                            if box.isFulfilled { return }
+                            do {
+                                try await Task.sleep(nanoseconds: cancellationPollNanoseconds)
+                            } catch {
+                                return
+                            }
+                        }
+                        // Departure mirror first, box second: the flip is
+                        // visible to service-side demand reads before this
+                        // waiter's resume is even enqueued.
+                        onWaiterCancel?()
+                        box.fulfill(with: .failure(WaiterCancelledError()))
+                    }
+                }
+            }
+        } onCancel: {
+            onWaiterCancel?()
+            box.fulfill(with: .failure(WaiterCancelledError()))
+        }
     }
 
     // MARK: - File helpers

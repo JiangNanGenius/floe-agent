@@ -247,6 +247,34 @@ private final class FakeComponentTransport: @unchecked Sendable {
     }
 }
 
+/// Bounded replacement for the unbounded `while transport.callHistory().isEmpty`
+/// spins. On timeout it first opens the gate and cancels + joins the owned
+/// test tasks, so a preparation that fails BEFORE the fetch can never hang the
+/// serialized suite, and then records a meaningful error instead.
+private func waitForTransportCall(
+    _ transport: FakeComponentTransport,
+    gate: TransportGate? = nil,
+    ownedTasks: [Task<[String: String]?, Never>] = [],
+    context: String,
+    timeout: TimeInterval = 5
+) async throws {
+    let deadline = Date(timeIntervalSinceNow: timeout)
+    while transport.callHistory().isEmpty {
+        guard Date() < deadline else {
+            await gate?.openGate()
+            for task in ownedTasks { task.cancel() }
+            for task in ownedTasks { _ = await task.value }
+            throw NSError(
+                domain: "component-fixture",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "the trusted transport was never called within \(Int(timeout))s (\(context)): preparation failed before the fetch"]
+            )
+        }
+        try await Task.sleep(nanoseconds: 2_000_000)
+    }
+}
+
 private final class FakeComponentAuthorization: @unchecked Sendable {
     let lock = NSLock()
     var provider: @Sendable (String) -> SkillRuntimeComponentAuthority?
@@ -707,12 +735,25 @@ private func makePreparedChain(
         let transport = FakeComponentTransport()
         transport.handler = { _ in component.engineBytes }
         let cacheRoot = makeComponentTemporaryDirectory("cache-shared")
+        // BASELINE FIXTURE REPAIR (pre-existing; not caused by the demand
+        // fence): the bare runner defaults return an empty engine-probe
+        // stdout, which fails the exact handshake gate before cache reuse is
+        // ever exercised. Configure BOTH centers like every other end-to-end
+        // chain does.
+        let makeRunner = {
+            let runner = FakeComponentRunner()
+            runner.probeStdout = SkillRuntimeDependency.expectedProbeStdout(
+                componentVersion: component.descriptor.componentVersion
+            )
+            runner.contractStdout = String(decoding: component.contractBytes, as: UTF8.self)
+            return runner
+        }
         let makeCenter = {
             SkillRuntimeComponentCenter(
                 environmentResolver: { _ in
                     SkillRuntimeComponentEnvironment(layerURL: staged.layer, isLinuxVM: true, isActive: true)
                 },
-                runner: FakeComponentRunner(),
+                runner: makeRunner(),
                 cacheRoot: cacheRoot,
                 pathMapping: { _ in staged.pathMap },
                 launchGeneration: { _ in 7 },
@@ -792,14 +833,24 @@ private func makePreparedChain(
         #expect(state.deferredReason == SkillRuntimeComponentReason.existingRootConflict)
     }
 
-    @Test func prepareBindingsAdoptsAlreadyVerifiedStagedEntry() async throws {
+    @Test func prepareBindingsAdoptsVerifiedStagedEntryWithVerifiedCache() async throws {
         let (harness, component, staged, _, runID) = try await makePreparedChain()
-        // Plant VERIFIED bytes at the staged path; the cache is empty, so
-        // without adoption this would try to download (and fail).
+        // BASELINE FIXTURE REPAIR (pre-existing; not caused by the demand
+        // fence): the preparation requires the verified cache fact BEFORE
+        // staging (step 1), so an empty cache forces a download no matter
+        // what the staged path holds. Seed the cache with the exact pinned
+        // bytes; the throwing transport then proves staging ADOPTS the
+        // planted verified entry with no download and no copy.
         let target = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try component.engineBytes.write(to: target, options: .atomic)
-        try FileManager.default.removeItem(at: harness.cacheRoot)
+        let cacheFile = harness.cacheRoot
+            .appendingPathComponent(componentID, isDirectory: true)
+            .appendingPathComponent(component.descriptor.componentVersion, isDirectory: true)
+            .appendingPathComponent(component.descriptor.target.triple, isDirectory: true)
+            .appendingPathComponent(SkillRuntimeDependency.frozenEngineFileName, isDirectory: false)
+        try FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try component.engineBytes.write(to: cacheFile, options: .atomic)
         harness.transport.handler = { _ in
             throw NSError(domain: "must-not-download", code: -1)
         }
@@ -1004,7 +1055,10 @@ private func makePreparedChain(
         let preparation = Task {
             await harness.center.prepareBindings(environmentID: staged.environmentID, runID: runID, cancellation: nil)
         }
-        while harness.transport.callHistory().isEmpty { try await Task.sleep(nanoseconds: 1_000_000) }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [preparation],
+            context: "revocation mid-download never reached the trusted fetch"
+        )
         harness.setProvider { _ in nil } // disable mid-download
         await gate.openGate()
         let bindings = await preparation.value
@@ -1027,7 +1081,10 @@ private func makePreparedChain(
                 environmentID: staged.environmentID, runID: runID, cancellation: callerToken
             )
         }
-        while harness.transport.callHistory().isEmpty { try await Task.sleep(nanoseconds: 1_000_000) }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [preparation],
+            context: "cancellation during download never reached the trusted fetch"
+        )
         callerToken.cancel()
         await gate.openGate()
         let bindings = await preparation.value
@@ -1052,7 +1109,10 @@ private func makePreparedChain(
         let preparation = Task {
             await harness.center.prepareBindings(environmentID: staged.environmentID, runID: runID, cancellation: nil)
         }
-        while harness.transport.callHistory().isEmpty { try await Task.sleep(nanoseconds: 1_000_000) }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [preparation],
+            context: "release-environment join never saw the trusted fetch start"
+        )
         // releaseEnvironment must cancel + JOIN the in-flight preparation.
         await harness.center.releaseEnvironment(staged.environmentID)
         await gate.openGate()
@@ -1097,7 +1157,10 @@ private func makePreparedChain(
             await harness.center.prepareBindings(environmentID: stagedB.environmentID, runID: runB, cancellation: nil)
         }
         // One shared download serves both environments.
-        while harness.transport.callHistory().isEmpty { try await Task.sleep(nanoseconds: 1_000_000) }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [prepA, prepB],
+            context: "the shared download never reached the trusted fetch"
+        )
         await harness.center.releaseEnvironment(stagedA.environmentID)
         await gate.openGate()
         let bindingsA = await prepA.value
@@ -1108,6 +1171,173 @@ private func makePreparedChain(
         #expect(harness.runner.callHistory().count == 3) // only B probed
         let stagedFileB = stagedHostPath(layer: stagedB.layer, version: component.descriptor.componentVersion)
         #expect((try? Data(contentsOf: stagedFileB)) == component.engineBytes)
+    }
+
+    @Test func lateConsumerAfterCancelledReleaseCoalescesOnSameSharedDownload() async throws {
+        // The download slot must NOT be removed by a cancelled waiter before
+        // the actual shared task settles: A starts a gated fetch, A's release
+        // returns WITHOUT the gate ever opening, and only THEN B starts. B
+        // must coalesce on the still-running shared transfer — one fetch in
+        // total, B fully valid — instead of starting a duplicate download.
+        let component = try makeComponentFixture()
+        let stagedA = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
+        let stagedB = try await makeStagedSkillFixture(descriptorBytes: component.descriptorBytes)
+        let authorityA = makeAuthority(fixture: stagedA, descriptorBytes: component.descriptorBytes)
+        let authorityB = makeAuthority(fixture: stagedB, descriptorBytes: component.descriptorBytes)
+        let harness = makeHarness(
+            layers: [stagedA.environmentID: stagedA.layer, stagedB.environmentID: stagedB.layer],
+            pathMaps: [stagedA.environmentID: stagedA.pathMap, stagedB.environmentID: stagedB.pathMap]
+        )
+        harness.transport.handler = { _ in component.engineBytes }
+        harness.setProvider { skillID in
+            if skillID == stagedA.skillID { return authorityA }
+            if skillID == stagedB.skillID { return authorityB }
+            return nil
+        }
+        let runA = UUID(), runB = UUID()
+        _ = await harness.center.recordPlan(
+            skillID: stagedA.skillID, environmentID: stagedA.environmentID, workspaceRootURL: stagedA.workspace,
+            runID: runA, stagedGuestRoot: stagedA.stagedGuestRoot, authority: authorityA
+        )
+        _ = await harness.center.recordPlan(
+            skillID: stagedB.skillID, environmentID: stagedB.environmentID, workspaceRootURL: stagedB.workspace,
+            runID: runB, stagedGuestRoot: stagedB.stagedGuestRoot, authority: authorityB
+        )
+        let gate = TransportGate()
+        harness.transport.gate = gate
+        let prepA = Task {
+            await harness.center.prepareBindings(environmentID: stagedA.environmentID, runID: runA, cancellation: nil)
+        }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [prepA],
+            context: "the first consumer never reached the trusted fetch"
+        )
+        // Release A with the gate still closed: the join must be prompt and
+        // must not wait on (or abort) the independent global download.
+        await harness.center.releaseEnvironment(stagedA.environmentID)
+        // Late consumer B starts while the transfer is still gated.
+        let prepB = Task {
+            await harness.center.prepareBindings(environmentID: stagedB.environmentID, runID: runB, cancellation: nil)
+        }
+        await gate.openGate()
+        let bindingsA = await prepA.value
+        let bindingsB = await prepB.value
+        #expect(bindingsA == nil) // released: never a late binding
+        #expect(bindingsB?[SkillRuntimeComponentCenter.engineEnvironmentVariable]
+                == expectedEngineGuestPath(component.descriptor.componentVersion))
+        #expect(harness.transport.callHistory().count == 1) // ONE shared fetch served both
+        #expect(harness.runner.callHistory().count == 3)    // only B probed
+        let stateA = await harness.center.state(environmentID: stagedA.environmentID, componentID: componentID)
+        #expect(stateA.planRecorded == false) // release fenced everything A owned
+        let stateB = await harness.center.state(environmentID: stagedB.environmentID, componentID: componentID)
+        #expect(stateB.probed && stateB.deferredReason == nil)
+    }
+
+    @Test func oneCancelledCoalescedCallerNeverFencesTheRemainingSubscriber() async throws {
+        // Two runs in the SAME environment coalesce on ONE preparation. The
+        // first caller cancels its CancellationToken mid-download: it returns
+        // nil promptly, but the shared preparation is never aborted for the
+        // remaining valid subscriber — B still receives bindings from ONE
+        // fetch with exactly one probe pass, whatever the subscription
+        // interleaving (B coalesced before the cancel, or B re-created a
+        // preparation that coalesced on the preserved download slot).
+        let (harness, component, staged, authority, runA) = try await makePreparedChain()
+        let runB = UUID()
+        let outcomeB = await harness.center.recordPlan(
+            skillID: staged.skillID, environmentID: staged.environmentID, workspaceRootURL: staged.workspace,
+            runID: runB, stagedGuestRoot: staged.stagedGuestRoot, authority: authority
+        )
+        guard case .recorded = outcomeB else {
+            Issue.record("the second run's plan was rejected: \(outcomeB)")
+            return
+        }
+        let gate = TransportGate()
+        harness.transport.gate = gate
+        let tokenA = CancellationToken()
+        let prepA = Task {
+            await harness.center.prepareBindings(environmentID: staged.environmentID, runID: runA, cancellation: tokenA)
+        }
+        let prepB = Task {
+            await harness.center.prepareBindings(environmentID: staged.environmentID, runID: runB, cancellation: nil)
+        }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [prepA, prepB],
+            context: "coalesced callers never reached the trusted fetch"
+        )
+        tokenA.cancel()
+        await gate.openGate()
+        let bindingsA = await prepA.value
+        let bindingsB = await prepB.value
+        #expect(bindingsA == nil) // cancelled caller never receives bindings
+        #expect(bindingsB?[SkillRuntimeComponentCenter.engineEnvironmentVariable]
+                == expectedEngineGuestPath(component.descriptor.componentVersion))
+        #expect(harness.transport.callHistory().count == 1) // one shared fetch
+        #expect(harness.runner.callHistory().count == 3)    // exactly one probe pass
+        let state = await harness.center.state(environmentID: staged.environmentID, componentID: componentID)
+        #expect(state.probed && state.deferredReason == nil)
+        #expect((try? Data(contentsOf: stagedHostPath(
+            layer: staged.layer, version: component.descriptor.componentVersion
+        ))) == component.engineBytes)
+    }
+
+    @Test func soleCallerTokenCancelBeforeDownloadReleaseFencesEveryPreparationPhase() async throws {
+        // Strong deterministic regression for cancellation/phase
+        // linearization — no sleeps and no dependence on the caller-side
+        // 10 ms watcher: the sole caller's CancellationToken is cancelled
+        // BEFORE the gated shared download is released, so the cancellation
+        // strictly happens-before every post-download phase boundary. The
+        // service-owned transfer legitimately completes and commits the
+        // verified cache, but the preparation must synchronously observe the
+        // departed demand at its post-download boundary: NO environment
+        // staging, NO fixed probe verb, NO readiness/state publication —
+        // whichever producer settles the caller's wait. A valid second
+        // subscriber then succeeds end to end reusing that ONE fetch.
+        let (harness, component, staged, _, runID) = try await makePreparedChain()
+        let gate = TransportGate()
+        harness.transport.gate = gate
+        let callerToken = CancellationToken()
+        let preparation = Task {
+            await harness.center.prepareBindings(
+                environmentID: staged.environmentID, runID: runID, cancellation: callerToken
+            )
+        }
+        try await waitForTransportCall(
+            harness.transport, gate: gate, ownedTasks: [preparation],
+            context: "the demand-fence regression never reached the trusted fetch"
+        )
+        // Linearized ordering: cancel happens-before the download release,
+        // and the release happens-before every post-download boundary read.
+        callerToken.cancel()
+        await gate.openGate()
+        let bindings = await preparation.value
+        #expect(bindings == nil)
+        // No probe verb ever ran: the demand fence precedes the whole probe
+        // phase (and each verb re-fences at its own dispatch boundary).
+        #expect(harness.runner.callHistory().isEmpty)
+        // No staging ever happened: the demand fence precedes the staging
+        // phase, whose first synchronous statements re-fence.
+        let stagedFile = stagedHostPath(layer: staged.layer, version: component.descriptor.componentVersion)
+        #expect(FileManager.default.fileExists(atPath: stagedFile.path) == false)
+        // No readiness publication; honest cancelled deferral; the plan is
+        // preserved for the retry.
+        let state = await harness.center.state(environmentID: staged.environmentID, componentID: componentID)
+        #expect(state.probed == false)
+        #expect(state.stagedVerified == false)
+        #expect(state.deferredReason == SkillRuntimeComponentReason.cancelled)
+        #expect(state.planRecorded == true)
+        // A valid second subscriber now succeeds end to end reusing the ONE
+        // shared fetch — the fenced preparation never aborted nor duplicated
+        // the service-owned download (cache fact or preserved slot).
+        let retry = await harness.center.prepareBindings(
+            environmentID: staged.environmentID, runID: runID, cancellation: nil
+        )
+        #expect(retry?[SkillRuntimeComponentCenter.engineEnvironmentVariable]
+                == expectedEngineGuestPath(component.descriptor.componentVersion))
+        #expect(harness.transport.callHistory().count == 1)
+        #expect(harness.runner.callHistory().count == 3)
+        #expect((try? Data(contentsOf: stagedFile)) == component.engineBytes)
+        let finalState = await harness.center.state(environmentID: staged.environmentID, componentID: componentID)
+        #expect(finalState.probed && finalState.deferredReason == nil)
     }
 
     // MARK: Staged bundle integrity

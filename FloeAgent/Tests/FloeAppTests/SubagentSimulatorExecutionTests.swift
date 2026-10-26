@@ -79,8 +79,16 @@ private struct QualificationHoldingProviderAdapter: ProviderAdapter {
         return AsyncThrowingStream { continuation in
             continuation.yield(.textDelta(.init(text: "Guest qualification parent is active.")))
             let producer = Task {
+                // A deliberately open scripted stream still needs progress events:
+                // production correctly terminates a silent provider after its idle
+                // deadline. Keep this fixture alive without weakening that guard.
+                var ticks = 0
                 while !hold.isCancelled && !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(50))
+                    ticks += 1
+                    if ticks % 100 == 0, !hold.isCancelled, !Task.isCancelled {
+                        continuation.yield(.textDelta(.init(text: ".")))
+                    }
                 }
                 if !Task.isCancelled {
                     continuation.yield(.completed(.init(stopReason: .endTurn)))
@@ -1825,6 +1833,8 @@ extension SubagentSimulatorExecutionTests {
         var jobIDs: [UUID] = []
         var conversationID: UUID?
         var app: AppEnvironment?
+        var qualificationRunID: UUID?
+        var ownedSitePrefixCreated = false
         func finish() async {
             await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
                                   parentTask: parentTask, jobs: app?.backgroundJobService,
@@ -1838,6 +1848,7 @@ extension SubagentSimulatorExecutionTests {
             app = liveApp
             let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
             let runID = UUID()
+            qualificationRunID = runID
             let conversationUUID = UUID()
             conversationID = conversationUUID
             try await skillHubCreateRunRows(app: liveApp, conversationID: conversationUUID, runID: runID,
@@ -1905,11 +1916,35 @@ extension SubagentSimulatorExecutionTests {
                          "Transport citation lock differs from the integrated hub source lock")
             evidence["guestUnzip"] = String(unpack.outputSummary.prefix(1_200))
 
-            // 3. Hash-pinned offline installs (CPU-heavy -> background jobs).
+            // 2b. Resolve the OWNED environment write layer as the install
+            //     prefix instead of the task workspace share: the 9p export
+            //     must actually be mounted in THIS guest, the prefix is
+            //     created explicitly, and its space is recorded. Fail-closed:
+            //     no arbitrary first-environment, no silent temp fallback,
+            //     and no host interpreter.
+            let envProbe = try await skillHubShell(
+                runtime: runtime, identity: identity, context: context, tag: "env-prefix",
+                command: """
+                set -e
+                grep -q ' /floe/env ' /proc/mounts
+                mkdir -p /floe/env/python/skill-qualification
+                df -k /floe/env | tail -1
+                echo FLOE_ENV_PREFIX_OK
+                """)
+            try #require(envProbe.status == .ok
+                            && envProbe.outputSummary.contains("FLOE_ENV_PREFIX_OK"),
+                         "Owned environment write layer is unavailable in the guest: \(envProbe.outputSummary)")
+            ownedSitePrefixCreated = true
+            evidence["envPrefix"] = String(envProbe.outputSummary.prefix(400))
+
+            // Hash-pinned offline installation without pip's eager bytecode
+            // pass. PYTHONDONTWRITEBYTECODE alone does not disable pip's
+            // compileall calls. Actual script imports still run in the guest;
+            // timings, rather than this source review, establish the effect.
             let pip = "env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/workspace/skill-env/home "
                 + "PYTHONDONTWRITEBYTECODE=1 PIP_CONFIG_FILE=/dev/null python3 -u -m pip --isolated "
-                + "--disable-pip-version-check --no-input --no-cache-dir install --no-index --require-hashes "
-                + "--find-links /workspace/transport/unpacked/wheels --target /workspace/skill-env/site -r "
+                + "--disable-pip-version-check --no-input --no-cache-dir install --no-index --require-hashes --no-compile "
+                + "--find-links /workspace/transport/unpacked/wheels --target /floe/env/python/skill-qualification/site -r "
             let sympyInstall = try await skillHubSubmitShell(
                 jobs: jobs, runID: runID, environmentID: environmentID, root: root,
                 name: "pip-sympy",
@@ -1939,6 +1974,10 @@ extension SubagentSimulatorExecutionTests {
                              "Install summary missing \(pin): \(citationJob.resultSummary ?? "")")
             }
 
+            // The actual verifier imports the installed packages below. Avoid
+            // an unrelated eager compile of every module in the distribution;
+            // import-time compilation remains real guest work.
+
             // 4. SymPy verifier in the guest: derivative, exact roots, ODE
             //    residual and the remaining named checks; host re-reads the
             //    guest-written JSON artifact for the real result.
@@ -1947,7 +1986,7 @@ extension SubagentSimulatorExecutionTests {
                 name: "sympy-verify", command: """
                 set -e
                 mkdir -p skill-out
-                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                PYTHONPATH=/floe/env/python/skill-qualification/site PYTHONDONTWRITEBYTECODE=1 \
                 python3 skill-src/sympy/scripts/sympy_verify.py > skill-out/sympy-verify.json
                 sha256sum skill-out/sympy-verify.json
                 """, timeout: 600)
@@ -1974,7 +2013,7 @@ extension SubagentSimulatorExecutionTests {
                 name: "format-bibtex", command: """
                 set -e
                 mkdir -p skill-out
-                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                PYTHONPATH=/floe/env/python/skill-qualification/site PYTHONDONTWRITEBYTECODE=1 \
                 python3 skill-src/citation-management/scripts/format_bibtex.py \
                 skill-src/citation-management/assets/bibtex_template.bib -o skill-out/clean.bib
                 grep -c '^@' skill-out/clean.bib
@@ -1992,7 +2031,7 @@ extension SubagentSimulatorExecutionTests {
                 name: "validate-citations", command: """
                 set -e
                 mkdir -p skill-out
-                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                PYTHONPATH=/floe/env/python/skill-qualification/site PYTHONDONTWRITEBYTECODE=1 \
                 python3 skill-src/citation-management/scripts/validate_citations.py \
                 skill-src/citation-management/assets/bibtex_template.bib --report skill-out/validation-report.json
                 """, timeout: 300)
@@ -2013,7 +2052,7 @@ extension SubagentSimulatorExecutionTests {
                 name: "openalex-first-page", command: """
                 set -e
                 mkdir -p skill-out
-                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                PYTHONPATH=/floe/env/python/skill-qualification/site PYTHONDONTWRITEBYTECODE=1 \
                 python3 skill-src/citation-management/scripts/search_openalex.py "CRISPR gene editing" \
                 --limit 5 -o skill-out/openalex.json
                 """, timeout: 300)
@@ -2033,7 +2072,7 @@ extension SubagentSimulatorExecutionTests {
                 name: "doi-lookup", command: """
                 set -e
                 mkdir -p skill-out
-                PYTHONPATH=/workspace/skill-env/site PYTHONDONTWRITEBYTECODE=1 \
+                PYTHONPATH=/floe/env/python/skill-qualification/site PYTHONDONTWRITEBYTECODE=1 \
                 python3 skill-src/citation-management/scripts/doi_to_bibtex.py 10.1038/s41586-021-03819-2 \
                 -o skill-out/doi.bib
                 """, timeout: 300)
@@ -2049,9 +2088,48 @@ extension SubagentSimulatorExecutionTests {
             evidence["openalexSHA256"] = FloeDigest.sha256Hex(openAlexBytes)
             evidence["doiSHA256"] = FloeDigest.sha256Hex(doiBytes)
             print("FLOE_SKILLHUB_PYTHON_QUALIFIED wheels=7 sympy=ok citation=scripts-executed doi=\(FloeDigest.sha256Hex(doiBytes))")
+            // 7. Remove the test-owned env-layer prefix through the SAME
+            //    owned guest BEFORE teardown: the Runtime v2 layout keeps
+            //    environments/<id>/data beyond deleteEnvironment, so this
+            //    qualification cleans its own native files explicitly and
+            //    claims no persistent product install (it was ephemeral).
+            let purgeRun = try await skillHubSubmitShell(
+                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                name: "site-purge",
+                command: "rm -rf /floe/env/python/skill-qualification && echo FLOE_SITE_PURGED",
+                timeout: 600)
+            jobIDs.append(purgeRun)
+            let purgeJob = try await skillHubWaitTerminal(jobs, id: purgeRun, seconds: 660)
+            evidence["sitePurge"] = purgeJob.resultSummary ?? purgeJob.lastError ?? purgeJob.state.rawValue
+            try #require(purgeJob.state == .completed
+                            && (purgeJob.resultSummary ?? "").contains("FLOE_SITE_PURGED"),
+                         "Env-prefix purge failed; prefix retained at /floe/env/python/skill-qualification: \(evidence["sitePurge"] ?? "unknown")")
+            ownedSitePrefixCreated = false
+            print("FLOE_SKILLHUB_PURGE \(String((evidence["sitePurge"] ?? "").prefix(200)))")
             await finish()
         } catch {
             evidence["failure"] = String(describing: error)
+            // Best-effort owned-prefix purge before teardown so a failing
+            // run never stacks native leftovers. Its own failure is only
+            // recorded into the evidence (never an extra expectation): the
+            // original qualification failure always dominates.
+            if ownedSitePrefixCreated, let liveJobs = app?.backgroundJobService,
+               let qualificationRunID, let ownedEnvironmentID {
+                do {
+                    let cleanupPurge = try await skillHubSubmitShell(
+                        jobs: liveJobs, runID: qualificationRunID,
+                        environmentID: ownedEnvironmentID, root: root,
+                        name: "site-purge-cleanup",
+                        command: "rm -rf /floe/env/python/skill-qualification && echo FLOE_SITE_PURGED",
+                        timeout: 600)
+                    jobIDs.append(cleanupPurge)
+                    let cleanupJob = try await skillHubWaitTerminal(liveJobs, id: cleanupPurge, seconds: 660)
+                    evidence["sitePurge"] = cleanupJob.resultSummary ?? cleanupJob.lastError ?? cleanupJob.state.rawValue
+                    if cleanupJob.state == .completed { ownedSitePrefixCreated = false }
+                } catch {
+                    evidence["sitePurge"] = "purge failed: \(error); prefix retained at /floe/env/python/skill-qualification"
+                }
+            }
             skillHubFailureEvidence(evidence, root: root, label: "python")
             Issue.record("Skill Hub Python guest qualification failed: \(error)")
             await finish()
@@ -4249,7 +4327,21 @@ extension SubagentSimulatorExecutionTests {
             try #require(result.outputSummary.contains(pin),
                          "Guest re-hash missing \(id) digest \(pin): \(result.outputSummary)")
         }
-        return result.outputSummary
+        // The outer transport contains package ZIPs, not their installed trees.
+        // Only unpack those immutable packages after every guest digest passed.
+        var unpackCommand = "set -e"
+        for id in SevenDeepInputs.packageSHA256.keys.sorted() {
+            unpackCommand += "\nPYTHONDONTWRITEBYTECODE=1 python3 -m zipfile -e transport/unpacked/packages/\(id)/1.0.0/\(id).zip transport/unpacked/\(id)"
+            unpackCommand += "\ntest -f transport/unpacked/\(id)/SKILL.md"
+        }
+        unpackCommand += "\necho SEVEN_PACKAGE_TREES_READY"
+        let unpack = try await skillHubShell(
+            runtime: runtime, identity: identity, context: context,
+            tag: "seven-package-unpack", command: unpackCommand, timeout: 300)
+        try #require(unpack.status == .ok
+                        && unpack.outputSummary.contains("SEVEN_PACKAGE_TREES_READY"),
+                     "Verified inner packages could not be unpacked: \(unpack.outputSummary)")
+        return result.outputSummary + "\n" + unpack.outputSummary
     }
 
     /// Signed-guest apt provisioning exactly as proven by
@@ -5394,6 +5486,338 @@ extension SubagentSimulatorExecutionTests {
             evidence["failure"] = String(describing: error)
             skillHubFailureEvidence(evidence, root: root, label: "seven-deep-art")
             Issue.record("Seven-deep art qualification failed: \(error)")
+            await finish()
+        }
+    }
+}
+
+// MARK: - Guest-local HTTP readiness diagnostic (proposal from job-717fcb8eeba940b3)
+
+extension SubagentSimulatorExecutionTests {
+
+    /// Bounded diagnostic for the recurring guest-local HTTP readiness failure
+    /// (`app-tests-guest19-skill-webapp-real-browser-guest-summary.json` and
+    /// `app-tests-repairguest18-...`: urllib self-fetch to the guest's own
+    /// service times out while the host-side forward of the same port works).
+    ///
+    /// The test never touches host/device networking and leaks no secrets:
+    /// proxy environment is scanned by KEY NAME ONLY. All timeouts are the
+    /// original committed bounds (production-shape self-fetch keeps 8 s;
+    /// extra matrix cells use 4 s; nothing is raised above the existing
+    /// ceilings). It runs entirely through the real product surfaces:
+    /// launched-App-graph `bootGuest`, `makeRuntime` + active parent,
+    /// `skillHubShell` foreground `exec.shell`, the production
+    /// `exec.localService` job and `jobs.cancel` — no new model-facing tool,
+    /// no test-execution bypass, no host interpreter.
+    ///
+    /// It is a diagnostic: it classifies what it observes. It fails ONLY on
+    /// product invariants (host readiness, non-empty foreground channel,
+    /// cancelled-endpoint closure), never on a pre-repair negative, so a
+    /// broken guest yields evidence, not a red herring.
+    @Test("Guest-local HTTP readiness diagnostic",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_GUEST_LOCALHTTP_DIAGNOSTIC"] == "1"))
+    func guestLocalHTTPReadinessDiagnostic() async throws {
+        var evidence: [String: String] = ["kind": "guest-local-http-diagnostic-not-qualification"]
+        let root = try makeWorkspaceRoot()
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        let app = try await appQualificationEnvironment()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID, delegateCallID: "guest-http-diag")
+        identity = fixedIdentity
+        func finish() async {
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Guest-local HTTP diagnostic",
+                goal: "Classify the guest self-HTTP timeout cause; scripted parent")
+            recordsCreated = true
+            let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+            let hold = CancellationToken()
+            parentHold = hold
+            let ceiling: Set<String> = ["exec.shell", "jobs.status", "jobs.cancel"]
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Run the guest-local HTTP diagnostic") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before child exec execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity,
+                                             context: childContext)
+
+            // P0: actual runner binding. The shipped image identity used to be
+            // claimed from the source plan; this is the live binary's truth.
+            let p0 = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p0",
+                command: "uname -a; sha256sum /usr/local/bin/floe-exec 2>/dev/null || echo DIAG_RUNNER_HASH_MISSING; "
+                    + "readlink /proc/1/exe 2>/dev/null || echo DIAG_PID1_EXE_UNREADABLE; "
+                    + "tr '\\0' ' ' < /proc/cmdline; echo", timeout: 60)
+            evidence["p0Runner"] = p0.outputSummary
+
+            // P1: loopback state and routes. `ip route get 127.0.0.1` naming
+            // eth0/via the gateway is the leak; `dev lo` is the healthy state.
+            let p1Before = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p1-before",
+                command: "printf 'DIAG_LO_FLAGS='; cat /sys/class/net/lo/flags 2>/dev/null || echo missing; "
+                    + "printf 'DIAG_LO_OPERSTATE='; cat /sys/class/net/lo/operstate 2>/dev/null || echo missing; "
+                    + "grep -q -w 127.0.0.1 /proc/net/fib_trie 2>/dev/null && echo DIAG_127_IN_TRIE=yes || echo DIAG_127_IN_TRIE=no; "
+                    + "if command -v ip >/dev/null 2>&1; then echo DIAG_IP=yes; ip -o link show lo 2>/dev/null; "
+                    + "ip -o addr show 2>/dev/null; ip -o route get 127.0.0.1 2>/dev/null || echo DIAG_GET_127_FAIL; "
+                    + "ip -o route get 10.0.2.15 2>/dev/null || echo DIAG_GET_15_FAIL; "
+                    + "else echo DIAG_IP=no; fi", timeout: 60)
+            evidence["p1InterfacesBefore"] = p1Before.outputSummary
+
+            // P2: proxy exposure by key NAME only (never values).
+            let p2 = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p2-proxy",
+                command: "env | cut -d= -f1 | grep -i proxy | sed 's/^/DIAG_PROXY_ENV_KEY=/'; "
+                    + "echo DIAG_PROXY_ENV_SCAN_DONE", timeout: 30)
+            evidence["p2ProxyEnvKeys"] = p2.outputSummary
+
+            // P3: start a service through the REAL production supervisor path.
+            // The entry mirrors the shipped fixture_server.py bind contract
+            // (0.0.0.0 when FLOE_SERVICE_PORT is injected by the supervisor).
+            let serverScript = """
+            import json, os
+            from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+            port = int(os.environ["FLOE_SERVICE_PORT"])
+            bind = os.environ.get("FLOE_FIXTURE_BIND") or (
+                "0.0.0.0" if os.environ.get("FLOE_SERVICE_PORT") else "127.0.0.1")
+            class H(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/state":
+                        body = json.dumps({"receipt": "diag", "bind": bind,
+                                           "submissions": []}).encode()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_error(404)
+                def log_message(self, *args):
+                    pass
+            server = ThreadingHTTPServer((bind, port), H)
+            print("DIAG_BIND " + bind + " " + str(port), flush=True)
+            server.serve_forever()
+            """
+            try Data(serverScript.utf8).write(to: root.appendingPathComponent("diag-http-svc.py"))
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(runtime: "python",
+                entry: "diag-http-svc.py", arguments: [], cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID, toolCallID: "guest-http-diag-service-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService,
+                waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            evidence["serviceJobID"] = serviceJob.id.uuidString
+            evidence["servicePort"] = String(port)
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(jobs, id: serviceJob.id,
+                                                        samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "PreviewURL must be the owned loopback endpoint, got \(preview)")
+            // Host-side baseline (the already-proven forward path): /state over
+            // the 127.0.0.1 forward must answer while the guest self-fetch is
+            // what previously hung. Bounded exactly like the committed tests
+            // (3 s request / 5 s resource via skillHubFetch's ephemeral session).
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.urlCache = nil
+            configuration.timeoutIntervalForRequest = 3
+            configuration.timeoutIntervalForResource = 5
+            configuration.waitsForConnectivity = false
+            let session = URLSession(configuration: configuration)
+            defer { session.invalidateAndCancel() }
+            let hostState = try await skillHubFetch(preview.appendingPathComponent("state"),
+                                                    session: session)
+            try #require(hostState.1.statusCode == 200
+                            && String(decoding: hostState.0, as: UTF8.self).contains("\"bind\""),
+                        "Host-side forward baseline must serve /state: \(hostState.1)")
+            evidence["p3HostForward"] = "ok status=\(hostState.1.statusCode)"
+
+            // P4+P5+P6 in one bounded guest script: self-connect matrix
+            // BEFORE, owned in-guest loopback provisioning attempt (identical
+            // ioctls to the runner's eth0 path; guest-local only), the same
+            // matrix AFTER, plus the raw-socket discriminator and the
+            // production-shape 8 s fetch. Every probe line is classified:
+            // ok / refused / timeout / unreachable.
+            let matrixScript = """
+            import os, sys, socket, struct, fcntl, urllib.request, urllib.error
+            port = int(sys.argv[1])
+            def classify(exc):
+                reason = exc
+                if isinstance(exc, urllib.error.URLError):
+                    reason = exc.reason
+                if isinstance(reason, TimeoutError) or isinstance(reason, socket.timeout):
+                    return "timeout"
+                code = getattr(reason, "errno", None)
+                if code == 111: return "refused"
+                if code in (101, 113, 115): return "unreachable-%s" % code
+                return "err-%s" % type(reason).__name__
+            def http_probe(target, proxy, tmo):
+                url = "http://%s:%d/state" % (target, port)
+                try:
+                    if proxy == "off":
+                        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                        opener.open(url, timeout=tmo).read()
+                    else:
+                        urllib.request.urlopen(url, timeout=tmo).read()
+                    return "ok"
+                except Exception as exc:
+                    return classify(exc)
+            def raw_probe(target, tmo):
+                sock = socket.socket()
+                try:
+                    sock.settimeout(tmo)
+                    sock.connect((target, 9))
+                    return "connected"
+                except Exception as exc:
+                    return classify(exc)
+                finally:
+                    sock.close()
+            def matrix(phase):
+                for target in ("127.0.0.1", "10.0.2.15"):
+                    for proxy in ("off", "default"):
+                        print("DIAG_PROBE phase=%s target=%s proxy=%s timeout=4 result=%s"
+                              % (phase, target, proxy, http_probe(target, proxy, 4)), flush=True)
+                print("DIAG_RAW phase=%s target=127.0.0.1 port=9 result=%s"
+                      % (phase, raw_probe("127.0.0.1", 4)), flush=True)
+            def lo_flags(op, value=None):
+                name = b"lo" + b"\\x00" * 14
+                if op == 0x8913:
+                    buf = name + b"\\x00" * 24
+                    return struct.unpack("16sH22s", fcntl.ioctl(SK, op, buf))[1]
+                buf = struct.pack("16sH22s", name, value, b"\\x00" * 22)
+                fcntl.ioctl(SK, op, buf)
+                return None
+            matrix("before")
+            SK = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                before = lo_flags(0x8913)
+                for op, ip in ((0x8916, "127.0.0.1"), (0x891C, "255.0.0.0")):
+                    sa = struct.pack("HH4s8s", socket.AF_INET, 0, socket.inet_aton(ip), b"\\x00" * 8)
+                    fcntl.ioctl(SK, op, b"lo" + b"\\x00" * 14 + sa + b"\\x00" * 8)
+                lo_flags(0x8914, before | 1)
+                after = lo_flags(0x8913)
+                print("DIAG_REPAIR rc=0 lo_flags_before=%d lo_flags_after=%d up=%d"
+                      % (before, after, after & 1), flush=True)
+            except Exception as exc:
+                print("DIAG_REPAIR rc=1 error=%s errno=%s"
+                      % (type(exc).__name__, getattr(exc, "errno", "none")), flush=True)
+            matrix("after")
+            print("DIAG_PROD_SHAPE target=127.0.0.1 timeout=8 result=%s"
+                  % http_probe("127.0.0.1", "default", 8), flush=True)
+            """
+            let p4 = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p4-matrix",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - \(port) <<'PY'\n"
+                    + matrixScript + "\nPY", timeout: 120)
+            evidence["p4Matrix"] = p4.outputSummary
+            let after127OK = p4.outputSummary.contains(
+                "DIAG_PROBE phase=after target=127.0.0.1 proxy=off timeout=4 result=ok")
+            let before127OK = p4.outputSummary.contains(
+                "DIAG_PROBE phase=before target=127.0.0.1 proxy=off timeout=4 result=ok")
+            if before127OK {
+                evidence["verdict"] = "loopback self-HTTP already healthy at probe time; "
+                    + "the timeout cause is not lo state alone in this generation"
+            } else if after127OK {
+                evidence["verdict"] = "guest-local 127.0.0.1 self-HTTP restored by loopback "
+                    + "provisioning only: missing lo bring-up/address is the confirmed cause"
+            } else {
+                evidence["verdict"] = "loopback provisioning did NOT restore self-HTTP: "
+                    + "lo-down alone is insufficient; keep the p4Matrix classification as the lead"
+            }
+
+            // P5 channel isolation for the separate impeccable small-round1
+            // empty-stdout finding: the driver-shaped foreground wrapper must
+            // return its marker line while the real localService is running.
+            // Strict by design — an empty result here reproduces the channel
+            // defect with this harness as the witness.
+            let p5 = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p5-channel",
+                command: "run_engine() { label=\"$1\"; shift; start=$(date +%s%N); "
+                    + "\"$@\" >/dev/null 2>&1 & pid=$!; wait \"$pid\"; rc=$?; end=$(date +%s%N); "
+                    + "echo \"FLOE_ENGINE label=$label rc=$rc elapsed_ms=$(( (end - start) / 1000000 )) vmhwm_kb=unavailable\"; }; "
+                    + "run_engine diag-a python3 -c 'import time;time.sleep(1)'; "
+                    + "run_engine diag-b python3 -c 'import time;time.sleep(1)'",
+                timeout: 120)
+            try #require(p5.status == .ok, "Foreground channel probe must run: \(p5.outputSummary)")
+            try #require(p5.outputSummary.contains("FLOE_ENGINE label=diag-a ")
+                            && p5.outputSummary.contains("FLOE_ENGINE label=diag-b "),
+                         "Foreground exec.shell must return the driver markers while a localService "
+                             + "runs (empty stdout here reproduces the small-round1 finding): \(p5.outputSummary.prefix(400))")
+            evidence["p5ChannelForegroundWithService"] = "markers-present"
+
+            // P6: production cancellation with endpoint closure (guest side
+            // now checks the loopback target as the committed test does).
+            let cancelCall = try toolCall(id: "diag-jobs-cancel", toolName: "jobs.cancel",
+                arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
+            let cancelResult = await runtime.dispatchChildTool(cancelCall, identity: fixedIdentity,
+                                                               childContext: childContext)
+            try #require(cancelResult.status == .ok, "jobs.cancel dispatch failed: \(cancelResult.outputSummary)")
+            let cancelled = try await skillHubWaitTerminal(jobs, id: serviceJob.id, seconds: 90)
+            try #require(cancelled.state == .cancelled,
+                         "cancellation did not settle honestly: \(cancelled.state.rawValue)")
+            let deadState = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-state-dead",
+                command: "python3 -c \"import sys,urllib.request;urllib.request.urlopen(sys.argv[1],timeout=4).read()\" "
+                    + "'http://127.0.0.1:\(port)/state' && echo GUEST_STATE_STILL_REACHABLE",
+                timeout: 30)
+            try #require(deadState.status != .ok || !deadState.outputSummary.contains("GUEST_STATE_STILL_REACHABLE"),
+                         "the cancelled service endpoint must not stay reachable inside the guest")
+            let hostGone: Bool
+            do { _ = try await skillHubFetch(preview.appendingPathComponent("state"), session: session); hostGone = false }
+            catch { hostGone = true }
+            try #require(hostGone, "the cancelled fixture endpoint must not stay reachable from the host")
+            evidence["p6Cancellation"] = "settled-closed"
+
+            let p1After = try await skillHubShell(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "diag-p1-after",
+                command: "printf 'DIAG_LO_FLAGS='; cat /sys/class/net/lo/flags 2>/dev/null || echo missing; "
+                    + "grep -q -w 127.0.0.1 /proc/net/fib_trie 2>/dev/null && echo DIAG_127_IN_TRIE=yes || echo DIAG_127_IN_TRIE=no",
+                timeout: 30)
+            evidence["p1InterfacesAfterRepair"] = p1After.outputSummary
+
+            evidence["diagnosticCompleted"] = "true"
+            let evidenceRoot = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+                .appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+            try FileManager.default.createDirectory(at: evidenceRoot, withIntermediateDirectories: true)
+            let evidenceFile = evidenceRoot.appendingPathComponent("guest-http-diag-\(runID.uuidString).json")
+            try JSONEncoder().encode(evidence).write(to: evidenceFile, options: .atomic)
+            print("FLOE_GUEST_LOCALHTTP_DIAGNOSTIC_EVIDENCE=\(evidenceFile.path)")
+            print("FLOE_GUEST_LOCALHTTP_DIAG verdict=\(evidence["verdict"]?.prefix(48) ?? "unset")")
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "guest-http-diag")
+            Issue.record("Guest-local HTTP readiness diagnostic failed: \(error)")
             await finish()
         }
     }
