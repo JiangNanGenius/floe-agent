@@ -4,7 +4,7 @@ import SwiftUI
 /// Presentation only. Items and actions are supplied by the verified store;
 /// rendering a card never downloads a package or changes effective grants.
 struct SkillHubDisplayItem: Identifiable {
-    enum Action {
+    enum Action: Equatable {
         case get, added, enable, update, unavailable
         var title: LocalizedStringKey {
             switch self {
@@ -64,6 +64,12 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     private var categories: [SkillHubCategory] {
         SkillHubCategory.allCases.filter { category in items.contains { $0.category == category } }
     }
+    private var featured: [SkillHubDisplayItem] {
+        var seen = Set<SkillHubCategory>()
+        return Array(items.filter { item in
+            item.action != .unavailable && seen.insert(item.category).inserted
+        }.prefix(5))
+    }
     private func columns(for width: CGFloat) -> [GridItem] {
         let count = width >= 700 && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
         return Array(repeating: GridItem(.flexible(minimum: 0), spacing: 20), count: count)
@@ -73,6 +79,9 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         GeometryReader { geometry in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 20) {
+                    if normalizedQuery.isEmpty, category == nil, !featured.isEmpty {
+                        featuredShelf(wide: geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize)
+                    }
                     if categories.count > 1 {
                         ScrollView(.horizontal) {
                             HStack(spacing: 8) {
@@ -88,6 +97,10 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                             ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
                         } else {
                             ContentUnavailableView.search(text: normalizedQuery)
+                        }
+                    } else if normalizedQuery.isEmpty, category == nil {
+                        ForEach(categories) { group in
+                            categoryShelf(group, width: min(geometry.size.width, 1100) - 32)
                         }
                     } else {
                         LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
@@ -105,6 +118,81 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .onChange(of: categories) { _, values in
             if let category, !values.contains(category) { self.category = nil }
+        }
+    }
+
+    private func featuredShelf(wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("skills.hub.featured").font(.title2.bold())
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    ForEach(featured) { item in
+                        VStack(alignment: .leading, spacing: 12) {
+                            Button { onSelect(item.id) } label: {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    HStack {
+                                        Image(systemName: item.systemImage)
+                                            .font(.largeTitle)
+                                            .symbolRenderingMode(.hierarchical)
+                                            .foregroundStyle(item.category.tint)
+                                        Spacer()
+                                        Image(systemName: "arrow.up.right")
+                                            .font(.subheadline.weight(.medium))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Text(item.title)
+                                        .font(.title2.bold())
+                                        .foregroundStyle(.primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(item.summary)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(20)
+                                .background(item.category.tint.opacity(0.09),
+                                    in: RoundedRectangle(cornerRadius: 20))
+                                .contentShape(RoundedRectangle(cornerRadius: 20))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("skills.featured.\(item.id)")
+                            HStack {
+                                Text(item.category.title).font(.subheadline).foregroundStyle(.secondary)
+                                Spacer()
+                                getButton(item, identifierPrefix: "skills.featured.get")
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                        .containerRelativeFrame(.horizontal, count: wide ? 2 : 1, spacing: 14)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+            .accessibilityIdentifier("skills.featured.carousel")
+        }
+    }
+
+    private func categoryShelf(_ group: SkillHubCategory, width: CGFloat) -> some View {
+        let groupItems = matching.filter { $0.category == group }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(group.title).font(.title2.bold())
+                Spacer()
+                if groupItems.count > 6 {
+                    Button { category = group } label: {
+                        Label("skills.hub.see_all", systemImage: "chevron.right")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            LazyVGrid(columns: columns(for: width), alignment: .leading, spacing: 12) {
+                ForEach(Array(groupItems.prefix(6))) { item in directoryRow(item) }
+            }
         }
     }
 
@@ -162,7 +250,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .accessibilityIdentifier("skills.card.\(item.id)")
     }
 
-    private func getButton(_ item: SkillHubDisplayItem) -> some View {
+    private func getButton(_ item: SkillHubDisplayItem, identifierPrefix: String = "skills.get") -> some View {
         Button { onGet(item.id) } label: {
             Text(item.action.title)
                 .font(.subheadline.weight(.semibold))
@@ -172,7 +260,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .controlSize(.small)
         .buttonBorderShape(.capsule)
         .disabled(!item.actionEnabled)
-        .accessibilityIdentifier("skills.get.\(item.id)")
+        .accessibilityIdentifier("\(identifierPrefix).\(item.id)")
     }
 }
 #endif

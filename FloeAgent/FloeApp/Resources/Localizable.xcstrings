@@ -1,6 +1,40 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "skills.hub.see_all": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "See All"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查看全部"
+          }
+        }
+      }
+    },
+    "skills.hub.featured": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Featured"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "精选"
+          }
+        }
+      }
+    },
     "files.photos.retry": {
       "extractionState": "manual",
       "localizations": {
