@@ -313,8 +313,17 @@ struct ProviderProfileTests {
             serviceRoleIsConversation: true,
             defaultModelID: defaultModelID,
             existingCreatedAt: existing?.createdAt,
-            existingSyncRevision: existing?.syncRevision ?? 0
+            existingSyncRevision: existing?.syncRevision ?? 0,
+            region: existing?.region
         )
+    }
+
+    @Test("Editing a provider preserves its saved region")
+    func frozenDraftPreservesRegion() throws {
+        let existing = ProviderProfile(kind: .custom, wireProtocol: .openAIChatCompletions,
+            baseURL: URL(string: "https://api.deepseek.com")!, region: "saved-region")
+        let request = try requireRequest(makeDraft(existing: existing))
+        #expect(request.profile.region == "saved-region")
     }
 
     private func requireRequest(_ draft: ProviderSaveDraft) throws -> ProviderSaveRequest {
