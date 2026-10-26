@@ -2740,13 +2740,21 @@ public actor FloeAgentRuntime {
         if providerToolProgressPublishedAt == nil
             || providerLastProgressAt.timeIntervalSince(providerToolProgressPublishedAt ?? .distantPast) >= 1 {
             providerToolProgressPublishedAt = providerLastProgressAt
-            await publishLiveness(phase: .streaming, message: "Model is preparing tool arguments", isRecoverable: true)
+            await publishLiveness(phase: .preparingToolCall, message: "Model is preparing tool arguments", isRecoverable: true)
         }
     }
 
     private func handleStreamEvent(_ rawEvent: AgentEvent) async {
         // Never mutate after leaving streamingModel (cancel race safety).
         guard case .streamingModel(var info) = state else { return }
+
+        if livenessSnapshot.phase == .preparingToolCall {
+            switch rawEvent {
+            case .textDelta, .reasoningSummary:
+                await publishLiveness(phase: .streaming, message: "Model stream is active", isRecoverable: true)
+            default: break
+            }
+        }
 
         let observedAt = Date()
         providerLastProgressAt = observedAt

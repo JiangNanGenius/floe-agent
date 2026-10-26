@@ -119,11 +119,16 @@ struct TerminalView: View {
 @MainActor
 final class TerminalPresentation: ObservableObject {
     let view = SwiftTerm.TerminalView(frame: CGRect(x: 0, y: 0, width: 640, height: 400))
+    var attachmentID: UUID?
     var renderedEnd: Int?
     var generation: UUID?
     @Published var fontSize: CGFloat = 14 {
-        didSet { view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular) }
+        didSet {
+            view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            view.superview?.setNeedsLayout()
+        }
     }
+    init() { view.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular) }
     func clear() { view.feed(text: "\u{1b}[2J\u{1b}[3J\u{1b}[H") }
     func consume(_ output: Data, byteEnd: Int, generation: UUID?) {
         let start = byteEnd - output.count
@@ -140,6 +145,40 @@ final class TerminalPresentation: ObservableObject {
         view.feed(byteArray: bytes[...])
         if !atBottom { view.setContentOffset(offset, animated: false) }
         view.setNeedsDisplay()
+    }
+}
+
+/// SwiftUI owns this viewport; UIKit owns the terminal's unscaled bounds.
+/// Rehosting the same terminal in a full-screen cover must not let the old
+/// representable continue sizing it while the keyboard changes the viewport.
+@MainActor
+final class TerminalViewport: UIView {
+    let terminal: SwiftTerm.TerminalView
+    init(terminal: SwiftTerm.TerminalView) {
+        self.terminal = terminal
+        super.init(frame: .zero)
+        clipsToBounds = true
+        backgroundColor = .black
+        terminal.removeFromSuperview()
+        addSubview(terminal)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard terminal.superview === self, bounds.width > 0, bounds.height > 0 else { return }
+        let grid = terminal.getTerminal()
+        let optimal = terminal.getOptimalFrameSize().size
+        let cellWidth = optimal.width / CGFloat(max(1, grid.cols))
+        let cellHeight = optimal.height / CGFloat(max(1, grid.rows))
+        let size = CGSize(
+            width: min(max(bounds.width, cellWidth * 20), cellWidth * 500),
+            height: min(max(bounds.height, cellHeight * 5), cellHeight * 200)
+        )
+        UIView.performWithoutAnimation {
+            terminal.transform = .identity
+            let frame = CGRect(origin: .zero, size: size)
+            if terminal.frame != frame { terminal.frame = frame }
+        }
     }
 }
 
@@ -188,26 +227,33 @@ struct SSHEmulatorView: UIViewRepresentable {
         Coordinator(onSend: onSend, onResize: onResize)
     }
 
-    func makeUIView(context: Context) -> SwiftTerm.TerminalView {
+    func makeUIView(context: Context) -> TerminalViewport {
         let terminal = presentation?.view ?? context.coordinator.presentation.view
+        let state = presentation ?? context.coordinator.presentation
+        state.attachmentID = context.coordinator.attachmentID
+        context.coordinator.attachedPresentation = state
+        context.coordinator.isInteractive = isInteractive
         terminal.terminalDelegate = context.coordinator
         terminal.nativeForegroundColor = .white
         terminal.nativeBackgroundColor = .black
         terminal.backgroundColor = .black
         terminal.allowMouseReporting = true
-        return terminal
+        return TerminalViewport(terminal: terminal)
     }
 
-    func updateUIView(_ terminal: SwiftTerm.TerminalView, context: Context) {
+    func updateUIView(_ viewport: TerminalViewport, context: Context) {
+        let terminal = viewport.terminal
         context.coordinator.onSend = onSend
         context.coordinator.onResize = onResize
         context.coordinator.isInteractive = isInteractive
 
         let state = presentation ?? context.coordinator.presentation
+        guard state.attachmentID == context.coordinator.attachmentID,
+              terminal.superview === viewport else { return }
         if terminal.font.pointSize != state.fontSize {
             terminal.font = .monospacedSystemFont(ofSize: state.fontSize, weight: .regular)
         }
-        terminal.layoutIfNeeded()
+        viewport.setNeedsLayout()
         let wasAtBottom = terminal.contentOffset.y + terminal.bounds.height >= terminal.contentSize.height - 24
         let previousOffset = terminal.contentOffset
         let newBytes: Data
@@ -229,9 +275,21 @@ struct SSHEmulatorView: UIViewRepresentable {
         if byteEnd == nil { context.coordinator.renderedOutput = output }
     }
 
+    static func dismantleUIView(_ viewport: TerminalViewport, coordinator: Coordinator) {
+        coordinator.resizeTask?.cancel()
+        guard let state = coordinator.attachedPresentation,
+              state.attachmentID == coordinator.attachmentID else { return }
+        state.attachmentID = nil
+        viewport.terminal.terminalDelegate = nil
+    }
+
     @MainActor
     final class Coordinator: NSObject, @preconcurrency SwiftTerm.TerminalViewDelegate {
         let presentation = TerminalPresentation()
+        let attachmentID = UUID()
+        weak var attachedPresentation: TerminalPresentation?
+        var resizeTask: Task<Void, Never>?
+        var lastResize: (columns: Int, rows: Int)?
         var renderedOutput = Data()
         var isInteractive = false
         var onSend: @MainActor (Data) -> Void
@@ -252,7 +310,19 @@ struct SSHEmulatorView: UIViewRepresentable {
 
         func sizeChanged(source: SwiftTerm.TerminalView, newCols: Int, newRows: Int) {
             guard newCols > 0, newRows > 0 else { return }
-            onResize(newCols, newRows)
+            resizeTask?.cancel()
+            resizeTask = Task { [weak self, weak source] in
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+                guard let self, let source,
+                      self.attachedPresentation?.attachmentID == self.attachmentID,
+                      source.window != nil else { return }
+                let grid = source.getTerminal()
+                let columns = max(20, min(500, grid.cols))
+                let rows = max(5, min(200, grid.rows))
+                guard self.lastResize?.columns != columns || self.lastResize?.rows != rows else { return }
+                self.lastResize = (columns, rows)
+                self.onResize(columns, rows)
+            }
         }
 
         func clipboardCopy(source: SwiftTerm.TerminalView, content: Data) {

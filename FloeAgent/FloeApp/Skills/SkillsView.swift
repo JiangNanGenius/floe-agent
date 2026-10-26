@@ -247,13 +247,13 @@ struct SkillsView: View {
                     if updates.isRunning { ProgressView() }
                     else { Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath") }
                 }
+                    .labelStyle(.iconOnly)
                     .accessibilityLabel(Text("skills.update.check"))
                     .disabled(!center.canCheckUpdates || selection.active)
-                    .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("skills.updates.check_all")
                 Button("skills.update.all", systemImage: "arrow.down.circle") { center.startUpdatingAll() }
+                    .labelStyle(.iconOnly)
                     .disabled(!center.canUpdateAll || selection.active)
-                    .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("skills.updates.update_all")
             }
         }
@@ -360,7 +360,7 @@ struct SkillsView: View {
     private func updateAction(for skill: PersistedSkill) -> some View {
         let state = center.updateState(for: skill)
         if state?.phase == .checking || state?.phase == .updating {
-            ProgressView().frame(minWidth: 44, minHeight: 44)
+            ProgressView().controlSize(.small)
                 .accessibilityLabel(FloeL10n.l(state?.phase == .checking ? "skills.update.checking" : "skills.update.updating"))
         } else if state?.phase == .reviewRequired {
             Button("skills.update.review") {
@@ -368,20 +368,17 @@ struct SkillsView: View {
                 else { center.startUpdating(skill, forReview: true) }
             }
             .buttonStyle(.borderless)
-            .frame(minWidth: 44, minHeight: 44)
             .disabled((!center.canCheckUpdates && center.pendingUpgrade?.snapshot.package.manifest.id != skill.id)
                       || selection.active)
             .accessibilityIdentifier("skills.updates.review.\(skill.id)")
         } else if center.availableVersion(for: skill) != nil {
             Button("skills.update.now") { center.startUpdating(skill) }
                 .buttonStyle(.borderless)
-                .frame(minWidth: 44, minHeight: 44)
                 .disabled(!center.canCheckUpdates || selection.active)
                 .accessibilityIdentifier("skills.updates.update.\(skill.id)")
         } else if state?.phase == .failed {
             Button("action.retry") { center.retryUpdateCheck(skill) }
                 .buttonStyle(.borderless)
-                .frame(minWidth: 44, minHeight: 44)
                 .disabled(!center.canCheckUpdates || selection.active)
         }
     }

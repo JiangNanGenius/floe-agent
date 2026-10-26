@@ -5,6 +5,7 @@ public enum HarnessState: String, Sendable, Codable, Hashable {
     case idle
     case preparing
     case streaming
+    case preparingToolCall
     case waitingApproval
     case waitingUser
     case executingTool

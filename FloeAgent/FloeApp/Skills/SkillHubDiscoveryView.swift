@@ -112,8 +112,8 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         Button { category = value } label: {
             Text(value?.title ?? "skills.hub.all")
                 .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .frame(minHeight: 44)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
                 .background(category == value ? Color.accentColor.opacity(0.14) : Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -133,7 +133,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 14))
     }
@@ -164,11 +164,12 @@ struct SkillHubDiscoveryView<Connections: View>: View {
 
     private func getButton(_ item: SkillHubDisplayItem) -> some View {
         Button { onGet(item.id) } label: {
-            Text(item.action.title).font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 12).frame(minWidth: 60, minHeight: 44)
+            Text(item.action.title)
+                .font(.subheadline.weight(.semibold))
                 .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
         .buttonBorderShape(.capsule)
         .disabled(!item.actionEnabled)
         .accessibilityIdentifier("skills.get.\(item.id)")

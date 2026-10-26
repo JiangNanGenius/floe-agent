@@ -474,6 +474,9 @@ public actor ConversationRunService {
         if case .checkpointed = state { return "checkpointed" }
         if isReviewingApproval { return "reviewingApproval" }
         switch liveness.phase {
+        case .preparingToolCall:
+            if case .streamingModel = state { return "preparingToolCall" }
+            return state.name
         case .retrying:
             return "reconnecting"
         case .persisting:

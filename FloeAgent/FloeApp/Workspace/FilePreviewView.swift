@@ -686,6 +686,17 @@ struct FilePreviewView: View {
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
+            if WorkspaceFileType.isImage(relativePath), let imageURL = binaryPreviewURL {
+                SaveImageToPhotosButton(imageURL: imageURL, validateRead: {
+                    if remotePreview.url == imageURL { return }
+                    guard let service = center.fileService else { throw CocoaError(.fileReadNoPermission) }
+                    let resolved = try service.guardResolver.resolve(relativePath)
+                    guard resolved.standardizedFileURL == imageURL.standardizedFileURL else {
+                        throw CocoaError(.fileReadNoPermission)
+                    }
+                    try service.guardResolver.assertReadableSize(resolved)
+                })
+            }
             if engineeringPackage != nil {
                 Button { isEngineeringFullScreen = true } label: {
                     Label("engineering.fullscreen", systemImage: "arrow.up.left.and.arrow.down.right")

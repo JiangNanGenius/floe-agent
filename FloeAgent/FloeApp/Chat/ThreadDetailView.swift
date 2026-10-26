@@ -445,6 +445,16 @@ struct ThreadDetailView: View {
                             .transition(viewModel.isRunning ? FloeTheme.stepTransition(reduceMotion: reduceMotion) : .identity)
                     }
 
+                    if viewModel.isRunning, viewModel.liveStateName == "preparingToolCall" {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("state.preparing_tool_call")
+                                .font(FloeTheme.Typography.metadata)
+                                .foregroundStyle(.secondary)
+                        }
+                        .accessibilityIdentifier("thread.tool_call.preparing")
+                    }
+
                     if let usage = viewModel.usageSummary {
                         ThreadUsageFooter(summary: usage)
                     }

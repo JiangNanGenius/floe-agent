@@ -175,6 +175,11 @@ struct RunOutputFileView: View {
                         .navigationTitle(receipt.displayName)
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                if receipt.mimeType.hasPrefix("image/") {
+                                    SaveImageToPhotosButton(imageURL: item.url, expectedSHA256: receipt.sha256)
+                                }
+                            }
                             ToolbarItem(placement: .confirmationAction) {
                                 Button("workspace.workspace_canvas_view.done") { presentation = nil }
                                     .frame(minHeight: FloeTheme.minimumTarget)
