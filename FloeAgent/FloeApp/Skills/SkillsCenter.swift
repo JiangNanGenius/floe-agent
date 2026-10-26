@@ -1147,7 +1147,7 @@ final class SkillsCenter: ObservableObject {
     }
 
     func load() async {
-        do { try await recoverUpgrades() } catch { errorMessage = error.localizedDescription }
+        do { try await recoverUpgrades() } catch { errorMessage = Self.userMessage(for: error) }
         do {
             let rows = try await environment.skillStore.all()
             try await seedOfficialPublicationIdentities(rows: rows)
@@ -1163,7 +1163,7 @@ final class SkillsCenter: ObservableObject {
             journalSources = sources
             rollbackEligibleDigests = digests
         } catch {
-            if !Task.isCancelled && !(error is CancellationError) { errorMessage = error.localizedDescription }
+            if !Task.isCancelled && !(error is CancellationError) { errorMessage = Self.userMessage(for: error) }
         }
     }
 
@@ -2636,6 +2636,19 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    private static func userMessage(for error: Error) -> String {
+        switch error {
+        case is OfficialSkillPublicationConflict:
+            FloeL10n.l("skills.hub.publication_conflict")
+        case is OfficialSkillPublicationLedgerDamage:
+            FloeL10n.l("skills.hub.installation_record_unavailable")
+        case is OfficialSkillPublicationCandidateInvalid:
+            FloeL10n.l("skills.hub.version_unverified")
+        default:
+            error.localizedDescription
+        }
+    }
+
     private func perform(_ operation: @escaping () async throws -> Void) async {
         // A running service-owned batch is also "busy": single-row import,
         // install, official get or rollback windows must not interleave
@@ -2648,7 +2661,11 @@ final class SkillsCenter: ObservableObject {
         errorMessage = nil
         defer { isWorking = false }
         do { try await operation(); await load() }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            if !Task.isCancelled && !(error is CancellationError) {
+                errorMessage = Self.userMessage(for: error)
+            }
+        }
     }
 
     private static func identifier(_ name: String) throws -> String {

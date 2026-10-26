@@ -39,6 +39,106 @@ public struct PersistedSkill: Codable, Sendable, Hashable, Identifiable {
     }
 }
 
+/// One retained official Skill publication identity. Released bytes are
+/// immutable: an official curated package `id`+`version` observed by this
+/// device must never be replaced by different signed bytes under the same
+/// id+version. The identity commits in the SAME write transaction as the
+/// skill metadata (existing CAS/rollback boundary), so a ledger or database
+/// failure can never let a same-version replacement through, and there is no
+/// best-effort post-commit write to lose.
+///
+/// Honest scope: this table records OBSERVED identities only — it is not a
+/// universal immutability proof, and publisher CI remains the authority for
+/// history this client never observed. The table is unbounded (no silent
+/// eviction): its rows are created exclusively by successful curated
+/// installs/updates and explicit receipt-derived seeding.
+public struct OfficialSkillPublicationRecord: Codable, Sendable, Equatable {
+    public let skillID: String
+    public let version: String
+    public let contentDigest: String
+    public let publicationCommit: String?
+    public let updatedAt: Date
+
+    public init(skillID: String, version: String, contentDigest: String,
+                publicationCommit: String?, updatedAt: Date = Date()) {
+        self.skillID = skillID
+        self.version = version
+        self.contentDigest = contentDigest
+        self.publicationCommit = publicationCommit
+        self.updatedAt = updatedAt
+    }
+
+    public var isCanonical: Bool {
+        !skillID.isEmpty && skillID.utf8.count <= 128
+            && OfficialSkillPublicationLedgerRules.isValidVersion(version)
+            && OfficialSkillPublicationLedgerRules.isValidDigest(contentDigest)
+            && (publicationCommit.map(OfficialSkillPublicationLedgerRules.isValidCommit) ?? true)
+    }
+}
+
+/// Same id+version previously observed from different signed bytes. Carries
+/// both digests so the boundary can state the conflict without guessing.
+public struct OfficialSkillPublicationConflict: Error, Equatable, Sendable, LocalizedError {
+    public let skillID: String
+    public let version: String
+    public let seenDigest: String
+    public let candidateDigest: String
+    public init(skillID: String, version: String, seenDigest: String, candidateDigest: String) {
+        self.skillID = skillID; self.version = version
+        self.seenDigest = seenDigest; self.candidateDigest = candidateDigest
+    }
+    public var errorDescription: String? {
+        "Official Skill publication identity conflict: '\(skillID)' version '\(version)' was previously installed from digest "
+        + "\(seenDigest.prefix(12))…, and these bytes hash to \(candidateDigest.prefix(12))…. A released package version is immutable; "
+        + "an update must raise the package version. Nothing was written."
+    }
+}
+
+/// A caller-constructed identity that is not canonical (never a stored-shape
+/// problem): rejected before any write.
+public struct OfficialSkillPublicationCandidateInvalid: Error, Equatable, Sendable, LocalizedError {
+    public let skillID: String
+    public init(skillID: String) { self.skillID = skillID }
+    public var errorDescription: String? {
+        "The proposed official publication identity for '\(skillID)' is not canonical and was rejected before any write."
+    }
+}
+
+/// The retained ledger itself refuses to read or commit through a damaged
+/// row: malformed stored shapes are surfaced, never dropped to "unknown".
+public struct OfficialSkillPublicationLedgerDamage: Error, Equatable, Sendable, LocalizedError {
+    public let skillID: String
+    public let version: String
+    public init(skillID: String, version: String) { self.skillID = skillID; self.version = version }
+    public var errorDescription: String? {
+        "The official Skill publication identity ledger holds a malformed entry for '\(skillID)' version '\(version)'. "
+        + "Curated installs and updates are refused until the damaged entry is honestly resolved; ordinary skills are unaffected."
+    }
+}
+
+public enum OfficialSkillPublicationLedgerRules {
+    public static func isValidDigest(_ value: String) -> Bool {
+        value.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+        }
+    }
+    public static func isValidCommit(_ value: String) -> Bool {
+        value.count == 40 && value.utf8.allSatisfy { byte in
+            (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+                || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+        }
+    }
+    public static func isValidVersion(_ value: String) -> Bool {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return false }
+        return parts.allSatisfy { part in
+            !part.isEmpty && (part == "0" || !part.hasPrefix("0")) && Int(part) != nil
+                && part.utf8.allSatisfy { $0 >= UInt8(ascii: "0") && $0 <= UInt8(ascii: "9") }
+        }
+    }
+}
+
 public struct PersistedSkillPermission: Codable, Sendable, Equatable {
     public let capability: String
     public let decision: String
@@ -51,9 +151,28 @@ public actor SQLiteSkillStore {
     private let database: DatabaseManager
     public init(database: DatabaseManager) { self.database = database }
 
+    /// - Parameter officialPublication: when the caller is committing an
+    ///   official curated install/update, the typed identity is checked and
+    ///   written inside THIS transaction. A same id+version row with a
+    ///   different digest throws `OfficialSkillPublicationConflict` and rolls
+    ///   the entire skill-metadata write back (existing GRDB transaction +
+    ///   the staging service's file rollback); a malformed stored row throws
+    ///   `OfficialSkillPublicationLedgerDamage` instead of being ignored.
+    ///   `nil` never touches the ledger: external/user installs and local
+    ///   instruction edits keep their exact historical behavior.
     public func save(_ skill: PersistedSkill, grantCapabilities: [String] = [], replaceGrants: Bool = false,
-                     restoringPermissions: [PersistedSkillPermission]? = nil) async throws {
+                     restoringPermissions: [PersistedSkillPermission]? = nil,
+                     officialPublication: OfficialSkillPublicationRecord? = nil) async throws {
         try await database.writer { db in
+            try Self.ensureOfficialPublicationsTable(db)
+            if let officialPublication {
+                guard officialPublication.skillID == skill.id,
+                      officialPublication.version == skill.version,
+                      officialPublication.contentDigest == skill.rewrittenDigest else {
+                    throw OfficialSkillPublicationCandidateInvalid(skillID: skill.id)
+                }
+                try Self.commitOfficialPublication(officialPublication, db: db)
+            }
             try db.execute(sql: """
                 INSERT INTO skills (
                     id, name, version, status, skill_markdown, manifest_json,
@@ -223,6 +342,122 @@ public actor SQLiteSkillStore {
                 WHERE skill_id = ? AND decision = 'allow'
                   AND (expires_at IS NULL OR expires_at > ?)
                 """, arguments: [skillID, Self.date(now)]))
+        }
+    }
+
+    // MARK: - Official publication identity ledger
+
+    private static func ensureOfficialPublicationsTable(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TABLE IF NOT EXISTS official_skill_publications (
+                skill_id TEXT NOT NULL,
+                version TEXT NOT NULL,
+                content_digest TEXT NOT NULL,
+                publication_commit TEXT,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (skill_id, version)
+            )
+            """)
+    }
+
+    /// Transaction-body enforcement. Callers pass a candidate already derived
+    /// from the typed curated receipt; the shape gate keeps forged data out
+    /// even if a caller misconstructed it.
+    private static func commitOfficialPublication(_ publication: OfficialSkillPublicationRecord, db: Database) throws {
+        guard publication.isCanonical else {
+            throw OfficialSkillPublicationCandidateInvalid(skillID: publication.skillID)
+        }
+        try applyOfficialPublication(publication, db: db)
+    }
+
+    private static func applyOfficialPublication(_ publication: OfficialSkillPublicationRecord, db: Database) throws {
+        struct StoredRow {
+            let digest: String
+            let commit: String?
+        }
+        let stored: StoredRow? = try Row.fetchOne(db, sql: """
+            SELECT content_digest, publication_commit FROM official_skill_publications
+            WHERE skill_id = ? AND version = ?
+            """, arguments: [publication.skillID, publication.version]).flatMap { row in
+            StoredRow(digest: row["content_digest"], commit: row["publication_commit"])
+        }
+        if let stored {
+            guard OfficialSkillPublicationLedgerRules.isValidDigest(stored.digest) else {
+                throw OfficialSkillPublicationLedgerDamage(skillID: publication.skillID, version: publication.version)
+            }
+            if let commit = stored.commit, !OfficialSkillPublicationLedgerRules.isValidCommit(commit) {
+                throw OfficialSkillPublicationLedgerDamage(skillID: publication.skillID, version: publication.version)
+            }
+            guard stored.digest == publication.contentDigest else {
+                throw OfficialSkillPublicationConflict(
+                    skillID: publication.skillID, version: publication.version,
+                    seenDigest: stored.digest, candidateDigest: publication.contentDigest
+                )
+            }
+            try db.execute(sql: """
+                UPDATE official_skill_publications
+                SET content_digest = ?, publication_commit = ?, updated_at = ?
+                WHERE skill_id = ? AND version = ?
+                """, arguments: [publication.contentDigest, publication.publicationCommit,
+                                 Self.date(publication.updatedAt), publication.skillID, publication.version])
+            return
+        }
+        try db.execute(sql: """
+            INSERT INTO official_skill_publications (skill_id, version, content_digest, publication_commit, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """, arguments: [publication.skillID, publication.version, publication.contentDigest,
+                             publication.publicationCommit, Self.date(publication.updatedAt)])
+    }
+
+    /// The retained identity for one id+version, or nil when this device has
+    /// never committed official bytes for it. A malformed stored entry throws
+    /// `OfficialSkillPublicationLedgerDamage` — never a silent nil.
+    public func officialPublication(id: String, version: String) async throws -> OfficialSkillPublicationRecord? {
+        try await database.writer { db in
+            try Self.ensureOfficialPublicationsTable(db)
+            guard let row = try Row.fetchOne(db, sql: """
+                SELECT content_digest, publication_commit, updated_at FROM official_skill_publications
+                WHERE skill_id = ? AND version = ?
+                """, arguments: [id, version]) else { return nil }
+            let digest: String = row["content_digest"]
+            let commit: String? = row["publication_commit"]
+            guard OfficialSkillPublicationLedgerRules.isValidDigest(digest),
+                  (commit.map(OfficialSkillPublicationLedgerRules.isValidCommit) ?? true) else {
+                throw OfficialSkillPublicationLedgerDamage(skillID: id, version: version)
+            }
+            let storedStamp: String = row["updated_at"]
+            let storedDate = ISO8601DateFormatter().date(from: storedStamp) ?? Date(timeIntervalSince1970: 0)
+            return OfficialSkillPublicationRecord(
+                skillID: id, version: version, contentDigest: digest,
+                publicationCommit: commit, updatedAt: storedDate
+            )
+        }
+    }
+
+    public func countOfficialPublications() async throws -> Int {
+        try await database.writer { db in
+            try Self.ensureOfficialPublicationsTable(db)
+            return try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM official_skill_publications") ?? 0
+        }
+    }
+
+    /// Idempotent migration seed for curated installs that predate the ledger:
+    /// identities derived from the typed receipts of installed rows and
+    /// retained upgrade journals. Missing pairs are inserted; a same pair
+    /// with the SAME digest refreshes its commit; a same pair with a
+    /// DIFFERENT digest throws (nothing partial is written — the whole seed
+    /// transaction rolls back) so a genuinely damaged or contradicted ledger
+    /// is surfaced honestly instead of being silently overwritten.
+    public func seedOfficialPublications(_ publications: [OfficialSkillPublicationRecord]) async throws {
+        guard !publications.isEmpty else { return }
+        try await database.writer { db in
+            try Self.ensureOfficialPublicationsTable(db)
+            for publication in publications {
+                guard publication.isCanonical else {
+                    throw OfficialSkillPublicationCandidateInvalid(skillID: publication.skillID)
+                }
+                try Self.applyOfficialPublication(publication, db: db)
+            }
         }
     }
 

@@ -305,6 +305,33 @@ final class HomeChatVoiceIPhoneUITests: XCTestCase {
         app = nil
     }
 
+    /// Runs the compact navigation on the SAME canonical iPad simulator;
+    /// this is compact-shell/Dynamic Type evidence, not an iPhone device run.
+    func testSkillHubCompactShellWithLargeText() throws {
+        app.terminate()
+        app.launchArguments += ["--ui-test-skip-onboarding", "--ui-test-batch-fixture",
+                                "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        let drawer = app.buttons["phone.sidebar.open"]
+        XCTAssertTrue(drawer.waitForExistence(timeout: 15))
+        drawer.tap()
+        let skills = app.staticTexts["sidebar.skills"]
+        XCTAssertTrue(skills.waitForExistence(timeout: 8))
+        skills.tap()
+        let carousel = app.scrollViews["skills.featured.carousel"]
+        XCTAssertTrue(carousel.waitForExistence(timeout: 15))
+        let initial = XCTAttachment(screenshot: app.screenshot())
+        initial.name = "Skill Hub compact shell accessibility text"
+        initial.lifetime = .keepAlways
+        add(initial)
+        carousel.swipeLeft()
+        XCTAssertTrue(carousel.exists)
+        let scrolled = XCTAttachment(screenshot: app.screenshot())
+        scrolled.name = "Skill Hub compact featured carousel scrolled"
+        scrolled.lifetime = .keepAlways
+        add(scrolled)
+    }
+
     func testExpandedLongReasoningRemainsInteractive() throws {
         app.terminate()
         app.launchArguments += ["--ui-test-long-reasoning"]

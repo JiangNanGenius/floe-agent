@@ -99653,6 +99653,57 @@
           }
         }
       }
+    },
+    "skills.hub.publication_conflict": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This version has changed. Check for updates or contact its publisher."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此版本的内容已变更，请检查更新或联系发布者。"
+          }
+        }
+      }
+    },
+    "skills.hub.installation_record_unavailable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to read the skill’s installation record. Try again."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法读取技能的安装记录，请重试。"
+          }
+        }
+      }
+    },
+    "skills.hub.version_unverified": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unable to verify this skill version. Check for updates."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证此技能版本，请检查更新。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

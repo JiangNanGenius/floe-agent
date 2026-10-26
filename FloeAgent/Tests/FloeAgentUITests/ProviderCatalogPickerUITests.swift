@@ -38,7 +38,7 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         return app
     }
 
-    private func openProviderEditor(_ app: XCUIApplication) {
+    private func openProviderEditor(_ app: XCUIApplication, roleTitle: String = "Chat model provider") {
         let settings = app.buttons["sidebar.settings"]
         XCTAssertTrue(settings.waitForExistence(timeout: 15), "settings entry missing")
         if !settings.isHittable {
@@ -54,7 +54,7 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["providers.add"].waitForExistence(timeout: 10))
         app.buttons["providers.add"].tap()
         // The single Add entry chooses the initiating role first.
-        let chat = app.buttons["Chat model provider"]
+        let chat = app.buttons[roleTitle]
         XCTAssertTrue(chat.waitForExistence(timeout: 8), "role chooser missing")
         chat.tap()
         XCTAssertTrue(app.textFields["providers.display_name"].waitForExistence(timeout: 10))
@@ -114,6 +114,39 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         let existing = field.value as? String ?? ""
         if !existing.isEmpty {
             field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: min(existing.count, 40)))
+        }
+    }
+
+    func testMediaProviderFormsReachPrefilledModelsWithoutGeneration() throws {
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        for (role, title) in [("image", "Image generation/editing provider"),
+                              ("video", "Video generation provider")] {
+            let app = launchApp(iPad: true)
+            openProviderEditor(app, roleTitle: title)
+            let supplier = app.buttons["providers.supplier_field"]
+            tapWhenHittable(supplier, in: app)
+            let search = searchField(in: app)
+            XCTAssertTrue(search.waitForExistence(timeout: 8))
+            search.tap()
+            search.typeText("volc")
+            let preset = app.buttons["providers.supplier.preset.volcengineArk"]
+            XCTAssertTrue(preset.waitForExistence(timeout: 8))
+            preset.tap()
+            let notNow = app.buttons["providers.service_offers.not_now"]
+            if notNow.waitForExistence(timeout: 2) { notNow.tap() }
+            dismissKeyboard(app)
+            attach(app, role + " provider form")
+            let models = app.buttons["providers.manage_models"]
+            for _ in 0..<8 where !models.isHittable { app.swipeUp() }
+            XCTAssertTrue(models.isHittable, "The media form must allow reaching model selection")
+            models.tap()
+            let candidates = app.switches.matching(NSPredicate(format: "identifier BEGINSWITH %@", "providers.model."))
+            XCTAssertTrue(candidates.firstMatch.waitForExistence(timeout: 8), "Reviewed media model candidates must be prefilled")
+            attach(app, role + " provider prefilled model selection")
+            // No key, Save, Test or Generate action: no provider configuration
+            // is persisted and no paid media request is sent.
+            app.terminate()
         }
     }
 
