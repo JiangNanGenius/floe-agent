@@ -3224,10 +3224,17 @@ extension SubagentSimulatorExecutionTests {
                     arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
                 let finalResult = await runtime.dispatchChildTool(finalStatus, identity: identity,
                                                                   childContext: context)
-                try #require(finalResult.outputSummary.contains("cancelled"),
-                             "jobs.status must report the terminal cancelled service: \(finalResult.outputSummary.prefix(300))")
-                try #require(!finalResult.outputSummary.contains("http://127.0.0.1:\(port)"),
-                             "previewURL must vanish from jobs.status once cancelled: \(finalResult.outputSummary.prefix(400))")
+                try #require(finalResult.status == .ok,
+                             "MCP terminal status lookup failed: \(finalResult.outputSummary.prefix(300))")
+                let finalObject = try #require(try JSONSerialization.jsonObject(
+                    with: Data(sevenDeepOutput(finalResult).utf8)) as? [String: Any])
+                try #require(finalObject["state"] as? String == "cancelled",
+                             "jobs.status must report the terminal cancelled service")
+                let finalProgressJSON = try #require(finalObject["progressJSON"] as? String)
+                let finalProgress = try #require(try JSONSerialization.jsonObject(
+                    with: Data(finalProgressJSON.utf8)) as? [String: Any])
+                try #require(finalProgress["previewURL"] == nil || finalProgress["previewURL"] is NSNull,
+                             "previewURL must be absent in the cancelled MCP progress document")
                 var refused = false
                 do {
                     _ = try await client.callTool(name: "service_status",
@@ -3240,6 +3247,16 @@ extension SubagentSimulatorExecutionTests {
             }
             await client.disconnect()
             print("FLOE_SKILLHUB_MCP_QUALIFIED service=\(serviceJob.id) node=\(node.version ?? "unknown") build=completed smoke=\(evidence["smokeSHA256"] ?? "missing")")
+            evidence["sourceSHA"] = ProcessInfo.processInfo.environment["FLOE_QUAL_SOURCE_SHA"] ?? "not-provided"
+            evidence["runID"] = runID.uuidString
+            evidence["result"] = "PASS: real guest phases, MCP initialize/list/call and cancellation; no model/UI/device claim"
+            let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: true)
+            let directory = support.appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let retained = directory.appendingPathComponent("mcp-core-success-\(runID.uuidString).json")
+            try JSONEncoder().encode(evidence).write(to: retained, options: .atomic)
+            print("FLOE_MCP_CORE_QUALIFIED_EVIDENCE=\(retained.path)")
             await finish()
         } catch {
             evidence["failure"] = String(describing: error)
