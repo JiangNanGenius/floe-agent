@@ -1,0 +1,15 @@
+# Worked examples
+
+| file | shows |
+| --- | --- |
+| [dependencies.minimal.json](dependencies.minimal.json) | minimal envelope: one required exact pip pin |
+| [dependencies.purepip.json](dependencies.purepip.json) | several pure `py3-none-any` pins sharing one package-local wheel lock |
+| [dependencies.debian.json](dependencies.debian.json) | Debian apt identities with exact versions (single guest transaction + dpkg readback) |
+| [dependencies.npm.json](dependencies.npm.json) | exact `name@version` npm pins (lock bytes are review evidence, never replayed) |
+| [dependencies.cjk.json](dependencies.cjk.json) | Debian science-stack apt pins (`python3-matplotlib`, `fontconfig`) plus the optional exact font identity+version pin with the fixed CJK glyph-render probe |
+
+**A skill with no dependencies ships NO `dependencies.json` at all.** Do not
+invent an empty declaration: a document with zero profiles or a profile with an
+empty `requirements` array is invalid and fails closed. Guidance-only and
+script-only packages keep the existing no-sidecar behavior — old and new clients
+behave exactly as before.

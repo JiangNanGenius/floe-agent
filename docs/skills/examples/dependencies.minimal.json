@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "linux-guest",
+      "target": {
+        "os": "linux",
+        "architectures": [
+          "any"
+        ]
+      },
+      "requirements": [
+        {
+          "kind": "pip",
+          "name": "pypdf",
+          "version": "5.4.0",
+          "purpose": "Read and merge PDF pages for the report step.",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

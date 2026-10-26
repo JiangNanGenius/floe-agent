@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "linux-guest",
+      "target": { "os": "linux", "architectures": ["any"] },
+      "requirements": [
+        {
+          "kind": "npm",
+          "name": "typescript",
+          "version": "5.9.3",
+          "purpose": "Type-checks the generated helper before running it.",
+          "required": true
+        },
+        {
+          "kind": "npm",
+          "name": "@scope/validator",
+          "version": "1.2.0",
+          "purpose": "Schema validation used by the import step.",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
