@@ -2904,9 +2904,22 @@ extension SubagentSimulatorExecutionTests {
                 arguments: try Self.json(["jobID": serviceJob.id.uuidString]))
             let statusResult = await runtime.dispatchChildTool(statusCall, identity: fixedIdentity,
                                                                childContext: childContext)
-            try #require(statusResult.status == .ok
-                            && statusResult.outputSummary.contains("http://127.0.0.1:\(port)"),
-                         "jobs.status must expose the running previewURL: \(statusResult.outputSummary.prefix(400))")
+            try #require(statusResult.status == .ok,
+                         "jobs.status failed: \(statusResult.outputSummary.prefix(400))")
+            // progressJSON is a JSON string inside the status JSON. Inspect
+            // both structured layers rather than matching escaped URL bytes.
+            let statusObject = try #require(try JSONSerialization.jsonObject(
+                with: Data(sevenDeepOutput(statusResult).utf8)) as? [String: Any])
+            try #require(statusObject["state"] as? String == "running")
+            let progressJSON = try #require(statusObject["progressJSON"] as? String)
+            let progressObject = try #require(try JSONSerialization.jsonObject(
+                with: Data(progressJSON.utf8)) as? [String: Any])
+            let statusPreview = try #require(progressObject["previewURL"] as? String)
+            let statusPreviewURL = try #require(URL(string: statusPreview))
+            try #require(statusPreviewURL.scheme == "http"
+                            && statusPreviewURL.host == "127.0.0.1"
+                            && statusPreviewURL.port == port,
+                         "jobs.status did not expose the owned running preview URL: \(statusPreview)")
             evidence["jobsStatusRunning"] = String(statusResult.outputSummary.prefix(1_200))
 
             // Cancellation: real guest process exit, endpoint closure both
@@ -2923,12 +2936,19 @@ extension SubagentSimulatorExecutionTests {
                 try toolCall(id: "jobs-status-cancelled", toolName: "jobs.status",
                              arguments: try Self.json(["jobID": serviceJob.id.uuidString])),
                 identity: fixedIdentity, childContext: childContext)
-            try #require(closedStatus.outputSummary.contains("cancelled"),
+            try #require(closedStatus.status == .ok,
+                         "terminal jobs.status failed: \(closedStatus.outputSummary.prefix(300))")
+            let closedObject = try #require(try JSONSerialization.jsonObject(
+                with: Data(sevenDeepOutput(closedStatus).utf8)) as? [String: Any])
+            try #require(closedObject["state"] as? String == "cancelled",
                          "jobs.status must report the terminal cancellation: \(closedStatus.outputSummary.prefix(300))")
-            // The final stored progress document nulls previewURL on exit
-            // (LocalServiceTool runGuestService): runbook §6 closure evidence.
-            try #require(!closedStatus.outputSummary.contains("http://127.0.0.1:\(port)"),
-                         "previewURL must vanish from jobs.status once cancelled: \(closedStatus.outputSummary.prefix(400))")
+            // Inspect the actual final progress document, so JSON escaping
+            // cannot make a still-live URL look absent after cancellation.
+            let closedProgressJSON = try #require(closedObject["progressJSON"] as? String)
+            let closedProgress = try #require(try JSONSerialization.jsonObject(
+                with: Data(closedProgressJSON.utf8)) as? [String: Any])
+            try #require(closedProgress["previewURL"] == nil || closedProgress["previewURL"] is NSNull,
+                         "previewURL must be absent in the final cancelled progress document")
             let configuration = URLSessionConfiguration.ephemeral
             configuration.urlCache = nil
             configuration.timeoutIntervalForRequest = 3
@@ -4424,8 +4444,9 @@ extension SubagentSimulatorExecutionTests {
     /// canvas. Navigation and controls still use the public browser tool chain;
     /// no JavaScript execution surface is added to the model or production app.
     fileprivate func sevenDeepCanvasReadback(
-        app: AppEnvironment, conversationID: UUID, tabID: UUID, root: URL, tag: String
-    ) async throws -> String {
+        app: AppEnvironment, conversationID: UUID, tabID: UUID, root: URL, tag: String,
+        retainedDirectory: URL
+    ) async throws -> (digest: String, png: Data) {
         guard let session = app.browserCenter.session(for: conversationID),
               let tab = session.tabs.first(where: { $0.id == tabID }) else {
             throw FloeError.notFound("Owned art browser tab is unavailable")
@@ -4450,7 +4471,52 @@ extension SubagentSimulatorExecutionTests {
         let file = root.appendingPathComponent("art-out/observed-\(tag).png")
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try bytes.write(to: file, options: .atomic)
-        return FloeDigest.sha256Hex(bytes)
+        // skillHubCleanup deletes this workspace root on finish; also retain the
+        // exact bytes per capture under the persistent QualificationEvidence
+        // directory so any digest divergence stays pixel-diagnosable after the run.
+        try bytes.write(
+            to: retainedDirectory.appendingPathComponent("observed-\(tag).png"), options: .atomic)
+        return (FloeDigest.sha256Hex(bytes), bytes)
+    }
+
+    /// Persistent per-run evidence directory (same authority pattern as
+    /// skillHubFailureEvidence) for the seed-restoration diagnostic captures.
+    fileprivate func sevenDeepArtEvidenceDirectory(runID: UUID) throws -> URL {
+        let support = try FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let directory = support
+            .appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+            .appendingPathComponent("art-seed-restoration-\(runID.uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    /// Decodes a canvas PNG to a 1200x1200 premultiplied-last RGBA8 buffer for
+    /// pixel classification. Diagnostic only in this patch: no verdict uses it.
+    fileprivate func sevenDeepPNGPixelBuffer(_ bytes: Data) throws -> Data {
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width == 1200, image.height == 1200 else {
+            throw FloeError.validationFailed("Canvas PNG could not be decoded for pixel classification")
+        }
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            throw FloeError.validationFailed("sRGB pixel classification space is unavailable")
+        }
+        var pixels = [UInt8](repeating: 0, count: 1200 * 1200 * 4)
+        return try pixels.withUnsafeMutableBytes { storage in
+            guard let context = CGContext(
+                data: storage.baseAddress, width: 1200, height: 1200, bitsPerComponent: 8,
+                bytesPerRow: 1200 * 4, space: colorSpace,
+                bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue
+                    | CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                throw FloeError.validationFailed("Pixel classification context could not be created")
+            }
+            context.setBlendMode(.copy)
+            context.interpolationQuality = .none
+            context.draw(image, in: CGRect(x: 0, y: 0, width: 1200, height: 1200))
+            return Data(storage)
+        }
     }
 
     // MARK: - Seven deep shared helpers
@@ -5679,8 +5745,10 @@ extension SubagentSimulatorExecutionTests {
             try #require(sourceDigest.count == 64 && sourceDigest.allSatisfy { "0123456789abcdef".contains($0) }
                             && sourceDigest == generatedDigest,
                          "source provenance digest differs from guest output")
-            let initialDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "initial")
+            let artEvidenceDirectory = try sevenDeepArtEvidenceDirectory(runID: runID)
+            let (initialDigest, initialPNG) = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root,
+                tag: "initial", retainedDirectory: artEvidenceDirectory)
 
             // next → digest changes; ← prev returns the EXACT original digest:
             // the controls drive the real seeded engine reversibly.
@@ -5699,8 +5767,9 @@ extension SubagentSimulatorExecutionTests {
             _ = try await skillHubWaitText(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-seed-next-text", tabID: tabID, marker: "987654322")
-            let nextDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "next")
+            let (nextDigest, _) = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root,
+                tag: "next", retainedDirectory: artEvidenceDirectory)
             try #require(nextDigest != initialDigest, "seed-next did not change the artwork digest")
 
             let prevRef = try skillHubFindRef(in: page, namePrefix: "← prev", role: "button")
@@ -5723,8 +5792,44 @@ extension SubagentSimulatorExecutionTests {
                 $0.role == "input" && !($0.value ?? "").isEmpty
             }.map(\.value) == initialControlValues,
                          "seed-prev did not restore the live control values")
-            let restoredDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "restored")
+            let (restoredDigest, restoredPNG) = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root,
+                tag: "restored", retainedDirectory: artEvidenceDirectory)
+            // Preserve NEW diagnostic inputs before the unchanged assertion.
+            // Host draw-call equivalence does not prove native pixel identity;
+            // these classifications locate the next check without assigning a cause.
+            let (restoredResampleDigest, _) = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root,
+                tag: "restored-resample", retainedDirectory: artEvidenceDirectory)
+            let pixelClassification: String
+            do {
+                pixelClassification = try sevenDeepPNGPixelBuffer(restoredPNG)
+                    == sevenDeepPNGPixelBuffer(initialPNG) ? "pixels-equal" : "pixels-differ"
+            } catch {
+                pixelClassification = "pixel-decode-error: \(error)"
+            }
+            evidence["artCanvasRestoredResampleSHA256"] = restoredResampleDigest
+            evidence["artCanvasPixelClassification"] = pixelClassification
+            evidence["artCanvasEvidenceDir"] = artEvidenceDirectory.path
+            let diagnosticFiles = try ["initial", "next", "restored", "restored-resample"].map { tag -> [String: Any] in
+                let name = "observed-\(tag).png"
+                let data = try Data(contentsOf: artEvidenceDirectory.appendingPathComponent(name))
+                return ["file": name, "bytes": data.count, "sha256": FloeDigest.sha256Hex(data)]
+            }
+            let diagnostic: [String: Any] = [
+                "kind": "new-native-art-restoration-diagnostic",
+                "newDiagnosticInput": true, "qualification": false,
+                "sourceSHA": ProcessInfo.processInfo.environment["FLOE_QUAL_SOURCE_SHA"] ?? "not-provided",
+                "runID": runID.uuidString, "width": 1200, "height": 1200,
+                "packageSHA256": SevenDeepInputs.packageSHA256["algorithmic-art"] ?? "missing",
+                "transportSHA256": SevenDeepInputs.transportZipSHA256,
+                "pixelFormat": "zero-initialized sRGB RGBA8 premultiplied-last byte-order-big",
+                "pixelClassification": pixelClassification, "files": diagnosticFiles
+            ]
+            let manifest = artEvidenceDirectory.appendingPathComponent("manifest.json")
+            try JSONSerialization.data(withJSONObject: diagnostic, options: [.sortedKeys])
+                .write(to: manifest, options: .atomic)
+            print("FLOE_SEVEN_ART_DIAGNOSTIC_MANIFEST=\(manifest.path)")
             try #require(restoredDigest == initialDigest,
                          "seed-prev did not restore the exact original digest")
 
@@ -5741,8 +5846,9 @@ extension SubagentSimulatorExecutionTests {
             page = try await skillHubObserve(
                 runtime: runtime, identity: fixedIdentity, context: childContext,
                 tag: "art-observe-final", tabID: tabID)
-            let finalDigest = try await sevenDeepCanvasReadback(
-                app: app, conversationID: conversationUUID, tabID: tabID, root: root, tag: "after-download")
+            let (finalDigest, _) = try await sevenDeepCanvasReadback(
+                app: app, conversationID: conversationUUID, tabID: tabID, root: root,
+                tag: "after-download", retainedDirectory: artEvidenceDirectory)
             try #require(finalDigest == initialDigest,
                          "viewer state corrupted after the download control click")
             evidence["artNative"] = "seed next/prev reversible actual canvas PNG; download control intact, file delivery unverified"
