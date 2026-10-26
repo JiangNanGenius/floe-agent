@@ -1,0 +1,15 @@
+# Floe Agent 1.7.59 (300) delivery — 2026-10-26
+
+- Immutable App source: `03bc1127d96bbab49a04d1957ae4c6fda5a4c473`, annotated tag `v1.7.59`. Later review instructions and delivery records are metadata-only changes.
+- Original toolchain repairs are included: usable tool discovery, large Shell scripts, explicit timeout handling, long-result capture and paging, MCP startup/discovery/calls, and cancellation cleanup. Skill Hub work does not replace those requirements.
+- Local qualification includes Swift 6 full-App/object compilation, 89 core tests, 16 focused output-paging tests, and the final full-App MCP integration. The latter built and started a real service in Linux, passed 11 HTTP self-tests, completed native MCP initialization/list/call, and verified cancellation and endpoint shutdown. These checks ran at their recorded implementation commits; the final launcher integration ran at `a24bc690`, followed only by release-note changes before the frozen tag.
+- Local device archive: Xcode 27.1 (`27A9275`), iPhoneOS 27.1, arm64. The exact-source recovery transport and 14 matching symbol bundles are retained. Simulator checks do not claim physical-device acceptance.
+- Internal TestFlight: Apple `VALID`, unexpired, `IN_BETA_TESTING`, existing **Floe QA** group; English and Simplified Chinese notes verified. Signing/upload run: [40321351479](https://github.com/JiangNanGenius/floe-agent/actions/runs/40321351479).
+- Public TestFlight: attached to existing **publictest1**, exactly one submission, `WAITING_FOR_BETA_REVIEW` / `pending_review`. API metadata and group writes returned 403; Safari completed those operations. Independent read-only verification succeeded in [40325377368](https://github.com/JiangNanGenius/floe-agent/actions/runs/40325377368). This is submission, not external tester availability or a production App Store release.
+- [Stable unsigned Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.59): canonical IPA, SHA-256 sidecar and minimal provenance; latest pointer, immutable source binding, downloaded digest and actual arm64 iOS executable verified. IPA: 813,768,015 bytes; SHA-256 `e24ec577e11eac8e9ce9e470c355826ed132621d4b4199def9c3e26fd08237e2`.
+- Publisher [40324085148](https://github.com/JiangNanGenius/floe-agent/actions/runs/40324085148) awaited its reusable Feather publication job. Live feed version, build, source, download URL, size and digest match the verified Release.
+- Source merged and pushed to `main`; the merged task branch and private transport draft were removed. Finished build directories, redundant generated App/archive/transfer copies and an unused Simulator symbolication cache were cleaned after exporting evidence. Installed Simulator apps/data, original failures, logs, current installation packages, symbols and required rollback material remain preserved; both Floe Simulators are shut down.
+
+## 简体中文
+
+300 已包含原计划的工具调用链修复，并完成本地编译、相关行为检查、真实 Linux 服务与原生 MCP 调用验证。Floe QA 内测可安装；publictest1 已提交，正在等待审核。无签名 Release 与 Feather 源已发布并独立核验。代码已合并推送，任务分支和本轮无用产物已清理；没有变更正式 App Store 提交或宣称真机验收。
