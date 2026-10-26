@@ -17,7 +17,6 @@ import FloeProviders
 struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
     @State private var showsCatalogPicker = false
@@ -253,12 +252,10 @@ struct ProviderEditorView: View {
                         showsCatalogPicker = false
                     }
                 )
-                // Give the regular-width popover a usable proposal while
-                // allowing compact sheets to fit their actual screen width.
-                .frame(minWidth: horizontalSizeClass == .regular ? 420 : nil,
-                       idealWidth: 520,
-                       minHeight: horizontalSizeClass == .regular ? 540 : nil,
-                       idealHeight: 680)
+                // Offer a readable size without forcing a minimum height:
+                // the keyboard can leave a much shorter popover viewport.
+                // A hard minimum pushes the navigation/search bar offscreen.
+                .frame(idealWidth: 520, idealHeight: 540)
                 .presentationSizing(.page)
             }
         }

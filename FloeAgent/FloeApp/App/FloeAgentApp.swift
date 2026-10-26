@@ -1407,6 +1407,7 @@ struct RootView: View {
                     }
                 }
             }
+            .accessibilityIdentifier("sidebar.list")
             .disabled(inlineSelection.busy)
             if inlineSelection.isActive {
                 InlineConversationSelectionBar(

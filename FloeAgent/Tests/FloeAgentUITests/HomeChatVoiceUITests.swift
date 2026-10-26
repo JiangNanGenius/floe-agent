@@ -80,7 +80,12 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         XCTAssertTrue(pdf.exists)
         XCTAssertFalse(app.buttons["sidebar.batch"].exists)
         let row = app.descendants(matching: .any).matching(identifier: "sidebar.conversation.57C0A79F-CF1B-45D2-B640-EF54E5C55391").firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 8))
+        let sidebar = app.descendants(matching: .any).matching(identifier: "sidebar.list").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 8))
+        // Preserve the reused simulator's workspaces. Chat rows can be lazy
+        // and below them; scroll only the sidebar, not the open Skill Hub.
+        for _ in 0..<16 where !row.isHittable { sidebar.swipeUp() }
+        XCTAssertTrue(row.isHittable)
         row.press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选 1"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["sidebar.selectMultiple"].exists,
