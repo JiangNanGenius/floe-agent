@@ -1245,7 +1245,13 @@ sys.exit(0 if ok else 1)
     }
 
     /// Debian version class `([0-9]+:)?[A-Za-z0-9][A-Za-z0-9+.-~:]*` (epoch,
-    /// revision, dfsg/tilde suffixes stay verbatim inside the pin).
+    /// revision, dfsg/tilde suffixes stay verbatim inside the pin), aligned
+    /// with the approved descriptor contract (`SkillDependency.isValidAptVersion`):
+    /// the version body must carry at least one ASCII digit AFTER any epoch,
+    /// because every real Debian version body does — floating aliases
+    /// (`latest`, `stable`, even `1:latest`) can never masquerade as an exact
+    /// pin, while epoch/repack pins like `1:20240730+repack1-1` stay
+    /// verbatim-installable.
     public static func isValidAptVersion(_ value: String) -> Bool {
         var body = Substring(value)
         if let colon = value.firstIndex(of: ":") {
@@ -1256,7 +1262,8 @@ sys.exit(0 if ok else 1)
             body = value[value.index(after: colon)...]
         }
         let bytes = Array(body.utf8)
-        guard !bytes.isEmpty, bytes.count <= 128 else { return false }
+        guard !bytes.isEmpty, bytes.count <= 128,
+              bytes.contains(where: { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }) else { return false }
         let lower = UInt8(ascii: "a")...UInt8(ascii: "z")
         let upper = UInt8(ascii: "A")...UInt8(ascii: "Z")
         let digit = UInt8(ascii: "0")...UInt8(ascii: "9")

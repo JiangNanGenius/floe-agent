@@ -1403,7 +1403,15 @@ actor SkillDependencyPreparationCenter {
             }
             lines.append("\(entry.kind) \(entry.name)\(version) = \(label)\(entry.detail.map { " (\($0))" } ?? "")")
         }
+        // The "runs (or has run)" half is claimed only when THIS live center
+        // holds a plan bound to a resolved task environment (recordPlan /
+        // prepareAtInstall with an environmentID + runID). A persisted
+        // install-time record alone — a global prefetch summary read by
+        // another center instance, a restart or a released environment — never
+        // claims environment readiness: the environment half honestly stays
+        // "deferred" until a task binds a resolved Linux environment again.
         let pendingEnvironmentInstall = pendingSharedPreparation[skillID] != nil
+            || !plans.values.contains { $0.skillID == skillID }
         lines.append(pendingEnvironmentInstall
             ? "environment install/readback: deferred to the skill's first exec.shell invocation with skillID in a task bound to a resolved Linux environment (global installs prepare no task state and claim no readiness)"
             : "environment install/readback: runs (or has run) in the task's resolved Linux environment with receipts bound to the package version + digests + launch generation")

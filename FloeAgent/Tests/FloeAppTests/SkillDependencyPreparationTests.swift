@@ -1126,7 +1126,12 @@ struct SkillDependencyPreparationTests {
 
     @Test func signedLockBindsFetchAndInstallAndRefusesContradictions() async throws {
         let bundle = makeWheelBundle(spec: "pypdf==5.4.0")
-        let matchingLock = "pypdf==5.4.0 \\\n    --hash=sha256:\(bundle.sha256)\n    --hash=sha256:\(String(repeating: "f", count: 64))\n# comment\n"
+        // pip's own multi-hash continuation form (same shape as
+        // closureLockText()): every option line but the last ends in a
+        // backslash. A bare `--hash` statement is not parseable requirements
+        // syntax — pip itself refuses it — so the strict decoder correctly
+        // rejects it and the fixture must carry the valid continuation.
+        let matchingLock = "pypdf==5.4.0 \\\n    --hash=sha256:\(bundle.sha256) \\\n    --hash=sha256:\(String(repeating: "f", count: 64))\n# comment\n"
         // 1) Fetch/cache path: the digest is pinned -> verified.
         let goodHarness = makeHarness(requirementsJSON: pipWithLock(), lockText: matchingLock)
         let goodCenter = makeStoreCenter(goodHarness, storeURL: goodHarness.wheelStore)
