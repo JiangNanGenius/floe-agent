@@ -4,6 +4,7 @@ import Foundation
 import CryptoKit
 import Darwin
 import FloeCore
+import FloeLocalModelCatalog
 
 struct LocalSpeechCatalog: Codable, Sendable {
     let schemaVersion: Int
@@ -111,6 +112,7 @@ enum LocalSpeechVoiceReference {
 
 protocol LocalSpeechDownloading: Sendable {
     func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL
+    func download(_ url: URL, ledger: ModelDownloadSettlementLedger, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL
     /// Retire an in-flight or resumable transfer for a URL before its cached
     /// bytes are deleted. Canceling the owning background task first prevents a
     /// process-restarted transfer from recreating the file after cleanup.
@@ -118,11 +120,21 @@ protocol LocalSpeechDownloading: Sendable {
     /// fence; the default no-op serves download-only conformers and fixtures.
     func retire(_ url: URL) async
 }
-extension LocalSpeechDownloading { func retire(_ url: URL) async { } }
+extension LocalSpeechDownloading {
+    func retire(_ url: URL) async { }
+    func download(_ url: URL, ledger: ModelDownloadSettlementLedger,
+                  progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        try await download(url, progress: progress)
+    }
+}
 
 private struct SharedSpeechDownloader: LocalSpeechDownloading {
     func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
         try await WhisperDownloadCoordinator.shared.download(url, progress: progress)
+    }
+    func download(_ url: URL, ledger: ModelDownloadSettlementLedger,
+                  progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        try await WhisperDownloadCoordinator.shared.download(url, ledger: ledger, progress: progress)
     }
     /// Shared transfer owner's durable retirement fence: persists the URL key,
     /// resumes waiters, cancels the matching background task and removes its
@@ -570,6 +582,8 @@ actor LocalSpeechModelStore {
         try root().appendingPathComponent("tts-\(model.id)-\(model.revision)", isDirectory: true)
     }
     private func install(_ model: LocalSpeechModel, owner: UUID) async throws {
+        let ledger = ModelDownloadSettlementLedger()
+        defer { ledger.drain() }
         guard try catalog().contains(model), !leases.values.contains(model.id) else { throw Failure.busy }
         // Crash window between the final commit and the stage transition:
         // the pack is already installed, so finish without re-downloading.
@@ -591,7 +605,7 @@ actor LocalSpeechModelStore {
         let available = try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage ?? 0
         guard available >= needed else { throw Failure.space }
         var completed: Int64 = 0
-        for asset in model.files {
+        for (index, asset) in model.files.enumerated() {
             try Task.checkCancellation()
             guard generation == owner else { throw CancellationError() }
             let target = staging.appendingPathComponent(asset.path)
@@ -607,7 +621,7 @@ actor LocalSpeechModelStore {
             let window = speedWindow
             estimator.reset()
             installation.phase = .downloading
-            let temporary = try await downloader.download(asset.url) { bytes in
+            let temporary = try await downloader.download(asset.url, ledger: ledger) { bytes in
                 Task { await self.networkProgress(owner, window: window, base: before, bytes: bytes, assetBytes: asset.byteCount) }
             }
             try Task.checkCancellation()
@@ -626,6 +640,7 @@ actor LocalSpeechModelStore {
             try FileManager.default.moveItem(at: temporary, to: target)
             completed += asset.byteCount
             commitProgress(owner, bytes: completed)
+            if index < model.files.count - 1 { ledger.checkpoint() }
         }
         try Task.checkCancellation()
         installation.phase = .committing

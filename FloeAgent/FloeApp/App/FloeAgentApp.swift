@@ -44,6 +44,9 @@ final class FloeApplicationDelegate: NSObject, UIApplicationDelegate {
         // bootstrap atomically with each completion accounts for cold launch
         // before UIKit can release this background execution opportunity.
         let bootstrap: @Sendable () async -> Void = {
+            // TTS shares the speech downloader but keeps its own persisted
+            // request/retirement policy and installation owner.
+            await LocalSpeechModelStore.shared.restoreInstallation()
             await FloeAgentApp.liveEnvironment.backgroundRunCoordinator.runDownloadWakeBootstrap()
         }
         if identifier == WhisperDownloadCoordinator.identifier {
