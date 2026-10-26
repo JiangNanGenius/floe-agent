@@ -904,6 +904,13 @@ final class LinuxGuestRegistryTests: XCTestCase {
         let silentLedger = FakeSessionLedger()
         let silentFactory = FakeSessionFactory(ledger: silentLedger) { env, token in
             if token.hasPrefix("hello-") { return caps(token) }
+            // Answer the new trusted boot frame before deliberately holding
+            // the user's later command. Bootstrap must complete on each VM
+            // for this test to exercise cross-session timeout isolation.
+            if let console = silentLedger.console(for: env),
+               TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count == 1 {
+                return reply(token, stdout: "FLOE_LOOPBACK=provisioned\n", stderr: "", exit: 0)
+            }
             return env == "env-3" ? reply(token, stdout: "still-here", stderr: "", exit: 0) : []
         }
         let registryWithStuck = makeRegistry(

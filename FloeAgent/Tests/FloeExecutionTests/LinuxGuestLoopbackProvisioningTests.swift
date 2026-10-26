@@ -16,11 +16,6 @@ import FloeTools
 @testable import FloeExecution
 
 final class LinuxGuestLoopbackProvisioningTests: XCTestCase {
-    /// The healthy-skip marker occurs once in the trusted script. Counting
-    /// it in the host-written EXEC stream counts frames; procfs paths occur
-    /// several times within a single frame and cannot identify boot count.
-    private let loopbackSignature = "FLOE_LOOPBACK=skipped-already-healthy"
-
     /// Explicit open/close gate for the provisioning reply. The scripted
     /// guest can answer HELLO immediately but holds the provisioning frame
     /// until the test has observed the registry state it needs, so the
@@ -98,8 +93,10 @@ final class LinuxGuestLoopbackProvisioningTests: XCTestCase {
     }
 
     private func provisioningFrameCount(_ console: TestLinuxGuestConsole) -> Int {
-        String(decoding: console.written, as: UTF8.self)
-            .components(separatedBy: loopbackSignature).count - 1
+        // EXEC payloads are base64/chunk encoded and can be sent after the
+        // header. Count the actual protocol frames, so the held-reply gate
+        // can observe a dispatched frame before payload transmission ends.
+        TestLinuxGuestConsole.tokens(in: console.written, name: "EXEC").count
     }
 
     /// Waits until the first engine's provisioning frame is on the wire and

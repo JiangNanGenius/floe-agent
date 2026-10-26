@@ -44,6 +44,7 @@ import FloeEnvironments
 import FloeAgentRuntime
 import FloeSecurity
 import UserNotifications
+import UIKit
 import FloeExecution
 import FloePersistence
 import FloeSkills
@@ -6060,4 +6061,445 @@ extension SubagentSimulatorExecutionTests {
     }
 }
 
+
+// ============================================================================
+// ==== Impeccable large-capture INPUT export diagnostic =====================
+// ============================================================================
+// job-31b46c27c1d2461d - PRIVATE PROPOSAL, append-only.
+//
+// This block adds ONE separately named, explicitly enabled diagnostic test
+// and ONE file-private path-guard helper. It touches no existing test,
+// helper, assertion, transport pin, budget or permission anywhere in this
+// file. Rebased onto d6264380 ("Read complete retained tool results in
+// guest and browser qualification").
+//
+// Why it exists: the H6 qualification
+// `impeccableNativeCaptureLoopQualification` releases its captures and
+// deletes the owned workspace on every exit, so the ORIGINAL failed
+// large-round1 snapshot/identity/stdout/stderr from qualification29 are
+// genuinely gone (host timeout exit=124 at the 600 s production budget,
+// timeoutClamp=none; whole case failed 1). Root (Deep291, engine cause/patch
+// owner) asked for minimal NEW diagnostic INPUTS marked newDiagnosticInput:
+// a fresh controlled capture export, never a recovery claim about the lost
+// bytes and never a rerun of the engine.
+//
+// What it does: reconstructs ONLY the controlled input path of H6 - the
+// exact same `impeccableLargeFixtureHTML()` generation, the same byte-exact
+// staging with the guest re-hash proof, the same owned fixture-server job,
+// the same production native `browser.observe profile=design` capture -
+// reads the captured snapshot + identity ORIGINAL BYTES through the
+// capture-codec path rules, and exports those two files plus a small
+// manifest into App-owned ApplicationSupport evidence BEFORE any release or
+// cleanup runs.
+//
+// What it never does: no `floe-impeccable` invocation of any kind (no
+// snapshot-scan, no Needs, no round 1/round 2, no 600 s engine budget), no
+// small-page loop, no full H6 group, no weakened or reclassified H6
+// assertion, and no timeout-as-success wording. The manifest and the run
+// evidence state `qualification=false` and `engineRoundExecuted=false`
+// verbatim; a pass here only ever means "the export objective completed",
+// never "H6 qualified".
+//
+// Opt-in, fail-closed (a plain disabled run is reported as disabled, never a
+// pass - the existing real-guest policy in this file):
+//   * FLOE_IMPECCABLE_LARGE_EXPORT_DIAGNOSTIC=1
+//   * FLOE_SKILL_HUB_SOURCES_DIR  (same frozen hub 4210403 sources as H6;
+//                                  fixture server pages only)
+//   * FLOE_QUAL_SOURCE_SHA        (exact app source SHA under test;
+//                                  required, never fabricated)
+//   * FLOE_QUAL_TOOLCHAIN         (exact toolchain string; required, never
+//                                  fabricated)
+//
+// No transport zip, no engine binary and no engine execution anywhere in
+// this diagnostic; the engine argv/budget lines in the manifest are an
+// explicit REFERENCE ONLY, marked as not executed. Ownership is the same
+// production graph as H6: one owned guest, one owned localService
+// fixture-server job (labeled
+// `impeccable-large-export-diagnostic-fixture-server-<uuid>`, settled before
+// the owned guest is deleted), one owned browser tab and one owned design
+// capture, released and removed through the real tools AFTER the export.
+// No user device, no credentials, no model, no user pages, no broad
+// workspace copy: only the two receipt-named files are exported.
+// ============================================================================
+// MARK: - Impeccable large-capture export diagnostic (file scope, private)
+
+/// Capture-codec path rules for the export diagnostic, mirroring the
+/// production bridge validation (`BrowserImpeccableCaptureService.
+/// validatedBridgeRoot` / `ensureRealBridgeDirectories`): a receipt-relative
+/// path must be non-empty, relative and canonical (no empty, "." or ".."
+/// components), every parent under the resolved workspace root must be a
+/// real directory, and the final target must be a real regular file - a
+/// symlinked or escaping path is rejected, never followed or copied.
+private enum ImpeccableLargeExportPathGuard {
+    static func resolve(_ relative: String, under root: URL,
+                        fileManager: FileManager = .default) throws -> URL {
+        guard !relative.isEmpty else {
+            throw FloeError.validationFailed("Export diagnostic relative path is empty")
+        }
+        let components = relative.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.contains(""), !components.contains("."), !components.contains("..") else {
+            throw FloeError.validationFailed(
+                "Export diagnostic relative path must be canonical (no empty/./.. components): \(relative)")
+        }
+        let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        var current = resolvedRoot
+        for component in components.dropLast() {
+            current = current.appendingPathComponent(component, isDirectory: true)
+            guard fileManager.fileExists(atPath: current.path) else {
+                throw FloeError.notFound("Export diagnostic path component missing: \(current.path)")
+            }
+            let values = try current.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink == false else {
+                throw FloeError.validationFailed(
+                    "Export diagnostic path component is not a real directory (symlink rejected): \(current.path)")
+            }
+        }
+        guard let fileName = components.last else {
+            throw FloeError.validationFailed("Export diagnostic relative path has no file component: \(relative)")
+        }
+        let file = current.appendingPathComponent(fileName, isDirectory: false)
+        let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard values.isRegularFile == true, values.isSymbolicLink == false else {
+            throw FloeError.validationFailed(
+                "Export diagnostic target is not a real regular file (symlink rejected): \(file.path)")
+        }
+        return file
+    }
+}
+
+extension SubagentSimulatorExecutionTests {
+
+    // MARK: - Test: large-capture INPUT export diagnostic (never a qualification)
+
+    /// Export-only diagnostic for the Root engine owner. Rebuilds the exact
+    /// controlled large-capture inputs (same fixture generation, same staging
+    /// proof, same owned fixture server, same production native design
+    /// capture), exports the captured snapshot + identity original bytes and
+    /// capture metadata to App-owned ApplicationSupport evidence BEFORE any
+    /// release/cleanup, then releases and tears down through the real tools.
+    /// No engine invocation of any kind; the manifest states
+    /// `newDiagnosticInput=true`, `qualification=false` and
+    /// `engineRoundExecuted=false` verbatim, and the single printed marker is
+    /// the manifest path for Main/Root retrieval. A failure after the export
+    /// preserves the already-exported files (they live outside the owned
+    /// workspace that cleanup removes) and records the actionable error.
+    @Test(
+        "Impeccable large-capture export diagnostic: same controlled fixture and native design capture, snapshot/identity original bytes exported before cleanup, no engine round",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_IMPECCABLE_LARGE_EXPORT_DIAGNOSTIC"] == "1")
+    )
+    func impeccableLargeCaptureExportDiagnostic() async throws {
+        // Fail-closed input contract BEFORE any side effect: the exact source
+        // SHA and toolchain come from Main's test environment and are never
+        // fabricated here.
+        let sources = try SkillHubInputs.requireSourcesDir()
+        guard let sourceSHA = ProcessInfo.processInfo.environment["FLOE_QUAL_SOURCE_SHA"],
+              sourceSHA.range(of: "^[0-9a-f]{40}$", options: .regularExpression) != nil else {
+            throw FloeError.validationFailed(
+                "Large-capture export diagnostic requires FLOE_QUAL_SOURCE_SHA (exact app source SHA; never fabricated)")
+        }
+        guard let toolchain = ProcessInfo.processInfo.environment["FLOE_QUAL_TOOLCHAIN"],
+              !toolchain.isEmpty else {
+            throw FloeError.validationFailed(
+                "Large-capture export diagnostic requires FLOE_QUAL_TOOLCHAIN (exact toolchain; never fabricated)")
+        }
+        let root = try makeWorkspaceRoot()
+        let fixtureBytes = impeccableLargeFixtureHTML()
+        let fixtureSHA = FloeDigest.sha256Hex(fixtureBytes)
+        var evidence: [String: String] = [
+            "kind": "impeccable-large-capture-export-diagnostic-not-model-not-ui",
+            "hubSources": sources.path,
+            "fixtureHTMLSHA256": fixtureSHA,
+            "newDiagnosticInput": "true",
+            "qualification": "false",
+            "engineRoundExecuted": "false",
+        ]
+        var stagingManifest: [SkillHubStagedFile] = []
+        try SkillHubStager.stageBytes(fixtureBytes, to: root,
+                                      path: "webapp-testing-src/assets/fixtures/site/impeccable-large.html",
+                                      into: &stagingManifest)
+        try SkillHubStager.stage(sources.appendingPathComponent("webapp-testing", isDirectory: true),
+                                 to: root, relativePrefix: "webapp-testing-src", into: &stagingManifest)
+        try SkillHubStager.writeManifest(stagingManifest, at: root)
+
+        var ownedEnvironmentID: String?
+        var parentHold: CancellationToken?
+        var ownedRuntime: FloeAgentRuntime?
+        var parentTask: Task<Void, Error>?
+        var jobIDs: [UUID] = []
+        var tabs: [UUID] = []
+        var captureIDs: [UUID] = []
+        var identity: ChildExecutionIdentity?
+        var context: ToolContext?
+        let app = try await appQualificationEnvironment()
+        let conversationID = UUID()
+        let runID = UUID()
+        var recordsCreated = false
+        let fixedIdentity = ChildExecutionIdentity(
+            parentRunID: runID, rootTaskID: conversationID,
+            delegateCallID: "impeccable-large-export-diagnostic")
+        identity = fixedIdentity
+        func finish() async {
+            // Release the design capture and close the tab through the real
+            // tools while the parent runtime is still alive, then the
+            // standard ordered teardown (jobs settle before the owned guest
+            // is stopped). Exports under ApplicationSupport are outside the
+            // owned workspace and survive this cleanup by design.
+            if let runtime = ownedRuntime, let context {
+                for captureID in captureIDs {
+                    guard let release = try? toolCall(
+                        id: "release-" + captureID.uuidString, toolName: "browser.observe",
+                        arguments: try! Self.json([
+                            "profile": "design", "designAction": "release",
+                            "captureID": captureID.uuidString])) else { continue }
+                    _ = await runtime.dispatchChildTool(release, identity: fixedIdentity,
+                                                        childContext: context)
+                }
+            }
+            await skillHubCloseBrowserTabs(runtime: ownedRuntime, identity: identity,
+                                           context: context, tabs: tabs)
+            await skillHubCleanup(runtime: ownedRuntime, parentHold: parentHold,
+                                  parentTask: parentTask, jobs: app.backgroundJobService,
+                                  jobIDs: jobIDs, environmentID: ownedEnvironmentID, root: root,
+                                  conversationID: recordsCreated ? conversationID : nil, app: app)
+        }
+        do {
+            let environmentID = try await bootGuest(root: root)
+            ownedEnvironmentID = environmentID
+            try await skillHubCreateRunRows(app: app, conversationID: conversationID, runID: runID,
+                title: "Impeccable large-capture export diagnostic",
+                goal: "Export the controlled large-capture inputs; no engine, no model")
+            recordsCreated = true
+            let jobs = try #require(app.backgroundJobService, "Production job service is unavailable")
+            let ceiling: Set<String> = [
+                "exec.shell", "browser.tab", "browser.tabs", "browser.navigate",
+                "browser.wait", "browser.observe",
+            ]
+            let hold = CancellationToken()
+            parentHold = hold
+            let runtime = makeRuntime(
+                root: root, conversationID: conversationID, runID: runID,
+                allowedToolNames: ceiling, environmentID: environmentID,
+                adapter: QualificationHoldingProviderAdapter(hold: hold))
+            ownedRuntime = runtime
+            parentTask = Task { try await runtime.start(goal: "Run the Impeccable large-capture export diagnostic") }
+            try #require(await waitForAsync(timeout: 20) {
+                if case .streamingModel = await runtime.state { return true }
+                return false
+            }, "Parent must be active before the export diagnostic child execution")
+            let childContext = ToolContext(
+                runID: runID, scope: .local, allowedToolNames: ceiling,
+                workspaceRootURL: root, cancellation: CancellationToken(),
+                environmentID: environmentID, conversationID: conversationID)
+            context = childContext
+            try await requireQualifiedKernel(runtime: runtime, identity: fixedIdentity, context: childContext)
+
+            // Byte-exact staging proof (guest re-hash) - the same controlled
+            // input path as the H6 setup. No engine bytes are staged.
+            let stageResult = try await skillHubShell(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "large-export-stage-verify",
+                command: "PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n" + skillHubStageVerifyScript
+                    + "\nPY", timeout: 120)
+            try #require(stageResult.status == .ok && stageResult.outputSummary.contains("bad=0"),
+                         "Guest staging verification failed: \(stageResult.outputSummary)")
+
+            // Owned fixture server, same shipped script, labeled ownership.
+            let port = Int.random(in: 20_000...45_000)
+            let invocation = LocalServiceTool.Arguments(runtime: "python",
+                entry: "webapp-testing-src/scripts/fixture_server.py", arguments: [], cwd: nil, port: port)
+            let serviceJob = try await jobs.submit(
+                runID: runID,
+                toolCallID: "impeccable-large-export-diagnostic-fixture-server-" + UUID().uuidString,
+                targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(invocation),
+                scope: .local, workspaceRootURL: root, allowedWorkspacePaths: [],
+                environmentID: environmentID, submissionSource: .nativeService, waitForCompletion: false)
+            jobIDs.append(serviceJob.id)
+            evidence["serviceJobID"] = serviceJob.id.uuidString
+            var progressSamples: [[String: String]] = []
+            let preview = try await skillHubWaitPreview(jobs, id: serviceJob.id,
+                                                        samples: &progressSamples, timeout: 180)
+            try #require(preview.host == "127.0.0.1" && preview.port == port,
+                         "PreviewURL must be the owned loopback endpoint, got \(preview)")
+            for sample in progressSamples {
+                try #require(!(sample["previewURL"]?.isEmpty == false && sample["state"] != "running"),
+                             "previewURL appeared before the running state: \(sample)")
+            }
+
+            // Same controlled large page only: create -> navigate -> load ->
+            // settle on the fixture marker.
+            let created = try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "large-export-create", tool: "browser.tab",
+                arguments: ["action": "create"])
+            let tabID = try #require(created.page?.tabs.first(where: { $0.isActive })?.id,
+                                     "tab create returned no active tab")
+            tabs.append(tabID)
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "large-export-navigate", tool: "browser.navigate",
+                arguments: ["url": preview.absoluteString + "impeccable-large.html",
+                            "tabID": tabID.uuidString])
+            try await skillHubBrowserCall(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "large-export-load", tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "load",
+                            "timeoutMilliseconds": 15_000])
+            _ = try await skillHubWaitText(runtime: runtime, identity: fixedIdentity,
+                context: childContext, tag: "large-export-settle",
+                tabID: tabID, marker: "Impeccable large synthetic page")
+
+            // Same proven production native design capture.
+            let captureSummary = try await impeccableDesignCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "large-export-capture",
+                arguments: ["profile": "design", "tabID": tabID.uuidString])
+            let captureData = try #require(captureSummary.data(using: .utf8),
+                                           "Capture response was not UTF-8")
+            let capture = try JSONDecoder().decode(ImpeccableDesignCaptureResponse.self,
+                                                   from: captureData)
+            try #require(capture.profile == "design" && capture.state == "captured",
+                         "Capture response state mismatch: \(captureSummary.prefix(300))")
+            try #require(capture.capture.bridgeRootIsTaskWorkspace,
+                         "Capture must belong to this task workspace")
+            let captureID = try #require(UUID(uuidString: capture.capture.captureId),
+                                         "Capture id is not a UUID: \(capture.capture.captureId)")
+            captureIDs.append(captureID)
+            // Diagnostic fidelity (not an H6 assertion change): this must be
+            // the same large controlled fixture band the H6 scaling sample
+            // targeted, inside the unchanged frozen capture budgets.
+            try #require(capture.capture.elementCount >= 5_000,
+                         "Large fixture must really exceed 5,000 elements, got \(capture.capture.elementCount)")
+            try #require(capture.capture.elementCount <= 30_000,
+                         "Large fixture exceeds the 30,000-element capture budget: \(capture.capture.elementCount)")
+            try #require(capture.capture.snapshotBytes <= ImpeccableBudgets.frozenV1.maxSnapshotBytes,
+                         "Snapshot exceeds the frozen 48 MiB budget: \(capture.capture.snapshotBytes)")
+
+            // Read the ORIGINAL bytes through the capture-codec path rules
+            // (foreign/escaping/symlinked relative paths are rejected, never
+            // followed), bounded by the frozen 48 MiB snapshot budget.
+            let snapshotURL = try ImpeccableLargeExportPathGuard.resolve(
+                capture.capture.relativeSnapshotFile, under: root)
+            let identityURL = try ImpeccableLargeExportPathGuard.resolve(
+                capture.capture.relativeIdentityFile, under: root)
+            let snapshotBytes = try Data(contentsOf: snapshotURL)
+            let identityBytes = try Data(contentsOf: identityURL)
+            try #require(snapshotBytes.count == capture.capture.snapshotBytes,
+                         "Snapshot bytes differ from the native receipt")
+            let snapshotSHA = FloeDigest.sha256Hex(snapshotBytes)
+            let identitySHA = FloeDigest.sha256Hex(identityBytes)
+
+            // Viewport comes from the staged identity document itself.
+            let identityObject = try JSONSerialization.jsonObject(with: identityBytes)
+            guard let identityDictionary = identityObject as? [String: Any] else {
+                throw FloeError.validationFailed("Staged identity is not a JSON object")
+            }
+            guard let viewportDictionary = identityDictionary["viewport"] as? [String: Any] else {
+                throw FloeError.validationFailed("Staged identity has no viewport object")
+            }
+            guard let viewportWidth = (viewportDictionary["width"] as? NSNumber)?.doubleValue,
+                  let viewportHeight = (viewportDictionary["height"] as? NSNumber)?.doubleValue else {
+                throw FloeError.validationFailed("Staged identity viewport is missing width/height")
+            }
+
+            // Export FIRST - the two original files plus a small manifest -
+            // BEFORE any release/cleanup can remove the capture. Only these
+            // two receipt-named files leave the workspace; no broad copy.
+            let support = try FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask,
+                appropriateFor: nil, create: true)
+            let exportDirectory = support
+                .appendingPathComponent("FloeAgent/QualificationEvidence/ImpeccableLargeDiagnostic",
+                                        isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: exportDirectory,
+                                                    withIntermediateDirectories: true)
+            let exportedSnapshotURL = exportDirectory.appendingPathComponent("snapshot.v1.json")
+            let exportedIdentityURL = exportDirectory.appendingPathComponent("identity.v1.json")
+            try snapshotBytes.write(to: exportedSnapshotURL, options: .atomic)
+            try identityBytes.write(to: exportedIdentityURL, options: .atomic)
+            // Verify the copies byte-for-byte AFTER the copy.
+            let exportedSnapshotCheck = try Data(contentsOf: exportedSnapshotURL)
+            let exportedIdentityCheck = try Data(contentsOf: exportedIdentityURL)
+            try #require(exportedSnapshotCheck == snapshotBytes && exportedIdentityCheck == identityBytes,
+                         "Exported bytes differ from the captured originals")
+
+            let bundleInfo = Bundle.main.infoDictionary ?? [:]
+            let manifest: [String: Any] = [
+                "newDiagnosticInput": true,
+                "qualification": false,
+                "engineRoundExecuted": false,
+                "kind": "impeccable-large-capture-export-diagnostic-not-model-not-ui",
+                "fixtureHTMLSHA256": fixtureSHA,
+                "fixtureHTMLBytes": fixtureBytes.count,
+                "captureId": captureID.uuidString,
+                "elementCount": capture.capture.elementCount,
+                "viewport": ["width": viewportWidth, "height": viewportHeight],
+                "snapshot": [
+                    "file": exportedSnapshotURL.lastPathComponent,
+                    "sha256": snapshotSHA,
+                    "bytes": snapshotBytes.count,
+                    "originalRelativePath": capture.capture.relativeSnapshotFile,
+                ],
+                "identity": [
+                    "file": exportedIdentityURL.lastPathComponent,
+                    "sha256": identitySHA,
+                    "bytes": identityBytes.count,
+                    "originalRelativePath": capture.capture.relativeIdentityFile,
+                ],
+                "captureBinding": [
+                    "taskId": capture.capture.binding.taskId,
+                    "sessionId": capture.capture.binding.sessionId,
+                    "tabId": capture.capture.binding.tabId,
+                    "documentId": capture.capture.binding.documentId,
+                    "documentGeneration": capture.capture.binding.documentGeneration,
+                ],
+                "scriptDigest": capture.capture.scriptDigest,
+                "appVersion": bundleInfo["CFBundleShortVersionString"] as? String ?? "unknown",
+                "appBuild": bundleInfo["CFBundleVersion"] as? String ?? "unknown",
+                "runtimeOS": ProcessInfo.processInfo.operatingSystemVersionString,
+                "idiom": String(describing: UIDevice.current.userInterfaceIdiom),
+                "sourceSHA": sourceSHA,
+                "toolchain": toolchain,
+                "engineArgvReference": "floe-impeccable snapshot-scan --snapshot <relativeSnapshotFile> "
+                    + "--identity <relativeIdentityFile> --out <runPrefix>/result.round1.v1.json --round 1 "
+                    + "(structure reference only; NOT executed by this diagnostic)",
+                "engineBudgetReference": "frozen v1 reference only: 120 s engine budget, 4,096 hit "
+                    + "tests/round, 16,384 total, 48 MiB snapshot cap (NOT executed by this diagnostic)",
+                "exportedAt": ISO8601DateFormatter().string(from: Date()),
+            ]
+            let manifestData = try JSONSerialization.data(withJSONObject: manifest,
+                                                          options: [.sortedKeys])
+            let manifestURL = exportDirectory.appendingPathComponent("manifest.json")
+            try manifestData.write(to: manifestURL, options: .atomic)
+
+            evidence["captureId"] = captureID.uuidString
+            evidence["elementCount"] = String(capture.capture.elementCount)
+            evidence["snapshotSHA256"] = snapshotSHA
+            evidence["identitySHA256"] = identitySHA
+            evidence["exportDirectory"] = exportDirectory.path
+            evidence["manifest"] = manifestURL.path
+            // Single retrieval marker for Main/Root; no unrelated user data.
+            print("FLOE_IMPECCABLE_LARGE_DIAGNOSTIC_MANIFEST=\(manifestURL.path)")
+
+            // Export is complete: only now release the capture through the
+            // real tool and verify the bridge files are removed.
+            let releaseSummary = try await impeccableDesignCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "release-\(captureID.uuidString)",
+                arguments: ["profile": "design", "designAction": "release",
+                            "captureID": captureID.uuidString])
+            try #require(releaseSummary.contains("Design capture released"),
+                         "Release did not confirm: \(releaseSummary.prefix(300))")
+            let captureDirectory = root.appendingPathComponent(
+                "Impeccable/\(conversationID.uuidString)/\(captureID.uuidString)")
+            try #require(!FileManager.default.fileExists(atPath: captureDirectory.path),
+                         "Release left capture files behind: \(captureDirectory.path)")
+            captureIDs.removeAll()
+            evidence["release"] = "capture released, bridge files removed, exports preserved"
+            await finish()
+        } catch {
+            evidence["failure"] = String(describing: error)
+            skillHubFailureEvidence(evidence, root: root, label: "impeccable-large-export-diagnostic")
+            Issue.record("Impeccable large-capture export diagnostic failed: \(error)")
+            await finish()
+        }
+    }
+}
 #endif
