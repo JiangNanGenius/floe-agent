@@ -692,7 +692,21 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
     // Floe-owned guest entry. No public listener/host configuration is changed.
     process.env.HOST = '0.0.0.0';
     process.env.FLOE_MCP_ALLOWED_HOSTS = '127.0.0.1,localhost,[::1]';
-    await import('./dist/server.js');
+    // Importing server.js does not run its direct-entry CLI branch: argv[1]
+    // names this owned launcher. Start its exported service explicitly.
+    try {
+      const { startService, readConfiguration } = await import('./dist/server.js');
+      const service = await startService(readConfiguration(process.env));
+      console.log(JSON.stringify({ event: 'ready', transport: 'streamable-http', endpoint: service.endpoint }));
+      const shutdown = () => {
+        void service.stop().then(() => { process.exitCode = 0; }, () => { process.exitCode = 1; });
+      };
+      process.once('SIGINT', shutdown);
+      process.once('SIGTERM', shutdown);
+    } catch {
+      console.error('The MCP service could not start. Check the assigned host, port and dependencies.');
+      process.exitCode = 1;
+    }
     """
 
     /// The frozen monolithic contract bytes. Production no longer submits a
