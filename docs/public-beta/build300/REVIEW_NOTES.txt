@@ -1,0 +1,11 @@
+Floe Agent 1.7.59 (Build 300)
+
+Floe is a task assistant using the user's configured AI provider. No Floe account or demo account is required. AI responses require a configured provider; no paid provider credentials are included.
+
+This beta improves Skill Hub, skill creation and import, MCP service creation, and long-running tool execution. Open Plugins to browse the skill catalog and inspect an entry. Installed skills can be updated or removed. The add menu offers skill creation and import. Skills may include scripts and supporting files; their source and requested capabilities can be inspected before installation.
+
+MCP service creation uses the selected local Linux environment. The generated service can be built, checked and connected to the current task. Node-based service builds need a suitably sized environment; the tested configuration uses 768 MiB and one CPU. Tools use the task's existing permissions and execution environment. Task Center shows running work and its output, and provides cancellation. Long-running work may continue after a ten-minute advisory; the advisory does not stop execution.
+
+Settings includes an independent Task Live Activities switch. When enabled, active task stages appear on the Lock Screen and supported Dynamic Island, and finish when the task ends. Background location assistance is released when the last eligible task or local environment stops. Location is used for user-requested location tasks, such as local weather, subject to iOS permission; ordinary tasks remain available when permission is denied.
+
+Suggested checks: browse and install a reviewed skill, inspect its files, then remove it; create a local MCP service and check its connection; start a long task, inspect its output in Task Center, and cancel it. AI-assisted actions require the reviewer's own provider configuration. These beta changes do not change the existing formal App Store submission.
