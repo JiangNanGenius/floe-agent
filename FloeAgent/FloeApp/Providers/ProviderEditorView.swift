@@ -17,6 +17,7 @@ import FloeProviders
 struct ProviderEditorView: View {
     @StateObject private var viewModel: ProviderEditorViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showModelPicker = false
     @State private var editingModel: ModelProfile?
     @State private var showsCatalogPicker = false
@@ -55,11 +56,6 @@ struct ProviderEditorView: View {
         Form {
             Section("providers.provider_editor_view.service_purpose") {
                 Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
-                if viewModel.serviceRole == .video {
-                    Text("providers.provider_editor_view.video_models_are_an_optional_enhancement")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                }
             }
             presetSection
             serviceOffersSection
@@ -257,12 +253,12 @@ struct ProviderEditorView: View {
                         showsCatalogPicker = false
                     }
                 )
-                // A List/NavigationStack has no intrinsic popover size; an
-                // explicit compact-pad frame keeps the search field and rows
-                // visible (the iPhone adaptation presents a sheet and fills
-                // it). `.presentationSizing(.page)` alone collapsed the
-                // popover to ~68pt in the Simulator.
-                .frame(minWidth: 420, idealWidth: 520, minHeight: 540, idealHeight: 680)
+                // Give the regular-width popover a usable proposal while
+                // allowing compact sheets to fit their actual screen width.
+                .frame(minWidth: horizontalSizeClass == .regular ? 420 : nil,
+                       idealWidth: 520,
+                       minHeight: horizontalSizeClass == .regular ? 540 : nil,
+                       idealHeight: 680)
                 .presentationSizing(.page)
             }
         }
