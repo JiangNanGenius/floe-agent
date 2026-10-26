@@ -946,6 +946,7 @@ targets:
       - path: Tests/FloeExecutionTests/JobOutputPagingTests.swift
       - path: Tests/FloeExecutionTests/BackgroundJobTests.swift
       - path: Tests/FloeExecutionTests/NativeJobPolicyTests.swift
+      - path: Tests/FloeToolsTests/ToolRunnerRegistryTests.swift
       - path: Tests/FloeExecutionTests/TaskScheduleToolTests.swift
       # E provisioner speed patch (applied by G after E's 1->2-hart boundary
       # note; production engine paths untouched): the fast venv path and its

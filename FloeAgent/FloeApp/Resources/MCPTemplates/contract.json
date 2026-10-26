@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "templateID": "floe.mcp.node-http",
-  "templateVersion": "1.0.1",
+  "templateVersion": "1.0.2",
   "storefrontSkill": false,
   "projectRoot": "node-http",
   "language": "typescript",

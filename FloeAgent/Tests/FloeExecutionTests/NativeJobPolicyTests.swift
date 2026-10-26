@@ -66,14 +66,27 @@ struct NativeJobPolicyTests {
                               boundary: ToolExecutionBoundary = .any,
                               effect: ToolEffect = .mutating) -> Recorder {
         let recorder = Recorder()
-        registry.register(AnyAgentTool(descriptor: ToolCatalog.Descriptor(
-            name: name, toolDescription: name, parametersJSON: #"{"type":"object"}"#,
-            riskLabels: [], isSideEffecting: true, effect: effect,
-            executionBoundary: boundary
-        )) { arguments, context in
-            await recorder.record(context: context, payload: arguments)
-            return ToolExecutionOutput(summary: "done", fullOutputSHA256: "d")
-        })
+        // Test-owned routing. In the app-hosted target the app configures the
+        // process-wide ToolEnvironmentRouting with its real container resolver,
+        // which (correctly) fail-closes on a synthetic environmentID before the
+        // runner runs. These fixtures assert the job service's frozen origin —
+        // the execution context must carry the job's workspace, conversation
+        // and environment — so their echo keeps an instance-scoped router that
+        // returns the context unchanged. The production router and its gates
+        // stay untouched for every production runner.
+        let routing = ToolEnvironmentRouting()
+        routing.configure { context in ToolEnvironmentLease(context: context) }
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: name, toolDescription: name, parametersJSON: #"{"type":"object"}"#,
+                riskLabels: [], isSideEffecting: true, effect: effect,
+                executionBoundary: boundary
+            ),
+            run: { arguments, context in
+                await recorder.record(context: context, payload: arguments)
+                return ToolExecutionOutput(summary: "done", fullOutputSHA256: "d")
+            },
+            routing: routing))
         return recorder
     }
 
@@ -171,7 +184,8 @@ struct NativeJobPolicyTests {
             scope: .local, workspaceRootURL: workspace, allowedWorkspacePaths: [],
             environmentID: "env-1", submissionSource: .nativeService)
         let terminal = try await waitForTerminal(service, id: job.id)
-        #expect(terminal.state == .completed)
+        #expect(terminal.state == .completed,
+                "terminal state \(terminal.state), lastError: \(terminal.lastError ?? "nil")")
         #expect(terminal.workspaceRootPath == workspace.path)
         #expect(terminal.environmentID == "env-1")
     }
@@ -396,9 +410,13 @@ struct NativeJobPolicyTests {
                                            allowedWorkspacePaths: [], environmentID: "env-9",
                                            submissionSource: .nativeService)
         _ = try await waitForTerminal(service, id: job.id)
+        let terminal = try await service.job(id: job.id)
+        let terminalState = terminal.map { "\($0.state)" } ?? "nil"
+        let terminalError = terminal?.lastError ?? "nil"
         #expect(await terminalJobs.contains(job.id))
         let recorded = await recorder.contexts
-        #expect(recorded.count == 1)
+        #expect(recorded.count == 1,
+                "recorded \(recorded.count), terminal state \(terminalState), lastError: \(terminalError)")
         #expect(recorded.first?.workspace == workspace.path)
         #expect(recorded.first?.conversation == conversation)
         #expect(recorded.first?.environment == "env-9")

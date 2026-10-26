@@ -1497,7 +1497,7 @@ private func scriptedCall(id: String, name: String, arguments: String) throws ->
 // pass — the existing real-guest policy in this file):
 //   * FLOE_SKILLHUB_PY_QUALIFICATION=1       + FLOE_SKILL_HUB_SOURCES_DIR + FLOE_SKILL_HUB_WHEELS_ZIP
 //   * FLOE_SKILLHUB_WEBAPP_QUALIFICATION=1   + FLOE_SKILL_HUB_SOURCES_DIR
-//   * FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1 (bundled 1.0.1 template only)
+//   * FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1 (bundled 1.0.2 template only)
 //
 // Everything executes through the REAL production chain already used above:
 // bootGuest → makeRuntime → active parent → requireQualifiedKernel →
@@ -3138,7 +3138,7 @@ extension SubagentSimulatorExecutionTests {
             // 1. Production digest-gated template load + byte-exact staging.
             let template = try MCPServiceTemplate.load()
             try #require(template.contract.templateID == "floe.mcp.node-http")
-            try #require(template.contract.templateVersion == "1.0.1")
+            try #require(template.contract.templateVersion == "1.0.2")
             try #require(template.contract.runtime.os == "linux")
             try #require(template.contract.runtime.node == ">=20.19.0")
             try #require(template.contract.sdk.package == "@modelcontextprotocol/sdk")
@@ -3336,6 +3336,54 @@ extension SubagentSimulatorExecutionTests {
                 evidence["buildPhase.\(index).\(phase.name).result"] = String(phaseResult.prefix(600))
                 evidence["buildPhase.\(index).\(phase.name).waitElapsedMs"] = String(phaseObservation.elapsedMs)
                 evidence["buildPhase.\(index).\(phase.name).waitPolls"] = String(phaseObservation.polls)
+                flushProgressEvidence()
+                // Preserve each bounded spool before owned cleanup. Completeness
+                // metadata distinguishes a complete result from a capped prefix.
+                let outputKey = "buildPhase.\(index).\(phase.name)"
+                var retainedOutput = ""
+                var pageOffset = 0
+                var pagesRead = 0
+                var readComplete = false
+                while pagesRead < 34 {
+                    guard let outputPath = phaseJob.outputPath,
+                          let page = BackgroundJobOutputSpool.readPage(
+                            jobID: phaseJobID, path: outputPath, offset: pageOffset,
+                            maxBytes: 32_000, recordedBytes: phaseJob.outputBytes),
+                          page.available, let text = page.text else {
+                        evidence[outputKey + ".outputReadError"] = "spool unavailable at offset \(pageOffset)"
+                        break
+                    }
+                    retainedOutput += text
+                    evidence[outputKey + ".spoolComplete"] = page.complete.map { String($0) } ?? "unknown"
+                    evidence[outputKey + ".spoolOriginalBytes"] = page.originalBytes.map { String($0) } ?? "unknown"
+                    evidence[outputKey + ".spoolChangedSinceRecorded"] = String(page.changedSinceRecorded)
+                    pagesRead += 1
+                    guard let next = page.nextOffset else {
+                        readComplete = true
+                        break
+                    }
+                    guard next > pageOffset else {
+                        evidence[outputKey + ".outputReadError"] = "spool cursor did not advance"
+                        break
+                    }
+                    pageOffset = next
+                }
+                evidence[outputKey + ".spoolReadComplete"] = String(readComplete)
+                if !retainedOutput.isEmpty {
+                    let artifact = evidenceDirectory.appendingPathComponent(
+                        "build-phase-\(phaseJobID.uuidString)-\(index)-\(phase.name)-output.txt")
+                    do {
+                        let data = Data(retainedOutput.utf8)
+                        try data.write(to: artifact, options: .atomic)
+                        evidence[outputKey + ".retainedOutputPath"] = artifact.path
+                        evidence[outputKey + ".retainedOutputBytes"] = String(data.count)
+                        evidence[outputKey + ".retainedOutputSHA256"] = FloeDigest.sha256Hex(data)
+                    } catch {
+                        evidence[outputKey + ".outputWriteError"] = String(reflecting: type(of: error))
+                    }
+                    evidence[outputKey + ".outputHead"] = String(retainedOutput.prefix(2_000))
+                    evidence[outputKey + ".outputTail"] = String(retainedOutput.suffix(4_000))
+                }
                 flushProgressEvidence()
                 try #require(phaseJob.state == .completed,
                              "guest node-http build phase \(index) (\(phase.name)) failed: \(phaseResult.prefix(600))")

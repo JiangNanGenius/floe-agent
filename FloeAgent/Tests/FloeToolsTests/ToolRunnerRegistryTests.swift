@@ -62,8 +62,71 @@ private struct UnrunTool: AgentTool {
     }
 }
 
+private actor RoutingLeaseProbe {
+    private(set) var acquired = 0
+    private(set) var finished = 0
+    private(set) var ran = 0
+    func recordAcquire() { acquired += 1 }
+    func recordFinish() { finished += 1 }
+    func recordRun() { ran += 1 }
+}
+
 @Suite("FloeTools.ToolRunnerRegistry")
 struct ToolRunnerRegistryTests {
+    @Test("Owned routing stays local and finishes leases after success and failure")
+    func isolatedRoutingKeepsLeaseLifecycle() async throws {
+        let probe = RoutingLeaseProbe(), routing = ToolEnvironmentRouting()
+        routing.configure { context in
+            await probe.recordAcquire()
+            return ToolEnvironmentLease(context: context, finish: { await probe.recordFinish() })
+        }
+        let descriptor = AnyAgentTool(EchoRunnerTool()).descriptor
+        let context = ToolContext(runID: UUID(), cancellation: CancellationToken(),
+                                  environmentID: "fixture-owned")
+        let success = AnyAgentTool(descriptor: descriptor, run: { _, routed in
+            await probe.recordRun()
+            #expect(routed.environmentID == context.environmentID)
+            return ToolExecutionOutput(summary: "owned route", fullOutputSHA256: "d")
+        }, routing: routing)
+        let failure = AnyAgentTool(descriptor: descriptor, run: { _, _ in
+            await probe.recordRun()
+            throw FloeError.validationFailed("owned runner failure")
+        }, routing: routing)
+        #expect(try await success.execute(argumentsJSON: Data(), context: context).summary == "owned route")
+        await #expect(throws: FloeError.self) {
+            try await failure.execute(argumentsJSON: Data(), context: context)
+        }
+        #expect(await probe.acquired == 2)
+        #expect(await probe.ran == 2)
+        #expect(await probe.finished == 2)
+        // Both ordinary constructors retain the production app authority.
+        #expect(AnyAgentTool(EchoRunnerTool()).routing === ToolEnvironmentRouting.shared)
+        #expect(AnyAgentTool(descriptor: descriptor, run: { _, _ in
+            ToolExecutionOutput(summary: "default", fullOutputSHA256: "d")
+        }).routing === ToolEnvironmentRouting.shared)
+    }
+
+    @Test("Owned routing refusal prevents execution without changing the shared router")
+    func isolatedRoutingRefusalStillFailsClosed() async throws {
+        let probe = RoutingLeaseProbe(), routing = ToolEnvironmentRouting()
+        routing.configure { _ in
+            await probe.recordAcquire()
+            throw FloeError.notFound("fixture execution environment")
+        }
+        let tool = AnyAgentTool(descriptor: AnyAgentTool(EchoRunnerTool()).descriptor,
+            run: { _, _ in
+                await probe.recordRun()
+                return ToolExecutionOutput(summary: "must not run", fullOutputSHA256: "d")
+            }, routing: routing)
+        let context = makeContext()
+        await #expect(throws: FloeError.self) {
+            try await tool.execute(argumentsJSON: Data(), context: context)
+        }
+        #expect(await probe.acquired == 1)
+        #expect(await probe.ran == 0)
+        #expect(await probe.finished == 0)
+    }
+
     @Test func retiredExecutionNamesCannotBeRegisteredAsRunners() {
         let registry = ToolRunnerRegistry()
         let spellings = RetiredExecutionTools.names.flatMap { [$0, $0.replacingOccurrences(of: ".", with: "_")] }

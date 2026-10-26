@@ -23,17 +23,26 @@ public struct AnyAgentTool: Sendable {
     /// not exist *before* the durable record is created, instead of failing
     /// asynchronously inside the detached runner.
     public var preflightSubmission: (@Sendable (Data, URL?) async throws -> Void)?
+    /// The environment routing this runner acquires through at execution
+    /// time. Production runners keep the app-configured process-wide routing
+    /// (`ToolEnvironmentRouting.shared`), which fail-closes on any explicit
+    /// environmentID the real registry cannot resolve. A test-owned runner
+    /// may carry its own routing instance so a fixture cannot mutate or
+    /// depend on the process-wide routing without weakening either path.
+    public let routing: ToolEnvironmentRouting
 
     public init(
         descriptor: ToolCatalog.Descriptor,
         run: @escaping @Sendable (Data, ToolContext) async throws -> ToolExecutionOutput,
         validateArguments: @escaping @Sendable (Data) throws -> Void = { _ in },
-        preflightSubmission: (@Sendable (Data, URL?) async throws -> Void)? = nil
+        preflightSubmission: (@Sendable (Data, URL?) async throws -> Void)? = nil,
+        routing: ToolEnvironmentRouting = .shared
     ) {
         self.descriptor = descriptor
         self.run = run
         self.validateArguments = validateArguments
         self.preflightSubmission = preflightSubmission
+        self.routing = routing
     }
 
     /// Renders a decoding failure as an actionable message naming the exact
@@ -110,12 +119,13 @@ public struct AnyAgentTool: Sendable {
             try tool.validate(arguments)
             return try await tool.execute(arguments, context: context)
         }
+        self.routing = .shared
     }
 
     /// Executes the tool with JSON-encoded arguments.
     public func execute(argumentsJSON: Data, context: ToolContext) async throws -> ToolExecutionOutput {
         guard isAvailable() else { throw FloeError.validationFailed("Tool is disabled or not configured: \(descriptor.name)") }
-        let lease = try await ToolEnvironmentRouting.shared.acquire(context)
+        let lease = try await routing.acquire(context)
         do {
             let output = try await run(argumentsJSON, lease.context)
             await lease.finish()

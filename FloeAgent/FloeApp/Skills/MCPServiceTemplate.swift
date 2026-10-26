@@ -7,20 +7,20 @@ import FloeCore
 /// or a runtime/permission grant. The creation flow consumes these bytes in
 /// its resolved workspace and uses the existing jobs/service/MCP lifecycle.
 enum MCPServiceTemplate {
-    static let archiveName = "floe-mcp-node-http-1.0.1-source"
-    private static let archiveDigest = "a92e47639640d302021d05fdc5b17b6e4643065539164f97790eebdbaea50512"
-    private static let contractDigest = "76eea91e0d4b368d27783fdade209633df531c501a4f9ebf0d160e154a744034"
+    static let archiveName = "floe-mcp-node-http-1.0.2-source"
+    private static let archiveDigest = "7199a5dca8526c94a8a51c8bc3fa5f741f3126425efa6f32f64c06863ddbdc84"
+    private static let contractDigest = "e37d7022dc58b5365302111c5e023110467204444c2026c8c7e25efaf3103228"
 
     /// Generation may extend source, never weaken the locked build/test contract.
     static let immutableProjectDigests: [String: String] = [
-        "README.md": "d03b5d6085a4e108c53fc185c4c37cbac67b9dfb535c74a75f6a49792ffcd623",
-        "contract.json": "76eea91e0d4b368d27783fdade209633df531c501a4f9ebf0d160e154a744034",
+        "README.md": "0cef68017ad13450e4873680933cd7099adc3db294bfe6f15f4b21a781fcbfd2",
+        "contract.json": "e37d7022dc58b5365302111c5e023110467204444c2026c8c7e25efaf3103228",
         "node-http/.gitignore": "b63ce42e2babc54a13558cf679f775191d18649bca9dc04072126ef50987e1a4",
         "node-http/package-lock.json": "e4565f56ecbff62f74e0a76046c022cc4738a5beb86f86a3d1815acc57077e75",
         "node-http/package.json": "fdd3fbde3ac608ba607df736bb272637b6b6701c00a1775570669089f698a975",
         "node-http/src/server.ts": "e1c67121be4db6f0fa759dda42b130ec09a307305167675ea75d69e7a52e1385",
         "node-http/tests/discovery.mjs": "3042e48d110db9d5b00781b3869266cd6b830710f1107ed24e3cf43bdd408d4b",
-        "node-http/tests/http.test.mjs": "36583f7aa2297b4a52b7f38cfe914759c05617bfc0fc12398c0f6baf64306d71",
+        "node-http/tests/http.test.mjs": "b08e0e008ad36f5fca146b4639c424abc7c1f148be9eca51481fdf27eb63e48b",
         "node-http/tsconfig.json": "aaa03b5ee9fbadcd0e73745e4ac6d01c2a3d153a1115bc9416eb8cda96f9b26c",
     ]
 
@@ -97,7 +97,7 @@ enum MCPServiceTemplate {
         do { decoded = try JSONDecoder().decode(Contract.self, from: contract) }
         catch { throw unavailable() }
         guard decoded.schemaVersion == 1, decoded.templateID == "floe.mcp.node-http",
-              decoded.templateVersion == "1.0.1", !decoded.storefrontSkill,
+              decoded.templateVersion == "1.0.2", !decoded.storefrontSkill,
               decoded.projectRoot == "node-http", decoded.runtime.os == "linux",
               decoded.sdk.package == "@modelcontextprotocol/sdk", decoded.sdk.version == "1.32.2",
               decoded.commands["start"] == ["node", "dist/server.js"],
