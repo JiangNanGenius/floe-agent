@@ -214,7 +214,7 @@ struct LocalShellClientIsolationTests {
             cwd: ".",
             environment: [:],
             stdin: nil,
-            timeout: 5,
+            requestedTimeout: 5,
             maxOutputBytes: 1024,
             isBackground: false,
             context: context
@@ -242,7 +242,7 @@ struct LocalShellClientIsolationTests {
             cwd: ".",
             environment: [:],
             stdin: nil,
-            timeout: 5,
+            requestedTimeout: 5,
             maxOutputBytes: 1024,
             isBackground: false,
             context: context

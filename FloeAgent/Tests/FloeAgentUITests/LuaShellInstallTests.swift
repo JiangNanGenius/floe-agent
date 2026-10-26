@@ -69,7 +69,7 @@ struct LuaShellInstallTests {
                                       environment: toolEnvironment)
 
         func runShell(_ command: String, timeout: TimeInterval = 180) async -> ShellRunOutcome {
-            await backend.run(.init(command: command, cwd: ".", rootURL: root, timeout: timeout,
+            await backend.run(.init(command: command, cwd: ".", rootURL: root, deadline: .seconds(timeout),
                                     maxOutputBytes: 64 * 1024, sessionID: UUID().uuidString,
                                     runID: UUID(), toolEnvironment: toolEnvironment), cancellation: nil)
         }
