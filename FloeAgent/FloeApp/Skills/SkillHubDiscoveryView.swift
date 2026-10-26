@@ -51,37 +51,29 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     @State private var category: SkillHubCategory?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     private var matching: [SkillHubDisplayItem] {
         items.filter {
             (category == nil || $0.category == category)
-                && (query.isEmpty || $0.title.localizedStandardContains(query)
-                    || $0.summary.localizedStandardContains(query))
+                && (normalizedQuery.isEmpty || $0.title.localizedStandardContains(normalizedQuery)
+                    || $0.summary.localizedStandardContains(normalizedQuery))
         }
     }
     private var categories: [SkillHubCategory] {
         SkillHubCategory.allCases.filter { category in items.contains { $0.category == category } }
     }
     private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: dynamicTypeSize.isAccessibilitySize ? 420 : 300), spacing: 20)]
+        if dynamicTypeSize.isAccessibilitySize {
+            return [GridItem(.flexible(minimum: 0))]
+        }
+        return [GridItem(.adaptive(minimum: 300), spacing: 20)]
     }
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 24) {
-                if query.isEmpty, category == nil, !items.isEmpty {
-                    LazyVGrid(columns: columns, spacing: 16) {
-                        // Signed editorial ordering comes from the store. No
-                        // fabricated popularity, unavailable packages or IDs.
-                        ForEach(Array(items.prefix(2))) { item in
-                            Button { onSelect(item.id) } label: {
-                                editorialCard(item)
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("skills.featured.\(item.id)")
-                        }
-                    }
-                }
-                connections()
+            LazyVStack(alignment: .leading, spacing: 16) {
                 if categories.count > 1 {
                     ScrollView(.horizontal) {
                         HStack(spacing: 8) {
@@ -95,7 +87,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("skills.hub.directory").font(.title2.bold())
                     if matching.isEmpty {
-                        ContentUnavailableView.search(text: query)
+                        ContentUnavailableView.search(text: normalizedQuery)
                     } else {
                         LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
                             ForEach(matching) { item in
@@ -103,6 +95,9 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                             }
                         }
                     }
+                }
+                if normalizedQuery.isEmpty {
+                    connections()
                 }
             }
             .padding(20)
@@ -123,29 +118,6 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .buttonStyle(.plain)
         .foregroundStyle(category == value ? Color.accentColor : .primary)
         .accessibilityAddTraits(category == value ? .isSelected : [])
-    }
-
-    private func editorialCard(_ item: SkillHubDisplayItem) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ZStack(alignment: .bottomLeading) {
-                RoundedRectangle(cornerRadius: 18)
-                    .fill(item.category.tint.gradient)
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 58, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.95))
-                    .padding(24)
-            }
-            .frame(height: 160)
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(item.title).font(.title3.bold()).foregroundStyle(.primary)
-                Text(item.summary).font(.subheadline).foregroundStyle(.secondary)
-                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
-            }
-            .padding(.horizontal, 2)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
     }
 
     private func directoryRow(_ item: SkillHubDisplayItem) -> some View {
