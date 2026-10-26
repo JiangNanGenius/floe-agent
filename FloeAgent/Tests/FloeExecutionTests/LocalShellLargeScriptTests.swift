@@ -14,8 +14,8 @@
 //    unrelated user files in the staging directory are never touched;
 //  * `timeoutSeconds` works as a documented alias, equal duplicates pass,
 //    disagreements fail loudly, and the receipt names requested/effective/
-//    clamp reason (foreground 120 / background 600 unchanged; a sub-floor
-//    request floors to the Linux guest's documented 1-second minimum).
+//    policy and clamp reason (bare hints stay unlimited; a real hard
+//    deadline floors to the Linux guest's documented 1-second minimum).
 
 import Foundation
 import XCTest
@@ -34,7 +34,11 @@ private final class RecordingLinuxRunner: LinuxCommandRunning, @unchecked Sendab
         var argv: [String]
         var workingDirectory: String?
         var stdin: String?
-        var timeout: TimeInterval
+        var deadline: ShellExecutionDeadline
+        var timeout: TimeInterval? {
+            guard case .seconds(let value) = deadline else { return nil }
+            return value
+        }
         var stagedBytes: Data?
         var stagedExists: Bool
     }
@@ -70,6 +74,21 @@ private final class RecordingLinuxRunner: LinuxCommandRunning, @unchecked Sendab
         maxOutputBytes: Int,
         cancellation: CancellationToken?
     ) async throws -> LinuxCommandResult {
+        try await run(environmentID: environmentID, argv: argv,
+                      workingDirectory: workingDirectory, standardInput: standardInput,
+                      deadline: .seconds(timeout), maxOutputBytes: maxOutputBytes,
+                      cancellation: cancellation)
+    }
+
+    func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        deadline: ShellExecutionDeadline,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
         var staged: Data?
         var exists = false
         if argv.count == 3, argv[0] == "/bin/sh", argv[1] == "-c",
@@ -87,7 +106,7 @@ private final class RecordingLinuxRunner: LinuxCommandRunning, @unchecked Sendab
             argv: argv,
             workingDirectory: workingDirectory,
             stdin: standardInput,
-            timeout: timeout,
+            deadline: deadline,
             stagedBytes: staged,
             stagedExists: exists
         )
@@ -187,8 +206,10 @@ final class LocalShellLargeScriptTests: XCTestCase {
         XCTAssertEqual(inline.exitStatus, 7)
         XCTAssertEqual(runner.recorded.count, 1)
         // Inline path: the whole command rides argv, exactly as before.
-        XCTAssertEqual(runner.recorded[0].argv.count, 3)
-        XCTAssertTrue(runner.recorded[0].argv[2].hasSuffix(inlineBody))
+        let first = try XCTUnwrap(runner.recorded.first)
+        XCTAssertEqual(first.deadline, .unlimited)
+        XCTAssertEqual(first.argv.count, 3)
+        XCTAssertTrue(first.argv[2].hasSuffix(inlineBody))
         XCTAssertTrue(stagingEntries(in: fixture.root).isEmpty)
 
         let hugeBody = makeScript(bytes: 2 * 1024 * 1024)
@@ -197,7 +218,8 @@ final class LocalShellLargeScriptTests: XCTestCase {
             context: makeContext(fixture.root)
         )
         XCTAssertEqual(staged.exitStatus, 7)
-        let second = runner.recorded[1]
+        XCTAssertEqual(runner.recorded.count, 2)
+        let second = try XCTUnwrap(runner.recorded.dropFirst().first)
         XCTAssertEqual(second.argv.count, 3)
         XCTAssertTrue(second.argv[2].hasPrefix(". '"), second.argv[2])
         XCTAssertLessThan(second.argv[2].utf8.count, 200)
@@ -362,6 +384,7 @@ final class LocalShellLargeScriptTests: XCTestCase {
         XCTAssertEqual(results.map(\.exitStatus), [0, 0])
         let invocations = runner.recorded
         XCTAssertEqual(invocations.count, 2)
+        XCTAssertTrue(invocations.allSatisfy { $0.deadline == .unlimited })
         XCTAssertEqual(Set(invocations.map(\.argv[2])).count, 2, "each invocation stages its own file")
         XCTAssertTrue(invocations.allSatisfy { $0.stagedExists })
         XCTAssertTrue(stagingEntries(in: fixture.root).isEmpty)
