@@ -1116,5 +1116,12 @@
        deferred AFTER bundle.js so window.L.ImpressTileLayer exists, and before
        any websocket status message can initialize the tile layer. -->
   <script src="floe-impress-pcw-fix.js" defer></script>
+  <!-- Floe narrow Writer first-paint layout re-sync (floe-writer-viewport-sync.js):
+       deferred AFTER bundle.js so app.map exists. It invokes the bundle's own
+       existing onResize path exactly once, and only after BOTH the real page
+       'load' event and the real Writer 'docloaded' status have arrived for the
+       same live document layer. No polling, no synthetic event, no readiness
+       change. See the script header for the pinned-API evidence. -->
+  <script src="floe-writer-viewport-sync.js" defer></script>
 
 </body></html>
