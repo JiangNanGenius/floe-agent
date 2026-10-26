@@ -2,6 +2,7 @@
 import Foundation
 import Testing
 import FloeCore
+import FloeExecution
 import FloePersistence
 @testable import FloeApp
 
@@ -46,6 +47,7 @@ private final class MCPServiceTestBackend: MCPServiceCreationBackend {
     var saveGate: MCPServiceTestGate?
     var forgedReceipt = false
     var failSave = false
+    var failWaitBuild: Error?
     var stopFailuresRemaining = 0
     var savedIDs: Set<UUID> = []
     var onSaveCommit: (() async -> Void)?
@@ -67,7 +69,10 @@ private final class MCPServiceTestBackend: MCPServiceCreationBackend {
     func submitBuild(_ record: MCPServiceCreationRecord) async throws -> UUID {
         calls.append(("submitBuild", record)); return buildID
     }
-    func waitForBuild(_ record: MCPServiceCreationRecord) async throws { calls.append(("waitBuild", record)) }
+    func waitForBuild(_ record: MCPServiceCreationRecord) async throws {
+        calls.append(("waitBuild", record))
+        if let failWaitBuild { throw failWaitBuild }
+    }
     func submitService(_ record: MCPServiceCreationRecord) async throws -> UUID {
         calls.append(("submitService", record)); return serviceID
     }
@@ -387,6 +392,287 @@ struct MCPServiceCreationTests {
         await restored.load()
         #expect(restored.draft == center.draft)
         #expect(restored.records.isEmpty)
+    }
+
+    // MARK: - Bounded owned build phases
+
+    @Test("A failed build phase stays failed and cannot start the service")
+    func failedBuildPhaseBlocksService() async throws {
+        let backend = MCPServiceTestBackend()
+        backend.failWaitBuild = FloeError.validationFailed("phase test failed: exit=124")
+        let center = coordinator(backend)
+        await center.start(request())
+        try await wait { center.selected?.phase == .failed }
+        #expect(backend.calls.map(\.0) == ["resolve", "prepare", "generate", "submitBuild", "waitBuild"])
+        #expect(!backend.calls.contains { $0.0 == "submitService" })
+        #expect(center.selected?.serviceJobID == nil)
+        #expect(center.selected?.receipt == nil)
+        #expect(center.selected?.canSave == false)
+        await center.cancelSelected()
+    }
+
+    @Test("Resume decisions skip completed phases, attach live or failed rows, and never stop at the first completion")
+    func buildResumeDecisionTable() {
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [nil, nil, nil]) == .submitPhase(0))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.running, nil, nil]) == .attachPhase(0))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.completed, .queued, nil]) == .attachPhase(1))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.completed, .completed, nil]) == .submitPhase(2))
+        // Terminal failure/cancel/interrupt rows are attached and judged by
+        // waitForBuild: failure stays failure and no later phase is replayed
+        // or skipped over it.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.completed, .failed, nil]) == .attachPhase(1))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.cancelled, nil, nil]) == .attachPhase(0))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.interrupted, nil, nil]) == .attachPhase(0))
+        // All phases completed: the final row is attached (no replay) and
+        // waitForBuild validates fixed inputs before the service may start.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(states: [.completed, .completed, .completed]) == .allCompleted)
+    }
+
+    @Test("Phase identities are deterministic per record and cannot bind another record's rows")
+    func phaseIdentityBinding() {
+        let recordID = UUID()
+        let foreign = UUID()
+        let calls = MCPServiceCreationAppBackend.buildPhaseCallIDs(recordID)
+        #expect(calls.count == MCPServiceCreationAppBackend.buildPhaseSpecs.count)
+        #expect(Set(calls).count == calls.count)
+        #expect(MCPServiceCreationAppBackend.buildPhaseCallIDs(recordID) == calls)
+        for (index, call) in calls.enumerated() {
+            #expect(MCPServiceCreationAppBackend.phaseIndex(forCallID: call, recordID: recordID) == index)
+            #expect(MCPServiceCreationAppBackend.phaseIndex(forCallID: call, recordID: foreign) == nil)
+        }
+        #expect(MCPServiceCreationAppBackend.phaseIndex(forCallID: "mcp.build.\(recordID.uuidString)", recordID: recordID) == nil)
+    }
+
+    @Test("Phase commands carry every frozen contract command exactly once")
+    func phaseCommandsPreserveFrozenContract() {
+        let install = MCPServiceCreationAppBackend.installCommand
+        let compile = MCPServiceCreationAppBackend.compileCommand
+        let test = MCPServiceCreationAppBackend.testCommand
+        for command in [install, compile, test] {
+            #expect(command.hasPrefix("set -eu\n"))
+            #expect(command.contains("Node 20.19 or newer is required"))
+        }
+        // Install: the exact pinned npm ci invocation, once, nothing else.
+        #expect(install.contains("npm ci --ignore-scripts --no-audit --no-fund"))
+        #expect(!compile.contains("npm ci"))
+        #expect(!test.contains("npm ci"))
+        // Compile: the required TypeScript build, once, in no other phase.
+        #expect(compile.contains("npm run build"))
+        #expect(!install.contains("npm run build"))
+        #expect(!test.contains("npm run build"))
+        // Test: the pinned fixed HTTP test invocation directly, with no
+        // duplicated full rebuild smuggled back through `npm test`.
+        #expect(test.contains("node --test tests/http.test.mjs"))
+        #expect(!test.contains("npm test"))
+        #expect(!install.contains("node --test"))
+        #expect(!compile.contains("node --test"))
+        // Every executable command line of the retained monolithic contract
+        // survives in exactly one phase, `npm test` represented by its node
+        // step. Nothing is dropped from the reviewed workload.
+        let phaseLines = Set([install, compile, test]
+            .flatMap { $0.split(separator: "\n").map(String.init) })
+        for line in MCPServiceCreationAppBackend.buildCommand.split(separator: "\n")
+        where line.hasPrefix("npm ") || line.hasPrefix("node ") {
+            if line == "npm test" {
+                #expect(phaseLines.contains("node --test tests/http.test.mjs"))
+            } else {
+                #expect(phaseLines.contains(String(line)))
+            }
+        }
+    }
+
+    // MARK: - Exact owned command payload binding
+
+    @Test("A present row must be bound before its state may advance the resume scan")
+    func completedPredecessorMustBeBoundBeforeAdvancing() {
+        typealias Row = MCPServiceCreationAppBackend.MCPServiceBuildRow
+        let boundCompleted = Row(state: .completed, bound: true)
+        let boundRunning = Row(state: .running, bound: true)
+        let unboundCompleted = Row(state: .completed, bound: false)
+        let unboundFailed = Row(state: .failed, bound: false)
+        let unboundRunning = Row(state: .running, bound: false)
+        let unboundCancelled = Row(state: .cancelled, bound: false)
+        // Bound rows keep the predecessor decision table exactly as it was.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [boundCompleted, nil, nil]) == .submitPhase(1))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [boundCompleted, boundRunning, nil]) == .attachPhase(1))
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [boundCompleted, boundCompleted, boundCompleted]) == .allCompleted)
+        // Absence is not a rejection: a missing row still submits its own phase.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(rows: [nil, nil, nil]) == .submitPhase(0))
+        // A completed row production cannot bind — a foreign conversation,
+        // environment, root or another command payload under the same owner —
+        // rejects the whole scan instead of skipping its predecessor or
+        // authorizing the next phase.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [unboundCompleted, nil, nil]) == .reject)
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [boundCompleted, unboundCompleted, nil]) == .reject)
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(
+            rows: [boundCompleted, unboundFailed, boundCompleted]) == .reject)
+        // An unbound live or honestly terminal row is rejected too: it is
+        // never attached, never replayed and never cancelled as ours.
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(rows: [unboundRunning]) == .reject)
+        #expect(MCPServiceCreationAppBackend.nextBuildPhaseAction(rows: [unboundCancelled]) == .reject)
+    }
+
+    @Test("The native build payload is fixed per call ID and resolves no other row")
+    func expectedBuildPayloadIsFixedPerCallID() throws {
+        let recordID = UUID(); let foreign = UUID()
+        let relative = "MCPServices/" + recordID.uuidString.lowercased()
+        let legacy = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
+            callID: MCPServiceCreationAppBackend.legacyBuildCallID(recordID),
+            recordID: recordID, projectRelativePath: relative))
+        #expect(legacy.command == MCPServiceCreationAppBackend.buildCommand)
+        #expect(legacy.script == nil && legacy.env == nil && legacy.stdin == nil)
+        #expect(legacy.cwd == relative + "/node-http")
+        #expect(legacy.timeout == 600 && legacy.maxOutputBytes == 262_144)
+        let calls = MCPServiceCreationAppBackend.buildPhaseCallIDs(recordID)
+        for (index, call) in calls.enumerated() {
+            let args = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
+                callID: call, recordID: recordID, projectRelativePath: relative))
+            #expect(args.command == MCPServiceCreationAppBackend.buildPhaseSpecs[index].command)
+            #expect(args.script == nil && args.env == nil && args.stdin == nil)
+            #expect(args.cwd == relative + "/node-http")
+            #expect(args.timeout == 600 && args.maxOutputBytes == 262_144)
+            // Another record's row, a free-form ID and a prefixed-but-wrong ID
+            // resolve no expected payload at all.
+            #expect(MCPServiceCreationAppBackend.expectedBuildPayload(
+                callID: call, recordID: foreign, projectRelativePath: relative) == nil)
+        }
+        #expect(MCPServiceCreationAppBackend.expectedBuildPayload(
+            callID: "echo-done", recordID: recordID, projectRelativePath: relative) == nil)
+        #expect(MCPServiceCreationAppBackend.expectedBuildPayload(
+            callID: "mcp.build.install." + foreign.uuidString,
+            recordID: recordID, projectRelativePath: relative) == nil)
+    }
+
+    @Test("A real job row carrying the exact native payload is bound")
+    func genuineNativePayloadsAreBound() throws {
+        let conversationID = UUID(); let runID = UUID(); let recordID = UUID()
+        let relative = "MCPServices/" + recordID.uuidString.lowercased()
+        for call in [MCPServiceCreationAppBackend.legacyBuildCallID(recordID)]
+                        + MCPServiceCreationAppBackend.buildPhaseCallIDs(recordID) {
+            let expected = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
+                callID: call, recordID: recordID, projectRelativePath: relative))
+            // The real persisted type, exactly as `submit` stores it.
+            let job = BackgroundJob(conversationID: conversationID, runID: runID, toolCallID: call,
+                                    kind: .tool, targetTool: "exec.shell",
+                                    payloadJSON: JSONEncoder().encode(expected), state: .completed)
+            #expect(MCPServiceCreationAppBackend.matchesNativeBuildPayload(
+                job.payloadJSON, callID: call, recordID: recordID, projectRelativePath: relative))
+            // The tool's own canonical aliases carry the identical fixed
+            // execution and stay bound: the same command bytes as `script`,
+            // and `timeoutSeconds` equal to the canonical `timeout`.
+            let aliased = LocalShellTool.Arguments(script: expected.command, cwd: expected.cwd,
+                                                   timeoutSeconds: 600, maxOutputBytes: 262_144)
+            #expect(MCPServiceCreationAppBackend.matchesNativeBuildPayload(
+                JSONEncoder().encode(aliased), callID: call, recordID: recordID,
+                projectRelativePath: relative))
+        }
+        let service = MCPServiceCreationAppBackend.expectedServicePayload(projectRelativePath: relative, port: 8080)
+        let serviceJob = BackgroundJob(conversationID: conversationID, runID: runID,
+                                       toolCallID: "mcp.service." + recordID.uuidString, kind: .tool,
+                                       targetTool: "exec.localService", payloadJSON: JSONEncoder().encode(service))
+        #expect(MCPServiceCreationAppBackend.matchesNativeServicePayload(
+            serviceJob.payloadJSON, projectRelativePath: relative, port: 8080))
+    }
+
+    @Test("A forged or drifted same-owner payload never binds a build row")
+    func forgedBuildPayloadsAreRefused() throws {
+        let recordID = UUID()
+        let relative = "MCPServices/" + recordID.uuidString.lowercased()
+        let installCall = MCPServiceCreationAppBackend.buildPhaseCallIDs(recordID)[0]
+        let legacyCall = MCPServiceCreationAppBackend.legacyBuildCallID(recordID)
+        let expected = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
+            callID: installCall, recordID: recordID, projectRelativePath: relative))
+        let expectedLegacy = try #require(MCPServiceCreationAppBackend.expectedBuildPayload(
+            callID: legacyCall, recordID: recordID, projectRelativePath: relative))
+        func buildPayload(_ mutate: (inout LocalShellTool.Arguments) -> Void) -> Data {
+            var args = expected
+            mutate(&args)
+            return JSONEncoder().encode(args)
+        }
+        func bound(_ bytes: Data, _ call: String) -> Bool {
+            MCPServiceCreationAppBackend.matchesNativeBuildPayload(bytes, callID: call, recordID: recordID,
+                                                                   projectRelativePath: relative)
+        }
+        func refused(_ bytes: Data, _ label: String) {
+            #expect(!bound(bytes, installCall), "install slot must refuse: " + label)
+        }
+        // The echo-done row that "completes" the install slot is refused, and
+        // so is every quieter drift of the fixed bounds or injected inputs:
+        // none of them may count as a finished phase or authorize a new one.
+        refused(buildPayload { $0.command = "echo done" }, "echo done")
+        refused(buildPayload { $0.command = "npm ci && npm run build && node --test tests/http.test.mjs" },
+                "one-line fake equivalent")
+        refused(buildPayload { $0.command = "set -eu\nnode --test tests/http.test.mjs" }, "truncated phase")
+        // Another genuine phase command is still not THIS slot's command.
+        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.compileCommand }, "compile bytes in the install slot")
+        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.testCommand }, "test bytes in the install slot")
+        refused(buildPayload { $0.command = MCPServiceCreationAppBackend.buildCommand }, "monolithic bytes in the install slot")
+        // Drifted or missing bounds and injected inputs are refused, even an
+        // empty channel: this backend writes those keys never, not empty.
+        refused(buildPayload { $0.cwd = "MCPServices/other-project/node-http" }, "other project cwd")
+        refused(buildPayload { $0.cwd = nil }, "missing cwd")
+        refused(buildPayload { $0.timeout = 30 }, "shortened timeout")
+        refused(buildPayload { $0.timeout = nil }, "missing timeout")
+        refused(buildPayload { $0.timeout = 600; $0.timeoutSeconds = 30 }, "disagreeing timeout alias")
+        refused(buildPayload { $0.maxOutputBytes = 24_576 }, "smaller output bound")
+        refused(buildPayload { $0.maxOutputBytes = nil }, "missing output bound")
+        refused(buildPayload { $0.env = ["PATH": "/tmp/evil/bin"] }, "injected environment")
+        refused(buildPayload { $0.env = [:] }, "empty environment key")
+        refused(buildPayload { $0.stdin = "yes" }, "injected stdin")
+        refused(buildPayload { $0.packages = ["requests==2.0"] }, "package install channel")
+        refused(buildPayload { $0.packages = [] }, "empty package channel")
+        refused(buildPayload { $0.packagePurpose = "install" }, "package purpose")
+        refused(buildPayload { $0.packageCapabilities = ["network"] }, "package capabilities")
+        // A second, different command smuggled in the `script` alias is not the
+        // canonical identical-bytes form.
+        refused(buildPayload { $0.script = "echo done" }, "second command in the script alias")
+        // Undecodable or wrongly shaped bodies are not receipts.
+        refused(Data("not-json".utf8), "undecodable body")
+        refused(Data("[]".utf8), "wrongly shaped body")
+        refused(Data(), "empty body")
+        // Slot cross-binding: the legacy payload cannot fill a phase slot and a
+        // phase payload cannot fill the legacy slot; another record's install
+        // slot binds nothing here at all.
+        #expect(!bound(JSONEncoder().encode(expectedLegacy), installCall), "legacy payload cannot fill the install slot")
+        #expect(!bound(JSONEncoder().encode(expected), legacyCall), "install payload cannot fill the legacy slot")
+        #expect(!bound(JSONEncoder().encode(expected), "mcp.build.install." + UUID().uuidString),
+                "another record's install slot binds nothing here")
+        // The genuine install payload is still bound (no over-rejection).
+        #expect(bound(JSONEncoder().encode(expected), installCall))
+    }
+
+    @Test("A drifted service payload cannot keep or start the owned service")
+    func forgedServicePayloadsAreRefused() throws {
+        let recordID = UUID()
+        let relative = "MCPServices/" + recordID.uuidString.lowercased()
+        let expected = MCPServiceCreationAppBackend.expectedServicePayload(projectRelativePath: relative, port: 8080)
+        func servicePayload(_ mutate: (inout LocalServiceTool.Arguments) -> Void) -> Data {
+            var args = expected
+            mutate(&args)
+            return JSONEncoder().encode(args)
+        }
+        func bound(_ bytes: Data) -> Bool {
+            MCPServiceCreationAppBackend.matchesNativeServicePayload(bytes, projectRelativePath: relative, port: 8080)
+        }
+        #expect(bound(JSONEncoder().encode(expected)))
+        #expect(!bound(servicePayload { $0.port = 8081 }))
+        #expect(!bound(servicePayload { $0.entry = relative + "/node-http/other-start.mjs" }))
+        #expect(!bound(servicePayload { $0.entry = "MCPServices/other/node-http/floe-start.mjs" }))
+        #expect(!bound(servicePayload { $0.runtime = "python" }))
+        #expect(!bound(servicePayload { $0.arguments = ["--argv0", "./evil.js"] }))
+        #expect(!bound(servicePayload { $0.cwd = relative }))
+        #expect(!bound(servicePayload { $0.cwd = nil }))
+        #expect(!bound(Data("not-json".utf8)))
+        // A different record's directory is a different payload.
+        #expect(!MCPServiceCreationAppBackend.matchesNativeServicePayload(
+            JSONEncoder().encode(MCPServiceCreationAppBackend.expectedServicePayload(
+                projectRelativePath: "MCPServices/" + UUID().uuidString.lowercased(), port: 8080)),
+            projectRelativePath: relative, port: 8080))
     }
 }
 #endif

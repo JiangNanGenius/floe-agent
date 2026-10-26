@@ -2993,16 +2993,33 @@ extension SubagentSimulatorExecutionTests {
             evidence["guestNodeVersion"] = node.version ?? "unknown"
             print("FLOE_SKILLHUB_NODE path=\(node.nodePath) version=\(node.version ?? "unknown")")
 
-            // 3. The production fixed build contract runs in the guest.
-            let build = try await skillHubSubmitShell(
-                jobs: jobs, runID: runID, environmentID: environmentID, root: root,
-                name: "mcp-build", command: MCPServiceCreationAppBackend.buildCommand,
-                timeout: 600, cwd: operationDirectory + "/node-http")
-            jobIDs.append(build)
-            let buildJob = try await skillHubWaitTerminal(jobs, id: build, seconds: 780)
-            evidence["build"] = buildJob.resultSummary ?? buildJob.lastError ?? buildJob.state.rawValue
-            try #require(buildJob.state == .completed,
-                         "guest node-http template build/test contract failed: \(evidence["build"] ?? "unknown")")
+            // 3. The production bounded build phases run in the guest
+            // serially. Each phase consumes the exact production phase
+            // command bytes as its own real owned 600s exec.shell job; every
+            // phase job ID is registered for cleanup, and each actual
+            // terminal state plus observed duration is recorded. A phase
+            // that does not genuinely complete fails here, before any
+            // service step can run — no substitute evidence, no merged job.
+            var buildPhaseReceipts: [String] = []
+            for (index, phase) in MCPServiceCreationAppBackend.buildPhaseSpecs.enumerated() {
+                let phaseStarted = Date()
+                let phaseJobID = try await skillHubSubmitShell(
+                    jobs: jobs, runID: runID, environmentID: environmentID, root: root,
+                    name: "mcp-build-\(phase.name)", command: phase.command,
+                    timeout: 600, cwd: operationDirectory + "/node-http")
+                jobIDs.append(phaseJobID)
+                let phaseJob = try await skillHubWaitTerminal(jobs, id: phaseJobID, seconds: 780)
+                let phaseDurationMs = Int64(Date().timeIntervalSince(phaseStarted) * 1_000)
+                let phaseResult = phaseJob.resultSummary ?? phaseJob.lastError ?? phaseJob.state.rawValue
+                evidence["buildPhase.\(index).\(phase.name).job"] = phaseJobID.uuidString
+                evidence["buildPhase.\(index).\(phase.name).durationMs"] = String(phaseDurationMs)
+                evidence["buildPhase.\(index).\(phase.name).state"] = phaseJob.state.rawValue
+                evidence["buildPhase.\(index).\(phase.name).result"] = String(phaseResult.prefix(600))
+                try #require(phaseJob.state == .completed,
+                             "guest node-http build phase \(index) (\(phase.name)) failed: \(phaseResult.prefix(600))")
+                buildPhaseReceipts.append("\(phase.name)=\(phaseJobID.uuidString):\(phaseDurationMs)ms")
+            }
+            evidence["build"] = "phases " + buildPhaseReceipts.joined(separator: " ")
             let dist = try await skillHubShell(
                 runtime: runtime, identity: identity, context: context, tag: "dist-hash",
                 command: "test -s \(operationDirectory)/node-http/dist/server.js && sha256sum \(operationDirectory)/node-http/dist/server.js",
