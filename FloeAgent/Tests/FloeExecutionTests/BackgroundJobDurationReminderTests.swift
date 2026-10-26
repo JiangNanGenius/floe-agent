@@ -12,20 +12,32 @@ import FloeCore
 @testable import FloeExecution
 
 private actor JobTestSleepGate {
-    private var waiters: [CheckedContinuation<Bool, Never>] = []
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
     private(set) var requested: [TimeInterval] = []
 
     func sleep(_ seconds: TimeInterval) async -> Bool {
         requested.append(seconds)
-        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            waiters.append(continuation)
+        let id = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters[id] = continuation
+                }
+            }
+        } onCancel: {
+            Task { await self.cancel(id) }
         }
     }
     var waiterCount: Int { waiters.count }
     func releaseAll(_ result: Bool) {
-        let pending = waiters
-        waiters = []
+        let pending = Array(waiters.values)
+        waiters = [:]
         for continuation in pending { continuation.resume(returning: result) }
+    }
+    private func cancel(_ id: UUID) {
+        waiters.removeValue(forKey: id)?.resume(returning: false)
     }
 }
 
