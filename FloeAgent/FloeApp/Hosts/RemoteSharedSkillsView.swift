@@ -157,6 +157,7 @@ private struct RemoteSharedSkillDetail: View {
     let service: RemoteSharedSkillsService
     @State private var document: RemoteSharedSkillDocument?
     @State private var error: String?
+    @State private var readAttempt = UUID()
 
     var body: some View {
         List {
@@ -168,11 +169,14 @@ private struct RemoteSharedSkillDetail: View {
             }
             if let document {
                 Section { MarkdownRendererView(source: document.content, isStreaming: false) }
-            } else if let error { Text(error).foregroundStyle(.secondary) }
+            } else if let error {
+                Text(error).foregroundStyle(.secondary)
+                Button("action.retry") { readAttempt = UUID() }
+            }
             else { ProgressView() }
         }
         .navigationTitle(skill.name)
-        .task(id: skill.digest) {
+        .task(id: readAttempt) {
             do {
                 let value = try await service.read(hostID: hostID, skill: skill)
                 guard !Task.isCancelled else { return }

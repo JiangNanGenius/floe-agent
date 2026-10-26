@@ -28,6 +28,7 @@ struct SkillHubDisplayItem: Identifiable {
 enum SkillHubCategory: String, CaseIterable, Identifiable {
     case office, writing, research, design, development, product, productivity
     var id: String { rawValue }
+    var artworkName: String { "SkillHub-" + rawValue }
     var title: LocalizedStringKey { LocalizedStringKey("skills.hub.category." + rawValue) }
     var tint: Color {
         switch self {
@@ -129,17 +130,20 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                     ForEach(featured) { item in
                         VStack(alignment: .leading, spacing: 12) {
                             Button { onSelect(item.id) } label: {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    HStack {
-                                        Image(systemName: item.systemImage)
-                                            .font(.largeTitle)
-                                            .symbolRenderingMode(.hierarchical)
-                                            .foregroundStyle(item.category.tint)
-                                        Spacer()
-                                        Image(systemName: "arrow.up.right")
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundStyle(.secondary)
-                                    }
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Color(red: 0.055, green: 0.055, blue: 0.11)
+                                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                                        .overlay {
+                                            GeometryReader { artwork in
+                                                Image(item.category.artworkName)
+                                                    .resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: artwork.size.width, height: artwork.size.height)
+                                                    .clipped()
+                                            }
+                                        }
+                                        .accessibilityHidden(true)
+                                    VStack(alignment: .leading, spacing: 8) {
                                     Text(item.title)
                                         .font(.title2.bold())
                                         .foregroundStyle(.primary)
@@ -149,11 +153,13 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                                         .foregroundStyle(.secondary)
                                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
                                         .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(16)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(20)
-                                .background(item.category.tint.opacity(0.09),
+                                .background(Color(uiColor: .secondarySystemGroupedBackground),
                                     in: RoundedRectangle(cornerRadius: 20))
+                                .clipShape(RoundedRectangle(cornerRadius: 20))
                                 .contentShape(RoundedRectangle(cornerRadius: 20))
                             }
                             .buttonStyle(.plain)
