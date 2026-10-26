@@ -1,17 +1,26 @@
 name: floe-skill-hub-signing
 # DATA-ONLY publication signing bridge (the root has substituted the exact
 # reviewed tooling commit into the literal pin below; catalog publication
-# still runs only behind the launch gate enforced inside that trusted
-# tooling).
+# still runs only behind the launch gate AND the reviewed dependency-v1 /
+# publication-immutability guard enforced inside that trusted tooling, whose
+# baseline is anchored to the LIVE official Hub main independently resolved
+# by this workflow on every run — never from a dispatch input).
 #
-# What this workflow does: it fetches ONLY two read-only snapshots of the
+# What this workflow does: it fetches ONLY read-only snapshots of the
 # public-facing content repository JiangNanGenius/floe-skill-hub — the
-# reviewed trusted tooling T at a LITERAL pinned commit and the claimed data
-# commit S/X at the dispatch input (40-hex, exact object fetch) — and runs
-# one fixed helper from T (`scripts/sign_publication.py`, Python isolated
-# mode, current directory outside the data checkout). It signs review-record
-# envelopes or the gated release catalogs with the existing official signing
-# secret and uploads the result as a run ARTIFACT only.
+# reviewed trusted tooling T at a LITERAL pinned commit (full history: the
+# immutability guard re-verifies ledger rows and ledger ancestry from this
+# checkout by local Git object reads), the claimed data commit S/X at the
+# dispatch input (40-hex, exact object fetch), and the LIVE current
+# publication Y resolved exactly once from the hardcoded public origin's
+# refs/heads/main (tokenless, never from any dispatch or caller-supplied
+# value) — and runs one fixed helper from T (`scripts/sign_publication.py`,
+# Python isolated mode, current directory outside the data checkout) with
+# that Y passed as the mandatory --published-y baseline anchor. It signs
+# review-record envelopes or the gated release catalogs with the existing
+# official signing secret and uploads the result as a run ARTIFACT only.
+# Reviews mode resolves Y through the same fixed path but does not consult
+# the history gate itself; its behaviour is unchanged.
 #
 # What this workflow must never do: execute/import/install anything from the
 # data checkout; run any candidate scripts, entrypoints or hooks; carry
@@ -22,7 +31,15 @@ name: floe-skill-hub-signing
 # envelopes for content that is packaged+reviewed on a staging branch (this
 # is BEFORE catalog qualification flags and promotes nothing); catalog
 # publication signing refuses unless the Root-approved staged-opening launch
-# gate (policy incremental-2026-10-27) is genuinely satisfied: each feed must
+# gate (policy incremental-2026-10-27) is genuinely satisfied AND the T
+# tooling's publication-history immutability guard passes BEFORE any
+# signing: the cumulative ledger at the canonical path inside T, every row
+# re-verified against the signed feed bytes at its pinned publication commit,
+# merged with the independently resolved live-main Y supplied as the
+# mandatory --published-y; reusing an already-published
+# (channel, id, version) with a different contentDigest, a stale or
+# shortened ledger, or a missing Y once publication history exists all fail
+# closed with no first-publication downgrade: each feed must
 # be EXACTLY the qualified download-eligible rows advertising that channel
 # (the four App-provided builtin ids are excluded by exact ID and an empty
 # feed is always refused), per-item trust is unchanged (frozen adaptations,
@@ -61,12 +78,21 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # Root-substituted reviewed tooling pin: f7480044aaf5c22d19f55a083a513482261f1d39
-  # ("Publish qualified download offers without duplicating App builtins",
-  # Hub byte tree 1edcaaae21ee3668d91e592be52f984a1eacd709), committed on the
-  # Hub default branch and independently verified by the root before this
-  # transport was cut.
-  TOOLING_COMMIT: f7480044aaf5c22d19f55a083a513482261f1d39
+  # Root-substituted reviewed tooling pin: f351591c51e3c07e706fc8c90f2f547b3f6760fd
+  # ("Align dependency-declaration mirror with the probed native decoder"),
+  # Hub byte tree 3dc3d487465f0fbebc6462816731ac0ac34f3033, parent
+  # fe9db33fa518c247fd871fd8ffbd0f67eba76056 (the reviewed dependency-v1 +
+  # publication-immutability guard), committed on the Hub default branch.
+  # This T4 corrects ONLY the producer-side declaration mirror against an
+  # executable component probe of the unchanged native authority; the
+  # immutability/signer/ledger gates, feeds, keys, packages and reviews are
+  # blob-identical to fe9. Focused evidence at T4: 35+26+41 = 102 tests OK,
+  # gen_schemas --check + check_catalog + release rebuild byte-identical at
+  # frozen X; retained history: the original worker 51 focused tests, the
+  # 264-run/8-baseline-only-failure full suite and Root's 97 actual tests at
+  # fe9. The transport pin was substituted by the root-owned activation job
+  # before this transport was cut.
+  TOOLING_COMMIT: f351591c51e3c07e706fc8c90f2f547b3f6760fd
 
 jobs:
   sign:
@@ -98,13 +124,18 @@ jobs:
       #   actions/checkout       v4.4.0 -> 11d5960a326750d5838078e36cf38b85af677262
       #   actions/setup-python   v5.6.0 -> a26af69be951a213d495a4c3e4e4022e16d87065
       #   actions/upload-artifact v4.6.2 -> ea165f8d65b6e75b540449e92b4886f43607fa02
+      # fetch-depth: 0 (full history) is required by the reviewed T
+      # immutability guard: it re-verifies every ledger row against the
+      # signed feed bytes at its pinned publication commit and reads the
+      # bounded (two-commit) ledger ancestry with local `git show` /
+      # `git log` inside this checkout — no network, no history rewrite.
       - name: Check out the reviewed tooling T at the literal pinned commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: JiangNanGenius/floe-skill-hub
           ref: ${{ env.TOOLING_COMMIT }}
           path: tooling
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
       - name: Fetch the exact data snapshot S/X at the claimed commit (tokenless, public)
         env:
@@ -137,6 +168,47 @@ jobs:
             *) echo "unexpected tooling origin: $origin" >&2; exit 1 ;;
           esac
           test -z "$(git -C tooling -c core.fsmonitor=false status --porcelain --untracked-files=all)"
+      # Independently anchored publication baseline (fixed, non-secret,
+      # tokenless): resolve the LIVE official Hub publication Y exactly once
+      # from the hardcoded public origin's refs/heads/main. This value never
+      # comes from the dispatch source_commit input, the tooling pin or any
+      # caller-supplied parameter; a stale or rolled-back ref fails closed
+      # later inside the T guard because the signed feed pairs AT Y must
+      # verify under the configured production trust. Y's exact object is
+      # fetched into the trusted tooling object store (hooks disabled, no
+      # credentials, no remote-tracking ref update) so the signer can read
+      # the published bytes at Y with local `git show`; fetching a commit
+      # already present (Y == T) is a no-op and the clean-tooling status
+      # check above is unaffected by FETCH_HEAD-only bookkeeping. Both modes
+      # resolve Y; reviews mode does not consult the history gate, so its
+      # behaviour is unchanged.
+      - name: Resolve the live official Hub publication Y (tokenless, fixed public origin/ref)
+        env:
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_SYSTEM: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          HUB_PUBLIC_ORIGIN=https://github.com/JiangNanGenius/floe-skill-hub.git
+          listing="$(git -c gc.auto=0 ls-remote "$HUB_PUBLIC_ORIGIN" refs/heads/main)"
+          line_count="$(printf '%s\n' "$listing" | wc -l | tr -d '[:space:]')"
+          if [[ "$line_count" != "1" ]]; then
+            echo "expected exactly one refs/heads/main line from the live official Hub" >&2
+            exit 1
+          fi
+          y_commit="${listing%%[[:space:]]*}"
+          if [[ ! "$y_commit" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "live refs/heads/main is not exactly 40 lowercase hex" >&2
+            exit 1
+          fi
+          git -C "$GITHUB_WORKSPACE/tooling" \
+            -c core.hooksPath=/nonexistent-signing-bridge-hooks \
+            -c core.fsmonitor=false \
+            -c gc.auto=0 fetch --quiet --no-tags "$HUB_PUBLIC_ORIGIN" "$y_commit"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" cat-file -t "$y_commit")" = "commit"
+          test "$(git -C "$GITHUB_WORKSPACE/tooling" rev-parse "$y_commit")" = "$y_commit"
+          echo "PUBLISHED_Y=$y_commit" >> "$GITHUB_ENV"
+          echo "resolved live official Hub publication Y: $y_commit"
       - name: Set up the pinned interpreter
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
@@ -148,12 +220,20 @@ jobs:
           FLOE_SKILL_HUB_SIGNING_KEY: ${{ secrets.FLOE_SKILL_HUB_SIGNING_KEY }}
         run: |
           set -euo pipefail
+          # The immutability baseline anchor must come from the fixed
+          # live-ref resolution step above (GITHUB_ENV export), be
+          # well-formed, and never from any dispatch or caller value.
+          if [[ ! "${PUBLISHED_Y:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "PUBLISHED_Y is missing or not exactly 40 lowercase hex; refusing to sign" >&2
+            exit 1
+          fi
           cd "$RUNNER_TEMP"
           python3 -I "$GITHUB_WORKSPACE/tooling/scripts/sign_publication.py" \
             --mode "$MODE" \
             --source-commit "$SOURCE_COMMIT" \
             --data "$GITHUB_WORKSPACE/data" \
             --tooling "$GITHUB_WORKSPACE/tooling" \
+            --published-y "$PUBLISHED_Y" \
             --out "$RUNNER_TEMP/bridge-out"
       - name: Upload the signed artifact bundle (no repository push, no release)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
