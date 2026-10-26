@@ -435,6 +435,18 @@ public extension BackgroundJobOutputSpool {
         // Pages cover the PAYLOAD only: the structured footer is reported as
         // fields (complete/originalBytes), never as page text.
         let payloadBytes = min(size, metadata?.savedBytes ?? size)
+        // A verified footer-only artifact is a valid, empty result. Preserve
+        // the ownership/path checks above and refuse continuation past offset 0.
+        if payloadBytes == 0, offset == 0, let metadata, metadata.savedBytes == 0 {
+            return BackgroundJobOutputPage(
+                available: true, path: path, totalBytes: size, offset: 0,
+                pageBytes: 0, nextOffset: nil, text: "",
+                complete: metadata.truncated ? false
+                    : (metadata.captureIntegrityKnown ? true : nil),
+                originalBytes: metadata.originalBytes,
+                captureTruncated: metadata.captureTruncated,
+                changedSinceRecorded: recordedBytes.map { $0 != size } ?? false)
+        }
         let start = min(max(0, offset), payloadBytes)
         let remaining = max(0, payloadBytes - start)
         guard remaining > 0 else { return nil }

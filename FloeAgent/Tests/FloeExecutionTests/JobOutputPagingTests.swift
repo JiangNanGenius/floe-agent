@@ -696,6 +696,19 @@ struct JobOutputPagingTests {
         let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
         #expect(!String(decoding: bytes, as: UTF8.self).contains("DISPLAY-ONLY-CAPTION"))
         #expect(terminal.resultDigest == FloeDigest.sha256Hex(Data()))
+        let result = try await JobsResultTool(service: service, outputRoot: root).execute(
+            JobsResultTool.Arguments(jobID: job.id.uuidString, offset: 0, maxBytes: 256),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        let response = try #require(
+            try JSONSerialization.jsonObject(with: Data(result.summary.utf8)) as? [String: Any])
+        let page = try #require(response["output"] as? [String: Any])
+        #expect(page["available"] as? Bool == true)
+        #expect(page["text"] as? String == "")
+        #expect(page["pageBytes"] as? Int == 0)
+        #expect(page["complete"] as? Bool == true)
+        #expect(page["originalBytes"] as? Int == 0)
+        #expect(BackgroundJobOutputSpool.readPage(
+            jobID: job.id, path: path, offset: 1, maxBytes: 256, root: root) == nil)
     }
 
     @Test("A spool write failure keeps the job result, cancel behavior and ownership intact")
