@@ -18,17 +18,49 @@ cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks ar
 complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
 has been pushed and independently read back. G04-R2 adds representative App
 integration and is now closed for its representative Alpha11 stage (build 13).
-G05-R1 now has a signed Alpha12 candidate with embedded Office. Offline DOCX,
-XLSX and an explicit-geometry two-slide PPTX were visibly rendered in the reused
-Android 37 / 16 KiB tablet emulator without a configured model or Linux preview
-fallback. Normal-close process/result handling is still being repaired; Alpha12
-has not been released. G05-R2 prioritizes basic manual editing and save/reopen
-before AI editing or advanced layout. These are staged requirements, not claims
-that editing or reliable saving is already available.
+G05-R1 is delivered in [Alpha12](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.12)
+(build 14, immutable source `9a694fbc52c6a276811c25290038a263df15f4d5`).
+Native offline DOCX/XLSX/PPTX representative previews, owned-close receipts and
+reopening were observed across the existing API37/16 KiB tablet and API33/4 KiB
+Samsung. The final candidate also fixes the phone Impress DOM-placement failure
+and passed actual portrait/landscape observation. G05-R2 now prioritizes basic
+manual editing and reliable save/reopen before AI editing or advanced layout;
+editing, recalculation and export are not yet delivered.
 Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
+
+## G05-R1 native Office preview
+
+The App embeds a fixed official Collabora 26.04.4.2 ARM64 native producer, with
+14 byte-pinned libraries and source/notice mappings to online commit
+`2333344185931274f9c49d6c12a408cefcef6844`. This is an official-producer reuse
+and real JNI/App qualification; no local Office-kernel rebuild or reproducible-
+build attestation is claimed. The original payload remains immutable, and the
+143 explicit asset transformations and unchanged notices are hash-bound.
+
+Direct system document selection works without a model or Linux installation.
+The service opens a verified private snapshot and fences the native process,
+viewer incarnation, cancellation and result ownership. A bound-only default-
+process anchor keeps the exact close acknowledgement reachable while the viewer
+is foreground; it adds no persistent notification, permission or PiP keepalive.
+Uncertain closure retains the snapshot rather than claiming a clean native return.
+
+Full/Play compilation, 40 module checks, 7 transfer checks, 54 render-witness
+semantic checks and 13 focused mobile DOM checks passed in the relevant cohorts.
+Unchanged Core06/Authority evidence is reused. Real tablet offline observations
+include Word Unicode/formatting, spreadsheet data/cached formula results and a
+valid two-slide presentation; blank and corrupt-input outcomes are preserved.
+The final APK was separately observed on the phone for two-page presentation,
+rotation, spreadsheet content, closing and fresh-process reopening. Original
+provider files and the phone's existing four histories/model selection survived.
+
+These are representative preview checks. Editing/recalculation/export, complex
+documents, complete interaction/hardware/visual coverage and two nonblocking
+phone frontend diagnostic events remain follow-up work. The original geometry-
+missing parser fixture's blank presentation failure is preserved. The next goal
+starts with manual editing plus transactional save/reopen, then AI/output work.
 
 ## G04-R2 workspace integration
 
@@ -99,6 +131,18 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 
 ## Android Alpha
+
+### Alpha12 / G05-R1 offline Office preview
+
+[Download Alpha12](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.12)
+is build 14 from source `9a694fbc52c6a276811c25290038a263df15f4d5`.
+The signed Full ARM64 APK is 432,382,034 bytes (SHA-256
+`2ddb0ea06ebb49da597212bc61520f9110b0f58931def5663673f7f766e48aff`).
+Its only accompanying release assets are final `SHA256SUMS` and the combined
+Linux/IDE/Office corresponding-source/license archive. All three public assets
+were downloaded and checked against their exact local inputs; the annotated tag
+binds the qualified source. It is a prerelease with `latest=false`, preserving
+Alpha11 and iOS Latest `v1.7.58`. The in-app updater remains a later G11 item.
 
 ### Alpha11 / G04-R2 representative delivery
 
