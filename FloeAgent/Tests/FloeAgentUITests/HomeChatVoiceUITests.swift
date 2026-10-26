@@ -63,18 +63,21 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         let plugins = app.staticTexts["sidebar.skills"]
         XCTAssertTrue(plugins.waitForExistence(timeout: 8))
         plugins.tap()
-        XCTAssertTrue(app.buttons["skills.card.floe-pdf"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.scrollViews["skills.featured.carousel"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.segmentedControls.firstMatch.exists)
         let marketplace = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         marketplace.name = "Skill Hub wide discovery"
         marketplace.lifetime = .keepAlways
         add(marketplace)
         XCUIDevice.shared.orientation = .portrait
-        XCTAssertTrue(app.buttons["skills.card.floe-pdf"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.scrollViews["skills.featured.carousel"].waitForExistence(timeout: 8))
         let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         portrait.name = "Skill Hub portrait discovery"
         portrait.lifetime = .keepAlways
         add(portrait)
+        let pdf = app.buttons["skills.card.floe-pdf"]
+        for _ in 0..<3 where !pdf.exists { app.swipeUp() }
+        XCTAssertTrue(pdf.exists)
         XCTAssertFalse(app.buttons["sidebar.batch"].exists)
         let row = app.descendants(matching: .any).matching(identifier: "sidebar.conversation.57C0A79F-CF1B-45D2-B640-EF54E5C55391").firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8))

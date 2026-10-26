@@ -5,7 +5,6 @@ public enum HarnessState: String, Sendable, Codable, Hashable {
     case idle
     case preparing
     case streaming
-    case preparingToolCall
     case waitingApproval
     case waitingUser
     case executingTool
@@ -25,6 +24,7 @@ public enum AgentLivenessPhase: String, Sendable, Codable, Hashable {
     case preparing
     case waitingForFirstEvent
     case streaming
+    case preparingToolCall
     case resolvingTool
     case waitingApproval
     case executingTool
