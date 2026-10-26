@@ -2787,6 +2787,33 @@ extension SubagentSimulatorExecutionTests {
                 context: childContext, tag: "case12-reload", tool: "browser.click",
                 arguments: ["tabID": tabID.uuidString, "ref": reloadNode.ref,
                             "documentID": page.documentID])
+            // A click can return before WebKit commits its queued reload.
+            // Prove the real didCommit document change before testing the
+            // old ref; otherwise an action on the still-current page is not
+            // evidence that stale-document protection failed.
+            let commitClock = ContinuousClock()
+            let commitDeadline = commitClock.now.advanced(by: .seconds(10))
+            var committedPage: SkillHubBrowserResult.Page?
+            var commitProbe = 0
+            while commitClock.now < commitDeadline {
+                let observed = try await skillHubObserve(
+                    runtime: runtime, identity: fixedIdentity, context: childContext,
+                    tag: "case12-commit-\(commitProbe)", tabID: tabID)
+                if observed.documentID != page.documentID {
+                    committedPage = observed
+                    break
+                }
+                commitProbe += 1
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            let reloadedPage = try #require(committedPage,
+                "reload never committed a new document within the navigation safety window")
+            evidence["webappReloadCommit"] = "\(page.documentID) -> \(reloadedPage.documentID)"
+            _ = try await skillHubBrowserCall(
+                runtime: runtime, identity: fixedIdentity, context: childContext,
+                tag: "case12-committed-load", tool: "browser.wait",
+                arguments: ["tabID": tabID.uuidString, "condition": "load",
+                            "timeoutMilliseconds": 10_000])
             let staleAttempt = try await skillHubBrowserFailure(runtime: runtime,
                 identity: fixedIdentity, context: childContext, tool: "browser.click",
                 arguments: ["tabID": tabID.uuidString, "ref": reloadNode.ref,
