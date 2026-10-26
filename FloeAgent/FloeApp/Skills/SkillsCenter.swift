@@ -284,6 +284,7 @@ final class SkillsCenter: ObservableObject {
         defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
         let staged = try await stageCuratedPackage(publication, id: request.id, at: scratch.url)
         try await requireCompatibility(staged.content.package)
+        try Self.validateDependencyDeclaration(in: staged.content)
         try context.cancellation.throwIfCancelled()
         let candidate: SkillUpgradeCandidate?
         if let current {
@@ -323,6 +324,21 @@ final class SkillsCenter: ObservableObject {
               committed.rewrittenDigest == staged.receipt.contentDigest else { throw SkillUpgradeError.localConflict }
         let receipt = try hubInstallReceipt(committed, status: current == nil ? .installed : .replaced)
         await load()
+        // Official install: persist the validated ownership record. When this
+        // tool path already runs bound to a resolved Linux task environment,
+        // the shared resource preparation (coalesced downloads into the
+        // environment's shared /floe/cache, per-family install + exact
+        // readback) starts now in THAT environment; without one (or on the
+        // global UI path) preparation defers honestly to first task use —
+        // never ambient selection, never a faked ready.
+        if staged.content.files[SkillDependency.packagePath] != nil {
+            _ = await dependencyPreparation?.prepareAtInstall(
+                skillID: request.id,
+                environmentID: context.environmentID,
+                runID: context.runID,
+                cancellation: context.cancellation
+            )
+        }
         return receipt
     }
 
@@ -364,6 +380,7 @@ final class SkillsCenter: ObservableObject {
             let staged = try await self.stageCuratedPackage(publication, id: id, at: scratch.url)
             let snapshot = staged.content
             try await self.requireCompatibility(snapshot.package)
+            try Self.validateDependencyDeclaration(in: snapshot)
             guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else { throw SkillUpgradeError.invalidSource }
             self.pendingInstallation = PendingInstallation(sourceURL: sourceURL,
                 skillMarkdown: String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self),
@@ -383,6 +400,21 @@ final class SkillsCenter: ObservableObject {
 
     /// Discovery reads only the signed catalog. Archives are staged only when
     /// the user opens an update, using the existing reviewed installation path.
+    /// Official curated staging gate for the dependency declaration: when the
+    /// digest-verified package carries `references/dependencies.json`, its
+    /// bytes must strict-decode (schema v1, exact keys, exact pins) and every
+    /// referenced lock / component descriptor must exist inside the signed
+    /// package. Anything else fails the staging closed BEFORE review or
+    /// commit — an official package can never install a half-declared
+    /// dependency set that later "prepares" unpredictably. Packages without
+    /// the file keep the exact existing behavior (the file is inert for old
+    /// clients and never exists for them).
+    static func validateDependencyDeclaration(in snapshot: SkillContentSnapshot) throws {
+        guard let declarationBytes = snapshot.files[SkillDependency.packagePath] else { return }
+        let declaration = try SkillDependency.decode(declarationBytes)
+        try SkillDependency.validate(declaration, packageFiles: snapshot.files)
+    }
+
     func refreshOfficialCatalog(force: Bool = false, applyAutomaticUpdates: Bool = true) async {
         guard !isCheckingCatalog,
               pendingUpgrade == nil, pendingInstallation == nil,
@@ -803,6 +835,14 @@ final class SkillsCenter: ObservableObject {
             _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             journal.phase = "complete"
             try self.writeJournal(journal, at: history)
+            // An update replaces the immutable package + descriptor pair: the
+            // dependency ownership record re-persists from the NEW exact bytes.
+            // Plans/receipts bound to the previous pair stay pinned to those
+            // bytes (their next use revalidates or is honestly revoked — no
+            // silent swap, no hidden same-version refresh).
+            if candidate.snapshot.files[SkillDependency.packagePath] != nil {
+                _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: current.id)
+            }
             updates.set(.init(installedDigest: candidate.snapshot.package.canonicalSHA256, sourceIdentity: updateSourceIdentity(candidate.source), phase: .upToDate), for: current.id)
             self.cancelUpgrade()
         } catch {
@@ -822,6 +862,15 @@ final class SkillsCenter: ObservableObject {
             else { throw SkillUpgradeError.localConflict }
             _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             try await self.restoreUpgrade(journal, at: path)
+            // Rollback restores the previous immutable package + descriptor
+            // pair; the ownership record re-persists from those exact bytes.
+            // Dependencies the current environments cannot satisfy after the
+            // rollback are reported honestly per requirement at the next
+            // invocation — nothing is removed automatically.
+            if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill)),
+               restored.files[SkillDependency.packagePath] != nil {
+                _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: skill.id)
+            }
         }
     }
 
@@ -905,6 +954,7 @@ final class SkillsCenter: ObservableObject {
     /// Nil in hosts/tests without the native component wiring; the read path
     /// then keeps its historical Markdown-only behavior.
     private let runtimeComponents: SkillRuntimeComponentCenter?
+    private let dependencyPreparation: SkillDependencyPreparationCenter?
     private var packageMutationInProgress = false
     private var builtinSeedTask: Task<Void, Never>?
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
@@ -969,6 +1019,100 @@ final class SkillsCenter: ObservableObject {
         )
     }
 
+    /// Pre-commit gate for the official publication identity ledger. The
+    /// authoritative enforcement is transactional inside `skillStore.save`
+    /// (identity + skill metadata commit together; a conflict rolls both
+    /// back). This read only turns an already-known conflict/damage into a
+    /// clearer early message; a database failure propagates and the curated
+    /// commit is refused — there is no silent empty ledger.
+    private func precheckOfficialPublication(_ candidate: OfficialSkillPublicationRecord) async throws {
+        let rows = try await environment.skillStore.all()
+        try await seedOfficialPublicationIdentities(rows: rows)
+        guard let seen = try await environment.skillStore.officialPublication(id: candidate.skillID, version: candidate.version) else { return }
+        guard seen.contentDigest == candidate.contentDigest else {
+            throw OfficialSkillPublicationConflict(
+                skillID: candidate.skillID, version: candidate.version,
+                seenDigest: seen.contentDigest, candidateDigest: candidate.contentDigest
+            )
+        }
+    }
+
+    /// Reconcile every retained receipt before a curated write. There is no
+    /// process-global "done" bit: another database, a partial migration or a
+    /// failed read must never bypass historical version immutability.
+    private func seedOfficialPublicationIdentities(rows: [PersistedSkill]) async throws {
+        let previous = try upgradeJournals().map { $0.1.oldSkill }
+        try await Self.seedOfficialPublicationIdentities(
+            rows: rows + previous, store: environment.skillStore)
+    }
+
+    static func seedOfficialPublicationIdentities(
+        rows: [PersistedSkill], store: SQLiteSkillStore
+    ) async throws {
+        var candidates: [OfficialSkillPublicationRecord] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard let receipt = curatedReceipt(for: row),
+                  receipt.feedStatus == .production,
+                  receipt.reviewDecision == .approve,
+                  receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.reviewKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.hubRepository == CuratedSkillHub.hubRepository,
+                  receipt.contentDigest == row.rewrittenDigest,
+                  receipt.entryID == row.id,
+                  receipt.entryVersion == row.version else { continue }
+            // Keep contradicting digests in the batch so the transaction
+            // rejects them, rather than deduplicating the contradiction away.
+            let key = "\(receipt.entryID)@\(receipt.entryVersion):\(receipt.contentDigest)"
+            guard seen.insert(key).inserted else { continue }
+            candidates.append(OfficialSkillPublicationRecord(
+                skillID: receipt.entryID, version: receipt.entryVersion,
+                contentDigest: receipt.contentDigest, publicationCommit: receipt.publicationCommit,
+                updatedAt: row.updatedAt))
+        }
+        if !candidates.isEmpty { try await store.seedOfficialPublications(candidates) }
+    }
+
+    /// Only a live, enabled, granted and digest-verified official install can
+    /// prepare dependencies. A declaration from an external package is data,
+    /// never an installation authorization.
+    static func dependencyAuthority(
+        row: PersistedSkill, snapshot: SkillContentSnapshot,
+        grantedCapabilities: Set<String>
+    ) -> SkillDependencyAuthority? {
+        guard row.status == "enabled",
+              let receipt = curatedReceipt(for: row),
+              receipt.entryID == row.id,
+              receipt.entryVersion == row.version,
+              snapshot.package.manifest.id == row.id,
+              snapshot.package.manifest.version == row.version,
+              receipt.contentDigest == row.rewrittenDigest,
+              receipt.contentDigest == snapshot.package.canonicalSHA256,
+              Set(snapshot.package.manifest.capabilities).isSubset(of: grantedCapabilities),
+              let bytes = snapshot.files[SkillDependency.packagePath]
+        else { return nil }
+        let authority = SkillDependencyAuthority(
+            skillID: row.id, packageVersion: row.version,
+            contentDigest: receipt.contentDigest, packageSHA256: receipt.packageSHA256,
+            catalogSHA256: receipt.catalogSHA256, reviewSHA256: receipt.reviewSHA256,
+            publicationCommit: receipt.publicationCommit,
+            feedStatus: receipt.feedStatus, reviewDecision: receipt.reviewDecision,
+            feedSignatureKeyID: receipt.feedSignatureKeyID, reviewKeyID: receipt.reviewKeyID,
+            hubRepository: receipt.hubRepository, declarationBytes: bytes,
+            declarationSHA256: FloeDigest.sha256Hex(bytes), packageFiles: snapshot.files)
+        guard SkillDependencyPreparationCenter.isFormallyValid(authority),
+              (try? SkillDependencyPreparationCenter.decodeAndValidate(authority)) != nil else { return nil }
+        return authority
+    }
+
+    func dependencyAuthorization(skillID: String) async -> SkillDependencyAuthority? {
+        guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              let snapshot = try? snapshot(for: row, runID: nil),
+              let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID)
+        else { return nil }
+        return Self.dependencyAuthority(row: row, snapshot: snapshot, grantedCapabilities: grants)
+    }
+
     /// Live revalidation used by the component center on EVERY fresh use: the
     /// row must still be installed and enabled, the receipt digest must still
     /// match the row and the re-verified snapshot, the snapshot must still
@@ -990,10 +1134,11 @@ final class SkillsCenter: ObservableObject {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil, dependencyPreparation: SkillDependencyPreparationCenter? = nil) {
         self.environment = environment
         self.resourceStager = resourceStager
         self.runtimeComponents = runtimeComponents
+        self.dependencyPreparation = dependencyPreparation
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -1004,7 +1149,9 @@ final class SkillsCenter: ObservableObject {
     func load() async {
         do { try await recoverUpgrades() } catch { errorMessage = error.localizedDescription }
         do {
-            installed = try await environment.skillStore.all()
+            let rows = try await environment.skillStore.all()
+            try await seedOfficialPublicationIdentities(rows: rows)
+            installed = rows
             let journals = try upgradeJournals().map(\.1).filter { $0.phase == "complete" }
                 .sorted { $0.createdAt > $1.createdAt }
             var sources: [String: GitHubSkillSource] = [:], digests: [String: String] = [:]
@@ -1548,6 +1695,16 @@ final class SkillsCenter: ObservableObject {
                 gitHubBinding: pending.gitHubBinding,
                 curatedReceipt: pending.curatedReceipt
             )
+            // Global-UI confirmed official install: this half has no run or
+            // environment, so only the ownership record is persisted and the
+            // shared preparation is marked deferred honestly. The UI may show
+            // "installed/verified" — never "packages ready".
+            if pending.curatedReceipt != nil, pending.snapshot?.files[SkillDependency.packagePath] != nil,
+               let skillID = pending.snapshot?.package.manifest.id {
+                _ = await self.dependencyPreparation?.prepareAtInstall(
+                    skillID: skillID, environmentID: nil, runID: nil, cancellation: nil
+                )
+            }
         }
     }
 
@@ -1816,6 +1973,38 @@ final class SkillsCenter: ObservableObject {
                 // Recording downloads nothing, stages nothing new and executes
                 // nothing — readiness runs only at the approved exec.shell
                 // boundary. Packages without the descriptor file are untouched.
+                if let dependencyPreparation, let runID,
+                   let declarationBytes = snapshot.files[SkillDependency.packagePath] {
+                    // A verified exact read of an installed official package
+                    // that carries the dependency declaration records an
+                    // immutable (environment, run)-bound plan pinning package
+                    // version + contentDigest + declaration digest, and the
+                    // skill.read response gains the invocation contract.
+                    // Recording installs nothing.
+                    let grants = try? await environment.skillStore.allowedCapabilities(skillID: row.id)
+                    let dependencyAuthority = grants.flatMap {
+                        Self.dependencyAuthority(
+                            row: row, snapshot: snapshot, grantedCapabilities: $0
+                        )
+                    }
+                    _ = await dependencyPreparation.recordPlan(
+                        skillID: row.id,
+                        environmentID: resourceContext.environmentID,
+                        runID: runID,
+                        authority: dependencyAuthority
+                    )
+                    if let dependencyAuthority,
+                       let declaration = try? SkillDependencyPreparationCenter.decodeAndValidate(dependencyAuthority) {
+                        markdown += "\n" + SkillDependencyPreparationCenter.invocationInfo(
+                            skillID: row.id, declaration: declaration
+                        ) + "\n"
+                    } else {
+                        markdown += "\n## Dependency invocation\nThe packaged dependency declaration failed strict validation for this build (or this is not an installed official curated package); automatic provisioning is unavailable for this skill and required resources must not be assumed present. Ordinary exec.shell commands without skillID are unchanged.\n"
+                    }
+                    if let status = await dependencyPreparation.sharedPreparationStatus(skillID: row.id) {
+                        markdown += "\nPreparation status:\n\(status)\n"
+                    }
+                }
                 if let runtimeComponents, let runID,
                    snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
                     let stagedRoot: String? = {
@@ -1889,6 +2078,12 @@ final class SkillsCenter: ObservableObject {
                 if exists { try FileManager.default.moveItem(at: backup, to: packageURL) }
                 throw error
             }
+            // Uninstalling a skill removes OWNERSHIP RECORDS ONLY. Declared
+            // apt/pip/npm packages stay in every environment untouched — no
+            // automatic deletion, ever. Explicit environment-package removal
+            // remains a user action in the package UI where nothing else
+            // installed still needs the exact spec.
+            await dependencyPreparation?.forgetSkill(skillID: skill.id)
             await load()
             return "status=removed id=\(skill.id) recoverablePackage=\(exists ? backup.path : "none")"
         case .update:
@@ -2154,6 +2349,7 @@ final class SkillsCenter: ObservableObject {
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
         let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride)
         let package = prepared.package
+        var officialPublicationCandidate: OfficialSkillPublicationRecord?
         if let receipt = curatedReceipt {
             guard receipt.feedStatus == .production,
                   receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
@@ -2162,6 +2358,28 @@ final class SkillsCenter: ObservableObject {
                   receipt.entryID == package.manifest.id,
                   receipt.entryVersion == package.manifest.version,
                   receipt.contentDigest == package.canonicalSHA256 else { throw SkillUpgradeError.localConflict }
+            // Version management (frozen rule #1, client-side second line):
+            // receipt equality alone cannot prove historical immutability — a
+            // freshly signed replacement entry with the SAME id+semver and a
+            // DIFFERENT contentDigest would pass it. The candidate identity
+            // is pre-checked for a clear early message and then written in
+            // the SAME database transaction as the skill metadata by
+            // `skillStore.save`: a same-version different-digest row (or a
+            // damaged stored row, or any ledger/database failure) throws and
+            // rolls the entire commit back — files included, through the
+            // staging service's existing rollback. External GitHub same-
+            // commit updates never carry a curated receipt and keep their
+            // historical behavior. Publisher CI remains mandatory for history
+            // this client never observed.
+            let candidate = OfficialSkillPublicationRecord(
+                skillID: package.manifest.id,
+                version: package.manifest.version,
+                contentDigest: package.canonicalSHA256,
+                publicationCommit: receipt.publicationCommit
+            )
+            guard candidate.isCanonical else { throw SkillUpgradeError.localConflict }
+            try await precheckOfficialPublication(candidate)
+            officialPublicationCandidate = candidate
         }
         if DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }), !bundledSeed {
             let legacyProof = verifiedUpgrade.map {
@@ -2252,7 +2470,14 @@ final class SkillsCenter: ObservableObject {
         let metadata = InitialSkillMetadata(store: environment.skillStore, skill: skill,
             capabilities: SkillBulkUpdatePlan.installationGrants(
                 declared: package.declaredCapabilities.map(\.rawValue),
-                upgradeAdded: verifiedUpgrade?.addedCapabilities))
+                upgradeAdded: verifiedUpgrade?.addedCapabilities),
+            officialPublication: officialPublicationCandidate)
+        // Identity + metadata commit atomically inside the staging service's
+        // metadata persist (skillStore.save transaction). A ledger conflict
+        // or damage throws BEFORE the skill row is committed, and the file
+        // move is rolled back by the staging service exactly like any other
+        // metadata failure — there is no post-success best-effort write and
+        // no ignored persistence error.
         _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
             .installRewrittenPackage(
                 at: url, provenance: provenance, replaceExisting: replaceExisting,
@@ -2264,8 +2489,10 @@ final class SkillsCenter: ObservableObject {
         let store: SQLiteSkillStore
         let skill: PersistedSkill
         let capabilities: [String]
+        var officialPublication: OfficialSkillPublicationRecord? = nil
         func persist(_ record: SkillInstallationRecord) async throws {
-            try await store.save(skill, grantCapabilities: capabilities)
+            try await store.save(skill, grantCapabilities: capabilities,
+                                 officialPublication: officialPublication)
         }
     }
 
@@ -2532,4 +2759,44 @@ final class SkillsCenter: ObservableObject {
         }
     }
 }
+
+// MARK: - Official Skill dependency invocation gate
+
+extension SkillsCenter: SkillDependencyInvocationGating {
+    /// The `exec.shell` gate. Verification re-reads the LIVE installed record
+    /// (enabled row + typed curated receipt + digest-verified snapshot +
+    /// current grants) through the center; the current-run plan binding and
+    /// the runtime-issued approval grant must both be present. A required
+    /// dependency that is not verified ready refuses only THIS skill's
+    /// dependency-aware invocation with the model-safe reason; optional gaps
+    /// return as a visible annotation. Nothing here approves, mints authority
+    /// or reroutes an environment, and commands that do not carry `skillID`
+    /// never reach this code.
+    func dependencyInvocationDecision(
+        skillID: String,
+        environmentID: String?,
+        runID: UUID,
+        approvalGrantID: UUID?,
+        cancellation: CancellationToken?
+    ) async -> SkillDependencyInvocationDecision {
+        guard approvalGrantID != nil else {
+            return .unavailable(reason: "dependency-aware invocation requires the run's approval grant")
+        }
+        guard let dependencyPreparation else {
+            return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)
+        }
+        switch await dependencyPreparation.invoke(
+            skillID: skillID,
+            environmentID: environmentID,
+            runID: runID,
+            cancellation: cancellation
+        ) {
+        case .ready(let annotation):
+            return .proceed(annotation: annotation)
+        case .refused(let reason):
+            return .refused(reason: reason)
+        }
+    }
+}
+
 #endif

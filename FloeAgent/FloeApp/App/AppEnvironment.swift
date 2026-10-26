@@ -175,6 +175,8 @@ final class AppEnvironment: ObservableObject {
     /// environment with an explicit backend instead of inheriting a shared
     /// or default one.
     let environmentRegistry: EnvironmentRegistry
+    private let environmentExecutions: EnvironmentExecutionCoordinator
+    private let skillDependencyPrepareLinux: LinuxPreparationHandler
     lazy var localTerminals = LocalTerminalStore(sessions: shellSessionCenter)
     /// Managed Linux Python installer shared by internal services and exec.shell.
     let managedPythonInstaller: ManagedPythonInstallService?
@@ -250,6 +252,56 @@ final class AppEnvironment: ObservableObject {
     private lazy var _workspaceCenter = WorkspaceCenter(environment: self)
     private lazy var _sourceControlCenter = SourceControlCenter(environment: self)
     private lazy var _settingsCenter = SettingsCenter(environment: self)
+    private lazy var skillDependencies: SkillDependencyPreparationCenter = {
+        let guests = linuxGuestService
+        let wheelRoot: URL?
+        if let root = try? RuntimeV2Layout.production().cacheDirectory(kind: "pip") {
+            do {
+                try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                wheelRoot = root
+            } catch { wheelRoot = nil }
+        } else { wheelRoot = nil }
+        let wheelGuestPath = wheelRoot.map { _ in "/floe/cache/pip/official-wheels" }
+        let operations: (any SkillDependencyPackageOperating)?
+        if let guests, let installer = managedPythonInstaller {
+            operations = LinuxGuestSkillDependencyPackageOperations(
+                managedPython: installer, languagePackages: LinuxGuestLanguagePackages(runner: guests),
+                wheelStoreGuestPath: wheelGuestPath)
+        } else { operations = nil }
+        let components = skillRuntimeComponents
+        return SkillDependencyPreparationCenter(
+            authorityProvider: { [weak self] id in
+                await self?.skillsCenter.dependencyAuthorization(skillID: id)
+            },
+            environmentResolver: { [weak self] id in
+                await self?.resolveSkillDependencyEnvironment(id)
+            },
+            launchGeneration: { id in
+                await guests?.runtimeStates().first { $0.environmentID == id && $0.running }?.identity.launchGeneration
+            },
+            operations: operations,
+            prepareEnvironment: { [weak self] id, cancellation in
+                guard let self else { throw FloeError.invalidConfiguration("App services are unavailable") }
+                _ = try await self.skillDependencyPrepareLinux(LinuxPreparationRequest(
+                    environmentID: id, cancellation: cancellation ?? CancellationToken()))
+            },
+            runtimeComponentProbe: { id, runID, cancellation in
+                if await components.prepareBindings(environmentID: id, runID: runID, cancellation: cancellation) != nil {
+                    return nil
+                }
+                return await components.state(environmentID: id, componentID: SkillRuntimeDependency.knownComponentID)
+                    .deferredReason ?? "Runtime component is not ready"
+            },
+            pipWheels: { specs in
+                try await ManagedPythonPackageInspector.fetchVerifiedWheels(specs: specs).map {
+                    SkillDependencyWheelBundle(spec: $0.spec, filename: $0.filename,
+                        sha256: $0.sha256, size: $0.size, bytes: $0.bytes)
+                }
+            },
+            wheelStoreURL: wheelRoot, wheelStoreGuestPath: wheelGuestPath,
+            appVersion: { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" },
+            persistenceRoot: (try? FloeArtifactStore.root())?.appendingPathComponent("SkillDependencies", isDirectory: true))
+    }()
     /// Skill bundle delivery uses the SAME descriptor-time share table the
     /// guest boots with, so an exact read that happens BEFORE the task's first
     /// exec.shell still stages into the workspace the later first boot mounts.
@@ -263,7 +315,8 @@ final class AppEnvironment: ObservableObject {
             resourceStager: SkillWorkspaceResourceStager { environmentID in
                 await guestService?.linuxGuestPathMap(environmentID: environmentID)
             },
-            runtimeComponents: skillRuntimeComponents
+            runtimeComponents: skillRuntimeComponents,
+            dependencyPreparation: skillDependencies
         )
     }()
     private lazy var _mcpServiceCreationBackend = MCPServiceCreationAppBackend(
@@ -396,6 +449,20 @@ final class AppEnvironment: ObservableObject {
     /// `defaultAgentMode` through it without a construction cycle.
     var settingsCenter: SettingsCenter { _settingsCenter }
     var skillsCenter: SkillsCenter { _skillsCenter }
+
+    private func resolveSkillDependencyEnvironment(_ id: String) async -> ToolEnvironment? {
+        guard let record = await environmentRegistry.record(id: id),
+              record.effectiveExecutionBackend == .linuxVM else { return nil }
+        do {
+            // Reuse the canonical layer/variable resolution. The caller's
+            // tool lease remains held throughout dependency preparation.
+            let lease = try await environmentExecutions.acquireManagement(
+                environmentID: id, cancellation: CancellationToken())
+            let resolved = lease.context.environment
+            await lease.finish()
+            return resolved
+        } catch { return nil }
+    }
     var mcpServiceCreationBackend: MCPServiceCreationAppBackend { _mcpServiceCreationBackend }
     var mcpServiceCreationCoordinator: MCPServiceCreationCoordinator { _mcpServiceCreationCoordinator }
     /// Signed declarative-content updates (prompts/help/templates/providers).
@@ -736,6 +803,7 @@ final class AppEnvironment: ObservableObject {
         self.environmentRegistry = environmentRegistry
         let containerCAS = ContainerCAS(roots: environmentRoots)
         let environmentExecutions = EnvironmentExecutionCoordinator(roots: environmentRoots, registry: environmentRegistry)
+        self.environmentExecutions = environmentExecutions
         ToolEnvironmentRouting.shared.configure { context in try await environmentExecutions.acquire(context) }
 
         // Linux guest backend: one TinyEMU-backed service for the whole app,
@@ -862,6 +930,7 @@ final class AppEnvironment: ObservableObject {
                 cancellation: request.cancellation
             )
         }
+        self.skillDependencyPrepareLinux = linuxPreparation
 
         // Phase 2 (TinyEMU migration): local Python runs only inside the task
         // environment's Linux guest (shared venv, real pip). The bundled
@@ -1007,6 +1076,17 @@ final class AppEnvironment: ObservableObject {
                 return await self.skillsCenter.runtimeComponentAuthorization(skillID: skillID)
             }
         )
+        let skillDependencies = self.skillDependencies
+        if let runtimeComponentCacheRoot {
+            skillDependencies.setLateBindings(
+                transport: { [weak self] owner, repository, ref, path in
+                    guard let self else { throw FloeError.invalidConfiguration("App services are unavailable") }
+                    return try await self.sourceControlCenter.skillRepositoryData(
+                        owner: owner, repository: repository, ref: ref, path: path,
+                        usesConnectorCredential: false)
+                },
+                componentStoreRoot: runtimeComponentCacheRoot)
+        }
 
         let containerLifecycle = ContainerLifecycle(
             roots: environmentRoots,
@@ -1023,11 +1103,12 @@ final class AppEnvironment: ObservableObject {
                     guard let self else { throw FloeError.invalidConfiguration("Shell session service is unavailable") }
                     await self.shellSessionCenter.closeAll(environmentID: id)
                 },
-                cancelJobs: { [linuxGuests, skillRuntimeComponents] id in
+                cancelJobs: { [linuxGuests, skillRuntimeComponents, skillDependencies] id in
                     // Join owned runtime-component work (cancel + await) while
                     // the guest and its write layer still exist, so an
                     // in-flight preparation never outlives its environment.
                     await skillRuntimeComponents.releaseEnvironment(id)
+                    await skillDependencies.releaseEnvironment(id)
                     // stopGuest also stops every guest localService and drops
                     // the shared interpreter caches; the retired native
                     // CPython/Node workers no longer exist to stop.
@@ -1038,8 +1119,9 @@ final class AppEnvironment: ObservableObject {
                     await EnvironmentPackageJobs.shared.cancelAndWait(id: id)
                     try await environmentExecutions.stopAndWait(environmentID: id)
                 },
-                terminateWorkers: { [linuxGuests, skillRuntimeComponents] id in
+                terminateWorkers: { [linuxGuests, skillRuntimeComponents, skillDependencies] id in
                     await skillRuntimeComponents.releaseEnvironment(id)
+                    await skillDependencies.releaseEnvironment(id)
                     await linuxGuests.stopGuest(environmentID: id)
                     if !(await linuxGuests.guestIsRunning(environmentID: id)) {
                         await FloePlatformServices.shared.reportLinuxRuntimeEnded(environmentID: id)
@@ -1653,7 +1735,8 @@ final class AppEnvironment: ObservableObject {
             sessions: shellSessionCenter,
             pythonInstaller: managedPythonInstaller,
             capabilityInstaller: capabilityInstaller,
-            wasmStore: wasmCapabilities
+            wasmStore: wasmCapabilities,
+            dependencyGate: skillsCenter
         )
         FloeShellCommandRegistry.shared.configure(
             python: localPythonService,
