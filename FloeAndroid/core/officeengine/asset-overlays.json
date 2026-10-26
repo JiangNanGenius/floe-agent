@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "100feb80bb5c04b0761377b7afdecfe9d7f880b1f6e9b76ca08a1123b0a8a36b"
+      "sha256": "5ca1f08641a4edda40866e9586c50ebdd40288692a347e9caf19ff098700ed82"
     },
     {
       "operation": "replace",
@@ -1040,9 +1040,9 @@
       "operation": "add",
       "destination": "dist/floe-writer-viewport-sync.js",
       "originalSha256": null,
-      "reason": "Narrow self-authored MPL-2.0 deferred overlay for the pinned Writer initial-layout gap: after the real page load and Writer docloaded edges for the same captured map/document/layer/layout identities, it retires its listeners, captures numeric-only geometry, waits exactly one owned requestAnimationFrame (pinned Socket.js dispatches docloaded before applying Writer status geometry), revalidates every identity, invokes the existing ViewLayoutBase.onResize path once and posts one strict numeric packet through the existing host bridge for bounded RAM diagnostics. No timer, recurring frame, retry, poll, forced readiness, permission change or native producer edit; bundle.js and dist/src remain byte-identical upstream files.",
+      "reason": "Narrow self-authored MPL-2.0 deferred overlay for the pinned Writer initial-layout gap: after the real page load and Writer docloaded edges for the same captured map/document/layer/layout identities, it retires its listeners, captures numeric-only geometry, and only when the measured Writer body is still non-positive mirrors the complete pinned dist/global.js visualViewport binding once from the live positive visual viewport: scroll to the visual origin, set body height from visualViewport.height, and set the bounded --viewport-bottom-inset from html.clientHeight, offsetTop and height. If that viewport is unavailable or still zero it uses one standards-based live vh/dvh constraint and resets the inset instead of a pixel snapshot. The pinned handler's existing scroll/resize listeners and normal CSS remain the update path for later orientation and soft-keyboard changes. It then waits exactly one owned requestAnimationFrame (pinned Socket.js dispatches docloaded before applying Writer status geometry), revalidates every identity, invokes the existing ViewLayoutBase.onResize path once and posts one strict numeric packet through the existing host bridge for bounded RAM diagnostics. No timer, recurring frame, retry, poll, forced readiness, permission change or native producer edit; bundle.js and dist/src remain byte-identical upstream files.",
       "source": "dist/floe-writer-viewport-sync.js",
-      "sha256": "3ae240504f38f4a739d2d9d1dc432d302ba2fadb017ce08bd484900d6310910e"
+      "sha256": "885df166ab18e701770b755d1393be67a588a66b6afe19f61ecb261809a0f595"
     }
   ],
   "sourceAccess": {

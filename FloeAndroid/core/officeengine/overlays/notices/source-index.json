@@ -934,7 +934,7 @@
         "path": "dist/floe-writer-viewport-sync.js",
         "operation": "add",
         "originalSha256": null,
-        "newSha256": "3ae240504f38f4a739d2d9d1dc432d302ba2fadb017ce08bd484900d6310910e"
+        "newSha256": "885df166ab18e701770b755d1393be67a588a66b6afe19f61ecb261809a0f595"
       }
     ],
     "selfEntry": "Own digest excluded to avoid circular hash; it is present in the source overlay manifest."
