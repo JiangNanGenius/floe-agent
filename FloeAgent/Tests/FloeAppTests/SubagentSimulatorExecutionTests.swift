@@ -5769,8 +5769,7 @@ extension SubagentSimulatorExecutionTests {
             try #require(p5.status == .ok, "Foreground channel probe must run: \(p5.outputSummary)")
             try #require(p5.outputSummary.contains("FLOE_ENGINE label=diag-a ")
                             && p5.outputSummary.contains("FLOE_ENGINE label=diag-b "),
-                         "Foreground exec.shell must return the driver markers while a localService "
-                             + "runs (empty stdout here reproduces the small-round1 finding): \(p5.outputSummary.prefix(400))")
+                         "Foreground exec.shell must return the driver markers while a localService runs (empty stdout here reproduces the small-round1 finding): \(p5.outputSummary.prefix(400))")
             evidence["p5ChannelForegroundWithService"] = "markers-present"
 
             // P6: production cancellation with endpoint closure (guest side
