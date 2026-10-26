@@ -157,6 +157,10 @@ final class ProviderListViewModel: ObservableObject {
             // instead of leaving an unreachable Keychain/iCloud credential.
             try await secretStore.deleteSecret(scope: .provider(provider.id))
             try await center.deleteProvider(id: provider.id)
+            // The declined-offer memory belongs to the provider identity.
+            // Clearing it on delete keeps a later add under the same UUID
+            // (or a restored backup) from silently starting pre-declined.
+            ProviderServiceOfferPromptStore.shared.clear(for: provider.id)
         } catch {
             errorMessage = error.localizedDescription
         }

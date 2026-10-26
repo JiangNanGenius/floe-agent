@@ -147,6 +147,17 @@ struct AuxiliaryModelsView: View {
                 selection: $viewModel.videoModelID,
                 models: viewModel.videoCandidates
             )
+            // Honest inline state: a stored default that the runtime would
+            // silently drop is surfaced here instead of failing later.
+            if viewModel.storedVideoDefaultUnusable {
+                Label(
+                    "providers.auxiliary_models_view.the_selected_model_is_unavailable_choose",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .font(FloeTheme.Typography.metadata)
+                .foregroundStyle(FloeTheme.pending)
+                .accessibilityIdentifier("auxiliary.video.defaultUnusable")
+            }
         } header: {
             Text("providers.auxiliary_models_view.default_video_model")
         } footer: {
@@ -211,7 +222,26 @@ final class AuxiliaryModelsViewModel: ObservableObject {
                 && supports(.generate, model: $0) && supports(.edit, model: $0)
         }
     }
-    var videoCandidates: [ModelProfile] { center.videoModels }
+    /// Same adapter-backed usability rule the runtime uses
+    /// (`VideoModelRegistry.isUsable`), so this picker can never offer a
+    /// model the agent would silently drop (for example a chat-only
+    /// OpenAI/custom row that the old surface filter accepted).
+    var videoCandidates: [ModelProfile] {
+        center.videoModels.filter { model in
+            guard let provider = center.providers.first(where: { $0.id == model.providerID }) else {
+                return false
+            }
+            return VideoModelRegistry.isUsable(model: model, provider: provider)
+        }
+    }
+    /// True when the stored default video model is NOT a usable runtime
+    /// route (deleted, disabled, provider turned off or no shipped video
+    /// adapter). The selection stays untouched — this only tells the truth
+    /// inline instead of letting the runtime silently fall back.
+    var storedVideoDefaultUnusable: Bool {
+        guard videoModelID != nil else { return false }
+        return !videoCandidates.contains(where: { $0.id == videoModelID })
+    }
 
     func load() async {
         hasLoaded = false

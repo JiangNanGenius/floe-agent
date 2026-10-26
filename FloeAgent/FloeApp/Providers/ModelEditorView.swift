@@ -3,12 +3,18 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
+import FloeProviders
 
 struct ModelEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var model: ModelProfile
     @State private var makeDefault: Bool
     let serviceRole: ProviderServiceRole
+    /// The provider kind backing this editor session. Media contract lookups
+    /// resolve through this real connection identity; a remote model ID is
+    /// NEVER mapped to a provider family by name substrings ("swan" is not
+    /// Wan, "gemini" inside a gateway name is not Google).
+    let providerKind: ProviderKind?
     let isDefault: Bool
     let onMakeDefault: () -> Void
     let onSave: (ModelProfile) -> Void
@@ -16,6 +22,7 @@ struct ModelEditorView: View {
     init(
         model: ModelProfile,
         serviceRole: ProviderServiceRole = .conversation,
+        providerKind: ProviderKind? = nil,
         isDefault: Bool,
         onMakeDefault: @escaping () -> Void,
         onSave: @escaping (ModelProfile) -> Void
@@ -23,6 +30,7 @@ struct ModelEditorView: View {
         _model = State(initialValue: model)
         _makeDefault = State(initialValue: isDefault)
         self.serviceRole = serviceRole
+        self.providerKind = providerKind
         self.isDefault = isDefault
         self.onMakeDefault = onMakeDefault
         self.onSave = onSave
@@ -203,13 +211,11 @@ struct ModelEditorView: View {
         }
     }
 
+    /// Family resolved from the ACTUAL provider connection, never from the
+    /// model name. Without a known kind the row shows the honest
+    /// advanced-custom media summary instead of a name-guessed contract.
     private var mediaProviderFamily: MediaProviderFamily? {
-        let id = model.remoteModelID.lowercased()
-        if id.contains("gpt-image") { return .openAI }
-        if id.contains("gemini") || id.contains("veo") { return .googleGemini }
-        if id.contains("seedream") || id.contains("seedance") || id.contains("doubao") { return .volcengineArk }
-        if id.contains("wan") || id.contains("qwen-image") { return .alibabaModelStudio }
-        return nil
+        providerKind.flatMap { ProviderServiceOfferResolver.mediaFamily(for: $0) }
     }
 }
 
