@@ -405,6 +405,13 @@ final class SettingsCenter: ObservableObject {
         ) {
             pipAudioPreferences = pipAudio.normalized
         }
+        // The foreground work-session record (wake restore reads this; a
+        // corrupt record decodes field-by-field to the calm default).
+        if let workSession: BackgroundWorkSessionSnapshot = decode(
+            BackgroundWorkSessionSnapshot.self, BackgroundWorkSessionSnapshot.settingsKey
+        ) {
+            backgroundWorkSessionSnapshot = workSession
+        }
         if let verify: Bool = decode(Bool.self, AppSettingsKey.verifyFinalAnswer) {
             verifyFinalAnswer = verify
         }
@@ -718,6 +725,9 @@ final class SettingsCenter: ObservableObject {
         let repository = BackgroundPreferencesRepository(store: settingsStore)
         backgroundExecutionOptions = await repository.loadOptions()
         pipAudioPreferences = await repository.loadPipAudioPreferences()
+        if let session = await repository.loadWorkSessionSnapshot() {
+            backgroundWorkSessionSnapshot = session
+        }
     }
 
     /// Legacy entry point: projects the old mutually-exclusive choice onto
@@ -742,11 +752,28 @@ final class SettingsCenter: ObservableObject {
     }
 
     /// Each toggle reads the latest in-memory options inside this MainActor
-    /// call, mutates one capability (with the Core cascade rules), and
-    /// persists the whole normalized object atomically.
+    /// call and mutates one capability through the Core prerequisite-chain
+    /// setters: enabling a capability enables every prerequisite above it;
+    /// disabling a prerequisite while a dependent is still active is
+    /// REFUSED by Core (the options come back unchanged, so nothing is
+    /// persisted and the published binding simply does not move — the
+    /// policy is central, never UI-only). The whole normalized object is
+    /// then persisted atomically.
     func setEnhancedBackgroundEnabled(_ enabled: Bool) async {
         var options = backgroundExecutionOptions
-        options.enhancedBackgroundEnabled = enabled
+        options.setEnhancedBackgroundEnabled(enabled)
+        guard options != backgroundExecutionOptions else { return }
+        await setBackgroundExecutionOptions(options)
+    }
+
+    /// Standalone task audio capability. Enabling it pulls in the enhanced
+    /// processing prerequisite; disabling is refused while PiP or screen
+    /// feedback still rides on it. Selecting the capability NEVER starts
+    /// playback and never changes any volume: only a real running task (or
+    /// an explicit preview tap) does, so the upgrade never auto-plays.
+    func setAudioEnabled(_ enabled: Bool) async {
+        var options = backgroundExecutionOptions
+        options.setAudioEnabled(enabled)
         guard options != backgroundExecutionOptions else { return }
         await setBackgroundExecutionOptions(options)
     }
@@ -764,6 +791,24 @@ final class SettingsCenter: ObservableObject {
         guard options != backgroundExecutionOptions else { return }
         await setBackgroundExecutionOptions(options)
     }
+
+    // MARK: - Foreground work session record
+
+    /// The durable work-session record. Loading/saving goes through the
+    /// same atomic repository as the background capabilities; the record
+    /// restores metadata after a wake and is never start authority.
+    func loadBackgroundWorkSession() async -> BackgroundWorkSessionSnapshot? {
+        await BackgroundPreferencesRepository(store: settingsStore).loadWorkSessionSnapshot()
+    }
+
+    func saveBackgroundWorkSession(_ snapshot: BackgroundWorkSessionSnapshot) async throws {
+        try await BackgroundPreferencesRepository(store: settingsStore)
+            .saveWorkSessionSnapshot(snapshot)
+        backgroundWorkSessionSnapshot = snapshot
+    }
+
+    /// Current in-memory record (already persisted by the session controller).
+    @Published private(set) var backgroundWorkSessionSnapshot = BackgroundWorkSessionSnapshot()
 
     func setPiPAudioPreferences(_ preferences: PiPAudioPreferences) async {
         let normalized = preferences.normalized
@@ -1006,6 +1051,20 @@ struct BackgroundPreferencesRepository: Sendable {
             preferences.normalized,
             forKey: PiPAudioPreferences.settingsKey
         )
+    }
+
+    /// The foreground work-session record. One atomic JSON object; a corrupt
+    /// or absent record decodes to nil so the wake path restores nothing and
+    /// never fabricates a session.
+    func loadWorkSessionSnapshot() async -> BackgroundWorkSessionSnapshot? {
+        try? await store.value(
+            forKey: BackgroundWorkSessionSnapshot.settingsKey,
+            as: BackgroundWorkSessionSnapshot.self
+        )
+    }
+
+    func saveWorkSessionSnapshot(_ snapshot: BackgroundWorkSessionSnapshot) async throws {
+        try await store.setValue(snapshot, forKey: BackgroundWorkSessionSnapshot.settingsKey)
     }
 }
 

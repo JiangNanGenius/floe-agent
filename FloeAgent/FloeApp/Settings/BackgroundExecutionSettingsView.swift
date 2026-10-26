@@ -17,6 +17,73 @@ struct BackgroundExecutionSettingsView: View {
 
     private var statusPiPEnabled: Bool { StatusPiPReleaseGate.isEnabled }
 
+    /// Inline bilingual fallback for strings whose central catalog entry has
+    /// not landed yet (the catalog is root-owned for this round): a missing
+    /// key must never render raw. Proposed keys go to the handoff so the
+    /// rows can move to `background.features.*` in one catalog merge.
+    private func capabilityText(zh: String, en: String) -> String {
+        FloeL10n.isChinese ? zh : en
+    }
+
+    /// The user-facing names used by the cascade captions below.
+    private func capabilityName(_ capability: BackgroundExecutionCapability) -> String {
+        switch capability {
+        case .enhancedBackground:
+            return FloeL10n.l("background.features.enhanced")
+        case .audio:
+            return capabilityText(zh: "后台音频", en: "background audio")
+        case .pictureInPicture:
+            return FloeL10n.l("background.features.pip")
+        case .screenFeedback:
+            return FloeL10n.l("background.features.screen_feedback")
+        case .taskLiveActivity:
+            return FloeL10n.l("background.features.live_activity")
+        }
+    }
+
+    /// Refusal copy: a prerequisite cannot be turned off while dependents
+    /// are still enabled (Core policy; the row is disabled to match). Tells
+    /// the user exactly what to turn off first.
+    private func blockingCaption(_ capability: BackgroundExecutionCapability) -> String? {
+        guard isBlocked(capability) else { return nil }
+        let blocking = center.backgroundExecutionOptions
+            .activeDependentsBlockingDisable(of: capability)
+        guard !blocking.isEmpty else { return nil }
+        let names = blocking.map(capabilityName).joined(
+            separator: FloeL10n.isChinese ? "、" : ", ")
+        return FloeL10n.isChinese
+            ? "需先关闭\(names)。"
+            : "Turn off \(names) first."
+    }
+
+    /// Enable-pull copy: what turning this capability on also enables
+    /// (the prerequisite chain). Shown only while a prerequisite is off.
+    private func prerequisiteCaption(_ capability: BackgroundExecutionCapability) -> String? {
+        let missing = center.backgroundExecutionOptions
+            .prerequisitesEnabledByTurningOn(capability)
+        guard !missing.isEmpty else { return nil }
+        let names = missing.map(capabilityName).joined(
+            separator: FloeL10n.isChinese ? "、" : ", ")
+        return FloeL10n.isChinese
+            ? "开启后将同时开启\(names)。"
+            : "Turning this on also turns on \(names)."
+    }
+
+    private func isBlocked(_ capability: BackgroundExecutionCapability) -> Bool {
+        let options = center.backgroundExecutionOptions
+        let currentlyEnabled: Bool
+        switch capability {
+        case .enhancedBackground: currentlyEnabled = options.enhancedBackgroundEnabled
+        case .audio: currentlyEnabled = options.audioEnabled
+        case .pictureInPicture: currentlyEnabled = options.pictureInPictureEnabled
+        case .screenFeedback: currentlyEnabled = options.screenFeedbackEnabled
+        case .taskLiveActivity: currentlyEnabled = options.taskLiveActivityEnabled
+        }
+        // A legacy off prerequisite can still be ENABLED. The restriction
+        // applies only to disabling an on prerequisite with active dependents.
+        return currentlyEnabled && !options.activeDependentsBlockingDisable(of: capability).isEmpty
+    }
+
     var body: some View {
         Form {
             Section {
@@ -24,22 +91,62 @@ struct BackgroundExecutionSettingsView: View {
                     get: { center.backgroundExecutionOptions.enhancedBackgroundEnabled },
                     set: { value in Task { await center.setEnhancedBackgroundEnabled(value) } }
                 ))
+                .disabled(isBlocked(.enhancedBackground))
                 .accessibilityIdentifier("background.enhanced.toggle")
+                // Chain root: with any dependent capability still on, the
+                // Core setter refuses the disable (no silent cascade-off)
+                // and the row shows the actionable reason.
+                if let caption = blockingCaption(.enhancedBackground) {
+                    Text(caption)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("background.enhanced.blockedCaption")
+                }
+
+                // Standalone background audio: the service-owned ambient
+                // loop and task speech for a real running task — no PiP
+                // view required. Enabling it pulls in the enhanced
+                // processing prerequisite; it never changes volume or
+                // starts playback by itself.
+                Toggle(capabilityText(zh: "后台音频", en: "Background audio"), isOn: Binding(
+                    get: { center.backgroundExecutionOptions.audioEnabled },
+                    set: { value in Task { await center.setAudioEnabled(value) } }
+                ))
+                .disabled(isBlocked(.audio))
+                .accessibilityIdentifier("background.audio.toggle")
+                if let caption = blockingCaption(.audio) ?? prerequisiteCaption(.audio) {
+                    Text(caption)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("background.audio.policyCaption")
+                }
+
+                // The sound page is the AUDIO capability's own child —
+                // de-nested from the PiP row. It stays reachable with the
+                // capability off: the page's own preview is an explicit
+                // foreground action, and existing users keep access to
+                // their saved sound choices. The identifier stays
+                // `background.pip.audio.settings` because the pinned UI
+                // tests reference it.
+                NavigationLink {
+                    PiPAudioSettingsView(center: center, audioService: audioService)
+                } label: {
+                    Label("pip.audio.settings.title", systemImage: "speaker.wave.2")
+                }
+                .accessibilityIdentifier("background.pip.audio.settings")
 
                 Toggle("background.features.pip", isOn: Binding(
                     get: { center.backgroundExecutionOptions.pictureInPictureEnabled },
                     set: { value in Task { await center.setPictureInPictureEnabled(value) } }
                 ))
-                .disabled(!statusPiPEnabled)
+                .disabled(!statusPiPEnabled || isBlocked(.pictureInPicture))
                 .accessibilityIdentifier("background.pip.toggle")
-
-                NavigationLink {
-                    PiPAudioSettingsView(center: center, audioService: audioService)
-                } label: {
-                    Label("pip.audio.settings.title", systemImage: "speaker.wave.2")
-                        .padding(.leading, 20)
+                if let caption = blockingCaption(.pictureInPicture) ?? prerequisiteCaption(.pictureInPicture) {
+                    Text(caption)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("background.pip.policyCaption")
                 }
-                .accessibilityIdentifier("background.pip.audio.settings")
 
                 Toggle("background.features.screen_feedback", isOn: Binding(
                     get: { center.backgroundExecutionOptions.screenFeedbackEnabled },
@@ -47,6 +154,12 @@ struct BackgroundExecutionSettingsView: View {
                 ))
                 .disabled(!statusPiPEnabled)
                 .accessibilityIdentifier("background.screenFeedback.toggle")
+                if let caption = prerequisiteCaption(.screenFeedback) {
+                    Text(caption)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("background.screenFeedback.policyCaption")
+                }
 
                 // Independent of every other switch: it changes nothing else
                 // and requires no PiP, location or server capability.

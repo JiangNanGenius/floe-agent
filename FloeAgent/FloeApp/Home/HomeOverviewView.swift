@@ -18,6 +18,10 @@ import FloePersistence
 struct HomeOverviewView: View {
     @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: HomeLaunchpadViewModel
+    /// The explicit foreground work session (Task Center control). The
+    /// coordinator owns the instance; this view only reads its published
+    /// record and sends the two user intents.
+    @ObservedObject private var workSession: BackgroundWorkSessionController
     @EnvironmentObject private var authoring: SkillAuthoringCoordinator
     @EnvironmentObject private var router: AppRouter
     @State private var searchText = ""
@@ -41,11 +45,20 @@ struct HomeOverviewView: View {
 
     init(center: ConversationCenter) {
         self.center = center
-        _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(center: center))
+        let launchpad = HomeLaunchpadViewModel(center: center)
+        _viewModel = StateObject(wrappedValue: launchpad)
+        _workSession = ObservedObject(
+            wrappedValue: launchpad.environment.backgroundRunCoordinator.workSession)
     }
 
     var body: some View {
         List {
+            // The work-session row is always present: the user must see the
+            // honest state (idle/armed/running/waiting/interrupted) and the
+            // real counts, and can start or stop from the foreground only.
+            Section {
+                workSessionRow
+            }
             if !authoring.taskCenterRecords.isEmpty {
                 Section { SkillAuthoringRows(coordinator: authoring, taskCenter: true) }
             }
@@ -499,6 +512,9 @@ struct HomeOverviewView: View {
 
     private func load() async {
         await viewModel.load()
+        // The work-session row shows durable facts; refresh them alongside
+        // the rest of the overview (no separate polling loop).
+        await workSession.refresh()
         let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
         schedules = (try? await store.schedules()) ?? []
         let reminderStore = TaskScheduleCleanupReminderStore(
@@ -512,6 +528,168 @@ struct HomeOverviewView: View {
         pendingOccurrenceScheduleIDs = Set(pending.map(\.scheduleID))
         archivedTasks = ((try? await viewModel.environment.conversationStore
             .conversations(includeArchived: true)) ?? []).filter { $0.archivedAt != nil }
+    }
+
+    // MARK: - Work session row (foreground start/stop; honest counts only)
+
+    /// One compact row: honest state capsule, real counts line, explicit
+    /// start/stop button. A saved/armed record is never presented as an
+    /// accepted result, and no invented progress percent is ever rendered —
+    /// every visible number comes from the durable stores via the
+    /// controller's counts snapshot.
+    private var workSessionRow: some View {
+        let snapshot = workSession.snapshot
+        return HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(sessionTitle(for: snapshot.state))
+                    .font(FloeTheme.Typography.body.weight(.medium))
+                let detail = sessionDetail(for: snapshot)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("workbench.session.detail")
+                }
+            }
+            Spacer(minLength: 8)
+            Text(sessionStateLabel(for: snapshot.state))
+                .font(FloeTheme.Typography.metadata)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(sessionStateColor(for: snapshot.state).opacity(0.16), in: Capsule())
+                .foregroundStyle(sessionStateColor(for: snapshot.state))
+                .accessibilityIdentifier("workbench.session.state")
+            Button {
+                Task {
+                    switch snapshot.state {
+                    case .idle, .armed, .interrupted:
+                        await workSession.foregroundStart()
+                    case .running, .waiting:
+                        await workSession.foregroundStop()
+                    }
+                    await load()
+                }
+            } label: {
+                Text(sessionActionLabel(for: snapshot.state))
+                    .frame(minHeight: FloeTheme.minimumTarget)
+            }
+            .buttonStyle(.borderless)
+            .disabled(selection.busy)
+            .accessibilityIdentifier("workbench.session.control")
+        }
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func sessionTitle(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .interrupted:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        case .idle:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        case .armed, .running, .waiting:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        }
+    }
+
+    private func sessionStateLabel(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .idle: return scheduleText(zh: "未开始", en: "Not started")
+        case .armed: return scheduleText(zh: "待命", en: "Ready")
+        case .running: return String(localized: "home.home_overview_view.running")
+        case .waiting: return scheduleText(zh: "等待中", en: "Waiting")
+        case .interrupted: return scheduleText(zh: "已中断", en: "Interrupted")
+        }
+    }
+
+    private func sessionStateColor(for state: BackgroundWorkSessionState) -> Color {
+        switch state {
+        case .running: return FloeTheme.success
+        case .waiting, .armed: return FloeTheme.pending
+        case .interrupted: return FloeTheme.destructive
+        case .idle: return .secondary
+        }
+    }
+
+    private func sessionActionLabel(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .idle, .armed: return scheduleText(zh: "开始", en: "Start")
+        case .interrupted: return scheduleText(zh: "重新开始", en: "Restart")
+        case .running, .waiting: return scheduleText(zh: "停止", en: "Stop")
+        }
+    }
+
+    /// The honest line: real durable counts and, while waiting, the named
+    /// blocker. Nothing is inferred and nothing is padded.
+    private func sessionDetail(for snapshot: BackgroundWorkSessionSnapshot) -> String {
+        var parts: [String] = []
+        let counts = snapshot.counts
+        if counts.liveRuns > 0 {
+            parts.append(FloeL10n.isChinese ? "运行 \(counts.liveRuns)" : "runs \(counts.liveRuns)")
+        }
+        if counts.runningJobs > 0 {
+            parts.append(FloeL10n.isChinese ? "任务 \(counts.runningJobs)" : "jobs \(counts.runningJobs)")
+        }
+        if counts.queuedJobs > 0 {
+            parts.append(FloeL10n.isChinese ? "排队 \(counts.queuedJobs)" : "queued \(counts.queuedJobs)")
+        }
+        if counts.claimedScheduleOccurrences > 0 {
+            parts.append(FloeL10n.isChinese ? "排程 \(counts.claimedScheduleOccurrences)" : "schedules \(counts.claimedScheduleOccurrences)")
+        }
+        if counts.pendingApprovals > 0 {
+            parts.append(FloeL10n.isChinese ? "待批准 \(counts.pendingApprovals)" : "approvals \(counts.pendingApprovals)")
+        }
+        if snapshot.state == .waiting, let reason = snapshot.waitReason {
+            parts.append(waitReasonText(reason))
+        }
+        if snapshot.state == .interrupted {
+            return scheduleText(
+                zh: "点按重新开始以继续处理任务",
+                en: "Restart to continue processing tasks."
+            )
+        }
+        if snapshot.state == .armed {
+            return ""
+        }
+        // A live session reports the REAL framework qualification: the
+        // continued-processing request/acceptance state, not the saved
+        // toggle. A stored choice is never shown as accepted.
+        if snapshot.state.isActiveSurface {
+            switch workSession.qualification {
+            case .accepted:
+                parts.append(scheduleText(zh: "可后台运行", en: "background ready"))
+            case .requested:
+                parts.append(scheduleText(zh: "等待系统", en: "waiting for system"))
+            case .none:
+                parts.append(scheduleText(zh: "仅前台运行", en: "foreground only"))
+            }
+        }
+        if parts.isEmpty {
+            switch snapshot.state {
+            case .idle:
+                return ""
+            case .running:
+                return scheduleText(zh: "正在处理当前队列", en: "Processing the current queues")
+            case .waiting:
+                return scheduleText(zh: "等待任务", en: "Waiting for work")
+            default:
+                return ""
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func waitReasonText(_ reason: BackgroundWorkSessionWaitReason) -> String {
+        switch reason {
+        case .approvals:
+            return scheduleText(zh: "等待你批准", en: "waiting on your approval")
+        case .environmentBusy:
+            return scheduleText(zh: "等待环境空闲", en: "waiting for the busy environment")
+        case .network:
+            return scheduleText(zh: "等待网络", en: "waiting for network")
+        case .dueWork:
+            return scheduleText(zh: "等待到期任务", en: "waiting for due work")
+        }
     }
 
     private func overviewRow(_ conversation: ConversationRecord, showsState: Bool) -> some View {

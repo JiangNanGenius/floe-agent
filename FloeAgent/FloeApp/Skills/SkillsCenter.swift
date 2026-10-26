@@ -1150,8 +1150,8 @@ final class SkillsCenter: ObservableObject {
         do { try await recoverUpgrades() } catch { errorMessage = Self.userMessage(for: error) }
         do {
             let rows = try await environment.skillStore.all()
-            try await seedOfficialPublicationIdentities(rows: rows)
             installed = rows
+            try await seedOfficialPublicationIdentities(rows: rows)
             let journals = try upgradeJournals().map(\.1).filter { $0.phase == "complete" }
                 .sorted { $0.createdAt > $1.createdAt }
             var sources: [String: GitHubSkillSource] = [:], digests: [String: String] = [:]
@@ -2083,7 +2083,7 @@ final class SkillsCenter: ObservableObject {
             // automatic deletion, ever. Explicit environment-package removal
             // remains a user action in the package UI where nothing else
             // installed still needs the exact spec.
-            await dependencyPreparation?.forgetSkill(skillID: skill.id)
+            await dependencyPreparation?.forgetSkill(skill.id)
             await load()
             return "status=removed id=\(skill.id) recoverablePackage=\(exists ? backup.path : "none")"
         case .update:
