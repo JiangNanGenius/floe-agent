@@ -291,7 +291,7 @@ struct SkillDependencyGuestQualificationTests {
                     "mpmath must import from THIS environment's shared guest venv, saw \(proofLines[1])")
             #expect(proofLines[2].hasPrefix("1.414213562373095048"),
                     "mpmath.sqrt(2) at dps=30 must start 1.414213562373095048, saw \(proofLines[2])")
-            print("FLOE_DEPGUEST_PIP_PROOF version=\(proofLines[0]) location=\(bounded(proofLines[1], 120)) sqrt2=\(proofLines[2])")
+            print("FLOE_DEPGUEST_PIP_PROOF version=\(proofLines[0]) location=\(bounded(proofLines[1], limit: 120)) sqrt2=\(proofLines[2])")
 
             // 4) Wheel-store consumption proof: persist the exact verified
             //    bytes host-side through the production store path, uninstall
@@ -411,7 +411,7 @@ struct SkillDependencyGuestQualificationTests {
                     && hashProof.stdout.contains("1.3.0")
                     && hashProof.stdout.contains("1.414213562373095048"),
                     "the hash-mode-installed mpmath did not import/compute at exact precision: \(bounded(hashProof.stdout)) \(bounded(hashProof.stderr))")
-            print("FLOE_DEPGUEST_HASHMODE_OK verifiedDigest=\(String(verified.sha256.prefix(12))) wrongDigestRefused=yes installTail=\(bounded(verifiedHashOutput, 160))")
+            print("FLOE_DEPGUEST_HASHMODE_OK verifiedDigest=\(String(verified.sha256.prefix(12))) wrongDigestRefused=yes installTail=\(bounded(verifiedHashOutput, limit: 160))")
 
             // 5) Small Debian package through the NEW exact-pin transaction.
             phase("apt.update.candidate.hello")
@@ -432,7 +432,7 @@ struct SkillDependencyGuestQualificationTests {
             let helloRun = try await guest(["/usr/bin/hello"], timeout: 60, maxBytes: 4 * 1024)
             #expect(helloRun.exitCode == 0 && helloRun.stdout.contains("Hello"),
                     "/usr/bin/hello did not execute cleanly: exit=\(helloRun.exitCode) out=\(bounded(helloRun.stdout))")
-            print("FLOE_DEPGUEST_APT_OK hello=\(candidate) stdout=\(bounded(helloRun.stdout, 120))")
+            print("FLOE_DEPGUEST_APT_OK hello=\(candidate) stdout=\(bounded(helloRun.stdout, limit: 120))")
 
             // Optional declared-font render stage (never without its own
             // explicit flag: no unconditional heavy font download).
@@ -462,7 +462,7 @@ struct SkillDependencyGuestQualificationTests {
                 #expect(after, "the fixed FreeType glyph-render probe did not pass after the declared fontconfig+fonts-noto-cjk pins installed — renderer or faces are genuinely not ready")
             }
 
-            await leaseFinish.map { await $0() }
+            await leaseFinish?()
             leaseFinish = nil
             await cleanup()
             print("FLOE_DEPGUEST_OK bootSeconds=\(String(format: "%.1f", Date().timeIntervalSince(started))) arch=riscv64 mpmath=1.3.0 wheelOffline=\(storeBundle.filename) hello=\(candidate) fontStage=\(Self.fontEnabled ? "rendered" : "not-enabled")")

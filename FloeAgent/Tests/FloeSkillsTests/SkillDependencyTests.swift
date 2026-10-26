@@ -69,9 +69,9 @@ private func expectDecodeError(
 ) throws {
     do {
         _ = try SkillDependency.decode(encoded(object))
-        Issue.record("expected a strict failure", at: sourceLocation)
+        Issue.record("expected a strict failure", sourceLocation: sourceLocation)
     } catch let error as SkillDependencyError {
-        #expect(predicate(error), "unexpected failure \(error)", at: sourceLocation)
+        #expect(predicate(error), "unexpected failure \(error)", sourceLocation: sourceLocation)
     }
 }
 

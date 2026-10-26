@@ -813,7 +813,7 @@ struct SkillDependencyPreparationTests {
         let storeRoot = makeTempDirectory("component-cache")
         let wheelStore = makeTempDirectory("wheel-store")
         let lock = NSLock()
-        var fetchedSpecs: [String] = []
+        let fetchedSpecs = LockedStringBox()
         let fetchedEngine = harness.engine
         // Rebuild the center with the wheel seams (they are init-time).
         let center = SkillDependencyPreparationCenter(
@@ -822,7 +822,7 @@ struct SkillDependencyPreparationTests {
             launchGeneration: { _ in 7 },
             operations: harness.operations,
             runtimeComponentProbe: { _, _, _ in harness.probeBox.get() },
-            pipWheels: { specs in lock.withLock { fetchedSpecs.append(contentsOf: specs) }; return specs.map { makeWheelBundle(spec: $0) } },
+            pipWheels: { specs in lock.withLock { fetchedSpecs.entries.append(contentsOf: specs) }; return specs.map { makeWheelBundle(spec: $0) } },
             wheelStoreURL: wheelStore,
             appVersion: { "1.7.60" },
             persistenceRoot: harness.persistenceRoot
@@ -835,7 +835,7 @@ struct SkillDependencyPreparationTests {
             skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil
         )
         #expect(outcome == nil) // environment half honestly deferred, never fake-ready
-        #expect(lock.withLock { fetchedSpecs } == ["pypdf==5.4.0"])
+        #expect(lock.withLock { fetchedSpecs.entries } == ["pypdf==5.4.0"])
         // The verified BYTES actually persisted in the shared store under the
         // REAL canonical wheel name (what pip's --find-links scan can see),
         // with a binding sidecar carrying spec+filename+sha256+size.
@@ -852,7 +852,7 @@ struct SkillDependencyPreparationTests {
         #expect(binding.size == persisted.count)
         // A second global install reuses the persisted bytes without refetching.
         _ = await center.prepareAtInstall(skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil)
-        #expect(lock.withLock { fetchedSpecs.count } == 1)
+        #expect(lock.withLock { fetchedSpecs.entries.count } == 1)
         let statusNow = await center.sharedPreparationStatus(skillID: "dep-skill")
         try #require(statusNow != nil)
         #expect(statusNow!.contains("already present in the shared official store"))
@@ -922,13 +922,13 @@ struct SkillDependencyPreparationTests {
         let harness = makeHarness(requirementsJSON: json)
         let storeRoot = makeTempDirectory("component-cache")
         let counter = NSLock()
-        var transports = 0
+        let transports = LockedCounter()
         harness.center.setLateBindings(
-            transport: { _, _, _, _ in counter.withLock { transports += 1 }; return harness.engine },
+            transport: { _, _, _, _ in counter.withLock { transports.value += 1 }; return harness.engine },
             componentStoreRoot: storeRoot
         )
         _ = await harness.center.prepareAtInstall(skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil)
-        #expect(counter.withLock { transports } == 1)
+        #expect(counter.withLock { transports.value } == 1)
         // Simulated restart: a fresh actor on the same store re-verifies the
         // cached bytes instead of downloading again.
         let environmentID = harness.environmentID
@@ -942,11 +942,11 @@ struct SkillDependencyPreparationTests {
             persistenceRoot: harness.persistenceRoot
         )
         second.setLateBindings(
-            transport: { _, _, _, _ in counter.withLock { transports += 1 }; return harness.engine },
+            transport: { _, _, _, _ in counter.withLock { transports.value += 1 }; return harness.engine },
             componentStoreRoot: storeRoot
         )
         _ = await second.prepareAtInstall(skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil)
-        #expect(counter.withLock { transports } == 1)
+        #expect(counter.withLock { transports.value } == 1)
         let status = await second.sharedPreparationStatus(skillID: "dep-skill")
         try #require(status != nil)
         #expect(status!.contains("verified cache bytes reused"))
@@ -1338,16 +1338,16 @@ struct SkillDependencyPreparationTests {
                 Issue.record("\(label): must refuse honestly, got \(outcome)")
                 continue
             }
-            #expect(reason.contains("strict"), label)
-            #expect(harness.operations.pinsTransactions.isEmpty && harness.operations.pythonEnsureCalls.isEmpty, label)
+            #expect(reason.contains("strict"), "\(label)")
+            #expect(harness.operations.pinsTransactions.isEmpty && harness.operations.pythonEnsureCalls.isEmpty, "\(label)")
             // The prefetch side refuses the same lock honestly and persists
             // nothing.
             let store = makeTempDirectory("wheel-store")
             let center = makeStoreCenter(harness, storeURL: store)
             _ = await center.prepareAtInstall(skillID: "dep-skill", environmentID: nil, runID: nil, cancellation: nil)
             let status = await center.sharedPreparationStatus(skillID: "dep-skill")
-            try #require(status != nil, label)
-            #expect(status!.contains("prefetch failed"), label)
+            try #require(status != nil, "\(label)")
+            #expect(status!.contains("prefetch failed"), "\(label)")
         }
     }
 
@@ -1377,5 +1377,11 @@ struct SkillDependencyPreparationTests {
 /// Shared mutable fetch counter for the store-center helper.
 private final class LockedCounter: @unchecked Sendable {
     var value = 0
+}
+
+/// Shared mutable fetch-spec recorder for the global-install seam
+/// (guarded by the same external NSLock discipline as LockedCounter).
+private final class LockedStringBox: @unchecked Sendable {
+    var entries: [String] = []
 }
 #endif

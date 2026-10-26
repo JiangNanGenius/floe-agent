@@ -198,6 +198,49 @@ struct SkillDependencyShellTests {
     }
 }
 
+// File-local scripted Linux guest runner for the apt verb fixtures below.
+// The SPM `FloeExecutionTests` module also ships a `ScriptedLinuxCommandRunner`,
+// but it is declared in LinuxGuestLanguagePackageTests.swift, which the combined
+// `FloeAppTests` target's explicit source list does not compile — so this file
+// cannot reference it there. This double is uniquely named to coexist with the
+// SPM original inside one module and keeps the identical contract: record every
+// guest invocation, answer from a scripted handler, default to success.
+private final class SkillDependencyScriptedLinuxRunner: LinuxCommandRunning, @unchecked Sendable {
+    struct Call: Sendable {
+        var argv: [String]
+        var workingDirectory: String?
+        var standardInput: String?
+    }
+
+    private let lock = NSLock()
+    private var recorded: [Call] = []
+    private let handler: (@Sendable ([String], String?, String?) -> LinuxCommandResult)?
+
+    init(handler: (@Sendable ([String], String?, String?) -> LinuxCommandResult)? = nil) {
+        self.handler = handler
+    }
+
+    var calls: [Call] { lock.withLock { recorded } }
+
+    func supports(environmentID: String) async -> Bool { true }
+    func ownsLinuxEnvironment(environmentID: String) async -> Bool { true }
+
+    func run(
+        environmentID: String,
+        argv: [String],
+        workingDirectory: String?,
+        standardInput: String?,
+        timeout: TimeInterval,
+        maxOutputBytes: Int,
+        cancellation: CancellationToken?
+    ) async throws -> LinuxCommandResult {
+        lock.withLock {
+            recorded.append(Call(argv: argv, workingDirectory: workingDirectory, standardInput: standardInput))
+        }
+        return handler?(argv, workingDirectory, standardInput) ?? LinuxCommandResult(stdout: "", stderr: "", exitCode: 0)
+    }
+}
+
 // MARK: - Guest apt verbs (exact pins; fixed argv; honest readback)
 
 @Suite("FloeExecution.LinuxGuestAptVerbs", .serialized)
@@ -212,7 +255,7 @@ struct LinuxGuestAptVerbTests {
     }
 
     @Test func exactPinRunsTheSingleSignedTransaction() async throws {
-        let runner = ScriptedLinuxCommandRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
+        let runner = SkillDependencyScriptedLinuxRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
         let packages = LinuxGuestLanguagePackages(runner: runner)
         let env = environment()
         _ = try await packages.aptInstallExact(
@@ -225,7 +268,7 @@ struct LinuxGuestAptVerbTests {
     }
 
     @Test func exactFontPinCarriesEpochAndRepackIntoTheTransaction() async throws {
-        let runner = ScriptedLinuxCommandRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
+        let runner = SkillDependencyScriptedLinuxRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
         let packages = LinuxGuestLanguagePackages(runner: runner)
         _ = try await packages.aptInstallExact(
             identity: "fonts-noto-cjk", version: "1:20240730+repack1-1", environment: environment(), cancellation: nil
@@ -235,7 +278,7 @@ struct LinuxGuestAptVerbTests {
     }
 
     @Test func malformedIdentityOrVersionNeverReachesArgv() async {
-        let runner = ScriptedLinuxCommandRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
+        let runner = SkillDependencyScriptedLinuxRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
         let packages = LinuxGuestLanguagePackages(runner: runner)
         for bad in ["python3 scipy", "scipy;rm -rf /", "-lead", ""] {
             await #expect(throws: (any Error).self) {
@@ -251,13 +294,13 @@ struct LinuxGuestAptVerbTests {
     }
 
     @Test func readbackParsesExactDpkgLineAndTreatsUnknownAsAbsent() async throws {
-        let runner = ScriptedLinuxCommandRunner { _, _, _ in
+        let runner = SkillDependencyScriptedLinuxRunner { _, _, _ in
             LinuxCommandResult(stdout: "python3-scipy 1.15.3-1\n", stderr: "", exitCode: 0)
         }
         let packages = LinuxGuestLanguagePackages(runner: runner)
         let found = try await packages.aptReadback(identity: "python3-scipy", environment: environment(), cancellation: nil)
         #expect(found == "1.15.3-1")
-        let missing = ScriptedLinuxCommandRunner { _, _, _ in
+        let missing = SkillDependencyScriptedLinuxRunner { _, _, _ in
             LinuxCommandResult(stdout: "", stderr: "no packages found matching", exitCode: 1)
         }
         let absent = try await LinuxGuestLanguagePackages(runner: missing).aptReadback(
@@ -267,9 +310,9 @@ struct LinuxGuestAptVerbTests {
     }
 
     @Test func cjkProbeIsAFixedBooleanVerb() async throws {
-        let yes = ScriptedLinuxCommandRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
+        let yes = SkillDependencyScriptedLinuxRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 0) }
         #expect(try await LinuxGuestLanguagePackages(runner: yes).cjkFontProbe(environment: environment(), cancellation: nil))
-        let no = ScriptedLinuxCommandRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 1) }
+        let no = SkillDependencyScriptedLinuxRunner { _, _, _ in LinuxCommandResult(stdout: "", stderr: "", exitCode: 1) }
         #expect(!(try await LinuxGuestLanguagePackages(runner: no).cjkFontProbe(environment: environment(), cancellation: nil)))
         let broken = CJKProbeThrowingRunner()
         #expect(!(try await LinuxGuestLanguagePackages(runner: broken).cjkFontProbe(environment: environment(), cancellation: nil)))

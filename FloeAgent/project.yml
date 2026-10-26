@@ -694,6 +694,8 @@ targets:
       - path: Tests/FloePersistenceTests/OfficialSkillVersionLedgerTests.swift
       - path: Tests/FloeAppTests/OfficialSkillMigrationTests.swift
       - path: Tests/FloeExecutionTests/SkillDependencyExecutionTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestLanguagePackageTests.swift
+      - path: Tests/FloeExecutionTests/CloudWorkspaceToolContractTests.swift
       - path: Tests/FloeAppTests/TaskLiveActivityTests.swift
       - path: Tests/FloeAppTests/MCPServiceTemplateTests.swift
       - path: Tests/FloeAppTests/BrowserImpeccableCaptureTests.swift
