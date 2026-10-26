@@ -169,6 +169,34 @@ struct BackgroundDownloadDrainTests {
         #expect(settlement.settlementStateForTesting.fired)
     }
 
+    @Test("A terminal callback before attachment replays its result and cancels the unused replacement task")
+    func replayedTerminalResultDoesNotStrandAttachmentOrReplacement() async throws {
+        let identifier = uniqueTestIdentifier("replay-attach")
+        let settlement = LocalModelDownloadSettlements.settlement(for: identifier)
+        let ledger = ModelDownloadSettlementLedger()
+        let (delegate, temp) = try makeDelegate(settlement: settlement, ledger: ledger)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let original = URLSession.shared.downloadTask(with: URL(string: "https://example.invalid/original")!)
+        let replacement = URLSession.shared.downloadTask(with: URL(string: "https://example.invalid/replacement")!)
+        defer { original.cancel(); replacement.cancel(); ledger.drain() }
+        delegate.urlSession(URLSession.shared, task: original,
+                            didCompleteWithError: URLError(.networkConnectionLost))
+        settlement.sessionDidFinishEvents()
+        let fired = FireTracker()
+        registerSystemCompletion(identifier: identifier, settlement: settlement) { fired.record() }
+        do {
+            _ = try await delegate.start(task: replacement)
+            Issue.record("The replayed transfer error must reach its owning operation")
+        } catch let error as URLError {
+            #expect(error.code == .networkConnectionLost)
+        }
+        #expect(settlement.settlementStateForTesting.pending == 1)
+        #expect(fired.count == 0)
+        try await settleWait { replacement.state != .suspended }
+        ledger.drain()
+        try await settleWait { fired.count == 1 }
+    }
+
     @Test("A late handler for an already-drained, already-finished wake fires immediately at registration")
     func lateHandlerFiresAtRegistration() async throws {
         let identifier = uniqueTestIdentifier("late-handler")

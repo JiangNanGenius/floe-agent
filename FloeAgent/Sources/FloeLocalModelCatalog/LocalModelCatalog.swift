@@ -753,6 +753,20 @@ final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @un
     private var response: URLResponse?
     private var movedFile = false
     private var permitsResumePersistence = true
+    /// True once this transfer's FIRST terminal delegate callback has run.
+    /// Gates BOTH the settle-event registration and the resume handoff to
+    /// exactly once per transfer, independent of whether `start` has
+    /// attached yet — the event contract is callback-bound, not
+    /// continuation-bound (see `finish`).
+    private var settled = false
+    private var terminalCallbackClaimed = false
+    /// Terminal result stored when the callback arrived BEFORE `start`
+    /// attached (background-session restore replay: URLSession can deliver
+    /// replayed callbacks the moment the session is created, and
+    /// `session.allTasks` awaits before `start` runs). The awaiting
+    /// operation consumes it in `start`, so its verification/commit work
+    /// and the ledger tail drain still run; the resume is never lost.
+    private var storedResult: Result<URLResponse, Error>?
     private let startedAt = Date()
 
     init(
@@ -778,9 +792,50 @@ final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @un
     }
 
     func start(task: URLSessionDownloadTask) async throws -> URLResponse {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.withLock { self.continuation = continuation }
-            task.resume()
+        enum Binding {
+            case attached
+            case awaitingReplay
+            case replayed(Result<URLResponse, Error>)
+            case consumed
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URLResponse, Error>) in
+            let binding: Binding = lock.withLock {
+                if settled {
+                    // The terminal callback already ran (restore-replay
+                    // order). Hand back its stored result instead of
+                    // installing a continuation that nothing can resume.
+                    if let stored = storedResult {
+                        storedResult = nil
+                        return .replayed(stored)
+                    }
+                    return .consumed
+                }
+                guard self.continuation == nil else { return .consumed }
+                self.continuation = continuation
+                return terminalCallbackClaimed ? .awaitingReplay : .attached
+            }
+            switch binding {
+            case .attached:
+                task.resume()
+            case .awaitingReplay:
+                // The callback is registering its ledger event. It will
+                // resume this continuation only after that registration.
+                task.cancel()
+                break
+            case .replayed(let result):
+                // The task is terminal (its callbacks were replayed by
+                // URLSession when the restored session was created); its
+                // settle event was registered inside that callback. Do not
+                // resume it. allTasks can already have dropped the terminal
+                // task, leaving the caller's replacement task suspended;
+                // cancel that unused task (a no-op if already completed).
+                task.cancel()
+                continuation.resume(with: result)
+            case .consumed:
+                // Defensive: a second attach for one transfer. Never strand
+                // the caller's continuation.
+                continuation.resume(throwing: URLError(.cancelled))
+            }
         }
     }
 
@@ -859,23 +914,42 @@ final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func finish(_ result: Result<URLResponse, Error>) {
-        let continuation: CheckedContinuation<URLResponse, Error>? = lock.withLock {
-            defer { self.continuation = nil }
-            return self.continuation
+        let firstTerminal = lock.withLock {
+            guard !terminalCallbackClaimed else { return false }
+            terminalCallbackClaimed = true
+            return true
         }
-        guard let continuation else { return }
-        // This resume schedules the component's owned async settle follow-up
-        // in the awaiting download task (HTTP status/size/format validation
-        // now, and the durable staging commit at the operation tail). The
-        // event MUST be registered synchronously here, inside the delegate
-        // callback: `urlSessionDidFinishEvents` for this wake can arrive the
-        // moment the callback returns, and the system completion must then
-        // wait for the settle to drain instead of letting the process be
-        // suspended or killed mid-commit. The matching `endEvent` runs
-        // exactly once when the owning `download` operation drains its
-        // ledger — on every success, error and cancellation path.
+        guard firstTerminal else { return }
+        // Publish a replayable result only AFTER the event is registered.
+        // A concurrent start must not consume it and drain the operation
+        // while finish is still between its lock and ledger.began.
         ledger.began(settlement)
-        continuation.resume(with: result)
+        let waiting: CheckedContinuation<URLResponse, Error>? = lock.withLock {
+            settled = true
+            let waiting = self.continuation
+            self.continuation = nil
+            if waiting == nil {
+                // Restore-replay order: no operation has attached through
+                // `start` yet. Store the terminal result so the owning
+                // operation still awaits this transfer, runs its
+                // validation/commit and drains the event registered below.
+                storedResult = result
+            }
+            return waiting
+        }
+        // This terminal callback schedules the component's owned async
+        // settle follow-up in the awaiting download task (HTTP status/size/
+        // format validation now, and the durable staging commit at the
+        // operation tail). The event MUST be registered synchronously here,
+        // inside the delegate callback — BEFORE any continuation handoff and
+        // regardless of whether `start` has attached: `urlSessionDidFinishEvents`
+        // for this wake can arrive the moment the callback returns, and the
+        // system completion must then wait for the settle to drain instead
+        // of letting the process be suspended or killed mid-commit. The
+        // matching `endEvent` runs exactly once when the owning `download`
+        // operation drains its ledger — on every success, error and
+        // cancellation path.
+        waiting?.resume(with: result)
     }
 
     #if os(iOS)
