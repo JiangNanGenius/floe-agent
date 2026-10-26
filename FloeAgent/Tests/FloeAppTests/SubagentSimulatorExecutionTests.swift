@@ -45,6 +45,7 @@ import FloeAgentRuntime
 import FloeSecurity
 import UserNotifications
 import UIKit
+import ImageIO
 import FloeExecution
 import FloePersistence
 import FloeSkills
@@ -2647,7 +2648,24 @@ extension SubagentSimulatorExecutionTests {
                 context: childContext, tag: "case5-wait", tabID: tabID, marker: "status: saved")
             page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "case5-observe", tabID: tabID)
-            let statusText = page.nodes.first { $0.text.contains("status: saved") }?.text ?? ""
+            // The fixture writes the receipt into a bare <div id="status">
+            // (index.html), which the observe selector set never enumerates,
+            // while the official browser.wait text surface above proved the
+            // sentence is in document.body.innerText. Read the receipt from
+            // the actually rendered viewport through the shipped on-device
+            // OCR surface instead, keeping the exact [0-9a-f]{12} golden;
+            // case 6 still compares it against the independent server
+            // authority, so a misread status line fails honestly instead of
+            // ever falling back to server-only proof.
+            let shotCall5 = try toolCall(id: "case5-receipt-shot", toolName: "browser.screenshot",
+                arguments: try Self.json(["tabID": tabID.uuidString]))
+            let shotResult5 = await runtime.dispatchChildTool(
+                shotCall5, identity: fixedIdentity, childContext: childContext)
+            try #require(shotResult5.status == .ok,
+                         "post-submit screenshot failed: \(shotResult5.outputSummary)")
+            let shot5 = try sevenDeepDecodeScreenshot(shotResult5)
+            let statusText = (shot5.page?.visualTextRegions ?? [])
+                .filter { $0.text.contains("status: saved") }.map(\.text).joined(separator: " ")
             let receipt = try #require(skillHubFirstMatch(pattern: "[0-9a-f]{12}", in: statusText),
                                        "post-click status carries no 12-hex receipt: \(statusText)")
             try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
@@ -2675,7 +2693,21 @@ extension SubagentSimulatorExecutionTests {
                 context: childContext, tag: "case7-wait", tabID: tabID, marker: "count: 1")
             page = try await skillHubObserve(runtime: runtime, identity: fixedIdentity,
                 context: childContext, tag: "case7-observe", tabID: tabID)
-            let countText = page.nodes.first { $0.text.contains("count:") }?.text ?? ""
+            // Same bare-div contract as the status line above: <div id=
+            // "count-region"> is never an enumerated node, so this was the
+            // next guaranteed field mismatch (avoiding another per-field
+            // rebuild cycle). Prove the visible counter through the shipped
+            // OCR surface of the current viewport; case 8's independent
+            // server counter attestation stays unchanged.
+            let shotCall7 = try toolCall(id: "case7-counter-shot", toolName: "browser.screenshot",
+                arguments: try Self.json(["tabID": tabID.uuidString]))
+            let shotResult7 = await runtime.dispatchChildTool(
+                shotCall7, identity: fixedIdentity, childContext: childContext)
+            try #require(shotResult7.status == .ok,
+                         "counter screenshot failed: \(shotResult7.outputSummary)")
+            let shot7 = try sevenDeepDecodeScreenshot(shotResult7)
+            let countText = (shot7.page?.visualTextRegions ?? [])
+                .filter { $0.text.contains("count:") }.map(\.text).joined(separator: " ")
             let countValue = try #require(skillHubFirstMatch(pattern: "count: [0-9]+", in: countText),
                                           "counter region missing after the click")
             try await skillHubRecordCase(runtime: runtime, identity: fixedIdentity,
@@ -4344,6 +4376,23 @@ extension SubagentSimulatorExecutionTests {
     }
 
 
+    /// Reads the real encoded pixel dimensions from any ImageIO-decodable
+    /// retained image (the browser screenshot store is JPEG; generated PNG
+    /// artifacts keep using sevenDeepPNGSize). Undecodable or non-positive
+    /// bytes fail closed; nothing is assumed or invented.
+    fileprivate func sevenDeepEncodedImageSize(_ bytes: Data) throws -> (width: Int, height: Int) {
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, options),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            throw FloeError.validationFailed("Artifact is not a decodable image (\(bytes.count) bytes)")
+        }
+        return (width, height)
+    }
+
+
     /// Fixed read-only acceptance instrumentation of this task's actual WebKit
     /// canvas. Navigation and controls still use the public browser tool chain;
     /// no JavaScript execution surface is added to the model or production app.
@@ -5296,8 +5345,17 @@ extension SubagentSimulatorExecutionTests {
             let viewportW = Int(try #require(shot.page?.viewportWidth))
             let viewportH = Int(try #require(shot.page?.viewportHeight))
             let artifact = try #require(shot.page?.screenshotArtifact)
-            let artifactBytes = try Data(contentsOf: root.appendingPathComponent(artifact.relativePath))
-            let artifactSize = try sevenDeepPNGSize(artifactBytes)
+            // browser.screenshot persists its artifact under Application
+            // Support/FloeAgent/BrowserArtifacts (BrowserSessionCenter
+            // artifactDirectory; same base webapp case 9 reads) and
+            // saveSnapshot encodes JPEG — not the guest workspace and not a
+            // PNG. Read the retained bytes from their real location and take
+            // the dimensions from the decoded image itself, fail closed.
+            let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: true)
+            let artifactURL = support.appendingPathComponent("FloeAgent").appendingPathComponent(artifact.relativePath)
+            let artifactBytes = try Data(contentsOf: artifactURL)
+            let artifactSize = try sevenDeepEncodedImageSize(artifactBytes)
             evidence["canvasViewport"] = "\(viewportW)x\(viewportH) preview"
             evidence["canvasScreenshot"] = "\(artifactSize.width)x\(artifactSize.height) sha=\(artifact.sha256.prefix(16))… (viewport-bounded preview, NOT the 1080x1350 raster)"
 

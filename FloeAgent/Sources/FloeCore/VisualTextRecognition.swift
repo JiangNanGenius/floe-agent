@@ -54,6 +54,26 @@ public enum VisualTextRecognizer {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
         request.minimumTextHeight = 0.008
+        // A VNRecognizeTextRequest defaults to an English-only recognition
+        // language list, which silently skips fully rendered CJK lines: the
+        // on-page Chinese text stays out of visualTextRegions with no error.
+        // List Chinese explicitly (order = processing order) and enable the
+        // per-line automatic language detection the shipped document.pdf.
+        // convert path already uses (PDFDocumentOperations), so English
+        // transcription stays byte-stable while Chinese lines route to the
+        // Chinese model. Intersect with the languages the device reports so
+        // an absent Chinese model fails closed to the previous behavior
+        // instead of breaking every screenshot.
+        let desiredLanguages = ["zh-Hans", "zh-Hant", "en-US"]
+        if let supported = try? request.supportedRecognitionLanguages() {
+            let kept = desiredLanguages.filter { supported.contains($0) }
+            if !kept.isEmpty {
+                request.recognitionLanguages = kept
+            }
+        } else {
+            request.recognitionLanguages = desiredLanguages
+        }
+        request.automaticallyDetectsLanguage = true
         let handler = VNImageRequestHandler(data: imageData, options: [:])
         try handler.perform([request])
         let observations = (request.results ?? []).compactMap { observation -> (String, Float, CGRect)? in

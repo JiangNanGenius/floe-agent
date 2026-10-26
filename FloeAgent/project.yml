@@ -770,6 +770,7 @@ targets:
       - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
       - path: Tests/FloeCoreTests/BackgroundExecutionOptionsTests.swift
       - path: Tests/FloeCoreTests/ShareProviderIntakePolicyTests.swift
+      - path: Tests/FloeCoreTests/VisualTextRecognitionTests.swift
       - path: Tests/FloeAppTests/TemporaryConversationTests.swift
       - path: Tests/FloeAppTests/CapabilityExecutionRouterTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolDiscoveryTests.swift
