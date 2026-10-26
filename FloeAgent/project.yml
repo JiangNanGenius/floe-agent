@@ -728,6 +728,10 @@ targets:
       - path: Tests/FloeSyncTests/SyncControlPreferencesTests.swift
       - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
+      - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
+      - path: Tests/FloeAppTests/InlineConversationSelectionTests.swift
+      - path: Tests/FloeAppTests/ComposerOverflowRegressionTests.swift
+      - path: Tests/FloeProvidersTests/KimiFunctionNameCompatibilityTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
       - path: Tests/FloeSkillsTests/SkillPackageTests.swift

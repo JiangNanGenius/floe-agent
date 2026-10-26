@@ -103,11 +103,25 @@ final class TaskBulkManagementUITests: XCTestCase {
     }
 
     private func openManagement(_ app: XCUIApplication) {
-        let taskCenter = app.staticTexts["sidebar.task_center"]
-        XCTAssertTrue(taskCenter.waitForExistence(timeout: 30), "the Task Center entry must exist")
-        taskCenter.tap()
-        let manage = app.buttons["taskCenter.manage"]
-        XCTAssertTrue(manage.waitForExistence(timeout: 30), "the management entry must exist")
+        // The sidebar and Task Center now select inline. This suite keeps
+        // exercising the dedicated data-management page and its archive slice.
+        let settings = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.settings").firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 30))
+        settings.tap()
+        let data = app.descendants(matching: .any)
+            .matching(identifier: "settings.section.dataManagement").firstMatch
+        XCTAssertTrue(data.waitForExistence(timeout: 15))
+        for _ in 0..<5 where !data.isHittable {
+            let sections = app.descendants(matching: .any)
+                .matching(identifier: "settings.sections").firstMatch
+            XCTAssertTrue(sections.exists)
+            sections.swipeUp()
+        }
+        XCTAssertTrue(data.isHittable)
+        data.tap()
+        let manage = app.staticTexts["管理任务"].firstMatch
+        XCTAssertTrue(manage.waitForExistence(timeout: 15), "the dedicated management entry must remain available")
         manage.tap()
         XCTAssertTrue(app.buttons["tasks.manage.selectAll"].waitForExistence(timeout: 30),
                       "the canonical management screen must open")

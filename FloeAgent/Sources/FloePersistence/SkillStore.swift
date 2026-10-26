@@ -152,7 +152,7 @@ public actor SQLiteSkillStore {
                 """, arguments: [Self.removedPrefix + id, Self.date(Date())])
             if suppressBundledSeed {
                 try db.execute(sql: "INSERT OR REPLACE INTO app_settings (key, value_json, updated_at) VALUES (?, 'true', ?)",
-                    arguments: ["skills.userRemoved." + id, Self.date(Date())])
+                    arguments: [Self.bundledSeedSuppressionPrefix + id, Self.date(Date())])
             }
             try db.execute(sql: "DELETE FROM skills WHERE id = ?", arguments: [id])
             try Self.persistSourceTracking(nil, id: id, db: db)
@@ -162,13 +162,25 @@ public actor SQLiteSkillStore {
     public func wasBundledSkillRemoved(id: String) async throws -> Bool {
         try await database.reader { db in
             try String.fetchOne(db, sql: "SELECT value_json FROM app_settings WHERE key = ?",
-                arguments: ["skills.userRemoved." + id]) == "true"
+                arguments: [Self.bundledSeedSuppressionPrefix + id]) == "true"
         }
     }
 
     public func requestBundledSkillInstallation(id: String) async throws {
         try await database.writer { db in
-            try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: ["skills.userRemoved." + id])
+            try db.execute(sql: "DELETE FROM app_settings WHERE key = ?", arguments: [Self.bundledSeedSuppressionPrefix + id])
+        }
+    }
+
+    /// Clears both persisted removal intents (the hub-update marker and the
+    /// bundled-seed suppression marker) for one preinstalled ID inside a
+    /// single transaction. Callers use this only after the trusted bundled
+    /// seed has verified the installation: a repair either fully lands or the
+    /// markers stay in place for a later retry pass.
+    public func clearBundledSkillRemovalMarkers(id: String) async throws {
+        try await database.writer { db in
+            try db.execute(sql: "DELETE FROM app_settings WHERE key IN (?, ?)",
+                arguments: [Self.removedPrefix + id, Self.bundledSeedSuppressionPrefix + id])
         }
     }
 
@@ -230,6 +242,10 @@ public actor SQLiteSkillStore {
     private static func date(_ value: Date) -> String { ISO8601DateFormatter().string(from: value) }
     private static let sourceTrackingPrefix = "skills.update_source."
     private static let removedPrefix = "skills.user_removed."
+    /// Historical second spelling persisted by older releases alongside
+    /// `removedPrefix` when a bundled plugin was deleted. Preinstalled IDs are
+    /// no longer removable; this marker only gates legacy repair.
+    private static let bundledSeedSuppressionPrefix = "skills.userRemoved."
 
     private static func persistSourceTracking(_ json: String?, id: String, db: Database) throws {
         let key = sourceTrackingPrefix + id

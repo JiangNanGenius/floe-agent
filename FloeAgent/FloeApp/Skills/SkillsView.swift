@@ -16,6 +16,14 @@ struct SkillsView: View {
     @ObservedObject private var mcpCenter: MCPSettingsCenter
     @State private var showingInstalled = false
     @State private var searchText = ""
+    /// Inline batch selection state. Only the intent lives here; every
+    /// mutation runs service-owned through `SkillsCenter.runSkillBatch`.
+    @State private var selection = SkillBatchSelection()
+    @State private var confirmingBatchDelete = false
+    /// The exact eligible items + digests frozen when the destructive
+    /// confirmation opens; confirming executes THIS snapshot, never a
+    /// recomputed selection.
+    @State private var pendingBatchDeleteItems: [SkillBatchItem] = []
     @EnvironmentObject private var authoring: SkillAuthoringCoordinator
     @State private var pendingRemoval: PersistedSkill?
     @State private var updatingSkill: PersistedSkill?
@@ -80,7 +88,7 @@ struct SkillsView: View {
                 id: definition.id, title: definition.name,
                 summary: pluginSummary(definition), category: category,
                 systemImage: symbol, action: action,
-                actionEnabled: !center.isWorking && !updates.isRunning
+                actionEnabled: !center.isWorking && !updates.isRunning && !center.isBatchRunning
             )
         }
         let curated = center.curatedCards.map { card -> SkillHubDisplayItem in
@@ -104,7 +112,7 @@ struct SkillsView: View {
                 title: entry.name.value(preferredLanguages: Locale.preferredLanguages),
                 summary: entry.description.value(preferredLanguages: Locale.preferredLanguages),
                 category: category, systemImage: "puzzlepiece.extension", action: action,
-                actionEnabled: card.showsInstallAction && !center.isWorking && !updates.isRunning)
+                actionEnabled: card.showsInstallAction && !center.isWorking && !updates.isRunning && !center.isBatchRunning)
         }
         let curatedIDs = Set(curated.map(\.id))
         return legacy.filter { !curatedIDs.contains($0.id) } + curated
@@ -170,48 +178,7 @@ struct SkillsView: View {
                         ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
                     } else {
                         ForEach(visibleInstalled) { skill in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack {
-                                    VStack(alignment: .leading) {
-                                        Button { updatingSkill = skill } label: {
-                                            Text(skill.name).font(.headline).foregroundStyle(.primary)
-                                        }
-                                        .buttonStyle(.borderless)
-                                        .disabled(center.isWorking || updates.isRunning)
-                                        .accessibilityIdentifier("skills.details.\(skill.id)")
-                                        HStack(spacing: 6) {
-                                            Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
-                                            SkillOriginPill(origin: center.origin(of: skill))
-                                                .accessibilityIdentifier("skills.origin.\(skill.id)")
-                                        }
-                                    }
-                                    Spacer()
-                                    updateAction(for: skill)
-                                    Toggle("skills.enabled", isOn: Binding(
-                                        get: { skill.status == "enabled" },
-                                        set: { value in Task { await center.setEnabled(value, skill: skill) } }
-                                    )).labelsHidden().frame(minWidth: 44, minHeight: 44)
-                                        .disabled(center.isWorking || updates.isRunning)
-                                }
-                                if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
-                                    Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                                }
-                                updateStatus(for: skill)
-                            }
-                            .contextMenu {
-                                Button("skills.update.details", systemImage: "info.circle") { updatingSkill = skill }
-                                    .disabled(updates.isRunning || center.isWorking)
-                                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
-                                    Button("action.delete", systemImage: "trash", role: .destructive) { pendingRemoval = skill }
-                                        .disabled(updates.isRunning || center.isWorking)
-                                }
-                            }
-                            .swipeActions {
-                                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
-                                    Button("action.delete", role: .destructive) { pendingRemoval = skill }
-                                        .disabled(updates.isRunning || center.isWorking)
-                                }
-                            }
+                            installedRow(skill)
                         }
                     }
                     if !mcpCenter.servers.isEmpty {
@@ -235,6 +202,7 @@ struct SkillsView: View {
                             .accessibilityIdentifier("skills.auto_scripted_updates")
                     }
                 }
+                .safeAreaInset(edge: .bottom, spacing: 0) { batchBar }
             }
             if let error = center.catalogError {
                 Text(error).foregroundStyle(.secondary).font(.footnote).padding(.horizontal)
@@ -248,6 +216,21 @@ struct SkillsView: View {
         .searchable(text: $searchText, prompt: "plugins.search")
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if selection.active {
+                    Button(selection.isEverythingSelected(visible: visibleInstalledIDs)
+                           ? SkillBatchCopy.deselectAll : SkillBatchCopy.selectAll) {
+                        if selection.isEverythingSelected(visible: visibleInstalledIDs) {
+                            selection.deselectAll()
+                        } else {
+                            selection.selectAll(visible: visibleInstalledIDs)
+                        }
+                    }
+                    .disabled(center.isBatchRunning || visibleInstalled.isEmpty)
+                    .accessibilityIdentifier(SkillsSelectionAccessibility.selectAll)
+                    Button(SkillBatchCopy.done) { selection.exit() }
+                        .disabled(center.isBatchRunning)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.done)
+                }
                 Menu {
                     Button("plugins.import", systemImage: "square.and.arrow.down") {
                         Task { await authoring.open(kind: .importing) }
@@ -259,22 +242,27 @@ struct SkillsView: View {
                     Button("skills.mcp.creation.title", systemImage: "plus.app") { mcpSheet = .create }
                 } label: { Label("skills.hub.add", systemImage: "plus") }
                 .accessibilityIdentifier("skills.add")
+                .disabled(selection.active || center.isBatchRunning)
                 Button { center.startCheckingUpdates() } label: {
                     if updates.isRunning { ProgressView() }
                     else { Label("skills.update.check", systemImage: "arrow.triangle.2.circlepath") }
                 }
                     .accessibilityLabel(Text("skills.update.check"))
-                    .disabled(!center.canCheckUpdates)
+                    .disabled(!center.canCheckUpdates || selection.active)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("skills.updates.check_all")
                 Button("skills.update.all", systemImage: "arrow.down.circle") { center.startUpdatingAll() }
-                    .disabled(!center.canUpdateAll)
+                    .disabled(!center.canUpdateAll || selection.active)
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityIdentifier("skills.updates.update_all")
             }
         }
         .task {
-            await authoring.reload(); await center.load()
+            await authoring.reload()
+            // Open the trusted bundled seed on first entry so a historical
+            // mistaken removal repairs here too, not only inside a task.
+            await center.seedBuiltinDomainSkills()
+            await center.load()
             await center.refreshOfficialCatalog(); await center.refreshCuratedCatalog()
         }
         .refreshable { await center.load(); center.startCheckingUpdates() }
@@ -336,6 +324,37 @@ struct SkillsView: View {
                 pendingRemoval = nil
             }
         }
+        // One confirmation for the whole destructive batch. It runs the
+        // exact items frozen when the dialog opened, never a reselection.
+        .confirmationDialog(
+            Text(SkillBatchCopy.deleteConfirmTitle(pendingBatchDeleteItems.count)),
+            isPresented: $confirmingBatchDelete,
+            titleVisibility: .visible
+        ) {
+            Button(role: .destructive, action: {
+                let items = pendingBatchDeleteItems
+                pendingBatchDeleteItems = []
+                center.runSkillBatch(operation: .delete, items: items)
+            }) {
+                Text(SkillBatchCopy.deleteButton(pendingBatchDeleteItems.count))
+            }
+            Button("action.cancel", role: .cancel) { pendingBatchDeleteItems = [] }
+        }
+        // Search prunes selections that are no longer visible.
+        .onChange(of: searchText) { _, _ in
+            selection.prune(toVisible: Set(visibleInstalledIDs))
+        }
+        // Truthful per-item results: resolved rows leave, failures stay.
+        .onChange(of: center.lastBatchSummary) { _, summary in
+            guard let summary else { return }
+            selection.apply(summary: summary)
+        }
+        .onChange(of: showingInstalled) { _, installed in
+            if !installed {
+                selection.exit()
+                pendingBatchDeleteItems = []
+            }
+        }
     }
     @ViewBuilder
     private func updateAction(for skill: PersistedSkill) -> some View {
@@ -350,19 +369,20 @@ struct SkillsView: View {
             }
             .buttonStyle(.borderless)
             .frame(minWidth: 44, minHeight: 44)
-            .disabled(!center.canCheckUpdates && center.pendingUpgrade?.snapshot.package.manifest.id != skill.id)
+            .disabled((!center.canCheckUpdates && center.pendingUpgrade?.snapshot.package.manifest.id != skill.id)
+                      || selection.active)
             .accessibilityIdentifier("skills.updates.review.\(skill.id)")
         } else if center.availableVersion(for: skill) != nil {
             Button("skills.update.now") { center.startUpdating(skill) }
                 .buttonStyle(.borderless)
                 .frame(minWidth: 44, minHeight: 44)
-                .disabled(!center.canCheckUpdates)
+                .disabled(!center.canCheckUpdates || selection.active)
                 .accessibilityIdentifier("skills.updates.update.\(skill.id)")
         } else if state?.phase == .failed {
             Button("action.retry") { center.retryUpdateCheck(skill) }
                 .buttonStyle(.borderless)
                 .frame(minWidth: 44, minHeight: 44)
-                .disabled(!center.canCheckUpdates)
+                .disabled(!center.canCheckUpdates || selection.active)
         }
     }
 
@@ -375,6 +395,178 @@ struct SkillsView: View {
             } else if let error = state.error {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
+        }
+    }
+
+    // MARK: - Inline batch selection (Installed list)
+
+    private var visibleInstalledIDs: [String] { visibleInstalled.map(\.id) }
+
+    /// Mixed selections delete only the non-preinstalled rows; the button,
+    /// its count and the confirmation all reflect exactly this eligible
+    /// count. A builtin-only selection shows no delete affordance at all.
+    private var deleteEligibleCount: Int {
+        visibleInstalled.count { skill in
+            selection.isRowSelected(skill.id) && !SkillBatchSelectionPolicy.isPreinstalled(skill.id)
+        }
+    }
+
+    @ViewBuilder
+    private func installedRow(_ skill: PersistedSkill) -> some View {
+        let preinstalled = SkillBatchSelectionPolicy.isPreinstalled(skill.id)
+        let selected = selection.isRowSelected(skill.id)
+        let rowIssue: String? = {
+            guard selection.active, selected,
+                  let result = center.lastBatchSummary?.results.first(where: { $0.item.id == skill.id }),
+                  !result.outcome.isResolved else { return nil }
+            return result.outcome.issueText
+        }()
+        HStack(alignment: .top, spacing: 12) {
+            if selection.active {
+                Button {
+                    selection.toggle(skill.id)
+                } label: {
+                    SkillSelectionCircle(selected: selected)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(Text(selected ? SkillBatchCopy.deselectRow : SkillBatchCopy.selectRow))
+                .accessibilityIdentifier(SkillsSelectionAccessibility.rowCircle(skill.id))
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    VStack(alignment: .leading) {
+                        if selection.active {
+                            // Selection intercepts row opening; the row body
+                            // becomes inert and taps toggle the circle.
+                            Text(skill.name).font(.headline).foregroundStyle(.primary)
+                        } else {
+                            Button { updatingSkill = skill } label: {
+                                Text(skill.name).font(.headline).foregroundStyle(.primary)
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(center.isWorking || updates.isRunning || center.isBatchRunning)
+                            .accessibilityIdentifier("skills.details.\(skill.id)")
+                        }
+                        HStack(spacing: 6) {
+                            Text("v\(skill.version)").font(.caption).foregroundStyle(.secondary)
+                            SkillOriginPill(origin: center.origin(of: skill))
+                                .accessibilityIdentifier("skills.origin.\(skill.id)")
+                            if preinstalled {
+                                Text(SkillBatchCopy.builtInTag)
+                                    .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(.quaternary, in: Capsule())
+                            }
+                        }
+                    }
+                    Spacer()
+                    updateAction(for: skill)
+                    Toggle("skills.enabled", isOn: Binding(
+                        get: { skill.status == "enabled" },
+                        set: { value in Task { await center.setEnabled(value, skill: skill) } }
+                    )).labelsHidden().frame(minWidth: 44, minHeight: 44)
+                        .disabled(center.isWorking || updates.isRunning || selection.active || center.isBatchRunning)
+                }
+                if let definition = DomainSkillLibrary.all.first(where: { $0.id == skill.id }) {
+                    Text(pluginSummary(definition)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }
+                updateStatus(for: skill)
+                if let rowIssue {
+                    Text(rowIssue).font(.caption).foregroundStyle(.red)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.rowIssue(skill.id))
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if selection.active { selection.toggle(skill.id) }
+        }
+        .onLongPressGesture(minimumDuration: 0.5) {
+            // Long press enters selection directly and selects this row —
+            // no context-menu step, no management sheet.
+            guard !selection.active, !center.isBatchRunning else { return }
+            selection.enter(selecting: skill.id)
+        }
+        .swipeActions {
+            if !selection.active, !preinstalled, !center.isBatchRunning {
+                Button("action.delete", role: .destructive) { pendingRemoval = skill }
+                    .disabled(updates.isRunning || center.isWorking)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var batchBar: some View {
+        if showingInstalled && selection.active {
+            VStack(spacing: 6) {
+                HStack(spacing: 12) {
+                    Text(SkillBatchCopy.selectedCount(selection.ids.count))
+                        .font(.callout).foregroundStyle(.secondary)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.count)
+                    Spacer()
+                    if center.isBatchRunning {
+                        ProgressView().controlSize(.small)
+                            .accessibilityIdentifier(SkillsSelectionAccessibility.batchProgress)
+                    }
+                    Button(SkillBatchCopy.enable) {
+                        center.runSkillBatch(operation: .enable, items: selectedBatchItems(for: .enable))
+                    }
+                        .disabled(center.isBatchRunning)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.batchEnable)
+                    Button(SkillBatchCopy.disable) {
+                        center.runSkillBatch(operation: .disable, items: selectedBatchItems(for: .disable))
+                    }
+                        .disabled(center.isBatchRunning)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.batchDisable)
+                    if deleteEligibleCount > 0 {
+                        Button(role: .destructive) {
+                            // Freeze the eligible items and count NOW; the
+                            // confirmation executes exactly this snapshot.
+                            pendingBatchDeleteItems = selectedBatchItems(for: .delete)
+                            confirmingBatchDelete = true
+                        } label: {
+                            Text(SkillBatchCopy.deleteButton(deleteEligibleCount))
+                        }
+                        .disabled(center.isBatchRunning)
+                        .accessibilityIdentifier(SkillsSelectionAccessibility.batchDelete)
+                    }
+                }
+                if let summary = center.lastBatchSummary, !summary.isEmpty {
+                    Text(SkillBatchCopy.resultLine(summary))
+                        .font(.caption).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if summary.failedCount > 0 || summary.unverifiedCount > 0 || summary.notAttemptedCount > 0 {
+                        Text(SkillBatchCopy.keepFailedSelected)
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .buttonStyle(.bordered)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            .background(.bar)
+        }
+    }
+
+    /// Snapshots the selected rows for one batch operation at submission
+    /// time (click, or the destructive confirmation's open). Each item
+    /// carries the CURRENT visible row's digest: that frozen CAS revision is
+    /// what the service command must hit, so a package replaced in another
+    /// window fails honestly instead of being acted on silently. Delete
+    /// submissions exclude preinstalled IDs entirely.
+    private func selectedBatchItems(for operation: SkillBatchOperation) -> [SkillBatchItem] {
+        var seen: Set<String> = []
+        return visibleInstalled.compactMap { skill in
+            guard selection.isRowSelected(skill.id), seen.insert(skill.id).inserted else { return nil }
+            let preinstalled = SkillBatchSelectionPolicy.isPreinstalled(skill.id)
+            if operation == .delete, preinstalled { return nil }
+            return SkillBatchItem(
+                id: skill.id,
+                title: skill.name,
+                preinstalled: preinstalled,
+                expectedDigest: skill.rewrittenDigest
+            )
         }
     }
 
@@ -483,7 +675,7 @@ private struct SkillGitHubUpgradeSheet: View {
                                 await center.applyReviewedUpgrade()
                                 if center.errorMessage == nil { dismiss() }
                             }
-                        }.disabled(candidate.changedFiles.isEmpty)
+                        }.disabled(candidate.changedFiles.isEmpty || center.isBatchRunning)
                     } else if center.updateState(for: skill)?.phase == .upToDate {
                         Label("skills.skills_view.already_the_latest_version", systemImage: "checkmark.circle")
                             .font(.callout).foregroundStyle(.secondary)
@@ -517,20 +709,24 @@ private struct SkillGitHubUpgradeSheet: View {
                         Button("skills.update.rollback", role: .destructive) { confirmingRollback = true }
                     }
                 }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                if DomainSkillLibrary.all.first(where: { $0.id == skill.id })?.exposed != false {
+                // Preinstalled guides ship with the app: the detail sheet
+                // offers no removal at all (rollback inside the upgrade
+                // disclosure stays available when a real backup exists).
+                if DomainSkillLibrary.all.first(where: { $0.id == skill.id }) == nil {
                     Section {
                         Button("action.delete", role: .destructive) { confirmingRemoval = true }
-                            .disabled(center.updates.isRunning)
+                            .disabled(center.updates.isRunning || center.isBatchRunning)
                     }
                 }
                 if let error = center.errorMessage { Text(error).foregroundStyle(.red) }
             }
-            .disabled(center.isWorking)
-            .overlay { if center.isWorking { ProgressView() } }
+            .disabled(center.isWorking || center.isBatchRunning)
+            .overlay { if center.isWorking || center.isBatchRunning { ProgressView() } }
             .navigationTitle(skill.name)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("action.cancel") { if candidate != nil { center.cancelUpgrade() }; dismiss() }.disabled(center.isWorking) } }
             .confirmationDialog("skills.skills_view.restore_previous_content_and_grants", isPresented: $confirmingRollback) {
                 Button("skills.skills_view.roll_back", role: .destructive) { Task { await center.rollbackLatestUpgrade(skill: skill); if center.errorMessage == nil { dismiss() } } }
+                                .disabled(center.isBatchRunning)
             }
             .confirmationDialog("skills.remove.title", isPresented: $confirmingRemoval) {
                 Button("action.delete", role: .destructive) {

@@ -253,7 +253,7 @@ final class SkillsCenter: ObservableObject {
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly, let ownerID = context.conversationID,
               context.approvalGrantID != nil else { throw SkillHubInstallError.userChoiceBlocked }
-        guard !isWorking, !updates.isRunning, !packageMutationInProgress,
+        guard !isWorking, !updates.isRunning, !packageMutationInProgress, !isBatchRunning,
               pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
         let current = try await environment.skillStore.all().first { $0.id == request.id }
         if let current, let proof = Self.curatedReceipt(for: current),
@@ -501,7 +501,8 @@ final class SkillsCenter: ObservableObject {
     }
 
     private var canStartUpdateOperation: Bool {
-        !isWorking && !updates.isRunning && !isCheckingCatalog && !packageMutationInProgress && pendingUpgrade == nil && pendingInstallation == nil
+        !isWorking && !updates.isRunning && !isCheckingCatalog && !packageMutationInProgress
+            && !isBatchRunning && pendingUpgrade == nil && pendingInstallation == nil
     }
 
     var canCheckUpdates: Bool { canStartUpdateOperation && installed.contains { updateSource(for: $0) != nil } }
@@ -1643,8 +1644,105 @@ final class SkillsCenter: ObservableObject {
     }
 
     func remove(_ skill: PersistedSkill) async {
+        // Preinstalled guides ship with the app. The service-level guard in
+        // `manageSkill` stays the authority; the UI pre-check keeps the
+        // banner copy bilingual instead of surfacing the tool-channel string.
+        guard !SkillBatchSelectionPolicy.isPreinstalled(skill.id) else {
+            errorMessage = SkillBatchCopy.preinstalledCannotRemove
+            return
+        }
         await perform {
             _ = try await self.manageSkill(.init(action: .remove, id: skill.id, expectedDigest: skill.rewrittenDigest))
+        }
+    }
+
+    // MARK: - Inline batch management (Installed list)
+
+    /// Batch runs are SERVICE-owned: the Installed list closing or rotating
+    /// never interrupts an in-flight enable/disable/delete pass, and each
+    /// item goes through the exact same single-target `manageSkill` guards
+    /// (preinstalled rejection, digest CAS, busy fence, backup rollback).
+    /// Items are processed one at a time in submission order; every item
+    /// reports its own durable-read-verified outcome so the view keeps only
+    /// unresolved selections for a truthful retry.
+    @Published private(set) var isBatchRunning = false
+    @Published private(set) var lastBatchSummary: SkillBatchSummary?
+    private var batchTask: Task<Void, Never>?
+
+    func runSkillBatch(operation: SkillBatchOperation, items: [SkillBatchItem]) {
+        guard !items.isEmpty else { return }
+        guard !isBatchRunning, batchTask == nil else { return }
+        guard !isWorking, !updates.isRunning else {
+            errorMessage = SkillBatchCopy.busy
+            return
+        }
+        errorMessage = nil
+        // A new accepted run replaces the previous result line and any
+        // stale per-row issue immediately; the summary's `runToken`
+        // additionally makes every run a distinct identity so equal
+        // outcomes still reconcile the selection through onChange.
+        lastBatchSummary = nil
+        isBatchRunning = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let summary = await SkillBatchRunner().run(operation: operation, items: items) { item in
+                await self.performSkillBatchItem(operation: operation, item: item)
+            }
+            self.lastBatchSummary = summary
+            self.batchTask = nil
+            self.isBatchRunning = false
+        }
+        batchTask = task
+    }
+
+    private func performSkillBatchItem(operation: SkillBatchOperation, item: SkillBatchItem) async -> SkillBatchItemOutcome {
+        let state = await skillBatchRowState(id: item.id)
+        if let resolved = SkillBatchDecision.preflight(operation: operation, item: item, state: state) {
+            return resolved
+        }
+        do {
+            // The CAS revision is the digest of the row the user actually
+            // selected/confirmed, never a freshly fetched replacement: an
+            // update in another window makes this item fail honestly
+            // instead of silently acting on the new package.
+            switch operation {
+            case .enable:
+                _ = try await manageSkill(.init(action: .setEnabled, id: item.id, expectedDigest: item.expectedDigest, enabled: true))
+            case .disable:
+                _ = try await manageSkill(.init(action: .setEnabled, id: item.id, expectedDigest: item.expectedDigest, enabled: false))
+            case .delete:
+                _ = try await manageSkill(.init(action: .remove, id: item.id, expectedDigest: item.expectedDigest))
+            }
+            // Success is proven only by a durable read of the expected
+            // revision, not by the command's return string.
+            return SkillBatchDecision.afterCommand(
+                operation: operation,
+                item: item,
+                state: await skillBatchRowState(id: item.id)
+            )
+        } catch {
+            // The command can throw after the store actually committed (for
+            // example during post-transaction reload). Only a fresh,
+            // SUCCESSFUL read is the authority.
+            return SkillBatchDecision.afterFailure(
+                operation: operation,
+                item: item,
+                state: await skillBatchRowState(id: item.id),
+                errorText: SkillBatchCopy.failureText(for: error)
+            )
+        }
+    }
+
+    /// Tri-state durable read: `present` / `missing` / `unreadable`. A failed
+    /// read is never collapsed into "missing".
+    private func skillBatchRowState(id: String) async -> SkillBatchRowState {
+        do {
+            guard let row = try await environment.skillStore.all().first(where: { $0.id == id }) else {
+                return .missing
+            }
+            return .present(enabled: row.status == "enabled", digest: row.rewrittenDigest)
+        } catch {
+            return .unreadable(SkillBatchCopy.readFailure)
         }
     }
 
@@ -1764,14 +1862,21 @@ final class SkillsCenter: ObservableObject {
         if let builtin = DomainSkillLibrary.all.first(where: { $0.id == skill.id }), !builtin.exposed {
             throw FloeError.validationFailed("System guides are read-only and update only with the app")
         }
+        // Every removal path — UI row, inline batch and the assistant's
+        // skill.manage — funnels through this boundary. Preinstalled IDs are
+        // DomainSkillLibrary identities: disable them; never remove them.
+        if request.action == .remove, skillIsPreinstalled(skill.id) {
+            throw FloeError.validationFailed("Preinstalled guides ship with the app; disable them instead of removing")
+        }
         let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
         switch request.action {
         case .setEnabled:
             try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
         case .remove:
-            // Exposed official plugins can be removed. Their persisted user
-            // intent prevents launch-time seeding from undoing that choice.
-            // Keep a recoverable package outside the active store. If the DB
+            // Non-preinstalled skills can be removed; the persisted user
+            // intent keeps hub catalog sync from silently reinstalling them.
+            // Keep a recoverable package outside the active store and only
+            // roll the move back when the actual backup exists. If the DB
             // mutation fails, restore the package before reporting failure.
             let recovery = installationRoot.deletingLastPathComponent().appendingPathComponent("RemovedSkills", isDirectory: true)
             try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
@@ -1846,100 +1951,15 @@ final class SkillsCenter: ObservableObject {
         let seedKey = "floe.domainSkillSeeded"
         let seeded = defaults.dictionary(forKey: seedKey) as? [String: String] ?? [:]
         var updatedSeeds = seeded
-        let validator = SkillPackageValidator()
         for definition in DomainSkillLibrary.all {
             do {
-                if definition.exposed, try await environment.skillStore.wasBundledSkillRemoved(id: definition.id) { continue }
-                let temporary = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-                let markdown = """
-                ---
-                name: \(definition.id)
-                display_name: \(definition.name)
-                description: \(definition.description)
-                ---
-
-                \(definition.markdown)
-                """
-                try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-                let manifest: [String: Any] = [
-                    "schemaVersion": 1,
-                    "id": definition.id,
-                    "version": definition.version,
-                    "capabilities": [String](),
-                    "tools": [String](),
-                    "platforms": ["ios"],
-                    "scriptRuntime": "none",
-                    "pythonPackages": [[String: Any]]()
-                ]
-                let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
-                try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
-                if let exactFiles = BundledDomainSkills.officialSeedFiles[definition.id] {
-                    for (path, data) in exactFiles {
-                        let destination = temporary.appendingPathComponent(path)
-                        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        try data.write(to: destination, options: .atomic)
-                    }
+                let verified = try await seedBundledDomainSkill(definition, updatedSeeds: &updatedSeeds)
+                // Only a pass that verified the trusted install state for a
+                // preinstalled ID may clear its persisted removal intents.
+                // A partial failure keeps the markers so a later pass retries.
+                if verified {
+                    try await environment.skillStore.clearBundledSkillRemovalMarkers(id: definition.id)
                 }
-                let package = try validator.validate(packageAt: temporary)
-                if OfficialSkillHub.skillIDs.contains(definition.id) {
-                    guard package.canonicalSHA256 == BundledDomainSkills.officialPackageDigests[definition.id] else {
-                        throw FloeError.validationFailed("Bundled official seed differs from the signed GitHub package")
-                    }
-                }
-
-                let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
-                if let existing {
-                    if OfficialSkillHub.skillIDs.contains(definition.id) {
-                        guard OfficialSkillHub.acceptsBundledUpgrade(id: definition.id,
-                            sourceURL: existing.sourceURL, installedVersion: existing.version,
-                            bundledVersion: definition.version, sourceDigest: existing.sourceDigest,
-                            installedDigest: existing.rewrittenDigest),
-                              (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(existing.id),
-                                  expectedDigest: existing.rewrittenDigest)) != nil else { continue }
-                        try await installCanonicalPackage(at: temporary,
-                            sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                            initialStatus: existing.status, replaceExisting: true, bundledSeed: true)
-                        updatedSeeds[definition.id] = package.canonicalSHA256
-                        continue
-                    }
-                    // App bundles never replace a GitHub/user-managed source.
-                    guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { continue }
-                    let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
-                    let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
-                    if contentMatches {
-                        updatedSeeds[definition.id] = package.canonicalSHA256
-                        continue
-                    }
-                    if !bundledIsNewer {
-                        // Same or older bundled version with different digest:
-                        // the user edited this skill — respect their copy.
-                        updatedSeeds[definition.id] = existing.rewrittenDigest
-                        continue
-                    }
-                    // A local revision must be resolved explicitly, not overwritten.
-                    guard existing.rewrittenDigest == existing.sourceDigest else { continue }
-                    // Upgrade: preserve the user's enabled state (and, through
-                    // the store metadata, their capability grants).
-                    try await installCanonicalPackage(
-                        at: temporary,
-                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                        initialStatus: existing.status,
-                        replaceExisting: true,
-                        bundledSeed: true
-                    )
-                } else {
-                    try await installCanonicalPackage(
-                        at: temporary,
-                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                        initialStatus: "enabled",
-                        replaceExisting: true,
-                        bundledSeed: true
-                    )
-                }
-                updatedSeeds[definition.id] = package.canonicalSHA256
             } catch {
                 builtinSeedFailures[definition.id] = error.localizedDescription
                 // A single broken seed must never block app startup.
@@ -1949,6 +1969,126 @@ final class SkillsCenter: ObservableObject {
         defaults.set(updatedSeeds, forKey: seedKey)
         defaults.set(Self.domainSkillSeedVersion, forKey: "floe.domainSkillSeedVersion")
         await load()
+    }
+
+    /// Seeds one preinstalled guide from the trusted app bundle and reports
+    /// whether this pass VERIFIED the trusted install state (`true`) or
+    /// deliberately deferred to user-managed content (`false`).
+    ///
+    /// A persisted removal marker no longer suppresses the bundled repair:
+    /// preinstalled IDs are protected through every removal path, and a
+    /// historical mistaken deletion (older releases allowed it) must restore
+    /// on the first seeding pass after this upgrade — even when both legacy
+    /// markers are still persisted and even when the earlier deletion moved
+    /// the package to the `RemovedSkills` backup leaving no directory. A
+    /// still-installed GitHub/user-managed package, a user-edited copy, a
+    /// disabled state and existing backups are never overwritten.
+    private func seedBundledDomainSkill(
+        _ definition: DomainSkillLibrary.Definition,
+        updatedSeeds: inout [String: String]
+    ) async throws -> Bool {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        let markdown = """
+        ---
+        name: \(definition.id)
+        display_name: \(definition.name)
+        description: \(definition.description)
+        ---
+
+        \(definition.markdown)
+        """
+        try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
+        let manifest: [String: Any] = [
+            "schemaVersion": 1,
+            "id": definition.id,
+            "version": definition.version,
+            "capabilities": [String](),
+            "tools": [String](),
+            "platforms": ["ios"],
+            "scriptRuntime": "none",
+            "pythonPackages": [[String: Any]]()
+        ]
+        let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+        try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+        if let exactFiles = BundledDomainSkills.officialSeedFiles[definition.id] {
+            for (path, data) in exactFiles {
+                let destination = temporary.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: destination, options: .atomic)
+            }
+        }
+        let validator = SkillPackageValidator()
+        let package = try validator.validate(packageAt: temporary)
+        if OfficialSkillHub.skillIDs.contains(definition.id) {
+            guard package.canonicalSHA256 == BundledDomainSkills.officialPackageDigests[definition.id] else {
+                throw FloeError.validationFailed("Bundled official seed differs from the signed GitHub package")
+            }
+        }
+
+        let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
+        if let existing {
+            if OfficialSkillHub.skillIDs.contains(definition.id) {
+                guard OfficialSkillHub.acceptsBundledUpgrade(id: definition.id,
+                    sourceURL: existing.sourceURL, installedVersion: existing.version,
+                    bundledVersion: definition.version, sourceDigest: existing.sourceDigest,
+                    installedDigest: existing.rewrittenDigest),
+                      (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(existing.id),
+                          expectedDigest: existing.rewrittenDigest)) != nil else { return false }
+                try await installCanonicalPackage(at: temporary,
+                    sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                    initialStatus: existing.status, replaceExisting: true, bundledSeed: true)
+                updatedSeeds[definition.id] = package.canonicalSHA256
+                return true
+            }
+            // App bundles never replace a GitHub/user-managed source.
+            guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { return false }
+            let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
+            let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
+            if contentMatches {
+                updatedSeeds[definition.id] = package.canonicalSHA256
+                return true
+            }
+            if !bundledIsNewer {
+                // Same or older bundled version with different digest:
+                // the user edited this skill — respect their copy.
+                updatedSeeds[definition.id] = existing.rewrittenDigest
+                return false
+            }
+            // A local revision must be resolved explicitly, not overwritten.
+            guard existing.rewrittenDigest == existing.sourceDigest else { return false }
+            // Upgrade: preserve the user's enabled state (and, through
+            // the store metadata, their capability grants).
+            try await installCanonicalPackage(
+                at: temporary,
+                sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                initialStatus: existing.status,
+                replaceExisting: true,
+                bundledSeed: true
+            )
+        } else {
+            // Missing row for a preinstalled ID — including a historical
+            // mistaken removal with its persisted markers. Install the
+            // trusted bundle (any stale package directory left behind by the
+            // interrupted replacement is atomically staged over).
+            try await installCanonicalPackage(
+                at: temporary,
+                sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                initialStatus: "enabled",
+                replaceExisting: true,
+                bundledSeed: true
+            )
+        }
+        updatedSeeds[definition.id] = package.canonicalSHA256
+        return true
+    }
+
+    /// True for every DomainSkillLibrary identity — these ship with the app
+    /// and are protected from removal at the service boundary.
+    func skillIsPreinstalled(_ id: String) -> Bool {
+        SkillBatchSelectionPolicy.isPreinstalled(id)
     }
 
     /// Numeric dotted-version comparison ("1.10.0" > "1.4.0").
@@ -2270,7 +2410,10 @@ final class SkillsCenter: ObservableObject {
     }
 
     private func perform(_ operation: @escaping () async throws -> Void) async {
-        guard !isWorking, !updates.isRunning else {
+        // A running service-owned batch is also "busy": single-row import,
+        // install, official get or rollback windows must not interleave
+        // with batch items.
+        guard !isWorking, !updates.isRunning, !isBatchRunning else {
             errorMessage = FloeL10n.l("skills.operation.busy")
             return
         }

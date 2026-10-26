@@ -73,6 +73,64 @@ enum ComposerFieldMetrics {
     }
 }
 
+/// Sizing + overflow verdict for the growing composer field.
+///
+/// One pure rule, computed at the width the field is ACTUALLY laid out at:
+/// SwiftUI's `sizeThatFits` pass, the live view's `layoutSubviews` pass and
+/// the keystroke pass all call through here so they can never disagree (a
+/// disagreement was the old bug: the full-editor control was driven only by
+/// sizing proposals — nil / 0 / .infinity are filtered as probes, and the
+/// final exact placement may skip sizing entirely — so the host sometimes
+/// never received a verdict at the bounded content width and the expand
+/// button never appeared). There is deliberately no character-count
+/// threshold: `scrolls` is true only when the measured natural height of
+/// this exact text exceeds the height cap at this exact width, which keeps
+/// the full-editor control visible for real overflow and hidden as soon as
+/// the text fits again (deleting text, rotation, dynamic type, narrow
+/// split-view widths all re-derive through the same rule).
+enum ComposerFieldLayout {
+    struct Verdict: Equatable {
+        /// Height the inline field reports for the measured width.
+        let height: CGFloat
+        /// True when the natural TextKit height passed the cap: the tail of
+        /// the text is no longer visible inline and the field scrolls.
+        let scrolls: Bool
+    }
+
+    /// The single budget rule, parameterised so every caller passes the
+    /// laid-out width and every test can drive it with a real measured
+    /// height. The field no longer carries this arithmetic anywhere else.
+    static func verdict(
+        naturalTextHeight: CGFloat,
+        lineHeight: CGFloat,
+        verticalInsets: CGFloat,
+        lineLimit: ClosedRange<Int>,
+        deviceLineCap: Int,
+        availableHeight: CGFloat?,
+        restingMinimumHeight: CGFloat
+    ) -> Verdict {
+        let upperBound = max(1, min(lineLimit.upperBound, deviceLineCap))
+        let cap = max(
+            restingMinimumHeight,
+            max(
+                lineHeight + verticalInsets,
+                ComposerFieldMetrics.heightCap(
+                    lineCapHeight: lineHeight * CGFloat(upperBound) + verticalInsets,
+                    availableHeight: availableHeight
+                )
+            )
+        )
+        let floor = max(
+            restingMinimumHeight,
+            lineHeight * CGFloat(max(1, lineLimit.lowerBound)) + verticalInsets
+        )
+        return Verdict(
+            height: min(max(naturalTextHeight, floor), cap),
+            scrolls: naturalTextHeight > cap
+        )
+    }
+}
+
 /// Rough token estimate for the composer footer. CJK scalars ≈ 1 token each;
 /// everything else ≈ 4 scalars per token. Always presented as an estimate,
 /// never as an exact provider count.

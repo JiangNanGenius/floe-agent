@@ -64,47 +64,48 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     private var categories: [SkillHubCategory] {
         SkillHubCategory.allCases.filter { category in items.contains { $0.category == category } }
     }
-    private var columns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(minimum: 0))]
-        }
-        return [GridItem(.adaptive(minimum: 300), spacing: 20)]
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let count = width >= 700 && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
+        return Array(repeating: GridItem(.flexible(minimum: 0), spacing: 20), count: count)
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                if categories.count > 1 {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            categoryButton(nil)
-                            ForEach(categories) { categoryButton($0) }
-                        }
-                        .padding(.vertical, 2)
-                    }
-                    .scrollIndicators(.hidden)
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("skills.hub.directory").font(.title2.bold())
-                    if matching.isEmpty {
-                        ContentUnavailableView.search(text: normalizedQuery)
-                    } else {
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
-                            ForEach(matching) { item in
-                                directoryRow(item)
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if categories.count > 1 {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                categoryButton(nil)
+                                ForEach(categories) { categoryButton($0) }
                             }
+                            .padding(.vertical, 2)
+                        }
+                        .scrollIndicators(.hidden)
+                    }
+                    if matching.isEmpty {
+                        if normalizedQuery.isEmpty {
+                            ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
+                        } else {
+                            ContentUnavailableView.search(text: normalizedQuery)
+                        }
+                    } else {
+                        LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
+                                  alignment: .leading, spacing: 12) {
+                            ForEach(matching) { item in directoryRow(item) }
                         }
                     }
+                    if normalizedQuery.isEmpty { connections() }
                 }
-                if normalizedQuery.isEmpty {
-                    connections()
-                }
+                .padding(16)
+                .frame(maxWidth: 1100)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
-            .frame(maxWidth: 1100)
-            .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .onChange(of: categories) { _, values in
+            if let category, !values.contains(category) { self.category = nil }
+        }
     }
 
     private func categoryButton(_ value: SkillHubCategory?) -> some View {
@@ -122,18 +123,19 @@ struct SkillHubDiscoveryView<Connections: View>: View {
 
     private func directoryRow(_ item: SkillHubDisplayItem) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
                 itemButton(item)
-                Spacer(minLength: 8)
                 getButton(item)
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 itemButton(item)
-                getButton(item).padding(.leading, 58)
+                HStack { Spacer(); getButton(item) }
             }
         }
-        .padding(.vertical, 14)
-        .overlay(alignment: .bottom) { Divider() }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func itemButton(_ item: SkillHubDisplayItem) -> some View {
@@ -142,11 +144,13 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                 Image(systemName: item.systemImage)
                     .font(.title2)
                     .foregroundStyle(item.category.tint)
-                    .frame(width: 46, height: 46)
+                    .frame(width: 44, height: 44)
                     .background(item.category.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).font(.headline).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(item.summary).font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 }
@@ -161,7 +165,8 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     private func getButton(_ item: SkillHubDisplayItem) -> some View {
         Button { onGet(item.id) } label: {
             Text(item.action.title).font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 14).frame(minHeight: 44)
+                .padding(.horizontal, 12).frame(minWidth: 60, minHeight: 44)
+                .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
         .buttonBorderShape(.capsule)

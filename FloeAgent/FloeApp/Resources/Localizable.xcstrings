@@ -36572,13 +36572,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Added"
+            "value": "Installed"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "已添加"
+            "value": "已安装"
           }
         }
       }

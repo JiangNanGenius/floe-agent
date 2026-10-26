@@ -30,11 +30,14 @@ struct HomeOverviewView: View {
     @State private var cleanupReminders: [TaskScheduleCleanupReminder] = []
     @Environment(\.scenePhase) private var scenePhase
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
-    @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
     @State private var presentsTaskManagement = false
     @State private var managementFilter: ConversationBatchManagementView.Filter = .active
     @State private var restoreFailure: String?
+    /// Long-press multi-select in this overview (no management sheet; bulk
+    /// archive/delete run through the existing task bulk engine). The
+    /// dedicated archived-management page keeps its own restore surface.
+    @StateObject private var selection = InlineConversationSelectionModel()
 
     init(center: ConversationCenter) {
         self.center = center
@@ -237,6 +240,7 @@ struct HomeOverviewView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .disabled(selection.busy)
         .overlay {
             if overviewIsEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
@@ -251,11 +255,14 @@ struct HomeOverviewView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    openTaskManagement(.active)
+                    // The Tasks entry now opens the SAME inline selection the
+                    // long press uses — circles appear inside this list; no
+                    // selection sheet is launched.
+                    selection.begin(with: nil)
                 } label: {
                     Label(FloeL10n.l("settings.data_management_view.manage"), systemImage: "checklist")
                 }
-                .disabled(viewModel.isLoading)
+                .disabled(viewModel.isLoading || selection.busy)
                 .accessibilityIdentifier("taskCenter.manage")
             }
             ToolbarItem(placement: .primaryAction) {
@@ -294,12 +301,34 @@ struct HomeOverviewView: View {
                 Task { await load() }
             }
         }
-        .sheet(item: $batchStartingConversation) { conversation in
-            ConversationBatchManagementView(center: center, initialConversation: conversation)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selection.isActive {
+                InlineConversationSelectionBar(
+                    model: selection,
+                    center: center,
+                    visibleIDs: { visibleTaskIDs },
+                    selectedItems: { selectedTaskItems }
+                )
+            }
+        }
+        .inlineConversationSelectionChrome(
+            model: selection,
+            center: center,
+            afterRun: {
+                await load()
+                selection.pruneInvisible(visibleTaskIDs)
+            }
+        )
+        .onChange(of: visibleTaskIDList) { _, ids in
+            // A search or a finished run moving rows between sections must
+            // never leave an invisible pending selection behind.
+            selection.pruneInvisible(Set(ids))
         }
         // The canonical management surface, shared with Settings > Data
         // Management: selection, archive/restore and delete all run here
-        // through the existing lifecycle commands.
+        // through the existing lifecycle commands. Reached from the
+        // archived section; the Tasks toolbar entry now starts the same
+        // inline selection the long press uses.
         .sheet(isPresented: $presentsTaskManagement) {
             ConversationBatchManagementView(center: center, initialFilter: managementFilter)
                 .id(managementFilter)
@@ -487,9 +516,19 @@ struct HomeOverviewView: View {
 
     private func overviewRow(_ conversation: ConversationRecord, showsState: Bool) -> some View {
         Button {
-            router.openThreadFromHome(conversation.id)
+            if selection.isActive {
+                selection.toggle(conversation.id)
+            } else {
+                router.openThreadFromHome(conversation.id)
+            }
         } label: {
             HStack(spacing: 10) {
+                if selection.isActive {
+                    InlineSelectionCircle(
+                        conversationID: conversation.id,
+                        isSelected: selection.selectedIDs.contains(conversation.id)
+                    )
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(conversation.title.isEmpty
                          ? String(localized: "chat.untitled")
@@ -519,14 +558,39 @@ struct HomeOverviewView: View {
             }
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
-                .accessibilityIdentifier("workbench.selectMultiple")
-        }
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(conversation.title.isEmpty
             ? String(localized: "chat.untitled")
             : conversation.title)
+        .accessibilityIdentifier("workbench.row.\(conversation.id.uuidString)")
+        .inlineSelectionRowTraits(model: selection, conversationID: conversation.id)
+        // Long press enters the inline selection in this list directly; it
+        // never launches a management sheet and the release never navigates.
+        .inlineSelectionLongPress(conversationID: conversation.id, model: selection)
+    }
+
+    /// The conversation rows the user can currently see as manageable
+    /// tasks. Archived rows are a disjoint scope: their restore semantics
+    /// stay on the inline restore button and the dedicated archived
+    /// management page, exactly like the canonical filter split.
+    private var visibleTaskIDs: Set<UUID> {
+        Set(visibleTaskIDList)
+    }
+
+    private var visibleTaskIDList: [UUID] {
+        var ids: [UUID] = []
+        ids.append(contentsOf: runningTasks.map(\.id))
+        ids.append(contentsOf: failedTasks.map(\.id))
+        ids.append(contentsOf: completedTasks.map(\.id))
+        return ids
+    }
+
+    /// Selected visible task rows with visible titles, frozen by the
+    /// confirmation dialog.
+    private var selectedTaskItems: [TaskBulkItem] {
+        (runningTasks + failedTasks + completedTasks)
+            .filter { selection.selectedIDs.contains($0.id) }
+            .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 }
 #endif

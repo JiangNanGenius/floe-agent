@@ -59,29 +59,63 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         app.terminate()
         app.launchArguments += ["--ui-test-batch-fixture"]
         app.launch()
-        XCUIDevice.shared.orientation = .portrait
+        XCUIDevice.shared.orientation = .landscapeLeft
         let plugins = app.staticTexts["sidebar.skills"]
         XCTAssertTrue(plugins.waitForExistence(timeout: 8))
         plugins.tap()
-        XCTAssertTrue(app.staticTexts["plugins.card.floe-pdf"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["skills.card.floe-pdf"].waitForExistence(timeout: 15))
         XCTAssertTrue(app.segmentedControls.firstMatch.exists)
         let marketplace = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        marketplace.name = "Plugin marketplace"
+        marketplace.name = "Skill Hub wide discovery"
         marketplace.lifetime = .keepAlways
         add(marketplace)
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.buttons["skills.card.floe-pdf"].waitForExistence(timeout: 8))
+        let portrait = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        portrait.name = "Skill Hub portrait discovery"
+        portrait.lifetime = .keepAlways
+        add(portrait)
         XCTAssertFalse(app.buttons["sidebar.batch"].exists)
         let row = app.descendants(matching: .any).matching(identifier: "sidebar.conversation.57C0A79F-CF1B-45D2-B640-EF54E5C55391").firstMatch
         XCTAssertTrue(row.waitForExistence(timeout: 8))
         row.press(forDuration: 0.8)
-        let selectMultiple = app.buttons["sidebar.selectMultiple"]
-        XCTAssertTrue(selectMultiple.waitForExistence(timeout: 5))
-        selectMultiple.tap()
-        XCTAssertTrue(app.navigationBars["选择任务"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["已选 1"].exists)
+        XCTAssertTrue(app.staticTexts["已选 1"].waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["sidebar.selectMultiple"].exists,
+                       "Long press enters the original list directly, without a context-menu step")
+        XCTAssertFalse(app.navigationBars["选择任务"].exists,
+                       "Selection must not open the old management sheet")
+        XCTAssertTrue(row.exists, "The original sidebar row stays in place")
+        XCTAssertTrue(app.buttons["skills.card.floe-pdf"].exists,
+                      "Entering sidebar selection must not navigate away from the current detail")
         let management = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        management.name = "Batch task management"
+        management.name = "Inline sidebar multi-selection"
         management.lifetime = .keepAlways
         add(management)
+    }
+
+    func testInstalledBundledSkillSelectsInlineAndCannotBeDeleted() throws {
+        let plugins = app.staticTexts["sidebar.skills"]
+        XCTAssertTrue(plugins.waitForExistence(timeout: 15))
+        plugins.tap()
+        let installed = app.segmentedControls.firstMatch.buttons["已安装"]
+        XCTAssertTrue(installed.waitForExistence(timeout: 10))
+        installed.tap()
+        let pdf = app.buttons["skills.details.floe-pdf"]
+        XCTAssertTrue(pdf.waitForExistence(timeout: 15))
+        pdf.press(forDuration: 0.8)
+        let done = app.buttons["skills.selection.done"]
+        XCTAssertTrue(done.waitForExistence(timeout: 8), "Long press selects in the installed list")
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "skills.selection.count").firstMatch.exists)
+        let deletion = app.buttons["skills.batch.delete"]
+        XCTAssertTrue(!deletion.exists || !deletion.isEnabled, "A bundled-only selection cannot be deleted")
+        XCTAssertFalse(app.navigationBars["选择任务"].exists)
+        let evidence = XCTAttachment(screenshot: app.screenshot())
+        evidence.name = "Installed skills inline selection with bundled protection"
+        evidence.lifetime = .keepAlways
+        add(evidence)
+        done.tap()
+        XCTAssertTrue(pdf.waitForExistence(timeout: 5))
     }
 
     func testDurableChecklistRestoresInChat() throws {

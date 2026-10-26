@@ -311,7 +311,10 @@ struct RootView: View {
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @State private var expandedWorkspaceIDs: Set<UUID> = []
-    @State private var batchStartingConversation: ConversationRecord?
+    /// Long-press conversation selection in the sidebar: circles appear in
+    /// this list, bulk archive/delete run through the existing task bulk
+    /// engine, and navigation / temporary-session ownership is untouched.
+    @StateObject private var inlineSelection = InlineConversationSelectionModel()
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
     @State private var deletingWorkspace: WorkspaceRecord?
@@ -747,9 +750,6 @@ struct RootView: View {
                 .environmentObject(router)
         }
         .modifier(CanvasDestinationCover(environment: environment))
-        .sheet(item: $batchStartingConversation) { conversation in
-            ConversationBatchManagementView(center: environment.conversationCenter, initialConversation: conversation)
-        }
         .sheet(item: $renamingConversation) { conversation in
             TaskRenameSheet(conversation: conversation) { title in
                 try await environment.conversationCenter.renameConversation(
@@ -928,7 +928,6 @@ struct RootView: View {
             || router.presentedSetup != nil
             || router.presentedDesignPage != nil
             || presentedCanvasWorkspace != nil
-            || batchStartingConversation != nil
             || renamingConversation != nil
             || deletingConversation != nil
             || deletingWorkspace != nil
@@ -1398,6 +1397,16 @@ struct RootView: View {
                     }
                 }
             }
+            .disabled(inlineSelection.busy)
+            if inlineSelection.isActive {
+                InlineConversationSelectionBar(
+                    model: inlineSelection,
+                    center: environment.conversationCenter,
+                    visibleIDs: { inlineSidebarVisibleIDs },
+                    selectedItems: { inlineSidebarSelectedItems }
+                )
+                Divider()
+            }
             Divider()
             HStack(spacing: 8) {
                 Button {
@@ -1422,6 +1431,25 @@ struct RootView: View {
             applySidebarSelection(newValue)
             preferredCompactColumn = .detail
             discardTemporarySessionOnContentLeave(old: oldValue, new: newValue)
+        }
+        .inlineConversationSelectionChrome(
+            model: inlineSelection,
+            center: environment.conversationCenter,
+            afterRun: {
+                // Real reload only: the center republishes, the existing
+                // router reconciliation updates selection/navigation, and an
+                // open conversation that was archived/deleted follows the
+                // established route — nothing is fabricated.
+                await environment.conversationCenter.reload()
+            }
+        )
+        .onChange(of: environment.conversationCenter.conversations.map(\.id)) { _, _ in
+            inlineSelection.pruneInvisible(inlineSidebarVisibleIDs)
+        }
+        .onChange(of: expandedWorkspaceIDs) { _, _ in
+            // Collapsing a project hides its rows: invisible selections
+            // must not stay pending.
+            inlineSelection.pruneInvisible(inlineSidebarVisibleIDs)
         }
     }
 
@@ -1497,18 +1525,65 @@ struct RootView: View {
         }
     }
 
+    /// One sidebar conversation row. Long press ALWAYS enters the inline
+    /// selection (leading circles appear here; no management sheet and no
+    /// navigation — the row is `selectionDisabled` while selected so the
+    /// release cannot commit a list selection, and the recognized gesture
+    /// consumes the touch). Outside selection the normal swipe actions and
+    /// the per-row action menu stay; while selection is open they are the
+    /// conflicting controls and are hidden, and a tap toggles the circle
+    /// instead of navigating. `router.sidebarSelection` is never touched by
+    /// selection itself, so the open conversation and temporary-session
+    /// ownership are unaffected.
+    @ViewBuilder
     private func conversationSidebarRow(_ conversation: ConversationRecord) -> some View {
-        HStack(spacing: 8) {
+        let base = HStack(spacing: 8) {
+            if inlineSelection.isActive {
+                InlineSelectionCircle(
+                    conversationID: conversation.id,
+                    isSelected: inlineSelection.selectedIDs.contains(conversation.id)
+                )
+            }
             Label(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title, systemImage: "bubble.left")
             Spacer(minLength: 0)
             ConversationActivityBadge(conversationID: conversation.id, center: environment.conversationCenter)
+            if !inlineSelection.isActive {
+                sidebarRowActionsMenu(conversation)
+            }
         }
         .lineLimit(1)
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
-        .contextMenu {
-            Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
-                .accessibilityIdentifier("sidebar.selectMultiple")
+        .inlineSelectionRowTraits(model: inlineSelection, conversationID: conversation.id)
+        .contentShape(Rectangle())
+        .inlineSelectionLongPress(conversationID: conversation.id, model: inlineSelection)
+
+        if inlineSelection.isActive {
+            base
+                .selectionDisabled(true)
+                .onTapGesture {
+                    inlineSelection.toggle(conversation.id)
+                }
+        } else {
+            base
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button {
+                        Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
+                    } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
+                    .tint(.orange)
+                    Button(role: .destructive) { deletingConversation = conversation } label: {
+                        Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
+                    }
+                }
+        }
+    }
+
+    /// The single-task actions that previously lived in the long-press
+    /// menu. Long press now opens the inline selection, so they stay
+    /// reachable through this explicit per-row control (hidden while a
+    /// selection is active, together with the swipe actions).
+    private func sidebarRowActionsMenu(_ conversation: ConversationRecord) -> some View {
+        Menu {
             Button {
                 renamingConversation = conversation
             } label: {
@@ -1526,26 +1601,55 @@ struct RootView: View {
                     }
                 }
             }
-            Button(role: .destructive) {
-                deletingConversation = conversation
-            } label: {
-                Label("app.floe_agent_app.delete_task_2", systemImage: "trash")
-            }
             Button {
                 Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
             } label: {
                 Label("app.floe_agent_app.archive_task", systemImage: "archivebox")
             }
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
-            } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
-            .tint(.orange)
-            Button(role: .destructive) { deletingConversation = conversation } label: {
-                Label("workspace.workspace_canvas_view.delete", systemImage: "trash")
+            Button(role: .destructive) {
+                deletingConversation = conversation
+            } label: {
+                Label("app.floe_agent_app.delete_task_2", systemImage: "trash")
             }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                // The glyph stays compact; the hit target keeps the app's
+                // standard minimum (same 44pt used across controls).
+                .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.borderless)
+        .accessibilityLabel(ChatBilingualCatalog.localized(
+            key: "sidebar.row_actions",
+            en: "Task actions",
+            zh: "任务操作"
+        ))
+        .accessibilityIdentifier("sidebar.rowActions.\(conversation.id.uuidString)")
+    }
+
+    /// Sidebar conversation rows the user can currently see: expanded
+    /// project workspaces plus the Chat section. Collapsed rows are NOT
+    /// visible and are pruned from any pending selection.
+    private var inlineSidebarVisibleRecords: [ConversationRecord] {
+        var records: [ConversationRecord] = []
+        for workspace in environment.workspaceCenter.projectWorkspaces
+        where expandedWorkspaceIDs.contains(workspace.id) {
+            records.append(contentsOf: conversations(in: workspace.id))
+        }
+        records.append(contentsOf: chatConversations)
+        return records
+    }
+
+    private var inlineSidebarVisibleIDs: Set<UUID> {
+        Set(inlineSidebarVisibleRecords.map(\.id))
+    }
+
+    private var inlineSidebarSelectedItems: [TaskBulkItem] {
+        inlineSidebarVisibleRecords
+            .filter { inlineSelection.selectedIDs.contains($0.id) }
+            .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 
     @ViewBuilder
