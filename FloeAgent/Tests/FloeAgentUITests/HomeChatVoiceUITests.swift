@@ -119,6 +119,10 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         add(evidence)
         done.tap()
         XCTAssertTrue(pdf.waitForExistence(timeout: 5))
+        pdf.tap()
+        XCTAssertTrue(app.staticTexts["当前版本"].waitForExistence(timeout: 8),
+                      "A short tap still opens details after leaving selection")
+        app.buttons["取消"].firstMatch.tap()
     }
 
     func testDurableChecklistRestoresInChat() throws {

@@ -479,12 +479,18 @@ struct SkillsView: View {
         .onTapGesture {
             if selection.active { selection.toggle(skill.id) }
         }
-        .onLongPressGesture(minimumDuration: 0.5) {
-            // Long press enters selection directly and selects this row —
-            // no context-menu step, no management sheet.
-            guard !selection.active, !center.isBatchRunning else { return }
-            selection.enter(selecting: skill.id)
-        }
+        .highPriorityGesture(
+            LongPressGesture(
+                minimumDuration: InlineSelectionTiming.longPressDuration,
+                maximumDistance: InlineSelectionTiming.longPressMaximumDistance
+            )
+            .onEnded { _ in
+                // Consume the recognized press before the child details
+                // button can open its sheet, matching conversation rows.
+                guard !selection.active, !center.isBatchRunning else { return }
+                selection.enter(selecting: skill.id)
+            }
+        )
         .swipeActions {
             if !selection.active, !preinstalled, !center.isBatchRunning {
                 Button("action.delete", role: .destructive) { pendingRemoval = skill }
