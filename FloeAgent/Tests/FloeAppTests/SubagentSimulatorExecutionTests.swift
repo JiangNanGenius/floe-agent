@@ -2218,14 +2218,59 @@ private struct SkillHubRecordedCase: Decodable {
 
 extension SubagentSimulatorExecutionTests {
 
+    /// Decodes the browser tool's JSON contract from the retained FULL capture
+    /// when present. The runtime caps the model-facing `outputSummary` at 4096
+    /// characters, and the JSONEncoder key order is not part of the contract:
+    /// a real page with nodes can push the remaining keys (including
+    /// `status`/`tabs`) past the cut, so slicing `outputSummary` alone
+    /// sometimes yields a syntactically complete but contract-incomplete
+    /// object. `capturedOutput` carries the identical JSON bytes without the
+    /// model-context cut. Field required-ness stays exactly the production
+    /// invariants (PageSnapshot always encodes documentID/url/tabs/nodes;
+    /// only message/nextCursor/screenshotArtifact are genuinely optional) —
+    /// a field that was never captured is never replaced with a default.
     fileprivate func skillHubDecodeBrowser(_ result: ToolResult) throws -> SkillHubBrowserResult {
-        guard let start = result.outputSummary.firstIndex(of: "{"),
-              let end = result.outputSummary.lastIndex(of: "}"), start < end,
-              let data = result.outputSummary[start...end].data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(SkillHubBrowserResult.self, from: data) else {
-            throw FloeError.validationFailed("Browser result is not decodable JSON: \(result.outputSummary.prefix(400))")
+        let text = result.capturedOutput ?? result.outputSummary
+        // An explicitly truncated capture is never silently treated as the
+        // complete contract envelope: the runtime flags
+        // capturedOutputTruncated when even the retained body hit its own
+        // bound (ToolExecutionOutput.summaryTruncated for browser results),
+        // and a half envelope must not be asserted as full truth.
+        guard !result.capturedOutputTruncated else {
+            throw FloeError.validationFailed(
+                "Browser result capture flagged truncated (capture \(result.capturedOutput?.count ?? 0) chars, summary \(result.outputSummary.count) chars); refusing to decode an incomplete envelope as complete: \(text.prefix(200))")
         }
-        return decoded
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}"), start < end,
+              let data = text[start...end].data(using: .utf8) else {
+            throw FloeError.validationFailed(
+                "Browser result carries no JSON object (capturedOutputNil: \(result.capturedOutput == nil), summaryTruncated: \(result.capturedOutputTruncated)): \(text.prefix(400))")
+        }
+        do {
+            return try JSONDecoder().decode(SkillHubBrowserResult.self, from: data)
+        } catch let error as DecodingError {
+            throw FloeError.validationFailed(
+                "Browser result JSON contract mismatch [\(skillHubDecodingErrorDescription(error))]: \(text.prefix(200))")
+        }
+    }
+
+    /// Renders a DecodingError as an actionable, non-swallowed description.
+    fileprivate func skillHubDecodingErrorDescription(_ error: DecodingError) -> String {
+        func path(_ context: DecodingError.Context) -> String {
+            context.codingPath.map(\.stringValue).joined(separator: ".")
+        }
+        switch error {
+        case .keyNotFound(let key, let context):
+            return "missing '\(key.stringValue)' at \(path(context))"
+        case .typeMismatch(let type, let context):
+            return "type mismatch \(type) at \(path(context)): \(context.debugDescription)"
+        case .valueNotFound(let type, let context):
+            return "null where \(type) required at \(path(context))"
+        case .dataCorrupted(let context):
+            return "corrupted JSON at \(path(context)): \(context.debugDescription)"
+        @unknown default:
+            return "unknown decoding error: \(error.localizedDescription)"
+        }
     }
 
     /// Full semantic observation, following `nextCursor` pagination; the
@@ -4242,14 +4287,28 @@ extension SubagentSimulatorExecutionTests {
     }
 
     fileprivate func sevenDeepDecodeScreenshot(_ result: ToolResult) throws -> SevenDeepScreenshot {
-        guard let start = result.outputSummary.firstIndex(of: "{"),
-              let end = result.outputSummary.lastIndex(of: "}"), start < end,
-              let data = result.outputSummary[start...end].data(using: .utf8),
-              let decoded = try? JSONDecoder().decode(SevenDeepScreenshot.self, from: data) else {
+        // See skillHubDecodeBrowser: read the same bytes the tool actually
+        // authored, not the 4096-character model-facing cut, and surface the
+        // real DecodingError instead of swallowing it with try?. An
+        // explicitly truncated capture is reported, never decoded as if it
+        // were the complete envelope.
+        let text = result.capturedOutput ?? result.outputSummary
+        guard !result.capturedOutputTruncated else {
             throw FloeError.validationFailed(
-                "Screenshot result is not decodable JSON: \(result.outputSummary.prefix(400))")
+                "Screenshot result capture flagged truncated (capture \(result.capturedOutput?.count ?? 0) chars, summary \(result.outputSummary.count) chars); refusing to decode an incomplete envelope as complete: \(text.prefix(200))")
         }
-        return decoded
+        guard let start = text.firstIndex(of: "{"),
+              let end = text.lastIndex(of: "}"), start < end,
+              let data = text[start...end].data(using: .utf8) else {
+            throw FloeError.validationFailed(
+                "Screenshot result carries no JSON object (capturedOutputNil: \(result.capturedOutput == nil), summaryTruncated: \(result.capturedOutputTruncated)): \(text.prefix(400))")
+        }
+        do {
+            return try JSONDecoder().decode(SevenDeepScreenshot.self, from: data)
+        } catch let error as DecodingError {
+            throw FloeError.validationFailed(
+                "Screenshot JSON contract mismatch [\(skillHubDecodingErrorDescription(error))]: \(text.prefix(200))")
+        }
     }
 
     /// Reads the pixel size from a PNG's IHDR (stdlib parse, host-side
@@ -4302,6 +4361,18 @@ extension SubagentSimulatorExecutionTests {
 
     // MARK: - Seven deep shared helpers
 
+    /// Guest/tool marker checks must read the FULL retained output, not only
+    /// the model-facing `outputSummary`: exec.shell results are cut to 4096
+    /// characters there, so a trailing marker after a large verifier JSON
+    /// report (e.g. `..._RC=0`, `*_OK`, `APT_CANDIDATES_READY`) would
+    /// otherwise disappear from the checked string while the tool actually
+    /// captured it. `capturedOutput` is the same bytes without the cut; when
+    /// the tool itself truncated its capture the guest says so with its own
+    /// `stdoutTruncated` marker, which no assertion here papers over.
+    fileprivate func sevenDeepOutput(_ result: ToolResult) -> String {
+        result.capturedOutput ?? result.outputSummary
+    }
+
     /// Reads one guest-written JSON output back from the mounted workspace.
     fileprivate func sevenDeepJSON(_ root: URL, _ relative: String) throws -> [String: Any] {
         let data = try Data(contentsOf: root.appendingPathComponent(relative))
@@ -4352,10 +4423,10 @@ extension SubagentSimulatorExecutionTests {
             runtime: runtime, identity: identity, context: context,
             tag: "seven-stage", command: command, timeout: 300)
         try #require(result.status == .ok, "Seven-deep guest staging failed: \(result.outputSummary)")
-        try #require(result.outputSummary.contains(SevenDeepInputs.transportZipSHA256),
+        try #require(sevenDeepOutput(result).contains(SevenDeepInputs.transportZipSHA256),
                      "Guest transport re-hash mismatch: \(result.outputSummary)")
         for (id, pin) in SevenDeepInputs.packageSHA256 {
-            try #require(result.outputSummary.contains(pin),
+            try #require(sevenDeepOutput(result).contains(pin),
                          "Guest re-hash missing \(id) digest \(pin): \(result.outputSummary)")
         }
         // The outer transport contains package ZIPs, not their installed trees.
@@ -4370,7 +4441,7 @@ extension SubagentSimulatorExecutionTests {
             runtime: runtime, identity: identity, context: context,
             tag: "seven-package-unpack", command: unpackCommand, timeout: 300)
         try #require(unpack.status == .ok
-                        && unpack.outputSummary.contains("SEVEN_PACKAGE_TREES_READY"),
+                        && sevenDeepOutput(unpack).contains("SEVEN_PACKAGE_TREES_READY"),
                      "Verified inner packages could not be unpacked: \(unpack.outputSummary)")
         return result.outputSummary + "\n" + unpack.outputSummary
     }
@@ -4411,7 +4482,7 @@ extension SubagentSimulatorExecutionTests {
             tag: "apt-policy", command: probe, timeout: 180)
         try #require(policy.status == .ok, "apt policy probe failed: \(policy.outputSummary)")
         var output = policy.outputSummary
-        if policy.outputSummary.contains("APT_NEEDS_INDEX_UPDATE") {
+        if sevenDeepOutput(policy).contains("APT_NEEDS_INDEX_UPDATE") {
             let updateID = try await skillHubSubmitShell(
                 jobs: jobs, runID: runID, environmentID: environmentID, root: root,
                 name: "seven-apt-update",
@@ -4426,7 +4497,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: identity, context: context,
                 tag: "apt-policy-2", command: probe, timeout: 180)
             try #require(rechecked.status == .ok
-                            && rechecked.outputSummary.contains("APT_CANDIDATES_READY"),
+                            && sevenDeepOutput(rechecked).contains("APT_CANDIDATES_READY"),
                          "Signed guest repository has no candidates after update: \(rechecked.outputSummary)")
             output += "\n" + rechecked.outputSummary
         }
@@ -4473,7 +4544,7 @@ extension SubagentSimulatorExecutionTests {
             runtime: runtime, identity: identity, context: context,
             tag: "apt-verify", command: verify, timeout: 180)
         try #require(verified.status == .ok
-                        && verified.outputSummary.contains("APT_REAL_CONFIGURATION_VERIFIED"),
+                        && sevenDeepOutput(verified).contains("APT_REAL_CONFIGURATION_VERIFIED"),
                      "apt install verification failed: \(verified.outputSummary)")
         output += "\n" + verified.outputSummary
         return output
@@ -4578,7 +4649,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "eda-verify",
                 command: "cd \(base)/exploratory-data-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/eda_verify.py --require-optional --output verify-eda.json; echo EDA_VERIFY_RC=$?",
                 timeout: 300)
-            try #require(edaVerify.status == .ok && edaVerify.outputSummary.contains("EDA_VERIFY_RC=0"),
+            try #require(edaVerify.status == .ok && sevenDeepOutput(edaVerify).contains("EDA_VERIFY_RC=0"),
                          "eda_verify failed: \(edaVerify.outputSummary)")
             let edaReport = try sevenDeepJSON(root, "\(base)/exploratory-data-analysis/verify-eda.json")
             let edaChecks = try sevenDeepRequireAllChecksPass(edaReport, label: "eda_verify")
@@ -4596,7 +4667,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "eda-workload",
                 command: "cd \(base)/exploratory-data-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/eda_analyzer.py assets/fixtures/profile_fixture.csv --root . --missing-token NA --output eda.json && PYTHONDONTWRITEBYTECODE=1 python3 scripts/pandas_profile.py assets/fixtures/profile_fixture.csv --root . --missing-token NA --output pandas.json && echo EDA_WORKLOAD_OK",
                 timeout: 300)
-            try #require(edaWorkload.status == .ok && edaWorkload.outputSummary.contains("EDA_WORKLOAD_OK"),
+            try #require(edaWorkload.status == .ok && sevenDeepOutput(edaWorkload).contains("EDA_WORKLOAD_OK"),
                          "eda real workload failed: \(edaWorkload.outputSummary)")
             let pandasReport = try sevenDeepJSON(root, "\(base)/exploratory-data-analysis/pandas.json")
             let crossEngine = try #require(pandasReport["cross_engine_check"] as? [String: Any],
@@ -4611,7 +4682,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "stats-verify",
                 command: "cd \(base)/statistical-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/stats_verify.py --require-layer --output verify-stats.json; echo STATS_VERIFY_RC=$?",
                 timeout: 300)
-            try #require(statsVerify.status == .ok && statsVerify.outputSummary.contains("STATS_VERIFY_RC=0"),
+            try #require(statsVerify.status == .ok && sevenDeepOutput(statsVerify).contains("STATS_VERIFY_RC=0"),
                          "stats_verify failed: \(statsVerify.outputSummary)")
             let statsReport = try sevenDeepJSON(root, "\(base)/statistical-analysis/verify-stats.json")
             let statsChecks = try sevenDeepRequireAllChecksPass(statsReport, label: "stats_verify")
@@ -4626,7 +4697,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "stats-run",
                 command: "cd \(base)/statistical-analysis && PYTHONDONTWRITEBYTECODE=1 python3 scripts/stats_run.py assets/fixtures/groups_fixture.csv --spec assets/fixtures/groups_spec.json --output stats-results.json --report stats-report.md; echo STATS_RUN_RC=$?",
                 timeout: 300)
-            try #require(statsRun.status == .ok && statsRun.outputSummary.contains("STATS_RUN_RC=0"),
+            try #require(statsRun.status == .ok && sevenDeepOutput(statsRun).contains("STATS_RUN_RC=0"),
                          "stats_run failed: \(statsRun.outputSummary)")
             let statsResults = try sevenDeepJSON(root, "\(base)/statistical-analysis/stats-results.json")
             let repro = try #require(statsResults["reproducibility"] as? [String: Any],
@@ -4652,7 +4723,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "viz-verify",
                 command: "cd \(base)/scientific-visualization && PYTHONDONTWRITEBYTECODE=1 python3 scripts/viz_verify.py --require-layer --require-cjk --output verify-viz.json; echo VIZ_VERIFY_RC=$?",
                 timeout: 300)
-            try #require(vizVerify.status == .ok && vizVerify.outputSummary.contains("VIZ_VERIFY_RC=0"),
+            try #require(vizVerify.status == .ok && sevenDeepOutput(vizVerify).contains("VIZ_VERIFY_RC=0"),
                          "viz_verify failed: \(vizVerify.outputSummary)")
             let vizReport = try sevenDeepJSON(root, "\(base)/scientific-visualization/verify-viz.json")
             _ = try sevenDeepRequireAllChecksPass(vizReport, label: "viz_verify")
@@ -4666,16 +4737,35 @@ extension SubagentSimulatorExecutionTests {
                          "no CJK font discovered even though fonts-noto-cjk is provisioned")
             let vizExport = try await skillHubShell(
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "viz-export",
-                command: "cd \(base)/scientific-visualization && PYTHONDONTWRITEBYTECODE=1 python3 scripts/figure_export.py --demo outputs/export-smoke --formats pdf,png,svg --dpi 300 --manifest && PYTHONDONTWRITEBYTECODE=1 python3 scripts/image_metadata.py outputs/export-smoke.png --format png --min-dpi 300 && PYTHONDONTWRITEBYTECODE=1 python3 scripts/palette_audit.py --palette okabe_ito_on_white --background FFFFFF --role graphical && echo VIZ_EXPORT_OK",
+                command: "cd \(base)/scientific-visualization && PYTHONDONTWRITEBYTECODE=1 python3 scripts/figure_export.py --demo outputs/export-smoke --formats pdf,png,svg --dpi 300 --manifest && PYTHONDONTWRITEBYTECODE=1 python3 scripts/image_metadata.py outputs/export-smoke.png --format png --min-dpi 299.99 --min-width-px 1050 --min-height-px 750 && PYTHONDONTWRITEBYTECODE=1 python3 scripts/palette_audit.py --palette okabe_ito_on_white --background FFFFFF --role graphical && echo VIZ_EXPORT_OK",
                 timeout: 300)
-            try #require(vizExport.status == .ok && vizExport.outputSummary.contains("VIZ_EXPORT_OK"),
+            try #require(vizExport.status == .ok && sevenDeepOutput(vizExport).contains("VIZ_EXPORT_OK"),
                          "viz real export workload failed: \(vizExport.outputSummary)")
             for artifact in ["outputs/export-smoke.png", "outputs/export-smoke.svg",
-                             "outputs/export-smoke.pdf"] {
+                             "outputs/export-smoke.pdf", "outputs/export-smoke.export.json"] {
                 let url = root.appendingPathComponent("\(base)/scientific-visualization/\(artifact)")
                 try #require(FileManager.default.fileExists(atPath: url.path),
                              "viz export artifact missing: \(artifact)")
             }
+            // PNG pHYs quantization contract: a declared 300 dpi is stored as
+            // 11811 ppm and reads back as 299.9994 dpi, so a strict
+            // --min-dpi 300 would fail even a CORRECT export. The physical
+            // PNG metadata stays validated by the shipped checker at the
+            // narrowest representable floor (--min-dpi 299.99; the 0.0006 dpi
+            // tolerance is far below any real 1-dpi step) plus exact pixel
+            // geometry; the DECLARED value is asserted exactly (300.0) from
+            // the exporter's own manifest settings — the manifest complements
+            // the physical check, it never replaces it.
+            let vizManifest = try sevenDeepJSON(
+                root, "\(base)/scientific-visualization/outputs/export-smoke.export.json")
+            let exportSettings = try #require(
+                vizManifest["settings"] as? [String: Any], "viz export manifest settings missing")
+            try #require((exportSettings["dpi"] as? Double) == 300.0,
+                         "declared export dpi != 300: \(String(describing: exportSettings["dpi"]))")
+            let exportFormats = try #require(exportSettings["formats"] as? [String],
+                                             "viz export manifest formats missing")
+            try #require(exportFormats == ["pdf", "png", "svg"],
+                         "viz export formats != [pdf,png,svg]: \(exportFormats)")
             evidence["viz"] = "layer+cjk pass cjk_fonts=\(cjkFonts.count) export png/svg/pdf dpi300"
             print("FLOE_SEVEN_VIZ cjk_fonts=\(cjkFonts.first ?? "?") exports=png,svg,pdf dpi=300")
 
@@ -4684,7 +4774,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "md-verify",
                 command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_verify.py --require-layer --output verify-md.json; echo MD_VERIFY_RC=$?",
                 timeout: 300)
-            try #require(mdVerify.status == .ok && mdVerify.outputSummary.contains("MD_VERIFY_RC=0"),
+            try #require(mdVerify.status == .ok && sevenDeepOutput(mdVerify).contains("MD_VERIFY_RC=0"),
                          "md_verify failed: \(mdVerify.outputSummary)")
             let mdReport = try sevenDeepJSON(root, "\(base)/markitdown/verify-md.json")
             _ = try sevenDeepRequireAllChecksPass(mdReport, label: "md_verify")
@@ -4696,7 +4786,7 @@ extension SubagentSimulatorExecutionTests {
                     command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_convert.py assets/fixtures/\(fixture) --root . --output out-\(stem).md --receipt receipt-\(stem).json; echo MD_CONVERT_RC=$?",
                     timeout: 300)
                 try #require(convert.status == .ok
-                                && convert.outputSummary.contains("MD_CONVERT_RC=0"),
+                                && sevenDeepOutput(convert).contains("MD_CONVERT_RC=0"),
                              "md_convert \(fixture) failed: \(convert.outputSummary)")
                 let receipt = try sevenDeepJSON(root, "\(base)/markitdown/receipt-\(stem).json")
                 let inner = try #require(receipt["receipt"] as? [String: Any],
@@ -4713,7 +4803,7 @@ extension SubagentSimulatorExecutionTests {
                 command: "cd \(base)/markitdown && PYTHONDONTWRITEBYTECODE=1 python3 scripts/md_convert.py assets/fixtures/encrypted.pdf --root . --output out-encrypted.md --receipt receipt-encrypted.json; echo MD_ENCRYPT_RC=$?",
                 timeout: 300)
             try #require(mdEncrypted.status == .ok
-                            && mdEncrypted.outputSummary.contains("MD_ENCRYPT_RC=1"),
+                            && sevenDeepOutput(mdEncrypted).contains("MD_ENCRYPT_RC=1"),
                          "encrypted.pdf must fail closed in the guest: \(mdEncrypted.outputSummary)")
             let encReceipt = try sevenDeepJSON(root, "\(base)/markitdown/receipt-encrypted.json")
             let encInner = try #require(encReceipt["receipt"] as? [String: Any])
@@ -4728,7 +4818,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-verify",
                 command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/lit_verify.py --output verify-lit.json; echo LIT_VERIFY_RC=$?",
                 timeout: 300)
-            try #require(litVerify.status == .ok && litVerify.outputSummary.contains("LIT_VERIFY_RC=0"),
+            try #require(litVerify.status == .ok && sevenDeepOutput(litVerify).contains("LIT_VERIFY_RC=0"),
                          "lit_verify failed: \(litVerify.outputSummary)")
             let litReport = try sevenDeepJSON(root, "\(base)/literature-review/verify-lit.json")
             _ = try sevenDeepRequireAllChecksPass(litReport, label: "lit_verify")
@@ -4739,7 +4829,7 @@ extension SubagentSimulatorExecutionTests {
                 command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_citations.py assets/fixtures/review_fixture.md --offline-dir assets/fixtures/crossref -o lit-offline-report.json; echo LIT_OFFLINE_RC=$?",
                 timeout: 300)
             try #require(litOffline.status == .ok
-                            && litOffline.outputSummary.contains("LIT_OFFLINE_RC=1"),
+                            && sevenDeepOutput(litOffline).contains("LIT_OFFLINE_RC=1"),
                          "offline citation run must exit 1 (one unresolved synthetic DOI): \(litOffline.outputSummary)")
             let litCitation = try sevenDeepJSON(root, "\(base)/literature-review/lit-offline-report.json")
             try #require(litCitation["mode"] as? String == "offline", "mode != offline")
@@ -4764,7 +4854,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "lit-truth",
                 command: "cd \(base)/literature-review && PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_citations.py assets/fixtures/online_acceptance.md --offline-dir assets/fixtures/crossref -o lit-truth-report.json; echo LIT_TRUTH_RC=$?",
                 timeout: 300)
-            try #require(litTruth.status == .ok && litTruth.outputSummary.contains("LIT_TRUTH_RC=1"),
+            try #require(litTruth.status == .ok && sevenDeepOutput(litTruth).contains("LIT_TRUTH_RC=1"),
                          "truth citation run must exit 1: \(litTruth.outputSummary)")
             let truthReport = try sevenDeepJSON(root, "\(base)/literature-review/lit-truth-report.json")
             try #require((truthReport["verified"] as? [String])?.isEmpty == true,
@@ -4829,7 +4919,7 @@ extension SubagentSimulatorExecutionTests {
                 native3, identity: fixedIdentity, childContext: childContext)
             try #require(native3Result.status != .ok,
                          "scanned_stub.pdf must fail with the OCR-required refusal: \(native3Result.outputSummary)")
-            try #require(native3Result.outputSummary.lowercased().contains("ocr"),
+            try #require(sevenDeepOutput(native3Result).lowercased().contains("ocr"),
                          "scanned refusal must name the OCR workflow: \(native3Result.outputSummary)")
             try #require(!FileManager.default.fileExists(atPath: root.appendingPathComponent(
                 "native-fixtures/scanned-stub.md").path),
@@ -4993,7 +5083,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-compile",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile scripts/make_poster.py scripts/png_to_pdf.py && echo CANVAS_COMPILE_OK",
                 timeout: 120)
-            try #require(compile.status == .ok && compile.outputSummary.contains("CANVAS_COMPILE_OK"),
+            try #require(compile.status == .ok && sevenDeepOutput(compile).contains("CANVAS_COMPILE_OK"),
                          "canvas py_compile failed: \(compile.outputSummary)")
 
             // 2. check-only: JSON report, canvasPx 3508x4961, nothing written.
@@ -5001,11 +5091,16 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-check",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --check-only --spec assets/examples/hero-spec.json > check-hero.json && test ! -e poster-out && echo CANVAS_CHECK_OK",
                 timeout: 120)
-            try #require(checkOnly.status == .ok && checkOnly.outputSummary.contains("CANVAS_CHECK_OK"),
+            try #require(checkOnly.status == .ok && sevenDeepOutput(checkOnly).contains("CANVAS_CHECK_OK"),
                          "canvas check-only failed or wrote files: \(checkOnly.outputSummary)")
             let checkReport = try sevenDeepJSON(root, "\(base)/canvas-design/check-hero.json")
-            let canvasPx = try #require(checkReport["canvasPx"] as? [Int])
-            try #require(canvasPx == [3_508, 4_961], "hero canvasPx != [3508,4961]: \(canvasPx)")
+            // make_poster.py emits canvasPx as the object {"width","height"}
+            // (frozen emitter contract, H5 runbook step 2: "canvasPx 3508x4961").
+            // Both declared dimensions stay mandatory goldens — never just a
+            // non-empty field.
+            let canvasPx = try #require(checkReport["canvasPx"] as? [String: Any])
+            try #require(canvasPx["width"] as? Int == 3_508 && canvasPx["height"] as? Int == 4_961,
+                         "hero canvasPx != {width:3508,height:4961}: \(canvasPx)")
             for field in ["metricBasis", "artifactPolicy", "notices"] {
                 try #require(checkReport[field] != nil, "check-only report missing \(field)")
             }
@@ -5015,7 +5110,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-hero",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/hero-spec.json --outdir poster-out --prefix hero; echo CANVAS_HERO_RC=$?",
                 timeout: 300)
-            try #require(hero.status == .ok && hero.outputSummary.contains("CANVAS_HERO_RC=0"),
+            try #require(hero.status == .ok && sevenDeepOutput(hero).contains("CANVAS_HERO_RC=0"),
                          "hero poster failed: \(hero.outputSummary)")
             let heroSVG = try String(contentsOf: root.appendingPathComponent(
                 "\(base)/canvas-design/poster-out/hero.svg"), encoding: .utf8)
@@ -5036,9 +5131,9 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-cjk",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/cjk-poster-spec.json --outdir poster-out --prefix cjk; echo CANVAS_CJK_RC=$?",
                 timeout: 300)
-            try #require(cjk.status == .ok && cjk.outputSummary.contains("CANVAS_CJK_RC=0"),
+            try #require(cjk.status == .ok && sevenDeepOutput(cjk).contains("CANVAS_CJK_RC=0"),
                          "cjk poster failed: \(cjk.outputSummary)")
-            try #require(cjk.outputSummary.contains("\"fallbackChars\": 22"),
+            try #require(sevenDeepOutput(cjk).contains("\"fallbackChars\": 22"),
                          "cjk fallbackChars != 22: \(cjk.outputSummary.prefix(400))")
 
             // 5. --require-embedded on the CJK spec is the honest useful failure.
@@ -5046,9 +5141,9 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-embedded",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/cjk-poster-spec.json --outdir poster-out --prefix cjk --require-embedded; echo CANVAS_EMBED_RC=$?",
                 timeout: 120)
-            try #require(embedded.status == .ok && embedded.outputSummary.contains("CANVAS_EMBED_RC=4"),
+            try #require(embedded.status == .ok && sevenDeepOutput(embedded).contains("CANVAS_EMBED_RC=4"),
                          "--require-embedded must exit 4 on the CJK spec: \(embedded.outputSummary)")
-            try #require(embedded.outputSummary.contains("--require-embedded"),
+            try #require(sevenDeepOutput(embedded).contains("--require-embedded"),
                          "--require-embedded refusal message missing: \(embedded.outputSummary.prefix(300))")
 
             // 6. Guest determinism: byte-identical svg/html across runs.
@@ -5056,7 +5151,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "canvas-rerun",
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 scripts/make_poster.py --spec assets/examples/hero-spec.json --outdir poster-out2 --prefix hero && cmp poster-out/hero.svg poster-out2/hero.svg && cmp poster-out/hero.html poster-out2/hero.html && echo CANVAS_DETERMINISTIC",
                 timeout: 300)
-            try #require(rerun.status == .ok && rerun.outputSummary.contains("CANVAS_DETERMINISTIC"),
+            try #require(rerun.status == .ok && sevenDeepOutput(rerun).contains("CANVAS_DETERMINISTIC"),
                          "poster determinism failed: \(rerun.outputSummary)")
 
             // 7. png_to_pdf: closure-corrected 2x2 fixture literal, verified
@@ -5081,8 +5176,8 @@ extension SubagentSimulatorExecutionTests {
                 """#.replacingOccurrences(of: "TRANSPORT_BASE", with: base),
                 timeout: 120)
             try #require(pngPDF.status == .ok
-                            && pngPDF.outputSummary.contains("CANVAS_PNGPDF_RC=0")
-                            && pngPDF.outputSummary.contains("CANVAS_PDF_OVERWRITE_RC=3"),
+                            && sevenDeepOutput(pngPDF).contains("CANVAS_PNGPDF_RC=0")
+                            && sevenDeepOutput(pngPDF).contains("CANVAS_PDF_OVERWRITE_RC=3"),
                          "png_to_pdf verify/overwrite-guard mismatch: \(pngPDF.outputSummary)")
             let fixturePDFReport = try sevenDeepJSON(root, "\(base)/canvas-design/fixture-pdf.json")
             try #require(fixturePDFReport["verified"] as? Bool == true,
@@ -5104,7 +5199,7 @@ extension SubagentSimulatorExecutionTests {
                 command: "cd \(base)/canvas-design && PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'\n"
                     + sevenDeepPosterTruthScript + "\nPY",
                 timeout: 120)
-            try #require(truth.status == .ok && truth.outputSummary.contains("ARTIFACT_TRUTH_OK"),
+            try #require(truth.status == .ok && sevenDeepOutput(truth).contains("ARTIFACT_TRUTH_OK"),
                          "poster artifact truth failed: \(truth.outputSummary)")
             evidence["canvasGuest"] = "compile+check+hero(5fonts)+cjk(22)+embed4+determinism+pngpdf+truth"
             print("FLOE_SEVEN_CANVAS_GUEST hero=3508x4961 cjk_fallback=22 embed_rc=4 pngpdf=verified")
@@ -5309,7 +5404,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-node-check",
                 command: "cd \(base)/algorithmic-art && node --check assets/floegart.js && node --check scripts/prng_parity.js && node --check assets/viewer-ui.js && echo ART_NODE_CHECK_OK",
                 timeout: 120)
-            try #require(nodeCheck.status == .ok && nodeCheck.outputSummary.contains("ART_NODE_CHECK_OK"),
+            try #require(nodeCheck.status == .ok && sevenDeepOutput(nodeCheck).contains("ART_NODE_CHECK_OK"),
                          "node --check failed: \(nodeCheck.outputSummary)")
 
             // 2. PRNG stream equality: guest python vs guest node.
@@ -5317,7 +5412,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-prng",
                 command: "cd \(base)/algorithmic-art && PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --seed 987654321 --prng-stream > /tmp/seven-py.stream && node scripts/prng_parity.js --seed 987654321 --streams > /tmp/seven-js.stream && cmp /tmp/seven-py.stream /tmp/seven-js.stream && echo ART_PRNG_STREAM_OK",
                 timeout: 120)
-            try #require(prng.status == .ok && prng.outputSummary.contains("ART_PRNG_STREAM_OK"),
+            try #require(prng.status == .ok && sevenDeepOutput(prng).contains("ART_PRNG_STREAM_OK"),
                          "PRNG stream parity failed: \(prng.outputSummary)")
 
             // 3. Canonical digest parity: both algos, both boundary seeds, one
@@ -5335,9 +5430,9 @@ extension SubagentSimulatorExecutionTests {
                 """,
                 timeout: 300)
             try #require(parity.status == .ok
-                            && parity.outputSummary.contains("PARITY_FLOWFIELD_OK")
-                            && parity.outputSummary.contains("PARITY_ORBITWASH_OK")
-                            && parity.outputSummary.contains("PARITY_OVERRIDES_OK"),
+                            && sevenDeepOutput(parity).contains("PARITY_FLOWFIELD_OK")
+                            && sevenDeepOutput(parity).contains("PARITY_ORBITWASH_OK")
+                            && sevenDeepOutput(parity).contains("PARITY_OVERRIDES_OK"),
                          "digest parity failed: \(parity.outputSummary)")
 
             // 4. Four-file artifacts + guest determinism across runs.
@@ -5354,7 +5449,7 @@ extension SubagentSimulatorExecutionTests {
                 echo ART_DETERMINISTIC
                 """,
                 timeout: 300)
-            try #require(generate.status == .ok && generate.outputSummary.contains("ART_DETERMINISTIC"),
+            try #require(generate.status == .ok && sevenDeepOutput(generate).contains("ART_DETERMINISTIC"),
                          "art generation/determinism failed: \(generate.outputSummary)")
             for artifact in ["study.svg", "study.html", "study.primitives.json", "study.params.json"] {
                 let url = root.appendingPathComponent("\(base)/algorithmic-art/art-out/\(artifact)")
@@ -5374,9 +5469,9 @@ extension SubagentSimulatorExecutionTests {
                 """,
                 timeout: 120)
             try #require(negatives.status == .ok
-                            && negatives.outputSummary.contains("ART_BAD_SEED_RC=2")
-                            && negatives.outputSummary.contains("ART_BAD_WIDTH_RC=2")
-                            && negatives.outputSummary.contains("ART_BAD_OVERRIDES_RC=2"),
+                            && sevenDeepOutput(negatives).contains("ART_BAD_SEED_RC=2")
+                            && sevenDeepOutput(negatives).contains("ART_BAD_WIDTH_RC=2")
+                            && sevenDeepOutput(negatives).contains("ART_BAD_OVERRIDES_RC=2"),
                          "invalid-input exit codes wrong: \(negatives.outputSummary)")
 
             // 6. --list-algos lists both algorithms.
@@ -5384,7 +5479,7 @@ extension SubagentSimulatorExecutionTests {
                 runtime: runtime, identity: fixedIdentity, context: childContext, tag: "art-algos",
                 command: "cd \(base)/algorithmic-art && PYTHONDONTWRITEBYTECODE=1 python3 scripts/generate_art.py --list-algos > algos.txt && grep -q flowfield algos.txt && grep -q orbitwash algos.txt && echo ART_ALGOS_OK",
                 timeout: 120)
-            try #require(algos.status == .ok && algos.outputSummary.contains("ART_ALGOS_OK"),
+            try #require(algos.status == .ok && sevenDeepOutput(algos).contains("ART_ALGOS_OK"),
                          "--list-algos missing an algorithm: \(algos.outputSummary)")
 
             // 7. Shipped disclosures inside the self-contained study.html.
@@ -5446,7 +5541,7 @@ extension SubagentSimulatorExecutionTests {
             let noticeBytes = Data(studyHTML[noticeStart.upperBound..<noticeEnd.lowerBound].utf8)
             let notice = try #require(try JSONSerialization.jsonObject(with: noticeBytes) as? [String: Any])
             let provenance = try #require(notice["provenance"] as? [String: Any])
-            let params = try sevenDeepJSON(root, "art-out/study.params.json")
+            let params = try sevenDeepJSON(root, "\(base)/algorithmic-art/art-out/study.params.json")
             let generatedOutput = try #require(params["output"] as? [String: Any])
             let sourceDigest = try #require(provenance["digest"] as? String)
             let generatedDigest = try #require(generatedOutput["digest"] as? String)
