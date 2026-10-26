@@ -23,9 +23,18 @@ G05-R1 is delivered in [Alpha12](https://github.com/JiangNanGenius/floe-agent/re
 Native offline DOCX/XLSX/PPTX representative previews, owned-close receipts and
 reopening were observed across the existing API37/16 KiB tablet and API33/4 KiB
 Samsung. The final candidate also fixes the phone Impress DOM-placement failure
-and passed actual portrait/landscape observation. G05-R2 now prioritizes basic
-manual editing and reliable save/reopen before AI editing or advanced layout;
-editing, recalculation and export are not yet delivered.
+and passed actual portrait/landscape observation. The first G05-R2 manual-editing
+slice is delivered in [Alpha13](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
+(build 15, immutable APK source `64ef0f57dcb34c6e0fe4135f80a98add46003df7`).
+It adds DOCX text/common formatting, XLSX cells/formula recalculation and PPTX
+text/simple objects, with owned working copies and verified save-copy receipts.
+Actual Word keyboard input, save-copy, original preservation and normal reopening
+passed on the tablet and Samsung; the tablet's Calc/PPT edit/reopen evidence is
+retained. AI-directed precise editing, PDF export/printing and the full format,
+hardware and visual matrix remain in progress. Phone PPT can render both slides
+while reporting missing presentation-follow controls; a 0.01 mm PPT round-trip
+object-size offset remains documented. All three public release assets were
+downloaded and hash-verified; Alpha12 and iOS Latest remain unchanged.
 Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
