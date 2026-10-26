@@ -1250,7 +1250,7 @@ sys.exit(0 if ok else 1)
         var body = Substring(value)
         if let colon = value.firstIndex(of: ":") {
             let epoch = value[value.startIndex..<colon]
-            guard !epoch.isEmpty, epoch.utf8.allSatisfy({ UInt8(ascii: "0")...UInt8(ascii: "9").contains($0) }) else {
+            guard !epoch.isEmpty, epoch.utf8.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }) else {
                 return false
             }
             body = value[value.index(after: colon)...]
