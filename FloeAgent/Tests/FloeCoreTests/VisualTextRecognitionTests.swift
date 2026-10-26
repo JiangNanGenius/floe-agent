@@ -21,9 +21,9 @@ struct VisualTextRecognitionTests {
     func recognizesRenderedCJKAndLatinExactly() throws {
         let size = CGSize(width: 1200, height: 420)
         let renderer = UIGraphicsImageRenderer(size: size)
-        let image = renderer.image { _ in
-            UIColor.white.setFill()
-            CGRect(origin: .zero, size: size).fill()
+        let image = renderer.image { context in
+            context.cgContext.setFillColor(UIColor.white.cgColor)
+            context.cgContext.fill(CGRect(origin: .zero, size: size))
             let cjkFont = UIFont(name: "PingFang SC", size: 150) ?? .systemFont(ofSize: 150)
             ("\u{9759}\u{9ED8}\u{51E0}\u{4F55}" as NSString).draw(
                 at: CGPoint(x: 40, y: 30),
