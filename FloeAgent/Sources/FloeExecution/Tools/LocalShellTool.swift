@@ -228,7 +228,11 @@ public struct LocalShellTool: AgentTool {
             case .failed(let message):
                 return Self.output("status=packageInstallFailed\nerror=\(message)\nexit=65", exitStatus: 65)
             case .timedOut(let partial):
-                return Self.output("status=packageInstallTimedOut\n\(partial)\nexit=124", exitStatus: 124)
+                // The install was killed mid-flight: the retained text is a
+                // partial receipt, not a complete captured output.
+                return Self.output(
+                    "status=packageInstallTimedOut\n\(partial)\nexit=124",
+                    exitStatus: 124, captureTruncated: true)
             case .cancelled:
                 throw FloeError.cancelled
             }
@@ -290,15 +294,28 @@ public struct LocalShellTool: AgentTool {
         }
         switch outcome {
         case .exited(let code, let stdout, let stderr, let truncated, let stderrTruncated, let durationMs):
-            let cleanOut = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stdout))
-            let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(stderr))
+            // Sanitization itself bounds each line (32 KiB) and the whole
+            // output (512 KiB); those cuts are real losses of command output,
+            // so their flags travel with the capture exactly like the
+            // backend's transport-cap markers.
+            let sanitizedOut = ShellOutputSanitizer.sanitizeReportingTruncation(stdout)
+            let sanitizedErr = ShellOutputSanitizer.sanitizeReportingTruncation(stderr)
+            let cleanOut = SecretRedactor.redact(sanitizedOut.text)
+            let cleanErr = SecretRedactor.redact(sanitizedErr.text)
             var text = prefix()
             text += "exit=\(code) durationMs=\(durationMs) cwd=\(cwd) \(timeoutReceipt())"
             if truncated { text += " stdoutTruncated" }
             if stderrTruncated { text += " stderrTruncated" }
             text += "\n--- stdout ---\n\(cleanOut)"
             if !cleanErr.isEmpty { text += "\n--- stderr ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: code)
+            // This capture is the complete RETAINED text for this run, but when
+            // the transport cap or the sanitizer already cut stdout/stderr it
+            // is NOT the command's whole raw output, and neither the job
+            // artifact nor a result reader may claim otherwise.
+            return Self.output(
+                text, exitStatus: code,
+                captureTruncated: truncated || stderrTruncated
+                    || sanitizedOut.truncated || sanitizedErr.truncated)
         case .timedOut(let partialStdout, let partialStderr, let durationMs):
             var text = prefix()
             text += "exit=124 durationMs=\(durationMs) cwd=\(cwd) status=timedOut \(timeoutReceipt())"
@@ -309,9 +326,13 @@ public struct LocalShellTool: AgentTool {
             if !cleanOut.isEmpty { text += "\n--- stdout ---\n\(cleanOut)" }
             let cleanErr = SecretRedactor.redact(ShellOutputSanitizer.sanitize(partialStderr))
             if !cleanErr.isEmpty { text += "\n--- stderr ---\n\(cleanErr)" }
-            return Self.output(text, exitStatus: 124)
+            // A deadline stop leaves only partial output: declare the capture
+            // incomplete instead of inventing a size for what was never read.
+            return Self.output(text, exitStatus: 124, captureTruncated: true)
         case .cancelled:
-            return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130)
+            // Cancellation returns a receipt with no collected stdout: the
+            // command's output is unknown, so the capture is partial too.
+            return Self.output("exit=130 status=cancelled cwd=\(cwd)", exitStatus: 130, captureTruncated: true)
         case .notStarted(let reason):
             // The engine gate was still owned by another worker. Nothing of
             // this command ran, so there is no exit code and no output to
@@ -322,7 +343,19 @@ public struct LocalShellTool: AgentTool {
         }
     }
 
-    private static func output(_ text: String, exitStatus: Int32) -> ToolExecutionOutput {
-        ToolExecutionOutput(digesting: text, exitStatus: exitStatus, capturedOutput: text)
+    /// - Parameter captureTruncated: true when this receipt is not the
+    ///   command's whole output (transport cut, deadline stop, cancellation).
+    ///   The captured text is still everything this run retained, and the
+    ///   digest always covers that retained text.
+    private static func output(
+        _ text: String,
+        exitStatus: Int32,
+        captureTruncated: Bool = false
+    ) -> ToolExecutionOutput {
+        ToolExecutionOutput(
+            digesting: text,
+            exitStatus: exitStatus,
+            capturedOutput: text,
+            capturedOutputTruncated: captureTruncated)
     }
 }

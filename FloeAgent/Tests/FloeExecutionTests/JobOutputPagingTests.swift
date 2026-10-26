@@ -323,4 +323,463 @@ struct JobOutputPagingTests {
         let dependencies = SQLiteRunDependencyStore(database: db)
         #expect(try await dependencies.pending(runID: run).isEmpty)
     }
+
+    // MARK: - B4 capture/completeness regressions
+
+    /// Deterministic capture replay: NO process runs and no host command
+    /// executes. The scripted `ShellRunOutcome` is returned verbatim, so these
+    /// tests drive the REAL LocalShellTool formatter/sanitizer/redactor, the
+    /// REAL BackgroundJobService capture selection and the canonical spool.
+    private struct ScriptedShellBackend: LocalShellBackend {
+        let outcome: ShellRunOutcome
+
+        func run(_ request: ShellRunRequest, cancellation: CancellationToken?) async -> ShellRunOutcome {
+            outcome
+        }
+
+        func openSession(
+            _ request: ShellOpenRequest, cancellation: CancellationToken?
+        ) async throws -> ShellOpenResult {
+            ShellOpenResult(sessionID: request.sessionID, initialOutput: "", alive: true)
+        }
+
+        func exchangeSession(
+            _ request: ShellExchangeRequest, cancellation: CancellationToken?
+        ) async throws -> ShellExchangeResult {
+            ShellExchangeResult(output: "", alive: true)
+        }
+
+        func closeSession(sessionID: String) async {}
+    }
+
+    private func temporaryRoot(_ tag: String) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(tag)\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root
+    }
+
+    /// Registers the real exec.shell tool over the scripted backend and submits
+    /// one background job through the real jobs.submit path.
+    private func submitScriptedShellJob(
+        database: DatabaseManager,
+        backend: ScriptedShellBackend,
+        root: URL,
+        run: UUID,
+        command: String = "print deterministic payload"
+    ) async throws -> (service: BackgroundJobService, jobID: UUID) {
+        let registry = ToolRunnerRegistry()
+        ToolCatalog.register(LocalShellTool.self)
+        registry.register(LocalShellTool(
+            shell: LocalShellService(backend: backend, rootProvider: { root })))
+        let service = registerBackgroundJobTools(
+            database: database, registry: registry, outputRootURL: root)
+        let callID = "call-\(UUID().uuidString)"
+        let arguments = try JSONSerialization.data(withJSONObject: ["command": command])
+        let submit = JobsSubmitTool(service: service)
+        let output = try await submit.execute(
+            .init(tool: "exec.shell", arguments: String(decoding: arguments, as: UTF8.self)),
+            context: .init(runID: run, toolCallID: callID, cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: callID, toolName: "jobs.submit"))
+        )
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let jobID = try #require((object["jobID"] as? String).flatMap(UUID.init(uuidString:)))
+        return (service, jobID)
+    }
+
+    /// Pages the whole stored artifact through the REAL `jobs.result` path.
+    private func reassemblePages(
+        service: BackgroundJobService, root: URL, jobID: UUID, run: UUID
+    ) async throws -> (text: String, pages: Int, lastPage: [String: Any], lastNote: String?) {
+        let tool = JobsResultTool(service: service, outputRoot: root)
+        var offset = 0
+        var collected = ""
+        var pages = 0
+        var lastPage: [String: Any] = [:]
+        var lastNote: String?
+        for _ in 0..<600 {
+            let output = try await tool.execute(
+                pageArguments(jobID: jobID, offset: offset),
+                context: .init(runID: run, cancellation: CancellationToken()))
+            let response = try #require(
+                try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+            let page = try #require(response["output"] as? [String: Any])
+            collected += (page["text"] as? String) ?? ""
+            pages += 1
+            lastPage = page
+            lastNote = response["note"] as? String
+            guard let next = page["nextOffset"] as? Int else {
+                return (collected, pages, lastPage, lastNote)
+            }
+            offset = next
+        }
+        Issue.record("jobs.result paging did not terminate")
+        return (collected, pages, lastPage, lastNote)
+    }
+
+    @Test("A >4096 sanitized capture survives the real shell tool, spool and paged readback with its digest")
+    func capturedOutputBeyondSummarySurvivesBackgroundJob() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-capture-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // ~10 KB of deterministic rows plus a unique tail: the 4096-character
+        // display summary cannot contain the tail, so it can only come back
+        // through the already-sanitized capture and the canonical spool.
+        let rows = (0..<500).map { "line-\($0)-result-payload-abcdefghij" }
+        let stdout = rows.joined(separator: "\n") + "\nTAIL-MARKER-capture-closed"
+        let backend = ScriptedShellBackend(outcome: .exited(
+            code: 0, stdout: stdout, stderr: "",
+            truncated: false, stderrTruncated: false, durationMs: 7))
+        let (service, jobID) = try await submitScriptedShellJob(
+            database: db, backend: backend, root: root, run: run)
+
+        let terminal = try await waitForTerminal(service, id: jobID)
+        #expect(terminal.state == .completed)
+        let outputBytes = try #require(terminal.outputBytes)
+        #expect(outputBytes > 4_096)
+
+        // The model/UI summary stays bounded and does not carry the tail.
+        let summary = try #require(terminal.resultSummary)
+        #expect(summary.count <= 4_096)
+        #expect(!summary.contains("TAIL-MARKER-capture-closed"))
+
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: jobID, root: root))
+        #expect(!metadata.truncated)
+        #expect(!metadata.captureTruncated)
+        #expect(metadata.originalBytes == metadata.savedBytes)
+
+        let paged = try await reassemblePages(service: service, root: root, jobID: jobID, run: run)
+        #expect(paged.text.contains("line-499-result-payload-abcdefghij"))
+        #expect(paged.text.contains("TAIL-MARKER-capture-closed"))
+        // The stored payload is exactly the text the producer digested: the
+        // original B4 defect (payload 4096, digest of the full text) is gone.
+        #expect(FloeDigest.sha256Hex(Data(paged.text.utf8)) == terminal.resultDigest)
+        #expect(paged.lastPage["complete"] as? Bool == true)
+        #expect(paged.lastPage["captureTruncated"] as? Bool == false)
+        #expect(paged.lastNote?.contains("last page of the complete output") == true)
+    }
+
+    @Test("A summary-only tool output is spooled honestly and never claims completeness")
+    func summaryFallbackCannotClaimComplete() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-fallback-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // A tool that supplies NO capture: ToolExecutionOutput clips its own
+        // summary to the 4096-character display bound, so only a clipped
+        // summary survives. The fallback must declare that instead of
+        // reporting the retained prefix as the complete result.
+        let fullText = String(repeating: "0123456789", count: 900)
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "exec.shell", toolDescription: "summary-only test tool",
+                parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true)
+        ) { _, _ in
+            ToolExecutionOutput(digesting: fullText)
+        })
+        let service = registerBackgroundJobTools(
+            database: db, registry: registry, outputRootURL: root)
+        let callID = "call-\(UUID().uuidString)"
+        let submit = JobsSubmitTool(service: service)
+        let output = try await submit.execute(
+            .init(tool: "exec.shell", arguments: #"{"script":"print(1)"}"#),
+            context: .init(runID: run, toolCallID: callID, cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: callID, toolName: "jobs.submit")))
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let jobID = try #require((object["jobID"] as? String).flatMap(UUID.init(uuidString:)))
+
+        let terminal = try await waitForTerminal(service, id: jobID)
+        #expect(terminal.state == .completed)
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: jobID, root: root))
+        #expect(metadata.truncated)
+        #expect(metadata.captureTruncated)
+        #expect(metadata.originalBytes == nil) // unknown upstream size, never invented
+        #expect(metadata.savedBytes == 4_096)
+
+        let paged = try await reassemblePages(service: service, root: root, jobID: jobID, run: run)
+        #expect(paged.text.utf8.count == 4_096)
+        // The retained summary is NOT the digested full text; claiming it
+        // complete would repeat the original B4 false-completeness defect.
+        #expect(FloeDigest.sha256Hex(Data(paged.text.utf8)) != terminal.resultDigest)
+        #expect(paged.lastPage["complete"] as? Bool == false)
+        #expect(paged.lastNote?.contains("original output size is unknown") == true)
+        #expect((terminal.resultSummary ?? "").count <= 4_096)
+    }
+
+    @Test("A producer-truncated capture keeps its retained tail but never claims completeness")
+    func producerTruncatedCaptureStaysHonest() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-upstream-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let rows = (0..<300).map { "row-\($0)-retained-payload" }
+        let stdout = rows.joined(separator: "\n") + "\nRETAINED-TAIL"
+        let backend = ScriptedShellBackend(outcome: .exited(
+            code: 0, stdout: stdout, stderr: "",
+            truncated: true, stderrTruncated: false, durationMs: 3))
+        let (service, jobID) = try await submitScriptedShellJob(
+            database: db, backend: backend, root: root, run: run)
+
+        let terminal = try await waitForTerminal(service, id: jobID)
+        #expect(terminal.state == .completed)
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: jobID, root: root))
+        #expect(metadata.truncated)
+        #expect(metadata.captureTruncated)
+        #expect(metadata.originalBytes == nil)
+
+        let paged = try await reassemblePages(service: service, root: root, jobID: jobID, run: run)
+        // Everything that WAS retained is readable and matches the digest…
+        #expect(paged.text.contains("RETAINED-TAIL"))
+        #expect(FloeDigest.sha256Hex(Data(paged.text.utf8)) == terminal.resultDigest)
+        // …but the artifact is never presented as the complete job output.
+        #expect(paged.lastPage["complete"] as? Bool == false)
+        #expect(paged.lastPage["captureTruncated"] as? Bool == true)
+        #expect(paged.lastNote?.contains("original output size is unknown") == true)
+    }
+
+    @Test("A sanitizer-capped shell capture is retained but never claimed complete")
+    func sanitizerCappedCaptureStaysHonest() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-sanitizer-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // 23k short lines (~620 KiB): below the 1 MiB artifact cap but above
+        // the sanitizer's 512 KiB total bound, so only the producer's own
+        // truncation flag can keep the retained capture honest.
+        let stdout = (0..<23_000).map { "sanitizer-row-\($0)-padding" }
+            .joined(separator: "\n") + "\n"
+        let backend = ScriptedShellBackend(outcome: .exited(
+            code: 0, stdout: stdout, stderr: "",
+            truncated: false, stderrTruncated: false, durationMs: 5))
+        let (service, jobID) = try await submitScriptedShellJob(
+            database: db, backend: backend, root: root, run: run)
+
+        let terminal = try await waitForTerminal(service, id: jobID)
+        #expect(terminal.state == .completed)
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: jobID, root: root))
+        #expect(metadata.truncated)
+        #expect(metadata.captureTruncated)
+        #expect(metadata.originalBytes == nil)
+        // The artifact itself was not capped, so only the producer flag stops
+        // the old false-complete claim.
+        #expect((terminal.outputBytes ?? 0) < BackgroundJobOutputSpool.maximumArtifactBytes)
+
+        let paged = try await reassemblePages(service: service, root: root, jobID: jobID, run: run)
+        #expect(paged.text.contains("[output truncated]"))
+        #expect(FloeDigest.sha256Hex(Data(paged.text.utf8)) == terminal.resultDigest)
+        #expect(paged.lastPage["complete"] as? Bool == false)
+        #expect(paged.lastNote?.contains("original output size is unknown") == true)
+
+        // The per-line bound (32 KiB) is reported the same way, not inferred
+        // from a before/after length difference.
+        let longLine = String(repeating: "c", count: 40_000)
+        let lineBackend = ScriptedShellBackend(outcome: .exited(
+            code: 0, stdout: longLine, stderr: "",
+            truncated: false, stderrTruncated: false, durationMs: 2))
+        let (lineService, lineJobID) = try await submitScriptedShellJob(
+            database: db, backend: lineBackend, root: root, run: run)
+        let lineTerminal = try await waitForTerminal(lineService, id: lineJobID)
+        #expect(lineTerminal.state == .completed)
+        let linePath = try #require(lineTerminal.outputPath)
+        let lineMetadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: linePath, jobID: lineJobID, root: root))
+        #expect(lineMetadata.truncated)
+        #expect(lineMetadata.captureTruncated)
+        let linePaged = try await reassemblePages(
+            service: lineService, root: root, jobID: lineJobID, run: run)
+        #expect(linePaged.text.contains("[line truncated]"))
+        #expect(FloeDigest.sha256Hex(Data(linePaged.text.utf8)) == lineTerminal.resultDigest)
+        #expect(linePaged.lastPage["complete"] as? Bool == false)
+    }
+
+    @Test("A >1 MiB already-sanitized capture is capped with a known size while the job still completes")
+    func capCutKeepsJobAndReportsKnownSize() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-cap-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Spool-contract case: a producer whose ALREADY-sanitized capture is
+        // larger than the 1 MiB artifact bound.
+        let fullText = String(repeating: "b", count: 1_200_000)
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "exec.shell", toolDescription: "large capture test tool",
+                parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true)
+        ) { _, _ in
+            ToolExecutionOutput(
+                summary: "head",
+                fullOutputSHA256: FloeDigest.sha256Hex(Data(fullText.utf8)),
+                capturedOutput: fullText)
+        })
+        let service = registerBackgroundJobTools(
+            database: db, registry: registry, outputRootURL: root)
+        let callID = "call-\(UUID().uuidString)"
+        let submit = JobsSubmitTool(service: service)
+        let output = try await submit.execute(
+            .init(tool: "exec.shell", arguments: #"{"script":"print(3)"}"#),
+            context: .init(runID: run, toolCallID: callID, cancellation: CancellationToken(),
+                           callOrigin: ToolCallOrigin(kind: .mainRunDelegate, runID: run,
+                                                      callID: callID, toolName: "jobs.submit")))
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: Data(output.summary.utf8)) as? [String: Any])
+        let jobID = try #require((object["jobID"] as? String).flatMap(UUID.init(uuidString:)))
+
+        let terminal = try await waitForTerminal(service, id: jobID)
+        #expect(terminal.state == .completed)
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: jobID, root: root))
+        #expect(metadata.truncated)
+        #expect(!metadata.captureTruncated)
+        #expect(metadata.savedBytes == BackgroundJobOutputSpool.maximumArtifactBytes)
+        #expect(metadata.originalBytes == 1_200_000)
+
+        // The last page names the cap as the reason it is not complete.
+        let tool = JobsResultTool(service: service, outputRoot: root)
+        let pageOutput = try await tool.execute(
+            JobsResultTool.Arguments(
+                jobID: jobID.uuidString,
+                offset: BackgroundJobOutputSpool.maximumArtifactBytes - 64,
+                maxBytes: 256),
+            context: .init(runID: run, cancellation: CancellationToken()))
+        let response = try #require(
+            try JSONSerialization.jsonObject(with: Data(pageOutput.summary.utf8)) as? [String: Any])
+        let page = try #require(response["output"] as? [String: Any])
+        #expect(page["complete"] as? Bool == false)
+        #expect((response["note"] as? String)?.contains("bounded prefix") == true)
+    }
+
+    @Test("An explicitly empty capture stays empty instead of storing its display caption")
+    func emptyCaptureIsAuthoritative() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-empty-")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "exec.shell", toolDescription: "empty capture fixture",
+                parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true),
+            run: { _, _ in
+                ToolExecutionOutput(summary: "DISPLAY-ONLY-CAPTION",
+                    fullOutputSHA256: FloeDigest.sha256Hex(Data()), capturedOutput: "")
+            }, routing: ToolEnvironmentRouting()))
+        let service = registerBackgroundJobTools(
+            database: db, registry: registry, outputRootURL: root)
+        let job = try await service.submit(
+            runID: run, toolCallID: "empty-capture", targetTool: "exec.shell",
+            payloadJSON: Data("{}".utf8), scope: .local,
+            workspaceRootURL: root, allowedWorkspacePaths: [], submissionSource: .nativeService)
+        let terminal = try await waitForTerminal(service, id: job.id)
+        #expect(terminal.state == .completed)
+        #expect(terminal.resultSummary == "DISPLAY-ONLY-CAPTION")
+        let path = try #require(terminal.outputPath)
+        let metadata = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: path, jobID: job.id, root: root))
+        #expect(metadata.savedBytes == 0)
+        #expect(metadata.originalBytes == 0)
+        #expect(!metadata.truncated)
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        #expect(!String(decoding: bytes, as: UTF8.self).contains("DISPLAY-ONLY-CAPTION"))
+        #expect(terminal.resultDigest == FloeDigest.sha256Hex(Data()))
+    }
+
+    @Test("A spool write failure keeps the job result, cancel behavior and ownership intact")
+    func spoolFailureKeepsJobContract() async throws {
+        let (db, _, run) = try await fixture()
+        let root = try temporaryRoot("floe-b4-spoolfail-")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let registry = ToolRunnerRegistry()
+        registry.register(AnyAgentTool(
+            descriptor: ToolCatalog.Descriptor(
+                name: "exec.shell", toolDescription: "spool failure test tool",
+                parametersJSON: #"{"type":"object"}"#, riskLabels: [], isSideEffecting: true),
+            run: { _, _ in
+                ToolExecutionOutput(
+                    digesting: "visible summary", capturedOutput: "visible summary")
+            }, routing: ToolEnvironmentRouting()))
+        let service = BackgroundJobService(
+            store: BackgroundJobStore(database: db), registry: registry,
+            outputSpooler: { _, _, _ in
+                throw FloeError.internalError("simulated spool write failure")
+            })
+        let job = try await service.submit(
+            runID: run, toolCallID: "call-spool-failure", targetTool: "exec.shell",
+            payloadJSON: Data("{}".utf8), scope: .local,
+            workspaceRootURL: root, allowedWorkspacePaths: [],
+            submissionSource: .nativeService)
+        let terminal = try await waitForTerminal(service, id: job.id)
+        // A spool failure never fails or re-labels the job.
+        #expect(terminal.state == .completed)
+        #expect(terminal.outputPath == nil)
+        #expect(terminal.resultSummary == "visible summary")
+        // Cancelling an already-finished job keeps its ACTUAL result.
+        let afterCancel = try await service.cancel(id: job.id)
+        #expect(afterCancel.state == .completed)
+        // Ownership is still enforced for another run.
+        await #expect(throws: (any Error).self) {
+            _ = try await service.ownedJob(id: job.id, runID: UUID())
+        }
+    }
+
+    @Test("Legacy numeric footers parse unchanged and an unknown size requires an incomplete artifact")
+    func footerBackwardCompatibility() throws {
+        let root = try temporaryRoot("floe-b4-footer-")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let jobID = UUID()
+        let url = try #require(
+            BackgroundJobOutputSpool.canonicalArtifactURL(jobID: jobID, root: root))
+
+        // Pre-fix artifact: numeric footer, no capture marker.
+        try Data("hello\n[floe-job-output originalBytes=6 savedBytes=6 truncated=false]\n".utf8)
+            .write(to: url)
+        let legacy = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: url.path, jobID: jobID, root: root))
+        #expect(legacy.originalBytes == 6)
+        #expect(legacy.savedBytes == 6)
+        #expect(!legacy.truncated)
+        #expect(!legacy.captureTruncated)
+        let legacyPage = try #require(BackgroundJobOutputSpool.readPage(
+            jobID: jobID, path: url.path, offset: 0, maxBytes: 64, root: root))
+        #expect(legacyPage.complete == nil) // legacy summary provenance is unknown
+        #expect(!legacy.captureIntegrityKnown)
+        #expect(legacyPage.text == "hello\n")
+
+        // A producer-cut flag cannot coexist with a completeness claim.
+        try Data("hello\n[floe-job-output originalBytes=6 savedBytes=6 truncated=false captureTruncated=true]\n".utf8)
+            .write(to: url)
+        #expect(BackgroundJobOutputSpool.readMetadata(
+            path: url.path, jobID: jobID, root: root) == nil)
+
+        // An unknown original size on an artifact that claims completeness is
+        // refused: it could otherwise disguise an incomplete capture.
+        try Data("hello\n[floe-job-output originalBytes=unknown savedBytes=6 truncated=false]\n".utf8)
+            .write(to: url)
+        #expect(BackgroundJobOutputSpool.readMetadata(
+            path: url.path, jobID: jobID, root: root) == nil)
+
+        // Unknown is honest when the artifact declares itself incomplete.
+        try Data("hello\n[floe-job-output originalBytes=unknown savedBytes=6 truncated=true captureTruncated=true]\n".utf8)
+            .write(to: url)
+        let partial = try #require(BackgroundJobOutputSpool.readMetadata(
+            path: url.path, jobID: jobID, root: root))
+        #expect(partial.originalBytes == nil)
+        #expect(partial.truncated)
+        #expect(partial.captureTruncated)
+    }
 }

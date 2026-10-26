@@ -13,11 +13,22 @@ public enum ShellOutputSanitizer {
     /// (except `\n` and `\t`), collapses runs of more than two newlines, and
     /// bounds each line to `maximumLineBytes`.
     public static func sanitize(_ text: String) -> String {
-        guard !text.isEmpty else { return text }
+        sanitizeReportingTruncation(text).text
+    }
+
+    /// Same sanitization as `sanitize`, plus whether the sanitizer itself had
+    /// to cut content (a line beyond `maximumLineBytes`, or the total beyond
+    /// `maximumTotalBytes`). A producer that retains this text as its captured
+    /// output must propagate `truncated` into its capture completeness instead
+    /// of presenting the bounded text as the command's whole output. The text
+    /// itself is byte-identical to `sanitize`.
+    public static func sanitizeReportingTruncation(_ text: String) -> (text: String, truncated: Bool) {
+        guard !text.isEmpty else { return (text, false) }
         var output = String()
         output.reserveCapacity(min(text.utf8.count, 64 * 1024))
         var lineBytes = 0
         var newlineRun = 0
+        var truncated = false
         var index = text.startIndex
         while index < text.endIndex {
             let character = text[index]
@@ -49,6 +60,7 @@ public enum ShellOutputSanitizer {
             if scalar.value < 0x20 || scalar.value == 0x7F { continue }
             if lineBytes >= maximumLineBytes {
                 output.append("\n[line truncated]")
+                truncated = true
                 // Fast-forward to the next newline without emitting content.
                 while index < text.endIndex, text[index] != "\n" { index = text.index(after: index) }
                 lineBytes = 0
@@ -60,10 +72,11 @@ public enum ShellOutputSanitizer {
             newlineRun = 0
             if output.utf8.count >= maximumTotalBytes {
                 output.append("\n[output truncated]")
+                truncated = true
                 break
             }
         }
-        return output
+        return (output, truncated)
     }
 
     private static func skipEscapeSequence(_ text: String, _ index: inout String.Index) {

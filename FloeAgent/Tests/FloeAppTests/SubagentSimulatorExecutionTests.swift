@@ -1497,7 +1497,7 @@ private func scriptedCall(id: String, name: String, arguments: String) throws ->
 // pass — the existing real-guest policy in this file):
 //   * FLOE_SKILLHUB_PY_QUALIFICATION=1       + FLOE_SKILL_HUB_SOURCES_DIR + FLOE_SKILL_HUB_WHEELS_ZIP
 //   * FLOE_SKILLHUB_WEBAPP_QUALIFICATION=1   + FLOE_SKILL_HUB_SOURCES_DIR
-//   * FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1 (bundled 1.0.2 template only)
+//   * FLOE_SKILLHUB_MCP_NODE_QUALIFICATION=1 (bundled 1.0.3 template only)
 //
 // Everything executes through the REAL production chain already used above:
 // bootGuest → makeRuntime → active parent → requireQualifiedKernel →
@@ -3138,7 +3138,7 @@ extension SubagentSimulatorExecutionTests {
             // 1. Production digest-gated template load + byte-exact staging.
             let template = try MCPServiceTemplate.load()
             try #require(template.contract.templateID == "floe.mcp.node-http")
-            try #require(template.contract.templateVersion == "1.0.2")
+            try #require(template.contract.templateVersion == "1.0.3")
             try #require(template.contract.runtime.os == "linux")
             try #require(template.contract.runtime.node == ">=20.19.0")
             try #require(template.contract.sdk.package == "@modelcontextprotocol/sdk")
@@ -3384,7 +3384,13 @@ extension SubagentSimulatorExecutionTests {
                     evidence[outputKey + ".outputHead"] = String(retainedOutput.prefix(2_000))
                     evidence[outputKey + ".outputTail"] = String(retainedOutput.suffix(4_000))
                 }
+                evidence[outputKey + ".resultDigest"] = phaseJob.resultDigest ?? "unavailable"
                 flushProgressEvidence()
+                if readComplete, evidence[outputKey + ".spoolComplete"] == "true",
+                   let retainedDigest = evidence[outputKey + ".retainedOutputSHA256"] {
+                    try #require(retainedDigest == phaseJob.resultDigest,
+                                 "The complete phase spool must match the producer result digest")
+                }
                 try #require(phaseJob.state == .completed,
                              "guest node-http build phase \(index) (\(phase.name)) failed: \(phaseResult.prefix(600))")
                 buildPhaseReceipts.append("\(phase.name)=\(phaseJobID.uuidString):\(phaseDurationMs)ms")

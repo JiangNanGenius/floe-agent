@@ -54,7 +54,14 @@ public actor BackgroundJobService {
     /// summary truncation and returns its absolute path + exact byte count.
     /// Implementations bound the artifact size and never throw content away
     /// silently.
-    public typealias OutputSpooler = @Sendable (UUID, String) async throws -> (path: String, bytes: Int)
+    ///
+    /// The third argument is the producer's own integrity declaration: `true`
+    /// means the executed tool already reported its capture as incomplete
+    /// (the upstream output was cut, or only a clipped display summary
+    /// survived), so the artifact must carry that fact and can never be read
+    /// back as the job's complete output. The original upstream size is
+    /// unknown in that case and must not be invented.
+    public typealias OutputSpooler = @Sendable (UUID, String, Bool) async throws -> (path: String, bytes: Int)
     /// Records a durable parent-run dependency edge for a required job.
     /// `(jobID, runID, conversationID, kind)` where kind is `job` or
     /// `service`.
@@ -442,6 +449,12 @@ public actor BackgroundJobService {
             /// summary bound: spooled to a durable artifact so the complete
             /// result survives even when the summary is clipped.
             var fullOutput: String?
+            /// Producer-side integrity for `fullOutput`: true when the tool
+            /// itself declared the retained text incomplete (upstream output
+            /// cut, or only a clipped summary was available). Carried into the
+            /// artifact footer so paged read-back can never claim completeness
+            /// the producer never observed.
+            var captureTruncated = false
             do {
                 _ = try await store.transition(id: job.id, to: .running)
                 await recorder.record(NativeJobProgress(stage: .running, note: "processor started"))
@@ -492,7 +505,19 @@ public actor BackgroundJobService {
                         }
                     )
                     let output = try await runner.execute(argumentsJSON: job.payloadJSON, context: context)
-                    fullOutput = output.summary
+                    // Prefer the already-sanitized producer capture: the 4096
+                    // character display summary is a UI bound, not the result.
+                    // Only fall back to the summary when the tool supplies no
+                    // capture, and carry the truncation the producer itself
+                    // reported so a retained payload is never read back as the
+                    // complete output when it was already clipped upstream.
+                    if let captured = output.capturedOutput {
+                        fullOutput = captured
+                        captureTruncated = output.capturedOutputTruncated
+                    } else {
+                        fullOutput = output.summary
+                        captureTruncated = output.summaryTruncated
+                    }
                     summary = NativeJobTextLimits.bounded(output.summary)
                     digest = output.fullOutputSHA256
                     if token.isCancelled {
@@ -538,7 +563,8 @@ public actor BackgroundJobService {
             // `jobs.result` reads this artifact, never a re-derived summary.
             var outputPath: String?
             var outputBytes: Int?
-            if let fullOutput, let outputSpooler, let spooled = try? await outputSpooler(job.id, fullOutput) {
+            if let fullOutput, let outputSpooler,
+               let spooled = try? await outputSpooler(job.id, fullOutput, captureTruncated) {
                 outputPath = spooled.path
                 outputBytes = spooled.bytes
             }

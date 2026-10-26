@@ -123,25 +123,61 @@ public enum BackgroundJobOutputSpool {
 
     /// Structured completeness metadata carried in the artifact footer.
     public struct Metadata: Sendable, Equatable {
-        public var originalBytes: Int
+        /// Byte size of the output the artifact was written from, when that
+        /// size is actually known. Nil means UNKNOWN: the producer had already
+        /// truncated its own capture upstream, so the job's original output
+        /// size cannot be derived from what was retained. It is never
+        /// fabricated (never the retained prefix, never prefix + 1).
+        public var originalBytes: Int?
         public var savedBytes: Int
-        /// True when the payload was cut at the cap; the artifact then holds
-        /// a bounded PREFIX, not the whole output.
+        /// True when the artifact is NOT the complete job output: either the
+        /// stored payload was cut at the artifact cap, or the producer declared
+        /// its capture already truncated upstream. Page completeness is
+        /// `!truncated`, so a reader that only knows this field can never
+        /// mistake a bounded or producer-truncated capture for a complete
+        /// result.
         public var truncated: Bool
+        /// True only for producer-declared upstream truncation (the retained
+        /// capture itself was already incomplete). Distinguishes "capped here,
+        /// original size known" from "already incomplete upstream, original
+        /// size unknown" for user/model-facing notes. Always implies
+        /// `truncated == true`.
+        public var captureTruncated: Bool
+        /// Legacy numeric footers predate producer-capture accounting. Their
+        /// text remains readable, but an uncut footer alone cannot establish
+        /// that a display summary was the producer's whole output.
+        public var captureIntegrityKnown: Bool
 
-        public init(originalBytes: Int, savedBytes: Int, truncated: Bool) {
+        public init(
+            originalBytes: Int?,
+            savedBytes: Int,
+            truncated: Bool,
+            captureTruncated: Bool = false,
+            captureIntegrityKnown: Bool = true
+        ) {
             self.originalBytes = originalBytes
             self.savedBytes = savedBytes
             self.truncated = truncated
+            self.captureTruncated = captureTruncated
+            self.captureIntegrityKnown = captureIntegrityKnown
         }
     }
 
     /// Footer grammar: one line at the very end of the artifact.
+    /// `originalBytes` is a byte count, or the literal `unknown` when the
+    /// producer had already cut its own capture upstream. Every field the
+    /// pre-existing parser required is still emitted in the same order, and
+    /// new footers declare `captureTruncated` even when false. Legacy footers
+    /// without that declaration remain readable with unverified completeness.
     static let footerPrefix = "[floe-job-output "
     static func footer(for metadata: Metadata) -> String {
-        "\n\(footerPrefix)originalBytes=\(metadata.originalBytes)"
+        var line = "\n\(footerPrefix)originalBytes=\(metadata.originalBytes.map { String($0) } ?? "unknown")"
             + " savedBytes=\(metadata.savedBytes)"
-            + " truncated=\(metadata.truncated)]\n"
+            + " truncated=\(metadata.truncated)"
+        if metadata.captureIntegrityKnown {
+            line += " captureTruncated=\(metadata.captureTruncated)"
+        }
+        return line + "]\n"
     }
 
     public static func defaultRoot() -> URL? {
@@ -178,7 +214,16 @@ public enum BackgroundJobOutputSpool {
     /// the artifact's real byte size (payload + footer). Never throws an
     /// error that would fail the job: the caller treats nil as "summary
     /// only".
-    public static func write(jobID: UUID, text: String, root: URL?) -> (path: String, bytes: Int)? {
+    /// - Parameter captureTruncated: the producer's own integrity declaration
+    ///   for `text` (see `BackgroundJobService.OutputSpooler`): when true the
+    ///   job's complete output was already unavailable before spooling, so the
+    ///   artifact is marked not-complete and the original size stays unknown.
+    public static func write(
+        jobID: UUID,
+        text: String,
+        root: URL?,
+        captureTruncated: Bool = false
+    ) -> (path: String, bytes: Int)? {
         guard let root, let url = canonicalArtifactURL(jobID: jobID, root: root) else { return nil }
         let data = Data(text.utf8)
         var metadata: Metadata
@@ -193,10 +238,18 @@ public enum BackgroundJobOutputSpool {
             var end = maximumArtifactBytes
             while end > 0, (data[end] & 0xC0) == 0x80 { end -= 1 }
             payload = data.subdata(in: 0..<end)
-            metadata = Metadata(originalBytes: data.count, savedBytes: end, truncated: true)
+            metadata = Metadata(
+                originalBytes: captureTruncated ? nil : data.count,
+                savedBytes: end,
+                truncated: true,
+                captureTruncated: captureTruncated)
         } else {
             payload = data
-            metadata = Metadata(originalBytes: data.count, savedBytes: data.count, truncated: false)
+            metadata = Metadata(
+                originalBytes: captureTruncated ? nil : data.count,
+                savedBytes: data.count,
+                truncated: captureTruncated,
+                captureTruncated: captureTruncated)
         }
         let footer = Data(footer(for: metadata).utf8)
         var artifact = payload
@@ -242,11 +295,37 @@ public enum BackgroundJobOutputSpool {
             guard parts.count == 2 else { continue }
             values[String(parts[0])] = String(parts[1])
         }
-        guard let original = values["originalBytes"].flatMap(Int.init),
-              let saved = values["savedBytes"].flatMap(Int.init),
+        // `originalBytes=unknown` is a new, honest encoding for a size the
+        // writer never knew; legacy numeric footers keep parsing unchanged.
+        // An unknown size is accepted only on an artifact that already
+        // declares itself incomplete, so it can never disguise a complete
+        // artifact as an unknown-length one.
+        guard let originalRaw = values["originalBytes"] else { return nil }
+        let original: Int?
+        if originalRaw != "unknown" {
+            guard let parsed = Int(originalRaw) else { return nil }
+            original = parsed
+        } else {
+            original = nil
+        }
+        guard let saved = values["savedBytes"].flatMap(Int.init),
               let truncated = values["truncated"].flatMap(Bool.init)
         else { return nil }
-        return Metadata(originalBytes: original, savedBytes: saved, truncated: truncated)
+        if original == nil, !truncated { return nil }
+        let captureTruncated: Bool
+        if let raw = values["captureTruncated"] {
+            guard let parsed = Bool(raw) else { return nil }
+            captureTruncated = parsed
+        } else {
+            captureTruncated = false
+        }
+        guard !captureTruncated || truncated else { return nil }
+        return Metadata(
+            originalBytes: original,
+            savedBytes: saved,
+            truncated: truncated,
+            captureTruncated: captureTruncated,
+            captureIntegrityKnown: values["captureTruncated"] != nil)
     }
 
     /// Age-based retention. Called on write; a cheap best-effort scan.
@@ -283,11 +362,19 @@ public struct BackgroundJobOutputPage: Sendable {
     public let nextOffset: Int?
     public let text: String?
     /// Structured completeness of the WHOLE artifact, read from its footer:
-    /// `truncated == true` means the artifact itself is a capped prefix, so
-    /// reaching the end of it is NOT proof the job's complete output was
-    /// read. Nil when the footer is unavailable (legacy/changed file).
+    /// `truncated == true` means the artifact is not the complete job output
+    /// (it was capped at the spool limit, or the producer's own capture was
+    /// already truncated upstream), so reaching the end of it is NOT proof the
+    /// job's complete output was read. Nil when the footer is unavailable
+    /// (legacy/changed file).
     public let complete: Bool?
+    /// Nil when the writer never knew the original size (producer-declared
+    /// upstream truncation); a known value only accompanies a cap cut.
     public let originalBytes: Int?
+    /// True when the producer declared its capture already truncated upstream:
+    /// the artifact holds everything retained, but the job's original output
+    /// size is unknown and the end of the artifact is not proof of completeness.
+    public let captureTruncated: Bool
     /// True when the artifact's current size differs from the size recorded
     /// when the job finished (an external change or a partial write): the page
     /// still reports what is really there.
@@ -303,6 +390,7 @@ public struct BackgroundJobOutputPage: Sendable {
         text: String?,
         complete: Bool?,
         originalBytes: Int?,
+        captureTruncated: Bool = false,
         changedSinceRecorded: Bool
     ) {
         self.available = available
@@ -312,6 +400,7 @@ public struct BackgroundJobOutputPage: Sendable {
         self.pageBytes = pageBytes
         self.nextOffset = nextOffset
         self.text = text
+        self.captureTruncated = captureTruncated
         self.complete = complete
         self.originalBytes = originalBytes
         self.changedSinceRecorded = changedSinceRecorded
@@ -372,8 +461,10 @@ public extension BackgroundJobOutputSpool {
             pageBytes: page.byteCount,
             nextOffset: page.nextOffset,
             text: page.text,
-            complete: metadata.map { !$0.truncated },
+            complete: metadata?.truncated == true ? false
+                : (metadata?.captureIntegrityKnown == true ? true : nil),
             originalBytes: metadata?.originalBytes,
+            captureTruncated: metadata?.captureTruncated ?? false,
             changedSinceRecorded: recordedBytes.map { $0 != size } ?? false)
     }
 }
@@ -583,11 +674,19 @@ private struct JobOutputPageView: Encodable {
     let nextOffset: Int?
     let text: String?
     /// Structured completeness of the WHOLE artifact, read from its footer:
-    /// `truncated == true` means the artifact itself is a capped prefix, so
-    /// reaching the end of it is NOT proof the job's complete output was
-    /// read. Nil when the footer is unavailable (legacy/changed file).
+    /// `truncated == true` means the artifact is not the complete job output
+    /// (capped here, or the producer's capture was already truncated
+    /// upstream), so reaching the end of it is NOT proof the job's complete
+    /// output was read. Nil when the footer is unavailable (legacy/changed
+    /// file).
     let complete: Bool?
+    /// Nil when the writer never knew the original size (producer-declared
+    /// upstream truncation).
     let originalBytes: Int?
+    /// True when the producer declared its retained capture already truncated
+    /// upstream: the artifact holds everything retained, the original size is
+    /// unknown, and the end of the artifact is not proof of completeness.
+    let captureTruncated: Bool
     /// True when the artifact's current size differs from the size recorded
     /// when the job finished (an external change or a partial write): the page
     /// still reports what is really there.
@@ -605,6 +704,7 @@ private struct JobOutputPageView: Encodable {
         text = page.text
         complete = page.complete
         originalBytes = page.originalBytes
+        captureTruncated = page.captureTruncated
         changedSinceRecorded = page.changedSinceRecorded
     }
 }
@@ -623,7 +723,7 @@ public struct JobsResultTool: AgentTool {
     }
 
     public static let name = "jobs.result"
-    public static let toolDescription = "Fetch a background job's result. For a finished job this returns resultSummary AND, when the output was spooled, the first page of the stored output plus a nextOffset cursor: keep calling jobs.result with offset=nextOffset to read it in UTF-8-safe pages even after earlier pages have left the context. The response states COMPLETENESS: \"complete\":true means the whole output is stored; \"complete\":false means the artifact is itself a bounded prefix (originalBytes is reported) and reading its end is not the whole job output — do not rerun the job just for that; resultPath/workspace may hold a real file. resultPath is present only when the owning service actually wrote a file and it still exists. For a job that is still running this returns its state — wait for the automatic completion announcement instead of tight polling. When the process died mid-job the status is interrupted: the outcome is UNKNOWN, so inspect existing outputs read-only before explicitly resubmitting."
+    public static let toolDescription = "Fetch a background job's result. For a finished job this returns resultSummary AND, when the output was spooled, the first page of the stored output plus a nextOffset cursor: keep calling jobs.result with offset=nextOffset to read it in UTF-8-safe pages even after earlier pages have left the context. The response states COMPLETENESS: \"complete\":true means the whole output is stored; \"complete\":false means the artifact is not the whole job output — either a bounded prefix capped at the spool limit (originalBytes is reported) or a capture the tool itself already truncated upstream (captureTruncated:true, original size unknown) — so reading its end is not the whole job output; do not rerun the job just for that; resultPath/workspace may hold a real file. resultPath is present only when the owning service actually wrote a file and it still exists. For a job that is still running this returns its state — wait for the automatic completion announcement instead of tight polling. When the process died mid-job the status is interrupted: the outcome is UNKNOWN, so inspect existing outputs read-only before explicitly resubmitting."
     public static let parametersJSON = #"{"type":"object","properties":{"jobID":{"type":"string","description":"UUID returned by jobs.submit"},"offset":{"type":"integer","minimum":0,"description":"Byte offset into the full output; use the nextOffset from the previous page."},"maxBytes":{"type":"integer","minimum":256,"maximum":32000,"description":"Maximum bytes for this page (default 3000)."}},"required":["jobID"],"additionalProperties":false}"#
     public static let riskLabels: Set<RiskLabel> = []
     public static let isSideEffecting = false
@@ -748,15 +848,18 @@ public struct JobsResultTool: AgentTool {
                 return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of the \(output.totalBytes)-byte artifact. Call jobs.result with offset=\(next) for the next page; the artifact path is stable, so this paging keeps working even after earlier pages are dropped from context."
             }
             if output.complete == false {
-                // Reaching the end of a CAPPED artifact is not proof the whole
-                // job output was read: say exactly what is bounded.
+                // Reaching the end of a bounded artifact is not proof the whole
+                // job output was read: name the exact bound in effect.
+                if output.captureTruncated {
+                    return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of the \(output.totalBytes)-byte artifact. COMPLETENESS: the tool reported its own retained output as already truncated upstream, so the job's original output size is unknown. The artifact holds everything that was retained before spooling (and may itself be a capped prefix), but this is the end of the artifact — NOT proof of the whole job output. Inspect the job's resultPath/workspace if it wrote a file, and never rerun the job automatically."
+                }
                 let original = output.originalBytes.map { "\($0)" } ?? "more than the cap"
                 return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of the \(output.totalBytes)-byte artifact. COMPLETENESS: this artifact is itself a bounded prefix (original output: \(original) bytes; cap \(BackgroundJobOutputSpool.maximumArtifactBytes) bytes), so this is the end of the artifact — NOT necessarily the whole job output. The remainder was not stored; inspect the job's resultPath/workspace if it wrote a file, and never rerun the job automatically."
             }
             if output.complete == true {
                 return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of \(output.totalBytes). This is the last page of the complete output."
             }
-            return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of \(output.totalBytes). The artifact footer was unreadable, so completeness could not be verified; treat this as the end of the stored artifact only."
+            return "Output page: bytes \(output.offset)..<\(output.offset + output.pageBytes) of \(output.totalBytes). Source completeness could not be verified; treat this as the end of the stored artifact only."
         }
 
         func changeNote() -> String? {
@@ -872,8 +975,10 @@ public func registerBackgroundJobTools(
         downloadHandler: downloadHandler,
         downloadCancelHandler: downloadCancelHandler,
         downloadTaskLiveness: downloadTaskLiveness,
-        outputSpooler: { jobID, text in
-            guard let spooled = BackgroundJobOutputSpool.write(jobID: jobID, text: text, root: spoolRoot) else {
+        outputSpooler: { jobID, text, captureTruncated in
+            guard let spooled = BackgroundJobOutputSpool.write(
+                jobID: jobID, text: text, root: spoolRoot,
+                captureTruncated: captureTruncated) else {
                 throw FloeError.validationFailed("Unable to spool the job output artifact")
             }
             return spooled
