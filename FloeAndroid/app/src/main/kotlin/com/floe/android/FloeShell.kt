@@ -38,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -116,6 +117,10 @@ private fun FloeShellContent(
     onThemeModeChange: (FloeThemeMode) -> Unit,
     runtimeHost: RuntimeHost?,
 ) {
+    val application = androidx.compose.ui.platform.LocalContext.current.applicationContext as? FloeApplication
+    val officePreviews = application?.officePreviews
+    if (officePreviews != null) OfficePreviewEffect(officePreviews, themeMode)
+    var officeNavigationGeneration by remember { mutableLongStateOf(0L) }
     // G02 selection persistence contract: the SAVED key carries ONLY
     // durable/ordinary selections. A live temporary surface is RAM truth
     // owned by the application-scoped runtime host — it survives rotation/
@@ -420,6 +425,8 @@ private fun FloeShellContent(
         BackHandler(enabled = drawerOpen) { drawerOpen = false }
 
         val select: (SidebarSelection) -> Unit = { target ->
+            officeNavigationGeneration++
+            officePreviews?.cancelUnopened()
             val opensSkillsSheet = target is SidebarSelection.More &&
                 target.destination == MoreDestination.SKILLS
             val currentTemporary = runtimeHost?.conversations?.activeTemporarySession()
@@ -482,6 +489,31 @@ private fun FloeShellContent(
                     { sidebarCollapsed = true }
                 } else null,
                 runtimeHost = runtimeHost,
+                onOpenDocument = officePreviews?.let { controller ->
+                    {
+                        val navigation = ++officeNavigationGeneration
+                        drawerOpen = false
+                        scope.launch {
+                            val temporary = runtimeHost?.conversations?.activeTemporarySession()
+                            if (runtimeHost != null && temporary != null) {
+                                // This is explicit navigation to a local
+                                // document, not an expanded temporary-chat
+                                // tool ceiling or a view reconstruction.
+                                runtimeHost.conversations.tempFence.beginEnd(temporary)
+                                if (!runtimeHost.conversations.tempFence.awaitAdmission(temporary) ||
+                                    navigation != officeNavigationGeneration ||
+                                    runtimeHost.conversations.activeTemporarySession() != null) return@launch
+                                val home = SidebarSelection.Workbench(WorkbenchSelection.NEW_TASK)
+                                runtimeHost.home.onNavigation(home)
+                                commitVisibleSelection(home)
+                            }
+                            if (navigation != officeNavigationGeneration) return@launch
+                            inspectorRoute = null
+                            controller.requestProviderPick()
+                        }
+                        Unit
+                    }
+                },
             )
         }
 

@@ -407,6 +407,13 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     packaging {
         jniLibs.useLegacyPackaging = false
+        // Preserve the verified upstream Office bytes. Their own immutable
+        // payload pins are checked independently from Floe's Swift core;
+        // a packaging strip must not silently replace that native identity.
+        val officePins = groovy.json.JsonSlurper().parse(
+            rootProject.file("core/officeengine/payload-pins.json")) as Map<*, *>
+        val officeLibraries = officePins["libraries"] as Map<*, *>
+        jniLibs.keepDebugSymbols += officeLibraries.keys.map { "**/$it" }
         // Product-packaging boundary for the Swift SDK runtime staging: the
         // four test-only Swift runtime libraries are staged inside
         // core/swiftbridge jniLibs for host qualification and are byte-pinned
@@ -470,6 +477,7 @@ dependencies {
     implementation(project(":feature:settings"))
     // G04 service/presentation modules; owner-bound host adapters gate use.
     implementation(project(":core:safgateway"))
+    implementation(project(":core:officeengine"))
     implementation(project(":feature:ide"))
     implementation(project(":feature:terminal"))
     implementation(project(":feature:browser"))

@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -549,14 +550,43 @@ fun ThreadContinuationBar(holder: ConversationFlowHolder, modifier: Modifier = M
 /** ⇄ errorBanner: honest failure surface with dismiss. */
 @Composable
 fun ThreadErrorBanner(holder: ConversationFlowHolder, modifier: Modifier = Modifier) {
-    val message = holder.actionError ?: return
-    InlineBanner(
-        icon = FloeIcons.XOctagon,
-        text = message,
-        tint = Floe.colors.destructive,
-        onDismiss = holder::dismissActionError,
-        modifier = modifier,
-    )
+    val message = holder.actionError
+    val queueFailure = holder.queueRefreshFailureToken
+    if (message == null && queueFailure == null) return
+    Column(modifier = modifier) {
+        // This banner remains available for completed runs (canContinue
+        // is deliberately irrelevant). Its action performs reads only.
+        if (queueFailure != null) {
+            val refreshLabel = stringResource(R.string.queue_refresh_action)
+            InlineBanner(
+                icon = FloeIcons.XOctagon,
+                text = stringResource(R.string.queue_refresh_failed),
+                tint = Floe.colors.destructive,
+                action = {
+                    Box(
+                        modifier = Modifier
+                            .heightIn(min = FloeLayout.MinimumTarget)
+                            .widthIn(min = FloeLayout.MinimumTarget)
+                            .clickable { holder.retryQueueRefresh() }
+                            .semantics { contentDescription = refreshLabel }
+                            .padding(horizontal = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        FloeText(refreshLabel, style = Floe.typography.metadata,
+                            color = Floe.colors.accent)
+                    }
+                },
+            )
+        }
+        if (message != null) {
+            InlineBanner(
+                icon = FloeIcons.XOctagon,
+                text = message,
+                tint = Floe.colors.destructive,
+                onDismiss = holder::dismissActionError,
+            )
+        }
+    }
 }
 
 /** ⇄ compaction status row. */

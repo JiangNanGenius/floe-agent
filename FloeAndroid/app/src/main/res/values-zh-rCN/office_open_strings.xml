@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="office_open_document">打开文档</string>
+    <string name="office_open_preparing">正在准备文档…</string>
+    <string name="office_open_cancelling">正在取消…</string>
+    <string name="office_open_cancel">取消</string>
+    <string name="office_open_done">完成</string>
+    <string name="office_open_busy">请先关闭当前文档，或等待文档打开。</string>
+    <string name="office_open_unsupported">请选择 DOCX、XLSX 或 PPTX 文档。</string>
+    <string name="office_open_failed">无法打开此文档，请尝试重新选择。</string>
+    <string name="office_open_too_large">请选择不超过 256 MiB 的文档。</string>
+</resources>

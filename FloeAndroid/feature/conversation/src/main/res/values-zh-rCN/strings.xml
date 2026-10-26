@@ -335,4 +335,6 @@
     <string name="history_rename_name">名称</string>
     <string name="history_rename_save">保存</string>
     <string name="history_rename_failed">无法重命名此任务，请重试。</string>
+    <string name="queue_refresh_failed">排队消息刷新失败</string>
+    <string name="queue_refresh_action">刷新</string>
 </resources>

@@ -17,11 +17,50 @@ are complete. G03-R3 representative App qualification, Alpha9 delivery and round
 cleanup are now closed. G04-R1 file/IDE/Git/browser code and component checks are
 complete; the [source batch](https://github.com/JiangNanGenius/floe-agent/commit/fd028eac3b12073e317f802e9f428248f6b02945)
 has been pushed and independently read back. G04-R2 adds representative App
-integration for the Alpha10 stage (build 12). Release availability, actual device
-coverage and remaining limits are recorded in
+integration and is now closed for its representative Alpha11 stage (build 13).
+G05-R1 is delivered in [Alpha12](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.12)
+(build 14, immutable source `9a694fbc52c6a276811c25290038a263df15f4d5`).
+Native offline DOCX/XLSX/PPTX representative previews, owned-close receipts and
+reopening were observed across the existing API37/16 KiB tablet and API33/4 KiB
+Samsung. The final candidate also fixes the phone Impress DOM-placement failure
+and passed actual portrait/landscape observation. G05-R2 now prioritizes basic
+manual editing and reliable save/reopen before AI editing or advanced layout;
+editing, recalculation and export are not yet delivered.
+Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
+
+## G05-R1 native Office preview
+
+The App embeds a fixed official Collabora 26.04.4.2 ARM64 native producer, with
+14 byte-pinned libraries and source/notice mappings to online commit
+`2333344185931274f9c49d6c12a408cefcef6844`. This is an official-producer reuse
+and real JNI/App qualification; no local Office-kernel rebuild or reproducible-
+build attestation is claimed. The original payload remains immutable, and the
+143 explicit asset transformations and unchanged notices are hash-bound.
+
+Direct system document selection works without a model or Linux installation.
+The service opens a verified private snapshot and fences the native process,
+viewer incarnation, cancellation and result ownership. A bound-only default-
+process anchor keeps the exact close acknowledgement reachable while the viewer
+is foreground; it adds no persistent notification, permission or PiP keepalive.
+Uncertain closure retains the snapshot rather than claiming a clean native return.
+
+Full/Play compilation, 40 module checks, 7 transfer checks, 54 render-witness
+semantic checks and 13 focused mobile DOM checks passed in the relevant cohorts.
+Unchanged Core06/Authority evidence is reused. Real tablet offline observations
+include Word Unicode/formatting, spreadsheet data/cached formula results and a
+valid two-slide presentation; blank and corrupt-input outcomes are preserved.
+The final APK was separately observed on the phone for two-page presentation,
+rotation, spreadsheet content, closing and fresh-process reopening. Original
+provider files and the phone's existing four histories/model selection survived.
+
+These are representative preview checks. Editing/recalculation/export, complex
+documents, complete interaction/hardware/visual coverage and two nonblocking
+phone frontend diagnostic events remain follow-up work. The original geometry-
+missing parser fixture's blank presentation failure is preserved. The next goal
+starts with manual editing plus transactional save/reopen, then AI/output work.
 
 ## G04-R2 workspace integration
 
@@ -35,15 +74,27 @@ accurate existing fallbacks and corrected settings-category mappings. No Flutter
 engine or new runtime dependency is added. The six workspace commands are grouped
 under compact New and More controls in the existing title bar.
 
-The C07 editor/pending-input/terminal Kotlin boundary passed 147 JVM tests and
-Full/Play production compilation; actual Tab acceptance, rapid edit/save/reopen
-and GUI-run output with exit code 0 also passed. The subsequent compact-header
-and system-bar source cohort has separate compilation and device evidence. The unchanged queue/run
-native component passed 31 tests and actual Android ARM64 object compilation and
-linking. Qualification of each new source/artifact cohort and App/device behavior
-are recorded separately in the implementation record above.
-This stage does not close whole-product visual parity, the full device/IME matrix,
-or later Root/ADB/accessibility capabilities.
+The final queue observer/read-recovery batch passed 102 App JVM tests, 19
+feature tests and 51 native tests, Full/Play Kotlin compilation and actual Swift
+Android ARM64 object compilation/linking. The actual tablet flow approved one
+local command, observed exit 0, automatically ran one queued 235-byte input and
+removed its queue row on the same page without navigation or manual refresh.
+That queue proof used the previously installed compatible runtime12; the exact
+packaged runtime13 was subsequently upgraded and read back separately. The
+Samsung upgrade retained existing history, model selection and saved-file text.
+Earlier editor/terminal/preview/local Git evidence is reused for unchanged paths.
+
+Owned test users, fixture services, forwarding and phone QA objects were removed;
+original device data, the existing AVD and useful pinned SDKs were preserved.
+The stage does not close every operation, remote-account integration, whole-product
+visual parity, the complete hardware/IME matrix or later Root/ADB/accessibility
+capabilities. The original 85 work packages and 24 G04 operation identities remain.
+
+At each major Android goal close, compare the latest iOS main source against the
+last recorded baseline and update the requirements and next goal. The first
+[delta review](../docs/FLOE_ANDROID_IOS_DELTA_AUDIT.zh-CN.md) identifies 18 groups;
+Office target/save/PDF and output/skill-resource contracts feed into G05. New
+requirements stay in the plan until their inputs and worker ownership are ready.
 
 ## G04-R1 code and component qualification
 
@@ -81,7 +132,31 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 ## Android Alpha
 
-### Alpha10 / G04
+### Alpha12 / G05-R1 offline Office preview
+
+[Download Alpha12](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.12)
+is build 14 from source `9a694fbc52c6a276811c25290038a263df15f4d5`.
+The signed Full ARM64 APK is 432,382,034 bytes (SHA-256
+`2ddb0ea06ebb49da597212bc61520f9110b0f58931def5663673f7f766e48aff`).
+Its only accompanying release assets are final `SHA256SUMS` and the combined
+Linux/IDE/Office corresponding-source/license archive. All three public assets
+were downloaded and checked against their exact local inputs; the annotated tag
+binds the qualified source. It is a prerelease with `latest=false`, preserving
+Alpha11 and iOS Latest `v1.7.58`. The in-app updater remains a later G11 item.
+
+### Alpha11 / G04-R2 representative delivery
+
+[Download Alpha11](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.11)
+is build13 from immutable source `ab825370e3253285e777f4970ee993f73aeef95a`.
+Its assets are one signed ARM64 Full APK, final APK/source `SHA256SUMS`, and the
+combined corresponding-source/license archive. Public downloads, hashes, tag
+binding and package integrity passed. An initially incorrect generator-internal
+checksum list was replaced with the final two-file list and downloaded again.
+The release is a prerelease with `latest=false`; existing Android tags and the
+iOS Latest release are preserved. The GitHub in-app updater remains planned;
+this Alpha currently uses manual installation.
+
+### Alpha10 / G04 history
 
 [Alpha10 release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.10)
 uses build 12 and the same signing identity. Its clean asset set is one signed
@@ -90,8 +165,8 @@ archive. See the implementation record for publication and device qualification.
 
 Known limitation: the active queue panel can retain an already-executed input
 until the conversation is reopened. The observed input was consumed and replied
-to, while the live display did not refresh. The cross-layer observer repair is
-still in progress; this stage does not close G04-R2.
+to, while the live display did not refresh. The cross-layer observer repair was subsequently delivered in Alpha11.
+This paragraph records the unchanged Alpha10 limitation.
 
 ### Alpha9 / G03 history
 

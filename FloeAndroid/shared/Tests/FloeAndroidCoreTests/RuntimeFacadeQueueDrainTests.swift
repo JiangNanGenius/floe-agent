@@ -759,6 +759,688 @@ final class RuntimeFacadeQueueDrainTests: XCTestCase {
         XCTAssertTrue(proofEmpty,
                       "the committed-run proof is consumed exactly once by the lane")
     }
+
+    // MARK: - 7. C09 queue-settle publication + causal observer regressions
+    //
+    // Contract §7 N1–N9 (job-4822f733addf4f0b design, MAIN_ADDENDUM A–F
+    // corrections). AUTHORED, NOT EXECUTED in this lane; determinism comes
+    // from the same CONTROLLED gates as sections above (WriterHoldGate,
+    // provider script gates, synthetic saved anchors) — never sleeps-as-races
+    // — plus STATS/FACT DELTA assertions where the coalesced-wakeup race can
+    // legitimately add ONE further honest publication (documented per test).
+
+    /// A durable COMPLETED run row written directly to the store: a real
+    /// anchor whose journal accepts the settle fact and whose window
+    /// materializes `attached`, WITHOUT any provider traffic. Used where the
+    /// contract's N-shape needs an anchor that retired earlier in history
+    /// (the direct-dispatch idiom already stands in for the terminal entry).
+    @discardableResult
+    private func makeSyntheticTerminalRun(conversationID: UUID,
+                                          goal: String) async throws -> UUID {
+        let runID = UUID()
+        let now = Date()
+        try await fixture.runStore.saveRun(RunRecord(
+            id: runID, conversationID: conversationID, state: "completed",
+            goal: goal, startedAt: now.addingTimeInterval(-60),
+            endedAt: now))
+        return runID
+    }
+
+    /// Decode ONLY the stateless `queueSettled` invalidation facts on a
+    /// journal (the vocabulary word filters every other status frame).
+    private func settleFacts(runID: UUID) async throws
+        -> [(sequence: Int, payload: [String: Any])] {
+        let events = try await fixture.runStore.events(runID: runID)
+        return events.filter { $0.kind == .notice }.compactMap { record in
+            guard let data = record.payloadJSON.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data)
+                    as? [String: Any],
+                  (object["reason"] as? String) == FacadeRunDomain.queueSettleReason
+            else { return nil }
+            return (record.sequence, object)
+        }
+    }
+
+    private func pollSettledQuiescence(_ domain: FacadeRunDomain,
+                                       conversationID: UUID,
+                                       timeoutSeconds: Double = 15) async {
+        let quiesced = await pollFor(timeoutSeconds: timeoutSeconds) {
+            let active = await domain.queueDrainActive.isEmpty
+            let recheck = await domain.queueDrainRecheck.isEmpty
+            let duties = await domain.queueDrainDuties.isEmpty
+            let leases = await domain.queueDrainLeases[conversationID] == nil
+            return active && recheck && duties && leases
+        }
+        XCTAssertTrue(quiesced, "all drain lanes must reach their honest exit")
+    }
+
+    func testDrainExitPublishesSettleFactOnAnchorJournalAndWindow() async throws {
+        // N1: REAL terminal production path. The launched follow-up is
+        // SCRIPT-STALLS at the provider (gate), so exactly one lane exit
+        // happens before any second terminal can exist: the fact on the
+        // trigger anchor is deterministically lane=consumed chain=closed.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "queued follow-up settle",
+                                       selectedModelID: fixture.modelID)
+        let gate = RunGateBox()
+        defer { gate.release() }
+        fixture.adapter.enqueue(script: .init(events: [
+            .textDelta(.init(text: "held follow-up")),
+            .completed(.init(stopReason: .endTurn)),
+        ], stallAfter: 1, gate: gate), forRequest: fixture.adapter.requestCount + 1)
+        let anchor = try await startAndCompleteRun(
+            domain, conversationID: conversationID,
+            goal: "settle trigger", correlation: "corr-c09-n1")
+        let factVisible = await pollFor(timeoutSeconds: 15) {
+            let facts = (try? await self.settleFacts(runID: anchor)) ?? []
+            return !facts.isEmpty
+        }
+        XCTAssertTrue(factVisible, "the lane exit must publish under the still-held lease")
+        let facts = try await settleFacts(runID: anchor)
+        XCTAssertEqual(facts.count, 1, "exactly ONE settle fact on the anchor journal")
+        let payload = try XCTUnwrap(facts.first?.payload)
+        XCTAssertEqual(payload["reason"] as? String, FacadeRunDomain.queueSettleReason)
+        XCTAssertEqual(payload["lane"] as? String, "consumed",
+            "the follow-up is gated live, so this exit is the consumed receipt itself")
+        XCTAssertEqual(payload["chain"] as? String, "closed",
+            "no other terminal parked while this lane ran")
+        XCTAssertNil(payload["state"],
+            "the settle vocabulary NEVER carries a run-state member (renders nothing)")
+        let factSequence = try XCTUnwrap(facts.first?.sequence)
+        let page = fixture.events.pollDurable(runID: anchor, afterSequence: 0,
+                                              budgetBytes: 65_536)
+        XCTAssertEqual(page["windowState"] as? String, "attached",
+            "the fact materializes into the pump window the binder serves")
+        XCTAssertGreaterThanOrEqual(page["watermark"] as? Int ?? -1, factSequence,
+            "the window watermark covers the committed fact")
+        // Release the follow-up; the chain settles honestly through its own
+        // lane (duty path) before teardown.
+        gate.release()
+        let consumed = await pollFor(timeoutSeconds: 15) {
+            let current = try? await self.fixture.inputStore.input(id: row.id)
+            return current?.status == .consumed && current?.consumedRunID != nil
+        }
+        XCTAssertTrue(consumed)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        XCTAssertEqual(fixture.adapter.requestCount, 2,
+            "trigger + the one follow-up launch — no duplicate")
+    }
+
+    func testRefusedHeadRowPublishesSettleFactAndStaysVisiblyQueued() async throws {
+        // N2: an explicit unroutable row through the REAL terminal path.
+        // Single terminal + refusal never launches ⇒ deterministic lane=
+        // refused chain=closed; the row keeps its body byte-intact.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        var disabledModel = fixture.modelProfile
+        disabledModel.id = UUID()
+        disabledModel.remoteModelID = "fixture-model-c09-disabled"
+        disabledModel.displayName = "Fixture Disabled C09"
+        disabledModel.isEnabled = false
+        try await fixture.modelStore.saveModel(disabledModel)
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "queued without route settle",
+                                       selectedModelID: disabledModel.id)
+        let anchor = try await startAndCompleteRun(
+            domain, conversationID: conversationID,
+            goal: "refusal trigger", correlation: "corr-c09-n2")
+        let factVisible = await pollFor(timeoutSeconds: 15) {
+            let facts = (try? await self.settleFacts(runID: anchor)) ?? []
+            return !facts.isEmpty
+        }
+        XCTAssertTrue(factVisible)
+        let facts = try await settleFacts(runID: anchor)
+        XCTAssertEqual(facts.count, 1)
+        let payload = try XCTUnwrap(facts.first?.payload)
+        XCTAssertEqual(payload["lane"] as? String, "refused",
+            "the refusal exit carries the honest lane class")
+        XCTAssertEqual(payload["chain"] as? String, "closed",
+            "single terminal, refusal launches nothing ⇒ no park possible")
+        XCTAssertNil(payload["state"])
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .queued)
+        XCTAssertEqual(stored.content, "queued without route settle",
+                       "the refused row keeps its original body byte-intact")
+        let pending = try await fixture.inputStore.pending(conversationID: conversationID)
+        XCTAssertTrue(pending.contains { $0.id == row.id },
+                      "a refused row stays visibly queued (the fact renders nothing)")
+        XCTAssertEqual(fixture.adapter.requestCount, 1,
+                       "a refused route never launches — the fact is the only IO")
+    }
+
+    func testOwnedLeaseHeldAcrossSettlePublicationAndReleasedExactlyOnce() async throws {
+        // N3 (QREV-01): while the append is gated INSIDE the publish await,
+        // the registry still sees the lane's owned work — the delete drain
+        // and root shutdown provably BLOCK (waitForDrain false), and the
+        // lane's active flag + single lease are still live. After release,
+        // the fact materializes, the EXACT token detached last, and the
+        // epoch's owned count is back to its pre-dispatch baseline.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchor = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                        goal: "owned-publication anchor")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "owned lease settle row",
+                                       selectedModelID: fixture.modelID)
+        let gateStore = GatedPublishRunStore(wrapped: fixture.runStore, gatedAnchor: anchor)
+        defer { gateStore.releaseAppend() }
+        let bundle = RunPersistenceBundle(identity: .ordinary,
+                                          conversations: fixture.conversationStore,
+                                          runs: gateStore,
+                                          runningInputs: fixture.inputStore,
+                                          launches: fixture.launchStore,
+                                          childRuns: fixture.childStore,
+                                          intelligence: fixture.intelligence)
+        let baseline = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: bundle,
+                                              anchorRunID: anchor)
+        let entered = gateStore.awaitEntered(timeoutSeconds: 15)
+        XCTAssertTrue(entered,
+            "the settle publication must reach its append INSIDE the still-held lane lease")
+        // Publication IO is in flight UNDER the lease:
+        let stillActive = await domain.queueDrainActive.contains(conversationID)
+        XCTAssertTrue(stillActive, "the lane must stay ACTIVE across the publish await")
+        let leaseCount = await domain.queueDrainLeases[conversationID]?.count ?? 0
+        XCTAssertEqual(leaseCount, 1, "the lane's exact lease is still held")
+        let live = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        XCTAssertGreaterThanOrEqual(live, baseline + 1,
+            "the publication is REAL owned work the shutdown must wait for")
+        let drainedEarly = await RuntimeOwnedWorkRegistry.shared.waitForDrain(
+            epoch: fixture.epoch, timeoutMillis: 300)
+        XCTAssertFalse(drainedEarly,
+            "delete drain / root shutdown must NOT see zero while publication IO owns the lease")
+        gateStore.releaseAppend()
+        let settled = await pollFor(timeoutSeconds: 15) {
+            let page = self.fixture.events.pollDurable(runID: anchor, afterSequence: 0,
+                                                       budgetBytes: 65_536)
+            let facts = (try? await self.settleFacts(runID: anchor)) ?? []
+            guard let sequence = facts.first?.sequence else { return false }
+            let active = await domain.queueDrainActive.isEmpty
+            let leases = await domain.queueDrainLeases[conversationID] == nil
+            let count = await RuntimeOwnedWorkRegistry.shared.count(for: self.fixture.epoch)
+            return (page["windowState"] as? String) == "attached"
+                && (page["watermark"] as? Int ?? -1) >= sequence
+                && active && leases && count == baseline
+        }
+        XCTAssertTrue(settled,
+            "the fact materializes, the exact token detached LAST, and owned work returns to baseline")
+        let consumed = await pollFor(timeoutSeconds: 15) {
+            let current = try? await self.fixture.inputStore.input(id: row.id)
+            return current?.status == .consumed && current?.consumedRunID != nil
+        }
+        XCTAssertTrue(consumed)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+    }
+
+    func testAppendFailureIsTypedObservableAndPreservesConsumption() async throws {
+        // N4 (QREV-03 + MAIN_ADDENDUM F): the auxiliary append throws ⇒
+        // IMMEDIATE typed degrade — no journal retry, NO business
+        // re-creation. Consumption/receipt are untouched; the host-visible
+        // signal is the EXISTING resyncRequired member on the anchor poll.
+        // The follow-up's own duty publication (coalesced B shape) lands a
+        // second fact on the follow-up run, so stats are asserted as
+        // exact PER-ANCHOR deltas, not absolute totals.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchorA1 = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                          goal: "append-fail anchor")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "append fail settle row",
+                                       selectedModelID: fixture.modelID)
+        let failing = FailingAppendRunStore(wrapped: fixture.runStore, failingAnchor: anchorA1)
+        let bundle = RunPersistenceBundle(identity: .ordinary,
+                                          conversations: fixture.conversationStore,
+                                          runs: failing,
+                                          runningInputs: fixture.inputStore,
+                                          launches: fixture.launchStore,
+                                          childRuns: fixture.childStore,
+                                          intelligence: fixture.intelligence)
+        let statsBefore = await domain.queueSettleStats
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: bundle,
+                                              anchorRunID: anchorA1)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let statsAfter = await domain.queueSettleStats
+        XCTAssertEqual(statsAfter.appendFailed - statsBefore.appendFailed, 1,
+            "the append throw is counted exactly once for this anchor (degrade-immediate, no retry)")
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .consumed)
+        XCTAssertNotNil(stored.consumedRunID,
+            "publication failure NEVER touches the consumption row/receipt")
+        let anchorFacts = try await settleFacts(runID: anchorA1)
+        XCTAssertTrue(anchorFacts.isEmpty, "the failed append left NO fact on the anchor")
+        let degradedA1 = await fixture.events.isSettlePublicationDegraded(runID: anchorA1)
+        XCTAssertTrue(degradedA1)
+        let page = fixture.events.pollDurable(runID: anchorA1, afterSequence: 0,
+                                              budgetBytes: 65_536)
+        XCTAssertEqual(page["windowState"] as? String, "notAttached")
+        XCTAssertEqual(page["resyncRequired"] as? Bool, true,
+            "the host-visible signal rides the EXISTING wire member, no new schema")
+        let leasesCleared = await domain.queueDrainLeases[conversationID] == nil
+        XCTAssertTrue(leasesCleared)
+        // Recovery: the NEXT real chain publishes its own anchor's fact
+        // through a healthy bundle and reads back clean.
+        let anchorA2 = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                          goal: "recovery anchor")
+        let row2 = try await enqueueRow(conversationID: conversationID,
+                                        content: "recovery settle row",
+                                        selectedModelID: fixture.modelID)
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchorA2)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let recoveryFacts = try await settleFacts(runID: anchorA2)
+        XCTAssertFalse(recoveryFacts.isEmpty,
+            "a healthy chain publishes where the host's CURRENT watch reads")
+        let publishedAfter = await domain.queueSettleStats.published
+        XCTAssertGreaterThan(publishedAfter, statsAfter.published,
+            "the recovery publication is counted (delta ≥ 1 incl. the follow-up duty fact)")
+        let degradedA2 = await fixture.events.isSettlePublicationDegraded(runID: anchorA2)
+        XCTAssertFalse(degradedA2, "the recovery anchor's window is verified clean")
+        let consumed2 = await pollFor(timeoutSeconds: 15) {
+            let current = try? await self.fixture.inputStore.input(id: row2.id)
+            return current?.status == .consumed && current?.consumedRunID != nil
+        }
+        XCTAssertTrue(consumed2)
+    }
+
+    func testValidMultiPageBacklogMaterializesWithoutFailureClassification() async throws {
+        // N5 (Main's backlog steer): 450 un-refreshed journal events are a
+        // VALID >one-page backlog, NOT an IO failure. The progress-driven
+        // loop pages through (200/200/remaining) and the fact materializes
+        // with ZERO windowUnmaterialized classification.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchor = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                        goal: "backlog anchor")
+        for index in 1...450 {
+            _ = try await fixture.runStore.appendEvent(
+                runID: anchor, kind: .status,
+                payloadJSON: "{\"filler\":\(index)}")
+        }
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "backlog settle row",
+                                       selectedModelID: fixture.modelID)
+        let before = await domain.queueSettleStats
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchor)
+        let facts = await pollFor(timeoutSeconds: 20) {
+            let current = try? await self.settleFacts(runID: anchor)
+            return current?.isEmpty == false
+        }
+        XCTAssertTrue(facts)
+        let materializationFacts = try await settleFacts(runID: anchor)
+        let settleSequence = try XCTUnwrap(materializationFacts.first?.sequence)
+        let materialized = await pollFor(timeoutSeconds: 20) {
+            let page = self.fixture.events.pollDurable(runID: anchor, afterSequence: 0,
+                                                       budgetBytes: 65_536)
+            return (page["windowState"] as? String) == "attached"
+                && (page["watermark"] as? Int ?? -1) >= settleSequence
+        }
+        XCTAssertTrue(materialized, "the watermark strictly advances to the committed fact")
+        let after = await domain.queueSettleStats
+        XCTAssertGreaterThan(after.published - before.published, 0)
+        XCTAssertEqual(after.windowUnmaterialized - before.windowUnmaterialized, 0,
+            "a valid multi-page backlog is NEVER misclassified as IO failure")
+        let degraded = await fixture.events.isSettlePublicationDegraded(runID: anchor)
+        XCTAssertFalse(degraded)
+        let consumed = await pollFor(timeoutSeconds: 15) {
+            let current = try? await self.fixture.inputStore.input(id: row.id)
+            return current?.status == .consumed && current?.consumedRunID != nil
+        }
+        XCTAssertTrue(consumed)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+    }
+
+    func testWindowReadFailureKeepsDurableFactAndReportsDegraded() async throws {
+        // N6: the fact IS durable (append succeeded) but the window cannot
+        // be VERIFIED (store read throws) ⇒ typed degraded on the exact
+        // window the host watch polls; consumption/receipt untouched; the
+        // lease is released exactly once.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchor = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                        goal: "window-fail anchor")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "window fail settle row",
+                                       selectedModelID: fixture.modelID)
+        let failing = WindowFailingRunStore(wrapped: fixture.runStore, failingAnchor: anchor)
+        let bundle = RunPersistenceBundle(identity: .ordinary,
+                                          conversations: fixture.conversationStore,
+                                          runs: failing,
+                                          runningInputs: fixture.inputStore,
+                                          launches: fixture.launchStore,
+                                          childRuns: fixture.childStore,
+                                          intelligence: fixture.intelligence)
+        let before = await domain.queueSettleStats
+        let registryBefore = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: bundle,
+                                              anchorRunID: anchor)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let journal = try await fixture.runStore.events(runID: anchor)
+        let durable = journal.contains { record in
+            guard record.kind == .notice,
+                  let data = record.payloadJSON.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return false }
+            return (object["reason"] as? String) == FacadeRunDomain.queueSettleReason
+        }
+        XCTAssertTrue(durable, "the committed fact survives window failure (durable truth)")
+        let after = await domain.queueSettleStats
+        XCTAssertEqual(after.windowUnmaterialized - before.windowUnmaterialized, 1,
+            "unverifiable window counted exactly once")
+        let degraded = await fixture.events.isSettlePublicationDegraded(runID: anchor)
+        XCTAssertTrue(degraded)
+        let page = fixture.events.pollDurable(runID: anchor, afterSequence: 0,
+                                              budgetBytes: 65_536)
+        XCTAssertEqual(page["resyncRequired"] as? Bool, true)
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .consumed)
+        XCTAssertNotNil(stored.consumedRunID)
+        let leases = await domain.queueDrainLeases[conversationID] == nil
+        XCTAssertTrue(leases, "the exact-token detach-last tail ran despite the degrade")
+        let allOwnedWorkSettled = await pollFor(timeoutSeconds: 15) {
+            RuntimeOwnedWorkRegistry.shared.count(for: self.fixture.epoch) == registryBefore
+        }
+        XCTAssertTrue(allOwnedWorkSettled,
+                      "queue-lane quiescence can precede the real follow-up run's owned cleanup")
+        let registryAfter = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        XCTAssertEqual(registryAfter, registryBefore,
+            "exact-token detach-last leaves no registry residue after the whole chain settles")
+    }
+
+    func testParkedDutyAnchorInheritanceAndChainBits() async throws {
+        // N7 (QREV-02 coalesced shape): lane #1 pinned at its claim; a
+        // second anchored dispatch PARKS and records its DUTY anchor. The
+        // first exit publishes lane=refused with the truthful-at-
+        // construction chain=OPEN (the park exists); the honoring
+        // re-dispatch publishes its OWN duty anchor with chain=CLOSED
+        // (nothing parked while lane #2 ran). The ORIGINAL parked-wakeup
+        // evidence assertion (feedEvidence delta 2) is preserved verbatim.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchorA1 = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                          goal: "parked duty A1")
+        let anchorA2 = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                          goal: "parked duty A2")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "queued foreign mode c09",
+                                       selectedModelID: fixture.modelID,
+                                       executionMode: "weirdMode")
+        let writerGate = WriterHoldGate()
+        defer { writerGate.releaseWriter() }
+        writerGate.hold(fixture.database)
+        let evidenceBefore = await domain.feedEvidence[conversationID]?.count ?? 0
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchorA1)
+        let laneActive = await domain.queueDrainActive.contains(conversationID)
+        XCTAssertTrue(laneActive)
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchorA2)
+        let parkedFlag = await domain.queueDrainRecheck.contains(conversationID)
+        XCTAssertTrue(parkedFlag)
+        let dutyAtPark = await domain.queueDrainDuties[conversationID]
+        XCTAssertEqual(dutyAtPark, anchorA2,
+            "the park records the parking terminal's anchor: the follow-up publishes where the host's CURRENT watch reads")
+        writerGate.releaseWriter()
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let factsA1 = try await settleFacts(runID: anchorA1)
+        XCTAssertEqual(factsA1.count, 1)
+        XCTAssertEqual(factsA1.first?.payload["lane"] as? String, "refused")
+        XCTAssertEqual(factsA1.first?.payload["chain"] as? String, "open",
+            "a park exists while this lane exits — the successor is guaranteed")
+        let factsA2 = try await settleFacts(runID: anchorA2)
+        XCTAssertEqual(factsA2.count, 1)
+        XCTAssertEqual(factsA2.first?.payload["lane"] as? String, "refused")
+        XCTAssertEqual(factsA2.first?.payload["chain"] as? String, "closed",
+            "nothing parked while the honoring lane ran — the refusal-at-rest closes the chain")
+        let evidenceAfter = await domain.feedEvidence[conversationID]?.count ?? 0
+        XCTAssertEqual(evidenceAfter - evidenceBefore, 2,
+            "the parked wakeup must produce exactly ONE real bounded re-dispatch (existing lease-evidence trail): a dropped wakeup leaves 1, a spin leaves more")
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .queued)
+        XCTAssertEqual(stored.content, "queued foreign mode c09",
+                       "the refused row keeps its original body byte-intact")
+        XCTAssertEqual(fixture.adapter.requestCount, 0,
+                       "a refusing head row never reaches the provider, honored re-dispatch included")
+    }
+
+    func testSiblingSkipPublishesDeferredFactUnderDedicatedLease() async throws {
+        // N8 (QREV-02 sibling race): a live sibling makes the dispatch a
+        // REAL observation boundary. The skip publishes lane=DEFERRED
+        // chain=OPEN under its own short attach→publish→exact-token-detach
+        // lease (delete drain waits the feed evidence); the row is NOT
+        // consumed; only the sibling ever reached the provider.
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchor = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                        goal: "sibling skip anchor")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "queued under sibling settle",
+                                       selectedModelID: fixture.modelID)
+        let gate = RunGateBox()
+        let stallIndex = fixture.adapter.requestCount
+        defer { gate.release() }
+        fixture.adapter.enqueue(script: .init(events: [
+            .textDelta(.init(text: "held sibling")),
+            .completed(.init(stopReason: .endTurn)),
+        ], stallAfter: 1, gate: gate), forRequest: stallIndex)
+        let sibling = try await startRunLive(domain, conversationID: conversationID,
+                                             goal: "sibling parked", correlation: "corr-c09-n8")
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchor)
+        let factVisible = await pollFor(timeoutSeconds: 15) {
+            let facts = (try? await self.settleFacts(runID: anchor)) ?? []
+            return facts.first?.payload["lane"] as? String == "deferred"
+        }
+        XCTAssertTrue(factVisible, "the skip is a durable observation boundary, not a silent return")
+        let facts = try await settleFacts(runID: anchor)
+        XCTAssertEqual(facts.count, 1)
+        XCTAssertEqual(facts.first?.payload["chain"] as? String, "open",
+            "the live sibling guarantees a later terminal fact")
+        XCTAssertNil(facts.first?.payload["state"])
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .queued, "a sibling skip never consumes")
+        let siblingReachedProvider = await pollFor(timeoutSeconds: 10) {
+            self.fixture.adapter.requestCount == 1
+        }
+        XCTAssertTrue(siblingReachedProvider,
+                      "owned registration precedes provider entry; wait for the real held stream")
+        XCTAssertEqual(fixture.adapter.requestCount, 1,
+                       "only the live sibling reached the provider — no drain launch, no duplicate turn")
+        let leaseReleased = await pollFor(timeoutSeconds: 10) {
+            await domain.queueDrainLeases[conversationID] == nil
+        }
+        XCTAssertTrue(leaseReleased,
+            "the dedicated short lease detached its exact token last, no await after")
+        // Let the sibling settle honestly before teardown.
+        gate.release()
+        _ = await waitDurableTerminal(fixture: fixture, runID: sibling)
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+    }
+
+    func testFencedExitPublishesNothing() async throws {
+        // N9: root retirement dominating a pinned lane ⇒ NO silent write.
+        // The lane is pinned at its claim (writer gate); the fence lands
+        // while it awaits; the exit's publication re-proves the fences and
+        // REFUSES — the anchor journal stays clean, the lane still releases
+        // its exact lease (shutdown waits real completion).
+        let conversationID = try await fixture.makeOrdinaryConversation()
+        let domain = fixture.makeDomain()
+        let anchor = try await makeSyntheticTerminalRun(conversationID: conversationID,
+                                                        goal: "fenced anchor")
+        let row = try await enqueueRow(conversationID: conversationID,
+                                       content: "fenced settle row",
+                                       selectedModelID: fixture.modelID)
+        let writerGate = WriterHoldGate()
+        defer { writerGate.releaseWriter() }
+        writerGate.hold(fixture.database)
+        let baseline = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        await domain.dispatchQueuedInputDrain(conversationID: conversationID,
+                                              bundle: domain.durable,
+                                              anchorRunID: anchor)
+        let laneActive = await domain.queueDrainActive.contains(conversationID)
+        XCTAssertTrue(laneActive, "the lane must be active, pinned at its claim")
+        // The PRODUCTION retirement fence (the same entry every existing
+        // fence test uses): real root retirement semantics, no synthetic
+        // property poke.
+        await domain.beginGenerationRetirement()
+        writerGate.releaseWriter()
+        await pollSettledQuiescence(domain, conversationID: conversationID)
+        let facts = try await settleFacts(runID: anchor)
+        XCTAssertTrue(facts.isEmpty, "no silent write after root retirement")
+        let stats = await domain.queueSettleStats
+        XCTAssertEqual(stats.fencedSkipped, 1,
+            "the fenced publication refusal is counted (honesty floor)")
+        let stored = try unwrapAsync(await fixture.inputStore.input(id: row.id))
+        XCTAssertEqual(stored.status, .queued,
+                       "the claimed row restored under the fence path stays durable")
+        let count = await RuntimeOwnedWorkRegistry.shared.count(for: fixture.epoch)
+        XCTAssertEqual(count, baseline,
+            "the exact-token detach-last tail still released the lease")
+        // No unfence: beginGenerationRetirement is generation-terminal and the
+        // fixture teardown retires through the REAL shutdown anyway.
+    }
+}
+
+// MARK: - C09 settle-publication test doubles (contract §7)
+
+/// Base delegation over the REAL fixture store. `appendEvent` is one writer
+/// transaction in the SQLite implementation, so a wrapper throw below
+/// cannot leave partial state; everything else is forwarded verbatim
+/// (including the protocol-extension members, so overrides stay honest).
+private class DelegatingRunStore: RunStore, @unchecked Sendable {
+    let wrapped: any RunStore
+    init(wrapped: any RunStore) { self.wrapped = wrapped }
+    func saveRun(_ run: RunRecord) async throws { try await wrapped.saveRun(run) }
+    func run(id: UUID) async throws -> RunRecord? { try await wrapped.run(id: id) }
+    func runs(conversationID: UUID) async throws -> [RunRecord] {
+        try await wrapped.runs(conversationID: conversationID)
+    }
+    func recentRuns(conversationID: UUID, limit: Int) async throws -> [RunRecord] {
+        try await wrapped.recentRuns(conversationID: conversationID, limit: limit)
+    }
+    func nonTerminalRuns() async throws -> [RunRecord] { try await wrapped.nonTerminalRuns() }
+    func updateRunState(id: UUID, state: String, endedAt: Date?) async throws {
+        try await wrapped.updateRunState(id: id, state: state, endedAt: endedAt)
+    }
+    func assignGoal(runID: UUID, goalID: UUID) async throws {
+        try await wrapped.assignGoal(runID: runID, goalID: goalID)
+    }
+    func appendEvent(runID: UUID, kind: RunEventRecord.Kind,
+                     payloadJSON: String) async throws -> RunEventRecord {
+        try await wrapped.appendEvent(runID: runID, kind: kind, payloadJSON: payloadJSON)
+    }
+    func events(runID: UUID) async throws -> [RunEventRecord] { try await wrapped.events(runID: runID) }
+    func recentEvents(runID: UUID, limit: Int) async throws -> [RunEventRecord] {
+        try await wrapped.recentEvents(runID: runID, limit: limit)
+    }
+    func earlierEvents(runID: UUID, beforeSequence: Int,
+                       limit: Int) async throws -> [RunEventRecord] {
+        try await wrapped.earlierEvents(runID: runID, beforeSequence: beforeSequence, limit: limit)
+    }
+    func events(runID: UUID, afterSequence: Int, limit: Int) async throws -> [RunEventRecord] {
+        try await wrapped.events(runID: runID, afterSequence: afterSequence, limit: limit)
+    }
+    func recordUsage(_ usage: RunUsageRecord) async throws { try await wrapped.recordUsage(usage) }
+    func usage(runID: UUID) async throws -> [RunUsageRecord] { try await wrapped.usage(runID: runID) }
+    func recordError(_ error: RunErrorRecord) async throws { try await wrapped.recordError(error) }
+    func errors(runID: UUID) async throws -> [RunErrorRecord] { try await wrapped.errors(runID: runID) }
+    func saveCheckpoint(runID: UUID, conversationID: UUID, formatVersion: Int,
+                        state: String, bodyJSON: String) async throws {
+        try await wrapped.saveCheckpoint(runID: runID, conversationID: conversationID,
+                                         formatVersion: formatVersion, state: state,
+                                         bodyJSON: bodyJSON)
+    }
+    func checkpointBody(runID: UUID) async throws -> String? {
+        try await wrapped.checkpointBody(runID: runID)
+    }
+    func deleteCheckpoint(runID: UUID) async throws { try await wrapped.deleteCheckpoint(runID: runID) }
+    func usageStatistics() async throws -> UsageStatistics { try await wrapped.usageStatistics() }
+}
+
+/// N3: the anchor's settle append PROVES its entry (entered signal) and then
+/// parks off the cooperative pool until released (the WriterHoldGate
+/// discipline — occupancy proven, no sleeps-as-races).
+private final class GatedPublishRunStore: DelegatingRunStore {
+    private let gatedAnchor: UUID
+    private let entered = DispatchSemaphore(value: 0)
+    private let release = DispatchSemaphore(value: 0)
+
+    init(wrapped: any RunStore, gatedAnchor: UUID) {
+        self.gatedAnchor = gatedAnchor
+        super.init(wrapped: wrapped)
+    }
+
+    override func appendEvent(runID: UUID, kind: RunEventRecord.Kind,
+                              payloadJSON: String) async throws -> RunEventRecord {
+        if runID == gatedAnchor {
+            entered.signal()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().async {
+                    self.release.wait()
+                    continuation.resume()
+                }
+            }
+        }
+        return try await wrapped.appendEvent(runID: runID, kind: kind, payloadJSON: payloadJSON)
+    }
+
+    /// Blocks the TEST thread only (the WriterHoldGate discipline: occupancy
+    /// is PROVEN before assertions run; the gated append itself parks on a
+    /// global-queue worker, never the cooperative pool).
+    func awaitEntered(timeoutSeconds: Double) -> Bool {
+        entered.wait(timeout: .now() + timeoutSeconds) == .success
+    }
+
+    func releaseAppend() {
+        release.signal()
+    }
+}
+
+/// N4: the anchor's journal append throws (all other writes delegate).
+private final class FailingAppendRunStore: DelegatingRunStore {
+    private let failingAnchor: UUID
+    init(wrapped: any RunStore, failingAnchor: UUID) {
+        self.failingAnchor = failingAnchor
+        super.init(wrapped: wrapped)
+    }
+    override func appendEvent(runID: UUID, kind: RunEventRecord.Kind,
+                              payloadJSON: String) async throws -> RunEventRecord {
+        if runID == failingAnchor {
+            throw NSError(domain: "c09-settle-append", code: 42,
+                          userInfo: [NSLocalizedDescriptionKey: "injected append failure"])
+        }
+        return try await wrapped.appendEvent(runID: runID, kind: kind, payloadJSON: payloadJSON)
+    }
+}
+
+/// N6: the anchor's windowed page READ throws (the durable append and all
+/// reads for other runs delegate — the fact is durable, the window is not
+/// verifiable: the exact degraded shape).
+private final class WindowFailingRunStore: DelegatingRunStore {
+    private let failingAnchor: UUID
+    init(wrapped: any RunStore, failingAnchor: UUID) {
+        self.failingAnchor = failingAnchor
+        super.init(wrapped: wrapped)
+    }
+    override func events(runID: UUID, afterSequence: Int,
+                         limit: Int) async throws -> [RunEventRecord] {
+        if runID == failingAnchor {
+            throw NSError(domain: "c09-settle-window", code: 43,
+                          userInfo: [NSLocalizedDescriptionKey: "injected window read failure"])
+        }
+        return try await wrapped.events(runID: runID, afterSequence: afterSequence, limit: limit)
+    }
 }
 
 /// Test-only deterministic writer gate (C05 regressions): occupies the

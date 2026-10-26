@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0; Floe neutral widget artwork. Functional widget names, states and dimensions preserve the native interface. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 50">
+  <rect width="16" height="50" fill="#ffffff" />
+  <line x1="8" y1="7" x2="8" y2="43" stroke="#C6C6C8" stroke-width="8" stroke-linecap="round" />
+</svg>

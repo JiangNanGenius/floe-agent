@@ -556,6 +556,11 @@ class ConversationFlowHolder(
     var actionError: String? by mutableStateOf(null)
         private set
 
+    /** A failed queue projection read belongs to this holder/session and
+     * its exact recovery token, independently of ordinary action errors. */
+    var queueRefreshFailureToken: String? by mutableStateOf(null)
+        private set
+
     /** ⇄ ThreadComposerView attachmentError (import-path surface). */
     var attachmentError: String? by mutableStateOf(null)
         private set
@@ -747,6 +752,7 @@ class ConversationFlowHolder(
         actionError = null
         attachmentError = null
         modelPersistenceFailureName = null
+        queueRefreshFailureToken = null
         isCompacting = false
         temporaryKeepState = TemporaryKeepStateUi.Idle
         temporaryDraftHandoffPending = false
@@ -1799,6 +1805,26 @@ class ConversationFlowHolder(
 
     fun dismissActionError() { actionError = null }
     fun dismissAttachmentError() { attachmentError = null }
+
+    fun noteQueueRefreshFailure(failureToken: String) {
+        if (retired || failureToken.isBlank()) return
+        queueRefreshFailureToken = failureToken
+    }
+
+    fun clearQueueRefreshFailure(expectedFailureToken: String): Boolean {
+        if (retired || queueRefreshFailureToken != expectedFailureToken) return false
+        queueRefreshFailureToken = null
+        return true
+    }
+
+    /** Refreshing projection reads never resumes or re-executes a run.
+     * Dispatch alone is not recovery: keep the failure until the host
+     * confirms an authoritative read for the same exact token. */
+    fun retryQueueRefresh(): Boolean {
+        if (retired) return false
+        val token = queueRefreshFailureToken ?: return false
+        return host.refreshQueuedInputProjection(session, token)
+    }
 
     /** The host surfaces a typed queue-mutation refusal on the thread error
      * banner. The pending-input editor sheet closes optimistically when the

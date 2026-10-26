@@ -133,6 +133,19 @@ public final class FacadeEventPump: @unchecked Sendable {
         case runGone            // attached and the durable owner is gone
     }
 
+    /// Typed outcome of one durable-window refresh (C09 QREV-03b).
+    /// `refreshed` carries the window watermark AFTER the merged page so a
+    /// progress-driven materializer can tell a valid multi-page backlog
+    /// apart from an IO anomaly; `failedRead` is the honest typed failure
+    /// of the store read (previously a silent return). The result is
+    /// internal Swift only — no wire member changed; the existing
+    /// `@discardableResult` keeps every production track-task and existing
+    /// pump test call site source-compatible.
+    public enum DurableWindowRefreshOutcome: Sendable, Equatable {
+        case refreshed(watermark: Int)
+        case failedRead
+    }
+
     public struct DurableWindowSnapshot: Sendable {
         public let runID: UUID
         public let status: DurableWindowStatus
@@ -154,6 +167,24 @@ public final class FacadeEventPump: @unchecked Sendable {
     private var windowOrder: [UUID] = []
     private var consumers: [UUID: [LiveConsumerState]] = [:]   // runID -> per epoch
     private var effectSequences: [UUID: UInt64] = [:]          // per-run live epoch
+
+    // MARK: Settle-publication degraded state (C09 QREV-03b / MAIN_ADDENDUM E)
+
+    /// runID → the settle-fact sequence the window could NOT be verified
+    /// against the journal (-1 = the append itself failed, so no sequence
+    /// can be proven). Insertion-ordered and bounded by
+    /// `Limits.maximumWindows`; internal Swift only — the signal rides the
+    /// EXISTING frozen `resyncRequired` durable member, never a new schema.
+    private var settleDegraded: [UUID: Int] = [:]
+    private var settleDegradedOrder: [UUID] = []
+    /// MAIN_ADDENDUM E: an overflow must never silently drop an unresolved
+    /// target's sole recovery signal. Evicting an unresolved entry therefore
+    /// latches a conservative pump-wide resync (bounded: one Bool) forcing
+    /// `resyncRequired` on every subsequent durable poll until the pump /
+    /// root generation resets. Consumers treat it as the existing once-per-
+    /// watch authoritative reconcile — repairing from real pages is
+    /// idempotent, so over-signal degrades cost, never correctness.
+    private var settleOverflowResyncLatched = false
 
     public init() {}
 
@@ -178,7 +209,9 @@ public final class FacadeEventPump: @unchecked Sendable {
     /// The pump contract (monotonic sequence, bounded window, explicit
     /// notAttached/runGone) is identical; no store is synthesized and the
     /// durable singleton is never substituted for a temporary run.
-    public func refreshDurableWindow(runID: UUID, store: any RunStore) async {
+    @discardableResult
+    public func refreshDurableWindow(runID: UUID, store: any RunStore) async
+        -> DurableWindowRefreshOutcome {
         let page: [RunEventRecord]
         let run: RunRecord?
         do {
@@ -187,9 +220,13 @@ public final class FacadeEventPump: @unchecked Sendable {
             page = try await store.events(runID: runID, afterSequence: after,
                                           limit: Limits.durablePageSize)
         } catch {
-            return
+            // C09 QREV-03b: the failure is TYPED, never a silent return. The
+            // queue-settle materializer distinguishes an IO failure from a
+            // valid multi-page backlog; every other caller ignores the
+            // result exactly like the previous Void return.
+            return .failedRead
         }
-        withLock {
+        let watermark = withLock {
             let window: Window
             if let existing = windows[runID] {
                 window = existing
@@ -216,7 +253,68 @@ public final class FacadeEventPump: @unchecked Sendable {
             while window.events.count > Limits.maximumWindowEvents {
                 window.events.removeFirst()
             }
+            // Auto-heal: once the verified tail of a degraded publication has
+            // really materialized into the window, the per-run resync forcing
+            // is removed (an append-failure entry uses the -1 sentinel and is
+            // only cleared explicitly when the fact re-lands on another
+            // anchor; the pump-wide overflow latch, once set, stays until the
+            // pump / root generation resets — MAIN_ADDENDUM E).
+            if let expected = settleDegraded[runID], expected >= 0,
+               window.watermark >= expected {
+                settleDegraded.removeValue(forKey: runID)
+                settleDegradedOrder.removeAll { $0 == runID }
+            }
+            return window.watermark
         }
+        return .refreshed(watermark: watermark)
+    }
+
+    /// Mark one run's durable window as UNVERIFIABLE against the journal for
+    /// a settle publication (append throw: `expectedSequence == nil`, or the
+    /// fact committed but never materialized: its sequence). The next
+    /// `pollDurable` of this run answers with the existing `resyncRequired`
+    /// member so the consumer reconciles from authoritative pages. Bounded
+    /// by `Limits.maximumWindows`; overflow latches a conservative pump-wide
+    /// resync instead of silently losing an unresolved target's signal.
+    public func markSettlePublicationDegraded(runID: UUID, expectedSequence: Int?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if settleDegraded[runID] == nil {
+            settleDegradedOrder.append(runID)
+        }
+        settleDegraded[runID] = expectedSequence ?? -1
+        while settleDegradedOrder.count > Limits.maximumWindows {
+            let evicted = settleDegradedOrder.removeFirst()
+            settleDegraded.removeValue(forKey: evicted)
+            // MAIN_ADDENDUM E: the evicted entry was UNRESOLVED — keep its
+            // recovery signal alive through the bounded latch.
+            settleOverflowResyncLatched = true
+        }
+    }
+
+    /// Clear one run's per-run degraded forcing (the verified tail
+    /// materialized). Does not touch the overflow latch (bounded, pump-
+    /// lifetime conservative signal by design).
+    public func clearSettlePublicationDegraded(runID: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        settleDegraded.removeValue(forKey: runID)
+        settleDegradedOrder.removeAll { $0 == runID }
+    }
+
+    /// Verification/test accessor: this run's window carries an unresolved
+    /// degraded settle publication (or the pump latched an overflow resync).
+    public func isSettlePublicationDegraded(runID: UUID) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return settleDegraded[runID] != nil || settleOverflowResyncLatched
+    }
+
+    /// Verification/test accessor for the MAIN_ADDENDUM E overflow latch.
+    public var isSettleOverflowResyncLatched: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return settleOverflowResyncLatched
     }
 
     /// Directly attach a window (test seam for RB3/RB4 wiring and the
@@ -247,9 +345,15 @@ public final class FacadeEventPump: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let window = windows[runID] else {
+            // notAttached: a degraded settle publication for this run (or a
+            // latched pump-wide overflow) still owes the consumer an
+            // authoritative resync — the existing `resyncRequired` member
+            // carries it; the window-state shape itself is unchanged.
             return ["windowState": DurableWindowStatus.notAttached.rawValue,
                     "events": [Any](), "hasMore": false,
-                    "resyncRequired": false, "nextSequence": afterSequence]
+                    "resyncRequired": settleDegraded[runID] != nil
+                        || settleOverflowResyncLatched,
+                    "nextSequence": afterSequence]
         }
         guard window.runExists else {
             return ["windowState": DurableWindowStatus.runGone.rawValue,
@@ -260,6 +364,13 @@ public final class FacadeEventPump: @unchecked Sendable {
         var resync = false
         if afterSequence + 1 < earliest, !window.events.isEmpty {
             resync = true   // lagged behind the bounded window; explicit, not silent
+        }
+        // C09 QREV-03b: the window's durable tail could not be verified
+        // against the journal for this run (degraded settle publication), or
+        // the pump latched an overflow — the consumer must reconcile from
+        // authoritative pages. Same existing wire member, no new schema.
+        if settleDegraded[runID] != nil || settleOverflowResyncLatched {
+            resync = true
         }
         let candidates = window.events.filter { $0.sequence > afterSequence }
         var included: [[String: Any]] = []

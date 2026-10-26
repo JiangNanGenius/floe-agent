@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0; Floe neutral widget artwork. Functional widget names, states and dimensions preserve the native interface. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="15" height="11">
+  <rect width="15" height="11" fill="#F6F6F7" />
+  <polygon points="4.5,3.5 10.5,3.5 7.5,8" fill="#8E8E93" />
+</svg>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="office_open_document">Open document</string>
+    <string name="office_open_preparing">Preparing document…</string>
+    <string name="office_open_cancelling">Cancelling…</string>
+    <string name="office_open_cancel">Cancel</string>
+    <string name="office_open_done">Done</string>
+    <string name="office_open_busy">Close the current document or wait for it to finish opening.</string>
+    <string name="office_open_unsupported">Choose a DOCX, XLSX or PPTX document.</string>
+    <string name="office_open_failed">Unable to open this document. Try selecting it again.</string>
+    <string name="office_open_too_large">Choose a document no larger than 256 MiB.</string>
+</resources>

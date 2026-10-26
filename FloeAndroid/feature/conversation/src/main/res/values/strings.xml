@@ -337,4 +337,6 @@
     <string name="history_rename_name">Name</string>
     <string name="history_rename_save">Save</string>
     <string name="history_rename_failed">Couldn’t rename this task. Try again.</string>
+    <string name="queue_refresh_failed">Couldn’t refresh queued messages.</string>
+    <string name="queue_refresh_action">Refresh</string>
 </resources>
