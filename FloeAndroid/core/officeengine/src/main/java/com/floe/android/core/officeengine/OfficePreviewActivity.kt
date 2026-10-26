@@ -973,13 +973,17 @@ private fun OfficeViewerScreen(
                 ),
                 color = Floe.colors.secondaryLabel,
             )
-            if (noticeKey == "jsError" && !noticeDetail.isNullOrBlank()) {
-                FloeCapsuleButton(stringResource(R.string.office_viewer_details), onClick = {
-                    showInfo = false
-                    onRefreshDiagnostics()
-                    showDetails = true
-                })
-            }
+            // The bounded session history is an EXPLICIT local view, reachable
+            // in every state (Main observation 2026-10-26: a stuck "Opening"
+            // session records no jsError, so gating this on one notice key made
+            // the actual facts uninspectable exactly when they were needed).
+            // It is never a readiness shortcut: opening it changes no state and
+            // claims nothing.
+            FloeCapsuleButton(stringResource(R.string.office_viewer_details), onClick = {
+                showInfo = false
+                onRefreshDiagnostics()
+                showDetails = true
+            })
             FloeCapsuleButton(stringResource(R.string.office_viewer_notices), onClick = {
                 showInfo = false
                 onOpenNotices()
@@ -1024,7 +1028,9 @@ private fun OfficeViewerScreen(
                         icon = FloeIcons.InfoCircle,
                         contentDescription = stringResource(R.string.office_viewer_readonly_cd),
                         onClick = {
-                            if (editableSession) onRefreshDiagnostics()
+                            // Refresh for EVERY session kind: the Info sheet's
+                            // Technical details action is now always reachable.
+                            onRefreshDiagnostics()
                             showInfo = true
                         },
                     )

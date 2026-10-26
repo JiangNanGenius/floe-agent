@@ -175,6 +175,17 @@ class OfficeEngineService : Service() {
          */
         private val hostUiProgressConsumed = AtomicBoolean(false)
 
+        /**
+         * Coalesces the host-driven `window.socket.doSend()` polls: at most
+         * one is pending per view, and the pending window ends immediately
+         * before the poll is issued so the tail of an engine burst still arms
+         * the next one. The pinned mobile socket has no polling interval of
+         * its own, and an un-coalesced trigger flood is what walked the page's
+         * throttle ladder to its cap and armed its fatal 30 s no-response
+         * watchdog (see [OfficeSendTrigger] and MobileSocket's class header).
+         */
+        private val sendTrigger = OfficeSendTrigger()
+
         /** Kit `statechanged:` `.uno:ModifiedStatus` fact (null until first frame). */
         @Volatile var documentModified: Boolean? = null
             private set
@@ -878,11 +889,24 @@ class OfficeEngineService : Service() {
 
         override fun triggerSend() {
             val view = webView ?: return
-            runCatching {
-                view.post {
-                    runCatching { view.loadUrl("javascript:window.socket.doSend();") }
+            if (!sendTrigger.claim()) return
+            // mainHandler (not view.post) so the claim is ALWAYS released: a
+            // runnable queued on a detached view may never run, which would
+            // leak the claim and stop every later poll.
+            val posted = runCatching {
+                mainHandler.post {
+                    // Release BEFORE issuing the poll so a message enqueued
+                    // from here on arms the next one (bounded-batch tail).
+                    sendTrigger.release()
+                    if (retired || presentationSuperseded || current !== this@Session) return@post
+                    // Re-read: the poll belongs to the view that was attached
+                    // when this runnable was scheduled.
+                    if (webView === view) {
+                        runCatching { view.loadUrl("javascript:window.socket.doSend();") }
+                    }
                 }
-            }
+            }.getOrDefault(false)
+            if (!posted) sendTrigger.release()
         }
 
         override fun transportFailed(reason: String) {
@@ -900,8 +924,6 @@ class OfficeEngineService : Service() {
                 failure = OfficeFailureCode.TRANSPORT_FAILURE,
             )
         }
-
-        override fun isClosed(): Boolean = retired || cancelled.get()
 
         fun retire() {
             retired = true
@@ -1099,8 +1121,6 @@ class OfficeEngineService : Service() {
         override fun transportFailed(reason: String) {
             delegate?.transportFailed(reason)
         }
-
-        override fun isClosed(): Boolean = delegate?.isClosed() ?: true
     }
 
     /**
