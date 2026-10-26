@@ -300,6 +300,57 @@ struct SubagentSimulatorExecutionTests {
         return environmentID
     }
 
+    /// Explicit test-owned guest shape boot for the MCP node-http
+    /// qualification ONLY. `bootGuest` stays unchanged for every other test:
+    /// those keep the production default shape (`LinuxGuestLimits.
+    /// defaultRAMMB`, 256 MiB, never overridden globally). This variant
+    /// cold-starts THIS test's own freshly prepared workspace environment
+    /// through the production `LinuxGuestLifecycleManager.start
+    /// (environmentID:config:ownerTaskID:cancellation:)` — the exact same
+    /// service, typed `LinuxGuestLifecycleConfig` and ladder validation the
+    /// model-facing `environment.startLinux` tool uses to declare
+    /// vcpus/memoryMB before the first shell command. `memoryMB` must be a
+    /// real guest RAM ladder step (`GuestMemoryMiB`: 256/512/768/1024/1536/
+    /// 2048; the manager rejects anything else server-side instead of
+    /// rounding). Nothing is restarted, taken over or reshaped on another
+    /// environment; no user-saved shape is consulted or written; app
+    /// defaults are untouched. The returned receipt carries the runtime's
+    /// OWN actual granted shape read back from the session table, which the
+    /// caller records next to the declared value. A pool/budget/headroom
+    /// refusal surfaces honestly (LinuxGuestError/LinuxGuestLifecycleError)
+    /// and the test fails at boot — there is no silent fallback shape.
+    private func bootGuestWithShape(
+        root: URL, memoryMB: Int, onPrepared: (String) -> Void
+    ) async throws -> (environmentID: String, receipt: LinuxGuestLifecycleReceipt) {
+        let environment = try await appQualificationEnvironment()
+        let services = FloePlatformServices.shared
+        try await services.prepareWorkspaceEnvironment(root: root)
+        guard let environmentID = await environmentID(
+            forRoot: root, registry: environment.environmentRegistry
+        ) else {
+            throw FloeError.notFound("No Linux project environment exists for this test's workspace root")
+        }
+        onPrepared(environmentID)
+        let receipt = try await environment.linuxGuestLifecycle.start(
+            environmentID: environmentID,
+            config: LinuxGuestLifecycleConfig(vcpus: 1, memoryMB: memoryMB),
+            ownerTaskID: nil,
+            cancellation: CancellationToken())
+        guard receipt.phase == .running, !receipt.reused,
+              receipt.actualMemoryMB == memoryMB else {
+            throw FloeError.validationFailed(
+                "MCP-owned guest cold start did not reach the declared shape: phase=\(receipt.phase.rawValue) reused=\(receipt.reused) actualMemoryMB=\(receipt.actualMemoryMB) declared=\(memoryMB)")
+        }
+        let ready = await waitForAsync(timeout: bootTimeout) {
+            await services.linuxEnvironmentAvailable(id: environmentID)
+        }
+        guard ready else {
+            let status = await services.linuxEnvironmentStatus(id: environmentID)
+            throw FloeError.validationFailed("Linux guest never became available: \(String(describing: status))")
+        }
+        return (environmentID, receipt)
+    }
+
     private func makeRuntime(
         root: URL,
         conversationID: UUID,
@@ -1665,6 +1716,57 @@ extension SubagentSimulatorExecutionTests {
             try await Task.sleep(for: .milliseconds(250))
         }
         throw FloeError.validationFailed("Skill Hub job \(id) never reached a terminal state; preserve its environment")
+    }
+
+    /// Cooperative wait-until-terminal used by the MCP node-http build-phase
+    /// observation. It deliberately imposes NO second execution deadline:
+    /// StageA made the bare payload `timeout` advisory, and MCP41 truthfully
+    /// read the production `compile` job still RUNNING at 608.685s (no exec
+    /// kill) before the old fixed 780s observation window expired. That
+    /// window was never a product guarantee, and replacing 780 with another
+    /// arbitrary cap is not allowed here. This helper observes the job's OWN
+    /// production store state until it is genuinely terminal:
+    ///  * cooperative: `Task.checkCancellation()` each poll plus the throwing
+    ///    `Task.sleep` mean test-level cancellation still unwinds promptly
+    ///    into the existing failure/cleanup path;
+    ///  * fail closed: a vanished row throws `notFound` instead of spinning;
+    ///  * observable: with a `progressLabel` it prints one real-sample line
+    ///    about every 30 seconds (job id, label, persisted state, elapsed,
+    ///    polls — never a synthesized percent) and calls `onProgress` so the
+    ///    qualification test retains phase progress evidence BEFORE its
+    ///    owned job rows are cleaned up.
+    /// The exact completed/failure/cancel assertions stay at the call sites,
+    /// unchanged; the bounded cancel-drain waits keep `skillHubWaitTerminal`.
+    func skillHubWaitTerminalCooperative(
+        _ jobs: BackgroundJobService,
+        id: UUID,
+        progressLabel: String? = nil,
+        onProgress: (BackgroundJob, Int64, Int) -> Void = { _, _, _ in }
+    ) async throws -> (job: BackgroundJob, polls: Int, elapsedMs: Int64) {
+        let started = Date()
+        var polls = 0
+        var lastSample = started
+        while true {
+            try Task.checkCancellation()
+            guard let job = try await jobs.job(id: id) else {
+                throw FloeError.notFound(
+                    "Skill Hub job \(id) disappeared before its terminal state was observed")
+            }
+            if job.state.isTerminal {
+                let elapsed = Int64(Date().timeIntervalSince(started) * 1_000)
+                onProgress(job, elapsed, polls)
+                return (job, polls, elapsed)
+            }
+            polls += 1
+            let now = Date()
+            if let progressLabel, now.timeIntervalSince(lastSample) >= 30 {
+                let elapsed = Int64(now.timeIntervalSince(started) * 1_000)
+                print("FLOE_SKILLHUB_WAIT_TERMINAL job=\(id) label=\(progressLabel) state=\(job.state.rawValue) elapsedMs=\(elapsed) polls=\(polls)")
+                lastSample = now
+                onProgress(job, elapsed, polls)
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        }
     }
 
     /// `exec.localService` readiness exactly as the proven static-service test.
@@ -3075,8 +3177,40 @@ extension SubagentSimulatorExecutionTests {
             _ = launcher // referenced through the manifest entry above
             try SkillHubStager.writeManifest(manifest, at: root)
 
-            let environmentID = try await bootGuest(root: root)
+            // 1a. Explicit test-owned guest resource shape (MCP only).
+            // Retained observed facts, not a root-cause claim: MCP38 showed
+            // the production `compile` phase hitting the OLD hard 600s exec
+            // cap (exit124); after StageA that cap is advisory and MCP41
+            // truthfully read the same phase still RUNNING at 608.685s with
+            // the guest at the production default 256 MiB (ramMB=256 log
+            // line — a declared default, not proof of cause). Hypothesis
+            // only: a riscv64 TinyEMU Node/TypeScript build may need more
+            // than 256 MiB. This boot declares a SUPPORTED ladder step for
+            // this test's own fresh environment BEFORE its first start, and
+            // the wait below then observes the job's real terminal state
+            // without imposing any execution cap.
+            let declaredGuestMemoryMB: Int = {
+                guard let raw = ProcessInfo.processInfo.environment[
+                    "FLOE_SKILLHUB_MCP_GUEST_MEMORY_MB"] else { return 768 }
+                guard let value = Int(raw),
+                      [256, 512, 768, 1024, 1536, 2048].contains(value) else { return -1 }
+                return value
+            }()
+            try #require(declaredGuestMemoryMB > 0,
+                         "FLOE_SKILLHUB_MCP_GUEST_MEMORY_MB must name a real guest RAM ladder step (256/512/768/1024/1536/2048)")
+            let booted = try await bootGuestWithShape(root: root, memoryMB: declaredGuestMemoryMB) {
+                ownedEnvironmentID = $0
+            }
+            let environmentID = booted.environmentID
+            let shapeReceipt = booted.receipt
             ownedEnvironmentID = environmentID
+            evidence["guestShape.declaredMemoryMB"] = String(declaredGuestMemoryMB)
+            evidence["guestShape.requestedMemoryMB"] = String(shapeReceipt.requestedMemoryMB ?? -1)
+            evidence["guestShape.actualMemoryMB"] = String(shapeReceipt.actualMemoryMB)
+            evidence["guestShape.actualVCPUs"] = String(shapeReceipt.actualVCPUs)
+            evidence["guestShape.reused"] = String(shapeReceipt.reused)
+            evidence["guestShape.imageID"] = shapeReceipt.imageID ?? "unknown"
+            print("FLOE_MCP_GUEST_SHAPE environment=\(environmentID) declared=\(declaredGuestMemoryMB) requested=\(shapeReceipt.requestedMemoryMB ?? -1) actual=\(shapeReceipt.actualMemoryMB) vcpus=\(shapeReceipt.actualVCPUs) reused=\(shapeReceipt.reused)")
             let liveApp = try await appQualificationEnvironment()
             app = liveApp
             let jobs = try #require(liveApp.backgroundJobService, "Production job service is unavailable")
@@ -3086,6 +3220,33 @@ extension SubagentSimulatorExecutionTests {
             try await skillHubCreateRunRows(app: liveApp, conversationID: conversationUUID, runID: runID,
                 title: "MCP node-http qualification",
                 goal: "Real guest node MCP service through owned jobs; no model")
+
+            // Milestone flushes through the existing retained-qualification
+            // mechanism (the same SkillHubGuest directory the PASS file and
+            // skillHubFailureEvidence already use): the honest evidence
+            // dictionary is written BEFORE owned job rows are removed by
+            // cleanup, so the guest shape (declared AND actual), phase job
+            // ids, per-phase progress and the post-cancel terminal/result
+            // summaries stay independently readable even if a later step
+            // fails or the run is stopped. A failure-time dump alone cannot
+            // prove a cancelled service row after owned cleanup deletes it.
+            let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                in: .userDomainMask, appropriateFor: nil, create: true)
+            let evidenceDirectory = support
+                .appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
+            try FileManager.default.createDirectory(at: evidenceDirectory, withIntermediateDirectories: true)
+            let progressFile = evidenceDirectory
+                .appendingPathComponent("mcp-core-progress-\(runID.uuidString).json")
+            func flushProgressEvidence() {
+                do {
+                    let data = try JSONEncoder().encode(evidence)
+                    try data.write(to: progressFile, options: .atomic)
+                    print("FLOE_MCP_PROGRESS_EVIDENCE=\(progressFile.path)")
+                } catch {
+                    print("FLOE_MCP_PROGRESS_EVIDENCE_WRITE_FAILED type=\(String(reflecting: type(of: error)))")
+                }
+            }
+            flushProgressEvidence()
 
             let ceiling: Set<String> = ["exec.shell", "jobs.status", "jobs.cancel"]
             let hold = CancellationToken()
@@ -3134,13 +3295,19 @@ extension SubagentSimulatorExecutionTests {
             evidence["guestNodeVersion"] = node.version ?? "unknown"
             print("FLOE_SKILLHUB_NODE path=\(node.nodePath) version=\(node.version ?? "unknown")")
 
-            // 3. The production bounded build phases run in the guest
-            // serially. Each phase consumes the exact production phase
-            // command bytes as its own real owned 600s exec.shell job; every
-            // phase job ID is registered for cleanup, and each actual
-            // terminal state plus observed duration is recorded. A phase
-            // that does not genuinely complete fails here, before any
-            // service step can run — no substitute evidence, no merged job.
+            // 3. The production build phases run in the guest serially.
+            // Each phase consumes the exact production phase command bytes
+            // as its own real owned exec.shell job with the UNCHANGED bare
+            // 600 payload timeout (advisory after StageA: MCP41 observed
+            // 608.685s of real RUNNING with no exec kill) and the unchanged
+            // output bound; every phase job ID is registered for cleanup,
+            // and each actual terminal state, result summary, duration and
+            // observation polls are recorded and flushed BEFORE owned rows
+            // are cleaned. There is no second execution deadline here: the
+            // wait is cooperative until the job's own terminal state. A
+            // phase that does not genuinely complete still fails exactly as
+            // before, before any service step can run — no substitute
+            // evidence, no merged job, no host tool, no prebuilt output.
             var buildPhaseReceipts: [String] = []
             for (index, phase) in MCPServiceCreationAppBackend.buildPhaseSpecs.enumerated() {
                 let phaseStarted = Date()
@@ -3149,16 +3316,31 @@ extension SubagentSimulatorExecutionTests {
                     name: "mcp-build-\(phase.name)", command: phase.command,
                     timeout: 600, cwd: operationDirectory + "/node-http")
                 jobIDs.append(phaseJobID)
-                let phaseJob = try await skillHubWaitTerminal(jobs, id: phaseJobID, seconds: 780)
+                evidence["buildPhase.\(index).\(phase.name).job"] = phaseJobID.uuidString
+                flushProgressEvidence()
+                print("FLOE_MCP_BUILD_PHASE_SUBMIT index=\(index) label=\(phase.name) job=\(phaseJobID)")
+                let phaseObservation = try await skillHubWaitTerminalCooperative(
+                    jobs, id: phaseJobID, progressLabel: phase.name
+                ) { observedJob, waitElapsedMs, waitPolls in
+                    evidence["buildPhase.\(index).\(phase.name).state"] = observedJob.state.rawValue
+                    evidence["buildPhase.\(index).\(phase.name).waitElapsedMs"] = String(waitElapsedMs)
+                    evidence["buildPhase.\(index).\(phase.name).waitPolls"] = String(waitPolls)
+                    flushProgressEvidence()
+                }
+                let phaseJob = phaseObservation.job
                 let phaseDurationMs = Int64(Date().timeIntervalSince(phaseStarted) * 1_000)
                 let phaseResult = phaseJob.resultSummary ?? phaseJob.lastError ?? phaseJob.state.rawValue
                 evidence["buildPhase.\(index).\(phase.name).job"] = phaseJobID.uuidString
                 evidence["buildPhase.\(index).\(phase.name).durationMs"] = String(phaseDurationMs)
                 evidence["buildPhase.\(index).\(phase.name).state"] = phaseJob.state.rawValue
                 evidence["buildPhase.\(index).\(phase.name).result"] = String(phaseResult.prefix(600))
+                evidence["buildPhase.\(index).\(phase.name).waitElapsedMs"] = String(phaseObservation.elapsedMs)
+                evidence["buildPhase.\(index).\(phase.name).waitPolls"] = String(phaseObservation.polls)
+                flushProgressEvidence()
                 try #require(phaseJob.state == .completed,
                              "guest node-http build phase \(index) (\(phase.name)) failed: \(phaseResult.prefix(600))")
                 buildPhaseReceipts.append("\(phase.name)=\(phaseJobID.uuidString):\(phaseDurationMs)ms")
+                flushProgressEvidence()
             }
             evidence["build"] = "phases " + buildPhaseReceipts.joined(separator: " ")
             let dist = try await skillHubShell(
@@ -3218,6 +3400,11 @@ extension SubagentSimulatorExecutionTests {
                 //    guest endpoint refuses, and a post-cancel client call fails.
                 _ = try await jobs.cancel(id: serviceJob.id)
                 let terminal = try await skillHubWaitTerminal(jobs, id: serviceJob.id, seconds: 90)
+                evidence["serviceCancel.terminalJobID"] = serviceJob.id.uuidString
+                evidence["serviceCancel.terminalState"] = terminal.state.rawValue
+                evidence["serviceCancel.terminalResult"] = String(
+                    (terminal.resultSummary ?? terminal.lastError ?? terminal.state.rawValue).prefix(600))
+                flushProgressEvidence()
                 try #require(terminal.state == .cancelled,
                              "MCP service cancellation is not honest: \(terminal.state.rawValue)")
                 let finalStatus = try toolCall(id: "jobs-status-mcp-final", toolName: "jobs.status",
@@ -3235,12 +3422,15 @@ extension SubagentSimulatorExecutionTests {
                     with: Data(finalProgressJSON.utf8)) as? [String: Any])
                 try #require(finalProgress["previewURL"] == nil || finalProgress["previewURL"] is NSNull,
                              "previewURL must be absent in the cancelled MCP progress document")
+                evidence["serviceCancel.jobsStatusState"] = finalObject["state"] as? String ?? "missing"
                 var refused = false
                 do {
                     _ = try await client.callTool(name: "service_status",
                         argumentsJSON: Data(#"{"label":"post-cancel-probe"}"#.utf8))
                 } catch { refused = true }
                 try #require(refused, "the cancelled guest MCP endpoint must refuse real requests")
+                evidence["serviceCancel.endpointRefused"] = "true"
+                flushProgressEvidence()
             } catch {
                 await client.disconnect()
                 throw error
@@ -3250,11 +3440,7 @@ extension SubagentSimulatorExecutionTests {
             evidence["sourceSHA"] = ProcessInfo.processInfo.environment["FLOE_QUAL_SOURCE_SHA"] ?? "not-provided"
             evidence["runID"] = runID.uuidString
             evidence["result"] = "PASS: real guest phases, MCP initialize/list/call and cancellation; no model/UI/device claim"
-            let support = try FileManager.default.url(for: .applicationSupportDirectory,
-                in: .userDomainMask, appropriateFor: nil, create: true)
-            let directory = support.appendingPathComponent("FloeAgent/QualificationEvidence/SkillHubGuest", isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let retained = directory.appendingPathComponent("mcp-core-success-\(runID.uuidString).json")
+            let retained = evidenceDirectory.appendingPathComponent("mcp-core-success-\(runID.uuidString).json")
             try JSONEncoder().encode(evidence).write(to: retained, options: .atomic)
             print("FLOE_MCP_CORE_QUALIFIED_EVIDENCE=\(retained.path)")
             await finish()
