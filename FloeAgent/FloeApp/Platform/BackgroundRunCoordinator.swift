@@ -403,6 +403,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     private var notifiedApprovalRuns: Set<UUID> = []
     private var lease: BackgroundExecutionLease?
     private var refreshWork: Task<Void, Never>?
+    /// Fenced generation bookkeeping for the BGAppRefresh lifecycle. The
+    /// scheduler races each task instance's expiration callback against the
+    /// work body (and a second delivery defensively supersedes an unfinished
+    /// generation); every cancel/clear/complete/claim step re-checks this
+    /// fence so a stale or expired refresh can never touch a newer
+    /// generation and no instance is ever completed twice (a second
+    /// `setTaskCompleted` is an OS exception).
+    private var refreshGeneration = BackgroundRefreshGenerationFence()
+    /// The system task owned by the CURRENT refresh generation. Cleared
+    /// together with the fence, so a completion always targets the instance
+    /// whose generation still owns the slot.
+    private weak var activeRefreshTask: BGAppRefreshTask?
     private var processingWork: Task<Void, Never>?
     private var mediaRefreshWork: Task<Void, Never>?
     private var mediaProcessingWork: Task<Void, Never>?
@@ -425,6 +437,86 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     @available(iOS 26.0, *)
     private var continuedTasksByIdentifier:
         [String: [ObjectIdentifier: BGContinuedProcessingTask]] = [:]
+
+    /// The explicit foreground work session (Task Center control). Lazy so
+    /// a launch that never touches the session constructs no observation
+    /// graph; the seams read ONLY existing durable stores and reuse the
+    /// existing finite due pass plus the EXISTING continued-processing
+    /// lifecycle — there is no second scheduler, no parallel claim path
+    /// and no parallel background mechanism.
+    lazy var workSession: BackgroundWorkSessionController = {
+        let controller = BackgroundWorkSessionController(
+            countsProvider: { [weak self] in
+                guard let self else {
+                    // The coordinator owning the durable stores is gone: the
+                    // facts are UNKNOWN — never an "empty queue" answer.
+                    throw BackgroundWorkSessionCountsUnknownError(component: "coordinator")
+                }
+                return try await self.workSessionCounts()
+            },
+            runDuePass: { [weak self] in
+                await self?.runDueSchedulesNow()
+            },
+            onOwnershipChanged: { [weak self] snapshot in
+                await self?.workSessionOwnershipChanged(snapshot)
+            }
+        )
+        controller.qualificationContext = { [weak self] in
+            guard let self else { return (foreground: false, loaded: false) }
+            return (
+                foreground: self.hasAggregateForegroundScene,
+                loaded: self.environment.settingsCenter.launchPreferencesLoaded
+            )
+        }
+        controller.submitQualification = { [weak self] stage, progress in
+            self?.submitWorkSessionQualification(stage: stage, progress: progress) ?? false
+        }
+        controller.updateQualification = { [weak self] stage, progress in
+            guard let self else { return }
+            if #available(iOS 26.0, *) {
+                self.updateContinuedTask(title: "Floe Agent", stage: stage, progress: progress)
+            }
+        }
+        controller.releaseQualification = { [weak self] in
+            self?.releaseWorkSessionQualification()
+        }
+        return controller
+    }()
+
+    /// Reserved eligibility identity for the work session inside the SAME
+    /// `ContinuedProcessingEligibilityState` bookkeeping real runs use. A
+    /// fixed nil-UUID is reserved for production runs, so this marker can
+    /// never collide with a real run registration.
+    static let workSessionEligibilityID = UUID(uuidString: "5E5510FF-10FF-4551-80FF-5E55100000A1")!
+
+    /// Real framework submission through the ONE existing path. The origin
+    /// is `.explicitUserAction` because the controller only calls this from
+    /// a current-process foreground user start with admitted work; the
+    /// shared path re-checks foreground, loaded preferences and the
+    /// enhanced capability, so nothing is minted on a wake or a restored
+    /// flag even if a caller lied.
+    private func submitWorkSessionQualification(stage: String, progress: Int64) -> Bool {
+        continuedEligibility.registerRun(
+            Self.workSessionEligibilityID, origin: .explicitUserAction)
+        return requestContinuedProcessingIfEligible(
+            origin: .explicitUserAction,
+            workload: "workSession",
+            title: "Floe Agent",
+            stage: stage,
+            progress: progress
+        )
+    }
+
+    /// Releases ONLY the session's own eligibility. A real run that still
+    /// holds explicit-user eligibility keeps the shared continued task; the
+    /// system task is finished only when the session was the last owner.
+    private func releaseWorkSessionQualification() {
+        continuedEligibility.finishRun(Self.workSessionEligibilityID)
+        guard !continuedEligibility.hasEligibleWork else { return }
+        if #available(iOS 26.0, *) {
+            finishContinuedTasks(success: true)
+        }
+    }
 
     nonisolated static func shouldRequestContinuedProcessing(
         for preference: BackgroundExecutionPreference
@@ -530,8 +622,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         statusPiPEnabled: Bool
     ) -> BackgroundExecutionOptions {
         guard !statusPiPEnabled else { return options }
+        // The gate degrades the app to the compliant standard path: the
+        // audio surface and both visual surfaces are stripped together
+        // (an ungated status PiP with a silent audio session was the
+        // audited 2.5.4 problem). Enhanced processing stays independent
+        // and is never gated, and the Live Activity choice is outside the
+        // hierarchy, so honoring neither strips nor implies it.
         return BackgroundExecutionOptions(
-            enhancedBackgroundEnabled: options.enhancedBackgroundEnabled
+            enhancedBackgroundEnabled: options.enhancedBackgroundEnabled,
+            audioEnabled: false,
+            pictureInPictureEnabled: false,
+            screenFeedbackEnabled: false,
+            taskLiveActivityEnabled: options.taskLiveActivityEnabled
         )
     }
 
@@ -581,6 +683,7 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         for honored: BackgroundExecutionOptions
     ) -> Bool {
         honored.enhancedBackgroundEnabled
+            || honored.audioEnabled
             || honored.pictureInPictureEnabled
             || honored.screenFeedbackEnabled
     }
@@ -702,16 +805,19 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     /// Legacy entry point kept for existing callers/tests: projects the old
-    /// mutually-exclusive choice onto the current independent options (the
-    /// stored enhanced flag is preserved) and reconciles through the real
-    /// options path. Production settings now drive
-    /// `backgroundExecutionOptionsDidChange` directly.
+    /// mutually-exclusive choice onto the current independent options and
+    /// reconciles through the real options path. Under the prerequisite
+    /// chain, enabling a visual pulls in its prerequisites (audio,
+    /// enhanced); the DEEPEST capability is set first so a projection to
+    /// `.standard`/`.pictureInPicture` is never refused by an active
+    /// dependent (screen feedback is cleared before PiP). Production
+    /// settings drive `backgroundExecutionOptionsDidChange` directly.
     func backgroundExecutionPreferenceDidChange(
         to preference: BackgroundExecutionPreference
     ) {
         var options = environment.settingsCenter.backgroundExecutionOptions
-        options.setPictureInPictureEnabled(preference != .standard)
         options.setScreenFeedbackEnabled(preference == .screenShare)
+        options.setPictureInPictureEnabled(preference != .standard)
         backgroundExecutionOptionsDidChange(to: options)
     }
 
@@ -734,6 +840,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // Background location follows the honored capability OR; a settings
         // change re-evaluates it immediately (including in the background).
         reconcileLocationAssist()
+        // The standalone audio owner is a capability AND real-work fact:
+        // an existing batch can start or stop owning the service session
+        // when the user turns the capability on/off; the capability alone
+        // never starts playback with no live task.
+        reconcileStandaloneAudioOwner()
         // The task Live Activity is independent: this only makes the switch's
         // new value take effect (ending promptly when it was turned off).
         taskLiveActivityCoordinator().preferencesDidChange()
@@ -971,11 +1082,18 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             sendsTerminalNotification: publishesContent,
             publishesContent: publishesContent
         )
-        activeRuns[runID] = run
-        // A genuinely new run re-arms task ambience inside a continuing PiP
-        // owner session; it never creates the owner itself (that stays bound
-        // to the real PiP surface) and never enables PiP as a side effect.
+         activeRuns[runID] = run
+        // A genuinely new run re-arms task ambience inside a continuing owner
+        // session. With the standalone audio capability the run batch IS the
+        // owner (service/task-owned, no PiP view required); without it,
+        // ownership stays bound to the real PiP surface. A start never
+        // enables any capability as a side effect.
         environment.pipAudioService.handleRunStarted()
+        reconcileStandaloneAudioOwner()
+        // A live work session tracks the real admitted work; later work
+        // joins only an actual valid session (refreshIfLive no-ops
+        // otherwise) and can never revive a stopped/interrupted record.
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
         if publishesContent {
             _ = continuedEligibility.registerRun(runID, origin: origin)
             publishRunWork(
@@ -1041,6 +1159,8 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             "backgroundMediaStarted work=\(workID.uuidString) activeRuns=\(activeRuns.count)"
         )
         environment.pipAudioService.handleRunStarted()
+        reconcileStandaloneAudioOwner()
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
         // A continued-processing task is the top-right system Live Activity
         // users reported as a false PiP surface. Canvas media owns a real
         // AVKit PiP context instead and must never submit that request.
@@ -1125,6 +1245,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         reconcileLocationAssist()
         reconcileTaskLiveActivity(reason: "approval")
+        // The central approval-paused ↔ approval-cleared flip (both
+        // directions pass the real-change guard above) moves the counts
+        // behind the session's waitReason (.approvals): let a live work
+        // session re-derive its state immediately instead of waiting for a
+        // Home manual pull. A non-live record is never revived.
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
     }
 
     enum ToolSurfaceOutcome: Sendable, Equatable {
@@ -1190,6 +1316,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if stageChanged || wasAwaitingUserAttention {
             reconcileTaskLiveActivity(reason: "progress")
         }
+        // Real progress is proof the run resumed after a suspension: on
+        // exactly that transition, let a live work session re-derive its
+        // counts/waitReason immediately (no Home manual pull; per-token
+        // percentages never reach this).
+        if wasAwaitingUserAttention {
+            Task { [weak self] in await self?.workSession.refreshIfLive() }
+        }
     }
 
     /// Keeps a durable, user-resumable run visible without turning the
@@ -1235,6 +1368,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
         reconcileLocationAssist()
         reconcileTaskLiveActivity(reason: "suspended")
+        // The central suspension transition puts the run into
+        // waiting-for-the-user: re-derive a live session's counts/waitReason
+        // immediately (armed/idle records stay untouched by refreshIfLive).
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
     }
 
     /// The three terminal outcomes a provider run can reach. Cancellation is
@@ -1311,6 +1448,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         if activeRuns.isEmpty {
             environment.pipAudioService.handleRunBatchTerminal()
         }
+        reconcileStandaloneAudioOwner()
+        // A finished run changes the admitted-work counts; a live session
+        // re-derives its honest state (and releases its qualification when
+        // nothing admitted remains). Non-live records are untouched.
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
         let conversationID = finished.conversationID
         notifiedApprovalRuns.remove(runID)
         if finished.sendsTerminalNotification, let conversationID {
@@ -3368,6 +3510,12 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             environment.backgroundVideoService.update(progress: FloeL10n.l("platform.background_run_coordinator.waiting_for_your_approval"))
         }
         reconcileTaskLiveActivity(reason: "approvalRequired")
+        // The central needsInput surface: once the request is published (the
+        // per-run dedupe guard above passed), a live work session re-reads
+        // its real counts immediately so counts/waitReason flip to
+        // "awaiting approval" without a Home manual pull. Non-live records
+        // are untouched; this never writes to the conversation center.
+        Task { [weak self] in await self?.workSession.refreshIfLive() }
         let taskName = activeRuns[runID]?.title ?? String(localized: "background.task.name_fallback")
         Task { [weak self] in
             guard let self else { return }
@@ -3454,6 +3602,10 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             finishContinuedTasks(success: true)
         } else {
             task.updateTitle("Floe Agent", subtitle: FloeL10n.l("platform.background_run_coordinator.resuming_task_in_background"))
+            // REAL framework acceptance: the work session's qualification
+            // display flips only here, never at submission time. The
+            // controller fences late/stale acceptances itself.
+            workSession.handleQualificationAccepted()
         }
     }
 
@@ -3495,6 +3647,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
 
     @available(iOS 26.0, *)
     private func finishContinuedTasks(success: Bool) {
+        // The shared continued task is the session's real qualification: any
+        // finish (explicit release, expiration, preference-off) returns the
+        // session's displayed state to truth. Idempotent and seam-free, so
+        // this cannot recurse into the release path.
+        workSession.handleQualificationLost()
         let tasks = continuedTasksByIdentifier.values.flatMap(\.values)
         continuedTasksByIdentifier.removeAll()
         _ = BackgroundPolicyRegistry.shared.completeAllContinuedTaskHandles()
@@ -3654,6 +3811,185 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         }
     }
 
+    /// Standalone audio ownership: with the honored audio capability, the
+    /// REAL run batch owns the service-managed ambient/task-speech session;
+    /// no PiP view is involved, and no settings change alone can start or
+    /// stop it. Temporary (ephemeral) chat runs never own task audio. The
+    /// PiP surface, when present, is the service's other owner input; the
+    /// service OR-merges them into one generation-guarded owner.
+    private func reconcileStandaloneAudioOwner() {
+        let honored = effectiveBackgroundExecutionOptions
+        let hasOwnedTaskWork = activeRuns.values.contains { run in
+            run.publishesContent
+        }
+        environment.pipAudioService.handleStandaloneAudioOwnerChanged(
+            honored.audioEnabled && hasOwnedTaskWork
+        )
+    }
+
+    // MARK: - Work session seams (real stores only; no second machinery)
+
+    /// The exact durable facts behind every session display. These are the
+    /// SAME stores the background passes use: live runs from the coordinator
+    /// itself, jobs from `BackgroundJobStore.activeJobs()`, schedule rows
+    /// from `SQLiteTaskScheduleStore` (whose occurrences the due pass
+    /// claims ATOMICALLY — the session never claims anything itself, so the
+    /// existing env-claim/permission machinery dedupes every wake against
+    /// every other executor by construction).
+    /// A failed store read THROWS: unknown must stay distinct from empty, so
+    /// a DB failure can never fabricate a drained queue, fake a progress
+    /// ratio or release a real qualification. The controller preserves the
+    /// last valid counts and defers until the next confirmed read.
+    private func workSessionCounts() async throws -> BackgroundWorkSessionCounts {
+        let runs = Array(activeRuns.values)
+        let liveRuns = runs.filter { run in
+            run.publishesContent
+                && run.pendingApprovalToolName == nil
+                && !run.isAwaitingUserAttention
+        }.count
+        let pendingApprovals = runs.filter { run in
+            run.pendingApprovalToolName != nil || run.isAwaitingUserAttention
+        }.count
+        let jobStore = BackgroundJobStore(database: environment.database)
+        let activeJobs = try await checkedCountsRead("activeJobs") {
+            try await jobStore.activeJobs()
+        }
+        let runningJobs = activeJobs.filter { $0.state == .running }.count
+        let queuedJobs = activeJobs.filter { $0.state == .queued }.count
+        let scheduleStore = SQLiteTaskScheduleStore(database: environment.database)
+        let schedules = try await checkedCountsRead("schedules") {
+            try await scheduleStore.schedules()
+        }
+        let enabledSchedules = schedules.filter(\.isEnabled).count
+        let recent = try await checkedCountsRead("recentOccurrences") {
+            try await scheduleStore.recentOccurrences(limit: 200)
+        }
+        let claimedOccurrences = recent.filter {
+            $0.state == .claimed || $0.state == .running
+        }.count
+        return BackgroundWorkSessionCounts(
+            liveRuns: liveRuns,
+            pendingApprovals: pendingApprovals,
+            runningJobs: runningJobs,
+            queuedJobs: queuedJobs,
+            claimedScheduleOccurrences: claimedOccurrences,
+            enabledSchedules: enabledSchedules,
+            heldEnvironmentClaims: linuxBackgroundHold.heldEnvironmentIDs.count
+        )
+    }
+
+    /// One counts-store read: any failure is logged and surfaced as the
+    /// shared unknown-facts error (never silently substituted with zeros).
+    private func checkedCountsRead<T>(
+        _ component: String,
+        _ read: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await read()
+        } catch {
+            FloeLogger(category: .persistence).info(
+                "workSessionCountsReadFailed component=\(component) detail=\(String(describing: type(of: error)))"
+            )
+            throw BackgroundWorkSessionCountsUnknownError(component: component)
+        }
+    }
+
+    /// Persist the session record and re-push the shared ownership facts.
+    /// The background-location release itself is decided by the shared
+    /// location service from the real task/server/accepted-work inputs: this
+    /// only guarantees it re-evaluates the moment the session's claim
+    /// changes (including a stop leaving no other owner).
+    private func workSessionOwnershipChanged(_ snapshot: BackgroundWorkSessionSnapshot) async {
+        do {
+            try await environment.settingsCenter.saveBackgroundWorkSession(snapshot)
+        } catch {
+            // Honest persistence failure: the surface still shows the live
+            // facts, but the wake-restore record is knowingly absent.
+            FloeLogger(category: .persistence).warning(
+                "workSessionSnapshotPersistFailed state=\(snapshot.state.rawValue)"
+            )
+        }
+        reconcileLocationAssist()
+        reconcileStandaloneAudioOwner()
+        reconcileTaskLiveActivity(reason: "workSessionChanged")
+    }
+
+    /// Restore the session record after ANY launch/wake. Metadata only:
+    /// running/waiting become interrupted, and no continued background
+    /// execution is reacquired — `mayAutoAcquireContinuedBackground` is the
+    /// fail-closed answer for every wake kind. The existing finite passes
+    /// (`runDueSchedules` inside the refresh task, the media/claim
+    /// reconciliation) continue to run under their own machinery; the
+    /// session merely reports what actually happened.
+    private func restoreWorkSession(afterWake wake: BackgroundWorkWakeKind) async {
+        let persisted = await environment.settingsCenter.loadBackgroundWorkSession()
+        if let persisted {
+            await workSession.restoreFromPersistence(
+                persisted: persisted, afterWake: wake)
+        }
+        await workSession.refresh()
+    }
+
+    /// Bounded download-wake bootstrap. Main wires it through the facade's
+    /// ATOMIC `register(_:bootstrap:)` in
+    /// `application(_:handleEventsForBackgroundURLSession:completionHandler:)`
+    /// so the bootstrap is a tracked settlement event: the stored system
+    /// completion cannot fire before it drains, and it is NEVER an
+    /// untracked Task spawned after register.
+    ///
+    /// Cold-wake readiness follows Main's 2026-10-27 contract: FIRST invoke
+    /// `AppEnvironment.startBackgroundDownloadInitialization()` — Main's
+    /// service-owned single-flight task running the EXISTING
+    /// `ensureReadyForExternalAutomation` (bootstrap + run recovery +
+    /// center reload + provider/model configuration; it never starts the
+    /// agent itself and never creates a second graph) — then bounded-wait
+    /// (≤5s) on the read-only `backgroundDownloadAutomationReady` flag
+    /// (externalAutomationReady && launchPrefsLoaded && durableReady).
+    /// Polling only `launchPreferencesLoaded` is NOT sufficient:
+    /// `runDueSchedules` → `executeScheduleOccurrence` reads
+    /// `conversationCenter.providerAndModel`/model preferences, so a due
+    /// occurrence could otherwise be permanently failed as
+    /// `modelUnavailable` before the center reload lands.
+    ///
+    /// Deadline behavior is FAIL-CLOSED DEFER: no metadata claim, no due
+    /// pass, no occurrence failed from uninitialized configuration; the
+    /// shared initialization keeps running for its foreground caller, and
+    /// the next wake/foreground launch picks due work up through the same
+    /// existing atomic-claim path. No continued-processing qualification
+    /// is ever minted from a wake (`mayAutoAcquireContinuedBackground` is
+    /// false for every wake kind).
+    ///
+    /// Contract signatures expected on AppEnvironment (Main-owned, landing
+    /// in the same batch): `func startBackgroundDownloadInitialization()`
+    /// (synchronous kickoff of the service-owned single-flight task) and
+    /// `var backgroundDownloadAutomationReady: Bool { get }`.
+    func runDownloadWakeBootstrap() async {
+        environment.startBackgroundDownloadInitialization()
+        let ready = await waitForBackgroundDownloadAutomationReady(deadlineSeconds: 5)
+        guard ready else {
+            FloeLogger(category: .app).warning(
+                "downloadWakeBootstrapDeferred reason=automationReadyDeadline persistenceReady=\(environment.persistenceReady) prefsLoaded=\(environment.settingsCenter.launchPreferencesLoaded)"
+            )
+            return
+        }
+        // Ready: restore the session metadata honestly (interrupted/armed —
+        // never start authority), then run ONE finite existing due pass.
+        await restoreWorkSession(afterWake: .downloadRelaunch)
+        await runDueSchedulesNow()
+    }
+
+    /// Bounded wait on Main's read-only cold-wake readiness flag. Polls the
+    /// flag only — it never awaits the shared initialization task itself,
+    /// so the foreground caller keeps that task's lifecycle and the wake
+    /// can neither extend nor cancel it.
+    private func waitForBackgroundDownloadAutomationReady(deadlineSeconds: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(deadlineSeconds)
+        while !environment.backgroundDownloadAutomationReady, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        return environment.backgroundDownloadAutomationReady
+    }
+
     /// Every lifecycle transition that can change local work, background
     /// support or the aggregate scene phase pushes the same three facts to the
     /// shared location service. The service owns the actual session/update
@@ -3709,6 +4045,65 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     /// prove a stop that lands during it is not applied afterwards. Shipping
     /// code never sets it.
     var linuxSurfaceRefreshBarrierForTesting: (@MainActor () async -> Void)?
+
+    // MARK: BGAppRefresh wake seams — MOCKED-FLOW only.
+    // These drive/record the REAL fenced refresh sequence (`startRefresh-
+    // Generation` → `performRefreshWork` → `finishRefreshGeneration`) so the
+    // readiness defer, generation fences and at-most-once completion are
+    // behavior-testable in-process. They do NOT prove the real OS layer:
+    // actual BGAppRefreshTask delivery, expiration firing and
+    // `setTaskCompleted` remain device/simulator-only Main acceptance.
+    // Shipping code never sets any of them.
+
+    /// Replaces the readiness step (kickoff + ≤5s bounded wait) with a
+    /// controllable gate.
+    var refreshReadinessForTesting: (@MainActor () async -> Bool)?
+
+    /// Records every step the fenced body actually runs for a generation:
+    /// `restore` / `maintenance` / `dueScan` / `deferred:*`.
+    var refreshWakeStepsForTesting: (@MainActor (_ taskID: UUID, _ step: String) -> Void)?
+
+    /// Replaces `setTaskCompleted` on the generation's own task handle.
+    var refreshCompletionsForTesting: (@MainActor (_ taskID: UUID, _ success: Bool) -> Void)?
+
+    /// Readback: the refresh generation currently owning the slot.
+    var activeRefreshGenerationIDForTesting: UUID? { refreshGeneration.activeID }
+
+    /// Drives the real supersede/begin scheduling without a system task
+    /// instance. Returns the new generation id.
+    @discardableResult
+    func beginRefreshWakeForTesting(taskID: UUID = UUID()) -> UUID {
+        startRefreshGeneration(taskID, task: nil)
+        return taskID
+    }
+
+    /// Fires the same fenced path the real `expirationHandler` runs.
+    func expireRefreshGenerationForTesting(taskID: UUID) {
+        expireRefreshGeneration(taskID: taskID)
+    }
+
+    /// Awaits the currently scheduled refresh body (test quiescence).
+    func awaitRefreshWorkForTesting() async {
+        if let refreshWork { await refreshWork.value }
+    }
+
+    /// Drives the REAL `executeScheduleOccurrence` claim → revalidate →
+    /// launch route exactly as the background pass calls it, so focused
+    /// tests can prove the pre-claim and pre-launch cancellation fences at
+    /// the actual seam against a controlled store.
+    func executeScheduleOccurrenceForTesting(
+        _ occurrence: TaskScheduleOccurrence,
+        schedule: TaskScheduleRecord,
+        store: SQLiteTaskScheduleStore
+    ) async -> ScheduleOccurrenceLaunchResult {
+        await executeScheduleOccurrence(
+            occurrence, schedule: schedule, store: store, now: Date())
+    }
+
+    /// Launch-boundary pause consumed directly before the pre-launch
+    /// cancellation fence (see `executeScheduleOccurrence`). Shipping code
+    /// never sets it.
+    var occurrencePrelaunchBarrierForTesting: (@MainActor () async -> Void)?
     #endif
 
     private func persistVisualSurfacePolicy() {
@@ -3777,22 +4172,142 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
     }
 
     private func acceptRefreshTask(_ task: BGAppRefreshTask) {
+        startRefreshGeneration(UUID(), task: task)
+    }
+
+    /// The fenced BGAppRefresh lifecycle, shared by the real task delivery
+    /// and the DEBUG behavior-test driver.
+    ///
+    /// COLD-WAKE READINESS (2026-10-27 repair): the pre-existing body ran
+    /// `runDueSchedules` directly, so on a COLD refresh wake a due occurrence
+    /// could be claimed and permanently failed `modelUnavailable` before
+    /// Main's center reload + provider/model configuration landed. The body
+    /// now follows the SAME contract as `runDownloadWakeBootstrap`: kick the
+    /// EXISTING single-flight `AppEnvironment.startBackgroundDownloadInitialization()`
+    /// and bounded-wait (≤5s) the read-only `backgroundDownloadAutomationReady`
+    /// flag. Not ready within the bound = FAIL-CLOSED DEFER: nothing is
+    /// claimed and no occurrence is failed from uninitialized configuration;
+    /// the shared initialization keeps running for its owner and the next
+    /// wake/foreground launch picks the due work up through the same
+    /// existing atomic-claim path. No second graph, scheduler, claim route or
+    /// continued-processing qualification is involved.
+    private func startRefreshGeneration(_ taskID: UUID, task: BGAppRefreshTask?) {
+        // Supersede an unfinished previous generation (defensive; the
+        // scheduler normally delivers one refresh instance at a time): cancel
+        // ITS work and close ITS own task exactly once through the fence.
+        // After the release neither its body nor its late expiration callback
+        // can cancel, clear or complete anything belonging to this new
+        // generation.
         refreshWork?.cancel()
-        task.expirationHandler = { [weak self, weak task] in
+        if let staleID = refreshGeneration.activeID, staleID != taskID {
+            finishRefreshGeneration(taskID: staleID, success: false)
+        }
+        refreshGeneration.begin(taskID)
+        activeRefreshTask = task
+        task?.expirationHandler = { [weak self] in
             Task { @MainActor in
-                self?.refreshWork?.cancel()
-                task?.setTaskCompleted(success: false)
+                guard let self else { return }
+                self.expireRefreshGeneration(taskID: taskID)
             }
         }
-        refreshWork = Task { [weak self, weak task] in
+        refreshWork = Task { [weak self] in
             guard let self else { return }
-            await self.reconcilePendingMediaJobs()
-            await self.environment.canvasCloudAssetService.releasePending()
-            await self.runDueSchedules()
-            let cancelled = Task.isCancelled
-            task?.setTaskCompleted(success: !cancelled)
-            self.refreshWork = nil
+            await self.performRefreshWork(taskID: taskID)
         }
+    }
+
+    /// The expiration side of the fence: only the generation still owning the
+    /// slot may cancel its own work and complete its own task. A stale or
+    /// already-closed generation's late callback is a hard no-op.
+    private func expireRefreshGeneration(taskID: UUID) {
+        guard refreshGeneration.owns(taskID) else { return }
+        refreshWork?.cancel()
+        finishRefreshGeneration(taskID: taskID, success: false)
+    }
+
+    /// Fenced completion of the generation's own system task. The first
+    /// owning path (body end, expiration, supersede) wins and releases the
+    /// slot; every later call for that generation is a no-op, so the OS
+    /// never sees a second `setTaskCompleted` and a dropped generation never
+    /// completes or clears a newer one.
+    private func finishRefreshGeneration(taskID: UUID, success: Bool) {
+        guard refreshGeneration.complete(taskID) else { return }
+        let task = activeRefreshTask
+        activeRefreshTask = nil
+        #if DEBUG
+        if let sink = refreshCompletionsForTesting {
+            sink(taskID, success)
+            return
+        }
+        #endif
+        task?.setTaskCompleted(success: success)
+    }
+
+    /// One refresh wake body. The step order is the repair contract; each
+    /// phase re-checks the generation fence + cooperative cancellation
+    /// BEFORE claiming or maintaining anything, so an expired/cancelled/
+    /// superseded generation cannot continue claiming after expiration.
+    private func performRefreshWork(taskID: UUID) async {
+        traceRefreshWakeStep(taskID, "readiness")
+        let ready = await refreshWakeAutomationReady()
+        guard ready, !Task.isCancelled, refreshGeneration.owns(taskID) else {
+            // Honest defer: no metadata claim, no maintenance scan, no due
+            // pass — nothing was completed, so the task reports failure and
+            // the next wake/foreground launch picks the work up.
+            let reason = ready
+                ? "generationCancelledOrSuperseded"
+                : "automationReadyDeadline"
+            FloeLogger(category: .app).warning(
+                "refreshWakeDeferred reason=\(reason) persistenceReady=\(environment.persistenceReady) prefsLoaded=\(environment.settingsCenter.launchPreferencesLoaded)"
+            )
+            traceRefreshWakeStep(taskID, "deferred:\(reason)")
+            finishRefreshGeneration(taskID: taskID, success: false)
+            return
+        }
+        // A refresh wake is NOT session start authority: restore the record
+        // honestly (interrupted/armed) and let the EXISTING finite pass below
+        // run. The session never auto-reacquires continued background
+        // execution from here.
+        traceRefreshWakeStep(taskID, "restore")
+        await restoreWorkSession(afterWake: .backgroundRefresh)
+        // The other real maintenance stays exactly where it was: durable
+        // media reconciliation and the canvas reservation release do not
+        // read provider/model configuration.
+        traceRefreshWakeStep(taskID, "maintenance")
+        await reconcilePendingMediaJobs()
+        await environment.canvasCloudAssetService.releasePending()
+        // Check cancellation/expiration immediately BEFORE claiming due
+        // occurrences; the pass itself keeps its per-item atomic-claim
+        // fences (a claimed occurrence is settled by its owner).
+        guard !Task.isCancelled, refreshGeneration.owns(taskID) else {
+            traceRefreshWakeStep(taskID, "deferred:beforeScan")
+            finishRefreshGeneration(taskID: taskID, success: false)
+            return
+        }
+        traceRefreshWakeStep(taskID, "dueScan")
+        await runDueSchedules()
+        // Success only for a still-open, uncancelled generation that
+        // actually ran the pass; losers are fenced no-ops (see
+        // `finishRefreshGeneration`).
+        finishRefreshGeneration(taskID: taskID, success: !Task.isCancelled)
+    }
+
+    /// Kick + bounded wait, or the injected DEBUG gate. Production always
+    /// takes the real Main-owned readiness (no second mechanism).
+    private func refreshWakeAutomationReady() async -> Bool {
+        #if DEBUG
+        if let gate = refreshReadinessForTesting {
+            return await gate()
+        }
+        #endif
+        environment.startBackgroundDownloadInitialization()
+        return await waitForBackgroundDownloadAutomationReady(deadlineSeconds: 5)
+    }
+
+    private func traceRefreshWakeStep(_ taskID: UUID, _ step: String) {
+        #if DEBUG
+        refreshWakeStepsForTesting?(taskID, step)
+        #endif
     }
 
     private func acceptMediaRefreshTask(_ task: BGAppRefreshTask) {
@@ -3838,6 +4353,11 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // notification route is flushed, instead of trusting persistence plus
         // scene phase as a proxy.
         navigationSubscribersReady = true
+        // Restore the work-session record FIRST: this is the one launch
+        // path with a real installed UI scene, so it names the wake. The
+        // restore is metadata-only (interrupted/armed) and grants no
+        // background execution authority.
+        await restoreWorkSession(afterWake: .foregroundLaunch)
         await reconcilePendingMediaJobs()
         await runDueSchedules()
         await reconcileLinuxBackgroundSessionsAfterLaunch()
@@ -4130,6 +4650,16 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         /// (nil) legacy policy keeps the settings default; an invalid one
         /// must never degrade into fallback permissions.
         case permissionUnavailable
+        /// The executing pass was ALREADY cancelled (an explicit session
+        /// Stop or an expired/ superseded refresh) before claiming: nothing
+        /// was claimed and the instance stays `pending`, so the next wake or
+        /// foreground launch picks it up through the same atomic-claim route.
+        case passCancelledBeforeClaim
+        /// A Stop/expiration landed AFTER the claim and BEFORE launch.
+        /// Nothing was launched and the claimed instance was honestly
+        /// settled `cancelled` (future fire times are separate instances);
+        /// no run exists to reference.
+        case cancelledBeforeLaunch
     }
 
     /// Machine-readable refusal reasons of the explicit selected-schedule
@@ -4178,6 +4708,13 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         store: SQLiteTaskScheduleStore,
         now: Date
     ) async -> ScheduleOccurrenceLaunchResult {
+        // Cancellation fence BEFORE claiming (2026-10-27 Stop/expiration
+        // contract): a cancelled session pass or refresh body must not move
+        // a fresh instance out of `pending` at all — the next wake or
+        // foreground launch picks it up through this same atomic-claim route.
+        guard !Task.isCancelled else {
+            return .passCancelledBeforeClaim
+        }
         // Claim BEFORE anything else: exactly one executor (a background
         // pass, an explicit selected-schedule call, a duplicate automation
         // callback) can move this instance out of `pending`, so the task can
@@ -4301,6 +4838,30 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             // as written instead of being overwritten with a false failure.
             return .launchCommittedButUnbound(
                 runID: runID, conversationID: existing.conversationID)
+        }
+        #if DEBUG
+        // Test-only launch-boundary pause (existing seam idiom): lets a
+        // focused test cancel the executing pass AFTER the claim awaits and
+        // directly before the fence below, proving it. Shipping code never
+        // sets it.
+        if let barrier = occurrencePrelaunchBarrierForTesting {
+            await barrier()
+        }
+        #endif
+        // Cancellation fence IMMEDIATELY BEFORE launching new work: a Stop
+        // or refresh expiration that landed after the claim must not start a
+        // new agent. The claimed instance is settled honestly as `cancelled`
+        // (nothing was started; future fire times are separate instances),
+        // the same recoverable settle the disabled-schedule path uses. A
+        // predetermined run that already committed above is NEVER touched:
+        // bind-recovery is not new work, and an ordinary foreground run is
+        // never cancelled from here.
+        if Task.isCancelled {
+            try? await store.finishOccurrence(
+                id: occurrence.id, state: .cancelled, summary: nil,
+                errorText: "The background pass was cancelled before this occurrence launched; nothing was started.",
+                at: Date())
+            return .cancelledBeforeLaunch
         }
         do {
             let started = try await center.startTask(
@@ -4650,6 +5211,17 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
             throw FloeSelectedScheduleFailure.storageUnavailable
         case .permissionUnavailable:
             throw FloeSelectedScheduleFailure.permissionUnavailable
+        case .passCancelledBeforeClaim:
+            // The route's OWN Task was cancelled before claiming: nothing
+            // launched and the due instance stays pending for the next pass.
+            // The typed refusal is truthful; no run may be referenced.
+            throw FloeSelectedScheduleFailure.launchFailed(
+                "The request was cancelled before this occurrence was claimed.")
+        case .cancelledBeforeLaunch:
+            // Cancelled after the claim and before launch; the instance was
+            // honestly settled `cancelled` above — nothing was started.
+            throw FloeSelectedScheduleFailure.launchFailed(
+                "The request was cancelled before this occurrence launched.")
         }
     }
 
@@ -5414,23 +5986,29 @@ extension BackgroundRunCoordinator: NotificationResponseRouting {
     }
 }
 
+/// Holds the system completion handler for the media-artifact background
+/// session until the system finish event HAS arrived AND every async
+/// settle/fail the coordinator registered has drained; the completion then
+/// runs exactly once on the main thread (`BackgroundDownloadEventSettlement`).
+/// The launch hook keeps calling `register` unchanged; the coordinator drives
+/// event accounting through `settlement`.
 final class MediaArtifactBackgroundEvents: @unchecked Sendable {
     static let shared = MediaArtifactBackgroundEvents()
-    private let lock = NSLock()
-    private var completion: (() -> Void)?
+    let settlement = BackgroundDownloadEventSettlement(name: "media-artifacts")
 
     private init() {}
 
     func register(_ completion: @escaping () -> Void) {
-        lock.lock(); self.completion = completion; lock.unlock()
+        settlement.registerSystemCompletionHandler(completion)
     }
 
-    func finish() {
-        lock.lock()
-        let callback = completion
-        completion = nil
-        lock.unlock()
-        DispatchQueue.main.async { callback?() }
+    /// Atomic register + bounded tracked bootstrap (see
+    /// `BackgroundDownloadEventSettlement.registerSystemCompletionHandler(_:bootstrap:)`).
+    func register(
+        _ completion: @escaping () -> Void,
+        bootstrap: @escaping @Sendable () async -> Void
+    ) {
+        settlement.registerSystemCompletionHandler(completion, bootstrap: bootstrap)
     }
 }
 
@@ -7081,6 +7659,32 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
 
     private let database: DatabaseManager
     private let onReady: (@Sendable (UUID) async -> Void)?
+    /// Service-owned drain for this background session's async settle/fail
+    /// work, so the system completion runs exactly once on the main thread
+    /// only after every registered follow-up has drained.
+    private var settlement: BackgroundDownloadEventSettlement {
+        MediaArtifactBackgroundEvents.shared.settlement
+    }
+    /// Ownership generation per job. Bumped when a download is handed to the
+    /// background session; a settle re-checks it after every await so a
+    /// relaunch `start` for a reused id can never let a stale settle announce
+    /// `.ready`, and the stale settle removes ITS OWN staging file.
+    private var jobGenerations: [UUID: UInt64] = [:]
+    private let generationLock = NSLock()
+
+    private func currentGeneration(_ jobID: UUID) -> UInt64 {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return jobGenerations[jobID] ?? 0
+    }
+
+    private func bumpGeneration(_ jobID: UUID) -> UInt64 {
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        let next = (jobGenerations[jobID] ?? 0) &+ 1
+        jobGenerations[jobID] = next
+        return next
+    }
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
         configuration.sessionSendsLaunchEvents = true
@@ -7105,6 +7709,7 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         }
         let tasks = await session.allTasks
         if tasks.contains(where: { $0.taskDescription == jobID.uuidString }) { return }
+        _ = bumpGeneration(jobID)
         var request = URLRequest(url: remoteURL)
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         let task = session.downloadTask(with: request)
@@ -7173,21 +7778,33 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
                 .flatMap { URL(fileURLWithPath: $0).pathExtension }
                 .flatMap { $0.isEmpty ? nil : $0 }
             let sourceURL = downloadTask.originalRequest?.url
+            // Register the async follow-up synchronously, before this
+            // callback returns, so the system completion cannot fire while
+            // settle is still moving/committing/transitioning.
+            settlement.beginEvent()
+            let generationAtStart = currentGeneration(jobID)
             Task {
                 await self.settle(
-                    jobID: jobID, staging: staging, statusCode: statusCode,
+                    jobID: jobID, staging: staging, generationAtStart: generationAtStart,
+                    statusCode: statusCode,
                     mimeType: mimeType, suggestedExtension: suggestedExtension,
                     sourceURL: sourceURL
                 )
+                self.settlement.endEvent()
             }
         } catch {
-            Task { await fail(jobID: jobID, message: error.localizedDescription) }
+            settlement.beginEvent()
+            Task {
+                await self.fail(jobID: jobID, message: error.localizedDescription)
+                self.settlement.endEvent()
+            }
         }
     }
 
     private func settle(
         jobID: UUID,
         staging: URL,
+        generationAtStart: UInt64,
         statusCode: Int,
         mimeType: String?,
         suggestedExtension: String?,
@@ -7195,6 +7812,13 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
     ) async {
         let fileManager = FileManager.default
         let store = MediaGenerationJobStore(database: database)
+        // Re-check ownership after the async hop: a relaunch `start` for the
+        // same job replaced this settle's authority; its staged file is ours
+        // to remove, and we must never transition the durable row.
+        guard generationAtStart == currentGeneration(jobID) else {
+            try? fileManager.removeItem(at: staging)
+            return
+        }
         guard let job = try? await store.job(id: jobID), !job.state.isTerminal else {
             try? fileManager.removeItem(at: staging)
             return
@@ -7241,16 +7865,32 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
             )
             let hash = receipt.sha256
             let assetStore = CreativeAssetStore(database: database)
-            try? await assetStore.save(CreativeAssetRecord(
-                id: assetID, contentHash: hash, kind: .video,
-                displayName: destination.deletingPathExtension().lastPathComponent,
-                mimeType: mimeType ?? "video/mp4",
-                localRelativePath: "Materials/\(destination.lastPathComponent)",
-                cloudRecordName: nil, byteCount: size,
-                sourceURL: sourceURL,
-                license: nil, tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")], referenceCount: 0,
-                createdAt: Date(), updatedAt: Date()
-            ))
+            // A durable asset-write failure is NOT readiness: the committed
+            // material stays on disk (preserve the file), but the job must
+            // never be marked ready carrying a `localAssetID` the library
+            // cannot resolve. The historical `try?` swallowed the failure and
+            // marked ready anyway.
+            do {
+                try await assetStore.save(CreativeAssetRecord(
+                    id: assetID, contentHash: hash, kind: .video,
+                    displayName: destination.deletingPathExtension().lastPathComponent,
+                    mimeType: mimeType ?? "video/mp4",
+                    localRelativePath: "Materials/\(destination.lastPathComponent)",
+                    cloudRecordName: nil, byteCount: size,
+                    sourceURL: sourceURL,
+                    license: nil, tags: [FloeL10n.l("platform.background_run_coordinator.generate_content")], referenceCount: 0,
+                    createdAt: Date(), updatedAt: Date()
+                ))
+            } catch {
+                FloeLogger(category: .app).warning(
+                    "mediaAssetSaveFailed job=\(jobID.uuidString) asset=\(assetID.uuidString) file preserved, job not marked ready"
+                )
+                await fail(
+                    jobID: jobID,
+                    message: "The downloaded file was kept but could not be registered in the asset library: \(error.localizedDescription)"
+                )
+                return
+            }
             // The job may have been cancelled while the download was in
             // flight; a terminal job must never be announced as ready. The
             // material stays in the library (it is already on disk), but no
@@ -7278,11 +7918,18 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
         didCompleteWithError error: Error?
     ) {
         guard let error, let raw = task.taskDescription, let jobID = UUID(uuidString: raw) else { return }
-        Task { await fail(jobID: jobID, message: error.localizedDescription) }
+        settlement.beginEvent()
+        Task {
+            await self.fail(jobID: jobID, message: error.localizedDescription)
+            self.settlement.endEvent()
+        }
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        MediaArtifactBackgroundEvents.shared.finish()
+        // System side done only; the stored completion fires after every
+        // registered settle/fail event has drained (finish-before-settle
+        // was the historical bug).
+        MediaArtifactBackgroundEvents.shared.settlement.sessionDidFinishEvents()
     }
 
     private func fail(jobID: UUID, message: String) async {
@@ -7298,6 +7945,463 @@ final class MediaArtifactDownloadCoordinator: NSObject, URLSessionDownloadDelega
                 $0.nextPollAt = now.addingTimeInterval(MediaRetryBackoff.delay(afterRetryCount: $0.retryCount))
             }
         }
+    }
+}
+
+// MARK: - BGAppRefresh generation fence
+
+/// Fenced generation bookkeeping for the BGAppRefresh wake lifecycle, shared
+/// across every task instance the coordinator accepts. The scheduler races
+/// each instance's expiration callback against its work body, and a second
+/// (defensive) delivery supersedes an unfinished generation; all paths race
+/// to close their instance. The fence guarantees AT MOST ONE path closes a
+/// generation: a stale or expired refresh can never cancel, clear or
+/// complete a newer one, no instance is ever completed twice (a second
+/// `setTaskCompleted` is an OS exception), and every claim/maintenance step
+/// re-checks `owns`, so an expired generation stops claiming. Pure state
+/// transitions — behavior tests drive the same code the coordinator uses.
+struct BackgroundRefreshGenerationFence {
+    private(set) var activeID: UUID?
+
+    /// Takes the slot for a new generation.
+    mutating func begin(_ id: UUID) {
+        activeID = id
+    }
+
+    /// True only while `id` is the generation that owns the slot.
+    func owns(_ id: UUID) -> Bool {
+        activeID == id
+    }
+
+    /// Releases the slot for its owner. Returns false for a generation that
+    /// no longer owns it (superseded or expired) or for every repeat call —
+    /// the caller may touch the system task ONLY when this returns true.
+    @discardableResult
+    mutating func complete(_ id: UUID) -> Bool {
+        guard activeID == id else { return false }
+        activeID = nil
+        return true
+    }
+}
+
+// MARK: - Foreground work session controller
+
+/// The app-side owner of the explicit foreground work session. It applies
+/// exactly the FloeCore `BackgroundWorkSessionPolicy` against the REAL
+/// durable counts (a snapshot provider the coordinator supplies from the
+/// existing job/schedule stores, with the same atomic claim + env-claim
+/// dedupe any background wake already uses), the existing finite due pass,
+/// and the EXISTING BGContinuedProcessing request/acceptance/expiration/
+/// progress lifecycle — the session mints no parallel background mechanism.
+///
+/// Qualification is real, never decorative: a submission happens only for
+/// a current-process explicit foreground user start with actually admitted
+/// work, the displayed qualification state follows the framework's real
+/// acceptance callback, an accepted task is released the moment no
+/// admitted work remains (no perpetual idle task), and every late callback
+/// is fenced by the start generation. A restored saved flag, a cold start
+/// or a download wake is NEVER start or qualification authority.
+///
+/// Isolated tests inject fake counts/pass/qualification seams so the whole
+/// contract is verifiable without a device or the full app graph.
+@MainActor
+final class BackgroundWorkSessionController: ObservableObject {
+    /// The real framework-acceptance state of the session's continued
+    /// processing qualification. `.requested` means an actual
+    /// BGContinuedProcessingRequest was submitted through the existing
+    /// coordinator path; `.accepted` is set ONLY from the real
+    /// `acceptContinuedTask` callback.
+    enum Qualification: Equatable, Sendable {
+        case none
+        case requested
+        case accepted
+    }
+
+    @Published private(set) var snapshot = BackgroundWorkSessionSnapshot()
+    @Published private(set) var qualification: Qualification = .none
+
+    /// The real durable counts behind every decision. The coordinator
+    /// supplies this from the shared stores; tests substitute a fake.
+    /// A failed durable read THROWS `BackgroundWorkSessionCountsUnknownError`
+    /// instead of returning zeros: unknown facts must never be presented as
+    /// an empty queue. On a throw the controller preserves the last VALID
+    /// counts/state, updates no progress and releases no qualification.
+    private let countsProvider: @MainActor () async throws -> BackgroundWorkSessionCounts
+    /// One FINITE due pass reusing the existing atomic-claim
+    /// `runDueSchedulesNow` (no whole-agent wait, no second manager). The
+    /// coordinator supplies it; tests substitute a counter.
+    private let runDuePass: @MainActor () async -> Void
+    /// Called after every durable change so the coordinator can persist the
+    /// record and reconcile the background-location assist and the other
+    /// shared surfaces.
+    private let onOwnershipChanged: @MainActor (BackgroundWorkSessionSnapshot) async -> Void
+
+    // MARK: Qualification seams (coordinator-owned; tests inject fakes)
+
+    /// The real current-process provenance facts: an aggregate foreground
+    /// scene is active AND launch preferences are loaded. Both must hold
+    /// for a user start to mint anything; a restored flag or wake never
+    /// satisfies them on its own.
+    var qualificationContext: (@MainActor () -> (foreground: Bool, loaded: Bool))?
+    /// Submits the REAL BGContinuedProcessingRequest through the existing
+    /// coordinator path (explicit-user-action origin, session workload) and
+    /// reports whether the framework submission was accepted for dispatch.
+    var submitQualification: (@MainActor (_ stage: String, _ progress: Int64) -> Bool)?
+    /// Pushes real progress into the accepted continued task.
+    var updateQualification: (@MainActor (_ stage: String, _ progress: Int64) -> Void)?
+    /// Releases ONLY the session's own continued-task ownership; a real run
+    /// that still holds eligibility keeps the shared task alive.
+    var releaseQualification: (@MainActor () -> Void)?
+
+    /// Injectable clock for deterministic start/wait presentation.
+    var nowProvider: @MainActor () -> Date = { Date() }
+
+    /// Single-flight: a start pressed twice coalesces onto one in-flight
+    /// pass, so an overlapping foreground/wake pass can never double-launch
+    /// the same logical occurrence (the durable claim already fences that).
+    private var activePass: Task<Void, Never>?
+    private var passToken = 0
+    private var startGeneration: UInt64 = 0
+    /// Real drain denominator for honest progress: the admitted-work count
+    /// captured when the session (re)acquired work. Never a guess.
+    private var admittedAtStart = 0
+    /// True once the USER acted in this process. A wake restore then has
+    /// nothing to restore: this process's live surface already beats any
+    /// persisted boundary record.
+    private(set) var hasUserActedThisProcess = false
+
+    init(
+        countsProvider: @MainActor @escaping () async throws -> BackgroundWorkSessionCounts,
+        runDuePass: @MainActor @escaping () async -> Void,
+        onOwnershipChanged: @MainActor @escaping (BackgroundWorkSessionSnapshot) async -> Void = { _ in }
+    ) {
+        self.countsProvider = countsProvider
+        self.runDuePass = runDuePass
+        self.onOwnershipChanged = onOwnershipChanged
+    }
+
+    // MARK: - User start (foreground only)
+
+    /// The only legal way to enter a live session: an explicit foreground
+    /// user action in the CURRENT process. Reads the real counts, runs one
+    /// finite existing due pass, and reflects whatever actually exists.
+    /// Without real foreground provenance and loaded launch preferences the
+    /// start is refused outright — nothing is minted, nothing is persisted.
+    func foregroundStart() async {
+        guard BackgroundWorkSessionPolicy.mayStart(origin: .userInterface) else { return }
+        let context = qualificationContext?() ?? (foreground: false, loaded: false)
+        guard context.foreground, context.loaded else {
+            FloeLogger(category: .app).info(
+                "workSessionStartRefused reason=noCurrentProcessForegroundProvenance foreground=\(context.foreground) loaded=\(context.loaded)"
+            )
+            return
+        }
+        hasUserActedThisProcess = true
+        startGeneration &+= 1
+        let generation = startGeneration
+        // Claim the single-flight pass SYNCHRONOUSLY at MainActor entry,
+        // before any await: two rapid starts cannot both observe an empty
+        // slot between the check and the persistence hop below.
+        if let existing = activePass {
+            snapshot = BackgroundWorkSessionSnapshot(
+                state: .running,
+                waitReason: nil,
+                counts: snapshot.counts,
+                startedAt: nowProvider(),
+                updatedAt: nowProvider(),
+                generation: snapshot.generation &+ 1
+            )
+            await publish()
+            await existing.value
+            if generation == startGeneration { await refresh() }
+            return
+        }
+        passToken &+= 1
+        let token = passToken
+        // Claim the single-flight pass slot SYNCHRONOUSLY before ANY await:
+        // two rapid starts cannot both observe an empty slot while the
+        // first is suspended in the counts read below.
+        let pass = Task { [runDuePass] in await runDuePass() }
+        activePass = pass
+        // Honest first counts before any state is shown: the session starts
+        // from the real durable facts, not an optimistic placeholder. The
+        // pass runs concurrently; the post-pass refresh below is what the
+        // displayed state settles on.
+        let initialCounts: BackgroundWorkSessionCounts
+        do {
+            initialCounts = try await countsProvider()
+        } catch {
+            // UNKNOWN is not EMPTY: with unreadable durable facts the start
+            // cannot honestly claim a running session. The already-scheduled
+            // finite pass still completes (the store's atomic claims fence
+            // any duplicate), the single-flight slot is released, and the
+            // record is left untouched — no state, no persistence write and
+            // no qualification minted from unknown facts.
+            _ = await pass.value
+            if passToken == token, activePass != nil { activePass = nil }
+            FloeLogger(category: .app).warning(
+                "workSessionStartDeferred reason=countsUnknown detail=\(String(describing: error))"
+            )
+            return
+        }
+        guard generation == startGeneration else { return }
+        admittedAtStart = initialCounts.totalAdmitted
+        snapshot = BackgroundWorkSessionSnapshot(
+            state: .running,
+            waitReason: nil,
+            counts: initialCounts,
+            startedAt: nowProvider(),
+            updatedAt: nowProvider(),
+            generation: snapshot.generation &+ 1
+        )
+        await publish()
+        applyQualification(generation: generation)
+        await pass.value
+        // Clear only our own pass slot: a stop/cancel may already have
+        // replaced it.
+        if passToken == token, activePass != nil { activePass = nil }
+        if generation == startGeneration { await refresh() }
+    }
+
+    /// Reading the counts again without a pass (a live-run/job change). The
+    /// session is live only while it is running or waiting; an idle/armed/
+    /// interrupted record never gains work here — later work joins ONLY an
+    /// actual valid live session.
+    func refresh() async {
+        let generation = startGeneration
+        let counts: BackgroundWorkSessionCounts
+        do {
+            counts = try await countsProvider()
+        } catch {
+            // UNKNOWN ≠ EMPTY: preserve the last VALID counts and state —
+            // no re-derived state, no progress update, no qualification
+            // release and no completion claim on a failed durable read. The
+            // next confirmed read (pass hook, Home appear/pull) settles the
+            // truth honestly.
+            FloeLogger(category: .app).info(
+                "workSessionCountsUnknown path=refresh detail=\(String(describing: error))"
+            )
+            return
+        }
+        guard generation == startGeneration else { return }
+        guard snapshot.state.isActiveSurface else {
+            // Still update the honest counts for display, but do not change
+            // a non-live state into a live one and never mint qualification.
+            if counts != snapshot.counts {
+                snapshot = BackgroundWorkSessionSnapshot(
+                    state: snapshot.state,
+                    waitReason: snapshot.waitReason,
+                    counts: counts,
+                    startedAt: snapshot.startedAt,
+                    updatedAt: nowProvider(),
+                    generation: snapshot.generation
+                )
+                await publish()
+            }
+            return
+        }
+        let decision = BackgroundWorkSessionPolicy.activeState(for: counts)
+        snapshot = BackgroundWorkSessionSnapshot(
+            state: decision.state,
+            waitReason: decision.waitReason,
+            counts: counts,
+            startedAt: snapshot.startedAt,
+            updatedAt: nowProvider(),
+            generation: snapshot.generation
+        )
+        await publish()
+        applyQualification(generation: generation)
+    }
+
+    /// Refresh only while a live session exists (run/schedule lifecycle
+    /// hooks). A non-live record is never revived by background movement.
+    func refreshIfLive() async {
+        guard snapshot.state.isActiveSurface else { return }
+        await refresh()
+    }
+
+    // MARK: - Qualification (real BGContinuedProcessing lifecycle)
+
+    /// Submits, updates or releases the session's continued-processing
+    /// qualification from the REAL counts. Submission requires admitted
+    /// work plus current-process foreground provenance (the underlying
+    /// coordinator path re-checks the same facts and the enhanced
+    /// capability); an accepted/requested task is released the moment no
+    /// admitted work remains, so the session can never hold a perpetual
+    /// idle task. Fenced by the start generation: a stale refresh after a
+    /// stop touches nothing.
+    private func applyQualification(generation: UInt64) {
+        guard generation == startGeneration, snapshot.state.isActiveSurface else { return }
+        if snapshot.counts.hasAcceptedWork {
+            if admittedAtStart == 0 { admittedAtStart = snapshot.counts.totalAdmitted }
+            let stage = qualificationStageText()
+            let progress = honestProgress()
+            switch qualification {
+            case .accepted:
+                updateQualification?(stage, progress)
+            case .requested:
+                break // the framework callback decides acceptance; never re-spam
+            case .none:
+                let context = qualificationContext?() ?? (foreground: false, loaded: false)
+                guard BackgroundWorkSessionPolicy.maySubmitQualification(
+                    isForegroundActive: context.foreground,
+                    launchPreferencesLoaded: context.loaded,
+                    counts: snapshot.counts
+                ) else { return }
+                if submitQualification?(stage, progress) == true {
+                    qualification = .requested
+                }
+            }
+        } else if qualification != .none {
+            releaseOwnedQualification()
+        }
+    }
+
+    /// The real framework acceptance callback (coordinator's
+    /// `acceptContinuedTask`). Fenced: a late acceptance after a stop, or in
+    /// a process where the user never started a session, is ignored — the
+    /// displayed state follows ONLY a real acceptance of a live session.
+    func handleQualificationAccepted() {
+        guard hasUserActedThisProcess,
+              snapshot.state.isActiveSurface,
+              qualification == .requested else { return }
+        qualification = .accepted
+        updateQualification?(qualificationStageText(), honestProgress())
+    }
+
+    /// The real release callback: the shared continued task finished,
+    /// expired or was withheld (enhanced off). The session stays live in
+    /// the foreground; only the qualification display returns to truth.
+    func handleQualificationLost() {
+        guard qualification != .none else { return }
+        qualification = .none
+    }
+
+    private func releaseOwnedQualification() {
+        releaseQualification?()
+        qualification = .none
+    }
+
+    /// Honest progress: the real drain ratio of admitted work
+    /// (admittedAtStart → remaining), clamped to 1…95 like the existing
+    /// continued-task updates. No invented percentage ever leaves here.
+    private func honestProgress() -> Int64 {
+        guard admittedAtStart > 0 else { return 1 }
+        let remaining = min(snapshot.counts.totalAdmitted, admittedAtStart)
+        let drained = Double(admittedAtStart - remaining) / Double(admittedAtStart)
+        return Int64(min(95, max(1, Int(drained * 100.0))))
+    }
+
+    private func qualificationStageText() -> String {
+        let counts = snapshot.counts
+        if let reason = snapshot.waitReason, snapshot.state == .waiting {
+            switch reason {
+            case .approvals:
+                return FloeL10n.isChinese
+                    ? "工作会话 · 等待批准 \(counts.pendingApprovals)"
+                    : "Work session · awaiting \(counts.pendingApprovals) approval(s)"
+            case .environmentBusy:
+                return FloeL10n.isChinese
+                    ? "工作会话 · 等待环境空闲"
+                    : "Work session · waiting for the busy environment"
+            case .network:
+                return FloeL10n.isChinese ? "工作会话 · 等待网络" : "Work session · waiting for network"
+            case .dueWork:
+                return FloeL10n.isChinese ? "工作会话 · 等待到期任务" : "Work session · waiting for due work"
+            }
+        }
+        let admitted = counts.totalAdmitted
+        return FloeL10n.isChinese
+            ? "工作会话 · \(admitted) 项进行中"
+            : "Work session · \(admitted) admitted"
+    }
+
+    // MARK: - User stop / clear
+
+    /// The user stopped the session: no new background admissions, the
+    /// owned qualification is released, foreground tasks and all durable
+    /// recoverable state are preserved (nothing is cancelled except this
+    /// controller's own scan pass). The record survives as `armed`.
+    func foregroundStop() async {
+        hasUserActedThisProcess = true
+        activePass?.cancel()
+        activePass = nil
+        startGeneration &+= 1
+        releaseOwnedQualification()
+        admittedAtStart = 0
+        // The user's stop is honored even when a durable read fails; on an
+        // UNKNOWN read the record keeps the last VALID counts (never zeros).
+        let counts = (try? await countsProvider()) ?? snapshot.counts
+        snapshot = BackgroundWorkSessionSnapshot(
+            state: .armed,
+            waitReason: nil,
+            counts: counts,
+            startedAt: nil,
+            updatedAt: nowProvider(),
+            generation: snapshot.generation &+ 1
+        )
+        await publish()
+    }
+
+    /// The user removed the record entirely (`idle`). Playback, claims and
+    /// notifications are already gone with `foregroundStop`; this only
+    /// clears the stored intent.
+    func foregroundClear() async {
+        hasUserActedThisProcess = true
+        activePass?.cancel()
+        activePass = nil
+        startGeneration &+= 1
+        releaseOwnedQualification()
+        admittedAtStart = 0
+        snapshot = BackgroundWorkSessionSnapshot(
+            state: .idle,
+            waitReason: nil,
+            counts: BackgroundWorkSessionCounts(),
+            startedAt: nil,
+            updatedAt: nowProvider(),
+            generation: snapshot.generation &+ 1
+        )
+        await publish()
+    }
+
+    // MARK: - Persistence restore (any wake)
+
+    /// The persisted snapshot was just (re)loaded by SettingsCenter. On a
+    /// wake this restores metadata ONLY: running/waiting become interrupted,
+    /// armed/idle survive. It never runs a due pass, never mints
+    /// qualification, and never reacquires continued background execution —
+    /// a wake is not start authority, and
+    /// `BackgroundWorkSessionPolicy.mayAutoAcquireContinuedBackground`
+    /// answers false for every wake kind.
+    func restoreFromPersistence(
+        persisted: BackgroundWorkSessionSnapshot,
+        afterWake wake: BackgroundWorkWakeKind
+    ) async {
+        guard !hasUserActedThisProcess else { return }
+        // A new process never inherits acceptance or a pending request.
+        qualification = .none
+        admittedAtStart = 0
+        guard persisted.state != .idle else {
+            snapshot = persisted
+            return
+        }
+        let restored = BackgroundWorkSessionPolicy.restoredState(
+            afterWake: wake,
+            previous: persisted.state
+        )
+        snapshot = BackgroundWorkSessionSnapshot(
+            state: restored,
+            waitReason: nil,
+            counts: persisted.counts,
+            startedAt: restored == .interrupted ? nil : persisted.startedAt,
+            updatedAt: nowProvider(),
+            generation: persisted.generation
+        )
+        await publish()
+    }
+
+    private func publish() async {
+        await onOwnershipChanged(snapshot)
     }
 }
 #endif
