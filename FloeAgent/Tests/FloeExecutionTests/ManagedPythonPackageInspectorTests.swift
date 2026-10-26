@@ -42,7 +42,7 @@ private final class InspectorStubURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         guard let url = request.url, let (status, body) = InspectorStubURLProtocol.route(for: url) else {
-            client?.urlProtocol(self, didFailWithError: CocoaError(.fileDoesNotExist))
+            client?.urlProtocol(self, didFailWithError: CocoaError(.fileReadNoSuchFile))
             return
         }
         InspectorStubURLProtocol.note(url)
@@ -72,7 +72,10 @@ private func makeWheelBytes(entries: [(String, String)]) throws -> Data {
     try { () -> Void in
         let archive = try Archive(url: url, accessMode: .create)
         for (path, text) in entries {
-            try archive.append(path, with: Data(text.utf8))
+            let entryBytes = Data(text.utf8)
+            try archive.addEntry(with: path, type: .file, uncompressedSize: Int64(entryBytes.count)) { position, size in
+                entryBytes.subdata(in: Int(position)..<(Int(position) + size))
+            }
         }
     }()
     let bytes = try Data(contentsOf: url)

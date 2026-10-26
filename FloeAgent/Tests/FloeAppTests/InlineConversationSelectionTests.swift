@@ -200,7 +200,8 @@ struct InlineConversationSelectionTests {
             execute: loggingExecutor(log),
             afterRun: {}
         )
-        #expect(log.runs == [[a, b, c]])
+        let recordedRuns = await log.runs
+        #expect(recordedRuns == [[a, b, c]])
         #expect(!model.confirmingArchive)
         #expect(model.pendingArchiveItems.isEmpty)
     }
