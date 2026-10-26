@@ -53,8 +53,12 @@ struct BackgroundWorkSessionTests {
             box.lastProgress = progress
             return box.submitAccepts
         }
-        controller.updateQualification = { [weak box] (_: String, _: Int64) in
+        controller.updateQualification = { [weak box] (_: String, progress: Int64) in
             box?.updateCount += 1
+            // Record the REAL progress the controller pushes through the
+            // seam: honest drain ratio assertions must observe the update
+            // channel, not just the initial submission value.
+            box?.lastProgress = progress
         }
         controller.releaseQualification = { [weak box] in
             box?.releaseCount += 1
@@ -89,11 +93,20 @@ struct BackgroundWorkSessionTests {
         #expect(approvalDecision.waitReason == .approvals)
         let envBusy = BackgroundWorkSessionCounts(queuedJobs: 1, heldEnvironmentClaims: 1)
         let busyDecision = BackgroundWorkSessionPolicy.activeState(for: envBusy)
+        #expect(busyDecision.state == .waiting)
         #expect(busyDecision.waitReason == .environmentBusy)
         // A server owner counts as accepted work (location must not be
         // released while it runs); an armed record with zero counts does not.
         #expect(BackgroundWorkSessionCounts(runningJobs: 1).hasAcceptedWork)
         #expect(!BackgroundWorkSessionCounts().hasAcceptedWork)
+        // A live-server hold ALONE is ownership (location assist and
+        // qualification stay held via hasAcceptedWork), but it is not this
+        // session's executing queue work: the honest state never presents
+        // the session's own idle queue as running because of it.
+        let serverHoldOnly = BackgroundWorkSessionCounts(heldEnvironmentClaims: 1)
+        #expect(serverHoldOnly.hasAcceptedWork)
+        #expect(BackgroundWorkSessionPolicy.activeState(for: serverHoldOnly).state == .waiting)
+        #expect(!BackgroundWorkSessionPolicy.shouldReleaseBackgroundLocation(counts: serverHoldOnly))
         #expect(BackgroundWorkSessionPolicy.shouldReleaseBackgroundLocation(
             counts: BackgroundWorkSessionCounts()))
         #expect(!BackgroundWorkSessionPolicy.shouldReleaseBackgroundLocation(
@@ -374,6 +387,31 @@ struct BackgroundWorkSessionTests {
         // Acceptance callbacks without a pending request change nothing.
         controller.handleQualificationAccepted()
         #expect(controller.qualification == .none)
+    }
+
+    @Test("A refusal is never re-spammed by refreshes; only a real drain or a new explicit start re-arms submission")
+    func refusedSubmissionRearmsOnDrainOrNewStart() async {
+        let (controller, box) = makeController(counts: .init(liveRuns: 1))
+        box.submitAccepts = false
+        await controller.foregroundStart()
+        #expect(box.submitCount == 1)
+        #expect(controller.qualification == .none)
+        // Refreshes over the SAME refused admission cycle never re-submit.
+        await controller.refresh()
+        await controller.refresh()
+        #expect(box.submitCount == 1)
+        #expect(box.releaseCount == 0)
+        // A real drain closes the refused cycle (nothing left to qualify).
+        box.counts = BackgroundWorkSessionCounts()
+        await controller.refresh()
+        #expect(controller.snapshot.state == .waiting)
+        #expect(box.submitCount == 1)
+        // Genuinely NEW admitted work then mints exactly one fresh request.
+        box.submitAccepts = true
+        box.counts = BackgroundWorkSessionCounts(runningJobs: 1)
+        await controller.refresh()
+        #expect(box.submitCount == 2)
+        #expect(controller.qualification == .requested)
     }
 
     @Test("Wake restore is metadata-only: it never mints qualification and ignores late acceptance")

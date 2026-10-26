@@ -184,11 +184,22 @@ public enum BackgroundWorkSessionPolicy {
     ///  • otherwise a named blocker if one really exists, in order
     ///    approvals → environment dedupe → connectivity → future due times;
     ///  • otherwise the session stays live-waiting on due work.
+    ///
+    /// `heldEnvironmentClaims` is deliberately NOT an executing fact here: it
+    /// names environments whose durable hold a live server or other accepted
+    /// work already owns. Those claims keep the ownership surfaces alive
+    /// (location assist, qualification — see `hasAcceptedWork`), but for the
+    /// state they are the dedupe blocker queued work waits on, never a reason
+    /// to present this session's own queue as running. `.running` requires
+    /// exactly the facts its case documents: a live run, a running job or a
+    /// claimed-due occurrence (the same set `totalAdmitted` counts as this
+    /// session's executing/drainable work).
     public static func activeState(for counts: BackgroundWorkSessionCounts) -> (
         state: BackgroundWorkSessionState,
         waitReason: BackgroundWorkSessionWaitReason?
     ) {
-        if counts.hasAcceptedWork {
+        if counts.liveRuns > 0 || counts.runningJobs > 0
+            || counts.claimedScheduleOccurrences > 0 {
             return (.running, nil)
         }
         if counts.pendingApprovals > 0 {

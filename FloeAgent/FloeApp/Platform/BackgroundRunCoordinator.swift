@@ -4857,11 +4857,32 @@ final class BackgroundRunCoordinator: NSObject, UNUserNotificationCenterDelegate
         // bind-recovery is not new work, and an ordinary foreground run is
         // never cancelled from here.
         if Task.isCancelled {
-            try? await store.finishOccurrence(
-                id: occurrence.id, state: .cancelled, summary: nil,
-                errorText: "The background pass was cancelled before this occurrence launched; nothing was started.",
-                at: Date())
-            return .cancelledBeforeLaunch
+            // The settle write must SURVIVE the very cancellation it reports:
+            // GRDB's async writer honors cooperative cancellation, so issuing
+            // it on this already-cancelled pass task throws CancellationError
+            // before the UPDATE runs and would strand the claimed row (a
+            // permanent phantom claim). Run this ONE settle write in a
+            // detached task, which does not inherit the pass's cancellation,
+            // and await its completion so the claimed instance is durably
+            // settled BEFORE this pass returns. A settle failure is storage
+            // truth, never a faked "settled cancelled".
+            let settleStore = store
+            let settleID = occurrence.id
+            let settled = await Task.detached(priority: .userInitiated) {
+                do {
+                    try await settleStore.finishOccurrence(
+                        id: settleID, state: .cancelled, summary: nil,
+                        errorText: "The background pass was cancelled before this occurrence launched; nothing was started.",
+                        at: Date())
+                    return true
+                } catch {
+                    FloeLogger(category: .persistence).warning(
+                        "scheduleOccurrenceCancelledSettleFailed id=\(settleID.uuidString) detail=\(String(describing: type(of: error)))"
+                    )
+                    return false
+                }
+            }.value
+            return settled ? .cancelledBeforeLaunch : .storageFailed
         }
         do {
             let started = try await center.startTask(
@@ -8065,6 +8086,12 @@ final class BackgroundWorkSessionController: ObservableObject {
     /// Real drain denominator for honest progress: the admitted-work count
     /// captured when the session (re)acquired work. Never a guess.
     private var admittedAtStart = 0
+    /// True once the framework REFUSED a submission for the current admission
+    /// cycle. A refusal means honest foreground-only operation — not a
+    /// transient error to re-spam on every counts refresh. Exactly one
+    /// submission per foreground admission cycle: only a real drain (no
+    /// accepted work left) or a fresh explicit user action re-arms it.
+    private var submissionRefused = false
     /// True once the USER acted in this process. A wake restore then has
     /// nothing to restore: this process's live surface already beats any
     /// persisted boundary record.
@@ -8098,6 +8125,10 @@ final class BackgroundWorkSessionController: ObservableObject {
         }
         hasUserActedThisProcess = true
         startGeneration &+= 1
+        // A fresh explicit user action starts a fresh admission cycle: a
+        // previous cycle's framework refusal must not silently disarm the
+        // new start's one honest submission.
+        submissionRefused = false
         let generation = startGeneration
         // Claim the single-flight pass SYNCHRONOUSLY at MainActor entry,
         // before any await: two rapid starts cannot both observe an empty
@@ -8242,6 +8273,11 @@ final class BackgroundWorkSessionController: ObservableObject {
             case .requested:
                 break // the framework callback decides acceptance; never re-spam
             case .none:
+                // A REFUSED submission for this admission cycle is never
+                // re-spammed by later refreshes: the session stays honestly
+                // foreground-only until the work really drains or the user
+                // explicitly starts again.
+                guard !submissionRefused else { return }
                 let context = qualificationContext?() ?? (foreground: false, loaded: false)
                 guard BackgroundWorkSessionPolicy.maySubmitQualification(
                     isForegroundActive: context.foreground,
@@ -8250,10 +8286,17 @@ final class BackgroundWorkSessionController: ObservableObject {
                 ) else { return }
                 if submitQualification?(stage, progress) == true {
                     qualification = .requested
+                } else {
+                    submissionRefused = true
                 }
             }
-        } else if qualification != .none {
-            releaseOwnedQualification()
+        } else {
+            // No admitted work: the admission cycle is over. A future real
+            // admission (or user start) may mint one fresh submission.
+            submissionRefused = false
+            if qualification != .none {
+                releaseOwnedQualification()
+            }
         }
     }
 
@@ -8329,6 +8372,7 @@ final class BackgroundWorkSessionController: ObservableObject {
         startGeneration &+= 1
         releaseOwnedQualification()
         admittedAtStart = 0
+        submissionRefused = false
         // The user's stop is honored even when a durable read fails; on an
         // UNKNOWN read the record keeps the last VALID counts (never zeros).
         let counts = (try? await countsProvider()) ?? snapshot.counts
@@ -8353,6 +8397,7 @@ final class BackgroundWorkSessionController: ObservableObject {
         startGeneration &+= 1
         releaseOwnedQualification()
         admittedAtStart = 0
+        submissionRefused = false
         snapshot = BackgroundWorkSessionSnapshot(
             state: .idle,
             waitReason: nil,
@@ -8381,6 +8426,7 @@ final class BackgroundWorkSessionController: ObservableObject {
         // A new process never inherits acceptance or a pending request.
         qualification = .none
         admittedAtStart = 0
+        submissionRefused = false
         guard persisted.state != .idle else {
             snapshot = persisted
             return
