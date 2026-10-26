@@ -266,7 +266,12 @@ public struct SSHCommandService: Sendable {
         }
     }
 
-    private static func containerCommand(
+    /// Builds the host-side launch line for one disposable task container.
+    /// The host shared Skill root is mounted READ-ONLY into NEW containers
+    /// only when it already exists; existing containers are never recreated,
+    /// interrupted or hot-mounted here. The trailing floeSharedSkillsMount
+    /// status tells the model the truthful mount state for this launch.
+    static func containerCommand(
         _ command: String,
         runtime: RemoteContainerRuntime,
         networkEnabled: Bool,
@@ -275,7 +280,10 @@ public struct SSHCommandService: Sendable {
         let payload = Data(command.utf8).base64EncodedString()
         let network = networkEnabled ? "bridge" : "none"
         let taskDirectory = "$HOME/.floe/tasks/\(taskID.uuidString)"
-        return "mkdir -p \"\(taskDirectory)\" && \(runtime.rawValue) run --rm --pull=never --network \(network) --cpus 1 --memory 512m --pids-limit 128 --security-opt no-new-privileges -v \"\(taskDirectory):/workspace\" -w /workspace ubuntu:24.04 sh -lc \"echo \(payload) | base64 -d | sh\"; _floe_status=$?; printf '\\nfloeTaskDirectory=\(taskDirectory)\\n'; exit $_floe_status"
+        let skillsRoot = "$HOME/.floe/shared/skills"
+        let launch = "\(runtime.rawValue) run --rm --pull=never --network \(network) --cpus 1 --memory 512m --pids-limit 128 --security-opt no-new-privileges -v \"\(taskDirectory):/workspace\""
+        let script = "sh -lc \"echo \(payload) | base64 -d | sh\""
+        return "_floe_mount=missing; if [ -d \"\(skillsRoot)\" ]; then _floe_mount=present; fi; mkdir -p \"\(taskDirectory)\" && if [ \"$_floe_mount\" = present ]; then \(launch) -v \"\(skillsRoot):/opt/floe/skills:ro\" -w /workspace ubuntu:24.04 \(script); else \(launch) -w /workspace ubuntu:24.04 \(script); fi; _floe_status=$?; printf '\\nfloeTaskDirectory=\(taskDirectory)\\nfloeSharedSkillsMount=%s\\n' \"$_floe_mount\"; exit $_floe_status"
     }
 
     private static func looksLikeNetworkMutation(_ command: String) -> Bool {
