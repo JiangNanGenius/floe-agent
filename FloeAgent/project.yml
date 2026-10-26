@@ -693,7 +693,7 @@ targets:
       - path: Tests/FloeLocalModelsTests/BackgroundDownloadDrainTests.swift
       - path: Tests/FloePersistenceTests/OfficialSkillVersionLedgerTests.swift
       - path: Tests/FloeAppTests/OfficialSkillMigrationTests.swift
-      - path: Tests/FloeExecutionTests/SkillDependencyTests.swift
+      - path: Tests/FloeExecutionTests/SkillDependencyExecutionTests.swift
       - path: Tests/FloeAppTests/TaskLiveActivityTests.swift
       - path: Tests/FloeAppTests/MCPServiceTemplateTests.swift
       - path: Tests/FloeAppTests/BrowserImpeccableCaptureTests.swift
@@ -741,7 +741,7 @@ targets:
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
       - path: Tests/FloeAppTests/TerminalViewportTests.swift
-      - path: Tests/FloeAppTests/ProviderFormSpecTests.swift
+      - path: Tests/FloeAppTests/ProviderFormSpecAppTests.swift
       - path: Tests/FloeProvidersTests/ProviderFormSpecTests.swift
       - path: Tests/FloeAgentRuntimeTests/ToolCallPreparationPresentationTests.swift
       - path: Tests/FloeExecutionTests/RemoteSharedSkillIdentityTests.swift
