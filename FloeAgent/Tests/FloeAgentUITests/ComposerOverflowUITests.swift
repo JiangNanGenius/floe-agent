@@ -16,7 +16,19 @@ final class ComposerOverflowUITests: XCTestCase {
         // current draft, send a request or change a configured provider.
         let row = app.descendants(matching: .any)
             .matching(identifier: "sidebar.conversation.A1D4A0F2-6F2E-4E7A-9C31-0B7C51E6A003").firstMatch
-        XCTAssertTrue(row.waitForExistence(timeout: 30))
+        // The reused simulator preserves many workspace groups above the
+        // Chats section and chat rows stay lazy until the sidebar scrolls
+        // them into the realized window. Scroll only the sidebar list —
+        // never workspace or user data — until the seeded fixture row is
+        // hittable (existence alone is not visibility for a lazy row).
+        let sidebar = app.descendants(matching: .any)
+            .matching(identifier: "sidebar.list").firstMatch
+        XCTAssertTrue(sidebar.waitForExistence(timeout: 10))
+        for _ in 0..<20 where !row.isHittable {
+            sidebar.swipeUp()
+        }
+        XCTAssertTrue(row.isHittable,
+                      "the seeded synthetic conversation must be reachable in the sidebar")
         row.tap()
         let input = app.textViews["composer.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 20))

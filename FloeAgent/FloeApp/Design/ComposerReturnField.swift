@@ -62,8 +62,48 @@ final class HardwareReturnTextView: UITextView {
         sharedUndoManager ?? super.undoManager
     }
 
+    /// Applies the composer's scroll-state flip through ONE seam. UITextView
+    /// reconfigures its NSTextContainer whenever the scrolling state flips
+    /// (width tracking drops and the container stops wrapping at the
+    /// laid-out width — exactly how a long unbroken run used to run off to
+    /// the right instead of soft-wrapping), so the composer layout contract
+    /// is re-asserted here on every flip, whether the flip comes from the
+    /// initial configuration, the deferred overflow delivery or a behavior
+    /// test driving this seam directly.
+    /// - Parameters:
+    ///   - scrolls: true switches the field to internal scrolling; false
+    ///     returns it to inline growth at the laid-out width.
+    ///   - revealCaret: true reveals the caret when scrolling starts.
+    func applyComposerScrollState(_ scrolls: Bool, revealCaret: Bool = false) {
+        if isScrollEnabled != scrolls {
+            isScrollEnabled = scrolls
+        }
+        // The flip reconfigured the container; re-pin the composer layout
+        // (guarded so a no-op flip stays free of container KVO churn).
+        if !textContainer.widthTracksTextView {
+            textContainer.widthTracksTextView = true
+        }
+        if textContainer.lineFragmentPadding != 0 {
+            textContainer.lineFragmentPadding = 0
+        }
+        if scrolls, revealCaret {
+            scrollRangeToVisible(selectedRange)
+        }
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
+        // UITextView can also reconfigure the container outside our seam
+        // (internal scroll-state bookkeeping, future SDK changes). Pinning
+        // the composer contract on every layout pass keeps the LIVE text
+        // wrapped at the actual slot width in both states; the guard keeps
+        // steady state free of container KVO churn.
+        if !textContainer.widthTracksTextView {
+            textContainer.widthTracksTextView = true
+        }
+        if textContainer.lineFragmentPadding != 0 {
+            textContainer.lineFragmentPadding = 0
+        }
         let width = bounds.width
         guard width > 1, abs(width - lastNotifiedLayoutWidth) >= 0.5 else { return }
         lastNotifiedLayoutWidth = width
@@ -162,11 +202,9 @@ struct ComposerReturnField: UIViewRepresentable {
         view.adjustsFontForContentSizeCategory = true
         view.textColor = .label
         view.textContainerInset = textInsets
-        view.textContainer.lineFragmentPadding = 0
-        view.isScrollEnabled = false
+        view.applyComposerScrollState(false)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         view.textContainer.lineBreakMode = .byWordWrapping
-        view.textContainer.widthTracksTextView = true
         view.showsVerticalScrollIndicator = false
         view.showsHorizontalScrollIndicator = false
         view.alwaysBounceVertical = false
@@ -456,19 +494,12 @@ struct ComposerReturnField: UIViewRepresentable {
             latestOverflowCallback = nil
             latestOverflowView = nil
             if let overflow, let textView, textView.isScrollEnabled != overflow {
-                textView.isScrollEnabled = overflow
-                // UITextView reconfigures its NSTextContainer when the
-                // scrolling state flips: re-assert the composer layout so
-                // the LIVE text keeps wrapping at the actual laid-out
-                // width in both states (a container that stopped tracking
-                // width is how long text runs off instead of soft-wrapping)
-                // and reveal the caret the moment the field starts to
-                // scroll internally.
-                textView.textContainer.widthTracksTextView = true
-                textView.textContainer.lineFragmentPadding = 0
-                if overflow {
-                    textView.scrollRangeToVisible(textView.selectedRange)
-                }
+                // The one seam for scroll flips: it re-pins the composer
+                // container contract (width tracking + zero padding) so the
+                // LIVE text keeps wrapping at the actual laid-out width in
+                // both states, and reveals the caret the moment the field
+                // starts to scroll internally.
+                textView.applyComposerScrollState(overflow, revealCaret: overflow)
             }
             guard let overflow else { return }
             report?(overflow)

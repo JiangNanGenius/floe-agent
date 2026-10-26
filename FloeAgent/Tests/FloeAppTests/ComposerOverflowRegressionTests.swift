@@ -12,9 +12,12 @@
 // - a verdict measured against older text never reaches the host, and the
 //   next real pass re-derives the new draft's truth at the SAME laid-out
 //   width (conversation switch inside the shared field view);
-// - flipping `isScrollEnabled` keeps the live container width-tracked, so
-//   long CJK / English / unbroken-URL runs wrap inside the bounded width
-//   instead of running off to the right;
+// - flipping the scroll state through `applyComposerScrollState` keeps the
+//   live container width-tracked, so long CJK / English / unbroken-URL runs
+//   wrap inside the bounded width instead of running off to the right (a
+//   raw `isScrollEnabled` write is UIKit's untracked reconfiguration — the
+//   run-off defect — and never a state the composer leaves the container
+//   in);
 // - the one shared layout rule keeps the existing line budget
 //   (6 compact / 8 regular), the one-third page-height cap and the 44pt
 //   resting minimum.
@@ -164,8 +167,13 @@ struct ComposerOverflowRegressionTests {
         )
         await drainMainQueue()
         #expect(reports.last == true)
-        // Measure the pure inline (non-scrolling) wrapping state.
-        fixture.view.isScrollEnabled = false
+        // Measure the pure inline (non-scrolling) wrapping state through
+        // the same seam the deferred overflow delivery flips. A raw
+        // `isScrollEnabled` write lets UIKit reconfigure the container
+        // untracked, so the measured block collapses to a single unbounded
+        // line — that raw UIKit state is the run-off defect itself, not a
+        // state the composer ever leaves the container in.
+        fixture.view.applyComposerScrollState(false)
         fixture.view.setNeedsLayout()
         fixture.view.layoutIfNeeded()
         let used = fixture.view.layoutManager.usedRect(for: fixture.view.textContainer)
