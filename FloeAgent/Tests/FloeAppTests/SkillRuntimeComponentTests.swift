@@ -99,7 +99,7 @@ private func makeComponentFixture(engineBytes: Data? = nil, contractVersion: Int
 
 private struct StagedSkillFixture {
     let skillID = "impeccable-fixture"
-    let environmentID = "env-fixture"
+    let environmentID: String
     let snapshot: SkillContentSnapshot
     let workspace: URL
     let layer: URL
@@ -111,7 +111,8 @@ private struct StagedSkillFixture {
 
 private func makeStagedSkillFixture(
     descriptorBytes: Data,
-    capabilities: [String] = []
+    capabilities: [String] = [],
+    environmentID: String = "env-fixture-" + UUID().uuidString
 ) async throws -> StagedSkillFixture {
     let workspace = makeComponentTemporaryDirectory("workspace")
     let layer = makeComponentTemporaryDirectory("layer")
@@ -144,7 +145,7 @@ private func makeStagedSkillFixture(
     let outcome = await stager.stage(
         snapshot: snapshot,
         in: SkillResourceContext(
-            environmentID: "env-fixture", workspaceRootURL: workspace, cancellation: CancellationToken()
+            environmentID: environmentID, workspaceRootURL: workspace, cancellation: CancellationToken()
         )
     )
     guard case .staged(let staged) = outcome else {
@@ -152,6 +153,7 @@ private func makeStagedSkillFixture(
     }
     let leaf = staged.guestRoot.split(separator: "/").last!
     return StagedSkillFixture(
+        environmentID: environmentID,
         snapshot: snapshot,
         workspace: workspace,
         layer: layer,
@@ -384,6 +386,10 @@ private func makeHarness(
     appVersion: String = "1.7.59"
 ) -> ComponentCenterHarness {
     let runner = FakeComponentRunner()
+    let component = try! makeComponentFixture()
+    runner.probeStdout = SkillRuntimeDependency.expectedProbeStdout(
+        componentVersion: component.descriptor.componentVersion)
+    runner.contractStdout = String(decoding: component.contractBytes, as: UTF8.self)
     let transport = FakeComponentTransport()
     let authorization = FakeComponentAuthorization()
     let generationBox = GenerationBox()

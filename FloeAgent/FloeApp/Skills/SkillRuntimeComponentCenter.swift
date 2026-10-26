@@ -41,6 +41,7 @@
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
+import Darwin
 import FloeCore
 import FloeExecution
 import FloeSkills
@@ -1073,8 +1074,10 @@ actor SkillRuntimeComponentCenter {
         let temporary = cacheDirectory.appendingPathComponent(
             Self.downloadPrefix + UUID().uuidString, isDirectory: false
         )
+        let output = try Self.createExclusiveTemporaryFile(at: temporary)
+        defer { try? output.close() }
         do {
-            try writeVerified(bytes: bytes, to: temporary, token: token)
+            try writeVerified(bytes: bytes, to: output, token: token)
             if FileManager.default.fileExists(atPath: cacheFile.path) {
                 if try verified(file: cacheFile, size: descriptor.artifact.size,
                                 sha256: descriptor.artifact.sha256, token: token) {
@@ -1199,8 +1202,10 @@ actor SkillRuntimeComponentCenter {
         let temporary = directory.appendingPathComponent(
             Self.stagingPrefix + UUID().uuidString, isDirectory: false
         )
+        let output = try Self.createExclusiveTemporaryFile(at: temporary)
+        defer { try? output.close() }
         do {
-            try copyVerified(from: cached, to: temporary, token: token)
+            try copyVerified(from: cached, to: output, token: token)
             guard try verified(file: temporary, size: descriptor.artifact.size,
                                sha256: descriptor.artifact.sha256, token: token) else {
                 throw SkillRuntimeComponentFailure(reason: SkillRuntimeComponentReason.artifactDigestMismatch)
@@ -1418,9 +1423,19 @@ actor SkillRuntimeComponentCenter {
         return actualSHA == sha256
     }
 
-    private func writeVerified(bytes: Data, to url: URL, token: CancellationToken) throws {
+    /// Claim the new temporary atomically before any cleanup scope owns it.
+    /// FileHandle(forWritingTo:) opens an existing file; it never creates one.
+    /// Exclusive, no-follow creation also preserves a conflicting entry.
+    private static func createExclusiveTemporaryFile(at url: URL) throws -> FileHandle {
+        let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
+        guard descriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    private func writeVerified(bytes: Data, to handle: FileHandle, token: CancellationToken) throws {
         guard !Self.isFenced(token) else { throw CancellationError() }
-        let handle = try FileHandle(forWritingTo: url)
         do {
             var offset = 0
             while offset < bytes.count {
@@ -1436,11 +1451,10 @@ actor SkillRuntimeComponentCenter {
         }
     }
 
-    private func copyVerified(from source: URL, to destination: URL, token: CancellationToken) throws {
+    private func copyVerified(from source: URL, to output: FileHandle, token: CancellationToken) throws {
         guard !Self.isFenced(token) else { throw CancellationError() }
         let handle = try FileHandle(forReadingFrom: source)
         defer { try? handle.close() }
-        let output = try FileHandle(forWritingTo: destination)
         do {
             while true {
                 if Self.isFenced(token) { throw CancellationError() }
