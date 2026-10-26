@@ -23,13 +23,33 @@ G05-R1 is delivered in [Alpha12](https://github.com/JiangNanGenius/floe-agent/re
 Native offline DOCX/XLSX/PPTX representative previews, owned-close receipts and
 reopening were observed across the existing API37/16 KiB tablet and API33/4 KiB
 Samsung. The final candidate also fixes the phone Impress DOM-placement failure
-and passed actual portrait/landscape observation. G05-R2 now prioritizes basic
-manual editing and reliable save/reopen before AI editing or advanced layout;
-editing, recalculation and export are not yet delivered.
+and passed actual portrait/landscape observation. The first G05-R2 manual-editing
+slice is delivered in [Alpha13](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
+(build 15, immutable APK source `64ef0f57dcb34c6e0fe4135f80a98add46003df7`).
+It adds DOCX text/common formatting, XLSX cells/formula recalculation and PPTX
+text/simple objects, with owned working copies and verified save-copy receipts.
+Actual Word keyboard input, save-copy, original preservation and normal reopening
+passed on the tablet and Samsung; the tablet's Calc/PPT edit/reopen evidence is
+retained. AI-directed precise editing, PDF export/printing and the full format,
+hardware and visual matrix remain in progress. Phone PPT can render both slides
+while reporting missing presentation-follow controls; a 0.01 mm PPT round-trip
+object-size offset remains documented. All three public release assets were
+downloaded and hash-verified; Alpha12 and iOS Latest remain unchanged.
 Release availability, actual device coverage and remaining limits are recorded in
 [the implementation record](../docs/FLOE_ANDROID_PROGRESS.zh-CN.md). Destinations
 still marked as being prepared remain unavailable. Android has no
 local LLM backend.
+
+## Corresponding-source packaging
+
+The source-packaging policy is versioned separately from the immutable APK
+source. Linux producer 1.2.0 accepts an optional `--host-run-mapping` private
+JSON file for same-length build-path redaction. The archive records rule ids,
+counts and original/public hashes; mapping values and its path stay private.
+Residual host paths fail validation, including when no mapping is provided.
+Office producer 1.0.1 includes the shipped Writer viewport semantic check in
+its exact source layout. These packaging changes do not replace Alpha13's APK,
+tag or verified release assets.
 
 ## G05-R1 native Office preview
 
@@ -131,6 +151,15 @@ The Alpha9 tag and APK stay immutable; no paid App-provider calls were used.
 
 
 ## Android Alpha
+
+### Alpha13 / G05-R2 manual Office editing
+
+[Download Alpha13](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
+— build 15, immutable APK source `64ef0f57dcb34c6e0fe4135f80a98add46003df7`.
+The Full ARM64 APK, two-line SHA256SUMS and final Linux/IDE/Office source archive
+were publicly downloaded and hash-verified. Manual editing and save-copy/reopen
+representative coverage is described above; AI precise edits and PDF/printing
+remain in the next batch. Alpha12 and iOS Latest are preserved.
 
 ### Alpha12 / G05-R1 offline Office preview
 

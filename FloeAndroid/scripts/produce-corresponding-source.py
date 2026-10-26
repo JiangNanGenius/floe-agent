@@ -60,7 +60,17 @@ Fail-closed bindings (all enforced, none downgraded to warnings):
   evidence and are never listed as shipped;
 * the archive is deterministic: byte-sorted entries, fixed epoch mtime,
   uid/gid 0, ustar format and a gzip member with mtime 0, so re-running on
-  the same frozen inputs reproduces identical bytes.
+  the same frozen inputs reproduces identical bytes;
+* disclosed packaging-only rendering: when ``--host-run-mapping FILE`` is
+  passed, the embedded recipe/relink copies run through a deterministic
+  same-length host-identity byte-run mask defined entirely by that private
+  mapping file — the tool source itself carries no host/user/volume/task
+  identity. Rules must be same-length, uniquely and neutrally named, and the
+  render fails closed if any mapped run survives or any forbidden fragment
+  remains; with no mapping the inputs render verbatim and the same residual
+  scan still fails closed. The mapping path and content are never recorded
+  in the archive or MANIFEST; MANIFEST.json records only rule ids, per-rule
+  run counts and the original/public digests of each rendered copy.
 
 Optional guest-resolver module (G03-R3):
 
@@ -88,6 +98,7 @@ readback.
 from __future__ import annotations
 
 import argparse
+import base64
 import gzip
 import hashlib
 import io
@@ -105,7 +116,21 @@ TOOL_NAME = "produce-corresponding-source"
 # .patch attestations describe the rejected header instead of being it), and
 # the public offer binds/labels exactly the two shipped executable payloads,
 # fail-closed if either libproot.so or libproot_loader.so binding is missing.
-TOOL_VERSION = "1.1.1"
+# 1.2.0 (packaging-only disclosure transform): the EMBEDDED copies of the
+# native-build recipe documents and of the allowlisted talloc relink evidence
+# objects may undergo a deterministic, same-length host-identity byte-run
+# mask. The mask rules live ONLY in an operator-supplied private mapping file
+# (--host-run-mapping); this source carries no host/user/volume/task identity.
+# The on-disk inputs are never modified and still pass every original check
+# (recipe tree hash vs provenance, text/deny scan, pins consistency,
+# allowlist); only the bytes written into the public archive change.
+# MANIFEST.json records every rendered copy as {originalSha256, publicSha256,
+# maskedRunCounts, bytes} so Main and any reader can audit the two
+# generations. Equality of byte length means ELF/ar section headers, symbol
+# tables, relocation records and section sizes are untouched; observed host
+# runs occur inside recipe prose/comments and inside the .debug_line DWARF
+# line-program string tables of the relink objects.
+TOOL_VERSION = "1.2.0"
 SCHEMA_VERSION = 1
 
 EPOCH_MTIME = 0
@@ -147,6 +172,133 @@ RELINK_ALLOWLIST = (
     "talloc-install/lib/libtalloc.a",
 )
 RELINK_REQUIRED = ("talloc.o", "replace.o", "talloc-install/lib/libtalloc.a")
+
+
+# ---- disclosed packaging-only rendering of host identity runs (1.2.0) ----------------
+# Applied ONLY to the byte sequences embedded into the public archive from the
+# native-build recipe tree and the allowlisted relink evidence: build-host
+# directory/user/cache strings captured in recipe prose and comments and inside
+# DWARF .debug_line tables. The replacement rules are NOT compiled into this
+# tool: the operator supplies a private mapping file through
+# --host-run-mapping (it lives only in the private output area; its path and
+# content never enter the archive, the MANIFEST or any rendered record). Every
+# rule must map one non-empty byte run to another of exactly the same byte
+# length, so file sizes, archive member sizes (ar headers), ELF section headers,
+# symbol tables and relocation records are byte-identical to the inputs; only
+# the masked character runs differ. The unmodified inputs remain the private
+# evidence of record and their digests (originalSha256) are recorded beside the
+# public digests. Rule ids are recorded instead of the original runs so the
+# public MANIFEST never re-exposes them. Without the flag the inputs render
+# verbatim and the residual scan below still fails closed on any surviving
+# host-form fragment, so a mapping covering the inputs' host runs is mandatory
+# for host-bound recipe trees.
+# Not applied to: the upstream archives (redistributed byte-exact against their
+# pinned provenance hashes), license texts, or the generated offer document -
+# those are scanned and already free of host identity runs.
+HOST_MAPPING_SCHEMA_VERSION = 1
+MAX_HOST_MAPPING_BYTES = 64 * 1024
+HOST_RULE_ID_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# Structural fragments only: generic path forms that name no specific host,
+# user, volume or task. Host identity itself enters exclusively through the
+# private mapping file (rule old-runs are always residual-checked, and the
+# mapping may add further residual fragments).
+HOST_RESIDUAL_FRAGMENTS = (b"/Users/", b"/Volumes/", b"Local/Private")
+
+
+def _mapping_blob(value: object, what: str) -> bytes:
+    if not isinstance(value, str):
+        raise ProduceError(f"host-run mapping {what} must be a base64 string")
+    try:
+        blob = base64.b64decode(value.encode("ascii"), validate=True)
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise ProduceError(f"host-run mapping {what} is not valid base64: {exc}")
+    if not blob:
+        raise ProduceError(f"host-run mapping {what} decodes to empty bytes")
+    return blob
+
+
+def load_host_run_mapping(path: Path) -> Tuple[List[Tuple[str, bytes, bytes]], Tuple[bytes, ...]]:
+    """Strict loader for the private same-length host-run mapping.
+
+    Expected shape (any deviation fails closed):
+        {"schemaVersion": 1,
+         "rules": [{"id": "<neutral-lowercase-token>",
+                    "oldB64": "<base64>", "newB64": "<same-length base64>"}, ...],
+         "residualFragmentsB64": ["<base64>", ...]}   (optional)
+    Rule ids are the only rule metadata that may be recorded publicly
+    (MANIFEST renderedCopies maskedRunCounts keys), so they are grammar-checked
+    neutral lowercase tokens and must be unique; every old/new pair must decode
+    to non-empty, exactly equal-length bytes. Order of the rules is the order
+    in which the mask applies them and is significant for run counts.
+    """
+    if not path.is_file():
+        raise ProduceError(f"host-run mapping file missing: {path.name}")
+    raw = read_bounded(path, MAX_HOST_MAPPING_BYTES, "host-run mapping")
+    try:
+        doc = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ProduceError(f"host-run mapping is not UTF-8 JSON: {exc}")
+    if not isinstance(doc, dict):
+        raise ProduceError("host-run mapping must be a JSON object")
+    allowed = {"schemaVersion", "rules", "residualFragmentsB64"}
+    if not set(doc) <= allowed or "schemaVersion" not in doc or "rules" not in doc:
+        raise ProduceError("host-run mapping keys must be schemaVersion and rules "
+                           "(plus optional residualFragmentsB64)")
+    if doc["schemaVersion"] != HOST_MAPPING_SCHEMA_VERSION:
+        raise ProduceError(f"host-run mapping schemaVersion must be "
+                           f"{HOST_MAPPING_SCHEMA_VERSION}")
+    rules_doc = doc["rules"]
+    if not isinstance(rules_doc, list):
+        raise ProduceError("host-run mapping rules must be a list")
+    rules: List[Tuple[str, bytes, bytes]] = []
+    seen = set()
+    for index, entry in enumerate(rules_doc):
+        if not isinstance(entry, dict) or set(entry) != {"id", "oldB64", "newB64"}:
+            raise ProduceError(f"host-run mapping rule {index} must carry exactly "
+                               "the keys id/oldB64/newB64")
+        rid = entry["id"]
+        if not isinstance(rid, str) or not HOST_RULE_ID_RE.match(rid):
+            raise ProduceError(f"host-run mapping rule {index} id must be a neutral "
+                               "lowercase [a-z0-9_] token (ids are recorded publicly)")
+        if rid in seen:
+            raise ProduceError(f"host-run mapping rule id {rid!r} is duplicated")
+        seen.add(rid)
+        old = _mapping_blob(entry["oldB64"], f"rule {rid} oldB64")
+        new = _mapping_blob(entry["newB64"], f"rule {rid} newB64")
+        if len(old) != len(new):
+            raise ProduceError(f"host-run mapping rule {rid!r} is not same-length "
+                               "(the disclosed transform never changes byte counts)")
+        rules.append((rid, old, new))
+    extra: Tuple[bytes, ...] = ()
+    if "residualFragmentsB64" in doc:
+        frags_doc = doc["residualFragmentsB64"]
+        if not isinstance(frags_doc, list):
+            raise ProduceError("host-run mapping residualFragmentsB64 must be a list")
+        extra = tuple(_mapping_blob(v, "residualFragmentsB64 entry")
+                      for v in frags_doc)
+    return rules, extra
+
+
+def mask_host_runs(data: bytes,
+                   rules: List[Tuple[str, bytes, bytes]],
+                   extra_residual_fragments: Tuple[bytes, ...] = ()):
+    """Deterministic same-length host identity run masking (see 1.2.0 note)."""
+    out = data
+    counts = {}
+    for rule, old, new in rules:
+        if len(old) != len(new):  # defensive re-check; loader enforced
+            raise ProduceError("host run mask lengths differ (internal error)")
+        c = out.count(old)
+        if c:
+            counts[rule] = c
+            out = out.replace(old, new)
+    if any(old in out for _, old, _ in rules):
+        raise ProduceError("host identity run survived masking (fail-closed)")
+    for frag in HOST_RESIDUAL_FRAGMENTS + tuple(extra_residual_fragments):
+        if frag in out:
+            raise ProduceError("masked bytes still carry a forbidden public fragment "
+                               f"{frag!r} (fail-closed)")
+    return out, counts
 
 DENY_NAME = re.compile(
     r"(?i)(^|[/._\-\s])(keystore|jks|p12|pfx|pem|secret|token|credential|"
@@ -480,6 +632,15 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
     require(bool(COMMIT_RE.match(commit)), "source-commit-grammar", checks,
             f"source commit {commit!r} must be 40 or 64 hex characters")
 
+    # ---- private same-length host-run mapping (optional input; never recorded) --
+    if args.host_run_mapping:
+        host_rules, host_frags = load_host_run_mapping(Path(args.host_run_mapping))
+        require(True, "host-run-mapping", checks, "",
+                {"ruleCount": len(host_rules),
+                 "ruleIds": [rid for rid, _, _ in host_rules]})
+    else:
+        host_rules, host_frags = [], ()
+
     # ---- provenance of the FINAL frozen native payloads ------------------------
     prov_path = Path(args.provenance)
     if not prov_path.is_file():
@@ -525,6 +686,7 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
 
     # ---- recipe tree binds to provenance ---------------------------------------
     recipe_dir = Path(args.recipe_dir)
+    rendered = {}
     entries = collect_recipe_tree(recipe_dir)
     recomputed = recipe_tree_sha256(recipe_dir, entries)
     require(recomputed == recipe_sha_recorded, "recipe-tree-binds-provenance", checks,
@@ -544,8 +706,15 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
                         f"recipe input {rel} contains {marker!r} — the Apple/APSL "
                         "queue.h is a rejected input (see THIRD_PARTY.md); the "
                         "producer fails the same way")
+        pub_data, rc = mask_host_runs(data, host_rules, host_frags)
+        if rc:
+            rendered[f"native-build/{rel}"] = {
+                "originalSha256": hashlib.sha256(data).hexdigest(),
+                "publicSha256": hashlib.sha256(pub_data).hexdigest(),
+                "maskedRunCounts": rc, "bytes": len(pub_data),
+                "rule": "same-length host-identity run mask (producer 1.2.0)"}
         files[f"native-build/{rel}"] = (
-            data, 0o755 if (src.stat().st_mode & 0o111) else 0o644)
+            pub_data, 0o755 if (src.stat().st_mode & 0o111) else 0o644)
 
     # ---- pinned patch cross-bound ----------------------------------------------
     require(patch_rel in entries, "patch-inside-recipe-tree", checks,
@@ -588,9 +757,16 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
     # ---- third-party obligations document ------------------------------------------
     tpd = Path(args.third_party_doc)
     tpd_text = text_or_reject(tpd, "THIRD_PARTY.md")
-    files["third-party/THIRD_PARTY.md"] = (tpd_text, 0o644)
+    tpd_pub, tpd_rc = mask_host_runs(tpd_text, host_rules, host_frags)
+    if tpd_rc:
+        rendered["third-party/THIRD_PARTY.md"] = {
+            "originalSha256": hashlib.sha256(tpd_text).hexdigest(),
+            "publicSha256": hashlib.sha256(tpd_pub).hexdigest(),
+            "maskedRunCounts": tpd_rc, "bytes": len(tpd_pub),
+            "rule": "same-length host-identity run mask (producer 1.2.0)"}
+    files["third-party/THIRD_PARTY.md"] = (tpd_pub, 0o644)
     require(True, "third-party-doc", checks, "",
-            {"sha256": hashlib.sha256(tpd_text).hexdigest()})
+            {"sha256": hashlib.sha256(tpd_pub).hexdigest()})
 
     # ---- distributable license texts ------------------------------------------------
     if not args.license_dir:
@@ -638,8 +814,15 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
                 "build/ export directory carrying the talloc objects/archive")
         for rel in present:
             data = read_bounded(root / rel, MAX_RELINK_BYTES, f"relink object {rel}")
-            files[f"relink/{rel}"] = (data, 0o644)
-            relink_index[rel] = hashlib.sha256(data).hexdigest()
+            pub_data, rc = mask_host_runs(data, host_rules, host_frags)
+            if rc:
+                rendered[f"relink/{rel}"] = {
+                    "originalSha256": hashlib.sha256(data).hexdigest(),
+                    "publicSha256": hashlib.sha256(pub_data).hexdigest(),
+                    "maskedRunCounts": rc, "bytes": len(pub_data),
+                    "rule": "same-length host-identity run mask (producer 1.2.0)"}
+            files[f"relink/{rel}"] = (pub_data, 0o644)
+            relink_index[rel] = hashlib.sha256(pub_data).hexdigest()
         require(True, "relink-evidence", checks, "", relink_index)
 
     # ---- optional guest-resolver module (all-or-none; see docstring) ----------
@@ -680,6 +863,7 @@ def load_and_validate(args: argparse.Namespace) -> Dict[str, object]:
             "patch": patch_info,
         },
         "pins": {"proot": prov_proot, "talloc": prov_talloc},
+        "renderedCopies": rendered,
         **({"guestResolver": guest} if guest is not None else {}),
         "archive": {"rootPrefix": ARCHIVE_ROOT_FMT.format(version=version),
                     "mtimeEpoch": EPOCH_MTIME, "ordering": "byte-sorted",
@@ -912,6 +1096,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                        help="product version this archive is offered with (same token as the tag)")
         p.add_argument("--source-commit", required=True,
                        help="frozen public commit the recipe/docs bind to (40 or 64 hex)")
+        p.add_argument("--host-run-mapping",
+                       help="optional private JSON file of same-length host-identity "
+                            "run rules rendered into the public copies (schemaVersion/"
+                            "rules/residualFragmentsB64, base64 byte runs); its path and "
+                            "content never enter the archive or MANIFEST")
 
     p_check = sub.add_parser("check", help="verify bindings; print JSON; write nothing")
     add_shared(p_check)

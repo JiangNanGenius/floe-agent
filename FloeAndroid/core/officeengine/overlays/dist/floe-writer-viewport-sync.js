@@ -16,14 +16,29 @@
 // identities (map, document layer, activeDocument and activeLayout) — the
 // real page 'load' event (the bundle's own completion boundary) and the real
 // map 'docloaded' status — retire the listeners, capture the live geometry,
-// then wait exactly ONE owned requestAnimationFrame before invoking the exact
+// then wait exactly ONE owned requestAnimationFrame. Inside that frame, after
+// revalidating every captured identity, bind a non-positive Writer body (the
+// root flex container) to the live positive viewport and invoke the exact
 // onResize path. The socket stack applies Writer status geometry after the
 // docloaded dispatch, so this one frame is the real completion boundary; it
 // is not a timer, recurring frame, retry, synthetic event, forced readiness
-// or permission change. The callback revalidates all captured identities and
-// refuses if any went stale. One frame is needed because pinned
-// src/app/Socket.js fires docloaded before its document-layer status call,
-// and that later call is where Writer applies the first status geometry.
+// or permission change. One frame is needed because pinned src/app/Socket.js
+// fires docloaded before its document-layer status call, and that later call
+// is where Writer applies the first status geometry.
+//
+// Root/body binding: pinned dist/global.js installs the mobile visualViewport
+// handler that scrolls to the visual origin, writes document.body.style.height,
+// and sets the bounded --viewport-bottom-inset from the live viewport. At the
+// initial WebView layout it can observe a zero viewport and leave a stale
+// inline height and inset that outrank the pinned body { height: 100% } rule;
+// the upstream percentage can also resolve against a root that is not yet
+// definite. When the measured Writer body is still non-positive, the owned
+// frame mirrors that complete authoritative binding once from the now-positive
+// visual viewport. If that viewport is unavailable or still zero, it uses one
+// standards-based live vh/dvh constraint (and resets the inset) instead of a
+// pixel snapshot. Neither path is a hard-coded height, timer, poll or second
+// callback: the pinned handler's existing scroll/resize listeners and normal
+// CSS remain the update path for later orientation and soft-keyboard changes.
 //
 // Diagnostics: post one strict numeric-only geometry packet (main/document/
 // canvas before>after, viewport/html/body after, outcome label) through the
@@ -88,6 +103,64 @@
             html: clientSize(document.documentElement),
             body: rectFromElement(document.body),
         };
+    }
+
+    function bodyHeight() {
+        return document.body &&
+            typeof document.body.getBoundingClientRect === 'function'
+            ? document.body.getBoundingClientRect().height
+            : 0;
+    }
+
+    function liveVisualViewport() {
+        var viewport = window.visualViewport;
+        if (viewport && Number.isFinite(viewport.height) && viewport.height > 0)
+            return viewport;
+        return null;
+    }
+
+    function bindViewport() {
+        var body = document.body;
+        var root = document.documentElement;
+        if (!body || !body.style)
+            return;
+
+        // Already definite: leave the pinned style and the normal path alone.
+        if (bodyHeight() > 0)
+            return;
+
+        var viewport = liveVisualViewport();
+        if (viewport) {
+            // Mirror the complete pinned dist/global.js visualViewport
+            // binding for this same live viewport: scroll to the visual
+            // origin, set the body height, and update the bounded bottom
+            // inset used by the pinned fixed toolbar. Its existing
+            // scroll/resize listeners remain the later lifecycle path.
+            var height = viewport.height;
+            var offsetTop = Number.isFinite(viewport.offsetTop)
+                ? viewport.offsetTop
+                : 0;
+            var htmlHeight = root ? root.clientHeight : 0;
+            var inset = Math.max(0, htmlHeight - offsetTop - height);
+            if (typeof window.scroll === 'function')
+                window.scroll(0, 0);
+            body.style.height = height + 'px';
+            if (root && root.style &&
+                typeof root.style.setProperty === 'function')
+                root.style.setProperty('--viewport-bottom-inset', inset + 'px');
+            return;
+        }
+
+        // The pinned visualViewport is unavailable or still zero at this
+        // boundary. Use the standards-based dynamic viewport constraint
+        // instead of a pixel snapshot; normal CSS re-resolves it on viewport
+        // changes, with the vh declaration as the fallback where dvh is not
+        // supported. No stale zero-vv inset is retained.
+        body.style.height = '100vh';
+        body.style.height = '100dvh';
+        if (root && root.style &&
+            typeof root.style.setProperty === 'function')
+            root.style.setProperty('--viewport-bottom-inset', '0px');
     }
 
     function post(packet) {
@@ -170,7 +243,12 @@
                 return;
             }
 
+            // Writer only: make the root/body height definite before the
+            // exact layout measurement. The stale-identity fence above has
+            // already passed, so no non-Writer or superseded document is
+            // mutated.
             try {
+                bindViewport();
                 writerLayout.onResize();
             } catch (error) {
                 packet(before, geometry(), 'failed');
