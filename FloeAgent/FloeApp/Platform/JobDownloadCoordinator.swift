@@ -545,7 +545,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         stateLock.lock()
         // Remove only this ending task's own entry: a newer retry (or a
         // cancel that already removed it) must not be overwritten.
-        if pendingRetryTasks[jobID] === task {
+        if pendingRetryTasks[jobID] == task {
             pendingRetryTasks[jobID] = nil
         }
         stateLock.unlock()
