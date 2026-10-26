@@ -8,7 +8,7 @@
 - 新增独立的任务实时活动开关，在锁屏及支持的灵动岛查看正在运行的任务和进度阶段，任务结束后自动收尾。
 - 完善技能完整目录安装、替换和删除，脚本、参考资料及图片等资源一并保留。
 - 完善 GitHub 技能整包更新和来源跟踪，支持同版本内容更新，并保护本地修改与删除选择。
-- 取消 Shell 命令长度限制，改进长脚本、后台提交、超时提示、工具发现及长结果继续读取。
+- 取消 Shell 命令长度和默认执行时长限制，改进长脚本、后台提交、工具发现及长结果继续读取；运行十分钟后提醒一次。
 - 修复任务或 Linux 环境结束后，后台定位未及时停止的问题。
 
 - 修复新增支持图片输入的多模态模型时，视觉输入未默认开启的问题。
@@ -21,6 +21,6 @@
 - Added an independent Task Live Activities switch to show running tasks and their stages on the Lock Screen and supported Dynamic Island, with automatic cleanup when work ends.
 - Improved complete-directory skill installation, replacement and removal, preserving scripts, references, images and other package resources.
 - Improved whole-package GitHub skill updates and source tracking, including content changes within the same version and protection for local edits and removal choices.
-- Removed the Shell command-length limit and improved long scripts, background submission, timeout reporting, tool discovery and continued reading of long results.
+- Removed Shell command-length and default execution-time limits, improved long scripts, background submission, tool discovery and continued reading of long results, and added one reminder after ten minutes.
 - Fixed background location remaining active after the last task or Linux environment stopped.
 - Fixed visual-input defaults when adding supported multimodal models.
