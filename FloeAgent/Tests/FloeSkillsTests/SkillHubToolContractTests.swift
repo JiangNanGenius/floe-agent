@@ -598,29 +598,38 @@ struct SkillHubToolInstallTests {
         #expect(await workspace.planCount() == 0)
     }
 
-    @Test("A pending permission delta returns an honest action state, never an installed receipt")
-    func pendingReviewIsNotSuccess() async throws {
-        let hub = FakeHubInstaller(.failure(SkillHubInstallError.reviewRequired))
-        let workspace = RecordingWorkspaceInstaller()
-        let tool = SkillWorkspaceInstallTool(installer: workspace, hub: hub)
-        let output = try await tool.execute(
-            .init(source: .hub, id: "hub-candidate", publicationCommit: hubPinY),
-            context: hubContext()
-        )
-        // Action state: the user owes a decision in the EXISTING combined
-        // approval flow; nothing is claimed as committed.
-        #expect(output.exitStatus == nil)
-        #expect(output.requiresUserAction == true)
-        #expect(output.summary.contains("status=pending-review id=hub-candidate"))
-        #expect(!output.summary.contains("status=installed"))
-        #expect(!output.summary.contains("contentDigest="))
-        #expect(!output.summary.contains("catalogDigest="))
-        #expect(!output.summary.contains("publicationCommit="))
-        // The id echo only carries the request's own id (no digests exist),
-        // and there is no directory fallback: the workspace installer is
-        // untouched even though the same tool instance owns both branches.
-        #expect(await hub.requestCount() == 1)
-        #expect(await workspace.planCount() == 0)
+    @Test("Hub install outcomes never produce a checkpoint action state (build-303 contract)")
+    func hubOutcomesNeverPark() async throws {
+        // The retired `reviewRequired` outcome used to park a task in a
+        // pending-review action state the owning conversation could not
+        // present. The contract now has NO pending-review outcome at all:
+        // an adds-scope delta is settled by ONE inline approval INSIDE the
+        // executing call (SkillInstallAuthorizationTests covers the park →
+        // approve → same-call receipt resume), and every terminal user
+        // decision stays a normal failed result. Nothing may claim success
+        // or claim a card is shown when none exists.
+        for error in [SkillHubInstallError.reviewDeclined, SkillHubInstallError.userChoiceBlocked] {
+            let hub = FakeHubInstaller(.failure(error))
+            let workspace = RecordingWorkspaceInstaller()
+            let tool = SkillWorkspaceInstallTool(installer: workspace, hub: hub)
+            let output = try await tool.execute(
+                .init(source: .hub, id: "hub-candidate", publicationCommit: hubPinY),
+                context: hubContext()
+            )
+            #expect(output.exitStatus == 1)
+            #expect(output.requiresUserAction == false,
+                    "a hub outcome must never checkpoint the run as awaiting a hidden review")
+            #expect(!output.summary.contains("status=pending-review"))
+            #expect(!output.summary.contains("review card"))
+            #expect(!output.summary.contains("status=installed"))
+            #expect(!output.summary.contains("contentDigest="))
+            // No directory fallback on any hub vocabulary outcome.
+            #expect(await workspace.planCount() == 0)
+        }
+        await #expect(throws: SkillHubInstallError.notConfigured) {
+            try await SkillWorkspaceInstallTool(installer: RecordingWorkspaceInstaller())
+                .execute(.init(source: .hub, id: "hub-candidate"), context: hubContext())
+        }
     }
 
     @Test("Declined review and user-choice blocks are terminal non-retryable messages")

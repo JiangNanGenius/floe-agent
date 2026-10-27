@@ -77,6 +77,16 @@ enum SkillHubCopy {
                   zh: "此更新为该技能申请新增访问权限。")
     }
 
+    // Inline exact-delta approval (task path). The nested card's reason
+    // line: one concise localized prompt; the verified facts line (skill,
+    // version, digest, ONLY the added entries) is appended by the caller
+    // from `SkillHubDeltaApprovalCopy.factsLine`.
+    static var deltaApprovalReason: String {
+        localized("skills.hub.delta.reason",
+                  en: "This update asks for new access. Approve to finish this install, or deny to stop it.",
+                  zh: "此更新申请新增访问权限。批准后本次安装将继续，拒绝则取消。")
+    }
+
     static var compatibilitySection: String { localized("skills.hub.compat.title", en: "Compatibility", zh: "兼容性") }
     static var compatibleReady: String { localized("skills.hub.compat.ready", en: "Compatible with this device", zh: "与当前设备兼容") }
     static func needsNewerApp(minimum: String) -> String {

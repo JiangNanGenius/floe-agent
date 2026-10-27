@@ -27,6 +27,59 @@ public struct CanvasStagedDocumentAccess: Sendable, Hashable {
     }
 }
 
+/// The canonical approval result behind this call's grant, issued by the
+/// runtime at dispatch from the exact `ApprovalGrant` that authorized the
+/// call. Never Codable and never model-minted. Consumers use it to know
+/// whether the run's EFFECTIVE authority already covers an additional
+/// in-call decision: a policy-authorized call (full-access, automatic,
+/// approval-model, full-control) carries the user's standing policy choice,
+/// while a one-off human inline card authorized exactly that call.
+public enum ToolApprovalOrigin: Sendable, Hashable {
+    /// A native inline ApprovalCard approved this exact call.
+    case humanCard
+    /// An existing approval policy authorized this call under its canonical
+    /// policy name (`ApprovalPolicy.policyName`).
+    case policy(String)
+}
+
+/// Result of a mid-execution (nested) human decision requested by an
+/// executing tool through its `RuntimeNestedApprovalHandle`.
+public enum NestedApprovalOutcome: Sendable, Equatable {
+    /// The human allowed the exact requested action.
+    case allowed
+    /// The human denied it; the reason is the card's own denial text.
+    case denied(reason: String)
+    /// The run was cancelled (or the wait interrupted) while parked.
+    case cancelled
+    /// The canonical waiting surface was not available for this call (the
+    /// run is not executing exactly this call, or no runtime seam exists in
+    /// this context). Nothing was presented; callers must fail honestly.
+    case unavailable
+}
+
+/// Runtime-issued handle letting ONE executing tool call request a canonical
+/// human decision mid-execution. The runtime implementation moves the run
+/// through the EXISTING `.waitingApproval` lifecycle — the same inline card,
+/// the same `resolveApproval` entry, the same durable decision receipt, the
+/// same liveness and background-ownership accounting — and the SAME tool
+/// call then continues with the outcome. This is not a second approval
+/// store: it re-enters the one canonical escalation path for a concrete
+/// already-dispatched call. Never Codable and never model-minted.
+public struct RuntimeNestedApprovalHandle: Sendable {
+    private let escalate: @Sendable (String) async -> NestedApprovalOutcome
+
+    public init(escalate: @escaping @Sendable (String) async -> NestedApprovalOutcome) {
+        self.escalate = escalate
+    }
+
+    /// Requests the one human decision for this call. `reason` is the
+    /// bounded user-visible description of EXACTLY what is being asked;
+    /// native services build it from verified facts, never model text.
+    public func request(reason: String) async -> NestedApprovalOutcome {
+        await escalate(reason)
+    }
+}
+
 /// Per-execution context handed to every tool.
 public struct ToolContext: Sendable {
     public var runID: UUID    /// Container/environment the run executes in. Tools that install or
@@ -118,6 +171,16 @@ public struct ToolContext: Sendable {
     /// and dispatch against exactly this set, never a wider raw registry.
     /// `nil` preserves legacy contexts that predate the frozen identity.
     public var frozenEffectiveCatalogNames: Set<String>?
+    /// Canonical approval result behind `approvalGrantID`, issued by the
+    /// runtime at dispatch. `nil` for legacy contexts and unapproved calls;
+    /// consumers treat `nil` conservatively (as the narrowest authority).
+    public var approvalOrigin: ToolApprovalOrigin?
+    /// Runtime-issued nested-approval seam for THIS exact executing call,
+    /// present when the dispatching runtime can present the canonical
+    /// mid-execution human decision. `nil` where no runtime surface exists
+    /// (legacy contexts, detached jobs); a consumer that genuinely needs a
+    /// human decision must then fail honestly instead of proceeding.
+    public var nestedApproval: RuntimeNestedApprovalHandle?
 
     public init(
         runID: UUID,
@@ -143,7 +206,9 @@ public struct ToolContext: Sendable {
         taskProgress: (any TaskProgressReporting)? = nil,
         temporaryReadOnly: Bool = false,
         clientSessionID: String? = nil,
-        frozenEffectiveCatalogNames: Set<String>? = nil
+        frozenEffectiveCatalogNames: Set<String>? = nil,
+        approvalOrigin: ToolApprovalOrigin? = nil,
+        nestedApproval: RuntimeNestedApprovalHandle? = nil
     ) {
         self.runID = runID
         self.environmentID = environmentID
@@ -169,6 +234,8 @@ public struct ToolContext: Sendable {
         self.temporaryReadOnly = temporaryReadOnly
         self.clientSessionID = clientSessionID
         self.frozenEffectiveCatalogNames = frozenEffectiveCatalogNames
+        self.approvalOrigin = approvalOrigin
+        self.nestedApproval = nestedApproval
     }
 
     /// Enforces the task's persisted file scope before the workspace path

@@ -504,8 +504,15 @@ final class SkillsCenter: ObservableObject {
         }
         let choiceKey = "skills.hub.reviewChoice." + ownerID.uuidString + "." + context.runID.uuidString + "." + request.id
         let choices = SQLiteSettingsStore(database: environment.database)
-        if try await choices.value(forKey: choiceKey) == "false" { throw SkillHubInstallError.reviewDeclined }
-        if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillHubInstallError.reviewRequired }
+        let persistedDecline = try await choices.value(forKey: choiceKey) == "false"
+        guard !persistedDecline else { throw SkillHubInstallError.reviewDeclined }
+        // A review the GLOBAL Skill Hub UI is presenting stays exclusive with
+        // a task install (single-writer store); that is a busy conflict the
+        // model may retry later — never a parking point for THIS call. The
+        // task path itself never writes `pendingInstallation`: an exact-delta
+        // decision is taken inline in the owning conversation and the same
+        // call resumes (build-303 deadlock repair).
+        if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillUpgradeError.localConflict }
         isWorking = true
         defer { isWorking = false }
         let publication = try await loadCuratedPublication(ref: request.publicationCommit ?? "main")
@@ -526,17 +533,73 @@ final class SkillsCenter: ObservableObject {
         guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
             throw SkillUpgradeError.invalidSource
         }
-        if staged.permissionDelta.requiresCombinedApproval {
-            pendingReviewChoiceKey = choiceKey
-            pendingInstallation = PendingInstallation(sourceURL: sourceURL,
-                skillMarkdown: String(decoding: staged.content.files["SKILL.md"] ?? Data(), as: UTF8.self),
-                manifest: staged.content.package.manifest, files: [:],
-                capabilityNames: staged.permissionDelta.missingCapabilities,
-                toolNames: staged.permissionDelta.missingTools, containsScripts: staged.receipt.containsScripts,
-                sourceDigest: staged.content.package.canonicalSHA256, rewriteModelID: "hub-reviewed-" + publication.publicationCommit,
-                snapshot: staged.content, curatedReceipt: staged.receipt, curatedUpgrade: candidate,
-                reviewOwnerID: ownerID)
-            throw SkillHubInstallError.reviewRequired
+        // The single deterministic authorization decision for this call. All
+        // hard checks above (signed chain, compatibility, dependency
+        // declaration, pin, user states, temporary ceiling, cancellation)
+        // already ran and are not re-litigated here.
+        let standingPolicyAuthority: Bool = {
+            if let origin = context.approvalOrigin, case .policy = origin { return true }
+            return false
+        }()
+        let decision = SkillHubTaskInstallPolicy.decide(SkillHubTaskInstallFacts(
+            temporaryReadOnly: context.temporaryReadOnly,
+            hasApprovalGrant: context.approvalGrantID != nil,
+            persistedDecline: persistedDecline,
+            explicitUserChoiceBlocked: false,   // enforced above; a block already threw
+            existingRow: current != nil,
+            deltaRequiresApproval: staged.permissionDelta.requiresCombinedApproval,
+            addedCapabilities: staged.permissionDelta.missingCapabilities,
+            addedTools: staged.permissionDelta.missingTools,
+            addedPythonPackageSpecs: staged.permissionDelta.missingPythonPackageSpecs,
+            humanScopedApproval: !standingPolicyAuthority,
+            inlineApprovalSurfaceAvailable: context.nestedApproval != nil))
+        switch decision {
+        case .refused(let reason):
+            switch reason {
+            case .temporaryChat, .approvalRequired, .userChoice: throw SkillHubInstallError.userChoiceBlocked
+            case .reviewDeclined: throw SkillHubInstallError.reviewDeclined
+            case .approvalSurfaceUnavailable: throw SkillUpgradeError.localConflict
+            }
+        case .proceedUnderCallAuthorization:
+            break
+        case .requestInlineDeltaApproval(let addedCapabilities, let addedTools, let addedPackages):
+            // Adds-scope UPDATE under a one-off human card grant: exactly
+            // ONE nested inline card, presented through the runtime's
+            // canonical waitingApproval lifecycle in the OWNING conversation
+            // and anchored to this executing call. The same call waits here
+            // and commits exactly the staged bytes after an approve; a
+            // decline or cancellation is recorded for this run/package and
+            // terminates honestly before the commit.
+            guard let handle = context.nestedApproval else {
+                // No canonical surface (detached job / legacy context): fail
+                // honestly and retryably; nothing parks invisibly.
+                throw SkillUpgradeError.localConflict
+            }
+            let reason = SkillHubCopy.deltaApprovalReason + " "
+                + SkillHubDeltaApprovalCopy.factsLine(
+                    skillID: request.id,
+                    version: staged.content.package.manifest.version,
+                    contentDigest: staged.content.package.canonicalSHA256,
+                    addedCapabilities: addedCapabilities,
+                    addedTools: addedTools,
+                    addedPythonPackageSpecs: addedPackages)
+            try context.cancellation.throwIfCancelled()
+            let outcome = await handle.request(reason: reason)
+            // Cancellation outranks a raced approve: the run is stopping, so
+            // nothing may commit after this point.
+            try context.cancellation.throwIfCancelled()
+            switch outcome {
+            case .allowed:
+                break
+            case .denied:
+                try? await choices.setValue("false", forKey: choiceKey)
+                throw SkillHubInstallError.reviewDeclined
+            case .cancelled:
+                try? await choices.setValue("false", forKey: choiceKey)
+                throw CancellationError()
+            case .unavailable:
+                throw SkillUpgradeError.localConflict
+            }
         }
         // No await between the final cancellation check and entering the
         // existing commit flow. Once committed, report the read-back receipt.
