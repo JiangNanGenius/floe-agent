@@ -43,8 +43,8 @@ name: floe-skill-hub-signing
 # be EXACTLY the qualified download-eligible rows advertising that channel
 # (the four App-provided builtin ids are excluded by exact ID and an empty
 # feed is always refused), per-item trust is unchanged (frozen adaptations,
-# guest-verified script bindings where offered, both-channel presence for
-# every offered pinned mandatory deep ID, and H6), and the retired
+# guest-verified script bindings where offered, explicit qualified platform presence for
+# every offered pinned mandatory deep ID, and per-channel H6), and the retired
 # >=40/all-nine batch rule survives only as informational complete-selection
 # coverage metadata. The signing key value never appears in logs or in the
 # canonical receipt (only the key ID).
@@ -78,13 +78,13 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # Reviewed tooling pin 832768f960122a745aad0e4bf27cb6e7b93d9cde, tree 5e1824ed62175814291fb4e86c98bc39c6667584.
-  # Executable producer/signer modules are blob-identical to reviewed T4
-  # f351591c (102 focused checks and the authentic guarded signing runs).
-  # This revision appends the verified 36-offer publication to the cumulative
-  # ledger (eight rows / 72 facts); frozen Main author rules remain aligned.
+  # Reviewed tooling pin 1ea3a641b150b94575f1135915ce011498fe91db, tree 220da964b6f33c2ed3e7e0745d7d2d0d614160e3.
+  # The 2026-10-28 platform-admission amendment validates every offered
+  # mandatory skill on its explicitly qualified channels, preserving full
+  # per-channel runtime/H6 and publication-history checks. Existing 36/36
+  # publication payloads and the eight-row ledger are unchanged by this pin.
   # The same strict live-Y resolver, key scope and data-only guards remain.
-  TOOLING_COMMIT: 832768f960122a745aad0e4bf27cb6e7b93d9cde
+  TOOLING_COMMIT: 1ea3a641b150b94575f1135915ce011498fe91db
 
 jobs:
   sign:
