@@ -194,6 +194,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                             in: RoundedRectangle(cornerRadius: 20))
                         .clipShape(RoundedRectangle(cornerRadius: 20))
                         .containerRelativeFrame(.horizontal, count: wide ? 2 : 1, spacing: 14)
+                        .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("skills.featured.card.\(item.id)")
                     }
                 }
@@ -266,6 +267,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("skills.row.\(item.id)")
     }
 

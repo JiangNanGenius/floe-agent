@@ -466,7 +466,14 @@ struct ComposerOverflowRegressionTests {
         // is UIKit's real markedTextRange; tests inject the same value at
         // the view's probe seam).
         fixture.view.markedTextProbe = { true }
-        let markedRun = "这是一段还在输入的拼音ni3zai4shu1ru4de4pin1yin1草稿mixed with Latin"
+        // The marked run must ACTUALLY overflow at the laid-out width — the
+        // transition this test defers can only exist if the freshest
+        // measurement says so (the first revision's ~3-line run measured
+        // under the 6/8-line cap at 320pt, so no verdict ever reached the
+        // host mid-composition and there was nothing to land on commit).
+        // The proven screenshot-scenario mixed draft, with the unconfirmed
+        // pinyin syllable still at the caret.
+        let markedRun = Self.mixedDraft + "ni3zai4shu1ru4de4pin1yin1"
         fixture.view.text = markedRun
         // Production keystroke path: the freshest measurement now says
         // "overflow" — the host must learn it, but the container flip may

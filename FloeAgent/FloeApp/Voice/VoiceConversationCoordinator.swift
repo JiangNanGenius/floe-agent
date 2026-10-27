@@ -1370,11 +1370,23 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// become the draft an armed or re-armed endpoint auto-sends after a round
     /// — the reported duplicate question with two separate answers.
     ///
+    /// A fenced replay also advances the baseline, so the ONE late FINAL of
+    /// that same accumulation can only arrive as its trailing punctuation:
+    /// the incremental diff is a bare "。" stub that asserts nothing new, and
+    /// the anchor alone cannot see the replay inside it (Build302 QA defect,
+    /// 2026-10-27). Such a stub is judged against the WHOLE current backend
+    /// accumulation instead: the same submitted words with no real microphone
+    /// speech since is still old audio, so it is fenced and discarded
+    /// synchronously, never staged and never armed. A diff carrying ANY
+    /// substantive character keeps the original fragment-level rule exactly.
+    ///
     /// Deliberate intent never routes through here: `sendNow()` and typed
     /// `submitText(_:)` call `submit` directly (product decision 2026-10-27).
     private func armEndpointOrFenceReplay(_ text: String, stage: String) {
         guard state == .listening, !isMuted, !text.isEmpty else { return }
-        if autoSubmitIdentity.blocksAutomaticSubmit(text) {
+        let stubOfFencedAccumulation = VoiceConversationBargeArbiter.normalized(text).isEmpty
+            && autoSubmitIdentity.blocksAutomaticSubmit(rawTranscript)
+        if autoSubmitIdentity.blocksAutomaticSubmit(text) || stubOfFencedAccumulation {
             report("duplicateUtteranceFenced", "stage=\(stage) chars=\(text.count)")
             discardStagedText()
             return

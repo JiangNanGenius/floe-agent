@@ -122,6 +122,7 @@ struct SkillHubInstallPanel: View {
                         } else if job.phase == .installed {
                             Label(SkillHubCopy.stageTitle(.installed), systemImage: "checkmark.circle.fill")
                                 .foregroundStyle(.green)
+                                .accessibilityIdentifier("skills.download.installed.\(skillID)")
                         }
                     }
                 } else {

@@ -166,13 +166,20 @@ final class SkillHubDiscoveryUITests: XCTestCase {
         // action is live. Never uninstall anything to force this case.
         let getButtons = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "skills.get."))
         var target: (id: String, button: XCUIElement)? = nil
-        for index in 0..<getButtons.count {
-            let button = getButtons.element(boundBy: index)
-            guard button.exists, button.isEnabled, button.isHittable else { continue }
-            let skillID = String(button.identifier.dropFirst("skills.get.".count))
-            if legacyIDs.contains(skillID) { continue }
-            target = (skillID, button)
-            break
+        // Curated entries are below the bundled first shelf in the lazy list.
+        // Visit real visible rows instead of assuming every catalog row is materialized.
+        for _ in 0..<12 {
+            for index in 0..<getButtons.count {
+                let button = getButtons.element(boundBy: index)
+                guard button.exists, button.isEnabled, button.isHittable,
+                      ["获取", "Get"].contains(button.label) else { continue }
+                let skillID = String(button.identifier.dropFirst("skills.get.".count))
+                if legacyIDs.contains(skillID) { continue }
+                target = (skillID, button)
+                break
+            }
+            if target != nil { break }
+            app.swipeUp()
         }
         guard let (skillID, button) = target else {
             XCTFail("""
@@ -199,7 +206,15 @@ final class SkillHubDiscoveryUITests: XCTestCase {
                 .matching(identifier: "skills.download.stage.\(stage)").firstMatch.waitForExistence(timeout: 5),
                 "stage row \(stage) must exist with its honest pending/active/done state")
         }
-        XCTAssertTrue(app.buttons["skills.download.cancel.\(skillID)"].waitForExistence(timeout: 5))
+        let cancel = app.buttons["skills.download.cancel.\(skillID)"]
+        let installed = app.descendants(matching: .any)
+            .matching(identifier: "skills.download.installed.\(skillID)").firstMatch
+        XCTAssertTrue(cancel.exists || installed.exists,
+                      "a download offers Cancel while live or its actual installed result")
+        let downloadEvidence = XCTAttachment(screenshot: app.screenshot())
+        downloadEvidence.name = "Skill Hub direct download progress or completed result"
+        downloadEvidence.lifetime = .keepAlways
+        add(downloadEvidence)
 
         // Closing the sheet must NOT kill the job — it is service-owned.
         let close = app.buttons["skills.download.close.\(skillID)"]

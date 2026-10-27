@@ -47,8 +47,10 @@ final class VoiceComposerOverflowUITests: XCTestCase {
         app.buttons["composer.editor.done"].tap()
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertEqual(input.value as? String, edited)
+        // Editing intentionally shows the transcript instead of the orb/status.
+        // Assert the surviving voice screen, not a deliberately hidden status label.
         XCTAssertTrue(app.descendants(matching: .any)
-            .matching(identifier: "voice.conversation.state").firstMatch.exists,
+            .matching(identifier: "voice.conversation").firstMatch.exists,
                       "Closing only the child editor retains the parent voice screen")
         keepScreenshot(app, name: "Voice composer returned to the same session")
     }

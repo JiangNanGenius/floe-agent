@@ -1613,6 +1613,7 @@ struct RootView: View {
         }
         .lineLimit(1)
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
         .inlineSelectionRowTraits(model: inlineSelection, conversationID: conversation.id)
         .contentShape(Rectangle())

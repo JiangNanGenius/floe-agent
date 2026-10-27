@@ -222,6 +222,7 @@ struct ConversationListView: View {
         }
         .buttonStyle(.plain)
         .accessibilityHint("chat.open.hint")
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
         .inlineSelectionRowTraits(model: selection, conversationID: conversation.id)
         .conversationRowContextMenu(

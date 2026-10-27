@@ -635,6 +635,72 @@ struct VoiceDuplicateUtteranceSafetyTests {
         #expect(rig.driving.starts.count == 1)
     }
 
+    @Test("The late FINAL of an already-fenced accumulation is fenced, never staged as a bare stub")
+    func fencedAccumulationFinalStaysFenced() async {
+        // The exact Build302 QA defect shape without a stream restart: the
+        // first fence advances the baseline past the backend's whole
+        // accumulation, so the one late final of the SAME speech arrives as
+        // nothing but its trailing punctuation. A punctuation stub asserts no
+        // new utterance — it must be fenced synchronously against the whole
+        // accumulation, never left visible as the user's draft or armed.
+        let recorder = EndpointDiagnosticRecorder()
+        let rig = VoiceRig(diagnostics: recorder)
+        await rig.coordinator.start()
+        await Self.answerOnce(rig)
+        #expect(rig.driving.starts.count == 1)
+
+        rig.stack.yieldTranscript("今天天氣怎麼樣")
+        let fenced = await rig.waitUntil {
+            recorder.count("duplicateUtteranceFenced") == 1 && rig.coordinator.stagedTranscript.isEmpty
+        }
+        #expect(fenced)
+        #expect(recorder.count("duplicateUtteranceFenced") == 1)
+
+        // The backend's final marker of the very same accumulation.
+        rig.stack.yieldTranscript("今天天氣怎麼樣。")
+        let finalFenced = await rig.waitUntil {
+            recorder.count("duplicateUtteranceFenced") == 2 && rig.coordinator.stagedTranscript.isEmpty
+        }
+        #expect(finalFenced)
+        #expect(rig.coordinator.stagedTranscript.isEmpty)
+        #expect(recorder.count("duplicateUtteranceFenced") == 2)
+
+        rig.clock.advance(by: 2.0)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 1)
+    }
+
+    @Test("A genuinely different utterance after fresh speech still stages and launches once")
+    func substantiveExtensionAfterFreshSpeechStillUsable() async {
+        // Fence-release companion of the stub rule: once real microphone
+        // speech has arrived, a DIFFERENT utterance stages and auto-submits
+        // exactly once no matter what the previous accumulation was fenced
+        // against — the stub rule never reaches a substantive diff.
+        let recorder = EndpointDiagnosticRecorder()
+        let rig = VoiceRig(diagnostics: recorder)
+        await rig.coordinator.start()
+        await Self.answerOnce(rig)
+        #expect(rig.driving.starts.count == 1)
+
+        rig.stack.yieldTranscript("今天天氣怎麼樣")
+        let fenced = await rig.waitUntil {
+            recorder.count("duplicateUtteranceFenced") == 1 && rig.coordinator.stagedTranscript.isEmpty
+        }
+        #expect(fenced)
+
+        // REAL voiced capture, then a genuinely different utterance.
+        await BargeFixture.openCandidate(rig)
+        rig.stack.yieldTranscript("明天會下雨嗎")
+        let staged = await rig.waitUntil { rig.coordinator.stagedTranscript == "明天會下雨嗎" }
+        #expect(staged, "fresh speech must stage a different utterance normally")
+        for _ in 0..<4 { rig.stack.yieldLevel(0, speech: false, duration: 0.25) }
+        await rig.settle()
+        rig.clock.advance(by: 0.95)
+        await rig.settle()
+        #expect(rig.driving.starts.count == 2)
+        #expect(rig.driving.starts.last?.request.text == "明天會下雨嗎")
+    }
+
     @Test("A genuine same-words repeat after fresh microphone speech submits exactly once")
     func genuineRepeatAfterFreshSpeechSubmitsOnce() async {
         let rig = VoiceRig()

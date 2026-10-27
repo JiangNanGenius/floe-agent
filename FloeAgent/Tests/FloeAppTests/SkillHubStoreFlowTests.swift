@@ -470,7 +470,7 @@ struct SkillHubStoreFlowTests {
     }
 
     @Test func columnWidthMathGuardsDegenerateInputs() {
-        #expect(SkillHubRowLayout.columnWidth(gridWidth: 744 - 32, columns: 2, gutter: 20) == (744 - 32 - 20) / 2)
+        #expect(SkillHubRowLayout.columnWidth(gridWidth: 744 - 32, columns: 2, gutter: 20) == CGFloat(346))
         #expect(SkillHubRowLayout.columnWidth(gridWidth: 100, columns: 2, gutter: 200) == 0,
                 "never negative widths")
         #expect(SkillHubRowLayout.columnWidth(gridWidth: 320, columns: 0, gutter: 20) == 320,
