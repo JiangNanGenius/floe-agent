@@ -18,6 +18,13 @@
 // receipts and the real runner with synthetic identities only; the
 // destructive lifecycle commands themselves stay covered by
 // TaskBulkManagementTests.
+//
+// Presentation correction (2026-10-27): the corrected hosts render the mode
+// with the platform's own editing toolbar (Done / count / Select All /
+// actions menu) instead of inserted bars. The model keeps exactly the same
+// semantics — the additional contracts pinned here are the pure pieces the
+// new chrome depends on: the result-alert decision, the truthful alert copy
+// and the one-shot receipt flag that never changes the selection.
 
 #if canImport(UIKit)
 import Foundation
@@ -571,6 +578,149 @@ struct InlineConversationSelectionTests {
         #expect(receipt.unverifiedCount == 1)
         #expect(receipt.notAttemptedCount == 1)
         #expect(receipt.succeededCount == 1)
+    }
+
+    // MARK: - Native editing chrome contracts (2026-10-27 presentation repair)
+
+    @Test("The native actions menu groups exactly the handed-off command identifiers")
+    func actionIdentifiersCoverTheMenuCommands() {
+        #expect(InlineSelectionIdentifiers.actions == "tasks.inline.actions")
+        #expect(InlineSelectionIdentifiers.receiptDismiss == "tasks.inline.receipt.dismiss")
+        // The menu rows keep the previously handed-off identifiers so the
+        // sidebar/chat automation anchors survive the presentation change.
+        for identifier in [
+            InlineSelectionIdentifiers.archive,
+            InlineSelectionIdentifiers.delete,
+            InlineSelectionIdentifiers.rename,
+            InlineSelectionIdentifiers.move,
+        ] {
+            #expect(!identifier.isEmpty)
+        }
+        // Done/count/select-all stay the same single source of truth.
+        #expect(InlineSelectionIdentifiers.done == "tasks.inline.done")
+        #expect(InlineSelectionIdentifiers.count == "tasks.inline.count")
+        #expect(InlineSelectionIdentifiers.selectAll == "tasks.inline.selectAll")
+    }
+
+    @Test("Only an incomplete batch asks for the native result alert")
+    func receiptNoticeRule() {
+        // A clean batch resolves every row and needs no extra chrome.
+        #expect(!InlineSelectionReceiptNotice.needsAttention(
+            summary(.archive, [(UUID(), .archived), (UUID(), .deleted)])
+        ))
+        #expect(!InlineSelectionReceiptNotice.needsAttention(
+            TaskBulkSummary(operation: .archive, results: [], wasCancelled: false)
+        ))
+        // Anything the user must consciously handle reports itself.
+        #expect(InlineSelectionReceiptNotice.needsAttention(
+            summary(.archive, [(UUID(), .failed("busy")), (UUID(), .archived)])
+        ))
+        #expect(InlineSelectionReceiptNotice.needsAttention(
+            summary(.delete, [(UUID(), .unverified("unreadable"))])
+        ))
+        #expect(InlineSelectionReceiptNotice.needsAttention(
+            summary(.archive, [(UUID(), .archived), (UUID(), .notAttempted)], cancelled: true)
+        ))
+        // A provable skip is still reported, never silently dropped.
+        #expect(InlineSelectionReceiptNotice.needsAttention(
+            summary(.archive, [(UUID(), .skipped(.alreadyInTargetState))])
+        ))
+    }
+
+    @Test("The alert receipt keeps counts, per-item reasons and the retry note")
+    func receiptDetailsStayTruthful() {
+        let failed = UUID()
+        let unverified = UUID()
+        let ok = UUID()
+        let receipt = summary(.delete, [
+            (ok, .deleted),
+            (failed, .failed("busy")),
+            (unverified, .unverified("unreadable")),
+        ])
+        let details = InlineSelectionResultCopy.details(for: receipt)
+        #expect(!details.isEmpty)
+        // Counts line comes from the same vocabulary as the management page.
+        #expect(details.contains(InlineSelectionResultCopy.text(for: receipt)))
+        #expect(details.contains(TaskManagementCopy.resultDeleted(1)))
+        #expect(details.contains(TaskManagementCopy.resultFailed(1)))
+        #expect(details.contains(TaskManagementCopy.resultUnverified(1)))
+        // Per-item reasons survive, with visible ordering.
+        #expect(details.contains("busy"))
+        #expect(details.contains("unreadable"))
+        // Unresolved rows stay actionable, and the copy says so.
+        #expect(receipt.retainedIDs == [failed, unverified])
+        #expect(details.contains(TaskManagementCopy.keepFailedSelected))
+        // A clean receipt has counts only (no retry/stop sentence).
+        let clean = summary(.archive, [(UUID(), .archived)])
+        #expect(InlineSelectionResultCopy.details(for: clean) ==
+                InlineSelectionResultCopy.text(for: clean))
+
+        let stopped = InlineSelectionResultCopy.details(
+            for: summary(.archive, [(UUID(), .archived), (UUID(), .notAttempted)], cancelled: true))
+        #expect(stopped.contains(TaskManagementCopy.cancelledNote))
+    }
+
+    @Test("The receipt alert flag follows real batches and clearing never drops unresolved rows")
+    func receiptFlagLifecycle() async {
+        let model = makeModel()
+        let ok = UUID()
+        let failed = UUID()
+        model.startMultiSelect(with: ok)
+        model.toggle(failed)
+        let clean = summary(.archive, [(ok, .archived), (failed, .archived)])
+        await model.run(
+            operation: .archive,
+            frozen: [item(ok), item(failed)],
+            execute: { _, _, _ in clean },
+            afterRun: {}
+        )
+        #expect(!model.receiptNeedsAttention)
+        #expect(model.selectedIDs.isEmpty)
+
+        model.startMultiSelect(with: ok)
+        model.toggle(failed)
+        let partial = summary(.archive, [(ok, .archived), (failed, .failed("busy"))])
+        await model.run(
+            operation: .archive,
+            frozen: [item(ok), item(failed)],
+            execute: { _, _, _ in partial },
+            afterRun: {}
+        )
+        #expect(model.receiptNeedsAttention)
+        #expect(model.receiptDetails.contains("busy"))
+        // Dismissing the alert is presentation-only: the failed row stays
+        // selected so the next batch retries exactly it.
+        #expect(model.selectedIDs == [failed])
+        model.dismissReceiptAlert()
+        #expect(!model.receiptNeedsAttention)
+        #expect(model.selectedIDs == [failed])
+
+        // Opening the mode again and leaving it clear the flag with the rest.
+        model.startMultiSelect(with: failed)
+        #expect(!model.receiptNeedsAttention)
+        model.end()
+        #expect(model.summary == nil)
+        #expect(!model.receiptNeedsAttention)
+    }
+
+    @Test("A stopped batch keeps the native receipt and the unprocessed rows selected")
+    func stoppedBatchShowsReceiptWithoutDroppingSelection() async {
+        let model = makeModel()
+        let a = UUID()
+        let b = UUID()
+        model.startMultiSelect(with: a)
+        model.toggle(b)
+        let stopped = summary(
+            .archive, [(a, .archived), (b, .notAttempted)], cancelled: true)
+        await model.run(
+            operation: .archive,
+            frozen: [item(a), item(b)],
+            execute: { _, _, _ in stopped },
+            afterRun: {}
+        )
+        #expect(model.receiptNeedsAttention)
+        #expect(model.receiptDetails.contains(TaskManagementCopy.cancelledNote))
+        #expect(model.selectedIDs == [b])
     }
 }
 #endif

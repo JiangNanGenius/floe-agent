@@ -46,33 +46,15 @@ struct ConversationListView: View {
         }
         .background(FloeTheme.readingSurface)
         .navigationTitle("tab.chat")
-        .toolbar { toolbarContent }
-        .task { await viewModel.load() }
-        .task(id: viewModel.searchText) { await viewModel.searchContents() }
-        .refreshable { await viewModel.load() }
-        .searchable(
-            text: $viewModel.searchText,
-            placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: Text("chat.search.prompt")
-        )
-        .navigationDestination(for: UUID.self) { conversationID in
-            ThreadDetailView(conversationID: conversationID, center: viewModel.center)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            // Corrected selection chrome: the header (count · select-all ·
-            // Done) sits above the list and only the compact batch actions
-            // stay at the bottom — one strip is never overloaded.
+        // Native editing mode: the ordinary entry/archive items are replaced
+        // by the platform's own toolbar composition in this column's bar —
+        // Done leading, the count as principal status, Select All + one
+        // actions menu trailing. No inserted header, no bottom text strip.
+        .toolbar {
             if selection.isActive {
-                InlineConversationSelectionHeader(
+                InlineSelectionEditingToolbar(
                     model: selection,
-                    visibleIDs: { Set(viewModel.filteredConversations.map(\.id)) }
-                )
-            }
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if selection.isActive {
-                InlineConversationSelectionActionBar(
-                    model: selection,
+                    visibleIDs: { Set(viewModel.filteredConversations.map(\.id)) },
                     center: viewModel.center,
                     selectedItems: { selectedItems },
                     onRename: { conversationID in
@@ -92,11 +74,25 @@ struct ConversationListView: View {
                         }
                     }
                 )
+            } else {
+                toolbarContent
             }
+        }
+        .task { await viewModel.load() }
+        .task(id: viewModel.searchText) { await viewModel.searchContents() }
+        .refreshable { await viewModel.load() }
+        .searchable(
+            text: $viewModel.searchText,
+            placement: .navigationBarDrawer(displayMode: .automatic),
+            prompt: Text("chat.search.prompt")
+        )
+        .navigationDestination(for: UUID.self) { conversationID in
+            ThreadDetailView(conversationID: conversationID, center: viewModel.center)
         }
         .inlineConversationSelectionChrome(
             model: selection,
             center: viewModel.center,
+            showsReceiptAlert: true,
             afterRun: {
                 await viewModel.load()
                 selection.pruneInvisible(Set(viewModel.filteredConversations.map(\.id)))

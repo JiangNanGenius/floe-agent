@@ -9,16 +9,23 @@
 // inline circles and selects the invoking row; tapping a row or circle then
 // toggles WITHOUT navigating, and Done restores the ordinary rows plus the
 // current conversation (the router selection is never touched by the mode).
-// The open mode shows a compact HEADER (count · select-all · Done) above the
-// list and a two-row BATCH BAR at the bottom (archive / delete, plus rename
-// / move when exactly one row is selected) so controls never cram into one
-// horizontal bar at sidebar width. Pin writes the durable conversation row
-// (schema v55) through the center; bulk archive/delete route through the
-// existing `ConversationTaskBulkService` / `TaskBulkRunner` engine (frozen
-// confirmation targets, cooperative stop between items, truthful per-item
-// results, unresolved items stay selected for a retry) — the same engine
-// the dedicated management pages use. There is no second store, queue or
-// permission path here, and no separate management modal to enter selection.
+// The open mode uses the platform's own EDITING CHROME instead of inserted
+// bars: Done sits on the navigation bar's leading edge, the selected count is
+// the bar's principal status, and Select All plus ONE native actions Menu
+// live on the trailing edge. The menu carries the batch archive / delete and
+// (only for exactly one selected row) rename / move as system buttons with
+// SF-Symbol icons, roles and disabled/busy rules — there is no second strip
+// above the list and no two-row text bar at the bottom. A batch that leaves
+// anything the user must see (failure, unverifiable, unprocessed, skipped or
+// stopped) is reported by the native result alert; a clean batch needs no
+// extra chrome because the resolved rows leave the selection and list. Pin
+// writes the durable conversation row (schema v55) through the center; bulk
+// archive/delete route through the existing `ConversationTaskBulkService` /
+// `TaskBulkRunner` engine (frozen confirmation targets, cooperative stop
+// between items, truthful per-item results, unresolved items stay selected
+// for a retry) — the same engine the dedicated management pages use. There is
+// no second store, queue or permission path here, and no separate management
+// modal to enter selection.
 //
 // Scope discipline: selection suspends row navigation only. It never touches
 // `AppRouter`, the outer split navigation, the running conversation or the
@@ -27,7 +34,8 @@
 // navigation refresh with real state — nothing is fabricated. The legacy
 // direct long-press entry (`inlineSelectionLongPress`) and single bottom bar
 // stay only for the Task Center surface this round (its host file is owned
-// elsewhere); the sidebar and Chat list use the corrected menu + split bars.
+// elsewhere); the sidebar and Chat list use the corrected menu + native
+// editing toolbar.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import Combine
@@ -47,6 +55,8 @@ enum InlineSelectionIdentifiers {
     static let selectAll = "tasks.inline.selectAll"
     static let done = "tasks.inline.done"
     static let count = "tasks.inline.count"
+    static let actions = "tasks.inline.actions"
+    static let receiptDismiss = "tasks.inline.receipt.dismiss"
     static let archive = "tasks.inline.archive"
     static let delete = "tasks.inline.delete"
     static let stop = "tasks.inline.stop"
@@ -116,6 +126,19 @@ enum InlineSelectionCopy {
     }
     static var rename: String { FloeL10n.l("workspace.file_tree_view.rename") }
     static var move: String { FloeL10n.l("app.floe_agent_app.move_to_project") }
+    /// Accessibility label of the one native batch-actions menu on the
+    /// trailing edge of the editing bar (its rows carry the icon labels).
+    static var batchActions: String {
+        ChatBilingualCatalog.localized(
+            key: "chat.inline_selection.batch_actions", en: "Actions", zh: "操作")
+    }
+    /// Title of the native result alert shown when a batch leaves anything
+    /// the user must consciously handle.
+    static var batchResult: String {
+        ChatBilingualCatalog.localized(
+            key: "chat.inline_selection.batch_result", en: "Batch result", zh: "批量结果")
+    }
+    static var ok: String { FloeL10n.l("workspace.office_document_editor_view.ok") }
     /// Honest disabled hint when the user has no project to move into yet.
     static var noProjects: String {
         ChatBilingualCatalog.localized(
@@ -138,6 +161,43 @@ enum InlineSelectionResultCopy {
         if summary.unverifiedCount > 0 { parts.append(TaskManagementCopy.resultUnverified(summary.unverifiedCount)) }
         if summary.notAttemptedCount > 0 { parts.append(TaskManagementCopy.resultNotAttempted(summary.notAttemptedCount)) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Full receipt for the native result alert: the same count line, one
+    /// line per item that carries a display-ready reason, and the existing
+    /// stop / retained-selection sentence. Pure so the alert copy stays
+    /// regression-tested without a view.
+    static func details(for summary: TaskBulkSummary) -> String {
+        var lines: [String] = []
+        let counts = text(for: summary)
+        if !counts.isEmpty { lines.append(counts) }
+        for result in summary.unresolvedItems {
+            let reason = result.outcome.issueText ?? ""
+            lines.append("• \(result.item.title) · \(reason)")
+        }
+        if summary.wasCancelled {
+            lines.append(TaskManagementCopy.cancelledNote)
+        } else if !summary.retainedIDs.isEmpty {
+            lines.append(TaskManagementCopy.keepFailedSelected)
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// Decides when the corrected hosts must surface the batch result natively.
+/// A clean batch needs no extra chrome: the resolved rows leave the selection
+/// and the list reloads with real state. Anything the user must consciously
+/// handle — a failure, an action that could not be verified, a row that never
+/// ran, a provable skip or a user stop — is reported by the result alert, so
+/// a partial outcome can never disappear silently.
+enum InlineSelectionReceiptNotice {
+    static func needsAttention(_ summary: TaskBulkSummary) -> Bool {
+        guard !summary.isEmpty else { return false }
+        return summary.wasCancelled
+            || summary.failedCount > 0
+            || summary.unverifiedCount > 0
+            || summary.notAttemptedCount > 0
+            || summary.skippedCount > 0
     }
 }
 
@@ -184,6 +244,11 @@ final class InlineConversationSelectionModel: ObservableObject {
     @Published private(set) var selectedIDs: Set<UUID> = []
     @Published private(set) var busy = false
     @Published private(set) var summary: TaskBulkSummary?
+    /// True when the last batch left something the user must consciously
+    /// handle (see `InlineSelectionReceiptNotice`). Corrected hosts present
+    /// it as the native result alert; dismissing it never changes the
+    /// selection, so unresolved rows stay actionable for a retry.
+    @Published private(set) var receiptNeedsAttention = false
 
     let lane: InlineConversationBulkLane
 
@@ -206,6 +271,10 @@ final class InlineConversationSelectionModel: ObservableObject {
 
     var selectedCount: Int { selectedIDs.count }
     var isSelected: Bool { !selectedIDs.isEmpty }
+    /// The full receipt copy for the native result alert (empty without one).
+    var receiptDetails: String {
+        summary.map(InlineSelectionResultCopy.details(for:)) ?? ""
+    }
     /// A new confirmation may only be requested while no batch is running
     /// anywhere on this lane (sidebar and content column are simultaneous
     /// surfaces; batches stay bounded-serial app-wide).
@@ -221,6 +290,7 @@ final class InlineConversationSelectionModel: ObservableObject {
     func startMultiSelect(with conversationID: UUID) {
         guard !busy else { return }
         summary = nil
+        receiptNeedsAttention = false
         isActive = true
         selectedIDs.insert(conversationID)
     }
@@ -234,6 +304,7 @@ final class InlineConversationSelectionModel: ObservableObject {
     func begin(with conversationID: UUID?) {
         guard !busy else { return }
         summary = nil
+        receiptNeedsAttention = false
         if isActive {
             if let conversationID { toggle(conversationID) }
             return
@@ -275,7 +346,14 @@ final class InlineConversationSelectionModel: ObservableObject {
         isActive = false
         selectedIDs = []
         summary = nil
+        receiptNeedsAttention = false
         clearPending()
+    }
+
+    /// Dismisses the native result alert without touching the selection:
+    /// unresolved rows stay selected so the next batch retries exactly them.
+    func dismissReceiptAlert() {
+        receiptNeedsAttention = false
     }
 
     // MARK: - Confirmation (frozen at request time)
@@ -365,6 +443,7 @@ final class InlineConversationSelectionModel: ObservableObject {
     func apply(_ result: TaskBulkSummary) {
         summary = result
         selectedIDs.subtract(result.removedIDs)
+        receiptNeedsAttention = InlineSelectionReceiptNotice.needsAttention(result)
     }
 
     // MARK: - Confirmation copy
@@ -413,7 +492,7 @@ struct InlineSelectionCircle: View {
 
 /// LEGACY single-bar surface (still the Task Center host's control this
 /// round; the corrected sidebar and Chat list use
-/// `InlineConversationSelectionHeader` + `InlineConversationSelectionActionBar`
+/// `InlineSelectionEditingToolbar` + `InlineSelectionBatchActionsMenu`
 /// instead). Compact inline bottom bar: Done, scoped select-all, selected
 /// count, and the archive / delete actions. Results appear as a quiet
 /// receipt line above the controls while the selection stays for a retry.
@@ -499,45 +578,67 @@ struct InlineConversationSelectionBar: View {
     }
 }
 
-// MARK: - Corrected selection chrome (header + compact two-row batch bar)
+// MARK: - Corrected presentation: the platform's own editing toolbar
 
-/// Selection mode header: the count, the visible-scoped select-all and Done.
-/// Three compact controls in ONE native strip above the list — no oversized
-/// drawn buttons, no second toolbar, nothing else competing for width.
-struct InlineConversationSelectionHeader: View {
+/// Selection mode as the system shows it: a REAL navigation-bar editing
+/// composition, never a strip drawn above the list. Done sits on the leading
+/// edge, the selected count is the bar's principal status, and Select All plus
+/// one native actions menu sit on the trailing edge. Hosts must install this
+/// in a host that owns a navigation container: the iPad sidebar column
+/// renders its own bar, the compact drawer is wrapped in its own
+/// NavigationStack, and the Chat list uses its detail column's bar — so no
+/// column can duplicate a bar or leave these items ignored.
+struct InlineSelectionEditingToolbar: ToolbarContent {
     @ObservedObject var model: InlineConversationSelectionModel
+    /// The rows the user currently sees (expanded sections + Chat); select-all
+    /// never sweeps in hidden tasks.
     let visibleIDs: @MainActor () -> Set<UUID>
+    let center: ConversationCenter
+    let selectedItems: @MainActor () -> [TaskBulkItem]
+    /// Host-owned presentation (rename sheet / move target list + command).
+    /// A nil capability simply omits that command.
+    var onRename: (@MainActor (UUID) -> Void)?
+    var moveTargets: (@MainActor () -> [InlineMoveTarget])?
+    var onMove: (@MainActor (UUID, UUID) -> Void)?
 
-    var body: some View {
-        HStack(spacing: 8) {
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button(InlineSelectionCopy.done) { model.end() }
+                .disabled(model.busy)
+                .accessibilityIdentifier(InlineSelectionIdentifiers.done)
+        }
+        ToolbarItem(placement: .principal) {
+            // The bar's own title slot becomes the live selection status:
+            // the same place a native inline title uses, with the system
+            // headline font so Dynamic Type scales it like any bar title.
             Text(InlineSelectionCopy.selected(model.selectedCount))
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
+                .font(.headline)
                 .lineLimit(1)
                 .accessibilityIdentifier(InlineSelectionIdentifiers.count)
-            Spacer(minLength: 4)
+        }
+        ToolbarItemGroup(placement: .topBarTrailing) {
             Button(model.allVisibleSelected(visible: visibleIDs())
                    ? InlineSelectionCopy.deselectAll
                    : InlineSelectionCopy.selectAll) {
                 model.toggleSelectAll(visible: visibleIDs())
             }
             .disabled(model.busy || visibleIDs().isEmpty)
-            .buttonStyle(.borderless)
             .accessibilityIdentifier(InlineSelectionIdentifiers.selectAll)
-            Button(InlineSelectionCopy.done) { model.end() }
-                .disabled(model.busy)
-                .buttonStyle(.borderless)
-                .accessibilityIdentifier(InlineSelectionIdentifiers.done)
+            InlineSelectionBatchActionsMenu(
+                model: model,
+                center: center,
+                selectedItems: selectedItems,
+                onRename: onRename,
+                moveTargets: moveTargets,
+                onMove: onMove
+            )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
     }
 }
 
-/// Pure placement rule for the batch bar: archive/delete act on any
+/// Pure placement rule for the batch commands: archive/delete act on any
 /// selection; rename and move (which have no batch semantics) appear only
-/// when EXACTLY one row is selected. Single source of truth for the view
+/// when EXACTLY one row is selected. Single source of truth for the menu
 /// and its regression tests.
 enum InlineSelectionCommandScope {
     static func offersSingleItemCommands(selectedCount: Int) -> Bool { selectedCount == 1 }
@@ -550,16 +651,17 @@ struct InlineMoveTarget: Identifiable, Hashable {
     let name: String
 }
 
-/// Bottom batch area for the corrected surfaces: the receipt line plus AT
-/// MOST two short rows — batch archive/delete, then rename / move when
-/// exactly one row is selected. Never one overloaded horizontal row at
-/// sidebar width; Done/select-all/count live in the header instead.
-struct InlineConversationSelectionActionBar: View {
+/// The single native batch-actions menu on the editing bar. Its rows are
+/// system buttons with SF-Symbol labels and the same rules the previous strip
+/// had: archive/delete need any selection and stay disabled otherwise (delete
+/// keeps its destructive role), rename/move only exist for exactly one
+/// selected row, a missing project list explains itself instead of failing,
+/// and every command is refused while a batch runs. The commands stay on the
+/// existing frozen-confirmation / bulk engine paths.
+struct InlineSelectionBatchActionsMenu: View {
     @ObservedObject var model: InlineConversationSelectionModel
     let center: ConversationCenter
     let selectedItems: @MainActor () -> [TaskBulkItem]
-    /// Host-owned presentation (rename sheet / move target list + command).
-    /// A nil capability simply omits that control.
     var onRename: (@MainActor (UUID) -> Void)?
     var moveTargets: (@MainActor () -> [InlineMoveTarget])?
     var onMove: (@MainActor (UUID, UUID) -> Void)?
@@ -570,74 +672,63 @@ struct InlineConversationSelectionActionBar: View {
         return model.selectedIDs.first
     }
 
+    private var batchCommandsDisabled: Bool {
+        !model.canRequestBatch
+            || !InlineSelectionCommandScope.offersBatchCommands(
+                selectedCount: model.selectedCount)
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let summary = model.summary, !summary.isEmpty {
-                receiptLine(summary)
-            }
-            HStack(spacing: 12) {
-                Button(InlineSelectionCopy.archive) { request(.archive) }
-                    .disabled(!model.canRequestBatch
-                              || !InlineSelectionCommandScope.offersBatchCommands(
-                                  selectedCount: model.selectedCount))
-                    .accessibilityIdentifier(InlineSelectionIdentifiers.archive)
-                Button(InlineSelectionCopy.delete, role: .destructive) { request(.delete) }
-                    .disabled(!model.canRequestBatch
-                              || !InlineSelectionCommandScope.offersBatchCommands(
-                                  selectedCount: model.selectedCount))
-                    .accessibilityIdentifier(InlineSelectionIdentifiers.delete)
-                Spacer(minLength: 8)
-            }
-            if let targetID = singleSelectedID {
-                HStack(spacing: 12) {
-                    if let onRename {
-                        Button(InlineSelectionCopy.rename) { onRename(targetID) }
-                            .disabled(model.busy)
-                            .accessibilityIdentifier(InlineSelectionIdentifiers.rename)
-                    }
-                    if let moveTargets, let onMove {
-                        let targets = moveTargets()
-                        if targets.isEmpty {
-                            Button(InlineSelectionCopy.noProjects) {}
-                                .disabled(true)
-                        } else {
-                            Menu(InlineSelectionCopy.move) {
-                                ForEach(targets) { target in
-                                    Button(target.name) { onMove(targetID, target.id) }
-                                }
-                            }
-                            .disabled(model.busy)
-                            .accessibilityIdentifier(InlineSelectionIdentifiers.move)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                }
-            }
+        Menu {
+            batchCommands
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.bar)
+        .menuOrder(.fixed)
+        .accessibilityLabel(InlineSelectionCopy.batchActions)
+        .accessibilityIdentifier(InlineSelectionIdentifiers.actions)
     }
 
     @ViewBuilder
-    private func receiptLine(_ summary: TaskBulkSummary) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(InlineSelectionResultCopy.text(for: summary))
-                .font(.footnote)
-            ForEach(summary.unresolvedItems) { result in
-                Text("\(result.item.title) · \(result.outcome.issueText ?? "")")
-                    .font(.caption)
-                    .foregroundStyle(FloeTheme.destructive)
-                    .lineLimit(2)
+    private var batchCommands: some View {
+        Button { request(.archive) } label: {
+            Label(InlineSelectionCopy.archive, systemImage: "archivebox")
+        }
+        .disabled(batchCommandsDisabled)
+        .accessibilityIdentifier(InlineSelectionIdentifiers.archive)
+        Button(role: .destructive) { request(.delete) } label: {
+            Label(InlineSelectionCopy.delete, systemImage: "trash")
+        }
+        .disabled(batchCommandsDisabled)
+        .accessibilityIdentifier(InlineSelectionIdentifiers.delete)
+        if let targetID = singleSelectedID {
+            Divider()
+            if let onRename {
+                Button { onRename(targetID) } label: {
+                    Label(InlineSelectionCopy.rename, systemImage: "pencil")
+                }
+                .disabled(model.busy)
+                .accessibilityIdentifier(InlineSelectionIdentifiers.rename)
             }
-            if summary.wasCancelled {
-                Text(TaskManagementCopy.cancelledNote)
-                    .font(.caption).foregroundStyle(.secondary)
-            } else if !summary.retainedIDs.isEmpty {
-                Text(TaskManagementCopy.keepFailedSelected)
-                    .font(.caption).foregroundStyle(.secondary)
+            if let moveTargets, let onMove {
+                let targets = moveTargets()
+                if targets.isEmpty {
+                    Button {} label: {
+                        Label(InlineSelectionCopy.noProjects, systemImage: "folder")
+                    }
+                    .disabled(true)
+                    .accessibilityIdentifier(InlineSelectionIdentifiers.move)
+                } else {
+                    Menu {
+                        ForEach(targets) { target in
+                            Button(target.name) { onMove(targetID, target.id) }
+                        }
+                    } label: {
+                        Label(InlineSelectionCopy.move, systemImage: "folder")
+                    }
+                    .disabled(model.busy)
+                    .accessibilityIdentifier(InlineSelectionIdentifiers.move)
+                }
             }
         }
     }
@@ -778,6 +869,11 @@ struct InlineConversationSelectionChromeModifier: ViewModifier {
     @ObservedObject var model: InlineConversationSelectionModel
     let center: ConversationCenter
     let afterRun: InlineConversationSelectionModel.AfterBatch
+    /// Corrected hosts surface the truthful batch result as a native alert
+    /// whenever the batch left anything unresolved or stopped. The legacy
+    /// Task Center host keeps its own persistent receipt line, so this stays
+    /// opt-in and never adds a second presentation there.
+    var showsReceiptAlert = false
 
     private var executor: InlineConversationBulkExecutor {
         InlineConversationBulkExecutor(center: center)
@@ -844,6 +940,18 @@ struct InlineConversationSelectionChromeModifier: ViewModifier {
                     InlineSelectionBusyOverlay { model.stopRunning() }
                 }
             }
+            .alert(
+                InlineSelectionCopy.batchResult,
+                isPresented: Binding(
+                    get: { showsReceiptAlert && model.receiptNeedsAttention && model.summary != nil },
+                    set: { presented in if !presented { model.dismissReceiptAlert() } }
+                )
+            ) {
+                Button(InlineSelectionCopy.ok) { model.dismissReceiptAlert() }
+                    .accessibilityIdentifier(InlineSelectionIdentifiers.receiptDismiss)
+            } message: {
+                Text(model.receiptDetails)
+            }
     }
 }
 
@@ -851,10 +959,12 @@ extension View {
     func inlineConversationSelectionChrome(
         model: InlineConversationSelectionModel,
         center: ConversationCenter,
+        showsReceiptAlert: Bool = false,
         afterRun: @escaping InlineConversationSelectionModel.AfterBatch
     ) -> some View {
         modifier(InlineConversationSelectionChromeModifier(
-            model: model, center: center, afterRun: afterRun))
+            model: model, center: center, afterRun: afterRun,
+            showsReceiptAlert: showsReceiptAlert))
     }
 
     /// A long press on a conversation row immediately enters (or extends)

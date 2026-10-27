@@ -333,7 +333,9 @@ struct RootView: View {
     @State private var expandedWorkspaceIDs: Set<UUID> = []
     /// Sidebar conversation selection: the row long press opens the native
     /// context menu (Pin/Unpin, Rename, Move, Multi-select, Archive, Delete)
-    /// and ONLY Multi-select reveals the inline circles in this list; bulk
+    /// and ONLY Multi-select reveals the inline circles in this list. While
+    /// the mode is open this column's own navigation bar carries the platform
+    /// editing controls (Done · count · Select All · actions menu); bulk
     /// archive/delete run through the existing task bulk engine, and
     /// navigation / temporary-session ownership is untouched.
     @StateObject private var inlineSelection = InlineConversationSelectionModel()
@@ -1207,7 +1209,15 @@ struct RootView: View {
                         .accessibilityLabel("app.floe_agent_app.collapse_task_list")
                 }
 
-                sidebarColumn
+                // The drawer owns its OWN navigation container: on iPad the
+                // split view supplies the sidebar column's bar, while the
+                // compact drawer sits in a plain overlay here — without this
+                // stack the shared `app.name` title and the inline editing
+                // toolbar would be silently dropped (never duplicated: the
+                // iPad path above is untouched).
+                NavigationStack {
+                    sidebarColumn
+                }
                     .frame(width: drawerWidth)
                     .frame(maxHeight: .infinity)
                     .background(FloeTheme.groupedSurface.ignoresSafeArea())
@@ -1343,17 +1353,6 @@ struct RootView: View {
 
     private var sidebarContent: some View {
         VStack(spacing: 0) {
-            // Corrected selection chrome: count · select-all · Done live in a
-            // narrow header ABOVE the list, batch actions stay at the bottom,
-            // so the narrow sidebar never carries one overloaded horizontal
-            // row of controls.
-            if inlineSelection.isActive {
-                InlineConversationSelectionHeader(
-                    model: inlineSelection,
-                    visibleIDs: { inlineSidebarVisibleIDs }
-                )
-                Divider()
-            }
             List(selection: $router.sidebarSelection) {
                 Section {
                     Label("workbench.new_task", systemImage: "square.and.pencil")
@@ -1432,12 +1431,38 @@ struct RootView: View {
             }
             .accessibilityIdentifier("sidebar.list")
             .disabled(inlineSelection.busy)
+            Divider()
+            HStack(spacing: 8) {
+                Button {
+                    router.presentedSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("more.settings")
+                .accessibilityIdentifier("sidebar.settings")
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+        }
+        .navigationTitle("app.name")
+        // Same inline bar as the split sidebar on iPad (sidebars always
+        // render small titles); this keeps the compact drawer's own bar
+        // compact instead of promoting a large title when the mode opens.
+        .navigationBarTitleDisplayMode(.inline)
+        // Corrected multi-select presentation: the editing controls are REAL
+        // navigation-bar items of this column (the iPad split's sidebar bar,
+        // the compact drawer's own NavigationStack bar) — Done leading, count
+        // as the bar's principal status, Select All + one native actions menu
+        // trailing. Nothing is inserted above the list and no second strip is
+        // drawn below it; the ordinary title bar is untouched while the mode
+        // is closed, and `router.sidebarSelection` is never modified here.
+        .toolbar {
             if inlineSelection.isActive {
-                // Compact batch area: archive / delete, plus rename / move
-                // when exactly one row is selected. Commands stay on the
-                // existing bulk engine and single-task lifecycle services.
-                InlineConversationSelectionActionBar(
+                InlineSelectionEditingToolbar(
                     model: inlineSelection,
+                    visibleIDs: { inlineSidebarVisibleIDs },
                     center: environment.conversationCenter,
                     selectedItems: { inlineSidebarSelectedItems },
                     onRename: { conversationID in
@@ -1458,24 +1483,8 @@ struct RootView: View {
                         }
                     }
                 )
-                Divider()
             }
-            Divider()
-            HStack(spacing: 8) {
-                Button {
-                    router.presentedSettings = true
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .buttonStyle(.plain)
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("more.settings")
-                .accessibilityIdentifier("sidebar.settings")
-                Spacer()
-            }
-            .padding(.horizontal, 16)
         }
-        .navigationTitle("app.name")
         .task {
             await environment.workspaceCenter.reload()
             await environment.conversationCenter.reload()
@@ -1488,6 +1497,7 @@ struct RootView: View {
         .inlineConversationSelectionChrome(
             model: inlineSelection,
             center: environment.conversationCenter,
+            showsReceiptAlert: true,
             afterRun: {
                 // Real reload only: the center republishes, the existing
                 // router reconciliation updates selection/navigation, and an
