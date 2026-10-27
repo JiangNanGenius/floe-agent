@@ -296,7 +296,9 @@ final class SkillHubInstallCoordinator {
         let isCancelRequested: () -> Bool
     }
 
-    typealias Pipeline = (PipelineContext) async throws -> SkillHubInstallOutcome
+    /// UI/job ownership and commit coordination stay on the same actor;
+    /// awaited download/validation services retain their own execution domains.
+    typealias Pipeline = @MainActor (PipelineContext) async throws -> SkillHubInstallOutcome
 
     enum Decision: Equatable {
         case started
