@@ -728,7 +728,7 @@ struct SkillHubCuratedSnapshotCacheTests {
         guard (object?["fixtureOnly"] as? Bool) == true,
               (object?["notATrustRoot"] as? Bool) == true,
               (object?["keyID"] as? String) == CuratedSkillHub.fixtureKeyID,
-              let raw = (object?["publicKey"] as? String).flatMap(Data.init(base64Encoded:)),
+              let raw = (object?["publicKey"] as? String).flatMap { Data(base64Encoded: $0) },
               raw.count == 32 else {
             throw CacheFixtureFailure(detail: "fixture public key material is malformed")
         }
