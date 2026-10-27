@@ -625,20 +625,79 @@ internal class WorkspaceSourceHostController(
                                          typedAcceptMime: String?): WorkspaceSourceResult {
             mutate { it.copy(busy = true, progressBytes = 0, lastResult = null) }
             val service = gateway() ?: return RUNTIME_UNAVAILABLE
+            // A granted FOLDER is a directory, not a file. The previous route
+            // opened the tree root's OWN descriptor and the first read threw
+            // the device failure "read failed: EISDIR (Is a directory)"
+            // (G05-R3 evidence 2026-10-27). A directory must be TRAVERSED
+            // through the scoped provider queries, one atomic verified child
+            // hop per file; the working single-file route stays byte-for-byte
+            // the same ladder below.
+            if (accepted.kind == SafUriKind.TREE.name) {
+                return importTreeLocked(service, accepted, targetPath)
+            }
+            return importSingleDocumentLocked(service, accepted, targetPath, typedAcceptMime)
+        }
+
+        /** The ORIGINAL single-file import route, unchanged in behavior and
+         * call ORDER (stageOpen → metadata → bounded pump → stageFinish →
+         * lastResult → refresh; Alpha14 device control 2026-10-27: ordinary
+         * file pick + Import passed). */
+        private suspend fun importSingleDocumentLocked(service: SafGatewayService,
+                                                      accepted: WorkspaceSourceAcceptedPick,
+                                                      targetPath: String,
+                                                      typedAcceptMime: String?): WorkspaceSourceResult {
+            val outcome = stageCommitDocumentLocked(
+                service, { resolveTarget(accepted) }, accepted.uri,
+                accepted.documentId, targetPath, typedAcceptMime)
+            if (!outcome.statusEquals("ok")) return outcome
+            mutate { it.copy(lastResult = outcome) }
+            val refreshed = refresh()
+            if (!refreshed.statusEquals("ok")) {
+                // The import itself settled natively; only the bounded
+                // row-list reload failed. Report it honestly as ok +
+                // refresh detail, never as a failed import.
+                mutate { it.copy(lastResult = ui.value.lastResult!!.copy(detail = "imported; row refresh pending")) }
+            }
+            return ui.value.lastResult!!
+        }
+
+        /** ONE provider document -> bounded staged ingress -> native verified
+         * commit + journal bind. This is the shipped import ladder with an
+         * identity-parameterized front end: the single-file route passes the
+         * accepted pick, and the folder route calls it once per enumerated
+         * child. Nothing here streams a directory (the provider's own
+         * fresh MIME_DIR row is refused typed), nothing buffers a whole file
+         * and the native hop keeps its ORIGINAL atomic no-overwrite CAS. */
+        private suspend fun stageCommitDocumentLocked(
+            service: SafGatewayService,
+            targetProvider: () -> SafDocumentRef?,
+            referenceUri: String,
+            sourceDocumentId: String?,
+            logicalPath: String,
+            typedAcceptMime: String?,
+        ): WorkspaceSourceResult {
             var stage = 0L
             try {
                 val sourceID = UUID.randomUUID().toString()
                 stage = runCatching {
-                    channel.stageOpen(nativeEpoch, taskID, workspaceID, "import", targetPath,
-                                      accepted.uri, accepted.documentId ?: "", sourceID)
+                    channel.stageOpen(nativeEpoch, taskID, workspaceID, "import", logicalPath,
+                                      referenceUri, sourceDocumentId ?: "", sourceID)
                 }.getOrDefault(-599)
                 if (stage <= 0) return mapStatus(stage.toInt())
-                val target = resolveTarget(accepted)
+                val target = targetProvider()
                     ?: return result("failed", "provider target unresolved")
                 val meta = gatewayOutcome { cancel -> service.operations.metadata(target, cancel) }
                 val document = when (meta) {
                     is SafOutcome.Failure -> return mapFailure(meta.failure, meta.detail)
                     is SafOutcome.Success -> meta.value
+                }
+                if (document.mimeType == SafDocument.MIME_DIR) {
+                    // Directory/regular-file distinction stays REAL: the
+                    // provider row says directory, so this hop refuses instead
+                    // of ever opening the directory descriptor (the EISDIR
+                    // class of failure cannot reach staging).
+                    return result("unsupported",
+                        "the selected item is a folder — use Choose folder… to import it, or browse it and pick one file")
                 }
                 if (document.capabilities.virtual && typedAcceptMime == null) {
                     return result("unsupported",
@@ -646,7 +705,7 @@ internal class WorkspaceSourceHostController(
                 }
                 var stageRefusal = 0
                 val pump = gatewayOutcome { cancel ->
-                    val references = retainedFor(accepted.uri, read = true, write = false)
+                    val references = retainedFor(referenceUri, read = true, write = false)
                     try {
                         val summary = service.operations.streamRead(
                             target, PROVIDER_COPY_BUDGET_BYTES, typedAcceptMime, cancel,
@@ -677,23 +736,13 @@ internal class WorkspaceSourceHostController(
                     runCatching { channel.stageFinish(stage, buffer) }.getOrDefault(-599)
                 }
                 if (!finish.ok) return mapReply(finish)
-                mutate {
-                    it.copy(lastResult = result("ok", "", mapOf(
-                        "sourceID" to finish.text("sourceID"),
-                        "path" to targetPath,
-                        "sha256" to finish.text("sha256"),
-                        "bytes" to finish.text("bytes"),
-                        "revision" to finish.text("revision"),
-                    )))
-                }
-                val refreshed = refresh()
-                if (!refreshed.statusEquals("ok")) {
-                    // The import itself settled natively; only the bounded
-                    // row-list reload failed. Report it honestly as ok +
-                    // refresh detail, never as a failed import.
-                    mutate { it.copy(lastResult = ui.value.lastResult!!.copy(detail = "imported; row refresh pending")) }
-                }
-                return ui.value.lastResult!!
+                return result("ok", "", mapOf(
+                    "sourceID" to finish.text("sourceID"),
+                    "path" to logicalPath,
+                    "sha256" to finish.text("sha256"),
+                    "bytes" to finish.text("bytes"),
+                    "revision" to finish.text("revision"),
+                ))
             } finally {
                 // The staged scratch is this lane's own temp: on success the
                 // verified body already sits in the workspace, on failure
@@ -702,6 +751,186 @@ internal class WorkspaceSourceHostController(
                 if (stage != 0L) runCatching { channel.stageAbort(stage) }
             }
         }
+
+        /** Folder import (G05-R3 repair 2026-10-27): traverse the EXACT
+         * granted tree through the shipped scoped provider queries
+         * (`listTreePage` held-cursor paging), validate every entry name
+         * against the workspace path grammar, reserve unique target paths,
+         * THEN run the ORIGINAL per-file commit ladder once per ordinary
+         * file child. Guarantees preserved: the walk commits nothing, so a
+         * refused entry cannot half-overwrite anything; each child publish
+         * is individually atomic + native-verified with the no-overwrite
+         * CAS; virtual children are counted honestly (never fabricated
+         * bytes); an empty folder is a typed refusal, never an empty
+         * success; every chunk still respects the cancel token, the full
+         * identity fence and the grant broker, and no workspace-outside
+         * path can be composed (native re-validates authoritatively). */
+        private suspend fun importTreeLocked(service: SafGatewayService,
+                                            accepted: WorkspaceSourceAcceptedPick,
+                                            targetPath: String): WorkspaceSourceResult {
+            val anchorString = accepted.treeAnchor ?: accepted.uri
+            val providerBackend = backend() ?: return RUNTIME_UNAVAILABLE
+            if (providerBackend.classifyUri(anchorString) != SafUriKind.TREE) {
+                return result("failed", "the chosen folder grant no longer matches the provider; pick the folder again")
+            }
+            val anchor = SafUriRef(anchorString)
+            // ---- PHASE A: bounded metadata-only walk (commits NOTHING) ----
+            val queuedFiles = ArrayList<FolderImportChild>()
+            val claimedPaths = HashSet<String>()
+            val pendingDirs = ArrayDeque<Triple<String?, String, Int>>()
+            pendingDirs.addLast(Triple(null, "", 0))
+            var entryBudget = 0
+            var virtualChildren = 0
+            var walkFailure: WorkspaceSourceResult? = null
+            /** The one held provider cursor lease that may outlive an early
+             * exit; released in the FINAL below so a refusal, cancellation
+             * request or thrown provider fault can never leak it. */
+            var heldCursor: String? = null
+            try {
+                outer@ while (!pendingDirs.isEmpty()) {
+                    val (parentDocumentId, relativePrefix, depth) = pendingDirs.removeFirst()
+                    var cursorToken: String? = null
+                    do {
+                        if (!admitted()) {
+                            walkFailure = RUNTIME_UNAVAILABLE
+                            break@outer
+                        }
+                        val page = gatewayOutcome { cancel ->
+                            val references = listOf(
+                                SharedUriGrantAuthority.broker.retain(anchor, SafAccessFlag.READ))
+                            try {
+                                service.operations.listTreePage(
+                                    anchor, parentDocumentId,
+                                    PageRequest(FOLDER_IMPORT_PAGE_ITEMS, cursorToken), cancel)
+                            } finally {
+                                releaseAll(references)
+                            }
+                        }
+                        val scan = when (page) {
+                            is SafOutcome.Failure -> {
+                                // queryChildDocuments closes the failed page's
+                                // lease itself; the finally below covers any
+                                // lease taken out by an EARLIER page.
+                                walkFailure = mapFailure(page.failure, page.detail)
+                                break@outer
+                            }
+                            is SafOutcome.Success -> page.value
+                        }
+                        heldCursor = scan.nextCursorToken
+                        entryBudget += scan.documents.size
+                        if (entryBudget > FOLDER_IMPORT_MAX_ENTRIES) {
+                            walkFailure = result("unsupported", folderBudgetMessage())
+                            break@outer
+                        }
+                        for (document in scan.documents) {
+                            val name = document.displayName
+                            if (!validDisplayName(name)) {
+                                walkFailure = result("failed",
+                                    "the folder contains a name that cannot be used in the workspace; nothing was imported")
+                                break@outer
+                            }
+                            val relativePath = if (relativePrefix.isEmpty()) name else "$relativePrefix/$name"
+                            val logicalPath = "$targetPath/$relativePath"
+                            if (!validLogicalPath(logicalPath)) {
+                                walkFailure = result("failed",
+                                    "the destination path for a folder item is too long to use; nothing was imported")
+                                break@outer
+                            }
+                            if (document.mimeType == SafDocument.MIME_DIR) {
+                                if (depth + 1 > FOLDER_IMPORT_MAX_DEPTH) {
+                                    walkFailure = result("unsupported",
+                                        "the folder nests too deeply to import; nothing was imported — try a shallower folder")
+                                    break@outer
+                                }
+                                val childID = document.ref.documentId
+                                if (childID == null) {
+                                    walkFailure = result("failed",
+                                        "the provider did not identify one of the folder items; nothing was imported")
+                                    break@outer
+                                }
+                                pendingDirs.addLast(Triple(childID, relativePath, depth + 1))
+                                continue
+                            }
+                            if (document.capabilities.virtual) {
+                                virtualChildren += 1
+                                continue
+                            }
+                            val childID = document.ref.documentId
+                            if (childID == null) {
+                                walkFailure = result("failed",
+                                    "the provider did not identify one of the folder items; nothing was imported")
+                                break@outer
+                            }
+                            if (!claimedPaths.add(logicalPath)) {
+                                walkFailure = result("conflict",
+                                    "two items in the folder share the same name ($name); nothing was imported — rename one and try again")
+                                break@outer
+                            }
+                            queuedFiles.add(FolderImportChild(document.ref, childID, logicalPath, relativePath))
+                            if (queuedFiles.size > FOLDER_IMPORT_MAX_FILES) {
+                                walkFailure = result("unsupported", folderBudgetMessage())
+                                break@outer
+                            }
+                        }
+                        cursorToken = scan.nextCursorToken
+                    } while (cursorToken != null)
+                }
+            } finally {
+                heldCursor?.let { cursor -> runCatching { service.operations.releaseCursor(cursor) } }
+            }
+            walkFailure?.let { return it }
+            if (queuedFiles.isEmpty()) {
+                return result("unsupported",
+                    if (virtualChildren > 0)
+                        "the folder contains only live provider items without stored files; pick one directly and choose a matching stream type"
+                    else "the folder has no files to import; nothing was imported")
+            }
+            // ---- PHASE B: the ORIGINAL per-file ladder, one child at a time ----
+            var committed = 0
+            var committedBytes = 0L
+            for (child in queuedFiles) {
+                if (!admitted()) {
+                    return WorkspaceSourceResult(
+                        "runtimeUnavailable",
+                        "the folder import stopped after $committed complete file(s); the rest were not imported",
+                        mapOf("imported" to committed.toString(),
+                              "committedBytes" to committedBytes.toString()))
+                }
+                val outcome = stageCommitDocumentLocked(
+                    service, { child.ref }, child.ref.uri.uriString,
+                    child.documentId, child.logicalPath, null)
+                if (!outcome.statusEquals("ok")) {
+                    if (committed == 0) return outcome
+                    return WorkspaceSourceResult(
+                        outcome.status,
+                        outcome.detail + " ($committed file(s) were already imported completely; nothing was partially written)",
+                        outcome.facts + mapOf("imported" to committed.toString(),
+                                              "committedBytes" to committedBytes.toString()))
+                }
+                committed += 1
+                committedBytes += outcome.facts["bytes"]?.toLongOrNull() ?: 0L
+            }
+            mutate {
+                it.copy(lastResult = result(
+                    "ok",
+                    if (virtualChildren > 0)
+                        "imported $committed file(s); skipped $virtualChildren live item(s) that cannot be copied as files"
+                    else "imported $committed file(s)",
+                    mapOf("imported" to committed.toString(),
+                          "committedBytes" to committedBytes.toString())))
+            }
+            val refreshed = refresh()
+            if (!refreshed.statusEquals("ok")) {
+                // The children all settled natively; only the bounded row
+                // reload failed — the SAME honest ok+detail rule as the
+                // single-file route.
+                mutate { it.copy(lastResult = ui.value.lastResult!!.copy(detail = "imported; row refresh pending")) }
+            }
+            return ui.value.lastResult!!
+        }
+
+        private fun folderBudgetMessage(): String =
+            "the folder contains more items than one import supports; nothing was imported — try a smaller folder"
 
         // ---- save: the journal-admitted destructive ladder ----------------
 
@@ -1581,6 +1810,14 @@ internal class WorkspaceSourceHostController(
     companion object {
         const val PROVIDER_COPY_BUDGET_BYTES = 1L shl 30
         const val CHUNK_BYTES = 65_536
+        // Folder-import walk budgets (G05-R3 repair 2026-10-27). Page size
+        // matches the shipped browseTree paging; the entry/file/depth caps
+        // fail closed BEFORE any commit, so a folder can never produce a
+        // half-validated batch or a runaway recursion.
+        const val FOLDER_IMPORT_PAGE_ITEMS = 256
+        const val FOLDER_IMPORT_MAX_ENTRIES = 4_096
+        const val FOLDER_IMPORT_MAX_FILES = 1_024
+        const val FOLDER_IMPORT_MAX_DEPTH = 8
         val RUNTIME_UNAVAILABLE = WorkspaceSourceResult(
             "runtimeUnavailable",
             "no live accepted native root + bound OS gateway for this binding; " +
@@ -1654,6 +1891,16 @@ internal data class WorkspaceSourceBrowseOutcome(
     val result: WorkspaceSourceResult,
     val children: List<WorkspaceSourceChildUi> = emptyList(),
     val nextCursor: String? = null,
+)
+
+/** One enumerated, name-validated ordinary file child from the folder-import
+ * walk (G05-R3). `ref` is the EXACT provider row reference (tree-anchored),
+ * never a re-guess; `logicalPath` is the reserved workspace path. */
+private data class FolderImportChild(
+    val ref: com.floe.android.safgateway.SafDocumentRef,
+    val documentId: String,
+    val logicalPath: String,
+    val relativePath: String,
 )
 
 /** Status tokens the UI maps to strings (EN/zh aligned). NEVER a raw

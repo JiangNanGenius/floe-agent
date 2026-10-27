@@ -55,6 +55,31 @@ class OfficeSaveProtocolTest {
     }
 
     @Test
+    fun exactEmptyResultSaveFailureFrameStaysNativeFailed() {
+        // Byte shape observed on C07 at 17:37:32.644617: no result field.
+        val frame = """unocommandresult: { "commandName": ".uno:Save", "success": false}"""
+            .toByteArray(Charsets.UTF_8)
+        val parsed = CoolMessageTriage.classify(frame).commandResult
+        assertNotNull(parsed)
+        assertEquals(false, parsed?.success)
+        assertNull(parsed?.resultValue)
+
+        val coordinator = OfficeSaveCoordinator()
+        coordinator.submitFlush("op-empty-save", saveIfUnmodified = false)
+        coordinator.markFlushDispatched("op-empty-save")
+        coordinator.markSaveCommandDispatched("op-empty-save")
+        val (outcome, external) = coordinator.onNativeSaveResult(
+            commandName = parsed?.commandName ?: OfficeSaveProtocol.SAVE_COMMAND_NAME,
+            success = parsed?.success,
+            resultValue = parsed?.resultValue,
+            isAutosave = parsed?.isAutosave == true,
+        )
+        assertNull(external)
+        assertEquals(OfficeSaveCoordinator.FlushVerdict.NATIVE_FAILED, outcome?.verdict)
+        assertNull(outcome?.detail)
+    }
+
+    @Test
     fun saveErrorFramesAreDistinguishedFromLoadErrors() {
         assertTrue(OfficeSaveProtocol.isSaveRelatedError("save", "savefailed"))
         assertTrue(OfficeSaveProtocol.isSaveRelatedError("storage", "savefailed"))
@@ -65,6 +90,11 @@ class OfficeSaveProtocolTest {
 }
 
 class OfficeSaveCoordinatorTest {
+
+    private fun dispatchSave(coordinator: OfficeSaveCoordinator, opId: String) {
+        assertTrue(coordinator.markFlushDispatched(opId))
+        assertTrue(coordinator.markSaveCommandDispatched(opId))
+    }
 
     @Test
     fun singleFlushCorrelationAndBusyRefusal() {
@@ -79,6 +109,7 @@ class OfficeSaveCoordinatorTest {
         )
         assertTrue(coordinator.markFlushDispatched("op-1"))
         assertFalse(coordinator.markFlushDispatched("op-other"))
+        assertTrue(coordinator.markSaveCommandDispatched("op-1"))
 
         val (outcome, external) = coordinator.onNativeSaveResult(
             commandName = ".uno:Save", success = true, resultValue = null, isAutosave = false,
@@ -106,10 +137,12 @@ class OfficeSaveCoordinatorTest {
     fun unmodifiedAndFailedVerdictsMapExactly() {
         val coordinator = OfficeSaveCoordinator()
         coordinator.submitFlush("op-u", saveIfUnmodified = true)
+        dispatchSave(coordinator, "op-u")
         val (unmodified, _) = coordinator.onNativeSaveResult(".uno:Save", false, "unmodified", false)
         assertEquals(OfficeSaveCoordinator.FlushVerdict.UNMODIFIED, unmodified?.verdict)
 
         coordinator.submitFlush("op-f", saveIfUnmodified = false)
+        dispatchSave(coordinator, "op-f")
         val (failed, _) = coordinator.onNativeSaveResult(".uno:Save", false, "io-error", false)
         assertEquals(OfficeSaveCoordinator.FlushVerdict.NATIVE_FAILED, failed?.verdict)
         assertEquals("io-error", failed?.detail)
@@ -126,9 +159,59 @@ class OfficeSaveCoordinatorTest {
     }
 
     @Test
+    fun saveAckBeforeActualSaveCommandStaysExternalThroughEditDispatch() {
+        val coordinator = OfficeSaveCoordinator()
+        coordinator.submitFlush("op-edit-prep", saveIfUnmodified = false)
+
+        val (preparationOutcome, preparationExternal) =
+            coordinator.onNativeSaveResult(".uno:Save", true, null, false)
+        assertNull(preparationOutcome)
+        assertEquals(
+            OfficeSaveCoordinator.FlushVerdict.WRITTEN_ACK,
+            preparationExternal?.verdict,
+        )
+        assertEquals("op-edit-prep", coordinator.pendingFlushOpId())
+
+        // Native setviewreadonly dispatch has started for cancellation
+        // purposes, but the REAL save command still has not been sent.
+        coordinator.markFlushDispatched("op-edit-prep")
+        val (editOutcome, editExternal) =
+            coordinator.onNativeSaveResult(".uno:Save", false, "unmodified", true)
+        assertNull(editOutcome)
+        assertEquals(
+            OfficeSaveCoordinator.FlushVerdict.UNMODIFIED,
+            editExternal?.verdict,
+        )
+        assertEquals(true, editExternal?.isAutosave)
+        assertEquals("op-edit-prep", coordinator.pendingFlushOpId())
+
+        dispatchSave(coordinator, "op-edit-prep")
+        val (hostOutcome, hostExternal) =
+            coordinator.onNativeSaveResult(".uno:Save", true, null, false)
+        assertNull(hostExternal)
+        assertEquals(OfficeSaveCoordinator.FlushVerdict.WRITTEN_ACK, hostOutcome?.verdict)
+        assertNull(coordinator.pendingFlushOpId())
+    }
+
+    @Test
+    fun saveErrorBeforeActualSaveCommandDoesNotSettlePendingFlush() {
+        val coordinator = OfficeSaveCoordinator()
+        coordinator.submitFlush("op-edit-error", saveIfUnmodified = false)
+        coordinator.markFlushDispatched("op-edit-error")
+        assertNull(coordinator.onSaveErrorFrame("storage", "savefailed"))
+        assertEquals("op-edit-error", coordinator.pendingFlushOpId())
+
+        coordinator.markSaveCommandDispatched("op-edit-error")
+        val outcome = coordinator.onSaveErrorFrame("storage", "savefailed")
+        assertEquals(OfficeSaveCoordinator.FlushVerdict.NATIVE_FAILED, outcome?.verdict)
+        assertNull(coordinator.pendingFlushOpId())
+    }
+
+    @Test
     fun autosaveCollisionIsNeverAttributedAndQuarantinesFlushes() {
         val coordinator = OfficeSaveCoordinator()
         coordinator.submitFlush("op-1", saveIfUnmodified = false)
+        dispatchSave(coordinator, "op-1")
         val (outcome, external) = coordinator.onNativeSaveResult(".uno:Save", true, null, true)
         assertNull(external)
         assertEquals(OfficeSaveCoordinator.FlushVerdict.NO_PROOF, outcome?.verdict)
@@ -149,7 +232,7 @@ class OfficeSaveCoordinatorTest {
     fun timeoutIsUnknownAndQuarantines() {
         val coordinator = OfficeSaveCoordinator()
         coordinator.submitFlush("op-1", saveIfUnmodified = false)
-        coordinator.markFlushDispatched("op-1")
+        dispatchSave(coordinator, "op-1")
         // A timeout for a different op changes nothing.
         assertNull(coordinator.onTimeout("op-other"))
         val outcome = coordinator.onTimeout("op-1")
@@ -168,6 +251,7 @@ class OfficeSaveCoordinatorTest {
         // Unrelated error frames are ignored.
         assertNull(coordinator.onSaveErrorFrame("load", "passwordrequired:to-view"))
         coordinator.submitFlush("op-1", saveIfUnmodified = false)
+        dispatchSave(coordinator, "op-1")
         val outcome = coordinator.onSaveErrorFrame("storage", "savefailed")
         assertEquals(OfficeSaveCoordinator.FlushVerdict.NATIVE_FAILED, outcome?.verdict)
         assertEquals("error:cmd=storage kind=savefailed", outcome?.detail)
@@ -192,6 +276,7 @@ class OfficeSaveCoordinatorTest {
         // the flag only marks the eventual receipt.
         coordinator.submitFlush("op-2", saveIfUnmodified = false)
         coordinator.markFlushDispatched("op-2")
+        coordinator.markSaveCommandDispatched("op-2")
         assertEquals(
             OfficeSaveCoordinator.CancelDecision.STILL_IN_FLIGHT,
             coordinator.requestCancel("op-2"),

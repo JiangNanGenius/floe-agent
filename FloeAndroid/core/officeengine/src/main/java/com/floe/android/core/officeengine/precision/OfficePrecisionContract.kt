@@ -22,9 +22,9 @@ import com.floe.android.core.officeengine.OfficeHostSaveHandoffPolicy
  *    was observed for this exact armed operation (typed read result).
  *  - [OfficePrecisionState.NATIVE_COMPLETED] — the producer's OWN completion
  *    evidence arrived (e.g. `pasteresult: success`) and every mandatory
- *    positional readback agreed, but the desired CONTENT postcondition is
- *    not (yet) confirmed by a real producer readback. Downstream tool
- *    success MUST wait for the later owned flush/export byte verification
+ *    positional readback agreed, and content readback is absent/inconclusive
+ *    rather than explicitly contradictory. Downstream tool success MUST wait
+ *    for the later owned flush/export byte verification
  *    (the existing WORKING_COPY_FLUSH/STAGED_EXPORT receipts) — this state
  *    alone never means "cell/text/formula content verified".
  *  - [OfficePrecisionState.MUTATION_VERIFIED] — NATIVE_COMPLETED plus a real
@@ -39,7 +39,9 @@ import com.floe.android.core.officeengine.OfficeHostSaveHandoffPolicy
  *    failure/refusal for this operation, or a mandatory readback disagreed
  *    (effect did not happen or hit the wrong target).
  *  - [OfficePrecisionState.UNKNOWN]         — no proof arrived (timeout,
- *    mount end, stale-answer quarantine). Effects may have happened; data
+ *    mount end, stale-answer quarantine), page edit mode was lost after an
+ *    effect send, or a real comparable content readback explicitly conflicted
+ *    with the request. Effects may have happened; data
  *    is retained, nothing is auto-undone, and no new conflicting mutation
  *    is admitted for the quarantined frame kind until a barrier re-arms it.
  *
@@ -96,7 +98,11 @@ enum class OfficePrecisionContentReadback {
     /** Readback text exactly equals the applied text. */
     MATCHED,
 
-    /** Readback answered but differs (e.g. Calc display re-formatting). */
+    /**
+     * A real comparable readback answered but differs from the requested
+     * content. This is explicit conflict evidence -> UNKNOWN/maybe-effect,
+     * never NATIVE_COMPLETED and never an automatic retry.
+     */
     MISMATCHED,
 
     /** Readback did not answer within its bounded soft window. */
@@ -208,7 +214,8 @@ enum class OfficePrecisionAction(
      * evidence is its own `pasteresult: success` frame; `fallback` is an
      * honest FAILED. A soft real readback (gettextselection) then attempts
      * to confirm the content postcondition: exact match upgrades to
-     * MUTATION_VERIFIED, anything else stays NATIVE_COMPLETED (pending the
+     * MUTATION_VERIFIED; an explicit comparable conflict becomes UNKNOWN;
+     * unavailable readback stays NATIVE_COMPLETED (pending the
      * owned flush/export byte verification). Requires a captured target
      * handle (CAS against manual edits, flushes, remounts and prior
      * mutations since capture). On spreadsheets the text MUST be
@@ -228,8 +235,9 @@ enum class OfficePrecisionAction(
      * requested cell before any effect, else FAILED) → paste
      * (`pasteresult:` producer completion) → confirming position readback →
      * soft CONTENT readback for LITERAL intent (exact match upgrades to
-     * MUTATION_VERIFIED; Calc display re-formatting stays honestly
-     * NATIVE_COMPLETED). FORMULA intent is never string-compared against
+     * MUTATION_VERIFIED; explicit comparable conflict becomes UNKNOWN;
+     * unavailable evidence stays NATIVE_COMPLETED). FORMULA intent is never
+     * string-compared against
      * display text (FORMULA_NOT_COMPARABLE → NATIVE_COMPLETED; formula
      * bytes land in the working copy and are provable only through the
      * owned flush/export verification). Content MUST be single-cell-safe
@@ -323,8 +331,8 @@ enum class OfficePrecisionState {
      * every mandatory positional readback agreed, but the FULL postcondition
      * is not (yet) confirmed by pinned-ordering-proven readback:
      *  - CONTENT mutations: the desired cell/text/formula content awaits the
-     *    owned flush/export byte verification (or the soft content readback
-     *    did not match exactly — e.g. Calc display re-formatting);
+     *    owned flush/export byte verification because soft readback was
+     *    unavailable or not comparable (an explicit conflict is UNKNOWN);
      *  - SELECTION effects: the non-empty selection readback is a PARTIAL
      *    postcondition only.
      * Downstream tool success MUST NOT be claimed from this state alone for
@@ -559,8 +567,8 @@ sealed class OfficePrecisionAnswer {
     /**
      * APPLY_TEXT / SET_CELL_CONTENT receipt. [contentReadback] states
      * exactly how far content verification got; NATIVE_COMPLETED results
-     * carry anything other than MATCHED and REQUIRE the later owned
-     * flush/export byte verification before any tool-success claim.
+     * carry only inconclusive/not-comparable outcomes and REQUIRE later owned
+     * flush/export verification. Explicit MISMATCHED is UNKNOWN instead.
      */
     data class MutationApplied(
         /** Ordered step attestations (producer evidence, path-free, content-free). */
