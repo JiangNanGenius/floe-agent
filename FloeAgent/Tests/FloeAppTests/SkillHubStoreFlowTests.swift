@@ -43,7 +43,9 @@ struct SkillHubStoreFlowTests {
         private let lock = NSLock()
         private var _runs = 0
         private var _commits = 0
-        private(set) var reportedPhases: [SkillHubInstallPhase] = []
+        private var _reportedPhases: [SkillHubInstallPhase] = []
+        var reportedPhases: [SkillHubInstallPhase] { lock.lock(); defer { lock.unlock() }; return _reportedPhases }
+        func reported(_ phase: SkillHubInstallPhase) { lock.lock(); _reportedPhases.append(phase); lock.unlock() }
         var failFirstAttempt = false
 
         var runs: Int { lock.lock(); defer { lock.unlock() }; return _runs }
@@ -74,7 +76,7 @@ struct SkillHubStoreFlowTests {
             let phases = [SkillHubInstallPhase.preparing, .downloading, .checking]
             for phase in phases {
                 context.report(phase, nil)
-                recorder.reportedPhases.append(phase)
+                recorder.reported(phase)
                 if context.isCancelRequested() { throw CancellationError() }
             }
             if parkForScope {
@@ -86,7 +88,7 @@ struct SkillHubStoreFlowTests {
                 guard approved else { throw CancellationError() }
             }
             context.report(.installing, nil)
-            recorder.reportedPhases.append(.installing)
+            recorder.reported(.installing)
             if context.isCancelRequested() { throw CancellationError() }
             // Past this point the verified commit transaction has started:
             // cancellation honestly cannot take effect.
