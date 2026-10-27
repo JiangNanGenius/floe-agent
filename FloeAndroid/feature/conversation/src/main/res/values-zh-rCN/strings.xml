@@ -337,4 +337,20 @@
     <string name="history_rename_failed">无法重命名此任务，请重试。</string>
     <string name="queue_refresh_failed">排队消息刷新失败</string>
     <string name="queue_refresh_action">刷新</string>
+
+    <!-- D04 任务输出文件卡片（⇄ 逐项密封文件输出） -->
+    <string name="run_output_save">保存副本</string>
+    <string name="run_output_open">打开</string>
+    <string name="run_output_saving">正在保存…</string>
+    <string name="run_output_saved">已保存到你的文件</string>
+    <string name="run_output_save_cancelled">已取消保存</string>
+    <string name="run_output_save_failed">保存失败</string>
+    <string name="run_output_missing">文件已不可用</string>
+    <string name="run_output_changed">文件内容已变化</string>
+    <string name="run_output_oversized">文件过大，无法在此打开</string>
+    <string name="run_output_rejected">输出记录无法验证</string>
+    <string name="run_output_loading">正在检查文件…</string>
+    <string name="run_output_unavailable">文件服务不可用</string>
+    <string name="run_output_truncated">部分输出可能未列出</string>
+    <string name="run_output_refresh">重新检查</string>
 </resources>

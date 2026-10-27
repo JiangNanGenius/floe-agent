@@ -1,6 +1,6 @@
 {
   "schema": "floe-office-notice-source-index/2",
-  "generatedAt": "2026-10-26",
+  "generatedAt": "2026-10-27",
   "license": "MPL-2.0",
   "status": "Floe source changes and producer identity recorded; actual publication and native runtime verified separately",
   "product": {
@@ -76,7 +76,7 @@
   },
   "floeOverlay": {
     "manifest": "core/officeengine/asset-overlays.json in matching Floe source",
-    "operationCount": 144,
+    "operationCount": 145,
     "sourceFileRecords": [
       {
         "path": "share/registry/floe-preview-policy.xcd",
@@ -592,7 +592,7 @@
         "path": "dist/cool.html",
         "operation": "replace",
         "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
-        "newSha256": "5bb079547f7c95fb88f7d1716e73acfa78844180d590137fb606b18e275761b9"
+        "newSha256": "3167f06000ca819d2dc96260a82f796154fe0c14c54137962fd178d1b8d1c989"
       },
       {
         "path": "notices/index.html",
@@ -935,6 +935,12 @@
         "operation": "add",
         "originalSha256": null,
         "newSha256": "885df166ab18e701770b755d1393be67a588a66b6afe19f61ecb261809a0f595"
+      },
+      {
+        "path": "dist/floe-impress-follow-controls-fix.js",
+        "operation": "add",
+        "originalSha256": null,
+        "newSha256": "e96f32f503ecb2d6669a950db465de466f2827fbfd285da4ff5af3ca178595a1"
       }
     ],
     "selfEntry": "Own digest excluded to avoid circular hash; it is present in the source overlay manifest."

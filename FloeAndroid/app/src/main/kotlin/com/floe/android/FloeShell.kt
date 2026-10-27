@@ -176,6 +176,32 @@ private fun FloeShellContent(
     var drawerOpen by rememberSaveable { mutableStateOf(false) }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
+    // G05-R2 Office AI transient launch admission (Main review 2026-10-27):
+    // project the shell's MODAL surfaces (Settings Dialog, preview Dialog,
+    // open drawer) onto the host for the AI lane's pre-claim admission only.
+    // Observation-only: privacy holder binding, BACK handling, dialog stacking
+    // and every launch behavior stay exactly as they are; the Settings Dialog
+    // overlays the still-composed chat without clearing privacyVisibleHolder,
+    // which is precisely why this separate fact exists.
+    androidx.compose.runtime.LaunchedEffect(settingsVisible, previewVisible, drawerOpen) {
+        runtimeHost?.uiModalSurfaceOwned = settingsVisible || previewVisible || drawerOpen
+    }
+
+    // The actual viewer claim reads these mutable state delegates on the
+    // UI thread, including a modal change before its next recomposition.
+    // Only AI opens require this gate; manual opens keep their own owner.
+    val officeAiAdmissionOwner = remember(officePreviews) { Any() }
+    androidx.compose.runtime.SideEffect {
+        officePreviews?.setAiLaunchAdmission(officeAiAdmissionOwner) { taskId ->
+            taskId != null && application?.isActivityInForeground() == true &&
+                !settingsVisible && !previewVisible && !drawerOpen &&
+                runtimeHost?.conversations?.currentVisibleConversationId() == taskId
+        }
+    }
+    androidx.compose.runtime.DisposableEffect(officePreviews, officeAiAdmissionOwner) {
+        onDispose { officePreviews?.clearAiLaunchAdmission(officeAiAdmissionOwner) }
+    }
+
     // G02 host presentation effects: navigation / inspector / permissions /
     // attachment picker / Skills folder picker / API 37 local-network
     // permission dialog. Observed here so composables stay observe-only.
@@ -187,6 +213,10 @@ private fun FloeShellContent(
         SkillsFolderPickerEffect(runtimeHost)
         LocalNetworkPermissionEffect(runtimeHost)
         com.floe.android.host.BackgroundTaskPermissionEffect(runtimeHost)
+        // D04 (job-6f953da44de048d0): the owned run-output Save-Copy
+        // CREATE_DOCUMENT launcher mounts exactly once with the other
+        // platform pickers; a null service (fixtures) is inert.
+        com.floe.android.host.output.RunOutputSavePickerEffect(application?.runOutputs)
         LaunchedEffect(runtimeHost) {
             // ONE serial consumer for host navigation. Collecting (instead of
             // keying a LaunchedEffect on the value) means clearing the

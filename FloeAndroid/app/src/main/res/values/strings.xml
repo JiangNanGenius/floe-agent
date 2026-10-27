@@ -438,4 +438,26 @@
     <string name="diagnostics_details_note_targets">Only a target row in lane state settled with a full receipt digest proves that particular data was cleared. Counts describe the whole lane and never prove a single target; obligations this device has not yet processed appear only in the queued count.</string>
     <string name="diagnostics_details_note_readonly">Opening or refreshing this page only reads current status. It runs no command, installs nothing, retries nothing, resumes no paused work and does not mark any tool ready.</string>
     <string name="providers_save_reopen_required">Reopen these settings and try again.</string>
+    <string name="run_pdf_back_cd">Back</string>
+    <string name="run_pdf_opening">Preparing preview…</string>
+    <string name="run_pdf_failed_title">Can\'t open this PDF</string>
+    <string name="run_pdf_expired_info">This preview expired. Reopen the file from the conversation.</string>
+    <string name="run_pdf_gone_info">The file is no longer available.</string>
+    <string name="run_pdf_toolarge_info">This PDF is too large to preview here.</string>
+    <string name="run_pdf_invalid_info">This file isn\'t a readable PDF, so it can\'t be previewed.</string>
+    <string name="run_pdf_password_info">This PDF is password-protected and can\'t be previewed here.</string>
+    <string name="run_pdf_transport_info">PDF preview couldn\'t start. Please try again.</string>
+    <string name="run_pdf_retry">Retry</string>
+    <string name="run_pdf_prev_cd">Previous page</string>
+    <string name="run_pdf_next_cd">Next page</string>
+    <string name="run_pdf_page_indicator">Page %1$d of %2$d</string>
+    <string name="run_pdf_zoom_in">Zoom in</string>
+    <string name="run_pdf_zoom_out">Zoom out</string>
+    <string name="run_pdf_fit">Fit width</string>
+    <string name="run_pdf_render_failed">This page failed to render.</string>
+    <string name="run_pdf_print">Print</string>
+    <string name="run_pdf_print_busy">Preparing print…</string>
+    <string name="run_pdf_print_opened">Print dialog opened. Choose a printer there.</string>
+    <string name="run_pdf_print_unavailable">This device can\'t print right now.</string>
+    <string name="run_pdf_print_gone">The file became unavailable before printing.</string>
 </resources>

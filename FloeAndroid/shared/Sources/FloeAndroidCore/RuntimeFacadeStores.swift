@@ -20,6 +20,11 @@ import Crypto
 import GRDB
 import FloePersistence
 import FloeAgentRuntime
+// D04 (job-3135f83ef97c4a21): the trusted run-output store binding, the
+// durable cleanup queue and the readiness retry pass are the shared core
+// (FloeTools) surface; the owned persistent root of THIS generation is the
+// only artifact authority Android publishes/cleans under.
+import FloeTools
 
 // MARK: - Typed bootstrap error vocabulary
 
@@ -149,6 +154,17 @@ public struct RuntimeStorageRoot: Sendable, Equatable, Hashable {
     public var checkpointDirectoryURL: URL {
         URL(fileURLWithPath: path).appendingPathComponent("checkpoints")
     }
+
+    /// D04 (job-3135f83ef97c4a21): the FLOE-owned artifact store root for
+    /// this persistent generation — the Android stand-in for iOS's
+    /// `<Application Support>/FloeAgent`. It lives INSIDE the already
+    /// validated owned root (never `$HOME`, never a temporary directory),
+    /// holds the `RunOutputs/` snapshot namespace and the durable
+    /// `RunOutputCleanupRequests/` tombstones, and is the only root the
+    /// trusted composition may bind into `RuntimeFacadeRunOutput`.
+    public var artifactStoreURL: URL {
+        URL(fileURLWithPath: path).appendingPathComponent("FloeAgent", isDirectory: true)
+    }
 }
 
 /// Process-local owner identity. The token is a host-generated random hex
@@ -190,6 +206,16 @@ public struct RuntimeRecoverySummary: Sendable, Equatable {
     public var credentialDeletionsPending: Int = 0
     public var credentialDeletionsDrained: Int = 0
     public var credentialDeletionsDeferred: Int = 0
+    /// D04 (job-3135f83ef97c4a21): counts from the ONE run-output tombstone
+    /// retry pass of this readiness (mirrors the iOS performBootstrap pass).
+    /// Zero when the run-output store was never bound or nothing persisted.
+    /// `runOutputCleanupRetainedLiveConversations` /
+    /// `runOutputCleanupRetainedLiveOwners` keep their tombstones AND their
+    /// snapshot trees for a later pass — never a partial delete.
+    public var runOutputCleanupCompleted: Int = 0
+    public var runOutputCleanupRetainedLiveConversations: Int = 0
+    public var runOutputCleanupRetainedLiveOwners: Int = 0
+    public var runOutputCleanupFailed: Int = 0
     public init() {}
 }
 
@@ -422,6 +448,60 @@ public actor AndroidRuntimeStoreOwner {
             return
         }
         guard lifecycleToken == token else { return }
+        // D04 (job-3135f83ef97c4a21; lifetime fix per the 2026-10-27 API
+        // review): bind the run-output store to THIS generation's owned
+        // persistent root and retry exactly the persisted cleanup tombstones
+        // — once per readiness pass, no timer, no global scan (the iOS
+        // performBootstrap placement). A run-output publication without
+        // this binding fails closed, so the binding is installed here and
+        // nowhere else; `close()` retires it under the monotonic epoch
+        // fence (a retired epoch can never be re-installed). The retry
+        // consults two trusted proofs before deleting anything: the
+        // conversation row is truly gone (a pre-DB-failure tombstone can
+        // never delete a live run's output) and NO live operation lease
+        // names the run (`RunOutputLeaseLiveOwnership`). The runs TABLE is
+        // deliberately NOT consulted: the conversation cascade itself
+        // deletes those rows BEFORE post-cascade cleanup, so a row probe
+        // could never see a publisher/download/native owner that survived
+        // the cascade — leases are the authoritative in-process signal and
+        // resumed durable job owners join the same acquire/release seam.
+        // Counts ride the honest recovery summary; failures keep requests.
+        if let identity = self.identity, let database, identity.epoch == token {
+            if RuntimeFacadeRunOutput.shared.install(
+                artifactRootPath: identity.root.artifactStoreURL.path,
+                epoch: identity.epoch
+            ) {
+                let outcome = await RunOutputCleanupQueue.retryPersistedTombstones(
+                    storeRoot: identity.root.artifactStoreURL,
+                    artifactRoot: identity.root.artifactStoreURL,
+                    liveOwnership: RunOutputLeaseLiveOwnership(),
+                    operationGate: RuntimeFacadeRunOutput.shared
+                ) { conversationID in
+                    // A read failure is unknown, not proof of deletion: the
+                    // queue retains the request and the user's snapshots.
+                    try await database.reader { db in
+                        try Row.fetchOne(
+                            db,
+                            sql: "SELECT 1 FROM conversations WHERE id = ?",
+                            arguments: [conversationID.uuidString]
+                        ) != nil
+                    }
+                }
+                summary.runOutputCleanupCompleted = outcome.completedRequests
+                summary.runOutputCleanupRetainedLiveConversations =
+                    outcome.retainedLiveConversationRequests
+                summary.runOutputCleanupRetainedLiveOwners =
+                    outcome.retainedLiveOutputRequests
+                summary.runOutputCleanupFailed = outcome.failedRequestCount
+            }
+        }
+        guard lifecycleToken == token else {
+            // The generation was torn down during the retry pass: retire OUR
+            // binding under its own epoch and fail closed like any other
+            // late-boundary exit.
+            if let epoch = identity?.epoch { RuntimeFacadeRunOutput.shared.retire(epoch: epoch) }
+            return
+        }
         recoverySummary = summary
         // The cluster is ready for bootstrap-scope commands only. Ordinary
         // runtime admission stays blocked until the real RB2b/RB3/RB4
@@ -445,6 +525,14 @@ public actor AndroidRuntimeStoreOwner {
         guard phase != .closed else { return }
         lifecycleToken = nil
         phase = .closing
+        // D04 (job-3135f83ef97c4a21): retire THIS generation's run-output
+        // binding under its own epoch first, so a late publish/verify/
+        // cleanup caller fails closed (the store then refuses any implicit
+        // Android root). Durable snapshot trees and tombstones on disk are
+        // untouched; a newer generation's binding is never torn down.
+        if let identity = self.identity {
+            RuntimeFacadeRunOutput.shared.retire(epoch: identity.epoch)
+        }
         // Drop store references before closing so no later job can reach them.
         conversationStore = nil
         runStore = nil
@@ -514,6 +602,17 @@ public actor AndroidRuntimeStoreOwner {
             checkpointStore: checkpointStore)
     }
 }
+
+// MARK: - D04 live-ownership note (lifetime fix, 2026-10-27 review)
+
+// An earlier candidate probed the runs TABLE for liveness. That signal is
+// wrong for post-cascade cleanup: the deletion's own cascade removes the
+// run rows BEFORE cleanup runs, so a still-running publisher/download/
+// native owner is invisible to it. The authoritative probes are now
+// `RunOutputLeaseLiveOwnership` (readiness path) and
+// `OwnedRunOutputWorkProbe` (deletion path) in RuntimeFacadeRunOutput.swift,
+// both composed from real runtime-issued leases and exact RB1 owned-work
+// tokens. No path/permission parallel system exists.
 
 // MARK: - Test-only probes (no production caller)
 

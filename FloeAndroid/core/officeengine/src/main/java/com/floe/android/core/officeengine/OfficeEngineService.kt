@@ -19,6 +19,11 @@ import android.view.InputDevice
 import android.view.View
 import android.webkit.WebView
 import com.floe.android.core.officeengine.OfficeRequestPolicy.formatForPath
+import com.floe.android.core.officeengine.precision.OfficePrecisionEngine
+import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
+import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
+import com.floe.android.core.officeengine.precision.OfficePrecisionResult
+import com.floe.android.core.officeengine.precision.OfficePrecisionState
 import java.io.File
 import java.util.Collections
 import java.util.Locale
@@ -206,6 +211,64 @@ class OfficeEngineService : Service() {
 
         /** Pure save state machine (one pending flush; exports serialized). */
         val saveCoordinator = OfficeSaveCoordinator()
+
+        /**
+         * Fenced typed precision surface (G05-R2 P-A): structured target
+         * capture/readback and native mutation dispatch over the PROVEN
+         * postMobileMessageNative wire, with the mount-scoped correlation
+         * ledger, native-operation lease and single-use target handles.
+         * Dies with this Session — a new native incarnation starts with a
+         * clean correlation/quarantine/handle state (the ONLY reconciliation
+         * for a poisoned barrier or quarantined callback-answer kind).
+         */
+        val precision = OfficePrecisionEngine(PrecisionHostBridge())
+
+        /**
+         * Mount-side capabilities for [precision]. Identity facts come from
+         * THIS session's own engine-owned record (never from callers or
+         * document content); diagnostics record identity-safe summaries
+         * only — never selected text, formulas, tokens or paths.
+         */
+        private inner class PrecisionHostBridge : OfficePrecisionEngine.OfficePrecisionHost {
+            override fun sessionToken(): String = request.sessionToken
+            override fun generation(): Long = this@Session.generation
+            override fun documentFormat(): OfficeDocumentFormat = request.format
+            override fun isReadyState(): Boolean =
+                state == OfficeViewerState.READY_READ_ONLY || state == OfficeViewerState.READY_EDITABLE
+            override fun isEditableReady(): Boolean =
+                state == OfficeViewerState.READY_EDITABLE && editPermissionEstablished
+            override fun isMountLive(): Boolean =
+                !retired && !presentationSuperseded && !cancelled.get() &&
+                    current === this@Session &&
+                    state != OfficeViewerState.CLOSING && state != OfficeViewerState.CLOSED &&
+                    !processRecoveryRequired.get()
+            override fun saveBusy(): Boolean =
+                saveCoordinator.pendingFlushOpId() != null || saveCoordinator.runningExportOpId() != null
+            override fun workingCopyDigest(): Pair<String, Long>? =
+                workingCopyFile?.let { OfficeRequestPolicy.digestWorkingCopy(it) }
+            override fun ownerTaskId(): String? = request.ownerTaskId
+            override fun workspaceId(): String? = request.workspaceId
+            override fun sourceId(): String? = request.sourceId
+            override fun sourceRevision(): String? = request.sourceRevision
+            override fun sourceLogicalPath(): String? = request.sourceLogicalPath
+            override fun documentModified(): Boolean? = this@Session.documentModified
+            override fun sendWire(message: String) = host.postMobileMessageNative(message)
+            override fun runOnControlLane(task: Runnable): Boolean = try {
+                controlExecutor.execute(task)
+                true
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                false
+            }
+            override fun scheduleTimeout(delayMs: Long, task: Runnable): Any =
+                task.also { mainHandler.postDelayed(it, delayMs) }
+            override fun cancelTimeout(handle: Any) {
+                if (handle is Runnable) mainHandler.removeCallbacks(handle)
+            }
+            override fun nativeIngressLock(): Any = host.nativeIngressLock
+            override fun recordDiagnostic(detail: String) =
+                this@Session.recordDiagnostic("precision", detail)
+            override fun elapsedMs(): Long = android.os.SystemClock.elapsedRealtime()
+        }
 
         /** Receipts issued for this mount, bounded; feeds the close outcome extras. */
         private val issuedReceipts = ArrayList<OfficeSaveReceipt>()
@@ -532,6 +595,11 @@ class OfficeEngineService : Service() {
         /** Delivers the terminal result exactly once for this mount. */
         fun deliverTerminal(closedCleanly: Boolean, failure: OfficeFailureCode?, message: String?) {
             if (!terminalDelivered.compareAndSet(false, true)) return
+            // Precision operations awaiting a native answer can never
+            // receive one after this mount ends: settle them UNKNOWN
+            // (effects uncertain, ALL data retained, never auto-undone)
+            // before the outcome snapshot.
+            precision.onMountTerminal()
             // A flush still awaiting its native ack can never receive one
             // after this mount ends: settle it UNKNOWN (honest — the App must
             // not read it as committed nor as certainly-not-written) BEFORE
@@ -653,8 +721,29 @@ class OfficeEngineService : Service() {
                     notifyNotice(outcome.noticeKey ?: "macroBlocked", rest.take(200))
                     return false
                 }
-                CoolMessageGate.Decision.FORWARD -> return true
-                CoolMessageGate.Decision.FORWARD_AFTER -> return true
+                CoolMessageGate.Decision.FORWARD,
+                CoolMessageGate.Decision.FORWARD_AFTER,
+                -> {
+                    // Precision lease (G05-R2 P-A): while a typed precision
+                    // operation is ACTUALLY executing (never while a model
+                    // thinks between ops), competing page retarget/write
+                    // traffic is fenced — mouse/key/selecttext/setpart/uno/
+                    // save/setviewreadonly/dialog/window commands AND the
+                    // reply-collision query class. Only pure render/tile/
+                    // keepalive traffic flows (fail-closed allowlist inside
+                    // the engine). A blocked attempt had no native effect,
+                    // so it does NOT advance the manual-input epoch; the
+                    // honest notice is emitted once per operation.
+                    val head = OfficeReadOnlyProtocol.command(message)
+                    if (precision.blocksPageCommand(head)) {
+                        if (precision.claimLeaseNoticeOnce(precision.ledger.armedOpId())) {
+                            notifyNotice("precisionBusy", null)
+                        }
+                        return false
+                    }
+                    precision.noteForwardedPageCommand(head)
+                    return true
+                }
             }
         }
 
@@ -692,11 +781,17 @@ class OfficeEngineService : Service() {
                     p.value?.let { lastPercent = it }
                     publishProgress()
                 }
-                CoolMessageTriage.Kind.STATUS -> triage.shape?.let { shape ->
-                    witnessWidthTwip = shape.widthTwip
-                    witnessHeightTwip = shape.heightTwip
-                    establishNativePermission()
-                    maybePromoteReady()
+                CoolMessageTriage.Kind.STATUS -> {
+                    triage.shape?.let { shape ->
+                        witnessWidthTwip = shape.widthTwip
+                        witnessHeightTwip = shape.heightTwip
+                        establishNativePermission()
+                        maybePromoteReady()
+                    }
+                    // Precision correlation observes the real status frame
+                    // BEFORE the WebView relay (exact `status:` prefix only
+                    // settles a status pull; statusupdate/partstatus never do).
+                    precision.observeNativeFrame(triage, message)
                 }
                 CoolMessageTriage.Kind.TILE_DELIVERY -> {
                     tileDeliveryCount++
@@ -715,6 +810,9 @@ class OfficeEngineService : Service() {
                             "ModifiedStatus=${change.state}",
                         )
                     }
+                    // Precision tracks ModifiedStatus as corroboration only
+                    // (never as completion evidence by itself).
+                    precision.observeNativeFrame(triage, message)
                     publishEditState()
                 }
                 CoolMessageTriage.Kind.UNO_COMMAND_RESULT -> triage.commandResult?.let { result ->
@@ -779,6 +877,17 @@ class OfficeEngineService : Service() {
                                 controlExecutor.execute { completeFlush(this@Session, flushOutcome) }
                             }
                         }
+                    } else if (precision.observeNativeFrame(triage, message)) {
+                        // The error frame named the ARMED precision step's
+                        // own command: it is that operation's producer
+                        // refusal (consumed as its typed FAILED result),
+                        // NOT a document failure — the mount stays open and
+                        // usable. Every other error keeps the exact existing
+                        // generic behaviour below (nothing is suppressed).
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_NATIVE_ERROR,
+                            "error consumed as precision operation refusal cmd=${info?.cmd}",
+                        )
                     } else {
                         notifyNotice("loadError", detail.ifEmpty { null })
                         // Honest failure representation (Main decision 2026-10-26):
@@ -798,6 +907,23 @@ class OfficeEngineService : Service() {
                             else -> publishProgress()
                         }
                     }
+                }
+                // Precision-surface answer/effect frames: correlated BEFORE
+                // the WebView relay, then relayed unchanged below (the page
+                // keeps seeing every frame exactly as before).
+                CoolMessageTriage.Kind.COMMAND_VALUE,
+                CoolMessageTriage.Kind.TEXT_SELECTION_CONTENT,
+                CoolMessageTriage.Kind.COMPLEX_SELECTION,
+                CoolMessageTriage.Kind.PASTE_RESULT,
+                CoolMessageTriage.Kind.PART_SET,
+                CoolMessageTriage.Kind.TEXT_SELECTION,
+                CoolMessageTriage.Kind.GRAPHIC_SELECTION,
+                CoolMessageTriage.Kind.CELL_CURSOR,
+                CoolMessageTriage.Kind.CELL_ADDRESS,
+                CoolMessageTriage.Kind.CELL_FORMULA,
+                CoolMessageTriage.Kind.PRESENTATION_INFO,
+                -> {
+                    precision.observeNativeFrame(triage, message)
                 }
                 else -> Unit
             }
@@ -1426,6 +1552,17 @@ class OfficeEngineService : Service() {
         ) {
             return rejectedReceipt(op, OfficeSaveFailureCode.SESSION_ENDING, "mount is closing")
         }
+        // Precision lease mutual exclusion (one native-session operation at
+        // a time): a flush/export is refused while a typed capture/apply
+        // actually executes; the precision submit side checks saveBusy()
+        // symmetrically. The save protocol itself is unchanged.
+        if (session.precision.leaseActive()) {
+            return rejectedReceipt(
+                op,
+                OfficeSaveFailureCode.INTERNAL,
+                "a precision operation holds the native session lease",
+            )
+        }
         return when (op.operation) {
             OfficeSaveOperation.WORKING_COPY_FLUSH -> {
                 if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) {
@@ -1521,15 +1658,44 @@ class OfficeEngineService : Service() {
             session.request.sessionToken != sessionToken || session.generation != generation
         ) return false
         if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) return false
+        // The precision lease fences nativeReadOnly toggles: flipping view
+        // permissions mid-capture/apply could break the trusted mutation in
+        // flight (and is itself a retarget-class state change). Short and
+        // bounded — never held while a model thinks between operations.
+        if (session.precision.leaseActive()) {
+            session.recordDiagnostic("precision", "requestEdit refused: lease active")
+            return false
+        }
         session.editRequested = enable
         session.recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "host requestEdit enable=$enable")
         controlExecutor.execute {
             if (session.retired || session.cancelled.get() || current !== session) return@execute
-            runCatching {
-                session.host.postMobileMessageNative(
-                    if (enable) OfficeReadOnlyProtocol.SET_VIEW_EDITABLE else OfficeReadOnlyProtocol.SET_VIEW_READ_ONLY,
-                )
-            }.onFailure { session.transportFailed("edit-toggle") }
+            // Ingress-monitor re-check: the binder-time lease pre-check is a
+            // TOCTOU; the real setviewreadonly send either happens now under
+            // the shared monitor or is honestly refused (never flips
+            // nativeReadOnly underneath a precision capture/apply).
+            var leaseBlocked = false
+            val sendFailed = synchronized(session.host.nativeIngressLock) {
+                if (!session.precision.canDispatchCompetingNative()) {
+                    leaseBlocked = true
+                    false
+                } else {
+                    runCatching {
+                        session.host.postMobileMessageNative(
+                            if (enable) OfficeReadOnlyProtocol.SET_VIEW_EDITABLE else OfficeReadOnlyProtocol.SET_VIEW_READ_ONLY,
+                        )
+                    }.isFailure
+                }
+            }
+            when {
+                leaseBlocked -> {
+                    session.editRequested = !enable
+                    session.recordDiagnostic("precision", "edit-toggle refused at dispatch: lease active")
+                    session.notifyNotice("precisionBusy", null)
+                    session.publishEditState()
+                }
+                sendFailed -> session.transportFailed("edit-toggle")
+            }
         }
         mainHandler.post {
             if (session.retired || session.presentationSuperseded || current !== session) return@post
@@ -1578,13 +1744,40 @@ class OfficeEngineService : Service() {
             session.request.sessionToken != sessionToken || session.generation != generation
         ) return false
         if (session.state != OfficeViewerState.READY_EDITABLE || !session.editPermissionEstablished) return false
+        // Manual history is fenced while a precision operation executes: an
+        // undo landing between a mutation's steps would corrupt both the
+        // document target and the correlation (one mutation in flight per
+        // native session). Honest refusal; retry after the lease clears.
+        if (session.precision.leaseActive()) {
+            session.recordDiagnostic("precision", "requestEditHistory refused: lease active")
+            return false
+        }
         controlExecutor.execute {
             if (session.retired || session.cancelled.get() || current !== session) return@execute
-            runCatching {
-                session.host.postMobileMessageNative(
-                    if (redo) "uno .uno:Redo" else "uno .uno:Undo",
-                )
-            }.onFailure { session.transportFailed("edit-history") }
+            // Ingress-monitor re-check: a manual undo/redo landing between a
+            // precision mutation's steps would corrupt both the document
+            // target and the frame correlation — the REAL send is refused
+            // under the shared monitor, honestly noticed, never silently.
+            var leaseBlocked = false
+            val sendFailed = synchronized(session.host.nativeIngressLock) {
+                if (!session.precision.canDispatchCompetingNative()) {
+                    leaseBlocked = true
+                    false
+                } else {
+                    runCatching {
+                        session.host.postMobileMessageNative(
+                            if (redo) "uno .uno:Redo" else "uno .uno:Undo",
+                        )
+                    }.isFailure
+                }
+            }
+            when {
+                leaseBlocked -> {
+                    session.recordDiagnostic("precision", "edit-history refused at dispatch: lease active")
+                    session.notifyNotice("precisionBusy", null)
+                }
+                sendFailed -> session.transportFailed("edit-history")
+            }
         }
         return true
     }
@@ -1716,6 +1909,57 @@ class OfficeEngineService : Service() {
         generation: Long,
     ): List<OfficeSessionDiagnostics.Event>? = diagnosticsSnapshot(sessionToken, generation)
 
+    // --- precision surface entry points (G05-R2 P-A, same-UID binder) ---
+
+    /**
+     * Fenced admission of one typed precision operation. Returns the
+     * synchronous ADMITTED acknowledgement or the exact typed REJECTED
+     * result (also stored for the answer read). NEVER a completion claim:
+     * the terminal result arrives via [readPrecisionAnswerFromBinder].
+     */
+    internal fun postPrecisionCommandFromBinder(
+        request: OfficePrecisionRequest,
+    ): OfficePrecisionResult {
+        val now = android.os.SystemClock.elapsedRealtime()
+        val session = current
+        if (session == null || session.retired ||
+            session.request.sessionToken != request.sessionToken ||
+            session.generation != request.generation
+        ) {
+            // No engine to fence through: answer with the same typed honesty
+            // (the mount identity simply does not exist here).
+            return OfficePrecisionResult(
+                opId = request.opId,
+                sessionToken = request.sessionToken,
+                generation = request.generation,
+                action = request.action,
+                state = OfficePrecisionState.REJECTED,
+                failure = OfficePrecisionFailure.SESSION_MISMATCH,
+                detail = "no-live-mount-for-this-identity",
+                answer = null,
+                attestation = "refused-before-dispatch",
+                submittedAtElapsedMs = now,
+                completedAtElapsedMs = now,
+            )
+        }
+        return session.precision.submit(request)
+    }
+
+    /**
+     * Reads (and consumes) the terminal result of one exact fenced
+     * precision op — the ONLY path typed answer content leaves the engine
+     * (same-UID binder + exact token/generation fence). Null while pending
+     * or unknown.
+     */
+    internal fun readPrecisionAnswerFromBinder(
+        opId: String,
+        sessionToken: String,
+        generation: Long,
+    ): OfficePrecisionResult? {
+        val session = current ?: return null
+        return session.precision.readAnswer(opId, sessionToken, generation)
+    }
+
     // --- save execution (control lane) ---
 
     /**
@@ -1744,7 +1988,26 @@ class OfficeEngineService : Service() {
             return
         }
         try {
-            session.host.postMobileMessageNative(OfficeSaveProtocol.flushMessage(op.saveIfUnmodified))
+            // Ingress-monitor re-check (Main integration 2026-10-26): the
+            // submit-time lease pre-check is a TOCTOU — a precision op can
+            // arm between it and this real dispatch. Under the SAME monitor
+            // that makes page check→send and precision arm→dispatch atomic,
+            // either the flush goes out now or nothing reached the kit and
+            // the flush settles as an honest dispatch refusal.
+            val leaseBlocked = synchronized(session.host.nativeIngressLock) {
+                if (session.precision.canDispatchCompetingNative()) {
+                    session.host.postMobileMessageNative(OfficeSaveProtocol.flushMessage(op.saveIfUnmodified))
+                    false
+                } else {
+                    true
+                }
+            }
+            if (leaseBlocked) {
+                session.saveCoordinator.abortDispatch(op.opId, "precision-lease-at-dispatch")?.let { outcome ->
+                    completeFlush(session, outcome)
+                }
+                return
+            }
             session.saveCoordinator.markFlushDispatched(op.opId)
             session.recordDiagnostic(OfficeSessionDiagnostics.KIND_SAVE, "flush dispatched op=${op.opId}")
             armFlushTimeout(session, op)
@@ -2436,6 +2699,9 @@ class OfficeEngineService : Service() {
     }
 
     private fun retireQuiet(session: Session) {
+        // Precision ops never survive their mount (settle UNKNOWN/REJECTED,
+        // data retained; idempotent with deliverTerminal's settle).
+        session.precision.onMountTerminal()
         session.retire()
         synchronized(sessionLock) { if (current === session) current = null }
         stopSelf()

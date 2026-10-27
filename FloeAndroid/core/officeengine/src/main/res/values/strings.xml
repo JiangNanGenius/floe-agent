@@ -65,4 +65,32 @@
     <string name="office_busy_exporting">Preparing the copy…</string>
     <string name="office_busy_awaiting_picker">Choose where to save the copy</string>
     <string name="office_busy_awaiting_app">Waiting for the app to finish saving…</string>
+<!-- G05-R2 PDF export / preview / print (Main contract 2026-10-27).
+         Honest wording: staged != saved; dialog-open != printed. -->
+    <string name="office_action_save_pdf">Save as PDF…</string>
+    <string name="office_action_pdf_preview">Preview as PDF</string>
+    <string name="office_action_pdf_print">Print PDF</string>
+    <string name="office_pdf_busy_export">Preparing the PDF…</string>
+    <string name="office_pdf_busy_print">Preparing the print…</string>
+    <string name="office_notice_pdf_failed">Couldn\'t prepare the PDF. Your document is kept.</string>
+    <string name="office_notice_print_submitted">Sent to the system print dialog. Choose a printer there.</string>
+    <string name="office_notice_print_unavailable">Printing isn\'t available on this device.</string>
+    <string name="office_pdf_opening">Preparing the preview…</string>
+    <string name="office_pdf_failed_title">Couldn\'t open this PDF</string>
+    <string name="office_pdf_password_info">This PDF is password-protected, so it can\'t be previewed here.</string>
+    <string name="office_pdf_invalid_info">This PDF couldn\'t be read, so it can\'t be previewed.</string>
+    <string name="office_pdf_transport_info">The PDF viewer couldn\'t start. Please try again.</string>
+    <string name="office_pdf_gone_info">The PDF file is no longer available.</string>
+    <string name="office_pdf_retry">Try again</string>
+    <string name="office_pdf_prev_cd">Previous page</string>
+    <string name="office_pdf_next_cd">Next page</string>
+    <string name="office_pdf_page_indicator">Page %1$d of %2$d</string>
+    <string name="office_pdf_zoom_in">Zoom in</string>
+    <string name="office_pdf_zoom_out">Zoom out</string>
+    <string name="office_pdf_fit">Fit</string>
+    <string name="office_pdf_render_failed">This page couldn\'t be rendered.</string>
+    <string name="office_print_reason_gone">The document changed or disappeared before printing.</string>
+    <string name="office_print_reason_write">The print job couldn\'t write the document data.</string>
+    <string name="office_print_reason_cancelled">The print job was cancelled.</string>
+    <string name="office_notice_precision_busy">The document is busy. Try again shortly.</string>
 </resources>

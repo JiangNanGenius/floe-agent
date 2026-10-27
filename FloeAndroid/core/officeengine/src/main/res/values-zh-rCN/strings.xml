@@ -65,4 +65,32 @@
     <string name="office_busy_exporting">正在生成副本…</string>
     <string name="office_busy_awaiting_picker">请选择副本的保存位置</string>
     <string name="office_busy_awaiting_app">正在等待应用完成保存…</string>
+<!-- G05-R2 PDF 导出 / 预览 / 打印（Main 约定 2026-10-27）。
+         诚实措辞：已暂存 != 已保存；已交给打印界面 != 已打印。 -->
+    <string name="office_action_save_pdf">另存为 PDF…</string>
+    <string name="office_action_pdf_preview">PDF 预览</string>
+    <string name="office_action_pdf_print">打印 PDF</string>
+    <string name="office_pdf_busy_export">正在生成 PDF…</string>
+    <string name="office_pdf_busy_print">正在准备打印…</string>
+    <string name="office_notice_pdf_failed">无法生成 PDF，文档已保留。</string>
+    <string name="office_notice_print_submitted">已交给系统打印界面，请在其中选择打印机。</string>
+    <string name="office_notice_print_unavailable">此设备暂不支持打印。</string>
+    <string name="office_pdf_opening">正在准备预览…</string>
+    <string name="office_pdf_failed_title">无法打开此 PDF</string>
+    <string name="office_pdf_password_info">此 PDF 受密码保护，无法在此预览。</string>
+    <string name="office_pdf_invalid_info">无法读取此 PDF，不能预览。</string>
+    <string name="office_pdf_transport_info">PDF 预览无法启动，请重试。</string>
+    <string name="office_pdf_gone_info">PDF 文件已不可用。</string>
+    <string name="office_pdf_retry">重试</string>
+    <string name="office_pdf_prev_cd">上一页</string>
+    <string name="office_pdf_next_cd">下一页</string>
+    <string name="office_pdf_page_indicator">第 %1$d 页，共 %2$d 页</string>
+    <string name="office_pdf_zoom_in">放大</string>
+    <string name="office_pdf_zoom_out">缩小</string>
+    <string name="office_pdf_fit">适应</string>
+    <string name="office_pdf_render_failed">此页无法渲染。</string>
+    <string name="office_print_reason_gone">打印前文档已变更或丢失。</string>
+    <string name="office_print_reason_write">打印任务无法写入文档数据。</string>
+    <string name="office_print_reason_cancelled">打印任务已取消。</string>
+    <string name="office_notice_precision_busy">文档正在处理，请稍后再试。</string>
 </resources>

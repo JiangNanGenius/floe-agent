@@ -145,6 +145,10 @@ import FloeCore
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
+// D04 (job-3135f83ef97c4a21): the durable run-output cleanup queue and the
+// exact trusted deletion order live in the shared core (FloeTools) next to
+// the snapshot store they protect.
+import FloeTools
 
 // MARK: - Opaque conversation revision (floe.conversation-row.v1)
 
@@ -2316,6 +2320,27 @@ public enum ConversationCredentialDrainStatus: Sendable, Equatable {
     case deferredUnbound
 }
 
+/// D04 (job-3135f83ef97c4a21): additive truth of the conversation-owned
+/// run-output snapshot cleanup inside one deletion. Deferred variants mean
+/// the tombstone SURVIVES on disk and the readiness retry pass finishes it
+/// idempotently — the DB deletion is never undone and no other namespace
+/// (Notes/Canvas in particular) is involved.
+public enum ConversationRunOutputCleanupStatus: Sendable, Equatable {
+    /// The conversation owned no durable run ids, or the run-output store
+    /// was never bound this generation (publication could only have failed
+    /// closed, so there is nothing under any owned root to clean).
+    case notApplicable
+    /// Tombstone persisted, cascade committed, exactly the owned
+    /// `RunOutputs/<runUUID>` trees removed and the request completed.
+    case removed
+    /// Cascade committed but a live durable service still owns one run's
+    /// outputs: trees AND tombstone retained for a later readiness pass.
+    case deferredLiveOwnership
+    /// Cascade committed; removal or completion failed. The request
+    /// survives and the readiness retry reattempts it (path-free reason).
+    case deferredQueueRetained(reason: String)
+}
+
 public struct ConversationDeleteReply: Sendable, Equatable {
     public let conversationID: UUID
     public let quiescence: ConversationQuiescenceReport
@@ -2334,13 +2359,17 @@ public struct ConversationDeleteReply: Sendable, Equatable {
     /// is NOT complete — no consumer may present this deletion as a full
     /// cross-UID wipe while an obligation awaits its real receipt.
     public let runtimeCleanup: ConversationRuntimeCleanupHandoff
+    /// D04 additive truth of the run-output cleanup ordering (see
+    /// `ConversationRunOutputCleanupStatus`).
+    public let runOutputCleanup: ConversationRunOutputCleanupStatus
 
     public init(conversationID: UUID, quiescence: ConversationQuiescenceReport,
                 workspaceCleanup: ConversationDeleteCleanupStatus,
                 credentialDrain: ConversationCredentialDrainStatus,
                 contentHandlesReleased: Int,
                 fenceSettlement: ConversationDeletionFenceSettlement,
-                runtimeCleanup: ConversationRuntimeCleanupHandoff = .notApplicable) {
+                runtimeCleanup: ConversationRuntimeCleanupHandoff = .notApplicable,
+                runOutputCleanup: ConversationRunOutputCleanupStatus = .notApplicable) {
         self.conversationID = conversationID
         self.quiescence = quiescence
         self.workspaceCleanup = workspaceCleanup
@@ -2348,6 +2377,7 @@ public struct ConversationDeleteReply: Sendable, Equatable {
         self.contentHandlesReleased = contentHandlesReleased
         self.fenceSettlement = fenceSettlement
         self.runtimeCleanup = runtimeCleanup
+        self.runOutputCleanup = runOutputCleanup
     }
 
     public var wireObject: [String: Any] {
@@ -2398,6 +2428,18 @@ public struct ConversationDeleteReply: Sendable, Equatable {
             object["runtimeCleanupReason"] = reason
         case .notApplicable:
             break
+        }
+        // D04 additive run-output cleanup truth.
+        switch runOutputCleanup {
+        case .notApplicable:
+            object["runOutputCleanup"] = "notApplicable"
+        case .removed:
+            object["runOutputCleanup"] = "removed"
+        case .deferredLiveOwnership:
+            object["runOutputCleanup"] = "deferredLiveOwnership"
+        case .deferredQueueRetained(let reason):
+            object["runOutputCleanup"] = "deferredQueueRetained"
+            object["runOutputCleanupReason"] = reason
         }
         return object
     }
@@ -3583,6 +3625,11 @@ public actor FacadeConversationDomain {
             let purpose: String
             let immutableFields: [String: SettingsDomainV1.CanonicalDigest.Field]
             let updatedAtRaw: String
+            /// D04 (job-3135f83ef97c4a21): the conversation's durable run
+            /// ids captured BEFORE the DB cascade, exactly as the upstream
+            /// cleanup contract requires (the cascade FK-removes the rows;
+            /// only this pre-cascade list may seed the tombstone).
+            let durableRunIDs: [UUID]
 
             var expectation: ConversationDeleteExpectation {
                 ConversationDeleteExpectation(purpose: purpose,
@@ -3614,8 +3661,23 @@ public actor FacadeConversationDomain {
             for (name, value) in row where name != "updated_at" {
                 immutable[name] = ConversationRowRevision.field(value)
             }
+            // D04: original-SELECT run-id enumeration over the SAME owned
+            // reader transaction (RunStore.swift:323 canonical ordering).
+            // Non-UUID ids cannot name a `RunOutputs/<uuidString>` tree and
+            // are skipped — never guessed at.
+            let runRows = try Row.fetchAll(
+                db,
+                sql: "SELECT id FROM runs WHERE conversation_id = ? ORDER BY started_at DESC, id",
+                arguments: [conversationID.uuidString]
+            )
+            var durableRunIDs: [UUID] = []
+            for row in runRows {
+                let raw: String = row["id"]
+                if let id = UUID(uuidString: raw) { durableRunIDs.append(id) }
+            }
             return Admission(digest: digest, title: title, purpose: purpose,
-                             immutableFields: immutable, updatedAtRaw: updated)
+                             immutableFields: immutable, updatedAtRaw: updated,
+                             durableRunIDs: durableRunIDs)
         }
 
         // Owned workspace captured BEFORE the drain (native order :5949-5954).
@@ -3706,15 +3768,70 @@ public actor FacadeConversationDomain {
             // the original RunLifecycleRetention/DELETE/cascades/triggers.
             // A stale row refuses before any write (including memory), so a
             // failed delete cannot touch Notes or another owner's memories.
+            //
+            // D04 (job-3135f83ef97c4a21): the run-output deletion order wraps
+            // EXACTLY this original store call. When the trusted store
+            // binding exists and the conversation owns durable runs, the
+            // tombstone is persisted FIRST (enqueue failure throws BEFORE any
+            // DB write; no tombstone-less orphaning is possible), the store
+            // cascade runs with its original CAS, and only a confirmed
+            // deletion proceeds to remove exactly the owned `RunOutputs/`
+            // trees and complete the request. A cleanup failure — or a live
+            // service owner detected by the trusted probe — keeps the request
+            // for the readiness retry pass; the DB deletion itself is never
+            // undone and Notes/Canvas state is outside every touched path.
             let expectation = admission.expectation
-            try await conversationStore.deleteConversation(
-                id: conversationID,
-                expectedRow: { row in try expectation.verify(row) },
-                beforeDelete: { db in
-                    try ConversationDeletionMemoryPreservation.preserve(
-                        db: db, conversationID: conversationID,
-                        ownerLabel: admission.title)
-                })
+            let runOutputBinding = RuntimeFacadeRunOutput.shared.currentBinding()
+            let store = conversationStore
+            let ownerLabel = admission.title
+            let deleteConversation: () async throws -> Void = {
+                try await store.deleteConversation(
+                    id: conversationID,
+                    expectedRow: { row in try expectation.verify(row) },
+                    beforeDelete: { db in
+                        try ConversationDeletionMemoryPreservation.preserve(
+                            db: db, conversationID: conversationID,
+                            ownerLabel: ownerLabel)
+                    })
+            }
+            var runOutputCleanup: ConversationRunOutputCleanupStatus = .notApplicable
+            if let runOutputBinding, !admission.durableRunIDs.isEmpty {
+                let outcome = try await RunOutputDeletionOrder.perform(
+                    conversationID: conversationID,
+                    durableRunIDs: admission.durableRunIDs,
+                    storeRoot: runOutputBinding.artifactRoot,
+                    artifactRoot: runOutputBinding.artifactRoot,
+                    // Trusted ownership composes (2026-10-27 lifetime
+                    // review): (a) this facade's generation-bound leases —
+                    // every configured/direct publication holds one for its
+                    // whole call, so a publisher that survived the DB
+                    // cascade is seen even though its runs row is gone;
+                    // and (b) the deletion flow's EXACT RB1 owned-work
+                    // tokens re-checked live against the shared registry.
+                    // The runs TABLE is deliberately not consulted. The
+                    // operation gate additionally takes the atomic cleanup
+                    // claim, so a publication starting after a false probe
+                    // can never race the removal: the claim refuses it.
+                    liveOwnership: OwnedRunOutputWorkProbe(
+                        conversationID: conversationID,
+                        observations: quiescence.targetOwnedWork ?? []),
+                    operationGate: RuntimeFacadeRunOutput.shared,
+                    deleteConversation: deleteConversation
+                )
+                switch outcome {
+                case .noOutputs: runOutputCleanup = .notApplicable
+                case .removed: runOutputCleanup = .removed
+                case .deferredLiveOwnership: runOutputCleanup = .deferredLiveOwnership
+                case .cleanupDeferred(let reason): runOutputCleanup = .deferredQueueRetained(reason: reason)
+                }
+            } else {
+                // No durable outputs, or the run-output subsystem was never
+                // bound this generation: publication could only have failed
+                // closed, so there is no snapshot under any owned root and
+                // the ORIGINAL deletion order runs unchanged (no purge of
+                // paths this runtime never produced).
+                try await deleteConversation()
+            }
             committed = true
 
             // CH-R3: exact-token commit AFTER the durable commit. The DB
@@ -3753,7 +3870,8 @@ public actor FacadeConversationDomain {
                                            credentialDrain: credentialStatus,
                                            contentHandlesReleased: released,
                                            fenceSettlement: fenceSettlement,
-                                           runtimeCleanup: runtimeCleanup)
+                                           runtimeCleanup: runtimeCleanup,
+                                           runOutputCleanup: runOutputCleanup)
         } catch {
             // CH-R3: every pre-commit exit (throw, cancellation, stale,
             // drain failure, expected-row CAS refusal) settles the EXACT

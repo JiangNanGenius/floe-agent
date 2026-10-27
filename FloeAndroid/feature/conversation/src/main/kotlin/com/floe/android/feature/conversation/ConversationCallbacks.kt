@@ -582,4 +582,36 @@ interface ConversationUiCallbacks {
 
     /** ⇄ onSaveToNotes (embedded surfaces): host decides availability. */
     fun saveMessageToNotes(session: ConversationSessionToken, text: String): Boolean
+
+    /* ---------------------------- run output cards --------------------------- */
+
+    /** Save a Copy of one SEALED run output to a system-picked document.
+     * The host re-derives the receipt from the run's own durable records
+     * and verifies every byte; this module never touches the filesystem,
+     * never sends a path, and never claims progress from a true return
+     * alone — the card state flows back through the projection. True means
+     * the host STARTED the verified pipeline for THIS exact output. */
+    fun saveRunOutputCopy(
+        session: ConversationSessionToken, runId: String, outputId: String,
+    ): Boolean = false
+
+    /** Open one owned Office or PDF run output through its in-app preview.
+     * Office uses a separately owned editable copy; PDF stays immutable.
+     * True = the host admitted the open. No external-intent fallback. */
+    fun openRunOutputFile(
+        session: ConversationSessionToken, runId: String, outputId: String,
+    ): Boolean = false
+
+    /** Cancel the still-pending Save Copy for one exact output (the
+     * transfer already reaching the provider cannot be reversed; the
+     * outcome stays honest either way). */
+    fun cancelRunOutputSave(
+        session: ConversationSessionToken, runId: String, outputId: String,
+    ): Boolean = false
+
+    /** Re-run the native availability check for one run's outputs (visible
+     * "check again" affordance on stale/missing states). */
+    fun refreshRunOutputs(
+        session: ConversationSessionToken, runId: String,
+    ): Boolean = false
 }

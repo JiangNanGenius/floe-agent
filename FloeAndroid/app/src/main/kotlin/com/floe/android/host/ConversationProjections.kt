@@ -8,6 +8,7 @@ import com.floe.android.feature.conversation.ApprovalTargetUi
 import com.floe.android.feature.conversation.AttachmentChipUi
 import com.floe.android.feature.conversation.AttachmentKindUi
 import com.floe.android.feature.conversation.CapabilityChipUi
+import com.floe.android.feature.conversation.RunOutputCardUi
 import com.floe.android.feature.conversation.ChecklistDetailUi
 import com.floe.android.feature.conversation.ChecklistStepStatusUi
 import com.floe.android.feature.conversation.ChecklistStepUi
@@ -132,6 +133,18 @@ class ThreadProjectionBuilder internal constructor(
     /** Run whose live tail reached its durable close boundary (never revived). */
     private var liveTailClosedFor: String? = null
     private var actionError: String? = null
+    /**
+     * D04 owned run-output cards per run, fed ONLY by the native owned
+     * reader (the run's own durable toolResult records + verified
+     * availability). Nothing here is inferred from model markdown, raw
+     * paths or arbitrary artifact metadata. [runOutputActionStates] is a
+     * RAM-only transient overlay (saving/saved/failed/cancelled) merged
+     * into the cards on projection; it is never persisted and never
+     * survives as a claim on reload.
+     */
+    private val runOutputsByRun = LinkedHashMap<String, MutableList<RunOutputCardUi>>()
+    private val runOutputScanTruncatedByRun = LinkedHashMap<String, Boolean>()
+    private val runOutputActionStates = LinkedHashMap<String, String>()
     private var policyApprovalMode: ApprovalModeUi = ApprovalModeUi.ASK
     /**
      * The REAL durable task-policy CAS pair (`taskPolicy.<uuid>` /
@@ -1089,6 +1102,50 @@ class ThreadProjectionBuilder internal constructor(
         actionError = code
     }
 
+    // ------------------------------------------------ D04 run-output cards
+
+    /** Replaces the last verified owned-output view for one run. An empty
+     * list removes the group entirely (the honest "this run sealed no
+     * user outputs"); it never leaves stale cards behind. Transient action
+     * states are merged by (run/output) key. */
+    fun applyRunOutputs(runID: String, items: List<RunOutputCardUi>, scanTruncated: Boolean) {
+        if (items.isEmpty()) {
+            runOutputsByRun.remove(runID)
+            runOutputScanTruncatedByRun.remove(runID)
+            return
+        }
+        runOutputsByRun[runID] = items.map { card ->
+            card.copy(actionStateRaw = runOutputActionStates["$runID/${card.outputId}"]
+                ?: card.actionStateRaw)
+        }.toMutableList()
+        runOutputScanTruncatedByRun[runID] = scanTruncated
+    }
+
+    /** The native lane itself is unavailable/fenced for this run: existing
+     * verified cards stay (they came from real durable records) but flip to
+     * the honest non-actionable "unavailable" state. Never the reverse. */
+    fun markRunOutputsUnavailable(runID: String) {
+        runOutputsByRun[runID]?.replaceWith { it.copy(availabilityRaw = "unavailable") }
+    }
+
+    private fun MutableList<RunOutputCardUi>.replaceWith(
+        transform: (RunOutputCardUi) -> RunOutputCardUi,
+    ) {
+        for (index in indices) this[index] = transform(this[index])
+    }
+
+    fun setRunOutputActionState(runID: String, outputID: String, stateRaw: String?) {
+        val key = "$runID/$outputID"
+        if (stateRaw == null) runOutputActionStates.remove(key)
+        else runOutputActionStates[key] = stateRaw
+        runOutputsByRun[runID]?.replaceWith {
+            if (it.outputId == outputID) it.copy(actionStateRaw = stateRaw) else it
+        }
+    }
+
+    fun cachedRunOutputCard(runID: String, outputID: String): RunOutputCardUi? =
+        runOutputsByRun[runID]?.firstOrNull { it.outputId == outputID }
+
     /** Build the complete immutable snapshot. */
     fun build(): ThreadUiState {
         snapshotCounter += 1
@@ -1112,6 +1169,14 @@ class ThreadProjectionBuilder internal constructor(
                 (it.kind == RunEventKindUi.ERROR || it.kind == RunEventKindUi.NOTICE) &&
                     !it.message.isNullOrBlank()
             }.forEach { rows.add(TimelineRowUi.Event(it)) }
+            runOutputsByRun[runId]?.takeIf { it.isNotEmpty() }?.let { outputs ->
+                rows.add(
+                    TimelineRowUi.RunOutputGroup(
+                        runId, outputs.toList(),
+                        runOutputScanTruncatedByRun[runId] == true,
+                    ),
+                )
+            }
         }
         for (message in messages) {
             when (message.role) {
@@ -1131,6 +1196,11 @@ class ThreadProjectionBuilder internal constructor(
             }
         }
         runEvents.keys.forEach(::appendRecordedActivity)
+        // Cards survive App reload from real stored records: on cold load
+        // terminal runs have no pumped events, but the native owned reader
+        // still answered their sealed outputs — emit those groups too
+        // (appendRecordedActivity dedups via projectedEventRuns).
+        runOutputsByRun.keys.forEach(::appendRecordedActivity)
         val assistantTail = assistantTailText()
         val reasoningTail = reasoningTailText()
         if (assistantTail.isNotEmpty()) {

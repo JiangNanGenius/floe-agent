@@ -277,6 +277,16 @@ public struct CatalogToolExecutor: ToolExecutor {
                 outputDigest: output.fullOutputSHA256,
                 exitStatus: output.exitStatus,
                 artifacts: output.artifacts,
+                // D04 port (job-3135f83ef97c4a21, upstream 8f AgentRuntime
+                // S3-D splice): user-output receipts travel with the result;
+                // the runtime seal in `finalizeToolResult` VALIDATES every
+                // identity field against the real call (filling only a
+                // genuinely absent task binding and re-asserting the run's
+                // frozen environment) before anything is persisted, so a
+                // tool-authored value is only a draft that can never launder
+                // foreign ownership into this run. Ordinary tools keep the
+                // empty default.
+                outputFiles: output.outputFiles,
                 // These tools enforce their own bounded JSON pages. A second 4K
                 // cut here destroys the JSON and its continuation cursor.
                 maximumSummaryCharacters: ["notes.read", "notes.search"].contains(call.toolName) ? 196_608 :
@@ -4425,6 +4435,41 @@ public actor FloeAgentRuntime {
             executionBackend: route.backend.rawValue,
             executionBackendReason: route.reason
         )
+        // D04 port (job-3135f83ef97c4a21; upstream 8f AgentRuntime S3-D
+        // seal, narrowed to this Android ToolResult lineage which carries
+        // no capturedOutput fields): the runtime, not the tool, owns
+        // output-file ownership. Every proposed receipt is sealed against
+        // this actor's real run identity and this exact call: runID, the
+        // present taskID, the producer call/tool and role must match, the
+        // stable output identity must re-derive from (runID, real call id,
+        // slot), and the canonical snapshot path must already match that
+        // identity — a foreign or mismatched receipt is REJECTED, never
+        // relabeled into this run. Only a genuinely absent task binding is
+        // filled, and environmentID always becomes the run's frozen
+        // binding. Equal duplicates collapse idempotently; a slot claimed
+        // twice with different metadata, or a draft the seal cannot prove,
+        // fails the call honestly instead of persisting an unowned success.
+        // Publication itself already refused temporary (ephemeral) runs via
+        // `context.temporaryReadOnly` in the store; the ceiling is unchanged.
+        if !finalized.outputFiles.isEmpty {
+            switch RunOutputSnapshotStore.seal(
+                drafts: finalized.outputFiles,
+                runID: runID,
+                taskID: configuration.conversationID,
+                environmentID: configuration.environmentID,
+                callID: call.id,
+                toolName: call.toolName
+            ) {
+            case .sealed(let sealed):
+                finalized.outputFiles = sealed
+            case .rejected(let reason):
+                let prior = String(finalized.outputSummary.prefix(240))
+                finalized.status = .failed
+                finalized.outputFiles = []
+                finalized.outputSummary =
+                    "Run output publication rejected: \(reason) The tool reported user-file outputs that could not be sealed to this exact call, so no output files were advertised. Reported result before rejection (untrusted, may be incomplete): \(prior)"
+            }
+        }
         return finalized
     }
 

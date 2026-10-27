@@ -438,4 +438,26 @@
     <string name="diagnostics_details_note_targets">只有通道状态为 settled 且带有完整回执摘要的目标条目，才能证明该目标数据确已清除。计数只描述整条清理通道，不能证明某个具体目标；本设备尚未处理到的清理义务只会出现在排队计数中。</string>
     <string name="diagnostics_details_note_readonly">打开或刷新本页只读取当前状态：不执行任何命令、不安装、不重试、不恢复已暂停的任务，也不会把任何工具标记为就绪。</string>
     <string name="providers_save_reopen_required">请重新打开此设置后重试。</string>
+    <string name="run_pdf_back_cd">返回</string>
+    <string name="run_pdf_opening">正在准备预览…</string>
+    <string name="run_pdf_failed_title">无法打开此 PDF</string>
+    <string name="run_pdf_expired_info">此预览已过期，请在对话中重新打开该文件。</string>
+    <string name="run_pdf_gone_info">文件已不可用。</string>
+    <string name="run_pdf_toolarge_info">此 PDF 过大，无法在此预览。</string>
+    <string name="run_pdf_invalid_info">无法读取此 PDF，不能预览。</string>
+    <string name="run_pdf_password_info">此 PDF 受密码保护，无法在此预览。</string>
+    <string name="run_pdf_transport_info">PDF 预览无法启动，请重试。</string>
+    <string name="run_pdf_retry">重试</string>
+    <string name="run_pdf_prev_cd">上一页</string>
+    <string name="run_pdf_next_cd">下一页</string>
+    <string name="run_pdf_page_indicator">第 %1$d 页，共 %2$d 页</string>
+    <string name="run_pdf_zoom_in">放大</string>
+    <string name="run_pdf_zoom_out">缩小</string>
+    <string name="run_pdf_fit">适合宽度</string>
+    <string name="run_pdf_render_failed">此页渲染失败。</string>
+    <string name="run_pdf_print">打印</string>
+    <string name="run_pdf_print_busy">正在准备打印…</string>
+    <string name="run_pdf_print_opened">已打开系统打印界面，请在其中选择打印机。</string>
+    <string name="run_pdf_print_unavailable">此设备暂不支持打印。</string>
+    <string name="run_pdf_print_gone">打印前文件已不可用。</string>
 </resources>

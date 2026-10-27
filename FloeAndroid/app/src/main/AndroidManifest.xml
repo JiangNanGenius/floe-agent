@@ -23,5 +23,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!--
+          Lane 17: App-owned preview of ONE verified durable run-output PDF.
+          Non-exported and default-process: launchable only from this app's
+          own RunOutputPdfPreviewController with an opaque live-launch token
+          (the Intent carries no path, digest or model text; the bytes are
+          re-proven at staging by the owned egress before this screen exists,
+          and the viewer resolves the token against the live owner-fenced
+          launch record). Parsing happens ONLY in the module's isolated FD-only
+          renderer service; printing goes through the module's accepted
+          PrintManager seam. No new permission.
+        -->
+        <activity
+            android:name=".host.output.RunOutputPdfPreviewActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
     </application>
 </manifest>

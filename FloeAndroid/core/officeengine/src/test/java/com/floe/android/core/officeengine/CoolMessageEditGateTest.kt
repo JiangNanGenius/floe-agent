@@ -298,11 +298,19 @@ class CoolMessageTriageR2Test {
         assertNotNull(
             CoolMessageTriage.classify(msg("""status: {"width":8276,"height":11632}""")).shape,
         )
-        // commandvalues stays out of the typed kinds (handled by the barrier
-        // parser), and unknown prefixes remain OTHER.
+        // R2/P-A promotion: `commandvalues:` IS a typed kind now — the engine
+        // routes Kind.COMMAND_VALUE into the ledger's FrameKind.COMMAND_VALUE
+        // so an armed operation's CellCursor/ReadOnly answer is consumed by
+        // THIS operation's barrier instead of floating as an unclassified
+        // frame (OfficeEngineService 914, OfficePrecisionEngine 390/456).
+        // Genuinely unknown prefixes must STILL remain OTHER (kept below).
+        assertEquals(
+            CoolMessageTriage.Kind.COMMAND_VALUE,
+            CoolMessageTriage.classify(msg("""commandvalues: {"commandName":".uno:ReadOnly","success":false}""")).kind,
+        )
         assertEquals(
             CoolMessageTriage.Kind.OTHER,
-            CoolMessageTriage.classify(msg("""commandvalues: {"commandName":".uno:ReadOnly","success":false}""")).kind,
+            CoolMessageTriage.classify(msg("totallyunknown: 1")).kind,
         )
     }
 }

@@ -52,6 +52,16 @@ import com.floe.android.design.FloeCapsuleButton
 import com.floe.android.design.FloeToolbar
 import com.floe.android.design.FloeUnavailableView
 import org.libreoffice.androidlib.COWebView
+import com.floe.android.core.officeengine.pdf.OfficeExportPurpose
+import com.floe.android.core.officeengine.pdf.OfficePdfExportLedger
+import com.floe.android.core.officeengine.pdf.OfficePdfPreviewActivity
+import com.floe.android.core.officeengine.pdf.OfficePdfPreviewRequest
+import com.floe.android.core.officeengine.pdf.OfficePdfPrintFlow
+import com.floe.android.core.officeengine.pdf.OfficePdfReceiptPolicy
+import com.floe.android.core.officeengine.pdf.OfficePdfRenderHost
+import com.floe.android.core.officeengine.pdf.PdfDocResult
+import com.floe.android.core.officeengine.pdf.PrintStartOutcome
+import com.floe.android.core.officeengine.pdf.VerifiedPdfSnapshot
 
 /**
  * The R1 viewer surface: Floe toolbar chrome (Back left, centered title,
@@ -108,6 +118,22 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
 
     /** Export ops awaiting OUTPUT_READY (opId -> format), fenced by opId. */
     private val pendingExportFormats = HashMap<String, String>()
+
+    /**
+     * Exact-once op->purpose ledger (pdf package). OUTPUT_READY for a LOCAL
+     * PDF purpose may open ONLY the isolated preview or the system print
+     * dialog — never the SAF picker, never a "saved" claim, never a dirty
+     * state change; SAF purposes keep the existing Save-Copy handoff
+     * behaviour untouched (Main contract 2026-10-27). A stale or duplicate
+     * terminal receipt whose op was already consumed opens NOTHING.
+     */
+    private val exportPurposes = OfficePdfExportLedger()
+
+    /** Local PDF flows in flight ("export" | "print") under the busy cover. */
+    private var pdfBusyKey: String? by mutableStateOf(null)
+
+    /** Renderer host used only to obtain the REAL page count before print. */
+    private var pdfRenderHost: OfficePdfRenderHost? = null
 
     /**
      * Ops whose picker result was delivered to the App and that now await
@@ -343,10 +369,13 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                             CloseSavePhase.AWAITING_PICKER -> "picker"
                             CloseSavePhase.AWAITING_APP -> "app"
                         }
-                    },
+                    } ?: pdfBusyKey?.let { if (it == "export") "pdfExport" else "pdfPrint" },
                     onBack = ::performBack,
                     onToggleEdit = ::toggleEditMode,
                     onSaveCopy = { startSaveCopy(forClose = false) },
+                    onSavePdfCopy = { startExportOp(OfficeExportPurpose.SAF_COPY) },
+                    onPreviewPdf = { startExportOp(OfficeExportPurpose.PDF_PREVIEW) },
+                    onPrintPdf = { startExportOp(OfficeExportPurpose.PDF_PRINT) },
                     onUndo = { requestEditHistory(redo = false) },
                     onRedo = { requestEditHistory(redo = true) },
                     onRefreshDiagnostics = ::refreshDiagnostics,
@@ -415,8 +444,11 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             return
         }
         // A close-save is in flight (input frozen, busy cover up): Back is
-        // ignored until the App settles or the flow aborts honestly.
+        // ignored until the App settles or the flow aborts honestly. The same
+        // holds for a local PDF export/print hand-off: its terminal receipt
+        // decides what opens, and leaving mid-flight could race that proof.
         if (closeSavePhase != null) return
+        if (pdfBusyKey != null) return
         if (engine.isMobileWizardVisible(token)) {
             engine.sendMobileWizardBack(token)
             return
@@ -464,10 +496,12 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     }
 
     /**
-     * First-slice Save Copy: exports the CURRENT document (same-format
-     * DOCX/XLSX/PPTX only; ODF/PDF choices stay hidden until separately
-     * qualified) to a module-private staged output, then hands the picker
-     * flow to the App. [forClose] arms the verified-settlement close path:
+     * First-slice Save Copy: exports the CURRENT document in its SAME format
+     * (DOCX/XLSX/PPTX; ODF choices stay hidden until separately qualified)
+     * to a module-private staged output, then hands the picker flow to the
+     * App. The PDF variants live in the editor menu beside it and reuse the
+     * same pinned STAGED_EXPORT + OUTPUT_READY proof (Main qualified the
+     * local PDF slice 2026-10-27). [forClose] arms the verified-settlement close path:
      * the editor closes ONLY after the App's real COPY_SAVED settlement for
      * that exact op.
      */
@@ -487,6 +521,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
             noticeDetail = "invalid export request"
             return
         }
+        exportPurposes.register(opId, OfficeExportPurpose.SAF_COPY)
         if (forClose) {
             showDirtyCloseSheet = false
             closeAfterExportOpId = opId
@@ -498,6 +533,7 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         }
         pendingExportFormats[opId] = format
         val receipt = service?.submitSaveOperation(op) ?: run {
+            exportPurposes.consume(opId)
             pendingExportFormats.remove(opId)
             if (forClose) abortCloseSave()
             return
@@ -506,6 +542,130 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
         // a synchronous REJECTED (never dispatched to listeners) is applied
         // here, so one op can never double-record.
         if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    /**
+     * One bounded PDF export op for an explicit LOCAL purpose (preview or
+     * print) or the PDF variant of the EXISTING Save-Copy handoff. Reuses
+     * the pinned STAGED_EXPORT executor (JNI saveAs + whole-file
+     * regular/magic/length/SHA verification) — never a JavaScript egress,
+     * WebView screenshot or void=success path. A close-save or another PDF
+     * flow already in flight refuses silently (the menu is closed and the
+     * busy cover owns input while either runs).
+     */
+    private fun startExportOp(purpose: OfficeExportPurpose) {
+        if (closeSavePhase != null || pdfBusyKey != null) return
+        val token = request?.sessionToken ?: return
+        val opId = newOpId("export")
+        val op = OfficeSaveRequest.of(
+            opId = opId,
+            sessionToken = token,
+            generation = nativeGeneration,
+            operation = OfficeSaveOperation.STAGED_EXPORT,
+            format = "pdf",
+            suggestedName = suggestedExportName("pdf"),
+        ).getOrNull() ?: run {
+            noticeKey = if (purpose == OfficeExportPurpose.SAF_COPY) "saveFailed" else "pdfFailed"
+            noticeDetail = "invalid export request"
+            return
+        }
+        exportPurposes.register(opId, purpose)
+        if (purpose == OfficeExportPurpose.SAF_COPY) {
+            // Exactly the existing handoff path (App prepares + settles the
+            // SAF target; PDF is one of its already-supported formats).
+            pendingExportFormats[opId] = "pdf"
+        } else {
+            pdfBusyKey = "export"
+        }
+        val receipt = service?.submitSaveOperation(op) ?: run {
+            exportPurposes.consume(opId)
+            if (purpose != OfficeExportPurpose.SAF_COPY) pdfBusyKey = null
+            return
+        }
+        if (receipt.state == OfficeSaveState.REJECTED) applyReceipt(receipt)
+    }
+
+    /**
+     * The ONLY path from a LOCAL PDF purpose to a surface: the exact owned
+     * receipt re-proved against the real bytes (canonical containment under
+     * this app's owned outputs root + op-name binding + %PDF- magic + exact
+     * length + whole-file SHA) may open the isolated preview or start print.
+     * Nothing here opens the SAF picker, clears dirty state, reports a
+     * user-file save or deletes anything.
+     */
+    private fun openVerifiedPdf(receipt: OfficeSaveReceipt, forPrint: Boolean) {
+        pdfBusyKey = null
+        val token = request?.sessionToken ?: return
+        val (snapshot, error) = OfficePdfReceiptPolicy.openFromReceipt(
+            receipt,
+            noBackupFilesDir,
+            token,
+            nativeGeneration,
+            receipt.opId,
+        )
+        if (snapshot == null) {
+            noticeKey = "pdfFailed"
+            // Path-free identity: the policy enum name only.
+            noticeDetail = error?.name
+            return
+        }
+        if (!forPrint) {
+            val preview = Intent(this, OfficePdfPreviewActivity::class.java).apply {
+                putExtra(
+                    OfficePdfPreviewRequest.EXTRA_REQUEST,
+                    OfficePdfPreviewRequest.of(snapshot, request?.displayName.orEmpty()),
+                )
+                putExtra("com.floe.office.THEME_MODE", intent.getStringExtra("com.floe.office.THEME_MODE"))
+            }
+            runCatching { startActivity(preview) }.onFailure {
+                noticeKey = "pdfFailed"
+                noticeDetail = "preview-unavailable"
+            }
+        } else {
+            startPdfPrint(snapshot)
+        }
+    }
+
+    /**
+     * Print over the verified snapshot: the REAL page count comes from the
+     * isolated renderer first (never guessed), then the foreground system
+     * PrintManager dialog. Dialog/scope acceptance is NOT printing — the
+     * notice says "handed to the system", and no UI path claims completion.
+     */
+    private fun startPdfPrint(snapshot: VerifiedPdfSnapshot) {
+        val host = pdfRenderHost ?: OfficePdfRenderHost(this).also { pdfRenderHost = it }
+        pdfBusyKey = "print"
+        val label = suggestedExportName("pdf")
+        host.documentInfo(snapshot) { result ->
+            pdfBusyKey = null
+            if (isDestroyed || isFinishing) return@documentInfo
+            when (result) {
+                is PdfDocResult.Ready -> OfficePdfPrintFlow.requestPrint(
+                    this,
+                    snapshot,
+                    result.pageCount,
+                    label,
+                ) { outcome ->
+                    if (isDestroyed || isFinishing) return@requestPrint
+                    noticeKey = when (outcome) {
+                        PrintStartOutcome.DialogOpened -> "printSubmitted"
+                        PrintStartOutcome.NoPrintService -> "printUnavailable"
+                        PrintStartOutcome.ActivityRetired -> "printUnavailable"
+                        PrintStartOutcome.SourceUnavailable -> "pdfFailed"
+                    }
+                    noticeDetail = null
+                }
+                is PdfDocResult.Failed -> {
+                    noticeKey = "pdfFailed"
+                    noticeDetail = when (result.failure) {
+                        com.floe.android.core.officeengine.pdf.PdfFailure.PasswordProtected -> "PASSWORD"
+                        com.floe.android.core.officeengine.pdf.PdfFailure.InvalidPdf -> "INVALID_PDF"
+                        com.floe.android.core.officeengine.pdf.PdfFailure.Busy -> "BUSY"
+                        com.floe.android.core.officeengine.pdf.PdfFailure.Transport -> "TRANSPORT"
+                    }
+                }
+            }
+        }
     }
 
     /** Maps one receipt to the honest transient notice + Save-Copy handoff. */
@@ -529,19 +689,54 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
                 noticeDetail = null
             }
             OfficeSaveState.OUTPUT_READY -> {
-                if (isCloseSave) closeSavePhase = CloseSavePhase.AWAITING_PICKER
-                else noticeKey = "copyStaged"
-                beginHostSaveHandoff(receipt)
+                // Exact-once purpose consumption decides EVERYTHING (Main
+                // contract 2026-10-27): a stale, foreign or duplicate
+                // terminal for an already-consumed op opens nothing at all.
+                when (exportPurposes.consume(receipt.opId)) {
+                    null -> Unit
+                    OfficeExportPurpose.SAF_COPY -> {
+                        if (isCloseSave) closeSavePhase = CloseSavePhase.AWAITING_PICKER
+                        else noticeKey = "copyStaged"
+                        beginHostSaveHandoff(receipt)
+                    }
+                    OfficeExportPurpose.PDF_PREVIEW -> openVerifiedPdf(receipt, forPrint = false)
+                    OfficeExportPurpose.PDF_PRINT -> openVerifiedPdf(receipt, forPrint = true)
+                }
             }
             OfficeSaveState.FAILED, OfficeSaveState.UNKNOWN -> {
+                val purpose = exportPurposes.consume(receipt.opId)
+                val localPdf = purpose == OfficeExportPurpose.PDF_PREVIEW ||
+                    purpose == OfficeExportPurpose.PDF_PRINT
+                if (purpose == OfficeExportPurpose.SAF_COPY) pendingExportFormats.remove(receipt.opId)
                 if (isCloseSave) abortCloseSave()
-                noticeKey = if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed"
+                if (localPdf) {
+                    pdfBusyKey = null
+                    noticeKey = "pdfFailed"
+                } else {
+                    noticeKey = if (receipt.state == OfficeSaveState.UNKNOWN) "saveUnknown" else "saveFailed"
+                }
                 noticeDetail = (receipt.failure?.name ?: "") + (receipt.message?.let { ": $it" } ?: "")
             }
-            OfficeSaveState.CANCELLED -> if (isCloseSave) abortCloseSave()
-            OfficeSaveState.REJECTED -> {
+            OfficeSaveState.CANCELLED -> {
+                val purpose = exportPurposes.consume(receipt.opId)
+                if (purpose == OfficeExportPurpose.PDF_PREVIEW || purpose == OfficeExportPurpose.PDF_PRINT) {
+                    pdfBusyKey = null
+                }
+                if (purpose == OfficeExportPurpose.SAF_COPY) pendingExportFormats.remove(receipt.opId)
                 if (isCloseSave) abortCloseSave()
-                noticeKey = "saveFailed"
+            }
+            OfficeSaveState.REJECTED -> {
+                val purpose = exportPurposes.consume(receipt.opId)
+                if (purpose == OfficeExportPurpose.PDF_PREVIEW || purpose == OfficeExportPurpose.PDF_PRINT) {
+                    pdfBusyKey = null
+                }
+                if (purpose == OfficeExportPurpose.SAF_COPY) pendingExportFormats.remove(receipt.opId)
+                if (isCloseSave) abortCloseSave()
+                noticeKey = if (purpose == OfficeExportPurpose.PDF_PREVIEW || purpose == OfficeExportPurpose.PDF_PRINT) {
+                    "pdfFailed"
+                } else {
+                    "saveFailed"
+                }
                 noticeDetail = receipt.failure?.name
             }
         }
@@ -658,6 +853,10 @@ class OfficePreviewActivity : ComponentActivity(), OfficeEngineService.OfficeEng
     }
 
     override fun onDestroy() {
+        exportPurposes.clear()
+        pdfBusyKey = null
+        pdfRenderHost?.release()
+        pdfRenderHost = null
         if (bound) {
             runCatching { unbindService(connection) }
             bound = false
@@ -894,6 +1093,9 @@ private fun OfficeViewerScreen(
     onBack: () -> Unit,
     onToggleEdit: () -> Unit,
     onSaveCopy: () -> Unit,
+    onSavePdfCopy: () -> Unit,
+    onPreviewPdf: () -> Unit,
+    onPrintPdf: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onRefreshDiagnostics: () -> Unit,
@@ -938,6 +1140,18 @@ private fun OfficeViewerScreen(
             FloeCapsuleButton(stringResource(R.string.office_action_save_copy), onClick = {
                 showEditorMenu = false
                 onSaveCopy()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_action_save_pdf), onClick = {
+                showEditorMenu = false
+                onSavePdfCopy()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_action_pdf_preview), onClick = {
+                showEditorMenu = false
+                onPreviewPdf()
+            })
+            FloeCapsuleButton(stringResource(R.string.office_action_pdf_print), onClick = {
+                showEditorMenu = false
+                onPrintPdf()
             })
             FloeCapsuleButton(stringResource(R.string.office_action_undo), onClick = {
                 showEditorMenu = false
@@ -1131,6 +1345,8 @@ private fun OfficeViewerScreen(
                                 when (busyPhaseKey) {
                                     "picker" -> R.string.office_busy_awaiting_picker
                                     "app" -> R.string.office_busy_awaiting_app
+                                    "pdfExport" -> R.string.office_pdf_busy_export
+                                    "pdfPrint" -> R.string.office_pdf_busy_print
                                     else -> R.string.office_busy_exporting
                                 },
                             ),
@@ -1149,7 +1365,7 @@ private fun NoticeGlyph(key: String) {
     val icon = when (key) {
         "loadError", "transportFailed", "jsError", "saveFailed", "copyFailed",
         "editPermissionDenied", "protectedDocument", "editEntryUnavailable",
-        -> FloeIcons.WarningTriangle
+        "pdfFailed", "printUnavailable" -> FloeIcons.WarningTriangle
         "saveUnknown" -> FloeIcons.WarningTriangle
         "saveFlushed", "copySaved" -> FloeIcons.CheckCircle
         "macroBlocked" -> FloeIcons.ShieldAlert
@@ -1190,6 +1406,15 @@ private fun noticeText(key: String, detail: String?): String {
         "editPermissionDenied" -> stringResource(R.string.office_notice_edit_denied)
         "editPermissionUnconfirmed" -> stringResource(R.string.office_notice_edit_unconfirmed)
         "editEntryUnavailable" -> stringResource(R.string.office_notice_edit_entry_unavailable)
+        // AI precision-edit busy notice emitted by the engine service
+        // (Main-owned aligned copy, 2026-10-27; ordinary language, never
+        // the raw key).
+        "precisionBusy" -> stringResource(R.string.office_notice_precision_busy)
+        // PDF export/preview/print (honest wording: staged != saved;
+        // dialog-open != printed — Main UI contract 2026-10-27).
+        "pdfFailed" -> stringResource(R.string.office_notice_pdf_failed)
+        "printSubmitted" -> stringResource(R.string.office_notice_print_submitted)
+        "printUnavailable" -> stringResource(R.string.office_notice_print_unavailable)
         else -> stringResource(R.string.office_notice_internal_error)
     }
     return base

@@ -1116,6 +1116,16 @@
        deferred AFTER bundle.js so window.L.ImpressTileLayer exists, and before
        any websocket status message can initialize the tile layer. -->
   <script src="floe-impress-pcw-fix.js" defer></script>
+  <!-- Floe narrow Impress mobile follow-controls repair
+       (floe-impress-follow-controls-fix.js): deferred AFTER bundle.js so
+       window.SlideShow.SlideShowPresenter exists, and before any document
+       load can construct the presenter. The pinned mobile UIs never contain
+       the notebookbar-only 'slide-presentation-follow[-me]' controls, so
+       showFollow no longer asks UIManager to toggle buttons this UI does not
+       provide (the exact two phone console errors of the Samsung C06 PPT
+       diagnostic). UIManager's own error logging for genuinely missing
+       buttons is untouched; no button is added and no error is hidden. -->
+  <script src="floe-impress-follow-controls-fix.js" defer></script>
   <!-- Floe narrow Writer first-paint layout re-sync (floe-writer-viewport-sync.js):
        deferred AFTER bundle.js so app.map exists. It invokes the bundle's own
        existing onResize path exactly once, and only after BOTH the real page

@@ -10,6 +10,8 @@ import com.floe.android.core.officeengine.OfficeEngine
 import com.floe.android.core.officeengine.OfficePermission
 import com.floe.android.core.officeengine.OfficePreviewRequest
 import com.floe.android.core.officeengine.OfficeViewerOutcome
+import com.floe.android.host.output.NativeRunOutputChannel
+import com.floe.android.host.output.RunOutputOfficeSnapshotStager
 import com.floe.android.safgateway.SafOperation
 import com.floe.android.safgateway.SafFailure
 import com.floe.android.safgateway.SafOutcome
@@ -40,9 +42,15 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     private val context = context.applicationContext
     private val workspaceRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/workspace")
     private val providerRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/provider")
+    private val runOutputRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/runoutput")
     private val workingRoot = File(this.context.applicationInfo.dataDir, "files/OfficeInputs/working")
     private val workspace = WorkspaceOfficeSnapshotStager(workspaceRoot)
     private val provider = OfficeProviderSnapshotStager(this.context, providerRoot)
+    /** D04 owned run-output INPUT transport: streams the native-verified snapshot
+     * (exact persisted receipt -> lease -> full streamed verify) into this
+     * App-owned immutable snapshot root. Never a model path, never a
+     * workspace/provider authority claim. */
+    private val runOutputs = RunOutputOfficeSnapshotStager(runOutputRoot, NativeRunOutputChannel)
     /** R2: separate owned MUTABLE working copy per edit route (never a chmod of
      * the immutable snapshot or any original; retained after close for recovery). */
     private val working = OfficeEditableCopyStager(workingRoot)
@@ -90,15 +98,44 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         private set
 
     private enum class Phase { PICKING, STAGING, LAUNCH, VIEWING }
-    private class Operation(val id: Long, var phase: Phase, val ownerCurrent: () -> Boolean) {
+    private class AiLaunchAdmission(val owner: Any, val allows: (String?) -> Boolean)
+    private var aiLaunchAdmission: AiLaunchAdmission? = null
+
+    internal fun setAiLaunchAdmission(owner: Any, allows: (String?) -> Boolean) = synchronized(lock) {
+        aiLaunchAdmission = AiLaunchAdmission(owner, allows)
+    }
+
+    internal fun clearAiLaunchAdmission(owner: Any) = synchronized(lock) {
+        if (aiLaunchAdmission?.owner === owner) aiLaunchAdmission = null
+    }
+
+    private class Operation(
+        val id: Long,
+        var phase: Phase,
+        val ownerCurrent: () -> Boolean,
+        /** Owner facts captured at open time (Main host20 admission): set
+         * ONLY by the workspace route so the Office AI lane's owner-checked
+         * retirement can match THIS operation and never another surface's. */
+        val ownerTaskId: String? = null,
+        val ownerWorkspaceId: String? = null,
+        val ownerNativeEpoch: String? = null,
+        val requiresAiLaunchAdmission: Boolean = false,
+    ) {
         @Volatile var retired = false
         @Volatile var input: File? = null
         @Volatile var sessionToken: String? = null
         @Volatile var providerIO: SafOperation<OfficeProviderSnapshotStager.Snapshot>? = null
         /** Immutable snapshot staged from the provider/workspace (EDIT routes). */
         @Volatile var snapshot: File? = null
+        /** Verified digest/size of the staged immutable snapshot (from the
+         * REAL staging result, never a claim). */
+        @Volatile var snapshotSha256: String? = null
+        @Volatile var snapshotBytes: Long = -1L
         /** Owned mutable working copy handed to the engine (EDIT routes). */
         @Volatile var workingCopy: File? = null
+        /** Verified digest/size of the ACTUAL editable working copy. */
+        @Volatile var workingCopySha256: String? = null
+        @Volatile var workingCopyBytes: Long = -1L
         /** True once the route staged an EDIT working copy for this operation. */
         @Volatile var editable = false
         /** Provider same-original refusal facts from the source snapshot (null for workspace docs). */
@@ -111,18 +148,29 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         active === op && !op.retired && op.ownerCurrent()
     }
 
-    private fun admit(phase: Phase, owner: () -> Boolean): Operation? = synchronized(lock) {
+    private fun admit(
+        phase: Phase,
+        owner: () -> Boolean,
+        workspaceOwner: WorkspaceOfficeSnapshotStager.Owner? = null,
+        requiresAiLaunchAdmission: Boolean = false,
+    ): Operation? = synchronized(lock) {
         if (active != null || sequence == Long.MAX_VALUE) {
             mutableState.value = mutableState.value.copy(error = "busy")
             return null
         }
         diagnosticFailure = null
         ackedClose = null
-        Operation(++sequence, phase, owner).also { active = it }
+        Operation(
+            ++sequence, phase, owner,
+            ownerTaskId = workspaceOwner?.taskID,
+            ownerWorkspaceId = workspaceOwner?.workspaceID,
+            ownerNativeEpoch = workspaceOwner?.let { it.nativeEpoch.toString() },
+            requiresAiLaunchAdmission = requiresAiLaunchAdmission,
+        ).also { active = it }
     }
 
     fun requestProviderPick() {
-        val op = admit(Phase.PICKING) { true } ?: return
+        val op = admit(Phase.PICKING, owner = { true }) ?: return
         synchronized(lock) { mutableState.value = State(picker = op.id) }
     }
 
@@ -149,6 +197,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     is SafOutcome.Success -> {
                         val snapshot = result.value
                         op.snapshot = snapshot.file
+                        op.snapshotSha256 = snapshot.sha256
+                        op.snapshotBytes = snapshot.bytes
                         op.input = snapshot.file
                         // EDIT route: stage a separately owned
                         // MUTABLE working copy from the verified immutable snapshot.
@@ -161,6 +211,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                             isCurrent = { current(op) },
                         )
                         op.workingCopy = copy.file
+                        op.workingCopySha256 = copy.sha256
+                        op.workingCopyBytes = copy.bytes
                         op.input = copy.file
                         op.editable = true
                         op.saveOriginal = OfficeSaveCopyOriginal(
@@ -183,13 +235,22 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         }
     }
 
-    fun openWorkspace(owner: WorkspaceOfficeSnapshotStager.Owner, path: String, ownerCurrent: () -> Boolean) {
-        val op = admit(Phase.STAGING, ownerCurrent) ?: return
+    fun openWorkspace(owner: WorkspaceOfficeSnapshotStager.Owner, path: String, ownerCurrent: () -> Boolean) =
+        openWorkspace(owner, path, ownerCurrent, requiresAiLaunchAdmission = false)
+
+    internal fun openWorkspaceForAi(owner: WorkspaceOfficeSnapshotStager.Owner, path: String, ownerCurrent: () -> Boolean) =
+        openWorkspace(owner, path, ownerCurrent, requiresAiLaunchAdmission = true)
+
+    private fun openWorkspace(owner: WorkspaceOfficeSnapshotStager.Owner, path: String, ownerCurrent: () -> Boolean,
+                              requiresAiLaunchAdmission: Boolean) {
+        val op = admit(Phase.STAGING, ownerCurrent, owner, requiresAiLaunchAdmission) ?: return
         mutableState.value = State(staging = true)
         scope.launch(Dispatchers.IO) {
             try {
                 val snapshot = workspace.stage(owner, path) { current(op) }
                 op.snapshot = snapshot.file
+                op.snapshotSha256 = snapshot.sha256
+                op.snapshotBytes = snapshot.bytes
                 op.input = snapshot.file
                 // EDIT route: same separately owned mutable working copy from
                 // the verified workspace snapshot. Real task/workspace/epoch/
@@ -203,6 +264,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     isCurrent = { current(op) },
                 )
                 op.workingCopy = copy.file
+                op.workingCopySha256 = copy.sha256
+                op.workingCopyBytes = copy.bytes
                 op.input = copy.file
                 op.editable = true
                 prepare(op, OfficePreviewRequest.of(
@@ -214,6 +277,58 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
                     nativeEpoch = owner.nativeEpoch.toString(), hostGeneration = owner.hostGeneration.toString(),
                     sourceLogicalPath = snapshot.logicalPath, sourceId = snapshot.sourceID,
                     sourceRevision = snapshot.sourceRevision,
+                ))
+            } catch (error: Exception) {
+                recordFailure(op, error); settle(op, stagingError(op, error))
+            } catch (error: LinkageError) {
+                recordFailure(op, error); settle(op, stagingError(op, error))
+            }
+        }
+    }
+
+    /** Open ONE exact owned run output (sealed receipt of a completed tool
+     * call) through the EXISTING Office preview path. The native lane
+     * re-derives the receipt from the run's own durable toolResult record,
+     * holds a generation lease across the streamed copy, and verifies the
+     * full snapshot digest before any byte is staged; this controller then
+     * mirrors the workspace route's R2 discipline: an immutable App-staged
+     * snapshot feeds a separately owned MUTABLE working copy, and the
+     * run-output ORIGINAL stays immutable and copy-only (no original
+     * overwrite exists in this slice). `workspaceId` and `sourceRevision`
+     * are absent (null) — a run output is not a workspace document and a
+     * content digest is never laundered into an opaque CAS revision; the
+     * true identity fields (conversation, run, sealed outputID, epoch,
+     * generation, canonical relative path) are carried verbatim. */
+    fun openRunOutput(owner: RunOutputOfficeSnapshotStager.Owner, ownerCurrent: () -> Boolean) {
+        val op = admit(Phase.STAGING, ownerCurrent) ?: return
+        mutableState.value = State(staging = true)
+        scope.launch(Dispatchers.IO) {
+            try {
+                val snapshot = runOutputs.stage(owner) { current(op) }
+                op.snapshot = snapshot.file
+                op.snapshotSha256 = snapshot.sha256
+                op.snapshotBytes = snapshot.bytes
+                op.input = snapshot.file
+                val copy = working.stage(
+                    source = snapshot.file, sourceBytes = snapshot.bytes,
+                    sourceSha256 = snapshot.sha256, extension = snapshot.file.extension,
+                    isCurrent = { current(op) },
+                )
+                op.workingCopy = copy.file
+                op.workingCopySha256 = copy.sha256
+                op.workingCopyBytes = copy.bytes
+                op.input = copy.file
+                op.editable = true
+                prepare(op, OfficePreviewRequest.of(
+                    sessionToken = copy.sessionID, stagedFilePath = copy.file.canonicalPath,
+                    sha256 = copy.sha256, lengthBytes = copy.bytes,
+                    displayName = snapshot.displayName, languageTag = languageTag(),
+                    permission = OfficePermission.EDIT,
+                    ownerTaskId = owner.conversationID,
+                    nativeEpoch = owner.nativeEpoch.toString(),
+                    hostGeneration = owner.hostGeneration.toString(),
+                    sourceLogicalPath = snapshot.relativePath,
+                    sourceId = snapshot.outputID,
                 ))
             } catch (error: Exception) {
                 recordFailure(op, error); settle(op, stagingError(op, error))
@@ -362,6 +477,15 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
     fun claimViewer(incarnation: Long): Intent? = synchronized(lock) {
         val op = active?.takeIf { it.id == incarnation && it.phase == Phase.LAUNCH } ?: return null
         if (!current(op)) { settle(op, null); return null }
+        // This runs on the launcher's UI thread. Read the shell's LIVE
+        // state immediately before the VIEWING flip, with no suspension or
+        // event-loop turn before launcher.launch; polling is not authority.
+        if (op.requiresAiLaunchAdmission && !runCatching {
+                aiLaunchAdmission?.allows?.invoke(op.ownerTaskId) == true
+            }.getOrDefault(false)) {
+            settle(op, "owner")
+            return null
+        }
         val request = mutableState.value.viewer?.request ?: return null
         op.phase = Phase.VIEWING
         OfficeEngine.viewerIntent(
@@ -418,12 +542,152 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         } else settle(op, null)
     }
 
+    /** True while the single admission slot carries an operation (busy at
+     * click time lets the conversation card refuse honestly BEFORE staging;
+     * the authoritative check stays inside [admit]). */
+    val isBusy: Boolean get() = synchronized(lock) { active != null }
+
+    /**
+     * READ-ONLY trusted lookup of the CURRENT owned open operation for a
+     * later in-app consumer (e.g. the Main-coordinated Office AI producer) —
+     * joins through this getter instead of writing a parallel controller.
+     * Answered ONLY from the REAL `active` Operation + its published
+     * request under the controller lock, and ONLY when:
+     *   * the operation is live (not retired, not view-ended, LAUNCH or
+     *     VIEWING — never a closing/closed operation);
+     *   * the caller-supplied trusted owner facts match EXACTLY —
+     *     ownerTaskId, workspaceId INCLUDING honest absence (the provider /
+     *     run-output routes answer only a `null` workspaceId claim), and
+     *     nativeEpoch; a model-claimed or "first document" owner can never
+     *     resolve another operation.
+     * Field honesty: `hostGeneration` is the App command-client generation
+     * and `nativeEpoch` the App readback of the accepted root at open time;
+     * the ENGINE's own native document generation is NOT claimed here and
+     * must be read from the engine by the consumer. `sourceRevision` is the
+     * opaque workspace CAS token (null for provider/run-output routes —
+     * never fabricated); the snapshot/working-copy SHA-256 fields are the
+     * content digests measured at staging — distinct identities, never
+     * conflated. `stagedWorkingCopyPath` is the canonical path of the ACTUAL
+     * editable working copy, present only when an editable route staged
+     * one. This getter grants nothing: it never opens files, never extends
+     * leases and authorizes no write.
+     */
+    data class OwnedOperationSnapshot(
+        val sessionToken: String,
+        val viewerIncarnation: Long,
+        val hostGeneration: String?,
+        val nativeEpoch: String?,
+        val ownerTaskId: String?,
+        val workspaceId: String?,
+        val sourceLogicalPath: String?,
+        val sourceId: String?,
+        val sourceRevision: String?,
+        val originalSnapshotSha256: String?,
+        val originalSnapshotBytes: Long,
+        val editable: Boolean,
+        val stagedWorkingCopyPath: String?,
+        val stagedWorkingCopySha256: String?,
+        val stagedWorkingCopyBytes: Long,
+    )
+
+    fun ownedOperationSnapshot(
+        ownerTaskId: String,
+        workspaceId: String?,
+        nativeEpoch: String,
+    ): OwnedOperationSnapshot? = synchronized(lock) {
+        val op = active ?: return null
+        if (op.retired || op.viewEnded) return null
+        if (op.phase != Phase.LAUNCH && op.phase != Phase.VIEWING) return null
+        if (!op.ownerCurrent()) return null
+        val request = mutableState.value.viewer?.request ?: return null
+        if (request.sessionToken != op.sessionToken) return null
+        if (request.ownerTaskId != ownerTaskId) return null
+        if (request.workspaceId != workspaceId) return null
+        if (request.nativeEpoch != nativeEpoch) return null
+        OwnedOperationSnapshot(
+            sessionToken = request.sessionToken,
+            viewerIncarnation = op.id,
+            hostGeneration = request.hostGeneration,
+            nativeEpoch = request.nativeEpoch,
+            ownerTaskId = request.ownerTaskId,
+            workspaceId = request.workspaceId,
+            sourceLogicalPath = request.sourceLogicalPath,
+            sourceId = request.sourceId,
+            sourceRevision = request.sourceRevision,
+            originalSnapshotSha256 = op.snapshotSha256,
+            originalSnapshotBytes = op.snapshotBytes,
+            editable = op.editable,
+            stagedWorkingCopyPath = op.workingCopy?.let {
+                runCatching { it.canonicalPath }.getOrNull()
+            },
+            stagedWorkingCopySha256 = op.workingCopySha256,
+            stagedWorkingCopyBytes = op.workingCopyBytes,
+        )
+    }
+
+    /** Narrow READ-ONLY capability join for the G05-R2 Office AI host lane
+     * (Main host20): hands out the ONE application-owned Save-Copy host
+     * instance so the RuntimeHost pump can read the engine generation/state
+     * and submit its own typed save ops through the existing transaction-20
+     * binding. It grants nothing else: no new operation, no file access, no
+     * lifecycle control; the channel-28 registration and the whole existing
+     * viewer Save-Copy flow stay exactly as they are. */
+    internal fun officeAiSaveHost(): OfficeSaveCopyHost = saveCopy
+
+    /** Narrow read-only PHASE join for the Office AI lane (Main admission
+     * continuation 2026-10-27): true ONLY when the current operation named by
+     * these EXACT owner facts has actually reached the VIEWING phase (the
+     * viewer claim happened). The AI lane carries its transient foreground/
+     * modal/visible-chat admission through staging until this flips, then
+     * stops consulting it entirely — a Main pause AFTER a successful claim
+     * must never revoke the owned viewing document. LAUNCH/staging/picking
+     * answers false, so an unclaimed launch stays retire-able through the
+     * existing [cancelUnopened]. Same lock, same exact-match rules as
+     * [ownedOperationSnapshot]. */
+    internal fun isOwnedOperationViewing(
+        ownerTaskId: String,
+        workspaceId: String?,
+        nativeEpoch: String,
+    ): Boolean = synchronized(lock) {
+        val op = active ?: return false
+        if (op.retired || op.viewEnded || op.phase != Phase.VIEWING || !op.ownerCurrent()) return false
+        val request = mutableState.value.viewer?.request ?: return false
+        request.sessionToken == op.sessionToken &&
+            request.ownerTaskId == ownerTaskId &&
+            request.workspaceId == workspaceId &&
+            request.nativeEpoch == nativeEpoch
+    }
+
+    /** Owner-checked transient-admission retirement (Main host20 admission
+     * continuation): cancels ONLY this exact owner's still-UNCLAIMED launch
+     * (picking/staging/launch, not VIEWING, not already retired) through the
+     * existing explicit-cancel lane. Another surface's operation (e.g. a
+     * manual user open that replaced ours) can never be touched, and a
+     * claimed VIEWING document is never revoked. Answers whether a cancel
+     * actually applied to the matching operation. */
+    internal fun cancelUnclaimedOwnedLaunch(
+        ownerTaskId: String,
+        workspaceId: String?,
+        nativeEpoch: String,
+    ): Boolean = synchronized(lock) {
+        val op = active ?: return false
+        if (op.ownerTaskId != ownerTaskId || op.ownerWorkspaceId != workspaceId ||
+            op.ownerNativeEpoch != nativeEpoch
+        ) {
+            return false
+        }
+        if (op.retired || op.viewEnded || op.phase == Phase.VIEWING) return false
+        cancelUnopened()
+        true
+    }
+
     fun clearError() = synchronized(lock) { mutableState.value = mutableState.value.copy(error = null) }
     fun reportSourceUnavailable() = synchronized(lock) { mutableState.value = mutableState.value.copy(error = "source") }
 
     private fun stagingError(op: Operation, error: Throwable): String? = when {
         op.retired -> null
         error is WorkspaceOfficeSnapshotStager.Failure && error.code == "contentTooLarge" -> "tooLarge"
+        error is RunOutputOfficeSnapshotStager.Failure && error.code == "contentTooLarge" -> "tooLarge"
         error is OfficeEditableCopyStager.Failure && error.code == "contentTooLarge" -> "tooLarge"
         else -> "source"
     }
@@ -464,7 +728,8 @@ internal class OfficePreviewController(context: Context, private val scope: Coro
         if (file == null) return
         runCatching {
             val parent = file.parentFile?.canonicalFile ?: return
-            val roots = setOf(workspaceRoot.canonicalFile, providerRoot.canonicalFile)
+            val roots = setOf(workspaceRoot.canonicalFile, providerRoot.canonicalFile,
+                              runOutputRoot.canonicalFile)
             val container = parent.parentFile ?: return
             if (container !in roots || runCatching { java.util.UUID.fromString(parent.name) }.isFailure) return
             // No recursive traversal of native-created links or unknown files.

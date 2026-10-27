@@ -136,6 +136,7 @@ fun ConversationTimelineRow(
         is TimelineRowUi.AssistantMessage -> AssistantRow(row, holder, modifier)
         is TimelineRowUi.Event -> EventRow(row.event, holder, modifier)
         is TimelineRowUi.StepGroup -> StepGroupRow(row, holder, modifier)
+        is TimelineRowUi.RunOutputGroup -> RunOutputGroupRow(row, holder, modifier)
         is TimelineRowUi.Terminal -> TerminalRow(row.event, modifier)
         is TimelineRowUi.MissingFinal -> MissingFinalRow(modifier)
         TimelineRowUi.LiveReasoning -> {

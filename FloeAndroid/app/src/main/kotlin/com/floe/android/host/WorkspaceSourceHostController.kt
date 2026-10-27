@@ -131,6 +131,13 @@ internal class WorkspaceSourceHostController(
         }
     }
 
+    /** Headless runtime-owned lane map for the Office AI original push
+     * (Main host20). Deliberately SEPARATE from the UI [lanes] map: a UI
+     * pane's owner fence can NEVER rebind (or be rebound by) a live-ticket
+     * headless closure — the two maps share only the pure Lane ladder
+     * itself, byte-reused. [retireEpoch] fences BOTH maps. */
+    private val headlessLanes = ConcurrentHashMap<String, Lane>()
+
     /** Root stop / rebind: fence every lane of THIS generation and record the
      * epoch as permanently retired. Owned requests are cancelled as a request
      * (their IO settles inside their own NonCancellable section), this lane's
@@ -143,6 +150,44 @@ internal class WorkspaceSourceHostController(
             entry.value.stop()
             lanes.remove(entry.key, entry.value)
         }
+        // Additive headless coverage: the Office AI push lanes retire with
+        // the SAME root fence as the UI lanes (never left live on a dead
+        // generation).
+        val doomedHeadless = headlessLanes.entries.filter { it.value.nativeEpoch == epoch }
+        for (entry in doomedHeadless) {
+            entry.value.stop()
+            headlessLanes.remove(entry.key, entry.value)
+        }
+    }
+
+    /** Binds (or rebinds) the HEADLESS lane for ONE durable identity under a
+     * live-ticket owner fence. The identity rules are exactly [laneFor]'s —
+     * never more — and the lane lives only in [headlessLanes], so the UI
+     * lane map and this one can never steal each other's owner closure. */
+    fun headlessLaneFor(taskID: String, workspaceID: String, nativeEpoch: Long,
+                        hostGeneration: Long, isCurrentOwner: () -> Boolean): Lane? {
+        if (nativeEpoch <= 0 || currentNativeEpoch() != nativeEpoch) return null
+        if (retiredEpochs.containsKey(nativeEpoch)) return null
+        val task = try { UUID.fromString(taskID) } catch (_: IllegalArgumentException) { return null }
+        val workspace = try { UUID.fromString(workspaceID) } catch (_: IllegalArgumentException) { return null }
+        if (!task.toString().equals(taskID, true) || !workspace.toString().equals(workspaceID, true)) return null
+        val key = "${task.toString().uppercase(Locale.ROOT)}|${workspace.toString().uppercase(Locale.ROOT)}|$nativeEpoch"
+        var created = false
+        val lane = headlessLanes.computeIfAbsent(key) {
+            created = true
+            Lane(taskID = task.toString(), workspaceID = workspace.toString(),
+                 nativeEpoch = nativeEpoch, initialGeneration = hostGeneration,
+                 initialOwner = isCurrentOwner)
+        }
+        if (!created && !lane.rebind(hostGeneration, isCurrentOwner)) return null
+        // Retirement may race construction after the initial admission
+        // check and miss this late insertion in its lane snapshot.
+        if (retiredEpochs.containsKey(nativeEpoch) || currentNativeEpoch() != nativeEpoch) {
+            lane.stop()
+            headlessLanes.remove(key, lane)
+            return null
+        }
+        return lane
     }
 
     /** Binds (or rebinds) the lane for ONE durable identity under the exact

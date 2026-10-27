@@ -35,6 +35,16 @@ object OfficeEngine {
     const val WEBVIEW_DATA_SUFFIX: String = "floe_office"
 
     /**
+     * Version of the fenced typed precision surface (G05-R2 P-A): structured
+     * target capture/readback and native mutation dispatch through
+     * [OfficeEngineCommandsPolicy.TRANSACTION_POST_PRECISION_COMMAND] /
+     * [OfficeEngineCommandsPolicy.TRANSACTION_READ_PRECISION_ANSWER] and the
+     * `com.floe.android.core.officeengine.precision` contract types. Bump on
+     * any breaking change to the precision request/result/answer shapes.
+     */
+    const val PRECISION_API_VERSION: Int = 1
+
+    /**
      * True when the pinned payload metadata is compiled into this build.
      * It never claims that the native engine loaded or rendered:
      * [availability] reports the real observed state.
@@ -84,7 +94,13 @@ object OfficeEngine {
      *
      * Live save/edit COMMANDS from the App process go through
      * [OfficeEngineCommands.bindIntent] + bindService (same UID, explicit,
-     * non-exported), fenced by exact session token + mount generation.
+     * non-exported), fenced by exact session token + mount generation. The
+     * fenced typed PRECISION surface (structured target capture/readback
+     * and native mutation dispatch, G05-R2 P-A) rides the SAME command
+     * binding via [OfficeEngineCommands.postPrecisionCommand] /
+     * [OfficeEngineCommands.readPrecisionAnswer]; see
+     * `com.floe.android.core.officeengine.precision` for the typed contract
+     * and its honest completion states.
      */
     fun viewerIntent(
         context: android.content.Context,

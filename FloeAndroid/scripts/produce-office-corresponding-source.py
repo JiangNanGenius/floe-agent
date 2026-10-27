@@ -130,7 +130,14 @@ TOOL_NAME = "produce-office-corresponding-source"
 # floe-writer-viewport-sync.js overlay; the exact-layout enumeration names it
 # and the rendered README tree line describes it. No assertion, scan, deny
 # list, redaction or binding logic was otherwise changed.
-TOOL_VERSION = "1.0.1"
+# 1.0.2: layout refresh for the current frozen public source. The Office
+# engine tree added core/officeengine/tools/test_presentation_controls.js,
+# the deterministic public-safe semantic check for the shipped
+# floe-impress-follow-controls-fix.js overlay (phone Impress follow-controls
+# repair); the exact-layout enumeration names it and the rendered README
+# tree line describes both semantic checks. No assertion, scan, deny list,
+# redaction or binding logic was otherwise changed.
+TOOL_VERSION = "1.0.2"
 SCHEMA_VERSION = 1
 
 EPOCH_MTIME = 0
@@ -189,6 +196,7 @@ ROOT_DOCS = sorted(["PROVENANCE.md", "asset-overlays.json", "build.gradle.kts",
                     "consumer-rules.pro", "payload-pins.json",
                     "producer-manifest.json"])
 TOOLS_FILES = sorted(["tools/README.md", "tools/prepare_payload.py",
+                      "tools/test_presentation_controls.js",
                       "tools/test_writer_viewport_sync.js"])
 # Files present in the module tree that are NOT part of the public offer:
 # host integration notes (contain host-local paths) and the developer-side
@@ -1024,7 +1032,8 @@ def render_readme(b: Dict[str, object]) -> str:
         "  build.gradle.kts, consumer-rules.pro, src/main/AndroidManifest.xml",
         "                 the module build source wiring",
         "  tools/         prepare_payload.py, README.md and the shipped-overlay",
-        "                 semantic check test_writer_viewport_sync.js: the",
+        "                 semantic checks test_writer_viewport_sync.js and",
+        "                 test_presentation_controls.js: the",
         "                 public staging recipe for the pinned producer payload",
         "                 (no downloads performed by this archive's producer)",
         "MANIFEST.json    full member hashes and every binding this tool checked",
