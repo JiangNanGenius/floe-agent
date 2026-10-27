@@ -548,7 +548,12 @@ struct ComposerOverflowRegressionTests {
             spacing: 8
         )
         #expect(row == 325)
-        #expect(inline == 325 - 220 - 40,
+        // The expected value must be a typed CGFloat: the #expect macro
+        // captures each operand independently, so the compound literal
+        // `325 - 220 - 40` defaulted to Int and the boxed comparison
+        // CGFloat(65.0) == Int(65) failed even though the arithmetic was
+        // exact. Same strict equality, now against the actual type.
+        #expect(inline == CGFloat(325 - 220 - 40),
                 "the flanked column is the row minus every control and gap")
         #expect(inline == 65,
                 "the shipped column was a ~65pt sliver, matching the screenshot")
@@ -836,6 +841,18 @@ private final class ComposerRowFixtureModel: ObservableObject {
 
 /// The production responsive row with production-width controls (attachment,
 /// Expand, mic, send) around the production `ComposerReturnField`.
+///
+/// Modifier order is load-bearing: the slot markers
+/// (`.composerResponsiveFieldSlot()` / `.composerResponsiveLeadingControl()`)
+/// must be the OUTERMOST modifier of their subview chain, exactly as
+/// ThreadComposerView and VoiceConversationView place them. A host probe
+/// (macOS SwiftUI, 2026-10-27) proved that a wrapper applied after
+/// `.layoutValue` — `onGeometryChange` here — hides the layout value from
+/// the parent `Layout`: the row then falls back to `fieldIndex == 0`
+/// (the invisible leading swatch), measures the real field as a control at
+/// its `?? 320` ideal width and never reflows — the exact build-302 hosted
+/// failures. Geometry probes therefore sit BELOW the markers; the marker
+/// itself changes no size, so the probe still reports the slot's frame.
 private struct ComposerRowFixtureHost: View {
     @ObservedObject var model: ComposerRowFixtureModel
     let probe: ResponsiveRowProbe
@@ -848,12 +865,12 @@ private struct ComposerRowFixtureHost: View {
         ComposerResponsiveRow(isFieldOverflowing: model.overflowing) {
             Color.clear
                 .frame(width: control, height: control)
-                .composerResponsiveLeadingControl()
                 .onGeometryChange(for: CGRect.self) { proxy in
                     proxy.frame(in: .global)
                 } action: { frame in
                     Task { @MainActor in probe.leading = frame }
                 }
+                .composerResponsiveLeadingControl()
             ComposerReturnField(
                 text: $model.text,
                 placeholder: "composer.test.placeholder",
@@ -868,12 +885,12 @@ private struct ComposerRowFixtureHost: View {
                 onReturn: {}
             )
             .frame(maxWidth: .infinity, minHeight: control, alignment: .leading)
-            .composerResponsiveFieldSlot()
             .onGeometryChange(for: CGRect.self) { proxy in
                 proxy.frame(in: .global)
             } action: { frame in
                 Task { @MainActor in probe.field = frame }
             }
+            .composerResponsiveFieldSlot()
             Color.clear.frame(width: control, height: control)
             Color.clear.frame(width: control, height: control)
             Color.clear
