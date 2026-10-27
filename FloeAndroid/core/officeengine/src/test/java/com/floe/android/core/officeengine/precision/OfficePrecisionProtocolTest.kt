@@ -296,4 +296,80 @@ class OfficePrecisionProtocolTest {
         assertTrue(OfficePrecisionProtocol.MAX_REPLY_PARCEL_BYTES <= 768 * 1024)
         assertTrue(OfficePrecisionProtocol.MAX_REPLY_PARCEL_BYTES * 4L <= 1024L * 1024L * 3L)
     }
+
+    @Test
+    fun semanticExpectedReadbackTextUndoesOnlyTheKnownCalcLiteralInputEscape() {
+        // Actual C14 witness pair: outbound wire '00123, native projection
+        // 00123 — the comparator expectation decodes exactly one host INPUT
+        // codec prefix, request side only, SET_CELL_CONTENT/LITERAL only.
+        assertEquals(
+            "00123",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                "'00123",
+            ),
+        )
+        // NUMBER branch: same kind, unescaped — exact no-op pass-through.
+        assertEquals(
+            "123",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                "123",
+            ),
+        )
+        // Double prefix decodes EXACTLY once (user's own apostrophe kept).
+        assertEquals(
+            "'00123",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                "''00123",
+            ),
+        )
+        // Never decodes down to an empty expectation.
+        assertEquals(
+            "'",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                "'",
+            ),
+        )
+        // Leading = literal keeps the = after decoding the escape.
+        assertEquals(
+            "=SUM(A1:A2)",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                "'=SUM(A1:A2)",
+            ),
+        )
+        // FORMULA kind never touches this stage or codec.
+        assertEquals(
+            "'x",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.FORMULA,
+                "'x",
+            ),
+        )
+        // APPLY_TEXT (Writer) has no codec at this layer — byte-exact keep.
+        assertEquals(
+            "'kept",
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.APPLY_TEXT,
+                null,
+                "'kept",
+            ),
+        )
+        assertNull(
+            OfficePrecisionProtocol.semanticExpectedReadbackText(
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                OfficePrecisionContentKind.LITERAL,
+                null,
+            ),
+        )
+    }
 }

@@ -347,6 +347,7 @@
     <string name="run_output_saved">Saved to your file</string>
     <string name="run_output_save_cancelled">Save cancelled</string>
     <string name="run_output_save_failed">Save failed</string>
+    <string name="run_output_open_blocked">Close the open document first, then tap Open again</string>
     <string name="run_output_missing">File no longer available</string>
     <string name="run_output_changed">File contents changed</string>
     <string name="run_output_oversized">File too large to open here</string>

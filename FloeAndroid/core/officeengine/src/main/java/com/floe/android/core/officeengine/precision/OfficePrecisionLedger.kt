@@ -73,6 +73,11 @@ import java.security.SecureRandom
  * SET_CELL_CONTENT is different: after its cursor readback confirms the
  * exact cell, the selected-cell display text is target-scoped and a literal
  * mismatch remains an explicit comparable conflict (UNKNOWN, never replay).
+ * The expectation is the SEMANTIC wanted value: the host's known Calc
+ * literal INPUT codec (one leading apostrophe on the outbound paste wire)
+ * is inverted request-side only via
+ * [OfficePrecisionProtocol.semanticExpectedReadbackText]; the observed
+ * native answer stays byte-exact and is never stripped or decoded.
  *
  * Target handles are engine-minted random ids bound to (generation, flushed
  * working-copy digest, manual-input epoch, precision-edit epoch): a manual
@@ -964,7 +969,13 @@ class OfficePrecisionLedger(
         }
         OfficePrecisionPlan.StepCheck.AppliedTextReadback -> {
             val parsed = frame.payload?.let { OfficePrecisionProtocol.parseTextSelectionContent(it) }
-            val expected = run.request.text
+            // Request side only: undo the host's known Calc literal INPUT
+            // codec (exactly one leading apostrophe) so the expectation is
+            // the semantic cell value, not the outbound wire payload. The
+            // OBSERVED native text is NEVER stripped, trimmed or decoded.
+            val expected = OfficePrecisionProtocol.semanticExpectedReadbackText(
+                run.request.action, run.request.contentKind, run.request.text,
+            )
             when {
                 parsed == null || parsed.oversize ||
                     !OfficePrecisionProtocol.contentFitsReplyBudget(parsed.text) -> StepOutcome.Fail(
