@@ -46,6 +46,8 @@ For your first iOS / iPadOS task: **install → connect a model → create a tas
 
 [Installation steps](docs/USER_GUIDE.md#1-installation-and-first-use) · [Model setup](docs/USER_GUIDE.md#2-models-and-auxiliary-capabilities) · [Sources and signing](docs/FEATHER_SOURCE.md)
 
+The iOS setup guide offers four recommendations to prefill choices for models, search, voice and workspaces, while keeping every section editable. Continue setup while voice packs, models or environments download, then check progress later. Apple Intelligence is off by default for new users.
+
 ## Features
 
 The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13) for the current Android alpha.

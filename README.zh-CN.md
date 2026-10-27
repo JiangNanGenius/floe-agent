@@ -46,6 +46,8 @@ iOS / iPadOS 首次使用：**安装 → 配置模型 → 新建任务 → 打�
 
 [详细安装步骤](docs/USER_GUIDE.zh-CN.md#1-安装与首次使用) · [模型配置](docs/USER_GUIDE.zh-CN.md#2-配置模型与辅助能力) · [软件源与签名](docs/FEATHER_SOURCE.md)
 
+iOS 设置向导提供四种推荐配置，帮助预填模型、搜索、语音和工作空间等选择，仍可逐项调整。下载语音包、模型或运行环境时可以继续设置，稍后再查看进度；Apple Intelligence 对新用户默认关闭。
+
 ## 主要功能
 
 下表介绍 Floe 的核心工作流程，具体可用性因平台与发布版本而异；Android 测试版现状请见上方安装说明与 [Android 发布记录](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)。
