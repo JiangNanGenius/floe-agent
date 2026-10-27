@@ -51,6 +51,7 @@ final class SetupGuideModel: ObservableObject {
     let resources: SetupResourcePreparation
     private var environment: AppEnvironment { center.environment }
     private let defaults: UserDefaults
+    private var presetGeneration = 0
     private var summarySink: AnyCancellable?
     private var lastPublishedCounts: (preparing: Int, attention: Int) = (0, 0)
 
@@ -107,6 +108,8 @@ final class SetupGuideModel: ObservableObject {
     // MARK: - Navigation intents
 
     func select(preset: SetupGuidePreset) {
+        presetGeneration += 1
+        appliedRoutes = []
         apply(.start(preset))
         plan = SetupGuidePresetPlanner.plan(preset: preset, facts: facts)
         if preset != .custom { applyPlanSilently() }
@@ -133,6 +136,9 @@ final class SetupGuideModel: ObservableObject {
     }
 
     func startFresh() {
+        presetGeneration += 1
+        appliedRoutes = []
+        didFinish = false
         SetupGuideProgressStore.clear(from: defaults)
         state = SetupGuideState()
         plan = SetupGuidePresetPlan()
@@ -243,6 +249,7 @@ final class SetupGuideModel: ObservableObject {
     /// whether the first-run sheet appears, and that file belongs to the
     /// approval owner.
     func finish() async {
+        presetGeneration += 1
         var preferences = center.modelPreferences
         preferences.onboardingStatus = .completed
         preferences.updatedAt = Date()
@@ -300,11 +307,13 @@ final class SetupGuideModel: ObservableObject {
             appliedRoutes = []
             return
         }
+        let generation = presetGeneration
         Task { [weak self] in
-            guard let self else { return }
+            guard let self, self.presetGeneration == generation, !self.didFinish else { return }
             // Live re-read at the boundary: the facts the plan was made from
             // are already history by the time this runs.
             await self.center.reload()
+            guard self.presetGeneration == generation, !self.didFinish else { return }
             var preferences = self.center.modelPreferences
             let enabledProviderIDs = Set(self.center.providers.filter(\.isEnabled).map(\.id))
             let liveModels = self.center.configuredModelsByProvider.values.flatMap { $0 }
@@ -345,11 +354,13 @@ final class SetupGuideModel: ObservableObject {
             do {
                 try await self.center.saveModelPreferences(preferences)
             } catch {
+                guard self.presetGeneration == generation, !self.didFinish else { return }
                 self.saveMessage = SecretRedactor.redact(error.localizedDescription)
                 // Nothing was committed, so nothing may be claimed as filled.
                 self.appliedRoutes = []
                 return
             }
+            guard self.presetGeneration == generation, !self.didFinish else { return }
             self.saveMessage = nil
             self.appliedRoutes = applied
             for route in applied where self.state.status(for: route.section) == .unset {
