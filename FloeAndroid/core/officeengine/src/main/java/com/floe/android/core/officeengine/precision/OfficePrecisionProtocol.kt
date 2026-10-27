@@ -409,6 +409,43 @@ object OfficePrecisionProtocol {
         return TextSelectionContent(multiFormatJson, content, bytes, oversize = false)
     }
 
+    /**
+     * Inverse of the host's ONE known Calc INPUT codec escape — for the
+     * request side of the SOFT content-readback expectation ONLY.
+     *
+     * The App host encodes every non-empty Calc LITERAL with exactly one
+     * leading apostrophe (OfficeAiWire.encodeNativeLiteral; Main ruling
+     * 2026-10-27), because the pinned producer (26.04.4.2-937 @ 2333344:
+     * ScImportExport STRING import consumes the apostrophe as the
+     * quoted-text input marker) then commits a typed text cell whose
+     * gettextselection projection is the RAW wanted value — the apostrophe
+     * is wire payload, never cell content. Actual C14 witness: wire
+     * '00123 -> native selection answer exactly "00123" (5 bytes) and a
+     * saved OOXML sharedString "00123".
+     *
+     * The SET_CELL_CONTENT NUMBER branch rides the SAME LITERAL kind
+     * UNESCAPED (canonical numeric text never starts with an apostrophe),
+     * so this decode is its exact no-op inverse and numeric semantics stay
+     * untouched. APPLY_TEXT (Writer) has no codec at this layer and is
+     * never decoded; FORMULA intents skip this comparison stage entirely.
+     * Only the REQUEST expectation passes through here — the OBSERVED
+     * native answer is compared byte-exactly, never stripped or trimmed.
+     */
+    fun semanticExpectedReadbackText(
+        action: OfficePrecisionAction,
+        contentKind: OfficePrecisionContentKind?,
+        requestText: String?,
+    ): String? =
+        if (action == OfficePrecisionAction.SET_CELL_CONTENT &&
+            contentKind == OfficePrecisionContentKind.LITERAL &&
+            requestText != null && requestText.length > 1 &&
+            requestText.startsWith("'")
+        ) {
+            requestText.substring(1)
+        } else {
+            requestText
+        }
+
     // ------------------------------------------------------------------
     // commandvalues header parse (bounded scalars only; payloads are
     // extracted separately and only while an operation is armed).

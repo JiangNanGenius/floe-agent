@@ -1062,4 +1062,190 @@ class OfficePrecisionLedgerTest {
         assertFalse(l.hasArmedWork())
         assertEquals(0, l.pendingCount())
     }
+
+    // ------------------------------------------------------------------
+    // Calc literal INPUT codec vs semantic expectation (C14 root cause,
+    // Main ruling 2026-10-28): the outbound paste wire carries exactly one
+    // leading apostrophe (OfficeAiWire.encodeNativeLiteral); the pinned
+    // producer consumes it as the quoted-text input marker, so the NATIVE
+    // selection projection is the RAW wanted value. Actual C14 witness:
+    // wire '00123 -> readback exactly "00123" (5 bytes) and saved OOXML
+    // sharedString "00123" (device/diag-read72). The comparator expectation
+    // must decode the request side ONLY.
+    // ------------------------------------------------------------------
+
+    /** Drives the SET_CELL_CONTENT ladder to just before the soft stage 6. */
+    private fun runCalcLiteralLadder(
+        ledger: OfficePrecisionLedger,
+        opId: String,
+        wireText: String,
+        prior: String = "10",
+    ): OfficePrecisionLedger.OpRun {
+        val run = claimArmed(
+            ledger,
+            request(
+                opId,
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                text = wireText,
+                contentKind = OfficePrecisionContentKind.LITERAL,
+                cellAddress = "B2",
+                targetHandle = handle,
+            ),
+        )
+        armDispatched(ledger, run, 0)
+        ledger.markDispatched(run, 0)
+        armDispatched(ledger, run, 1)
+        assertTrue(
+            ledger.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        acquirePreEffect(ledger, run, 2, 3, prior)
+        armDispatched(ledger, run, 4)
+        assertTrue(
+            ledger.onFrame(pasteFrame("success"))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        armDispatched(ledger, run, 5)
+        assertTrue(
+            ledger.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+                is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
+        armDispatched(ledger, run, 6)
+        return run
+    }
+
+    private fun settleSelection(
+        ledger: OfficePrecisionLedger,
+        content: String,
+    ): OfficePrecisionLedger.LedgerEvent.Terminal =
+        ledger.onFrame(selectionContentFrame(content)) as OfficePrecisionLedger.LedgerEvent.Terminal
+
+    @Test
+    fun setCellContentEncodedLiteralMatchesNativeProjectedRawValue() {
+        // The real C14 witness pair: wire '00123, native answer 00123.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec1", "'00123")
+        val event = settleSelection(l, "00123")
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, event.result.state)
+        assertNull(event.result.failure)
+        val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
+        assertEquals(OfficePrecisionContentReadback.MATCHED, applied.contentReadback)
+        assertTrue(event.result.attestation.contains("content-readback:readback-matched"))
+    }
+
+    @Test
+    fun setCellContentQuotedNativeProjectionRemainsComparableConflict() {
+        // The OBSERVED text is never stripped: an answer that still carries
+        // a quote is a genuine projection disagreement against the decoded
+        // raw expectation "00123" -> UNKNOWN, retained, never replayed.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec2", "'00123")
+        val event = settleSelection(l, "'00123")
+        assertEquals(OfficePrecisionState.UNKNOWN, event.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, event.result.failure)
+        assertEquals("content-readback-conflict-effect-uncertain", event.result.detail)
+        assertTrue(event.result.attestation.contains("content-readback:readback-mismatch"))
+    }
+
+    @Test
+    fun setCellContentMultiCellOrAppendedNewlineProjectionRemainsConflict() {
+        // The pinned committed single-cell Doc2Text provably answers WITHOUT
+        // any line terminator ("Do not append a line feed for one single
+        // cell", impex.cxx @2333344), so an observed LF/TSV-shaped answer is
+        // NOT silently trimmed — it stays an explicit comparable conflict.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec3a", "'00123")
+        val withTab = settleSelection(l, "00123\t9")
+        assertEquals(OfficePrecisionState.UNKNOWN, withTab.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, withTab.result.failure)
+
+        runCalcLiteralLadder(l, "codec3b", "'00123")
+        val withLf = settleSelection(l, "00123\n")
+        assertEquals(OfficePrecisionState.UNKNOWN, withLf.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, withLf.result.failure)
+    }
+
+    @Test
+    fun setCellContentLeadingEqualsLiteralMatchesDecodedExpectation() {
+        // A literal "=SUM(A1:A2)" is wire-encoded "'=SUM(A1:A2)" so the
+        // producer stores a TEXT cell; its projection "=SUM(A1:A2)" must
+        // match the decoded semantic expectation.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec4", "'=SUM(A1:A2)")
+        val event = settleSelection(l, "=SUM(A1:A2)")
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, event.result.state)
+        val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
+        assertEquals(OfficePrecisionContentReadback.MATCHED, applied.contentReadback)
+    }
+
+    @Test
+    fun setCellContentUserLiteralLeadingApostropheDecodesExactlyOnce() {
+        // Wanted raw value "'00123" carries its OWN apostrophe; the host
+        // codec prefixes one MORE ("''00123"). The producer commits the raw
+        // "'00123". Exactly one prefix is undone — never a blanket strip.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec5a", "''00123")
+        val matched = settleSelection(l, "'00123")
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, matched.result.state)
+
+        // A projection over-stripped to "00123" is a real disagreement.
+        runCalcLiteralLadder(l, "codec5b", "''00123")
+        val conflict = settleSelection(l, "00123")
+        assertEquals(OfficePrecisionState.UNKNOWN, conflict.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, conflict.result.failure)
+    }
+
+    @Test
+    fun setCellContentNumericUnescapedLiteralPassesThroughUndecoded() {
+        // The NUMBER branch rides the same LITERAL kind WITHOUT the escape:
+        // canonical numeric text has no leading apostrophe, so the decode is
+        // an exact no-op and numeric comparison behaviour is unchanged.
+        val l = ledger()
+        runCalcLiteralLadder(l, "codec6a", "123")
+        val matched = settleSelection(l, "123")
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, matched.result.state)
+
+        runCalcLiteralLadder(l, "codec6b", "123")
+        val conflict = settleSelection(l, "124")
+        assertEquals(OfficePrecisionState.UNKNOWN, conflict.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, conflict.result.failure)
+    }
+
+    @Test
+    fun applyTextLeadingApostropheExpectationIsNeverDecoded() {
+        // Writer APPLY_TEXT has no Calc INPUT codec: the leading apostrophe
+        // in request.text is part of the wanted text. It must stay intact —
+        // an exact "'kept" answer matches, and a stripped "kept" answer is
+        // NOT accepted as a decoded match (it falls to the existing
+        // selection-not-body UNAVAILABLE classification instead).
+        val l = ledger()
+        val run = claimArmed(
+            l,
+            request("codec7a", OfficePrecisionAction.APPLY_TEXT, text = "'kept", targetHandle = handle),
+        )
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
+        l.onFrame(pasteFrame("success"))
+        armDispatched(l, run, 3)
+        val matched = l.onFrame(selectionContentFrame("'kept"))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, matched.result.state)
+
+        val run2 = claimArmed(
+            l,
+            request("codec7b", OfficePrecisionAction.APPLY_TEXT, text = "'kept", targetHandle = handle),
+        )
+        acquirePreEffect(l, run2, 0, 1, "before")
+        armDispatched(l, run2, 2)
+        l.onFrame(pasteFrame("success"))
+        armDispatched(l, run2, 3)
+        val stripped = l.onFrame(selectionContentFrame("kept"))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.NATIVE_COMPLETED, stripped.result.state)
+        val applied = stripped.result.answer as OfficePrecisionAnswer.MutationApplied
+        assertEquals(OfficePrecisionContentReadback.UNAVAILABLE, applied.contentReadback)
+        assertTrue(
+            stripped.result.attestation.contains("content-readback:readback-selection-not-comparable"),
+        )
+    }
 }

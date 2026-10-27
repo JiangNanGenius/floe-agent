@@ -49,6 +49,15 @@ internal object RunOutputCardPresentation {
     const val ACTION_CANCELLED = "cancelled"
     const val ACTION_FAILED = "failed"
 
+    /** ADVISORY App-only refusal note (NEVER produced by a native run-output
+     * record and never an in-flight state): the host set it when this card's
+     * in-app Open was honestly refused because the single-slot Office viewer
+     * admission was already owned by another operation. Unlike the save
+     * terminals, it keeps the card RE-TAPPABLE — closing the live viewer and
+     * tapping Open again is the honest recovery — and a later admitted
+     * attempt clears it. */
+    const val ACTION_OPEN_BLOCKED = "open-blocked"
+
     /** Long-preserving file-size label (real MiB/KiB/B units, the same
      * convention the workspace pane uses). Byte metadata is NEVER shown
      * through the token-count formatter and never narrowed to Int: a
@@ -103,6 +112,7 @@ internal object RunOutputCardPresentation {
         ACTION_SAVED -> R.string.run_output_saved
         ACTION_CANCELLED -> R.string.run_output_save_cancelled
         ACTION_FAILED -> R.string.run_output_save_failed
+        ACTION_OPEN_BLOCKED -> R.string.run_output_open_blocked
         else -> null
     }
 
@@ -135,13 +145,18 @@ internal object RunOutputCardPresentation {
 }
 
 /** Does the CURRENT projection still carry this exact actionable card? A
- * card replaced by a refresh (or projected away) can never be tapped. */
+ * card replaced by a refresh (or projected away) can never be tapped, and an
+ * in-flight save or terminal save state stays fenced exactly as before. The
+ * ONLY tolerated state is the advisory ACTION_OPEN_BLOCKED refusal note: it
+ * captions a past busy refusal without disabling recovery — the card must
+ * stay re-tappable so closing the live viewer and tapping Open again works. */
 internal fun List<TimelineRowUi>.runOutputIsActionable(card: RunOutputCardUi): Boolean =
     filterIsInstance<TimelineRowUi.RunOutputGroup>()
         .firstOrNull { it.runId == card.runId }
         ?.outputs
         ?.any { it.outputId == card.outputId && RunOutputCardPresentation.isActionable(it.availabilityRaw) &&
-            it.actionStateRaw == null } == true
+            (it.actionStateRaw == null ||
+                it.actionStateRaw == RunOutputCardPresentation.ACTION_OPEN_BLOCKED) } == true
 
 /* --------------------------- timeline rows ---------------------------- */
 
