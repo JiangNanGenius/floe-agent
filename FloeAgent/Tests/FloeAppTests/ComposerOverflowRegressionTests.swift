@@ -540,7 +540,7 @@ struct ComposerOverflowRegressionTests {
     @Test("Responsive row: the shipped launchpad width gives the field the whole row")
     func responsivePolicyStacksAtTheShippedLaunchpadWidth() {
         let control = FloeTheme.minimumTarget
-        let row = 421 - 48 - 24 - 24
+        let row: CGFloat = 421 - 48 - 24 - 24
         let inline = ComposerResponsiveLayoutPolicy.inlineTextWidth(
             rowWidth: row,
             controlsWidth: 5 * control,
