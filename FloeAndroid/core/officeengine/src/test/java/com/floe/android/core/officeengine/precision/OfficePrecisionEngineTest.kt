@@ -860,8 +860,15 @@ class OfficePrecisionEngineTest {
         assertTrue(host.editPreparationCallbacks.containsKey("view-select"))
 
         host.completeEditPreparation("view-select")
+        // Full ordered trace: the one native-editable assertion, the ONE
+        // effect-bearing SelectAll, then the plan's permitted synchronous
+        // gettextselection readback (fire-and-forget step advances in-line).
         assertEquals(
-            listOf("native-editable", "wire:uno .uno:SelectAll"),
+            listOf(
+                "native-editable",
+                "wire:uno .uno:SelectAll",
+                "wire:gettextselection mimetype=text/plain;charset=utf-8",
+            ),
             host.dispatchEvents,
         )
         assertEquals(listOf(true), host.editAssertionsUnderMonitor)
@@ -877,7 +884,15 @@ class OfficePrecisionEngineTest {
         val host = FakeHost()
         val engine = OfficePrecisionEngine(host)
         engine.submit(req("view-lost", OfficePrecisionAction.SELECT_ALL_TEXT))
-        assertEquals(listOf("uno .uno:SelectAll"), host.wires)
+        // Full ordered trace: the ONE effect-bearing mutation, then the
+        // permitted synchronous readback (a query, not a repeated mutation).
+        assertEquals(
+            listOf(
+                "uno .uno:SelectAll",
+                "gettextselection mimetype=text/plain;charset=utf-8",
+            ),
+            host.wires,
+        )
 
         host.pageEditMode = false
         engine.onPageViewingObserved()
@@ -886,11 +901,14 @@ class OfficePrecisionEngineTest {
         assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, result.failure)
         assertEquals("page-viewing-after-effect-dispatch", result.detail)
         assertTrue(result.attestation.contains("page-edit-mode-lost"))
-        assertEquals(1, host.wires.size)
+        // Fence adds nothing and replays nothing: the two-wire trace above
+        // is the whole dispatch record (SelectAll exactly once, readback
+        // never re-issued).
+        assertEquals(2, host.wires.size)
 
         // A late answer cannot revive or repeat the already-settled effect.
         feed(engine, "textselectioncontent: selected")
-        assertEquals(1, host.wires.size)
+        assertEquals(2, host.wires.size)
         assertNull(engine.readAnswer("view-lost", "tok", 3L))
     }
 

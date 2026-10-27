@@ -1121,7 +1121,9 @@ class WorkspaceSourceHostControllerTest {
             assertEquals(treeUri + "/document/" + expected, channel.stageReferences[ticket])
         }
         // (3) every staged body is byte-exact against the provider content.
-        for ((path, ticket) in importTickets) {
+        // Key order matches the existing fake API: stagePaths is
+        // Map<Long ticket, String logicalPath>, same as the forEach above.
+        for ((ticket, path) in importTickets) {
             val expectedUri = treeUri + "/document/" + when (path) {
                 "qa/a.docx" -> "a-doc"; "qa/b.xlsx" -> "b-doc"; else -> "c-doc"
             }
