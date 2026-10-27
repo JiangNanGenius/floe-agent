@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "0796d728b92480a07af5448f4156c5a443fc373f5ca82df6f395e8ae6b65ab6f"
+      "sha256": "4a64942827a989a8cf16093da6376a9caccf63a461c6a58719c5fbe78f7bde21"
     },
     {
       "operation": "replace",
