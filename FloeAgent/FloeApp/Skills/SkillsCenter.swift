@@ -63,30 +63,261 @@ final class SkillsCenter: ObservableObject {
         guard !isRefreshingCuratedCatalog,
               force || lastCuratedCatalogCheck.map({ Date().timeIntervalSince($0) > 3600 }) != false else { return }
         isRefreshingCuratedCatalog = true
-        lastCuratedCatalogCheck = Date()
+        // The success timestamp is stamped only after a verified live load.
+        // A failed or cancelled check must not poison the one-hour slot: the
+        // store honestly shows its failure and stays free to retry live.
         defer { isRefreshingCuratedCatalog = false }
         do {
-            curatedPublication = try await loadCuratedPublication()
+            let publication = try await loadCuratedPublication()
+            try Task.checkCancellation()
+            curatedPublication = publication
             curatedCatalogError = nil
             lastCuratedCatalogCheck = Date()
+        } catch is CancellationError {
+            // Navigation cancellation is not a catalog failure; the previous
+            // state and error status stay untouched.
         } catch {
             // A failed refresh retains the last authenticated publication.
+            // A freshly launched process holds none in memory, so restore
+            // this install's own last authenticated snapshot. The snapshot
+            // is only ever written after a live publication fully verified,
+            // and restoration re-runs the SAME loader: exact-byte signature,
+            // compiled production trust, immutable commit pinning and strict
+            // feed decoding. An absent, torn, corrupted, signature- or
+            // commit-mismatched or fixture-forged snapshot restores nothing —
+            // never a fabricated or unverified feed. This keeps the curated
+            // store usable through a transient transport failure of the
+            // anonymous refresh; the honest unavailable status below still
+            // reports the failed live check, and the untouched timestamp
+            // leaves every later entry free to retry live first.
+            if curatedPublication == nil {
+                let restored = try? await Self.restoredCuratedPublication(channel: .ios, mode: .production)
+                guard !Task.isCancelled else { return }
+                curatedPublication = restored
+            }
+            guard !Task.isCancelled else { return }
             curatedCatalogError = FloeL10n.l("skills.hub.catalog_unavailable")
         }
     }
 
     private func loadCuratedPublication(ref: String = "main") async throws -> CuratedSkillHub.Publication {
         let connector = environment.sourceControlCenter
-        return try await CuratedSkillHub.loadPublication(channel: .ios, mode: .production, ref: ref,
+        return try await Self.loadCuratedPublication(
+            channel: .ios, mode: .production, ref: ref,
             resolve: { source in
                 let bytes = try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
                     ref: source.ref, path: nil, usesConnectorCredential: false)
                 struct Commit: Decodable { let sha: String }
                 return try JSONDecoder().decode(Commit.self, from: bytes).sha
-            }, fetch: { source, commit, path in
+            },
+            fetch: { source, commit, path in
                 try await connector.skillRepositoryData(owner: source.owner, repository: source.repository,
                     ref: commit, path: path, usesConnectorCredential: false)
+            },
+            store: { snapshot in
+                // Persist the exact verified bytes. The store runs on the
+                // loader's nonisolated context, so multi-megabyte bounded
+                // writes never block the main actor.
+                await Self.persistCuratedPublicationSnapshot(snapshot, channel: .ios)
             })
+    }
+
+    // MARK: - Curated catalog last-authenticated snapshot
+    //
+    // The store must survive a transient transport failure of the anonymous
+    // catalog refresh (offline, timeouts, URLSession identity flakes)
+    // without ever fabricating or trusting an unverified feed. The cache is
+    // an exact-byte snapshot written only after a live
+    // `CuratedSkillHub.loadPublication` returned a fully verified
+    // publication, and every restore re-runs that same pipeline —
+    // validateSource, immutable 40-hex commit Y, exact-bytes Ed25519
+    // verification under the compiled trust for the requested mode, the
+    // production/fixture coupling and the strict feed decode. No new trust
+    // engine, key, or bypass exists here; a failed verification restores
+    // nothing.
+
+    /// One authenticated channel publication captured exactly as verified:
+    /// the resolved immutable commit Y plus the channel feed bytes and the
+    /// signature bytes that covered exactly those feed bytes. Written and
+    /// read as ONE atomic self-contained JSON file, so a crash can never
+    /// tear a commit/feed/signature mismatch.
+    struct CuratedPublicationSnapshot: Codable, Sendable {
+        static let schemaVersion = 1
+        let schemaVersion: Int
+        let commit: String
+        let catalogBytes: Data
+        let signatureBytes: Data
+    }
+
+    /// Live load with exact-byte capture. `store` is invoked only after the
+    /// real pipeline returned a verified publication whose commit matches
+    /// the resolved commit and both captured channel files. Cancellation and
+    /// every other failure rethrow unchanged. Cancellation before the store
+    /// boundary writes nothing; a completed atomic verified-cache commit is
+    /// retained, while cancelled work never publishes UI/check success.
+    nonisolated static func loadCuratedPublication(
+        channel: CuratedSkillChannel,
+        mode: CuratedSkillTrustMode,
+        ref: String = "main",
+        resolve: GitHubSkillDownload.ResolveCommit,
+        fetch: GitHubSkillDownload.FetchFile,
+        store: (@Sendable (CuratedPublicationSnapshot) async -> Void)? = nil
+    ) async throws -> CuratedSkillHub.Publication {
+        try Task.checkCancellation()
+        let tee = CuratedPublicationTee(channel: channel)
+        do {
+            let publication = try await CuratedSkillHub.loadPublication(channel: channel, mode: mode, ref: ref,
+                resolve: { source in
+                    let commit = try await resolve(source)
+                    await tee.noteResolvedCommit(commit)
+                    return commit
+                }, fetch: { source, commit, path in
+                    let bytes = try await fetch(source, commit, path)
+                    await tee.noteFetchedFile(path: path, commit: commit, bytes: bytes)
+                    return bytes
+                })
+            try Task.checkCancellation()
+            let snapshot = await tee.authenticatedSnapshot(matching: publication)
+            try Task.checkCancellation()
+            // A pinned older publication is valid for its installation, but
+            // must never replace the last verified main-channel snapshot.
+            if ref == "main", let snapshot, let store {
+                await store(snapshot)
+            }
+            // An atomic verified-cache write may already have committed;
+            // cancellation still prevents publishing stale UI/check state.
+            try Task.checkCancellation()
+            return publication
+        } catch {
+            // A task torn down by navigation must not consume the failure
+            // branch: it is reclassified as cancellation so the caller
+            // keeps its untouched retry slot and stores nothing.
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+    }
+
+    /// Re-verifies one stored snapshot through the SAME loader pipeline.
+    /// The closure pair below only ever serves the snapshot's own commit and
+    /// two channel paths; all trust decisions (signature over the exact
+    /// bytes, compiled production keys, fixture/production coupling, strict
+    /// schema) happen inside `CuratedSkillHub.loadPublication`. Malformed,
+    /// corrupted, signature- or commit-mismatched payloads throw and restore
+    /// nothing.
+    nonisolated static func verifiedPublication(
+        from snapshot: CuratedPublicationSnapshot,
+        channel: CuratedSkillChannel,
+        mode: CuratedSkillTrustMode
+    ) async throws -> CuratedSkillHub.Publication {
+        guard snapshot.schemaVersion == CuratedPublicationSnapshot.schemaVersion,
+              snapshot.commit.count == 40, snapshot.commit.allSatisfy(\.isHexDigit),
+              !snapshot.catalogBytes.isEmpty, !snapshot.signatureBytes.isEmpty,
+              snapshot.catalogBytes.count <= CuratedSkillHub.maximumFeedBytes,
+              snapshot.signatureBytes.count <= SignedContentFeedVerifier.maximumSignatureBytes else {
+            throw CuratedSkillHubFailure.source("curated catalog snapshot is malformed")
+        }
+        let commit = snapshot.commit
+        let catalogBytes = snapshot.catalogBytes
+        let signatureBytes = snapshot.signatureBytes
+        return try await CuratedSkillHub.loadPublication(channel: channel, mode: mode, ref: "main",
+            resolve: { _ in commit },
+            fetch: { _, fetchedCommit, path in
+                guard fetchedCommit == commit else {
+                    throw CuratedSkillHubFailure.source("curated catalog snapshot commit mismatch")
+                }
+                switch path {
+                case CuratedSkillHub.catalogPath(for: channel): return catalogBytes
+                case CuratedSkillHub.signaturePath(for: channel): return signatureBytes
+                default:
+                    throw CuratedSkillHubFailure.source(
+                        "curated catalog snapshot only serves the channel feed and signature")
+                }
+            })
+    }
+
+    /// Captures only the two channel paths the loader itself verifies, bound
+    /// to one resolved commit. Nothing is persisted until `loadPublication`
+    /// returns a fully verified publication for that same commit.
+    private actor CuratedPublicationTee {
+        private let channel: CuratedSkillChannel
+        private var resolvedCommit: String?
+        private var catalog: (commit: String, bytes: Data)?
+        private var signature: (commit: String, bytes: Data)?
+
+        init(channel: CuratedSkillChannel) { self.channel = channel }
+
+        func noteResolvedCommit(_ commit: String) { resolvedCommit = commit }
+
+        func noteFetchedFile(path: String, commit: String, bytes: Data) {
+            if path == CuratedSkillHub.catalogPath(for: channel) {
+                catalog = (commit, bytes)
+            } else if path == CuratedSkillHub.signaturePath(for: channel) {
+                signature = (commit, bytes)
+            }
+        }
+
+        func authenticatedSnapshot(matching publication: CuratedSkillHub.Publication) -> CuratedPublicationSnapshot? {
+            guard resolvedCommit == publication.publicationCommit,
+                  let capturedCatalog = catalog, capturedCatalog.commit == publication.publicationCommit,
+                  let capturedSignature = signature, capturedSignature.commit == publication.publicationCommit,
+                  !capturedCatalog.bytes.isEmpty, !capturedSignature.bytes.isEmpty,
+                  capturedCatalog.bytes.count <= CuratedSkillHub.maximumFeedBytes,
+                  capturedSignature.bytes.count <= SignedContentFeedVerifier.maximumSignatureBytes else { return nil }
+            return CuratedPublicationSnapshot(
+                schemaVersion: CuratedPublicationSnapshot.schemaVersion,
+                commit: publication.publicationCommit,
+                catalogBytes: capturedCatalog.bytes,
+                signatureBytes: capturedSignature.bytes)
+        }
+    }
+
+    nonisolated private static func curatedSnapshotFileURL(channel: CuratedSkillChannel) throws -> URL {
+        let channelDirectory: String
+        switch channel {
+        case .ios: channelDirectory = "ios"
+        case .android: channelDirectory = "android"
+        }
+        return try FloeArtifactStore.root()
+            .appendingPathComponent("SkillHubCuratedCatalog", isDirectory: true)
+            .appendingPathComponent(channelDirectory, isDirectory: true)
+            .appendingPathComponent("publication-snapshot.json")
+    }
+
+    /// Atomic best-effort persistence of the verified snapshot, executed off
+    /// the main actor because the feed is bounded at multi-megabyte sizes.
+    /// A write failure never affects the live publication.
+    @concurrent nonisolated static func persistCuratedPublicationSnapshot(_ snapshot: CuratedPublicationSnapshot,
+                                                              channel: CuratedSkillChannel) async {
+        do {
+            let url = try curatedSnapshotFileURL(channel: channel)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                    withIntermediateDirectories: true)
+            try JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
+        } catch {
+            // The live verified publication is unaffected by a cache failure.
+        }
+    }
+
+    /// Restores the last authenticated publication for a channel from this
+    /// install's own snapshot file by feeding it through
+    /// `verifiedPublication` — full signature/production/commit re-
+    /// verification or throw. Nothing else is ever read from disk.
+    @concurrent nonisolated static func restoredCuratedPublication(channel: CuratedSkillChannel,
+                                                       mode: CuratedSkillTrustMode) async throws -> CuratedSkillHub.Publication {
+        let url = try curatedSnapshotFileURL(channel: channel)
+        let payload = try readCuratedSnapshotFile(url, limit: ((CuratedSkillHub.maximumFeedBytes + 2) / 3) * 4 + 1_048_576)
+        let snapshot = try JSONDecoder().decode(CuratedPublicationSnapshot.self, from: payload)
+        return try await verifiedPublication(from: snapshot, channel: channel, mode: mode)
+    }
+
+    nonisolated private static func readCuratedSnapshotFile(_ url: URL, limit: Int) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let bytes = try handle.read(upToCount: limit + 1) ?? Data()
+        guard !bytes.isEmpty, bytes.count <= limit else {
+            throw CuratedSkillHubFailure.source("curated catalog snapshot file is unreadable")
+        }
+        return bytes
     }
 
     func verifiedHubCatalogEntries() async throws -> [SkillHubCatalogEntry] {

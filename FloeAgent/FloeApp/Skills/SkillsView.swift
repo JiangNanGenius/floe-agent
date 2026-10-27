@@ -224,6 +224,18 @@ struct SkillsView: View {
                 }
                 .safeAreaInset(edge: .bottom, spacing: 0) { batchBar }
             }
+            if !showingInstalled, let error = center.curatedCatalogError {
+                HStack {
+                    Text(error).foregroundStyle(.secondary).font(.footnote)
+                        .accessibilityIdentifier("skills.catalog.error")
+                    Button("action.retry") {
+                        Task { await center.refreshCuratedCatalog(force: true) }
+                    }
+                    .disabled(center.isRefreshingCuratedCatalog)
+                    .accessibilityIdentifier("skills.catalog.retry")
+                }
+                .padding(.horizontal)
+            }
             if let error = center.catalogError {
                 Text(error).foregroundStyle(.secondary).font(.footnote).padding(.horizontal)
             }
@@ -283,7 +295,13 @@ struct SkillsView: View {
             // mistaken removal repairs here too, not only inside a task.
             await center.seedBuiltinDomainSkills()
             await center.load()
-            await center.refreshOfficialCatalog(); await center.refreshCuratedCatalog()
+            // The official bundled channel and the curated signed channel are
+            // independent stores: one slow or failing anonymous GitHub check
+            // must never delay or block the other store feed.
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { await center.refreshOfficialCatalog() }
+                group.addTask { await center.refreshCuratedCatalog() }
+            }
         }
         .refreshable { await center.load(); center.startCheckingUpdates() }
         .onChange(of: updates.reviewSkillID) { _, id in

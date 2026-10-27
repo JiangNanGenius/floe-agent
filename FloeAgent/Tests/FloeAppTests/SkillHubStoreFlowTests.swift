@@ -673,4 +673,364 @@ struct SkillHubDirectInstallServiceTests {
 }
 #endif
 
+// MARK: - Curated catalog last-authenticated snapshot cache (offline, fixtures only)
+
+/// Build-302 store repair regressions: when a live curated refresh fails
+/// (transient transport failure of the anonymous GitHub path), the store may
+/// only fall back to this install's own last-authenticated snapshot, and
+/// that fallback must re-run the FULL existing `CuratedSkillHub`
+/// verification — exact-byte signature, compiled trust for the requested
+/// mode, immutable commit pinning and strict feed decoding. These tests
+/// drive the lane-visible static seams with in-memory published fixture
+/// traffic only: they never read or write `FloeArtifactStore`, never touch
+/// user installs and never invent trust material. A malformed, corrupted,
+/// signature- or commit-mismatched, or fixture-forged-as-production
+/// snapshot must never become a publication, hence never a card, never an
+/// eligibility and never an install.
+@Suite("FloeApp.SkillHubCuratedSnapshotCache")
+@MainActor
+struct SkillHubCuratedSnapshotCacheTests {
+
+    private struct CacheFixtureFailure: Error, Sendable { let detail: String }
+
+    private static let fixtureCommit = String(repeating: "a", count: 40)
+
+    /// Anchor so `Bundle(for:)` resolves the App test bundle (the folder is
+    /// registered there when the integration owner ships fixtures); the
+    /// source-tree fallback mirrors the published FloeSkillsTests fixture
+    /// loader convention. Missing fixtures are actionable, never a skip.
+    private final class CacheFixtureAnchor: NSObject {}
+
+    private func cacheFixture(_ name: String) throws -> Data {
+        var roots: [URL] = []
+        if let resource = Bundle(for: CacheFixtureAnchor.self).resourceURL?
+            .appendingPathComponent("CuratedSkillHub", isDirectory: true) {
+            roots.append(resource)
+        }
+        roots.append(URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()                       // Tests/FloeAppTests
+            .appendingPathComponent("../FloeSkillsTests/Fixtures/CuratedSkillHub", isDirectory: true)
+            .standardizedFileURL)
+        for root in roots {
+            let file = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: file.path) {
+                return try Data(contentsOf: file)
+            }
+        }
+        throw CacheFixtureFailure(detail: "curated cache fixture \(name) is unavailable in every candidate root")
+    }
+
+    /// The explicit test-only trust built from the shipped fixture public
+    /// key — the same material the published fixture pair verifies under.
+    private func fixtureTrustMode() throws -> CuratedSkillTrustMode {
+        let object = try JSONSerialization.jsonObject(
+            with: cacheFixture("fixture-public-key.json")) as? [String: Any]
+        guard (object?["fixtureOnly"] as? Bool) == true,
+              (object?["notATrustRoot"] as? Bool) == true,
+              (object?["keyID"] as? String) == CuratedSkillHub.fixtureKeyID,
+              let raw = (object?["publicKey"] as? String).flatMap(Data.init(base64Encoded:)),
+              raw.count == 32 else {
+            throw CacheFixtureFailure(detail: "fixture public key material is malformed")
+        }
+        return .fixtureTestOnly(fixturePublicKey: raw)
+    }
+
+    private func fixtureTransport(catalog: Data, signature: Data,
+                                  resolveCancels: Bool = false, fetchFails: Bool = false)
+        -> (GitHubSkillDownload.ResolveCommit, GitHubSkillDownload.FetchFile)
+    {
+        let commit = Self.fixtureCommit
+        let resolve: GitHubSkillDownload.ResolveCommit = { _ in
+            if resolveCancels { throw CancellationError() }
+            return commit
+        }
+        let fetch: GitHubSkillDownload.FetchFile = { _, fetchedCommit, path in
+            if fetchFails { throw CacheFixtureFailure(detail: "transport failure") }
+            guard fetchedCommit == commit else {
+                throw CacheFixtureFailure(detail: "fetch pinned to another commit")
+            }
+            switch path {
+            case CuratedSkillHub.catalogPath(for: .ios): return catalog
+            case CuratedSkillHub.signaturePath(for: .ios): return signature
+            default: throw CacheFixtureFailure(detail: "unexpected path \(path)")
+            }
+        }
+        return (resolve, fetch)
+    }
+
+    private actor SnapshotBox {
+        private var stored: [SkillsCenter.CuratedPublicationSnapshot] = []
+        func store(_ snapshot: SkillsCenter.CuratedPublicationSnapshot) { stored.append(snapshot) }
+        var count: Int { stored.count }
+        func first() -> SkillsCenter.CuratedPublicationSnapshot? { stored.first }
+    }
+
+    private func validFixturePair() throws -> (mode: CuratedSkillTrustMode, catalog: Data, signature: Data) {
+        (try fixtureTrustMode(), try cacheFixture("catalog.json"), try cacheFixture("catalog.sig"))
+    }
+
+    private func snapshot(_ commit: String = SkillHubCuratedSnapshotCacheTests.fixtureCommit,
+                          catalog: Data, signature: Data,
+                          schemaVersion: Int = SkillsCenter.CuratedPublicationSnapshot.schemaVersion)
+        -> SkillsCenter.CuratedPublicationSnapshot
+    {
+        SkillsCenter.CuratedPublicationSnapshot(
+            schemaVersion: schemaVersion, commit: commit, catalogBytes: catalog, signatureBytes: signature)
+    }
+
+    private func expectSignatureFailure(_ error: any Error, _ label: String) {
+        guard let failure = error as? CuratedSkillHubFailure else {
+            Issue.record("\(label): expected CuratedSkillHubFailure, got \(error)")
+            return
+        }
+        switch failure {
+        case .signature: break
+        default: Issue.record("\(label): expected a signature failure, got \(failure)")
+        }
+    }
+
+    private func expectSourceFailure(_ error: any Error, _ label: String) {
+        guard let failure = error as? CuratedSkillHubFailure else {
+            Issue.record("\(label): expected CuratedSkillHubFailure, got \(error)")
+            return
+        }
+        switch failure {
+        case .source: break
+        default: Issue.record("\(label): expected a snapshot source/commit failure, got \(failure)")
+        }
+    }
+
+    @Test func verifiedLiveLoadStoresOneExactSnapshotAndRestoreKeepsItsIdentity() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let (resolve, fetch) = fixtureTransport(catalog: catalog, signature: signature)
+        let live = try await SkillsCenter.loadCuratedPublication(
+            channel: .ios, mode: mode, resolve: resolve, fetch: fetch,
+            store: { snapshot in await box.store(snapshot) })
+        let storedCount = await box.count
+        #expect(storedCount == 1, "one verified live load earns exactly one snapshot")
+        let stored = try #require(await box.first())
+        #expect(stored.schemaVersion == SkillsCenter.CuratedPublicationSnapshot.schemaVersion)
+        #expect(stored.commit == live.publicationCommit)
+        #expect(stored.catalogBytes == catalog, "the snapshot stores the exact signed feed bytes")
+        #expect(stored.signatureBytes == signature, "the snapshot stores the exact signature bytes")
+        // Restore is the SAME pipeline over the SAME bytes: an identical
+        // verified feed identity, not a re-encoded approximation.
+        let restored = try await SkillsCenter.verifiedPublication(from: stored, channel: .ios, mode: mode)
+        #expect(restored.publicationCommit == live.publicationCommit)
+        #expect(restored.verifiedFeed == live.verifiedFeed)
+    }
+
+    @Test func corruptedFeedByteNeverRestores() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        var tamperedBytes = catalog
+        tamperedBytes[catalog.count / 2] ^= 0x01
+        let tampered = snapshot(catalog: tamperedBytes, signature: signature)
+        do {
+            _ = try await SkillsCenter.verifiedPublication(from: tampered, channel: .ios, mode: mode)
+            Issue.record("a single flipped feed byte must never verify")
+        } catch {
+            expectSignatureFailure(error, "corrupted feed byte")
+        }
+    }
+
+    @Test func truncatedOrSwappedSignatureNeverRestores() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        // Dropped envelope byte: malformed or wrong proof over exact bytes.
+        let truncated = signature.dropLast()
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: catalog, signature: Data(truncated)), channel: .ios, mode: mode)
+            Issue.record("a truncated signature envelope must never verify")
+        } catch {
+            expectSignatureFailure(error, "truncated envelope")
+        }
+        // Swapped payload as envelope: exceeds the envelope bound outright.
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: catalog, signature: catalog), channel: .ios, mode: mode)
+            Issue.record("a feed payload cannot act as its own envelope")
+        } catch {
+            expectSignatureFailure(error, "swapped envelope")
+        }
+    }
+
+    @Test func malformedCommitOrSchemaSnapshotNeverRestores() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        // The commit is the immutable artifact pin; anything but a 40-hex
+        // Y is rejected before the loader is ever entered.
+        for bad in [String(repeating: "z", count: 40), String(repeating: "a", count: 39)] {
+            do {
+                _ = try await SkillsCenter.verifiedPublication(
+                    from: snapshot(bad, catalog: catalog, signature: signature), channel: .ios, mode: mode)
+                Issue.record("commit \(bad.prefix(6))… must never restore")
+            } catch {
+                expectSourceFailure(error, "malformed commit")
+            }
+        }
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: catalog, signature: signature, schemaVersion: 2),
+                channel: .ios, mode: mode)
+            Issue.record("an unknown snapshot schema must fail closed")
+        } catch {
+            expectSourceFailure(error, "schema mismatch")
+        }
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: Data(), signature: signature), channel: .ios, mode: mode)
+            Issue.record("an empty feed must fail closed")
+        } catch {
+            expectSourceFailure(error, "empty feed")
+        }
+        do {
+            let oversized = Data(repeating: 0x20, count: CuratedSkillHub.maximumFeedBytes + 1)
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: oversized, signature: signature), channel: .ios, mode: mode)
+            Issue.record("an over-bound feed must fail closed")
+        } catch {
+            expectSourceFailure(error, "oversize feed")
+        }
+    }
+
+    @Test func fixtureSnapshotCanNeverActivateProductionTrust() async throws {
+        // The exact-byte production/fixture coupling survives restore: the
+        // published fixture pair is rejected under compiled production
+        // trust, so the store's production fallback path can never publish
+        // a fixture offer, and no test ever forges production trust here.
+        let (catalog, signature) = (try cacheFixture("catalog.json"), try cacheFixture("catalog.sig"))
+        do {
+            _ = try await SkillsCenter.verifiedPublication(
+                from: snapshot(catalog: catalog, signature: signature), channel: .ios, mode: .production)
+            Issue.record("a fixture feed must never activate the production channel")
+        } catch {
+            guard let failure = error as? CuratedSkillHubFailure else {
+                Issue.record("expected CuratedSkillHubFailure, got \(error)")
+                return
+            }
+            switch failure {
+            case .trust: break
+            default: Issue.record("expected a trust coupling failure, got \(failure)")
+            }
+        }
+    }
+
+    private actor LateCatalogFetchGate {
+        private var entered = false
+        private var ended = false
+        private var arrivals: [CheckedContinuation<Bool, Never>] = []
+        private var release: CheckedContinuation<Void, Never>?
+        func hold() async {
+            entered = true
+            for arrival in arrivals { arrival.resume(returning: true) }
+            arrivals.removeAll()
+            await withCheckedContinuation { release = $0 }
+        }
+        func waitUntilEntered() async -> Bool {
+            if entered { return true }
+            if ended { return false }
+            return await withCheckedContinuation { arrivals.append($0) }
+        }
+        func attemptFinished() {
+            ended = true
+            for arrival in arrivals { arrival.resume(returning: false) }
+            arrivals.removeAll()
+        }
+        func finish() { release?.resume(); release = nil }
+    }
+
+    @Test func pinnedLoadCannotReplaceMainChannelSnapshot() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let (resolve, fetch) = fixtureTransport(catalog: catalog, signature: signature)
+        _ = try await SkillsCenter.loadCuratedPublication(
+            channel: .ios, mode: mode, ref: Self.fixtureCommit,
+            resolve: resolve, fetch: fetch, store: { await box.store($0) })
+        let count = await box.count
+        #expect(count == 0, "a pinned historical load must not roll back the main-channel cache")
+    }
+
+    @Test func noncooperativeLateFetchCannotStoreAfterCancellation() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let gate = LateCatalogFetchGate()
+        let (resolve, originalFetch) = fixtureTransport(catalog: catalog, signature: signature)
+        let attempt = Task { () -> Bool in
+            let cancelled: Bool
+            do {
+                _ = try await SkillsCenter.loadCuratedPublication(
+                    channel: .ios, mode: mode, resolve: resolve,
+                    fetch: { source, commit, path in
+                        let bytes = try await originalFetch(source, commit, path)
+                        if path == CuratedSkillHub.signaturePath(for: .ios) { await gate.hold() }
+                        return bytes
+                    }, store: { await box.store($0) })
+                cancelled = false
+            } catch is CancellationError { cancelled = true }
+            catch { Issue.record("late cancellation returned \(error)"); cancelled = false }
+            await gate.attemptFinished()
+            return cancelled
+        }
+        let entered = await gate.waitUntilEntered()
+        guard entered else {
+            Issue.record("the verified fixture load ended before reaching its signature fetch")
+            _ = await attempt.value
+            return
+        }
+        attempt.cancel()
+        await gate.finish()
+        let wasCancelled = await attempt.value
+        let count = await box.count
+        #expect(wasCancelled)
+        #expect(count == 0, "late bytes from a noncooperative transport cannot commit a cache")
+    }
+
+    @Test func failedLiveLoadStoresNothing() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let (resolve, fetch) = fixtureTransport(catalog: catalog, signature: signature, fetchFails: true)
+        do {
+            _ = try await SkillsCenter.loadCuratedPublication(
+                channel: .ios, mode: mode, resolve: resolve, fetch: fetch,
+                store: { snapshot in await box.store(snapshot) })
+            Issue.record("a failed transport must fail the live load")
+        } catch {
+            // Any transport error propagates; the cache stays untouched.
+        }
+        let storedCount = await box.count
+        #expect(storedCount == 0, "a failed live load can never write a snapshot")
+    }
+
+    @Test func cancelledTransportStoresNothingAndPropagatesTheLoaderFailure() async throws {
+        let (mode, catalog, signature) = try validFixturePair()
+        let box = SnapshotBox()
+        let (resolve, fetch) = fixtureTransport(catalog: catalog, signature: signature, resolveCancels: true)
+        var caught: any Error?
+        do {
+            _ = try await SkillsCenter.loadCuratedPublication(
+                channel: .ios, mode: mode, resolve: resolve, fetch: fetch,
+                store: { snapshot in await box.store(snapshot) })
+        } catch {
+            caught = error
+        }
+        let failure = try #require(caught, "a cancelled transport must fail the live load")
+        if let hubFailure = failure as? CuratedSkillHubFailure {
+            switch hubFailure {
+            case .unavailable: break
+            default: Issue.record("expected the loader's unavailable rethrow, got \(hubFailure)")
+            }
+        } else {
+            Issue.record("expected the loader's own rethrow, got \(failure)")
+        }
+        let storedCount = await box.count
+        #expect(storedCount == 0, "cancellation is not a catalog success and never writes a snapshot")
+        // When the surrounding task is genuinely torn down (navigation),
+        // `loadCuratedPublication` re-checks `Task.isCancelled` and
+        // reclassifies to `CancellationError`; `refreshCuratedCatalog`
+        // catches that separately, so no error status is consumed and the
+        // success timestamp is untouched — the next store entry retries
+        // live first instead of being blocked by a poisoned one-hour slot.
+    }
+}
+
 #endif
