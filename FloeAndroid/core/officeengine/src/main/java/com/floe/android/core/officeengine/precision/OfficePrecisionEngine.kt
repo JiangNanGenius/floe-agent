@@ -356,6 +356,8 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
         val estimate = OfficePrecisionProtocol.estimateResultParcelBytes(original)
         val contentBytes = when (val answer = original.answer) {
             is OfficePrecisionAnswer.TextSelection -> answer.byteCount
+            is OfficePrecisionAnswer.MutationApplied ->
+                answer.preEffectEvidence?.selectionByteCount ?: 0
             else -> 0
         }
         val query = original.action.effect == OfficePrecisionEffect.QUERY
@@ -366,7 +368,15 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
             state = if (query) OfficePrecisionState.FAILED else original.state,
             failure = if (query) OfficePrecisionFailure.ANSWER_TOO_LARGE else original.failure,
             detail = "answer-parcel-bytes=$estimate content-bytes=$contentBytes",
-            answer = if (original.answer is OfficePrecisionAnswer.TextSelection) null else original.answer,
+            answer = when (val answer = original.answer) {
+                is OfficePrecisionAnswer.TextSelection -> null
+                // Keep the already-completed effect's small honest receipt,
+                // but never return an oversize pre-effect payload or pretend
+                // its unavailable semantic baseline survived the fallback.
+                is OfficePrecisionAnswer.MutationApplied ->
+                    answer.copy(preEffectEvidence = null)
+                else -> answer
+            },
             attestation = original.attestation + "+reply-budget-refused",
         )
     }
@@ -676,7 +686,7 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                     ledger.rejectRun(run, check.failure, check.detail)?.let { finishRun(it) }
                     return
                 }
-                is OfficePrecisionLedger.TargetCheck.Ok -> Unit
+                is OfficePrecisionLedger.TargetCheck.Ok -> run.contentTarget = check.target
             }
             run.contextSha = sha
         }
@@ -710,6 +720,22 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                 ledger.rejectRun(run, OfficePrecisionFailure.SESSION_ENDING, "mount-ended-before-step")
                     ?.let { finishRun(it) }
                 return
+            }
+            if (step.check == OfficePrecisionPlan.StepCheck.PasteSuccess) {
+                // The pre-effect query may have waited for native evidence.
+                // Re-check the consumed capture at the ACTUAL paste boundary,
+                // under the same ingress monitor, rather than relying only on
+                // admission-time CAS. A drift refuses before content is sent.
+                val digest = host.workingCopyDigest()
+                when (val check = ledger.revalidateContentTargetBeforePaste(
+                    run, host.generation(), digest?.first,
+                )) {
+                    is OfficePrecisionLedger.TargetCheck.Refused -> {
+                        ledger.rejectRun(run, check.failure, check.detail)?.let { finishRun(it) }
+                        return
+                    }
+                    is OfficePrecisionLedger.TargetCheck.Ok -> Unit
+                }
             }
             val expect = step.expect
             when (val decision = ledger.armStep(run, stepIndex)) {

@@ -17,6 +17,7 @@ internal object WordText {
     const val W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
     private const val MC_NS = "http://schemas.openxmlformats.org/markup-compatibility/2006"
     const val DOCUMENT_PART = "word/document.xml"
+    const val NUMBERING_PART = "word/numbering.xml"
 
     fun normalizedBodyText(document: Document): String {
         val leaves = DomUtil.elements(document, W_NS, "p").filter { paragraph ->
@@ -28,6 +29,124 @@ internal object WordText {
             collect(paragraph, builder)
         }
         return builder.toString()
+    }
+
+    private data class ClipboardParagraph(
+        val text: String,
+        val numId: String?,
+        val level: Int,
+    )
+
+    private data class NumberingCatalog(
+        val abstracts: Map<String, Element>,
+        val nums: Map<String, Element>,
+    )
+
+    /** Reconstructs the Writer ASCII clipboard representation used by
+     * getSelectionTypeAndText for a whole-body plain-text selection. This is
+     * NOT whitespace normalization: every run/paragraph character is kept,
+     * LF separates paragraphs, one standard terminal empty body paragraph is
+     * omitted, and direct decimal numPr labels get their source-defined four-
+     * spaces-per-level indentation plus `N.` and one space. Unsupported list
+     * machinery stays unprovable instead of guessing a native label. */
+    fun normalizedClipboardBodyText(document: Document, numbering: Document?): String? {
+        val paragraphs = clipboardParagraphs(document) ?: return null
+        val catalog = numbering?.let(::numberingCatalog)
+        val counters = HashMap<Pair<String, Int>, Int>()
+        val builder = StringBuilder()
+        for ((index, paragraph) in paragraphs.withIndex()) {
+            if (index > 0) builder.append('\n')
+            if (paragraph.numId != null) {
+                val label = clipboardNumberLabel(paragraph, catalog, counters) ?: return null
+                builder.append(label).append(' ')
+            }
+            builder.append(paragraph.text)
+        }
+        return builder.toString()
+    }
+
+    private fun clipboardParagraphs(document: Document): List<ClipboardParagraph>? {
+        val leaves = DomUtil.elements(document, W_NS, "p").filter { paragraph ->
+            DomUtil.elementsWithin(paragraph, W_NS, "p").isEmpty()
+        }
+        val paragraphs = ArrayList<ClipboardParagraph>()
+        for (paragraph in leaves) {
+            val text = StringBuilder().also { collect(paragraph, it) }.toString()
+            val properties = DomUtil.childElements(paragraph, W_NS, "pPr").firstOrNull()
+            val num = properties?.let {
+                DomUtil.childElements(it, W_NS, "numPr").firstOrNull()
+            }
+            var numId: String? = null
+            var level = 0
+            if (num != null) {
+                val idElement = DomUtil.childElements(num, W_NS, "numId").firstOrNull()
+                    ?: return null
+                val rawId = idElement.getAttributeNS(W_NS, "val")
+                if (rawId.isEmpty()) return null
+                val levelElement = DomUtil.childElements(num, W_NS, "ilvl").firstOrNull()
+                if (levelElement != null) {
+                    level = levelElement.getAttributeNS(W_NS, "val").toIntOrNull() ?: return null
+                    if (level !in 0..8) return null
+                }
+                if (rawId != "0") numId = rawId
+            }
+            paragraphs.add(ClipboardParagraph(text, numId, level))
+        }
+        // Writer's whole-document clipboard copy excludes the standard final
+        // empty body node. Remove exactly that one node, never arbitrary blank
+        // paragraphs or whitespace from real content.
+        if (paragraphs.isNotEmpty() && paragraphs.last().text.isEmpty() &&
+            paragraphs.last().numId == null
+        ) {
+            paragraphs.removeAt(paragraphs.lastIndex)
+        }
+        return paragraphs
+    }
+
+    private fun numberingCatalog(numbering: Document): NumberingCatalog {
+        val abstracts = DomUtil.elements(numbering, W_NS, "abstractNum").mapNotNull { element ->
+            element.getAttributeNS(W_NS, "abstractNumId").takeIf { it.isNotEmpty() }
+                ?.let { it to element }
+        }.toMap()
+        val nums = DomUtil.elements(numbering, W_NS, "num").mapNotNull { element ->
+            element.getAttributeNS(W_NS, "numId").takeIf { it.isNotEmpty() }
+                ?.let { it to element }
+        }.toMap()
+        return NumberingCatalog(abstracts, nums)
+    }
+
+    private fun clipboardNumberLabel(
+        paragraph: ClipboardParagraph,
+        catalog: NumberingCatalog?,
+        counters: MutableMap<Pair<String, Int>, Int>,
+    ): String? {
+        val numId = paragraph.numId ?: return null
+        val definitions = catalog ?: return null
+        val num = definitions.nums[numId] ?: return null
+        // Overrides/restarts need engine list state; never silently substitute
+        // the abstract definition's start value.
+        if (DomUtil.childElements(num, W_NS, "lvlOverride").isNotEmpty()) return null
+        val abstractIdElement = DomUtil.childElements(num, W_NS, "abstractNumId").firstOrNull()
+            ?: return null
+        val abstract = definitions.abstracts[abstractIdElement.getAttributeNS(W_NS, "val")]
+            ?: return null
+        val level = DomUtil.childElements(abstract, W_NS, "lvl").firstOrNull {
+            it.getAttributeNS(W_NS, "ilvl") == paragraph.level.toString()
+        } ?: return null
+        val format = DomUtil.childElements(level, W_NS, "numFmt").firstOrNull()
+            ?.getAttributeNS(W_NS, "val")
+        val levelText = DomUtil.childElements(level, W_NS, "lvlText").firstOrNull()
+            ?.getAttributeNS(W_NS, "val")
+        if (format != "decimal" || levelText != "%${paragraph.level + 1}.") return null
+        val start = DomUtil.childElements(level, W_NS, "start").firstOrNull()
+            ?.getAttributeNS(W_NS, "val")?.toIntOrNull() ?: return null
+        if (start < 0) return null
+        val key = numId to paragraph.level
+        val value = (counters[key] ?: (start - 1)) + 1
+        counters[key] = value
+        // Writer OutASC_SwTextNode: four spaces for EACH level from zero
+        // through actualListLevel, then GetNumString() and one trailing space.
+        return "    ".repeat(paragraph.level + 1) + value + "."
     }
 
     private fun collect(element: Element, builder: StringBuilder) {

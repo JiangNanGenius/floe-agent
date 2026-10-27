@@ -133,6 +133,21 @@ class OfficePrecisionLedgerTest {
         assertEquals(true, ledger.submit(req) is OfficePrecisionLedger.SubmitOutcome.Accepted)
         val run = ledger.claimNext()
         assertNotNull(run)
+        if (req.action.effect == OfficePrecisionEffect.CONTENT) {
+            // Mirrors the engine's consumed capture, not a prior-selection
+            // injection. Actual text still has to arrive through the plan's
+            // own status + selection frames below.
+            run!!.contentTarget = OfficePrecisionTarget(
+                handleId = req.targetHandle.orEmpty(), generation = req.generation,
+                sourceId = null, sourceRevision = null, sourceLogicalPath = null,
+                workspaceId = null, ownerTaskId = null,
+                workingCopySha256 = "sha-a", workingCopyBytes = 10L,
+                inputEpoch = ledger.inputEpoch(), editEpoch = ledger.editEpoch(),
+                documentModified = false, docType = null, partsCount = null,
+                selectedPart = "0", capturedAtElapsedMs = nowMs,
+                expiresAtElapsedMs = Long.MAX_VALUE / 4,
+            )
+        }
         return run!!
     }
 
@@ -147,6 +162,21 @@ class OfficePrecisionLedgerTest {
             ledger.noteWireDispatched(run, stepIndex)
         }
         return decision
+    }
+
+    private fun acquirePreEffect(
+        ledger: OfficePrecisionLedger,
+        run: OfficePrecisionLedger.OpRun,
+        statusStep: Int,
+        selectionStep: Int,
+        prior: String,
+    ) {
+        armDispatched(ledger, run, statusStep)
+        assertTrue(ledger.onFrame(statusFrame(statusJson)) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
+        armDispatched(ledger, run, selectionStep)
+        assertTrue(
+            ledger.onFrame(selectionContentFrame(prior)) is OfficePrecisionLedger.LedgerEvent.DispatchStep,
+        )
     }
 
     // ------------------------------------------------------------------
@@ -490,10 +520,30 @@ class OfficePrecisionLedgerTest {
             "selection-postcondition-partial-readback",
             ok.result.detail,
         )
-        assertEquals(
-            "selected text".length,
-            (ok.result.answer as OfficePrecisionAnswer.TextSelected).effectPayloadBytes,
-        )
+        val selected = ok.result.answer as OfficePrecisionAnswer.TextSelection
+        assertEquals("selected text".length, selected.byteCount)
+        assertEquals("selected text", selected.text)
+        assertFalse(selected.multiFormatJson)
+    }
+
+    @Test
+    fun selectAllWithoutAvailableContentKeepsOnlyTheRealByteCount() {
+        val l = ledger()
+        val run = claimArmed(l, request("s3", OfficePrecisionAction.SELECT_ALL_TEXT))
+        armDispatched(l, run, 0)
+        l.markDispatched(run, 0)
+        armDispatched(l, run, 1)
+        val result = l.onFrame(
+            OfficePrecisionLedger.ObservedFrame(
+                kind = OfficePrecisionLedger.FrameKind.COMPLEX_SELECTION,
+                prefix = "complexselection",
+                payloadBytes = 1_048_576,
+            ),
+        ) as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.NATIVE_COMPLETED, result.result.state)
+        val selected = result.result.answer as OfficePrecisionAnswer.TextSelected
+        assertEquals(1_048_576, selected.effectPayloadBytes)
+        // No fabricated empty string can become a cursor/whole-body proof.
     }
 
     @Test
@@ -599,7 +649,8 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "hello", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
         val event = l.onFrame(pasteFrame("fallback")) as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.FAILED, event.result.state)
         assertEquals(OfficePrecisionFailure.PRODUCER_REJECTED, event.result.failure)
@@ -612,18 +663,22 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "hello", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
         // Producer completion evidence alone is NOT verified content.
         val afterPaste = l.onFrame(pasteFrame("success"))
         assertTrue(afterPaste is OfficePrecisionLedger.LedgerEvent.DispatchStep)
         // Soft readback with EXACT match upgrades to MUTATION_VERIFIED.
-        armDispatched(l, run, 1)
+        armDispatched(l, run, 3)
         val verified = l.onFrame(selectionContentFrame("hello"))
             as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.MUTATION_VERIFIED, verified.result.state)
         val applied = verified.result.answer as OfficePrecisionAnswer.MutationApplied
         assertEquals(OfficePrecisionContentReadback.MATCHED, applied.contentReadback)
         assertEquals(5, applied.pastedBytes)
+        assertEquals("before", applied.preEffectEvidence?.selectionText)
+        assertEquals("m1", applied.preEffectEvidence?.opId)
+        assertEquals("0", applied.preEffectEvidence?.partId)
     }
 
     @Test
@@ -636,9 +691,10 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = expected, targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, oldSelection)
+        armDispatched(l, run, 2)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 1)
+        armDispatched(l, run, 3)
         // C11 failure-class fixture: paste landed, then the readback names only
         // the OLD view selection. That selection-scoped answer cannot disprove
         // the document-body effect; only the later saved OOXML proof can do so.
@@ -659,9 +715,10 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "replacement", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "")
+        armDispatched(l, run, 2)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 1)
+        armDispatched(l, run, 3)
         // A collapsed post-paste selection is empty even when the document
         // contains the replacement. Empty selection ≠ empty document body.
         val event = l.onFrame(selectionContentFrame(""))
@@ -691,11 +748,12 @@ class OfficePrecisionLedgerTest {
         l.markDispatched(run, 0)
         armDispatched(l, run, 1)
         l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
-        armDispatched(l, run, 2)
-        l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 3)
-        l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+        acquirePreEffect(l, run, 2, 3, "1.50")
         armDispatched(l, run, 4)
+        l.onFrame(pasteFrame("success"))
+        armDispatched(l, run, 5)
+        l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+        armDispatched(l, run, 6)
         // A Calc single-cell readback IS scoped to the mutation target. Its
         // explicit disagreement remains positive conflict evidence: UNKNOWN,
         // never NATIVE_COMPLETED, never an automatic replay.
@@ -715,10 +773,11 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 1)
-        val timeout = l.onStepTimeout("m1", 1)!!
+        armDispatched(l, run, 3)
+        val timeout = l.onStepTimeout("m1", 3)!!
         // Soft stage: the completed mutation is NOT downgraded to UNKNOWN.
         assertEquals(OfficePrecisionState.NATIVE_COMPLETED, timeout.state)
         val applied = timeout.answer as OfficePrecisionAnswer.MutationApplied
@@ -732,9 +791,10 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 1)
+        armDispatched(l, run, 3)
         // An effect that already occurred keeps its small state/receipt even
         // when the verification readback is too large to carry (count only).
         val event = l.onFrame(
@@ -799,14 +859,15 @@ class OfficePrecisionLedgerTest {
             l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
                 is OfficePrecisionLedger.LedgerEvent.DispatchStep,
         )
-        armDispatched(l, run2, 2)
+        acquirePreEffect(l, run2, 2, 3, "before")
+        armDispatched(l, run2, 4)
         assertTrue(l.onFrame(pasteFrame("success")) is OfficePrecisionLedger.LedgerEvent.DispatchStep)
-        armDispatched(l, run2, 3)
+        armDispatched(l, run2, 5)
         assertTrue(
             l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
                 is OfficePrecisionLedger.LedgerEvent.DispatchStep,
         )
-        armDispatched(l, run2, 4)
+        armDispatched(l, run2, 6)
         val verified = l.onFrame(selectionContentFrame("hello"))
             as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.MUTATION_VERIFIED, verified.result.state)
@@ -830,15 +891,17 @@ class OfficePrecisionLedgerTest {
                 targetHandle = handle,
             ),
         )
-        // Formula plan has NO soft readback stage: 4 steps only.
-        assertEquals(4, run.plan.size)
+        // Formula plan has mandatory BEFORE evidence but NO soft post-paste
+        // display/formula comparison: six steps only.
+        assertEquals(6, run.plan.size)
         armDispatched(l, run, 0)
         l.markDispatched(run, 0)
         armDispatched(l, run, 1)
         l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 0, 10, 10, 1, 2"))
-        armDispatched(l, run, 2)
+        acquirePreEffect(l, run, 2, 3, "7")
+        armDispatched(l, run, 4)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 3)
+        armDispatched(l, run, 5)
         val event = l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 0, 10, 10, 1, 2"))
             as OfficePrecisionLedger.LedgerEvent.Terminal
         // Producer completion + position confirmation, but display text is
@@ -846,6 +909,8 @@ class OfficePrecisionLedgerTest {
         assertEquals(OfficePrecisionState.NATIVE_COMPLETED, event.result.state)
         val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
         assertEquals(OfficePrecisionContentReadback.FORMULA_NOT_COMPARABLE, applied.contentReadback)
+        assertEquals("7", applied.preEffectEvidence?.selectionText)
+        assertEquals("f1", applied.preEffectEvidence?.opId)
         assertEquals("pending-flush-or-export-verification", event.result.detail)
     }
 
@@ -904,9 +969,10 @@ class OfficePrecisionLedgerTest {
             l,
             request("m1", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = handle),
         )
-        armDispatched(l, run, 0)
+        acquirePreEffect(l, run, 0, 1, "before")
+        armDispatched(l, run, 2)
         l.onFrame(pasteFrame("success"))
-        armDispatched(l, run, 1)
+        armDispatched(l, run, 3)
         l.onFrame(selectionContentFrame("x")) // MUTATION_VERIFIED
         assertEquals(epochBefore + 1, l.editEpoch())
         val stale = l.validateTarget(t3.handleId, gen, "sha-a", consume = true)

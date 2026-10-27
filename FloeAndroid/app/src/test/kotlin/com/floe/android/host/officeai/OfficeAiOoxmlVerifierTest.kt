@@ -211,6 +211,78 @@ class OfficeAiOoxmlVerifierTest {
     }
 
     @Test
+    fun c12UnicodeRunsParagraphsAndDecimalListProveExactClipboardWholeBodyDelta() {
+        val title = "手记 § Baseline 🧪"
+        val second = "Floe G01 synthetic paragraph with bold and italic runs."
+        val rtl = "مرحبا שלום mixed RTL"
+        val split = "synthetic paragraph with bold and italic runs."
+        val secondRuns = "<w:p><w:r><w:t xml:space=\"preserve\">Floe G01 </w:t></w:r>" +
+            "<w:r><w:t xml:space=\"preserve\">" + OoxmlTestFixtures.esc(split) +
+            "</w:t></w:r></w:p>"
+        fun numbered(text: String) = "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/>" +
+            "<w:numId w:val=\"1\"/></w:numPr></w:pPr>" + OoxmlTestFixtures.wordPara(text).removePrefix("<w:p>")
+        val body = OoxmlTestFixtures.wordPara(title) + secondRuns + OoxmlTestFixtures.wordPara(rtl) +
+            numbered("alpha list one") + numbered("beta list two") + numbered("γ § 3 list three") +
+            OoxmlTestFixtures.wordPara("")
+        val numbering = "<w:numbering xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">" +
+            "<w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/>" +
+            "<w:numFmt w:val=\"decimal\"/><w:lvlText w:val=\"%1.\"/></w:lvl></w:abstractNum>" +
+            "<w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num></w:numbering>"
+        val base = OoxmlTestFixtures.docxBytes(
+            OoxmlTestFixtures.wordDocumentXml(body),
+            extras = mapOf("word/numbering.xml" to numbering.toByteArray(StandardCharsets.UTF_8)),
+        )
+        val marker = "Floe LOCAL QA marker applied via scripted fixture (no cloud model)."
+        val saved = docx(listOf(marker))
+        val prior = listOf(
+            title, second, rtl,
+            "    1. alpha list one", "    2. beta list two", "    3. γ § 3 list three",
+        ).joinToString("\n")
+        assertEquals("the real C12 select-all readback shape is 178 UTF-8 bytes",
+            178, prior.toByteArray(StandardCharsets.UTF_8).size)
+        val proven = verifiedOf(
+            inspect(input(saved, "docx", "applyText", marker, baseline = baselineOf(base, prior = prior))),
+        )
+        assertTrue(proven.expectedContentMatches)
+        assertTrue("exact Writer clipboard text + saved OOXML proves the whole-body delta",
+            proven.semanticDeltaVerified)
+        assertEquals(SemanticScope.WHOLE_BODY_REPLACED, proven.replacementScope)
+        assertFalse("NATIVE_COMPLETED alone is not target-effect proof", proven.targetEffectVerified)
+
+        val wrongLabel = verifiedOf(
+            inspect(
+                input(
+                    saved, "docx", "applyText", marker,
+                    baseline = baselineOf(base, prior = prior.replace("    2. beta", "    9. beta")),
+                ),
+            ),
+        )
+        assertFalse("a wrong list label or stale selection never promotes", wrongLabel.semanticDeltaVerified)
+        assertTrue(wrongLabel.limitations.contains(VerificationNotes.PRIOR_NOT_IN_BASELINE))
+        val missing = verifiedOf(
+            inspect(input(saved, "docx", "applyText", marker, baseline = baselineOf(base, prior = null))),
+        )
+        assertFalse(missing.semanticDeltaVerified)
+        assertTrue(missing.limitations.contains(VerificationNotes.PRIOR_SELECTION_MISSING))
+        val unsupportedNumbering = OoxmlTestFixtures.docxBytes(
+            OoxmlTestFixtures.wordDocumentXml(body),
+            extras = mapOf(
+                "word/numbering.xml" to numbering.replace("decimal", "bullet")
+                    .toByteArray(StandardCharsets.UTF_8),
+            ),
+        )
+        val unsupported = verifiedOf(
+            inspect(
+                input(
+                    saved, "docx", "applyText", marker,
+                    baseline = baselineOf(unsupportedNumbering, prior = prior),
+                ),
+            ),
+        )
+        assertFalse("unknown native list rendering must not be guessed", unsupported.semanticDeltaVerified)
+    }
+
+    @Test
     fun wrongBaselineDigestStaysUnprovenWithHonestNote() {
         val base = docx(listOf("Hello world foo"))
         val saved = docx(listOf("Hello there foo"))
@@ -370,6 +442,216 @@ class OfficeAiOoxmlVerifierTest {
         assertTrue(facts.semanticDeltaVerified)
         assertEquals(SemanticScope.SELECTION_REPLACED, facts.replacementScope)
         assertEquals("ppt/slides/slide2.xml", facts.partName)
+    }
+
+    @Test
+    fun pptxSelectedSlideRealEmptySelectionProvesInsertionAtCapturedPart() {
+        val base = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body")),
+            ),
+        )
+        // selectSlide + apply can start with NO selected shape: the native
+        // prior is empty, so existing title/body remain and a new text shape
+        // is inserted. Inventing "old title\nold body" as prior would instead
+        // describe a different whole-slide replacement operation.
+        val saved = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body", "selected-slide marker")),
+            ),
+        )
+        val facts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", "selected-slide marker", partIndex = 1,
+                    baseline = baselineOf(base, partIndex = 1, prior = ""),
+                ),
+            ),
+        )
+        assertTrue(facts.expectedContentMatches)
+        assertTrue(facts.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, facts.replacementScope)
+        assertEquals("ppt/slides/slide1.xml", facts.partName)
+        assertFalse("selected-slide completion alone is not target-effect proof", facts.targetEffectVerified)
+    }
+
+    /**
+     * A real empty native prior means the paste CREATED a paragraph/shape, so
+     * the normalized saved part carries the inserted text plus exactly one
+     * OOXML paragraph delimiter. Every old paragraph must still be present,
+     * in order, byte-for-byte — the delimiter is part of the proven single
+     * edit, never something to trim away. Prepend, middle and append are all
+     * real positions for the created paragraph.
+     */
+    @Test
+    fun pptxNewParagraphInsertionKeepsEveryOldParagraphExactly() {
+        val base = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId1", "slide1.xml", listOf("old title", "old body"))),
+        )
+        fun inserted(vararg paragraphs: String) = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId1", "slide1.xml", paragraphs.toList())),
+        )
+        fun proven(saved: ByteArray, expected: String): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", expected, partIndex = 0,
+                    baseline = baselineOf(base, partIndex = 0, prior = ""),
+                ),
+            ),
+        )
+
+        // APPEND: the created paragraph follows every old one.
+        val appended = proven(inserted("old title", "old body", "appended marker"), "appended marker")
+        assertTrue(appended.expectedContentMatches)
+        assertTrue(appended.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, appended.replacementScope)
+        assertEquals("ppt/slides/slide1.xml", appended.partName)
+
+        // MIDDLE: the created paragraph sits between the two old ones, which
+        // both survive unchanged and in order.
+        val middle = proven(inserted("old title", "inserted middle", "old body"), "inserted middle")
+        assertTrue(middle.expectedContentMatches)
+        assertTrue(middle.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, middle.replacementScope)
+
+        // PREPEND: the created paragraph precedes every old one.
+        val prepended = proven(inserted("prepended marker", "old title", "old body"), "prepended marker")
+        assertTrue(prepended.expectedContentMatches)
+        assertTrue(prepended.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, prepended.replacementScope)
+
+        // The same delimiter rule is family-general: WordprocessingML `w:p`
+        // leaves are joined with '\n' exactly like DrawingML `a:p` leaves.
+        val docxBase = docx(listOf("first para", "last para"))
+        val docxSaved = docx(listOf("first para", "inserted para", "last para"))
+        val docxFacts = verifiedOf(
+            inspect(
+                input(
+                    docxSaved, "docx", "applyText", "inserted para",
+                    baseline = baselineOf(docxBase, prior = ""),
+                ),
+            ),
+        )
+        assertTrue(docxFacts.expectedContentMatches)
+        assertTrue(docxFacts.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, docxFacts.replacementScope)
+    }
+
+    /**
+     * The delimiter-aware insertion proof must stay fail-closed: a preexisting
+     * marker with no content delta, an old paragraph SPLIT around the
+     * insertion, a guessed extra empty paragraph, a foreign partial edit, a
+     * change confined to another slide and a stale baseline captured at a
+     * different logical part all remain UNPROVEN.
+     */
+    @Test
+    fun pptxInsertionProofRefusesPreexistingGuessedForeignAndStaleDeltas() {
+        val base = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body")),
+            ),
+        )
+        fun factsOf(
+            saved: ByteArray,
+            expected: String,
+            partIndex: Int = 1,
+            baselinePartIndex: Int? = partIndex,
+        ): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", expected, partIndex = partIndex,
+                    baseline = baselineOf(base, partIndex = baselinePartIndex, prior = ""),
+                ),
+            ),
+        )
+        fun slide1(vararg paragraphs: String) = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", paragraphs.toList()),
+            ),
+        )
+
+        // (a) PREEXISTING marker: the captured part is byte-identical to the
+        // baseline, so presence alone is never promoted to a delta proof.
+        val preexisting = factsOf(base, "old body")
+        assertTrue(preexisting.expectedContentMatches)
+        assertFalse(preexisting.semanticDeltaVerified)
+        assertEquals(SemanticScope.TEXT_PRESENT_ONLY, preexisting.replacementScope)
+        assertTrue(preexisting.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (b) SPLIT old paragraph, tail form: the ONE baseline paragraph
+        // "onetwo" no longer exists — it became "one" + "xtwo". Removing
+        // "\nx" would restore the baseline text, so only a COMPLETE created
+        // paragraph run may prove an insertion.
+        val splitBase = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId2", "slide2.xml", listOf("onetwo"))),
+        )
+        fun splitFactsOf(saved: ByteArray): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", "x", partIndex = 0,
+                    baseline = baselineOf(splitBase, partIndex = 0, prior = ""),
+                ),
+            ),
+        )
+        val splitTail = splitFactsOf(
+            OoxmlTestFixtures.pptxBytes(
+                listOf(PptSlide("rId2", "slide2.xml", listOf("one", "xtwo"))),
+            ),
+        )
+        assertTrue(splitTail.expectedContentMatches)
+        assertFalse("a split old paragraph is not an insertion", splitTail.semanticDeltaVerified)
+        assertEquals(SemanticScope.TEXT_PRESENT_ONLY, splitTail.replacementScope)
+        assertTrue(splitTail.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (c) SPLIT old paragraph, head form ("onex" + "two"): the mirror of
+        // (b), where removing "x\n" would restore the baseline text.
+        val splitHead = splitFactsOf(
+            OoxmlTestFixtures.pptxBytes(
+                listOf(PptSlide("rId2", "slide2.xml", listOf("onex", "two"))),
+            ),
+        )
+        assertTrue(splitHead.expectedContentMatches)
+        assertFalse(splitHead.semanticDeltaVerified)
+        assertTrue(splitHead.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (d) GUESSED structure: an extra empty paragraph (two delimiters) is
+        // not the one exact insertion and is never trimmed into one.
+        val guessed = factsOf(slide1("old title", "old body", "", "marker"), "marker")
+        assertTrue(guessed.expectedContentMatches)
+        assertFalse(guessed.semanticDeltaVerified)
+        assertTrue(guessed.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (e) FOREIGN partial: the marker landed but an old paragraph was also
+        // rewritten, so the saved part is not ONE edit from the baseline.
+        val foreign = factsOf(slide1("old title", "rewritten body", "marker"), "marker")
+        assertTrue(foreign.expectedContentMatches)
+        assertFalse(foreign.semanticDeltaVerified)
+        assertTrue(foreign.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (f) WRONG PART: only another slide changed, so the captured slide
+        // shows neither the marker nor any delta.
+        val wrongPartSaved = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide", "marker")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body")),
+            ),
+        )
+        val wrong = factsOf(wrongPartSaved, "marker")
+        assertEquals("ppt/slides/slide1.xml", wrong.partName)
+        assertFalse(wrong.expectedContentMatches)
+        assertFalse(wrong.semanticDeltaVerified)
+        assertFalse(wrong.targetEffectVerified)
+
+        // (g) STALE baseline target: a baseline retained for another logical
+        // part index is never reused as this part's prior.
+        val stale = factsOf(slide1("old title", "old body", "marker"), "marker", baselinePartIndex = 0)
+        assertTrue(stale.expectedContentMatches)
+        assertFalse(stale.semanticDeltaVerified)
+        assertTrue(stale.limitations.contains(VerificationNotes.BASELINE_TARGET_MISMATCH))
     }
 
     // -----------------------------------------------------------------
@@ -604,6 +886,36 @@ class OfficeAiOoxmlVerifierTest {
         assertTrue(facts.semanticDeltaVerified)
         assertEquals(SemanticScope.CELL_REPLACED, facts.replacementScope)
         assertEquals(true, facts.changedFromOriginal)
+    }
+
+    @Test
+    fun formulaDeltaUsesObservedPriorDisplayAndActualSavedFormulaSource() {
+        val base = xlsx(
+            listOf(XlsxSheet("rId1", "sheet1.xml", listOf(XlsxCell("A1", v = "7")))),
+        )
+        val saved = xlsx(
+            listOf(
+                XlsxSheet(
+                    "rId1", "sheet1.xml",
+                    listOf(XlsxCell("A1", f = "SUM(B1:B2)", v = "14")),
+                ),
+            ),
+        )
+        val facts = verifiedOf(
+            inspect(
+                input(
+                    saved, "xlsx", "setCellContent", "=SUM(B1:B2)", "formula", "A1", 0,
+                    baseline = baselineOf(base, partIndex = 0, prior = "7"),
+                ),
+            ),
+        )
+        assertTrue(facts.expectedContentMatches)
+        assertTrue(facts.cellTypeMatchesIntent == true)
+        assertTrue("the prior display value plus saved formula source proves this cell delta",
+            facts.semanticDeltaVerified)
+        assertEquals(SemanticScope.CELL_REPLACED, facts.replacementScope)
+        assertFalse("FORMULA_NOT_COMPARABLE must rely on saved proof, not native effect promotion",
+            facts.targetEffectVerified)
     }
 
     @Test

@@ -203,6 +203,7 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
 
         var changedFromOriginal: Boolean? = null
         var baselineText: String? = null
+        var baselineClipboardText: String? = null
         val baseline = input.baseline
         if (baseline != null) {
             val guard = ArtifactGuard.check(baseline.file, baseline.sha256, baseline.bytes)
@@ -248,6 +249,9 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
                                     }
                                 }
                             }
+                            if (format == "docx" && baselineText != null) {
+                                baselineClipboardText = readWordClipboardText(open.zip)
+                            }
                         } finally {
                             open.zip.close()
                         }
@@ -261,6 +265,7 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
         } else {
             SemanticDelta.proveTextDelta(
                 baselineText = baselineText,
+                baselineClipboardText = baselineClipboardText,
                 savedText = savedText,
                 priorSelectionText = baseline.priorSelectionText,
                 expectedText = input.expectedText,
@@ -291,6 +296,15 @@ internal object OfficeAiOoxmlVerifier : OfficeAiSavedPackageVerifier {
                 limitations = limitations,
             ),
         )
+    }
+
+    /** Additional exact Writer-clipboard view of the SAME digest-verified
+     * baseline. Any unsupported numbering/unreadable part simply yields null;
+     * the original OOXML baseline and fail-closed delta remain untouched. */
+    private fun readWordClipboardText(zip: BoundedZipReader): String? {
+        val document = readXmlPart(zip, WordText.DOCUMENT_PART) ?: return null
+        val numbering = readXmlPart(zip, WordText.NUMBERING_PART)
+        return WordText.normalizedClipboardBodyText(document, numbering)
     }
 
     private fun baselineSlidePart(

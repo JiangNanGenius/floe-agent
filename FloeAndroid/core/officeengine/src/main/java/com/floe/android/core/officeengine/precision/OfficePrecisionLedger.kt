@@ -244,6 +244,16 @@ class OfficePrecisionLedger(
         /** Soft content-readback outcome (CONTENT actions only). */
         var contentReadback: OfficePrecisionContentReadback =
             OfficePrecisionContentReadback.NOT_ATTEMPTED
+
+        /** Exact capture consumed by the engine for a CONTENT run. */
+        var contentTarget: OfficePrecisionTarget? = null
+
+        /** Fresh part observed by this run's pre-effect status pull. */
+        var preEffectPartId: String? = null
+
+        /** Fresh selection acquired by THIS run before paste; never sampled
+         * from the host's ambient query/select-all cache. */
+        var preEffectEvidence: OfficePrecisionPreEffectEvidence? = null
     }
 
     private val lock = Any()
@@ -712,16 +722,18 @@ class OfficePrecisionLedger(
                 if (info == null) {
                     StepOutcome.Fail(OfficePrecisionFailure.PRODUCER_REJECTED, "status-answer-unparseable")
                 } else {
+                    // Bind the producer's OWN observed context into the minted
+                    // handle record NOW (still under `lock`), so the target
+                    // advertised to the owner and the target a later content
+                    // mutation validates/consumes are ONE immutable value.
+                    // A handle whose stored selectedPart stayed null could
+                    // never satisfy the mandatory pre-effect part gate, so
+                    // every APPLY_TEXT/SET_CELL_CONTENT would be refused
+                    // before its own paste wire.
+                    val captured = pendingCaptureTarget?.let { bindCapturedContextLocked(it, info) }
                     StepOutcome.Answer("status-answer") {
-                        val captured = pendingCaptureTarget
                         if (captured != null) {
-                            OfficePrecisionAnswer.TargetCaptured(
-                                captured.copy(
-                                    docType = info.docType,
-                                    partsCount = info.partsCount,
-                                    selectedPart = info.selectedPart,
-                                ),
-                            )
+                            OfficePrecisionAnswer.TargetCaptured(captured)
                         } else {
                             OfficePrecisionAnswer.DocumentContext(
                                 docType = info.docType,
@@ -827,15 +839,117 @@ class OfficePrecisionLedger(
                 )
             }
         }
+        OfficePrecisionPlan.StepCheck.PreEffectTargetStatus -> {
+            val info = frame.payload?.let { OfficePrecisionProtocol.parseDocumentStatus(it) }
+            val target = run.contentTarget
+            val expectedPart = target?.selectedPart
+            when {
+                info == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.PRODUCER_REJECTED,
+                    "pre-effect-status-unparseable",
+                )
+                target == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.INTERNAL,
+                    "pre-effect-target-absent",
+                )
+                expectedPart.isNullOrEmpty() || info.selectedPart != expectedPart ->
+                    StepOutcome.Fail(
+                        OfficePrecisionFailure.TARGET_UNVERIFIED,
+                        "pre-effect-part-mismatch",
+                    )
+                else -> {
+                    run.preEffectPartId = info.selectedPart
+                    run.preEffectEvidence = null
+                    StepOutcome.Answer("pre-effect-part-matched") { null }
+                }
+            }
+        }
+        is OfficePrecisionPlan.StepCheck.PreEffectSelectionContent -> {
+            val parsed = frame.payload?.let { OfficePrecisionProtocol.parseTextSelectionContent(it) }
+            val target = run.contentTarget
+            val expectedPart = target?.selectedPart
+            val causalPart = run.preEffectPartId?.takeIf { it == expectedPart }
+            when {
+                parsed == null || parsed.oversize -> StepOutcome.Fail(
+                    OfficePrecisionFailure.PRODUCER_REJECTED,
+                    "pre-effect-selection-unparseable",
+                )
+                !OfficePrecisionProtocol.contentFitsReplyBudget(parsed.text) -> StepOutcome.Fail(
+                    OfficePrecisionFailure.ANSWER_TOO_LARGE,
+                    "pre-effect-selection-content-bytes=${parsed.byteCount}",
+                )
+                target == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.INTERNAL,
+                    "pre-effect-target-absent",
+                )
+                causalPart == null -> StepOutcome.Fail(
+                    OfficePrecisionFailure.TARGET_UNVERIFIED,
+                    "pre-effect-part-not-proven",
+                )
+                parsed.multiFormatJson -> StepOutcome.Fail(
+                    OfficePrecisionFailure.COMPLEX_SELECTION_UNAVAILABLE,
+                    "pre-effect-multiformat-refused",
+                )
+                check.singleCellPlainText && parsed.text.any { it == '\t' || it == '\n' || it == '\r' } ->
+                    StepOutcome.Fail(
+                        OfficePrecisionFailure.COMPLEX_SELECTION_UNAVAILABLE,
+                        "pre-effect-single-cell-plaintext-required",
+                    )
+                !run.request.targetHandle.equals(target.handleId, ignoreCase = true) ->
+                    StepOutcome.Fail(
+                        OfficePrecisionFailure.TARGET_UNVERIFIED,
+                        "pre-effect-target-handle-mismatch",
+                    )
+                target.generation != run.request.generation -> StepOutcome.Fail(
+                    OfficePrecisionFailure.APPLY_CONFLICT,
+                    "pre-effect-generation-drift",
+                )
+                target.inputEpoch != inputEpoch -> StepOutcome.Fail(
+                    OfficePrecisionFailure.APPLY_CONFLICT,
+                    "pre-effect-manual-input-drift",
+                )
+                target.editEpoch != editEpoch -> StepOutcome.Fail(
+                    OfficePrecisionFailure.APPLY_CONFLICT,
+                    "pre-effect-edit-epoch-drift",
+                )
+                else -> {
+                    // parsed.text is preserved byte-for-byte as Kotlin text:
+                    // no trimming, terminator removal, TSV unquoting or cached
+                    // numeric display substitution. Empty is a REAL insertion
+                    // baseline only because this synchronous answer supplied it.
+                    val evidence = OfficePrecisionPreEffectEvidence(
+                        opId = run.request.opId,
+                        sessionToken = run.request.sessionToken,
+                        generation = run.request.generation,
+                        targetHandle = target.handleId,
+                        partId = causalPart,
+                        inputEpoch = inputEpoch,
+                        editEpoch = editEpoch,
+                        selectionText = parsed.text,
+                        selectionByteCount = parsed.byteCount,
+                    )
+                    run.preEffectEvidence = evidence
+                    StepOutcome.Answer("pre-effect-selection-bytes=" + parsed.byteCount) { null }
+                }
+            }
+        }
         OfficePrecisionPlan.StepCheck.NonEmptySelectionContent -> {
             val parsed = frame.payload?.let { OfficePrecisionProtocol.parseTextSelectionContent(it) }
             val byteCount = parsed?.byteCount ?: frame.payloadBytes
             when {
-                // An oversize/complex answer still PROVES non-emptiness by
-                // its real byte count (content itself is never carried).
+                // Preserve the ordinary answer's exact text for the public
+                // preparatory read. A later content op independently acquires
+                // its own causal prior. Complex/oversize/unparseable content
+                // proves only non-emptiness by count; nothing is truncated.
                 byteCount > 0 ->
                     StepOutcome.Answer("selection-readback-bytes=$byteCount") {
-                        OfficePrecisionAnswer.TextSelected(byteCount)
+                        if (parsed != null && !parsed.oversize) {
+                            OfficePrecisionAnswer.TextSelection(
+                                parsed.text, parsed.byteCount, parsed.multiFormatJson,
+                            )
+                        } else {
+                            OfficePrecisionAnswer.TextSelected(byteCount)
+                        }
                     }
                 parsed != null && parsed.text.isEmpty() && !parsed.oversize ->
                     StepOutcome.Fail(
@@ -1143,6 +1257,14 @@ class OfficePrecisionLedger(
     // Target handles (engine-minted, single-use, dual-revision CAS)
     // ------------------------------------------------------------------
 
+    /**
+     * Mints the handle BEFORE the capture's own `status:` answer exists, so
+     * the three producer-observed context fields (docType/partsCount/
+     * selectedPart) start null and are bound by
+     * [bindCapturedContextLocked] when that answer settles. The handle is
+     * only complete — and only usable for a content mutation's mandatory
+     * pre-effect part gate — after that binding.
+     */
     fun issueTarget(
         generation: Long,
         workingCopySha256: String?,
@@ -1181,6 +1303,43 @@ class OfficePrecisionLedger(
             handles.remove(oldest)
         }
         target
+    }
+
+    /**
+     * Binds the producer's OWN `status:` facts (docType/partsCount/
+     * selectedPart) into the ALREADY-MINTED handle record and returns the
+     * completed immutable target. Caller holds [lock] (invoked from
+     * [checkStep] inside [onFrame]).
+     *
+     * This is the single source of the capture's logical part: the value
+     * returned here is BOTH what [OfficePrecisionAnswer.TargetCaptured]
+     * advertises to the fenced owner and what [validateTarget] later hands to
+     * a content run as `contentTarget`. Keeping only the advertised copy
+     * (the pre-repair behaviour) left the stored record's `selectedPart`
+     * null, so [OfficePrecisionPlan.StepCheck.PreEffectTargetStatus] could
+     * never match and every APPLY_TEXT/SET_CELL_CONTENT was refused
+     * TARGET_UNVERIFIED before its own paste wire — in all three families.
+     *
+     * Nothing here is caller-supplied or model-supplied: the facts come from
+     * the native producer's own synchronous answer to this capture's `status`
+     * pull. An evicted or already-consumed record is never resurrected; the
+     * completed target is still returned so the owner's answer stays
+     * truthful about what was measured.
+     */
+    private fun bindCapturedContextLocked(
+        captured: OfficePrecisionTarget,
+        info: OfficePrecisionProtocol.DocumentStatusInfo,
+    ): OfficePrecisionTarget {
+        val bound = captured.copy(
+            docType = info.docType,
+            partsCount = info.partsCount,
+            selectedPart = info.selectedPart,
+        )
+        val record = handles[captured.handleId] ?: return bound
+        if (record.consumed) return bound
+        handles[captured.handleId] = record.copy(target = bound)
+        pendingCaptureTarget = bound
+        return bound
     }
 
     sealed class TargetCheck {
@@ -1242,6 +1401,35 @@ class OfficePrecisionLedger(
         TargetCheck.Ok(record.target)
     }
 
+    /** Re-check the ALREADY-CONSUMED capture immediately before paste. The
+     * handle registry cannot be queried again (single-use was consumed at arm),
+     * so this compares the run-owned immutable target with current native
+     * digest/generation/manual/edit epochs without consuming anything twice. */
+    internal fun revalidateContentTargetBeforePaste(
+        run: OpRun,
+        generation: Long,
+        currentWorkingCopySha256: String?,
+    ): TargetCheck = synchronized(lock) {
+        val target = run.contentTarget
+            ?: return@synchronized TargetCheck.Refused(
+                OfficePrecisionFailure.INTERNAL,
+                "pre-paste-target-absent",
+            )
+        when {
+            target.generation != generation || target.generation != run.request.generation ->
+                TargetCheck.Refused(OfficePrecisionFailure.APPLY_CONFLICT, "pre-paste-generation-advanced")
+            target.workingCopySha256 != currentWorkingCopySha256 ->
+                TargetCheck.Refused(OfficePrecisionFailure.APPLY_CONFLICT, "pre-paste-working-copy-changed")
+            target.inputEpoch != inputEpoch ->
+                TargetCheck.Refused(OfficePrecisionFailure.APPLY_CONFLICT, "pre-paste-manual-input-since-capture")
+            target.editEpoch != editEpoch ->
+                TargetCheck.Refused(OfficePrecisionFailure.APPLY_CONFLICT, "pre-paste-precision-effect-since-capture")
+            run.preEffectEvidence == null ->
+                TargetCheck.Refused(OfficePrecisionFailure.TARGET_UNVERIFIED, "pre-paste-evidence-missing")
+            else -> TargetCheck.Ok(target)
+        }
+    }
+
     private fun newHandleId(): String {
         val bytes = ByteArray(16)
         random.nextBytes(bytes)
@@ -1300,6 +1488,7 @@ class OfficePrecisionLedger(
                 contentReadback = readbackForAnswer,
                 workingCopySha256 = run.contextSha,
                 consumedTargetHandle = run.request.targetHandle,
+                preEffectEvidence = run.preEffectEvidence,
             )
         } else {
             null
