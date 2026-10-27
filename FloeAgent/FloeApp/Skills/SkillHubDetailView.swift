@@ -25,6 +25,24 @@ struct SkillHubDetailView: View {
     let onStoreAction: (String) -> Void
     /// Opens the existing GitHub upgrade detail for the installed row.
     let onOpenUpdateDetails: () -> Void
+    /// Injected publication media service (previews/tests). Production keeps
+    /// this nil and resolves the shared service from the AppEnvironment the
+    /// view tree already injects, in the body — never from an init default.
+    var media: SkillHubMediaCenter?
+    @EnvironmentObject private var environment: AppEnvironment
+    @State private var showcase: SkillHubShowcase?
+
+    /// Showcase artwork is pinned to the SAME immutable publication commit Y
+    /// the signed catalog was verified at — never a mutable ref.
+    private var publicationCommit: String? {
+        center.curatedPublication?.publicationCommit
+    }
+    private var mediaCenter: SkillHubMediaCenter {
+        media ?? SkillHubMediaCenter.shared(using: environment)
+    }
+    private var galleryRefs: [SkillHubShowcase.MediaRef] {
+        showcase?.gallery(for: item.id) ?? []
+    }
 
     private var curatedEntry: CuratedSkillEntry? {
         center.curatedCards.first(where: { $0.entry.id == item.id })?.entry
@@ -87,6 +105,16 @@ struct SkillHubDetailView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 10) {
+                    // Real per-skill cover from the pinned publication; the
+                    // bundled category band is the immediate fallback while
+                    // it is absent, offline or refused. Media never blocks
+                    // any verified fact or action below it.
+                    SkillHubDetailCover(
+                        ref: showcase?.cover(for: item.id),
+                        commit: publicationCommit,
+                        media: mediaCenter,
+                        category: item.category,
+                        skillID: item.id)
                     HStack(alignment: .top, spacing: 12) {
                         Image(systemName: item.systemImage)
                             .font(.title)
@@ -110,6 +138,19 @@ struct SkillHubDetailView: View {
                 .accessibilityIdentifier("skills.detail.\(item.id)")
             }
             .listRowBackground(Color(uiColor: .secondarySystemGroupedBackground))
+
+            if !galleryRefs.isEmpty {
+                // Only media the publication itself declares; a section with
+                // no verified source data stays hidden, never placeholdered.
+                Section(SkillHubCopy.galleryTitle) {
+                    SkillHubGalleryStrip(
+                        refs: galleryRefs,
+                        commit: publicationCommit,
+                        media: mediaCenter,
+                        skillID: item.id,
+                        category: item.category)
+                }
+            }
 
             Section("skills.hub.about") {
                 LabeledContent(SkillHubCopy.localized("skills.hub.install_state",
@@ -140,6 +181,7 @@ struct SkillHubDetailView: View {
                 if curatedEntry != nil, let publication = center.curatedPublication {
                     LabeledContent("skills.hub.publication",
                                    value: String(publication.publicationCommit.prefix(12)))
+                        .accessibilityIdentifier("skills.detail.publication.\(item.id)")
                 }
                 compatibilityRow
             }
@@ -180,6 +222,17 @@ struct SkillHubDetailView: View {
         }
         .navigationTitle(item.title)
         .navigationBarTitleDisplayMode(.inline)
+        // One demand per publication for the manifest; the service dedupes
+        // and caches, so discovery and detail share a single verified copy.
+        .task(id: publicationCommit) {
+            let media = mediaCenter
+            media.bind(publicationCommit: publicationCommit)
+            if let commit = publicationCommit {
+                showcase = await media.showcase(commit: commit)
+            } else {
+                showcase = nil
+            }
+        }
     }
 
     private var actionEnabledNow: Bool {
