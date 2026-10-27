@@ -87,7 +87,7 @@ final class SkillHubDiscoveryUITests: XCTestCase {
             "installed rows show the real installed-version fact")
         XCTAssertTrue(app.descendants(matching: .any)
             .matching(identifier: "skills.detail.updateDetails.floe-pdf").firstMatch.exists)
-        let evidence = XCTAttachment(screenshot: app.screenshot())
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         evidence.name = "Skill Hub unified native detail"
         evidence.lifetime = .keepAlways
         add(evidence)
@@ -211,7 +211,7 @@ final class SkillHubDiscoveryUITests: XCTestCase {
             .matching(identifier: "skills.download.installed.\(skillID)").firstMatch
         XCTAssertTrue(cancel.exists || installed.exists,
                       "a download offers Cancel while live or its actual installed result")
-        let downloadEvidence = XCTAttachment(screenshot: app.screenshot())
+        let downloadEvidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         downloadEvidence.name = "Skill Hub direct download progress or completed result"
         downloadEvidence.lifetime = .keepAlways
         add(downloadEvidence)
@@ -245,7 +245,7 @@ final class SkillHubDiscoveryUITests: XCTestCase {
                     .matching(identifier: "skills.download.panel.\(skillID)").firstMatch.exists
             XCTAssertTrue(settled, "the settled panel must show either Retry or the completed state")
         }
-        let evidence = XCTAttachment(screenshot: app.screenshot())
+        let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         evidence.name = "Skill Hub direct download panel for \(skillID)"
         evidence.lifetime = .keepAlways
         add(evidence)
@@ -284,7 +284,7 @@ final class SkillHubCompactLayoutUITests: XCTestCase {
     }
 
     private func keepScreenshot(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
