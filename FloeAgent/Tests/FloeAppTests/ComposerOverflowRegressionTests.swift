@@ -14,10 +14,12 @@
 //   width (conversation switch inside the shared field view);
 // - flipping the scroll state through `applyComposerScrollState` keeps the
 //   live container width-tracked, so long CJK / English / unbroken-URL runs
-//   wrap inside the bounded width instead of running off to the right (a
-//   raw `isScrollEnabled` write is UIKit's untracked reconfiguration — the
-//   run-off defect — and never a state the composer leaves the container
-//   in);
+//   wrap inside the bounded width instead of running off to the right;
+//   the wrapped block is measured in the scrolling state production
+//   displays for an overflowing draft — a NON-scrolling UITextView pins
+//   `heightTracksTextView` and clamps its container to the frame, so at
+//   the 44pt fixture row that state can never hold more than one line
+//   fragment no matter how the text wraps (UIKit semantics, not a defect);
 // - the one shared layout rule keeps the existing line budget
 //   (6 compact / 8 regular), the one-third page-height cap and the 44pt
 //   resting minimum.
@@ -167,16 +169,32 @@ struct ComposerOverflowRegressionTests {
         )
         await drainMainQueue()
         #expect(reports.last == true)
-        // Measure the pure inline (non-scrolling) wrapping state through
-        // the same seam the deferred overflow delivery flips. A raw
-        // `isScrollEnabled` write lets UIKit reconfigure the container
-        // untracked, so the measured block collapses to a single unbounded
-        // line — that raw UIKit state is the run-off defect itself, not a
-        // state the composer ever leaves the container in.
-        fixture.view.applyComposerScrollState(false)
+        // Measure the state production actually displays for this draft:
+        // the deferred verdict has just flipped the field to internal
+        // scrolling through `applyComposerScrollState`, leaving the live
+        // container width-tracked at the real slot width with an unbounded
+        // height. The earlier flip to `isScrollEnabled == false` measured a
+        // state that can never show this block: a NON-scrolling UITextView
+        // pins `heightTracksTextView` and clamps its container to the frame
+        // (44pt row − 16pt insets = 28pt), and TextKit lays out only the
+        // line fragments that FIT that container — exactly one 22.0083pt
+        // line here, since a second fragment would end at 44.0166 — so the
+        // used height stayed frame-clamped below the assertion no matter
+        // how the text wrapped, identically before and after the seam
+        // repair (the width cap passed in BOTH runs: the run was always
+        // broken at the bounded width, never an unbounded run-off).
+        #expect(fixture.view.isScrollEnabled)
         fixture.view.setNeedsLayout()
         fixture.view.layoutIfNeeded()
-        let used = fixture.view.layoutManager.usedRect(for: fixture.view.textContainer)
+        // The live UITextView's TextKit stack lays out lazily; force the
+        // FULL document layout for the container before reading the used
+        // block — the same forcing the detached production measurement
+        // applies through `glyphRange` — so the measurement reflects every
+        // wrapped line, not just the first viewport fragment.
+        let layoutManager = fixture.view.layoutManager
+        let textContainer = fixture.view.textContainer
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer)
         // Word-wrapping breaks the 86-character unbroken run mid-word: the
         // used block is wide-line-count tall and never wider than the slot.
         #expect(used.width <= 320 + 0.5)
