@@ -31,6 +31,7 @@ final class IDERunWebPreviewUITests: XCTestCase {
         continueAfterFailure = false
         let server = try await PreviewServer.start(marker: marker)
         defer { server.stop() }
+        XCTAssertTrue((1024...65535).contains(Int(server.port)), "the listener must have a usable bound port before launching the fixture")
         let url = "http://127.0.0.1:\(server.port)/web-preview-\(markerToken).html"
 
         let app = XCUIApplication()
@@ -214,7 +215,7 @@ private final class PreviewServer: @unchecked Sendable {
 
         let deadline = Date().addingTimeInterval(10)
         while Date() < deadline {
-            if let readyPort = listener.port?.rawValue {
+            if let readyPort = listener.port?.rawValue, (1024...65535).contains(Int(readyPort)) {
                 return PreviewServer(listener: listener, queue: queue, port: readyPort)
             }
             try await Task.sleep(for: .milliseconds(50))
