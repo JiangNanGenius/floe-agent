@@ -71,22 +71,62 @@ final class SidebarSelectionUITests: XCTestCase {
                 && point.x.isFinite && point.y.isFinite
                 && sidebar.frame.contains(point) && app.windows.firstMatch.frame.contains(point)
         }
-        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeUp() }
-        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeDown() }
+        // Stop once the owned row is visible; for-where keeps querying
+        // the remaining iterations even after visibility has been reached.
+        for _ in 0..<20 {
+            if rowIsVisible() { break }
+            sidebar.swipeUp()
+        }
+        if !rowIsVisible() {
+            for _ in 0..<20 {
+                if rowIsVisible() { break }
+                sidebar.swipeDown()
+            }
+        }
         XCTAssertTrue(rowIsVisible(),
                       "the seeded synthetic conversation must be reachable in the sidebar")
+        let deadline = Date().addingTimeInterval(5)
+        var previous: CGRect?
+        var settled = false
+        while Date() < deadline {
+            if rowIsVisible() {
+                let current = row.frame
+                if let previous,
+                   abs(current.minX - previous.minX) < 0.5,
+                   abs(current.minY - previous.minY) < 0.5,
+                   abs(current.width - previous.width) < 0.5,
+                   abs(current.height - previous.height) < 0.5 {
+                    settled = true
+                    break
+                }
+                previous = current
+            } else {
+                previous = nil
+            }
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        XCTAssertTrue(settled, "the owned row must finish scrolling before a gesture")
         return sidebar
     }
 
-    /// Long-press the fixture row through its verified frame coordinates.
+    /// Bind the gesture to the actual native cell containing the exact
+    /// owned row. Its coordinate is resolved at injection time instead of
+    /// retaining an earlier window offset through XCTest's idle wait.
     private func openRowMenu(_ app: XCUIApplication) {
-        realizeFixtureRow(app)
-        let row = fixtureRow(app)
-        let screen = app.windows.firstMatch.frame
-        app.windows.firstMatch
-            .coordinate(withNormalizedOffset: .zero)
-            .withOffset(CGVector(dx: row.frame.midX - screen.minX, dy: row.frame.midY - screen.minY))
-            .press(forDuration: 0.9)
+        let sidebar = realizeFixtureRow(app)
+        let cell = sidebar.cells.containing(
+            .any, identifier: "sidebar.conversation.\(fixtureID)").firstMatch
+        guard cell.exists else {
+            XCTFail("the owned fixture row must have a real native list cell")
+            return
+        }
+        let row = fixtureRow(app).frame
+        guard cell.frame.contains(CGPoint(x: row.midX, y: row.midY)) else {
+            XCTFail("the gesture cell must contain the exact owned fixture row")
+            return
+        }
+        cell.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 1.2)
     }
 
     private func menuButton(_ app: XCUIApplication, _ label: String) -> XCUIElement {
