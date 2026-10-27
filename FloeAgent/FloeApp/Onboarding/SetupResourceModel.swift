@@ -65,7 +65,7 @@ struct SetupResourceReport: Equatable, Sendable {
     var isInstalled: Bool = false
     var isPaused: Bool = false
     var wasCancelled: Bool = false
-    var failureMessage: String? = nil = nil
+    var failureMessage: String? = nil
 }
 
 /// What a preparation job is actually doing. The order matters: a finished
@@ -152,6 +152,7 @@ struct SetupResourceRow: Identifiable, Equatable, Sendable {
     var totalBytes: Int64? = nil
     var transferredBytes: Int64? = nil
     var bytesPerSecond: Int64? = nil
+    var ownerFraction: Double? = nil
 
     /// nil = indeterminate: an unknown total renders an indeterminate bar and
     /// never a fabricated percentage.
@@ -184,13 +185,13 @@ struct SetupResourceRow: Identifiable, Equatable, Sendable {
 struct SetupSelectionState: Equatable, Sendable {
     var kind: SetupResourceRow.Kind
     /// What the user has selected now (nil = nothing selected yet).
-    var selectedSubjectID: String? = nil = nil
+    var selectedSubjectID: String? = nil
     /// Installed subject ids as reported by the owner. Readiness is looked up
     /// here, never inferred from a byte counter.
     var installedSubjectIDs: Set<String> = []
     /// The subject the user picked that is still being prepared. The owning
     /// service applies it only if the selection is unchanged at completion.
-    var pendingSubjectID: String? = nil = nil
+    var pendingSubjectID: String? = nil
 
     /// True only when the selected subject is really installed.
     var isSelectedReady: Bool {
@@ -312,7 +313,7 @@ enum SetupResourceStageRules {
         kind: SetupResourceRow.Kind,
         selectedSubjectID: String?,
         installedSubjectIDs: Set<String>,
-        activeJobSubjectID: String?,
+        activeJobSubjectID: String? = nil,
         pendingSubjectID: String? = nil
     ) -> SetupSelectionState {
         let isSelectedReady = selectedSubjectID.map { installedSubjectIDs.contains($0) } ?? false

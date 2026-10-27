@@ -10,6 +10,7 @@
 
 import Foundation
 import Testing
+import FloeCore
 @testable import FloeApp
 
 @Suite("FloeApp.SetupGuideReducer")
@@ -41,9 +42,10 @@ struct SetupGuideReducerTests {
         for _ in 0..<20 {
             SetupGuideReducer.reduce(&state, .back)
             walked.append(state.section)
+            if state.section == .chatModels { break }
         }
         #expect(walked.last == .chatModels)
-        #expect(walked.count == SetupGuideSection.allCases.count - 1)
+        #expect(walked.count == SetupGuideSection.configurable.count - 1)
     }
 
     @Test("Later records a user decision, moves on, and never claims configured")
@@ -79,6 +81,7 @@ struct SetupGuideReducerTests {
     @Test("Preparation lifts a section to preparing and never blocks navigation")
     func preparationReflectsWithoutBlocking() {
         var state = SetupGuideState()
+        SetupGuideReducer.reduce(&state, .jump(.voice))
         SetupGuideReducer.reduce(&state, .setPreparation(.voice, true))
         #expect(state.status(for: .voice) == .preparing)
         SetupGuideReducer.reduce(&state, .next)
@@ -132,8 +135,9 @@ struct SetupGuideReducerTests {
 
     @Test("Progress survives a save and reload, and stays secret-free")
     func progressRoundTrip() throws {
-        let suite = UserDefaults(suiteName: "FloeAppTests.SetupGuide.\(UUID().uuidString)")!
-        defer { suite.removePersistentDomain(forName: suite.persistentDomainName ?? "") }
+        let suiteName = "FloeAppTests.SetupGuide.\(UUID().uuidString)"
+        let suite = UserDefaults(suiteName: suiteName)!
+        defer { suite.removePersistentDomain(forName: suiteName) }
         var state = SetupGuideState()
         SetupGuideReducer.reduce(&state, .start(.everyday))
         SetupGuideReducer.reduce(&state, .setStatus(.voice, .deferred))
@@ -141,7 +145,7 @@ struct SetupGuideReducerTests {
         let saved = SetupGuideReducer.progress(from: state)
         SetupGuideProgressStore.save(saved, to: suite)
 
-        let reloaded = #require(SetupGuideProgressStore.load(from: suite))
+        let reloaded = try #require(SetupGuideProgressStore.load(from: suite))
         #expect(reloaded.currentSection == state.section)
         #expect(reloaded.preset == .everyday)
         #expect(reloaded.status(for: .voice) == .deferred)
@@ -208,7 +212,7 @@ struct SetupGuideReducerTests {
         // Nothing was touched: it reads as postponed, never as configured.
         #expect(outcome[.syncStorage] == .later)
         #expect(entries.count == SetupGuideSection.configurable.count)
-        #expect(entries.allSatisfy(\.canJump))
+        #expect(entries.allSatisfy { $0.canJump })
     }
 
     @Test("A live job shows as preparing in the summary without changing the user's status")

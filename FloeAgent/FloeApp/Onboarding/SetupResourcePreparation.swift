@@ -203,7 +203,12 @@ final class SetupResourcePreparation: ObservableObject {
     }
 
     func prepareContent(_ id: String) {
-        Task { await center.environment.contentUpdateCenter.install(id) }
+        Task { await center.environment.contentUpdateCenter.beginInstall(id) }
+        scheduleRebuild()
+    }
+
+    func cancelContent(_ id: String) {
+        center.environment.contentUpdateCenter.cancelInstall(id)
         scheduleRebuild()
     }
 
@@ -508,18 +513,17 @@ final class SetupResourcePreparation: ObservableObject {
         case .installedStopped, .running, .updateAvailable:
             resourcePhase = .finished
         }
-        let total = runtime.sizeBytes
-        // The owner publishes a phase and a monotonic fraction for the
-        // download phase only. Both are real service facts. A byte count or a
-        // rate would have to be reconstructed from them, so neither is claimed:
-        // an owner that reports no speed shows no speed.
-        let ownerFraction = (phase == .downloading || (phase == nil && running)) ? fraction : nil
+        let transfer = running ? jobs.transfers[runtime.jobID] : nil
+        let total = transfer?.totalBytes ?? runtime.sizeBytes
+        let ownerFraction = phase == .downloading && transfer?.totalBytes != nil ? fraction : nil
         return SetupResourceReport(
             kind: .localRuntime,
             titleKey: "setup.resource.local_runtime",
             jobSubjectID: running || installed ? runtime.imageID : nil,
             phase: resourcePhase,
             totalBytes: total,
+            transferredBytes: transfer?.receivedBytes,
+            bytesPerSecond: transfer?.bytesPerSecond,
             ownerFraction: ownerFraction,
             isInstalled: installed,
             wasCancelled: running ? runtime.cancelling : false,
@@ -577,38 +581,36 @@ final class SetupResourcePreparation: ObservableObject {
         }
     }
 
-    /// Signed content installs report their own package size and the installer
-    /// owns the task; the guide only mirrors `installingIDs`. No byte stream is
-    /// published by that owner, so an installing row stays indeterminate.
+    /// Mirror the service-owned attempt, never an unrelated global error.
+    /// No byte stream exists for content packages, so progress stays indeterminate.
     private func contentReports(_ content: ContentUpdateCenter) -> [SetupResourceReport] {
-        content.available.values.sorted { $0.id < $1.id }.map { item in
-            let installing = content.installingIDs.contains(item.id)
-            let installed = content.installed[item.id]
-            let current = installed?.version == item.entry.version
-            // The owner's own per-entry decision is the truthful state: a
-            // blocked activation is a real, actionable fact about THIS entry,
-            // never a generic global error.
-            var failure: String?
-            if case .blocked(let reason, _) = item.decision {
+        let ids = Set(content.available.keys).union(content.installStates.keys)
+        return ids.sorted().map { id in
+            let item = content.available[id]
+            let attempt = content.installStates[id]
+            let running = attempt?.running == true
+            let installed = content.installed[id]
+            let current = item.map { installed?.version == $0.entry.version } ?? (installed != nil)
+            var failure = attempt?.failure
+            if !running, failure == nil, let item,
+               case .blocked(let reason, _) = item.decision {
                 failure = Self.contentBlockedText(reason)
             }
             let phase: SetupResourcePhase
-            if current {
-                phase = .finished
-            } else if installing {
-                phase = .installing
+            if running {
+                phase = attempt?.phase == .fetching ? .transferring : .installing
             } else {
-                phase = .idle
+                phase = current ? .finished : .idle
             }
             return SetupResourceReport(
                 kind: .contentUpdate,
-                titleKey: Self.contentTitleKey(for: item.entry.kind),
-                jobSubjectID: item.id,
+                titleKey: item.map { Self.contentTitleKey(for: $0.entry.kind) }
+                    ?? "settings.content_updates.title",
+                jobSubjectID: id,
                 phase: phase,
-                totalBytes: Int64(item.entry.size),
-                // The installer publishes no byte stream, so the row keeps an
-                // indeterminate bar instead of an invented percentage.
-                isInstalled: current,
+                totalBytes: item.map { Int64($0.entry.size) },
+                isInstalled: current && !running,
+                wasCancelled: attempt?.wasCancelled == true && !current,
                 failureMessage: failure
             )
         }

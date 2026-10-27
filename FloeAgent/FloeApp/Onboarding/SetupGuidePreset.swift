@@ -11,6 +11,7 @@
 // system permission and never turns on advanced background running by itself.
 
 import Foundation
+import FloeCore
 
 /// The selectable starting points. `custom` pre-fills nothing.
 enum SetupGuidePreset: String, CaseIterable, Identifiable, Codable, Equatable, Sendable {
@@ -314,6 +315,7 @@ struct SetupGuideDeviceFacts: Equatable, Sendable {
         case .speechRate: speechRateRatio != nil
         case .autoReadAnswers: autoReadEnabled != nil
         case .interruptionControl: interruptionAllowed != nil
+        case .memoryPersonalization: memoryProfilePresent || memorySoulPresent
         case .workspaceFolder: defaultWorkspaceName != nil
         case .localRuntime, .codeConnections, .permissionProfile, .extendedBackground: false
         case .deviceSync: cloudSyncEnabled != nil

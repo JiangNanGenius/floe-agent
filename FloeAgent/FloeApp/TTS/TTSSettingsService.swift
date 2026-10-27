@@ -71,6 +71,8 @@ final class TTSSettingsService: ObservableObject {
     /// Bumped by every new or dropped pending-voice intent. Any validation
     /// result produced under an older generation is stale and cannot commit.
     private var pendingVoiceGeneration = 0
+    private var failedPendingVoiceGeneration: Int?
+    private var ownsPendingVoiceFailure = false
     private var pendingLocalMigration: Bool?
 
     init(defaults: UserDefaults = .standard,
@@ -223,6 +225,24 @@ final class TTSSettingsService: ObservableObject {
         }
     }
 
+    /// Defaults are distinct from a choice the user has already saved.
+    var hasSavedPlaybackPreferences: Bool { defaults.data(forKey: Self.storageKey) != nil }
+
+    /// The voice recommendation can fill safe, local playback preferences
+    /// once. It never selects an online service, starts audio or downloads a
+    /// pack, and an existing saved choice always wins.
+    @discardableResult
+    func prefillConversationPreferencesIfUnset() -> Bool {
+        guard !hasSavedPlaybackPreferences, snapshot.provider == .apple,
+              pendingVoice == nil else { return false }
+        update {
+            $0.speechRateRatio = 1
+            $0.autoReadEnabled = true
+            $0.allowBargeIn = true
+        }
+        return true
+    }
+
     // MARK: - Playback source
 
     /// The source the current selection belongs to. Identity is the exact
@@ -355,6 +375,7 @@ final class TTSSettingsService: ObservableObject {
         // older one, so a late validator result can never commit it.
         pendingVoiceGeneration += 1
         pendingVoiceValidationStarted = false
+        clearPendingVoiceFailure()
         persist(pending: pending)
         if localInstalledModelIDs.contains(modelID) {
             // The bytes are on disk, but "installed" is not "usable": apply
@@ -372,8 +393,17 @@ final class TTSSettingsService: ObservableObject {
     func clearPendingVoice() {
         pendingVoiceGeneration += 1
         pendingVoiceValidationStarted = false
+        clearPendingVoiceFailure()
         defaults.removeObject(forKey: Self.pendingVoiceKey)
         pendingVoice = nil
+    }
+
+    private func clearPendingVoiceFailure() {
+        failedPendingVoiceGeneration = nil
+        if ownsPendingVoiceFailure, localMigrationNote == "voice.local.error.verify" {
+            localMigrationNote = nil
+        }
+        ownsPendingVoiceFailure = false
     }
 
     private func persist(pending: TTSPendingVoice) {
@@ -403,25 +433,30 @@ final class TTSSettingsService: ObservableObject {
             return
         }
         let generation = pendingVoiceGeneration
+        guard failedPendingVoiceGeneration != generation else { return }
         guard let model = try? await modelStore.catalog().first(where: { $0.id == pending.modelID }),
               !model.isHidden,
               model.voices.contains(where: { $0.id == pending.voiceID }),
               await modelStore.isInstalled(model) else { return }
-        guard !pendingVoiceValidationStarted else { return }
+        guard generation == pendingVoiceGeneration,
+              loadedPendingVoice() == pending,
+              pending.revision == defaults.integer(forKey: Self.selectionRevisionKey),
+              !pendingVoiceValidationStarted else { return }
         pendingVoiceValidationStarted = true
         let validation = await localPackValidator(model, pending.voiceID)
-        pendingVoiceValidationStarted = false
-        // Superseded during the validation window: the newer intent owns the
-        // commit, so this pass reports nothing and writes nothing.
+        // An old validation cannot clear the newer intent's in-flight gate.
         guard generation == pendingVoiceGeneration else { return }
+        pendingVoiceValidationStarted = false
         switch validation {
         case .deferred:
             return
         case .failed:
+            failedPendingVoiceGeneration = generation
+            ownsPendingVoiceFailure = true
             localMigrationNote = "voice.local.error.verify"
             return
         case .passed:
-            break
+            clearPendingVoiceFailure()
         }
         // Every awaited fact is settled BEFORE the commit re-read: the user
         // may have switched source, cancelled, or picked another voice while
@@ -452,6 +487,9 @@ final class TTSSettingsService: ObservableObject {
     }
 
     func install(_ model: LocalSpeechModel) async {
+        pendingVoiceGeneration += 1
+        pendingVoiceValidationStarted = false
+        clearPendingVoiceFailure()
         if !model.isHidden, !defaults.bool(forKey: Self.firstInstallKey) {
             let pending = PendingSelection(modelID: model.id, revision: defaults.integer(forKey: Self.selectionRevisionKey))
             defaults.set(try? JSONEncoder().encode(pending), forKey: Self.pendingSelectionKey)
@@ -470,8 +508,12 @@ final class TTSSettingsService: ObservableObject {
     }
     /// Explicit retry after a failed load validation (UI action).
     func retryLocalValidation() async {
+        pendingVoiceGeneration += 1
+        pendingVoiceValidationStarted = false
+        clearPendingVoiceFailure()
         migrationValidationStarted = false
         firstInstallValidationStarted = false
+        await applyPendingVoiceSelection()
         await reconcileLocalMigration()
         await finishFirstInstallationSelection()
     }

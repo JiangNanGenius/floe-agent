@@ -11,6 +11,73 @@
 
 import Foundation
 
+/// Stable product groups, shared by navigation and resumable progress.
+enum SetupGuideSection: String, CaseIterable, Codable, Hashable, Identifiable, Sendable {
+    case chatModels, creation, webSearch, voice, files, personalization
+    case permissions, background, syncStorage, skills, summary
+
+    var id: String { rawValue }
+    static var configurable: [Self] { allCases.filter { $0 != .summary } }
+    var titleKey: String { "setup.section.\(rawValue)" }
+    var detailKey: String { "setup.section.\(rawValue).detail" }
+    var systemImage: String {
+        switch self {
+        case .chatModels: "bubble.left.and.bubble.right"
+        case .creation: "photo.on.rectangle"
+        case .webSearch: "globe"
+        case .voice: "waveform"
+        case .files: "folder"
+        case .personalization: "person.crop.circle"
+        case .permissions: "hand.raised"
+        case .background: "arrow.triangle.2.circlepath"
+        case .syncStorage: "icloud"
+        case .skills: "puzzlepiece.extension"
+        case .summary: "checkmark.circle"
+        }
+    }
+    var next: Self? {
+        guard let index = Self.allCases.firstIndex(of: self), index + 1 < Self.allCases.count else { return nil }
+        return Self.allCases[index + 1]
+    }
+    var previous: Self? {
+        guard let index = Self.allCases.firstIndex(of: self), index > 0 else { return nil }
+        return Self.allCases[index - 1]
+    }
+}
+
+enum SetupSectionStatus: String, Codable, Equatable, Sendable {
+    case unset, defaulted, configured, deferred, preparing, needsAttention
+}
+
+/// Navigation only. Actual settings and resource choices remain in their owners.
+struct SetupGuideProgress: Codable, Equatable, Sendable {
+    var preset: SetupGuidePreset?
+    var currentSection: SetupGuideSection
+    var statuses: [String: SetupSectionStatus] = [:]
+    var visitedSections: [SetupGuideSection] = []
+    var pendingVoiceModelID: String? = nil
+    var updatedAt: Date = Date()
+
+    func status(for section: SetupGuideSection) -> SetupSectionStatus {
+        statuses[section.rawValue] ?? .unset
+    }
+}
+
+enum SetupGuideProgressStore {
+    static let storageKey = "floe.setupGuide.progress.v1"
+    static func load(from defaults: UserDefaults = .standard) -> SetupGuideProgress? {
+        guard let data = defaults.data(forKey: storageKey) else { return nil }
+        return try? JSONDecoder().decode(SetupGuideProgress.self, from: data)
+    }
+    static func save(_ progress: SetupGuideProgress, to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(progress) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
+    static func clear(from defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: storageKey)
+    }
+}
+
 /// One immutable guide position.
 struct SetupGuideState: Equatable, Sendable {
     var section: SetupGuideSection = .chatModels
@@ -103,7 +170,8 @@ enum SetupGuideReducer {
             let current = state.status(for: section)
             switch (current, isPreparing) {
             case (.preparing, true): break
-            case (_, true): state.statuses[section] = .preparing
+            case (.unset, true), (.defaulted, true): state.statuses[section] = .preparing
+            case (_, true): break
             // A finished preparation never claims "configured": only a real
             // user decision or an explicit model-layer confirmation does.
             case (.preparing, false): state.statuses[section] = .defaulted

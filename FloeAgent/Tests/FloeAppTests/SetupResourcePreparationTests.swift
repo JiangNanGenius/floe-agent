@@ -289,6 +289,46 @@ struct SetupGuideFinishFenceTests {
 @Suite("FloeApp.SetupPendingVoiceContract")
 @MainActor
 struct SetupPendingVoiceContractTests {
+    @Test("The voice preset fills unsaved system preferences without audio or downloads")
+    func voicePresetFillsOnlyUnsetPreferences() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanup() }
+        #expect(!fixture.service.hasSavedPlaybackPreferences)
+        #expect(fixture.service.prefillConversationPreferencesIfUnset())
+        #expect(fixture.service.snapshot.provider == .apple)
+        #expect(fixture.service.snapshot.autoReadEnabled)
+        #expect(fixture.service.snapshot.allowBargeIn)
+        #expect(fixture.service.snapshot.speechRateRatio == 1)
+        #expect(fixture.service.localInstallation.running == false)
+        fixture.service.update {
+            $0.autoReadEnabled = false
+            $0.speechRateRatio = 1.25
+        }
+        #expect(!fixture.service.prefillConversationPreferencesIfUnset())
+        #expect(!fixture.service.snapshot.autoReadEnabled)
+        #expect(fixture.service.snapshot.speechRateRatio == 1.25)
+    }
+    @Test("Failed voice validation waits for an explicit retry and clears its own error on success")
+    func failedValidationDoesNotLoop() async throws {
+        let fixture = try await Fixture.make(validation: .failed)
+        defer { fixture.cleanup() }
+        let pack = try #require(fixture.service.chooseVoice(modelID: fixture.model.id, voiceID: "serena"))
+        await fixture.service.install(pack)
+        try await fixture.settle()
+        await fixture.service.syncLocalSelection()
+        let count = await fixture.gate.entries
+        #expect(count > 0)
+        await fixture.service.syncLocalSelection()
+        await fixture.service.syncLocalSelection()
+        #expect(await fixture.gate.entries == count)
+        #expect(fixture.service.snapshot.provider == .apple)
+        #expect(fixture.service.localMigrationNote == "voice.local.error.verify")
+        await fixture.gate.setResult(.passed)
+        await fixture.service.retryLocalValidation()
+        #expect(fixture.service.snapshot.voiceID == "serena")
+        #expect(fixture.service.pendingVoice == nil)
+        #expect(fixture.service.localMigrationNote != "voice.local.error.verify")
+    }
     @Test("Explicitly keeping the current voice cancels a pending replacement")
     func choosingCurrentVoiceCancelsPendingIntent() async throws {
         let fixture = try await Fixture.make()
@@ -352,7 +392,7 @@ struct SetupPendingVoiceContractTests {
         #expect(!fixture.service.localInstalledModelIDs.contains(fixture.model.id))
 
         await fixture.service.install(pack)
-        await fixture.settle()
+        try await fixture.settle()
         await fixture.service.syncLocalSelection()
 
         // Installed + validated: the explicit voice is now the source.
@@ -369,7 +409,7 @@ struct SetupPendingVoiceContractTests {
         let pack = try #require(fixture.service.chooseVoice(
             modelID: fixture.model.id, voiceID: "serena"))
         await fixture.service.install(pack)
-        await fixture.settle()
+        try await fixture.settle()
 
         // The validator is suspended; the user picks the system voice instead.
         let sync = Task { await fixture.service.syncLocalSelection() }
@@ -396,7 +436,7 @@ struct SetupPendingVoiceContractTests {
         let pack = try #require(fixture.service.chooseVoice(
             modelID: fixture.model.id, voiceID: "serena"))
         await fixture.service.install(pack)
-        await fixture.settle()
+        try await fixture.settle()
         await fixture.service.syncLocalSelection()
 
         #expect(fixture.service.snapshot.voiceID == "serena",
@@ -413,7 +453,7 @@ struct SetupPendingVoiceContractTests {
             modelID: fixture.model.id, voiceID: "serena"))
         await fixture.service.install(pack)
         await fixture.service.cancelInstallation()
-        await fixture.settle()
+        try await fixture.settle()
         await fixture.service.syncLocalSelection()
 
         #expect(fixture.service.pendingVoice == nil)
@@ -428,7 +468,7 @@ struct SetupPendingVoiceContractTests {
         let pack = try #require(fixture.service.chooseVoice(
             modelID: fixture.model.id, voiceID: "serena"))
         await fixture.service.install(pack)
-        await fixture.settle()
+        try await fixture.settle()
         await fixture.service.syncLocalSelection()
 
         #expect(fixture.service.snapshot.provider == .apple)
@@ -443,7 +483,7 @@ struct SetupPendingVoiceContractTests {
         let pack = try #require(fixture.service.chooseVoice(
             modelID: fixture.model.id, voiceID: "serena"))
         await fixture.service.install(pack)
-        await fixture.settle()
+        try await fixture.settle()
 
         let firstSync = Task { await fixture.service.syncLocalSelection() }
         await fixture.gate.waitForEntry()
@@ -564,8 +604,13 @@ private actor ValidationGate {
     }
 
     func waitForEntry() async {
-        while entries == 0 {
+        let deadline = Date().addingTimeInterval(5)
+        while entries == 0, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(5))
+        }
+        if entries == 0 {
+            Issue.record("voice validation never reached its gate")
+            release(.failed)
         }
     }
 

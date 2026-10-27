@@ -122,6 +122,11 @@ final class SetupGuideModel: ObservableObject {
         appliedRoutes = []
         apply(.start(preset))
         plan = SetupGuidePresetPlanner.plan(preset: preset, facts: facts)
+        if preset == .voiceConversation, facts.hasAppleSpeechOutput,
+           environment.ttsSettingsService.prefillConversationPreferencesIfUnset() {
+            appliedRoutes = [.speechRate, .autoReadAnswers, .interruptionControl]
+            apply(.setStatus(.voice, .defaulted))
+        }
         if preset != .custom { applyPlanSilently() }
         rebuildSummary()
     }
@@ -308,19 +313,13 @@ final class SetupGuideModel: ObservableObject {
     /// made while the preset was being applied therefore always wins, and a
     /// route is reported as filled only when the write really happened.
     private func applyPlanSilently() {
-        guard state.preset != .custom, !plan.prefilled.isEmpty else {
-            appliedRoutes = []
-            return
-        }
+        guard state.preset != .custom, !plan.prefilled.isEmpty else { return }
         let intents: [SetupGuidePrefillIntent] = plan.prefilled.compactMap { route in
             guard let id = SetupGuidePresetPlanner.resolvedModelID(for: route, facts: facts)
             else { return nil }
             return SetupGuidePrefillIntent(route: route, modelID: id)
         }
-        guard !intents.isEmpty else {
-            appliedRoutes = []
-            return
-        }
+        guard !intents.isEmpty else { return }
         let generation = presetGeneration
         Task { [weak self] in
             guard let self, self.presetGeneration == generation, !self.didFinish else { return }
@@ -359,10 +358,7 @@ final class SetupGuideModel: ObservableObject {
             let applied = SetupGuidePrefillWriter.apply(
                 intents, to: &preferences, isUsable: isUsable
             )
-            guard !applied.isEmpty else {
-                self.appliedRoutes = []
-                return
-            }
+            guard !applied.isEmpty else { return }
             preferences.updatedAt = Date()
             preferences.syncRevision += 1
             do {
@@ -370,13 +366,13 @@ final class SetupGuideModel: ObservableObject {
             } catch {
                 guard self.presetGeneration == generation, self.isPresented, !self.didFinish else { return }
                 self.saveMessage = SecretRedactor.redact(error.localizedDescription)
-                // Nothing was committed, so nothing may be claimed as filled.
-                self.appliedRoutes = []
+                // The model choices were not committed. Independently saved
+                // voice defaults remain part of the actual applied choices.
                 return
             }
             guard self.presetGeneration == generation, self.isPresented, !self.didFinish else { return }
             self.saveMessage = nil
-            self.appliedRoutes = applied
+            self.appliedRoutes += applied.filter { !self.appliedRoutes.contains($0) }
             for route in applied where self.state.status(for: route.section) == .unset {
                 self.apply(.setStatus(route.section, .defaulted))
             }
@@ -490,9 +486,11 @@ final class SetupGuideModel: ObservableObject {
         if case .available = settings.iCloudDrive { facts.cloudSyncAvailable = true }
         facts.cloudSyncEnabled = settings.overallSyncEnabled
         facts.answerReviewEnabled = settings.verifyFinalAnswer
-        facts.autoReadEnabled = speech.snapshot.autoReadEnabled
-        facts.interruptionAllowed = speech.snapshot.allowBargeIn
-        facts.speechRateRatio = speech.snapshot.speechRateRatio
+        if speech.hasSavedPlaybackPreferences {
+            facts.autoReadEnabled = speech.snapshot.autoReadEnabled
+            facts.interruptionAllowed = speech.snapshot.allowBargeIn
+            facts.speechRateRatio = speech.snapshot.speechRateRatio
+        }
         facts.contentAutoUpdate = environment.contentUpdateCenter.autoUpdateDeclarativeContent
         return facts
     }

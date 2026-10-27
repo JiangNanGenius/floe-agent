@@ -1116,8 +1116,10 @@ struct SetupSkillsSection: View {
                             model.resources.prepareContent(id)
                         },
                         retry: {
-                            let id = String(row.jobSubjectID ?? row.id.dropFirst())
-                            model.resources.prepareContent(id)
+                            if let id = row.jobSubjectID { model.resources.prepareContent(id) }
+                        },
+                        cancel: {
+                            if let id = row.jobSubjectID { model.resources.cancelContent(id) }
                         }
                     )
                 }
@@ -1299,10 +1301,8 @@ struct SetupSummarySection: View {
                 model.resources.cancelOnDeviceModel(entry)
             }
         case .localRuntime: model.resources.cancelRuntime()
-        // The signed-content installer owns its own commit transaction and
-        // exposes no per-entry cancel; the hub job does, and only it is
-        // cancellable from here.
-        case .contentUpdate: break
+        case .contentUpdate:
+            if let id = row.jobSubjectID { model.resources.cancelContent(id) }
         case .skillHub:
             if let id = row.jobSubjectID { model.resources.cancelSkillHub(id: id) }
         }

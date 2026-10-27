@@ -100459,13 +100459,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Not available here yet: %@"
+            "value": "Not ready yet: %@"
           }
         },
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "此设备暂不可用：%@"
+            "value": "暂未就绪：%@"
           }
         }
       }
