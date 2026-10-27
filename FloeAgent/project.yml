@@ -743,6 +743,7 @@ targets:
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
       - path: Tests/FloeAppTests/SkillHubStoreFlowTests.swift
+      - path: Tests/FloeAppTests/SkillHubPublicTransportTests.swift
       - path: Tests/FloeAppTests/IDERunWebPreviewTests.swift
       - path: Tests/FloeAppTests/TerminalViewportTests.swift
       - path: Tests/FloeAppTests/ProviderFormSpecAppTests.swift

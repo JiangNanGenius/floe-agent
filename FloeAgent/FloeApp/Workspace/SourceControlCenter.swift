@@ -19,6 +19,271 @@ enum SourceControlRootIdentity {
     }
 }
 
+/// Immutable anonymous transport for the trusted public curated Skill Hub
+/// (`CuratedSkillHub.owner`/`repository`). When the connector is asked
+/// WITHOUT a credential for exactly that repository, commit resolution and
+/// pinned file reads move off the anonymous GitHub JSON API (HTTP 403 once
+/// the shared per-IP quota is exhausted) onto the public immutable
+/// equivalents: the repository's Atom commit feed resolves `main` to one
+/// 40-hex commit, and pinned files are read from `raw.githubusercontent.com`
+/// at that exact commit. Private, external and credential-connector
+/// requests, other repositories, other mutable refs and every
+/// package/feed/signature verification keep the caller's existing API
+/// behavior. Only the byte source changes here: the published commit,
+/// signature, digest and grant checks remain the authority, and no
+/// credential is ever attached to these public endpoints.
+enum SkillHubPublicTransport {
+    static let commitTagPrefix = "tag:github.com,2008:Grit::Commit/"
+
+    /// Canonical immutable GitHub commit object ID: exactly 40 lowercase hex
+    /// ASCII bytes, matching the production publication-commit gate.
+    static func isCanonicalCommit(_ ref: String) -> Bool {
+        ref.utf8.count == 40 && ref.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
+
+    /// True only for the exact curated Hub identity WITHOUT a connector
+    /// credential at a ref this route can serve immutably (`main` or a
+    /// pinned commit). Everything else keeps the caller's existing path.
+    static func isPublicHubRoute(owner: String, repository: String, ref: String, usesConnectorCredential: Bool) -> Bool {
+        guard !usesConnectorCredential,
+              owner == CuratedSkillHub.owner,
+              repository == CuratedSkillHub.repository else { return false }
+        return ref == "main" || isCanonicalCommit(ref)
+    }
+
+    /// The exact action of a selected public route. nil means the request is
+    /// not on this route and keeps the caller's existing behavior;
+    /// `.rejected` means it selected the official anonymous route but is not
+    /// an immutable file request — it is refused here instead of falling
+    /// back to any mutable or legacy byte source.
+    enum PublicHubAction: Equatable {
+        case localCommitResolution(Data)
+        case atomFeed(URL)
+        case pinnedFile(URL)
+        case rejected(String)
+    }
+
+    static func action(owner: String, repository: String, ref: String, path: String?,
+                       usesConnectorCredential: Bool) -> PublicHubAction? {
+        guard isPublicHubRoute(owner: owner, repository: repository, ref: ref,
+                               usesConnectorCredential: usesConnectorCredential) else { return nil }
+        if let path {
+            guard isCanonicalCommit(ref) else {
+                return .rejected(
+                    "GitHub skill source pins files to an immutable commit; a mutable ref is never read through this route")
+            }
+            guard let url = rawFileURL(owner: owner, repository: repository, commit: ref, path: path) else {
+                return .rejected("GitHub skill source path is not a safe immutable repository file path")
+            }
+            return .pinnedFile(url)
+        }
+        if let data = localCommitResolutionData(ref: ref) { return .localCommitResolution(data) }
+        guard let url = mainAtomURL(owner: owner, repository: repository) else {
+            return .rejected("GitHub skill source has no public commit feed for this repository")
+        }
+        return .atomFeed(url)
+    }
+
+    /// `{"sha":"<pinned>"}` commit-resolution bytes for an already-pinned
+    /// commit: resolving a pinned publication never needs the network.
+    static func localCommitResolutionData(ref: String) -> Data? {
+        guard isCanonicalCommit(ref) else { return nil }
+        return commitResolutionData(sha: ref)
+    }
+
+    /// The exact commit-resolution JSON shape the existing callers decode
+    /// (`struct Commit: Decodable { let sha: String }`), centralized so the
+    /// local and Atom paths stay byte-identical.
+    static func commitResolutionData(sha: String) -> Data {
+        (try? JSONSerialization.data(withJSONObject: ["sha": sha])) ?? Data("{\"sha\":\"\(sha)\"}".utf8)
+    }
+
+    /// The exact repository's Atom commit feed. Identity is not interpolated
+    /// from caller input beyond the hub constants; `main` is the only ref
+    /// this feed resolves.
+    static func mainAtomURL(owner: String, repository: String) -> URL? {
+        guard owner == CuratedSkillHub.owner, repository == CuratedSkillHub.repository else { return nil }
+        return URL(string: "https://github.com/\(owner)/\(repository)/commits/main.atom")
+    }
+
+    /// Immutable raw-file URL at a pinned commit. Only safe relative paths
+    /// are accepted: non-empty unreserved segments, no dot segments, no
+    /// backslash, percent, query or fragment bytes, no leading slash. No
+    /// `main`-branch file URL is ever constructed here.
+    static func rawFileURL(owner: String, repository: String, commit: String, path: String) -> URL? {
+        guard owner == CuratedSkillHub.owner, repository == CuratedSkillHub.repository,
+              isCanonicalCommit(commit), !path.isEmpty, !path.hasPrefix("/"),
+              !path.contains("\\"), !path.contains("%"), !path.contains("?"), !path.contains("#")
+        else { return nil }
+        let segments = path.split(separator: "/", omittingEmptySubsequences: false)
+        let allowed = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~+")
+        for segment in segments {
+            guard !segment.isEmpty, segment != ".", segment != "..",
+                  segment.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { return nil }
+        }
+        let encoding = CharacterSet(charactersIn:
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~")
+        let encoded = segments.compactMap { String($0).addingPercentEncoding(withAllowedCharacters: encoding) }
+        guard encoded.count == segments.count else { return nil }
+        return URL(string: "https://raw.githubusercontent.com/\(owner)/\(repository)/\(commit)/"
+            + encoded.joined(separator: "/"))
+    }
+
+    /// Anonymous request for one public Hub endpoint: fixed user agent,
+    /// bounded timeout, and structurally no Authorization header.
+    static func publicRequest(url: URL, accept: String?) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
+        request.setValue("FloeAgent", forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
+    /// First Atom entry → canonical commit SHA, cross-checked against that
+    /// entry's own commit link so the feed-level id, a different repository's
+    /// entry or a mismatched link is never accepted as a commit. External
+    /// entity declarations are rejected before parsing, and the parser never
+    /// resolves external resources.
+    static func commitSHA(fromAtom data: Data, owner: String, repository: String) throws -> String {
+        let maximumBytes = SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: nil)
+        guard !data.isEmpty, data.count <= maximumBytes else {
+            throw FloeError.syncUnavailable(
+                "GitHub skill source unavailable: the public Hub commit feed is empty or exceeds its byte bound.")
+        }
+        // The public feed is UTF-8: refuse NUL bytes and any non-UTF-8
+        // encoding up front so an encoded DTD can never slip past the
+        // declaration scan below. XMLParser also aborts on every DTD
+        // declaration kind independently of this byte-level check.
+        guard !data.contains(0), String(data: data, encoding: .utf8) != nil else {
+            throw FloeError.syncUnavailable(
+                "GitHub skill source unavailable: the public Hub commit feed is not plain UTF-8.")
+        }
+        var lowered = [UInt8](data)
+        for index in lowered.indices where (65...90).contains(lowered[index]) { lowered[index] += 32 }
+        guard !containsSequence(lowered, Array("<!doctype".utf8)),
+              !containsSequence(lowered, Array("<!entity".utf8)) else {
+            throw FloeError.syncUnavailable(
+                "GitHub skill source unavailable: the public Hub commit feed declares external entities.")
+        }
+        let collector = AtomCommitCollector()
+        let parser = XMLParser(data: data)
+        parser.shouldResolveExternalEntities = false
+        parser.delegate = collector
+        guard parser.parse(), !collector.sawDTDDeclaration, collector.rootIsFeed,
+              let entryID = collector.firstEntryID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let entryLink = collector.firstEntryLink,
+              entryID.hasPrefix(commitTagPrefix) else {
+            throw FloeError.syncUnavailable(
+                "GitHub skill source unavailable: the public Hub commit feed did not yield one immutable commit.")
+        }
+        let sha = String(entryID.dropFirst(commitTagPrefix.count))
+        guard isCanonicalCommit(sha),
+              entryLink == "https://github.com/\(owner)/\(repository)/commit/\(sha)" else {
+            throw FloeError.syncUnavailable(
+                "GitHub skill source unavailable: the public Hub commit feed entry is not the trusted repository's commit.")
+        }
+        return sha
+    }
+
+    private static func containsSequence(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
+        guard needle.count <= haystack.count else { return false }
+        var start = 0
+        while start <= haystack.count - needle.count {
+            var offset = 0
+            while offset < needle.count, haystack[start + offset] == needle[offset] { offset += 1 }
+            if offset == needle.count { return true }
+            start += 1
+        }
+        return false
+    }
+
+    /// Minimal Atom delegate: root identity, the FIRST entry's id and link,
+    /// and nothing else. Later entries can never override the first.
+    private final class AtomCommitCollector: NSObject, XMLParserDelegate {
+        var rootIsFeed = false
+        var firstEntryID: String?
+        var firstEntryLink: String?
+        /// Set by any DTD declaration callback. Whatever the document
+        /// encoding, XMLParser decodes before reporting these, so a DTD is
+        /// refused here even if it evaded the raw byte scan.
+        private(set) var sawDTDDeclaration = false
+        private var depth = 0
+        private var inFirstEntry = false
+        private var sawFirstEntry = false
+        private var capturingID = false
+        private var idText = ""
+
+        private func rejectDTD(_ parser: XMLParser) {
+            sawDTDDeclaration = true
+            parser.abortParsing()
+        }
+
+        func parser(_ parser: XMLParser, foundElementDeclarationWithName elementName: String, model: String) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundAttributeDeclarationWithName attributeName: String,
+                    forElement elementName: String, type: String?, defaultValue: String?) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundNotationDeclarationWithName name: String,
+                    publicID: String?, systemID: String?) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundUnparsedEntityDeclarationWithName name: String,
+                    publicID: String?, systemID: String?, notationName: String?) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String,
+                    publicID: String?, systemID: String?) {
+            rejectDTD(parser)
+        }
+
+        func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
+                    qualifiedName qName: String?, attributes attributeDict: [String: String]) {
+            let elementDepth = depth + 1
+            if elementDepth == 1 { rootIsFeed = elementName == "feed" }
+            if elementDepth == 2, elementName == "entry", !sawFirstEntry {
+                sawFirstEntry = true
+                inFirstEntry = true
+            }
+            if inFirstEntry, elementDepth == 3 {
+                if elementName == "id", firstEntryID == nil {
+                    capturingID = true
+                    idText = ""
+                } else if elementName == "link", firstEntryLink == nil {
+                    firstEntryLink = attributeDict["href"]
+                }
+            }
+            depth = elementDepth
+        }
+
+        func parser(_ parser: XMLParser, foundCharacters string: String) {
+            if capturingID { idText += string }
+        }
+
+        func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
+                    qualifiedName qName: String?) {
+            if capturingID, depth == 3, elementName == "id" {
+                firstEntryID = idText
+                capturingID = false
+            }
+            if depth == 2, elementName == "entry" { inFirstEntry = false }
+            depth -= 1
+        }
+    }
+}
+
 @MainActor
 final class SourceControlCenter: ObservableObject {
     @Published private(set) var snapshot = GitRepositorySnapshot(isRepository: false)
@@ -124,7 +389,37 @@ final class SourceControlCenter: ObservableObject {
 
     /// Skill updates use the existing connector credential without exposing it
     /// to the model, package, upgrade journal, or redirect destination.
+    ///
+    /// The anonymous route for the trusted curated Hub never touches the
+    /// shared-quota JSON API: `main` resolves through the repository's Atom
+    /// commit feed, an already-pinned 40-hex commit resolves locally, and
+    /// pinned files read from `raw.githubusercontent.com` at that exact
+    /// commit. Credentialed, private, external and other-ref requests keep
+    /// the original API behavior below.
     func skillRepositoryData(owner: String, repository: String, ref: String, path: String?, usesConnectorCredential: Bool = true) async throws -> Data {
+        try Task.checkCancellation()
+        switch SkillHubPublicTransport.action(owner: owner, repository: repository, ref: ref, path: path,
+                                              usesConnectorCredential: usesConnectorCredential) {
+        case .localCommitResolution(let data):
+            return data
+        case .atomFeed(let url):
+            let atom = try await fetchBounded(
+                request: SkillHubPublicTransport.publicRequest(url: url, accept: "application/atom+xml"),
+                maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: nil),
+                diagnostic: "GitHub skill source unavailable for the public curated Hub commit feed")
+            try Task.checkCancellation()
+            let commit = try SkillHubPublicTransport.commitSHA(fromAtom: atom, owner: owner, repository: repository)
+            return SkillHubPublicTransport.commitResolutionData(sha: commit)
+        case .pinnedFile(let url):
+            return try await fetchBounded(
+                request: SkillHubPublicTransport.publicRequest(url: url, accept: nil),
+                maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
+                diagnostic: "GitHub skill source unavailable for the public curated Hub pinned file")
+        case .rejected(let reason):
+            throw FloeError.validationFailed(reason)
+        case nil:
+            break
+        }
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
         func encoded(_ value: String) -> String { value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "" }
         var components = URLComponents(string: "https://api.github.com")!
@@ -139,14 +434,24 @@ final class SourceControlCenter: ObservableObject {
         request.setValue(path == nil ? "application/vnd.github+json" : "application/vnd.github.raw+json", forHTTPHeaderField: "Accept")
         request.setValue("FloeAgent", forHTTPHeaderField: "User-Agent")
         if usesConnectorCredential, let token = try credentials.token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        return try await fetchBounded(
+            request: request,
+            maximumBytes: SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path),
+            diagnostic: "GitHub skill source unavailable. Check the repository, ref, path and connector access")
+    }
+
+    /// One bounded GitHub stream: ephemeral session, redirects refused,
+    /// cancellation checked per byte, a hard size ceiling, and a diagnostic
+    /// that carries the HTTP status alone — never body bytes or credentials.
+    private func fetchBounded(request: URLRequest, maximumBytes: Int, diagnostic: String) async throws -> Data {
         let session = URLSession(configuration: .ephemeral, delegate: SkillGitHubNoRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         let (stream, response) = try await session.bytes(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw FloeError.syncUnavailable("GitHub skill source unavailable. Check the repository, ref, path and connector access.")
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw FloeError.syncUnavailable("\(diagnostic). GitHub HTTP status \(status).")
         }
         var result = Data()
-        let maximumBytes = SkillHubTransportBudget.maximumBytes(owner: owner, repository: repository, path: path)
         for try await byte in stream {
             try Task.checkCancellation()
             guard result.count < maximumBytes else { throw FloeError.validationFailed("GitHub skill download exceeds its size limit") }

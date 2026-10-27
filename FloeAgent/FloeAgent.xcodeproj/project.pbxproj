@@ -517,6 +517,7 @@
 		85C7C8102501696EABACFD41 /* SharedDocumentsCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9661473AB636CF3B58E423E5 /* SharedDocumentsCenter.swift */; };
 		85FE596AA078AE1512E4FD3A /* ZLImageEditor-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = E5AC44E2A3E68DA153AED855 /* ZLImageEditor-LICENSE.txt */; };
 		86326589F183356808ED8E75 /* VoiceOrbView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF65D13CBD3244B097B54671 /* VoiceOrbView.swift */; };
+		8660BDE92422ABD529E3E20E /* SkillHubPublicTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ABA13D446559FEB1FB0754F /* SkillHubPublicTransportTests.swift */; };
 		866BA77E0D2C71789223F734 /* NotesExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC237C9A630761F0880A780A /* NotesExport.swift */; };
 		86B3B6255EE780A3692A46C8 /* WorkspaceIDEView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5E18D2CD25230D158008D8A /* WorkspaceIDEView.swift */; };
 		86C5A3D28D1B9BE8051CC54C /* CADWorkbenchFixtureHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36AD05E114BEB0A30CD740A6 /* CADWorkbenchFixtureHarness.swift */; };
@@ -1419,6 +1420,7 @@
 		5A1D2F99E9E151908419336F /* MailSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MailSettingsView.swift; sourceTree = "<group>"; };
 		5A836CC647019173A92D3490 /* dayjs.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = dayjs.min.js; sourceTree = "<group>"; };
 		5AA8760896151B342A625F67 /* IDENativeTextPane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDENativeTextPane.swift; sourceTree = "<group>"; };
+		5ABA13D446559FEB1FB0754F /* SkillHubPublicTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubPublicTransportTests.swift; sourceTree = "<group>"; };
 		5AFE07F660B811C7894B6C21 /* NativeCADDrawingAssemblyClosureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCADDrawingAssemblyClosureTests.swift; sourceTree = "<group>"; };
 		5B28D9D00B0F8DC98654AE54 /* PiPAudioService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPAudioService.swift; sourceTree = "<group>"; };
 		5B36726B3E1BEB3829CF1210 /* ImportDestinationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportDestinationTests.swift; sourceTree = "<group>"; };
@@ -2578,6 +2580,7 @@
 				4AEA9BFEA4BB48349F0F6A8C /* SkillAuthoringPackageTests.swift */,
 				9FFADE785CAAE02620042320 /* SkillDependencyGuestQualificationTests.swift */,
 				765EA911CA0A8A2DD55660F9 /* SkillDependencyPreparationTests.swift */,
+				5ABA13D446559FEB1FB0754F /* SkillHubPublicTransportTests.swift */,
 				664CC843DF66F4FFD04F43B4 /* SkillHubStoreFlowTests.swift */,
 				3735B4913841D43B7EF193FE /* SkillManagementSelectionTests.swift */,
 				931CDDB861F7EFCF1D74858E /* SkillOriginTests.swift */,
@@ -5003,6 +5006,7 @@
 				C3FBF1E304F1EFDB0A6288F3 /* SkillDependencyGuestQualificationTests.swift in Sources */,
 				78DAD1CF36BCF4D29B0B1DA6 /* SkillDependencyPreparationTests.swift in Sources */,
 				BD0889BAF700D072DD2CFF97 /* SkillDependencyTests.swift in Sources */,
+				8660BDE92422ABD529E3E20E /* SkillHubPublicTransportTests.swift in Sources */,
 				3A5501121DE5B8D439A5EAFD /* SkillHubStoreFlowTests.swift in Sources */,
 				9AA2182E4070B18FFAB32526 /* SkillHubToolContractTests.swift in Sources */,
 				8B059AA187B9DAC4C1B3A2C4 /* SkillHubTransportBudgetTests.swift in Sources */,
