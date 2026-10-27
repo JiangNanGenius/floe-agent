@@ -617,12 +617,32 @@ struct InlineSelectionEditingToolbar: ToolbarContent {
                 .accessibilityIdentifier(InlineSelectionIdentifiers.count)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
-            Button(model.allVisibleSelected(visible: visibleIDs())
-                   ? InlineSelectionCopy.deselectAll
-                   : InlineSelectionCopy.selectAll) {
+            let allSelected = model.allVisibleSelected(visible: visibleIDs())
+            // Compact native control. A full-word text title ("取消全选")
+            // stretches this trailing group past the narrow sidebar column
+            // (measured 296pt), and the system then folds the principal
+            // count and the actions menu behind a "更多" overflow item —
+            // the editing bar silently loses its status while the model
+            // stays selected. An icon-only Label keeps the natural
+            // navigation-bar sizing in BOTH states while the full
+            // bilingual command remains the accessibility label, so
+            // VoiceOver and automation still read 全选/取消全选. No fixed
+            // button dimensions, no custom strip, no hidden text.
+            Button {
                 model.toggleSelectAll(visible: visibleIDs())
+            } label: {
+                Label(
+                    allSelected
+                        ? InlineSelectionCopy.deselectAll
+                        : InlineSelectionCopy.selectAll,
+                    systemImage: allSelected ? "xmark.circle" : "checkmark.circle")
+                    .labelStyle(.iconOnly)
             }
             .disabled(model.busy || visibleIDs().isEmpty)
+            .accessibilityLabel(
+                allSelected
+                    ? InlineSelectionCopy.deselectAll
+                    : InlineSelectionCopy.selectAll)
             .accessibilityIdentifier(InlineSelectionIdentifiers.selectAll)
             InlineSelectionBatchActionsMenu(
                 model: model,

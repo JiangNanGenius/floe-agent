@@ -93,6 +93,28 @@ final class SidebarSelectionUITests: XCTestCase {
         app.buttons.matching(NSPredicate(format: "label == %@", label)).firstMatch
     }
 
+    /// Waits for an element's accessibility label to become EXACTLY the
+    /// expected value. Used right after a state-changing tap so the
+    /// assertion observes settled state instead of racing the snapshot.
+    @discardableResult
+    private func waitForLabel(_ element: XCUIElement, _ label: String,
+                              timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label == %@", label), object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    /// Waits for the selected-count status to show at least one selected row
+    /// (the exact "已选 N" native status), then returns the element.
+    @discardableResult
+    private func waitForPositiveCount(_ element: XCUIElement,
+                                      timeout: TimeInterval = 10) -> Bool {
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label MATCHES %@", "已选 [1-9][0-9]*"),
+            object: element)
+        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    }
+
     /// Taps the verified fixture-row frame (window coordinates). Inside the
     /// mode this must toggle WITHOUT navigating.
     private func tapFixtureRow(_ app: XCUIApplication) {
@@ -127,6 +149,12 @@ final class SidebarSelectionUITests: XCTestCase {
     private func assertNativeEditingBar(_ app: XCUIApplication) {
         let bars = app.navigationBars.allElementsBoundByIndex
         XCTAssertFalse(bars.isEmpty, "the sidebar must expose its real navigation bar")
+        // The editing bar must never collapse into the system's 更多
+        // overflow: that is how the principal count and the actions menu
+        // vanish while the selection model stays active.
+        XCTAssertFalse(
+            app.navigationBars.buttons.matching(identifier: "OverflowBarButtonItem").firstMatch.exists,
+            "the editing bar must keep Done/count/Select-All/actions visible, not fold them into a system overflow")
         let sidebarFrame = app.descendants(matching: .any)
             .matching(identifier: "sidebar.list").firstMatch.frame
         let controls: [(String, XCUIElement)] = [
@@ -162,23 +190,96 @@ final class SidebarSelectionUITests: XCTestCase {
         return actions
     }
 
+    /// Closes an open system menu popover the way the platform does: one tap
+    /// on a VERIFIED non-interactive point measured OUTSIDE the popover (the
+    /// detail column's bar title first, otherwise a trailing-edge scan point
+    /// proven away from every navigation-bar button), followed by a
+    /// disappearance barrier. The sidebar bar's own center must never be
+    /// used: with a trailing-anchored popover it lands inside the first menu
+    /// row (measured: popover 110..346 x 32..218, sidebar bar center 148,59)
+    /// and can invoke Archive instead of dismissing. Fails closed — the
+    /// caller only ever taps a row after the menu is gone from the tree.
     private func dismissMenu(_ app: XCUIApplication) {
-        // Tap the navigation bar area (outside the popover) to close the menu
-        // without touching a row, then wait for the animated popover to leave
-        // the accessibility tree so the next row tap cannot land on it.
         let menuLabels = ["多选", "置顶", "取消置顶", "重命名", "移动到项目", "暂无项目", "归档", "删除"]
-        func anyMenuRowVisible() -> Bool {
-            menuLabels.contains { menuButton(app, $0).exists }
+        func visibleMenuRows() -> [XCUIElement] {
+            menuLabels.compactMap { label in
+                let button = menuButton(app, label)
+                return button.exists ? button : nil
+            }
         }
-        app.navigationBars.firstMatch.tap()
-        let deadline = Date().addingTimeInterval(5)
-        while anyMenuRowVisible() && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.1)
+        guard !visibleMenuRows().isEmpty else { return }
+
+        let window = app.windows.firstMatch.frame
+        func popoverRect() -> CGRect? {
+            let frames = visibleMenuRows().map(\.frame).filter {
+                $0.width > 0 && $0.height > 0
+            }
+            guard let first = frames.first else { return nil }
+            let union = frames.dropFirst().reduce(first) { $0.union($1) }
+            return union.insetBy(dx: -24, dy: -24)
         }
-        if anyMenuRowVisible() {
-            app.navigationBars.firstMatch.tap()
-            Thread.sleep(forTimeInterval: 0.3)
+        func verifiedOutsidePoint(_ popover: CGRect) -> CGPoint? {
+            var candidates: [CGPoint] = []
+            // 1. Non-interactive navigation-bar titles (detail column's
+            //    title is the stable one while the sidebar bar holds the
+            //    selection status).
+            for title in app.navigationBars.staticTexts.allElementsBoundByIndex {
+                let frame = title.frame
+                guard frame.width > 0, frame.height > 0 else { continue }
+                candidates.append(CGPoint(x: frame.midX, y: frame.midY))
+            }
+            // 2. Trailing-edge scan of the widest bar, re-verified against
+            //    every bar button below so a point can never hit a control.
+            if let widest = app.navigationBars.allElementsBoundByIndex
+                .max(by: { $0.frame.width < $1.frame.width }) {
+                var x = widest.frame.maxX - 12
+                while x > widest.frame.minX {
+                    candidates.append(CGPoint(x: x, y: widest.frame.midY))
+                    x -= 16
+                }
+            }
+            let buttons = app.navigationBars.buttons.allElementsBoundByIndex.map(\.frame)
+            for point in candidates {
+                guard window.contains(point), !popover.contains(point) else { continue }
+                let clear = buttons.allSatisfy {
+                    !$0.insetBy(dx: -6, dy: -6).contains(point)
+                }
+                if clear { return point }
+            }
+            return nil
         }
+        func tap(_ point: CGPoint) {
+            app.windows.firstMatch
+                .coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: point.x - window.minX, dy: point.y - window.minY))
+                .tap()
+        }
+        func waitForDisappearance(_ seconds: TimeInterval) {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !visibleMenuRows().isEmpty && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.15)
+            }
+        }
+
+        guard let popover = popoverRect(), let point = verifiedOutsidePoint(popover) else {
+            XCTFail("dismissMenu: no verified non-interactive point outside the open menu popover")
+            return
+        }
+        tap(point)
+        waitForDisappearance(5)
+        if !visibleMenuRows().isEmpty {
+            // One measured retry against the CURRENT geometry (a tap can
+            // race the presentation animation); never a blind repeat.
+            guard let popover = popoverRect(),
+                  let retryPoint = verifiedOutsidePoint(popover) else {
+                XCTFail("dismissMenu: menu still open and no verified outside point remains")
+                return
+            }
+            tap(retryPoint)
+            waitForDisappearance(3)
+        }
+        XCTAssertTrue(visibleMenuRows().isEmpty,
+                      "the menu must leave the accessibility tree before the next row tap")
     }
 
     // MARK: - Ordinary row shape
@@ -246,23 +347,38 @@ final class SidebarSelectionUITests: XCTestCase {
         // A row tap toggles WITHOUT navigating: the same verified-frame
         // coordinate as the long press, then assert the circle label flips.
         tapFixtureRow(app)
-        XCTAssertEqual(circle.label, "未选择", "tapping the row deselects it")
-        XCTAssertEqual(count.label, "已选 0", "the native status follows the real selection")
+        XCTAssertTrue(waitForLabel(circle, "未选择"), "tapping the row deselects it")
+        XCTAssertTrue(waitForLabel(count, "已选 0"),
+                      "the native status follows the real selection")
 
         // Select-all lives in the same bar and selects every visible row.
         // Starting from an empty selection this is deterministic: the
         // fixture row itself is visible, so the count can never stay 0.
-        app.navigationBars.buttons.matching(identifier: "tasks.inline.selectAll").firstMatch.tap()
-        XCTAssertTrue(
-            NSPredicate(format: "label MATCHES %@", "已选 [1-9][0-9]*").evaluate(with: count),
-            "select-all must select at least the visible fixture row")
-        XCTAssertEqual(circle.label, "已选择", "the visible fixture row is part of select-all")
+        // This is also the widest label state (取消全选): the compact
+        // icon-only control must keep the principal count, the actions
+        // menu and itself inside the same narrow bar — a text title here
+        // used to push the whole status behind a system overflow.
+        let selectAll = app.navigationBars.buttons
+            .matching(identifier: "tasks.inline.selectAll").firstMatch
+        selectAll.tap()
+        XCTAssertTrue(count.waitForExistence(timeout: 10),
+                      "select-all must keep the principal count in the native bar")
+        XCTAssertTrue(waitForPositiveCount(count),
+                      "select-all must select at least the visible fixture row")
+        XCTAssertTrue(waitForLabel(circle, "已选择"),
+                      "the visible fixture row is part of select-all")
+        XCTAssertEqual(selectAll.label, "取消全选",
+                       "the icon-only select-all keeps the full deselect accessibility label")
+        assertNativeEditingBar(app)
+        keepScreenshot(app, name: "Sidebar editing bar after select-all")
 
         // Row toggling stays independent of select-all.
         tapFixtureRow(app)
-        XCTAssertEqual(circle.label, "未选择", "toggling still applies after select-all")
+        XCTAssertTrue(waitForLabel(circle, "未选择"), "toggling still applies after select-all")
+        XCTAssertEqual(selectAll.label, "全选",
+                       "a partial selection restores the full select-all accessibility label")
         tapFixtureRow(app)
-        XCTAssertEqual(circle.label, "已选择", "toggling back re-selects the row")
+        XCTAssertTrue(waitForLabel(circle, "已选择"), "toggling back re-selects the row")
 
         // Done exits and restores the ordinary rows.
         app.navigationBars.buttons.matching(identifier: "tasks.inline.done").firstMatch.tap()
@@ -314,9 +430,12 @@ final class SidebarSelectionUITests: XCTestCase {
         dismissMenu(app)
 
         // No selection: batch archive/delete stay present but disabled, and
-        // the single-item commands disappear with the scope rule.
+        // the single-item commands disappear with the scope rule. The row
+        // tap only runs after the menu barrier above, so it toggles the row
+        // instead of being consumed as an outside tap.
         tapFixtureRow(app)
-        XCTAssertEqual(selectedCountStatus(app).label, "已选 0")
+        XCTAssertTrue(waitForLabel(selectedCountStatus(app), "已选 0"),
+                      "the fixture row tap must toggle the selection to zero")
         openBatchActions(app)
         let archive = menuButton(app, "归档")
         XCTAssertTrue(archive.waitForExistence(timeout: 10),
