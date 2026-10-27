@@ -12,6 +12,7 @@
 import Foundation
 import GRDB
 import FloeCore
+import FloeModels
 import Testing
 @testable import FloePersistence
 
@@ -194,18 +195,7 @@ struct ConversationPinningStoreTests {
             name: "Project", rootBookmark: Data(), kind: .project,
             createdAt: Date(), updatedAt: Date()
         )
-        try await manager.writer { db in
-            try db.execute(sql: """
-                INSERT INTO workspaces(id,name,root_bookmark,last_opened_at,
-                    active_target_kind,active_target_host_id,inspector_state_json,
-                    instructions_rel_path,created_at,updated_at,kind,internal_relative_path)
-                VALUES (?,?,?,?,NULL,'local',NULL,'{}',?,?, 'project', ?)
-                """, arguments: [
-                    project.id.uuidString, project.name, project.rootBookmark,
-                    PersistenceCodec.encode(Date()), PersistenceCodec.encode(Date()),
-                    "Project/\(project.id.uuidString)"
-                ])
-        }
+        try await workspaceStore.saveWorkspace(project)
         try await workspaceStore.assignConversation(workspaceID: project.id, conversationID: conversation.id)
         let after = try await store.conversation(id: conversation.id)
         #expect(after?.pinnedAt == Date(timeIntervalSince1970: 400))
@@ -245,8 +235,8 @@ struct ConversationPinningStoreTests {
 
     @Test("A pinned row with an older update still precedes freshly updated unpinned rows")
     func pinOutranksRecencyWithinGroup() {
-        let pinnedOld = record(UUID(), updated: 10, pinnedAt: Date(timeIntervalSince1970: 20))
-        let activeFresh = record(UUID(), updated: 900)
+        let pinnedOld = record(UUID(), updated: Date(timeIntervalSince1970: 10), pinnedAt: Date(timeIntervalSince1970: 20))
+        let activeFresh = record(UUID(), updated: Date(timeIntervalSince1970: 900))
         let ordered = ConversationListOrdering.sorted([activeFresh, pinnedOld])
         #expect(ordered.first?.id == pinnedOld.id)
     }
