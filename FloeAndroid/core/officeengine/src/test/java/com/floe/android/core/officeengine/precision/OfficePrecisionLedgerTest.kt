@@ -627,18 +627,78 @@ class OfficePrecisionLedgerTest {
     }
 
     @Test
-    fun applyTextExplicitReadbackMismatchIsUnknownEffectNotNativeCompleted() {
+    fun applyTextOldSelectionReadbackIsNotBodyContentConflict() {
         val l = ledger()
+        val expected = "Floe LOCAL QA marker applied via scripted fixture (no cloud model)."
+        val oldSelection = "手记 § Baseline 🧪Floe G01 synthetic paragraph with bold and italic runs." +
+            "مرحبا שלום mixed RTLalpha list onebeta list twoγ § 3 list three"
         val run = claimArmed(
             l,
-            request("m1", OfficePrecisionAction.APPLY_TEXT, text = "1.50", targetHandle = handle),
+            request("m1", OfficePrecisionAction.APPLY_TEXT, text = expected, targetHandle = handle),
         )
         armDispatched(l, run, 0)
         l.onFrame(pasteFrame("success"))
         armDispatched(l, run, 1)
-        // Exact C07 class: pasteresult=success followed by a REAL comparable
-        // answer that contradicts the requested text. ACK + conflict is not
-        // completion; the possible effect is retained and never replayed.
+        // C11 failure-class fixture: paste landed, then the readback names only
+        // the OLD view selection. That selection-scoped answer cannot disprove
+        // the document-body effect; only the later saved OOXML proof can do so.
+        val event = l.onFrame(selectionContentFrame(oldSelection))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.NATIVE_COMPLETED, event.result.state)
+        assertNull(event.result.failure)
+        assertEquals("pending-flush-or-export-verification", event.result.detail)
+        val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
+        assertEquals(OfficePrecisionContentReadback.UNAVAILABLE, applied.contentReadback)
+        assertTrue(event.result.attestation.contains("content-readback:readback-selection-not-comparable"))
+    }
+
+    @Test
+    fun applyTextCollapsedSelectionReadbackIsNotBodyContentConflict() {
+        val l = ledger()
+        val run = claimArmed(
+            l,
+            request("m1", OfficePrecisionAction.APPLY_TEXT, text = "replacement", targetHandle = handle),
+        )
+        armDispatched(l, run, 0)
+        l.onFrame(pasteFrame("success"))
+        armDispatched(l, run, 1)
+        // A collapsed post-paste selection is empty even when the document
+        // contains the replacement. Empty selection ≠ empty document body.
+        val event = l.onFrame(selectionContentFrame(""))
+            as OfficePrecisionLedger.LedgerEvent.Terminal
+        assertEquals(OfficePrecisionState.NATIVE_COMPLETED, event.result.state)
+        assertNull(event.result.failure)
+        val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
+        assertEquals(OfficePrecisionContentReadback.UNAVAILABLE, applied.contentReadback)
+        assertTrue(event.result.attestation.contains("content-readback:readback-selection-not-comparable"))
+    }
+
+    @Test
+    fun setCellContentExplicitReadbackMismatchIsUnknownEffectNotNativeCompleted() {
+        val l = ledger()
+        val run = claimArmed(
+            l,
+            request(
+                "m1",
+                OfficePrecisionAction.SET_CELL_CONTENT,
+                text = "1.50",
+                contentKind = OfficePrecisionContentKind.LITERAL,
+                cellAddress = "B2",
+                targetHandle = handle,
+            ),
+        )
+        armDispatched(l, run, 0)
+        l.markDispatched(run, 0)
+        armDispatched(l, run, 1)
+        l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+        armDispatched(l, run, 2)
+        l.onFrame(pasteFrame("success"))
+        armDispatched(l, run, 3)
+        l.onFrame(commandValuesFrame(".uno:CellCursor", "0, 380, 1219, 256, 1, 1"))
+        armDispatched(l, run, 4)
+        // A Calc single-cell readback IS scoped to the mutation target. Its
+        // explicit disagreement remains positive conflict evidence: UNKNOWN,
+        // never NATIVE_COMPLETED, never an automatic replay.
         val event = l.onFrame(selectionContentFrame("1.5"))
             as OfficePrecisionLedger.LedgerEvent.Terminal
         assertEquals(OfficePrecisionState.UNKNOWN, event.result.state)
