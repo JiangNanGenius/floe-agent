@@ -1,4 +1,4 @@
-<!-- docs-updated: 2026-10-21 -->
+<!-- docs-updated: 2026-10-28 -->
 <!-- doc-anchor: section-1 -->
 # Floe Agent User Manual
 
@@ -6,7 +6,7 @@
 
 Learn to use AI tasks, Notes, Office, Drawing Assistant, Canvas and media, and local and remote development in Floe. Designed for iPad and also available on iPhone, Floe requires iOS/iPadOS 26 or later.
 
-Version note: This guide follows the source. [1.7.45 (286) is delivered](releases/testflight/BUILD_286_DELIVERY.md); this batch’s printing, origin badges, Shortcuts and foldable changes await combined qualification and delivery.
+This guide follows the source. Check Settings for your installed version and [release and installation status](CURRENT_STATUS.md) for availability in each channel.
 
 ## Contents
 
@@ -57,6 +57,31 @@ Version note: This guide follows the source. [1.7.45 (286) is delivered](release
 5. Find the installed version in Settings → Diagnostics & About and include it in feedback.
 
 For a first task, configure a model, create a test conversation, attach a synthetic text file and request a summary. Inspect tool receipts and open the output file. Use sample material before important documents.
+
+### Setup guide
+
+Choose Light Start, Everyday, Voice Conversation, Development & Creation, or set things up yourself. Recommendations only prefill choices: every route follows the same complete guide. Existing settings stay in place and can be adjusted individually.
+
+| Section | What you can set up |
+| --- | --- |
+| Chat & Models | Connect a service, test it and choose a chat model |
+| Images & Creation | Image understanding, generation and editing, video and the Canvas assistant |
+| Web Search | Add and test search services and choose a default |
+| Voice | Input language, voice, speed, read-aloud and interruption |
+| Files & Workspaces | Working folder, on-device environment, remote computers and code repositories |
+| Personalization & Memory | Profile, SOUL.md, memory and automatic updates |
+| Permissions & Privacy | Action approvals, device features and identity verification |
+| Background | Background audio, Picture in Picture and other background options |
+| Sync & Storage | iCloud, configuration and credential sync, downloaded resources |
+| Skills & Updates | Browse and install skills and manage content updates |
+
+Go back, continue or leave a section for later. Connecting a main model does not end the guide early. The final overview links back to each section. Exit and continue later without entering saved settings again.
+
+**Downloads do not hold up setup.** After starting a voice pack, model or environment download, continue to the next section or start using Floe. Return to its settings to see the same download without starting another one. The final overview separates saved settings, resources being prepared and items left for later.
+
+Downloads show actual sizes, progress and speed. Reaching 100% may be followed by checking or installation; a resource becomes usable only after those finish. A failed, paused or space-limited download affects only that resource and can be retried later. Closing its page or leaving the guide does not cancel it. Background processing and work after the App exits depend on system limits; reopening checks the real state and resumes or offers a Continue action.
+
+A downloaded voice does not replace another voice you selected while waiting. Installing an environment does not start it. Apple Intelligence is off by default for new users and can be enabled on a supported device. Existing choices are preserved, and other models remain available on devices without Apple Intelligence.
 
 [↑ Back to contents](#contents)
 
