@@ -611,10 +611,23 @@ struct InlineSelectionEditingToolbar: ToolbarContent {
             // The bar's own title slot becomes the live selection status:
             // the same place a native inline title uses, with the system
             // headline font so Dynamic Type scales it like any bar title.
-            Text(InlineSelectionCopy.selected(model.selectedCount))
-                .font(.headline)
-                .lineLimit(1)
-                .accessibilityIdentifier(InlineSelectionIdentifiers.count)
+            // Keep the visible quantity readable in the native title slot.
+            // A narrow sidebar may not fit the full localized phrase; use
+            // the number then, while VoiceOver keeps the complete meaning.
+            ViewThatFits(in: .horizontal) {
+                Text(InlineSelectionCopy.selected(model.selectedCount))
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Text("\(model.selectedCount)")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.headline)
+            .monospacedDigit()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(InlineSelectionCopy.selected(model.selectedCount))
+            .accessibilityIdentifier(InlineSelectionIdentifiers.count)
         }
         ToolbarItemGroup(placement: .topBarTrailing) {
             let allSelected = model.allVisibleSelected(visible: visibleIDs())
