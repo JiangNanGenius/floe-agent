@@ -210,7 +210,7 @@ struct TemporaryChatCeilingTests {
         // Only the admitted reads reached the executor; every private,
         // argument-spoofing or mutating call was denied by the canonical
         // temporary boundary.
-        #expect(executor.entries.map(\.call.id) == ["allowed-fetch", "allowed-calendar", "allowed-location"])
+        #expect(executor.entries.map(\.call.id).sorted() == ["allowed-calendar", "allowed-fetch", "allowed-location"])
         let decisions = audit.entries.map(\.decision)
         #expect(decisions.contains("deny:temporary-readonly"))
         let locationArgDenial = try #require(

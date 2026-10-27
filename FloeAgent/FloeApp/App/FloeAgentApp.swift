@@ -2070,7 +2070,9 @@ private struct MoreDestinationView: View {
         case .auxiliaryModels:
             AuxiliaryModelsView(center: environment.conversationCenter)
         case .skills:
-            SkillsView(center: environment.skillsCenter)
+            NavigationStack {
+                SkillsView(center: environment.skillsCenter)
+            }
         case .memory:
             NavigationStack {
                 MemoryView(center: environment.memoryCenter)
