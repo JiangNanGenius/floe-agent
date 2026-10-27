@@ -368,7 +368,7 @@ final class SidebarSelectionUITests: XCTestCase {
         dismissMenu(app)
     }
     private func keepScreenshot(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: XCUIDevice.shared.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

@@ -153,7 +153,7 @@ final class ComposerOverflowUITests: XCTestCase {
         assertFieldOwnsComposerRow(app: app, input: input, rowIdentifier: "composer.row")
         XCTAssertGreaterThanOrEqual(input.frame.width, 240,
                                     "the launchpad's editable column must be practical, not a squeeze")
-        let stacked = XCTAttachment(screenshot: XCUIDevice.shared.screenshot())
+        let stacked = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         stacked.name = "New Task composer: field owns the row, controls below (device screenshot)"
         stacked.lifetime = .keepAlways
         add(stacked)

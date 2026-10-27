@@ -50,7 +50,7 @@ final class VoiceComposerOverflowUITests: XCTestCase {
         XCTAssertGreaterThanOrEqual(send.frame.minY, input.frame.maxY - 1,
             "voice controls must reflow below the multiline field")
         keepScreenshot(app, name: "Voice composer wrapped at real width")
-        let deviceShot = XCTAttachment(screenshot: XCUIDevice.shared.screenshot())
+        let deviceShot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         deviceShot.name = "Voice composer: field owns the row, controls below (device screenshot)"
         deviceShot.lifetime = .keepAlways
         add(deviceShot)
