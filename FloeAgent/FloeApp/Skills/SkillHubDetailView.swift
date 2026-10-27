@@ -184,10 +184,10 @@ struct SkillHubDetailView: View {
 
     private var actionEnabledNow: Bool {
         switch action {
-        case .unavailable: false
-        case .enable: !center.isWorking && !center.isBatchRunning
-        case .update: !center.isWorking && !center.updates.isRunning && !center.isBatchRunning
-        case .added: false
+        case .unavailable: return false
+        case .enable: return !center.isWorking && !center.isBatchRunning
+        case .update: return !center.isWorking && !center.updates.isRunning && !center.isBatchRunning
+        case .added: return false
         case .get:
             guard let card = center.curatedCards.first(where: { $0.entry.id == item.id }) else {
                 return !center.isWorking && !center.isBatchRunning

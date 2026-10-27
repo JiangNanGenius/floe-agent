@@ -188,12 +188,12 @@ struct SkillHubInstallJob: Equatable, Identifiable {
     /// "n / 4" line; never a fabricated byte percentage).
     var completedStageCount: Int {
         switch phase {
-        case .installed: SkillHubInstallPhase.orderedStages.count
-        case .queued: 0
-        case .preparing, .downloading, .checking, .installing: activeStageIndex ?? 0
+        case .installed: return SkillHubInstallPhase.orderedStages.count
+        case .queued: return 0
+        case .preparing, .downloading, .checking, .installing: return activeStageIndex ?? 0
         case .awaitingScopeApproval:
             // The first three stages ran; installing has NOT.
-            SkillHubInstallPhase.orderedStages.firstIndex(of: .installing) ?? 3
+            return SkillHubInstallPhase.orderedStages.firstIndex(of: .installing) ?? 3
         case .failed, .cancelled:
             guard let reached = lastReportedStageIndex else { return 0 }
             // A stage that stopped part-way never counts as completed.
