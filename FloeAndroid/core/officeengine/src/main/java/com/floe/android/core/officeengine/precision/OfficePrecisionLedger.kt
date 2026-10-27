@@ -65,6 +65,15 @@ import java.security.SecureRandom
  * (tool success then requires later owned flush/export byte verification).
  * Neither path auto-retries or auto-undoes the native attempt.
  *
+ * APPLY_TEXT's post-paste `gettextselection` answer is scoped to the CURRENT
+ * view selection, not to the document body or necessarily to the inserted
+ * range. Its exact match is positive corroboration, but an empty, stale or
+ * otherwise different selection is NOT comparable body-content conflict;
+ * the owned saved-OOXML check remains the decisive negative/positive gate.
+ * SET_CELL_CONTENT is different: after its cursor readback confirms the
+ * exact cell, the selected-cell display text is target-scoped and a literal
+ * mismatch remains an explicit comparable conflict (UNKNOWN, never replay).
+ *
  * Target handles are engine-minted random ids bound to (generation, flushed
  * working-copy digest, manual-input epoch, precision-edit epoch): a manual
  * page edit while a model thinks invalidates the capture even though
@@ -860,6 +869,12 @@ class OfficePrecisionLedger(
                     "readback-matched",
                     readback = OfficePrecisionContentReadback.MATCHED,
                 ) { null }
+                run.request.action == OfficePrecisionAction.APPLY_TEXT -> StepOutcome.Fail(
+                    OfficePrecisionFailure.INTERNAL,
+                    "readback-selection-not-body bytes=${parsed.byteCount}",
+                    attestationToken = "readback-selection-not-comparable",
+                    softDowngrade = OfficePrecisionContentReadback.UNAVAILABLE,
+                )
                 else -> StepOutcome.Fail(
                     OfficePrecisionFailure.INTERNAL,
                     "readback-mismatch bytes=${parsed.byteCount}",
