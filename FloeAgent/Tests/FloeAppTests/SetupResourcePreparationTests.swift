@@ -289,6 +289,52 @@ struct SetupGuideFinishFenceTests {
 @Suite("FloeApp.SetupPendingVoiceContract")
 @MainActor
 struct SetupPendingVoiceContractTests {
+    @Test("Explicitly keeping the current voice cancels a pending replacement")
+    func choosingCurrentVoiceCancelsPendingIntent() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanup() }
+        let current = fixture.service.snapshot
+        _ = fixture.service.chooseVoice(modelID: fixture.model.id, voiceID: "serena")
+        #expect(fixture.service.pendingVoice?.voiceID == "serena")
+        fixture.service.choose(current)
+        #expect(fixture.service.pendingVoice == nil)
+        #expect(fixture.service.snapshot.provider == current.provider)
+        #expect(fixture.service.snapshot.voiceID == current.voiceID)
+    }
+
+    @Test("Playback controls do not cancel the voice chosen for a download")
+    func playbackControlsKeepPendingIntent() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanup() }
+        _ = fixture.service.chooseVoice(modelID: fixture.model.id, voiceID: "serena")
+        fixture.service.update {
+            $0.speechRateRatio = 1.25
+            $0.autoReadEnabled = true
+            $0.allowBargeIn = false
+        }
+        await fixture.service.syncLocalSelection()
+        #expect(fixture.service.pendingVoice?.voiceID == "serena")
+        #expect(fixture.service.snapshot.speechRateRatio == 1.25)
+        #expect(fixture.service.snapshot.provider == .apple)
+    }
+
+    @Test("Changing an online channel supersedes an earlier pending local voice")
+    func channelChangeWinsOverPendingIntent() async throws {
+        let fixture = try await Fixture.make()
+        defer { fixture.cleanup() }
+        fixture.service.update {
+            $0.provider = .volcengine
+            $0.billingRoute = .payAsYouGo
+            $0.modelID = "fixture-model"
+            $0.voiceID = "fixture-voice"
+        }
+        _ = fixture.service.chooseVoice(modelID: fixture.model.id, voiceID: "serena")
+        fixture.service.update { $0.billingRoute = .agentPlan }
+        await fixture.service.syncLocalSelection()
+        #expect(fixture.service.pendingVoice == nil)
+        #expect(fixture.service.snapshot.provider == .volcengine)
+        #expect(fixture.service.snapshot.billingRoute == .agentPlan)
+    }
 
     @Test("An explicit undownloaded voice keeps the playable source until the pack is installed")
     func pendingVoiceDoesNotSwitchSourceEarly() async throws {

@@ -134,7 +134,7 @@ final class TTSSettingsService: ObservableObject {
         defaults.set(encoded, forKey: Self.storageKey)
         profiles[bucket(for: value)] = value
         if let encodedProfiles = try? JSONEncoder().encode(profiles) { defaults.set(encodedProfiles, forKey: Self.profilesKey) }
-        if snapshot.provider != value.provider || snapshot.modelID != value.modelID || snapshot.voiceID != value.voiceID || snapshot.language != value.language {
+        if snapshot.provider != value.provider || snapshot.modelID != value.modelID || snapshot.voiceID != value.voiceID || snapshot.language != value.language || snapshot.billingRoute != value.billingRoute || snapshot.connectionProviderID != value.connectionProviderID {
             defaults.set(defaults.integer(forKey: Self.selectionRevisionKey) + 1, forKey: Self.selectionRevisionKey)
         }
         snapshot = value
@@ -210,9 +210,17 @@ final class TTSSettingsService: ObservableObject {
         }
     }
     func choose(_ value: TTSSettingsSnapshot) {
+        // Choosing even the already-playing voice is an explicit decision
+        // against a pending replacement. Playback-control edits use update()
+        // and deliberately leave that pending choice intact.
+        let previousRevision = defaults.integer(forKey: Self.selectionRevisionKey)
+        clearPendingVoice()
         var chosen = value
         applyGlobalControls(to: &chosen)
         update { $0 = chosen }
+        if defaults.integer(forKey: Self.selectionRevisionKey) == previousRevision {
+            defaults.set(previousRevision + 1, forKey: Self.selectionRevisionKey)
+        }
     }
 
     // MARK: - Playback source
@@ -260,9 +268,7 @@ final class TTSSettingsService: ObservableObject {
     @discardableResult
     func selectSource(_ source: SpeechOutputSource) -> Bool {
         guard let target = savedSnapshot(for: source) else { return false }
-        var chosen = target
-        applyGlobalControls(to: &chosen)
-        update { $0 = chosen }
+        choose(target)
         return true
     }
 
@@ -667,9 +673,8 @@ final class TTSSettingsService: ObservableObject {
     }
 
     private func restore(_ provider: TTSSpeakerProvider, route: TTSBillingRoute) {
-        var next = profiles[binding(provider, route)] ?? TTSSettingsSnapshot(provider: provider, billingRoute: route)
-        applyGlobalControls(to: &next)
-        update { $0 = next }
+        let next = profiles[binding(provider, route)] ?? TTSSettingsSnapshot(provider: provider, billingRoute: route)
+        choose(next)
     }
 
     private func binding(_ provider: TTSSpeakerProvider, _ route: TTSBillingRoute) -> String {

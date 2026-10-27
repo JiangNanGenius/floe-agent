@@ -47,8 +47,8 @@ final class SetupResourcePreparation: ObservableObject {
     private var pump: Task<Void, Never>?
     private var scheduled: Task<Void, Never>?
     private var isObserving = false
-    /// Bumped by every scheduled read and by unsubscribing. A read publishes
-    /// only while its own generation is still the newest.
+    /// Bumped when a read starts and on teardown. Progress notifications do
+    /// not invalidate every read while a transfer is continuously active.
     private var generation = 0
 
     init(center: ConversationCenter) {
@@ -227,18 +227,16 @@ final class SetupResourcePreparation: ObservableObject {
 
     // MARK: - Coalesced, fenced rebuild
 
-    /// Many owner notifications inside one run loop turn collapse into one
-    /// read after a short quiet window.
+    /// Coalesce bursts into a bounded snapshot cadence. A continuous stream
+    /// must not keep cancelling the pending read or invalidate it mid-await;
+    /// otherwise fast downloads could show no progress until they finished.
     private func scheduleRebuild() {
-        guard isObserving else { return }
-        generation += 1
-        let captured = generation
-        scheduled?.cancel()
+        guard isObserving, scheduled == nil else { return }
         scheduled = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
-            guard !Task.isCancelled, let self, self.isObserving, self.generation == captured
-            else { return }
-            await self.rebuild(generation: captured)
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled, let self, self.isObserving else { return }
+            self.scheduled = nil
+            await self.rebuildNow()
         }
     }
 
