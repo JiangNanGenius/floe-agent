@@ -11,6 +11,14 @@ Floe QA 已确认 `VALID`、未过期和 `IN_BETA_TESTING`；publictest1 经 Saf
 
 Build 301 is available internally and as a verified stable unsigned Release with a matching Feather feed. All 424 focused tests and local Swift 6/device builds passed. One publictest1 submission awaits review. This round used the existing iPad Simulator; physical-device and live remote-server acceptance are separate. The delivery record includes scoped cleanup and the remaining general Python metadata diagnostic.
 
+## Android 0.1.0-alpha.13（构建 15）GitHub 公开预发布 / Android public prerelease
+
+Android 通道独立于 iOS。最新公开预发布为 [0.1.0-alpha.13](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)（构建 15，2026-10-26 发布），固定 APK 源码 `64ef0f57dcb34c6e0fe4135f80a98add46003df7`，仅 GitHub full 渠道，需 Android 9（API 28）及以上 ARM64 设备，安装与更新均为手动。附件仅一个正式签名 Full ARM64 APK（432,697,008 字节）、最终 `SHA256SUMS` 与 Linux／IDE／Office 对应源码及许可包，三个公开附件均经真实下载核验，标签绑定与摘要一致；预发布不占用 iOS Latest（`v1.7.60` 保持不变）。
+
+能力现状：自备云端 Key（BYOK）的 AI 对话与任务、历史与附件、服务商与凭据管理、MCP 连接与单次授权、设备端 Linux 环境与终端／作业、文件工作区、带补全与运行输出的代码 IDE、Git、浏览器，以及内置 Office 查看与 DOCX／XLSX／PPTX 基础编辑（工作副本另存，保护原文件）。不含本地模型；手记、画布、语音与 Skill Hub 商店尚未进入 Android 版本。代表性验证：16 KiB 平板模拟器与三星 Android 13 实机完成编辑、保存、重开检查，升级保留历史与模型配置。已知限制：手机界面与复杂排版仍在完善；手机 PPT 可能提示缺少演示跟随按钮；PPT 示例往返存在 0.01 毫米对象尺寸偏移；AI 精确编辑、PDF 导出与打印在下一批。详见 [FloeAndroid/README.md](../FloeAndroid/README.md) 与[实施记录](FLOE_ANDROID_PROGRESS.zh-CN.md)。
+
+The Android channel is separate from iOS. The latest public prerelease is 0.1.0-alpha.13 (build 15, published 2026-10-26, immutable APK source 64ef0f57), GitHub full channel only; it requires Android 9 (API 28) or later on ARM64, with manual install and updates. Its three assets — one signed full ARM64 APK, SHA256SUMS and the merged Linux/IDE/Office corresponding-source archive — were downloaded and hash-verified, and the prerelease does not occupy iOS Latest. Covered today: BYOK cloud chat and tasks, history and attachments, provider and credential management, MCP connections with single-grant approvals, the on-device Linux environment with terminal and jobs, the file workspace, a code IDE with completion and run output, Git, browser, and built-in Office viewing plus basic DOCX/XLSX/PPTX editing through owned working copies. No local model; Notes, Canvas, voice and the Skill Hub store have not reached Android yet.
+
 ## 1.7.57（298）内部与无签名已交付，公测待审 / Delivered; external review pending
 
 语音结束判断、暂停与恢复、中心图标及工具记录滚动加载已更新，专业数据集统一到搜索入口。完整 Swift 6 编译、259 项相关测试（0 失败、0 跳过）和设备归档通过；模拟器图标最大间隔 67 ms，真机听感与打断质量仍单独判断。[298 修复与交付记录](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)。

@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/JiangNanGenius/floe-agent?include_prereleases&label=release)](https://github.com/JiangNanGenius/floe-agent/releases)
 [![iOS 26+](https://img.shields.io/badge/iOS%20%2F%20iPadOS-26%2B-0A84FF)](FloeAgent/project.yml)
-[![Android 9+ ARM64 alpha](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1)
+[![Android 9+ ARM64 alpha](https://img.shields.io/badge/Android-9%2B%20ARM64%20alpha-3DDC84)](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13)
 [![MPL 2.0](https://img.shields.io/badge/license-MPL--2.0-4A5568)](LICENSE)
 
 [Install](#get-started) · [Features](#features) · [Demo](#see-floe-at-work) · [Docs](#documentation) · [Develop](#build-from-source) · [Contribute](#contributing-and-license)
@@ -40,15 +40,15 @@ https://raw.githubusercontent.com/JiangNanGenius/floe-agent/main/feather.json
 | iOS / iPadOS · TestFlight | Requires valid beta access. Available builds and expiry appear in TestFlight. |
 | iOS / iPadOS · Feather / AltStore | Install the corresponding app, use a button above to add the source, then sign with your own setup. |
 | iOS / iPadOS · GitHub IPA | Download the IPA and checksum from Releases. The IPA is unsigned and requires your own signing. |
-| Android alpha | Android 9+ (ARM64). Download the signed APK and checksum from the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1) and install it manually; updates are manual for now. The current alpha supports basic cloud chat with your own provider key (BYOK), plus configuration and history restore; no local model is included. The on-device environment and local AI are coming to Android, which will grow toward iOS capabilities over time alongside Android-specific features. |
+| Android alpha | Android 9+ (ARM64). Download the signed APK and checksum from the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13) and install it manually; updates are manual for now. The current alpha already covers cloud AI chat and tasks with your own provider key (BYOK), history and attachments, provider and credential management, MCP connections, an on-device Linux environment with terminal and jobs, the file workspace, a code IDE with completion and run output, Git, a browser, and built-in Office viewing plus basic editing of DOCX, XLSX and PPTX. No local model is included yet; Notes, Canvas, voice and the Skill Hub store are still coming to Android. |
 
-For your first iOS / iPadOS task: **install → connect a model → create a task → open the result**. Core Notes, file organization and Canvas work without an AI provider; AI features use your configured provider or a local model supported by your device. On Android: **install → add your cloud provider key → start chatting**.
+For your first iOS / iPadOS task: **install → connect a model → create a task → open the result**. Core Notes, file organization and Canvas work without an AI provider; AI features use your configured provider or a local model supported by your device. On Android: **install → add your cloud provider key → start chatting**; Office files, the file workspace, the Linux terminal and the code IDE are already in the alpha.
 
 [Installation steps](docs/USER_GUIDE.md#1-installation-and-first-use) · [Model setup](docs/USER_GUIDE.md#2-models-and-auxiliary-capabilities) · [Sources and signing](docs/FEATHER_SOURCE.md)
 
 ## Features
 
-The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.1) for the current Android alpha.
+The features below describe Floe core workflows. Availability varies by platform and release; see the installation notes above and the [Android release](https://github.com/JiangNanGenius/floe-agent/releases/tag/android/v0.1.0-alpha.13) for the current Android alpha.
 
 | Workflow | What you can do | Guide |
 | --- | --- | --- |
@@ -60,12 +60,14 @@ The features below describe Floe core workflows. Availability varies by platform
 | Canvas & media | Organize material on a canvas and use focused image, video and audio workbenches. | [Canvas & media](docs/USER_GUIDE.md#15-canvas-images-audio-and-video) |
 | Drawings & 3D | Inspect engineering files, edit supported entities and use Drawing Assistant. Operations vary by format. | [Engineering drawings](docs/USER_GUIDE.md#14-engineering-drawings-and-ai-review) |
 | Code & remote | Edit code, track Git changes and work with authorized remote hosts. | [Terminal & ports](docs/USER_GUIDE.md#9-local-terminal-and-linux-performance) · [Remote connections](docs/USER_GUIDE.md#12-remote-hosts-desktops-and-diagnostics) |
+| Voice | Dictate editable drafts, hold voice conversations and have final answers read aloud with system, enhanced on-device or configured online voices. Voice is available on iOS; it has not reached Android yet. | [Voice input & read-aloud](docs/USER_GUIDE.md#16-voice-input-and-transcription) |
+| Skills & Skill Hub | Install reviewed skills with declared dependencies and version management, keep them updated, and automate with MCP services and mail actions. The Skill Hub store is available on iOS; Android support is on the roadmap. | [Skills, MCP & automation](docs/USER_GUIDE.md#17-skills-mcp-mail-and-automation) |
 
-Cloud model requests go directly to your chosen provider; supported local models run inference on the device. Credentials stay in the device keychain. Files, uploads and remote actions follow task permissions, with consequential actions confirmed under the current policy. See [security](SECURITY.md).
+Cloud model requests go directly to your chosen provider; supported local models run inference on the device. Credentials stay in protected storage on your device. Files, uploads and remote actions follow task permissions, with consequential actions confirmed under the current policy. See [security](SECURITY.md).
 
 ## See Floe at work
 
-Recorded on iOS; the Android alpha covers the basics described above.
+Recorded on iOS; the Android alpha already includes chat, Office, files, terminal and IDE workflows and keeps growing.
 
 [![Watch Floe: tasks, Office, code, Notes and Canvas](docs/assets/video/floe-en.jpg)](https://www.youtube.com/watch?v=OXHntB2dyvo)
 
