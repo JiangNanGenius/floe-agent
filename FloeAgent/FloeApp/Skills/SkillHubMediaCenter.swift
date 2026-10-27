@@ -244,7 +244,11 @@ final class SkillHubMediaCenter: ObservableObject {
         let task = Task { [weak self] () -> SkillHubShowcase? in
             guard let self else { return nil }
             let value = await self.loadShowcase(commit: commit, demandEpoch: demandEpoch)
-            self.showcaseRequests[commit] = nil
+            // Returning to the same publication can start a newer demand
+            // under the same key; an old completion must not remove it.
+            if self.epoch == demandEpoch {
+                self.showcaseRequests[commit] = nil
+            }
             return value
         }
         showcaseRequests[commit] = task
@@ -307,7 +311,9 @@ final class SkillHubMediaCenter: ObservableObject {
         let task = Task { [weak self] () -> UIImage? in
             guard let self else { return nil }
             let value = await self.loadImage(path: path, commit: commit, key: key, demandEpoch: demandEpoch)
-            self.imageRequests[key] = nil
+            if self.epoch == demandEpoch {
+                self.imageRequests[key] = nil
+            }
             return value
         }
         imageRequests[key] = task
