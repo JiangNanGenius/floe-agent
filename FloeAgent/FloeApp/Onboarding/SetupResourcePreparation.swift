@@ -101,8 +101,8 @@ final class SetupResourcePreparation: ObservableObject {
         pump = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled else { break }
-                await self?.rebuildNow()
+                guard !Task.isCancelled, let owner = self else { break }
+                await owner.rebuildNow()
             }
         }
         Task { [weak self] in

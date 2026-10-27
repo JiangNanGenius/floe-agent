@@ -52,6 +52,8 @@ final class SetupGuideModel: ObservableObject {
     private var environment: AppEnvironment { center.environment }
     private let defaults: UserDefaults
     private var presetGeneration = 0
+    private var loadGeneration = 0
+    private var isPresented = true
     private var summarySink: AnyCancellable?
     private var lastPublishedCounts: (preparing: Int, attention: Int) = (0, 0)
 
@@ -67,7 +69,12 @@ final class SetupGuideModel: ObservableObject {
     /// never consulted: a user who left before configuring anything still
     /// returns to the same section.
     func load(preferredEntry: SetupGuideEntry = .firstLaunch) async {
+        guard !Task.isCancelled else { return }
+        loadGeneration += 1
+        let generation = loadGeneration
+        isPresented = true
         await center.reload()
+        guard loadGeneration == generation, isPresented, !Task.isCancelled else { return }
         entry = preferredEntry
         if let saved = SetupGuideProgressStore.load(from: defaults), saved.currentSection != .chatModels
             || saved.statuses.isEmpty == false {
@@ -75,6 +82,7 @@ final class SetupGuideModel: ObservableObject {
             apply(.resumeFrom(saved))
         }
         await refreshFacts()
+        guard loadGeneration == generation, isPresented, !Task.isCancelled else { return }
         resources.observe()
         // Resource counts are mirrored on a coalesced cadence, so a streaming
         // byte callback cannot re-render the whole guide twice a second.
@@ -96,6 +104,8 @@ final class SetupGuideModel: ObservableObject {
     /// View teardown: unsubscribes the mirror only. Owned jobs keep running
     /// and are visible again on return.
     func stopObserving() {
+        loadGeneration += 1
+        isPresented = false
         summarySink = nil
         resources.stopObserving()
     }
@@ -261,9 +271,11 @@ final class SetupGuideModel: ObservableObject {
             return
         }
         saveMessage = nil
-        apply(.finish)
         didFinish = true
-        SetupGuideProgressStore.clear(from: defaults)
+        apply(.finish)
+        // A completion returning after dismissal no longer owns the progress
+        // of a guide the user may already have reopened.
+        if isPresented { SetupGuideProgressStore.clear(from: defaults) }
     }
 
     /// True only after the completion status was really written.
@@ -277,7 +289,9 @@ final class SetupGuideModel: ObservableObject {
     /// fresh record that would reopen it as work in progress.
     func exitAndKeepProgress() {
         guard !didFinish, !state.finished else { return }
-        persistProgress()
+        // Explicit teardown owns this one snapshot; later async callbacks do
+        // not get to persist another copy after the page has left.
+        SetupGuideProgressStore.save(progressSnapshot, to: defaults)
     }
 
     var progressSnapshot: SetupGuideProgress {
@@ -354,13 +368,13 @@ final class SetupGuideModel: ObservableObject {
             do {
                 try await self.center.saveModelPreferences(preferences)
             } catch {
-                guard self.presetGeneration == generation, !self.didFinish else { return }
+                guard self.presetGeneration == generation, self.isPresented, !self.didFinish else { return }
                 self.saveMessage = SecretRedactor.redact(error.localizedDescription)
                 // Nothing was committed, so nothing may be claimed as filled.
                 self.appliedRoutes = []
                 return
             }
-            guard self.presetGeneration == generation, !self.didFinish else { return }
+            guard self.presetGeneration == generation, self.isPresented, !self.didFinish else { return }
             self.saveMessage = nil
             self.appliedRoutes = applied
             for route in applied where self.state.status(for: route.section) == .unset {
@@ -381,7 +395,7 @@ final class SetupGuideModel: ObservableObject {
     private func persistProgress() {
         // A completed guide is terminal: no late refresh, status mirror or
         // teardown callback may resurrect it as unfinished work.
-        guard !didFinish else { return }
+        guard isPresented, !didFinish else { return }
         SetupGuideProgressStore.save(progressSnapshot, to: defaults)
     }
 
