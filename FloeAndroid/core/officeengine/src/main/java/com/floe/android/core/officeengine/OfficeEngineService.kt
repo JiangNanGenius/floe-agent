@@ -375,7 +375,7 @@ class OfficeEngineService : Service() {
             }
         }
 
-        private fun prepareEditableView(
+        fun prepareEditableView(
             opId: String,
             callback: (OfficeEditModePreparationResult) -> Unit,
         ) {
@@ -387,7 +387,7 @@ class OfficeEngineService : Service() {
             }
         }
 
-        private fun cancelEditableViewPreparation(opId: String) {
+        fun cancelEditableViewPreparation(opId: String) {
             synchronized(host.nativeIngressLock) {
                 editModePreparation.cancel(opId)
             }
