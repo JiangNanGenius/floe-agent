@@ -2,7 +2,7 @@
   <img src="docs/images/floe-agent-icon.png" width="88" alt="Floe Agent app icon">
   <h1>Floe Agent</h1>
   <p><strong>Your models. Your files. Your machines.</strong></p>
-  <p>Floe Agent is an open-source on-device AI agent workspace designed for iOS and Android — iPad-first, with native iPhone support. Bring AI tasks, Notes, Office documents, creative tools and development together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
+  <p>Floe Agent is an open-source on-device AI agent workspace designed for iOS and Android — iPad-first, with native iPhone support. Bring AI tasks, Notes, Office documents, creative tools, development, voice conversations and skills together — with a real Linux environment on your device that runs code, packages and services, supported local models for on-device inference, and cloud AI using your own API keys (BYOK).</p>
   <p><a href="README.zh-CN.md">简体中文</a> · <a href="https://www.floe-agent.com/">Website</a> · <a href="docs/USER_GUIDE.md">User manual</a> · <a href="docs/README.md">Documentation</a></p>
 </div>
 
