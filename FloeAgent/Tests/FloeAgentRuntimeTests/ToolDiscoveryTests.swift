@@ -32,8 +32,6 @@ struct ToolDiscoveryTests {
                 #expect(TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil)
                 #expect(TemporaryChatToolPolicy.denialReason(
                     descriptor: descriptor, arguments: Data("{}".utf8)) != nil)
-                #expect(!descriptor.toolDescription.contains("skill.search"))
-                #expect(!descriptor.toolDescription.contains("skill.read"))
             }
         }
         // The ordinary directory is NOT scoped to a conversation ceiling.
@@ -42,7 +40,20 @@ struct ToolDiscoveryTests {
         // The temporary directory names the honest temporary scope.
         #expect(temporary[0].toolDescription.contains("temporary conversation"))
         #expect(temporary[0].toolDescription.contains("basic on-device reads"))
+        // Skill-name separation is pinned by the POSITIVE authority checks
+        // above — every offered helper (both sets) is refused by the
+        // temporary policy at execution (`readOnlyDescriptor == nil`,
+        // `denialReason != nil`) and the two directory scopings above — not
+        // by blanket substring bans. The ordinary tools.search keeps the
+        // established task guidance sentence that names skill.search/skill.read
+        // (production wording since 535902ca, exempted from the pre-lift
+        // no-mention loop too): an ordinary conversation runs the same
+        // authorized toolchain as a task, so those helpers are inside its
+        // ceiling and the pointer is honest, not a grant. Only the temporary
+        // directory must stay free of skill steering.
+        #expect(ordinary[0].toolDescription.contains("skill.search/skill.read"))
         #expect(!temporary[0].toolDescription.contains("skill.search"))
+        #expect(!temporary[0].toolDescription.contains("skill.read"))
     }
 
     @Test func retiredNamesNeverReappearFromPersistedDescriptors() throws {

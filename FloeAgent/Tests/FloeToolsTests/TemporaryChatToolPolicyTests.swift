@@ -394,7 +394,14 @@ struct TemporaryChatToolPolicyTests {
             descriptor: search,
             arguments: Data(#"{"query":"公司档案","source":"professional"}"#.utf8)
         )
-        #expect(reason?.contains("public web search only") == true)
+        // 2cfc74df deliberately reworded the temporary professional-source
+        // denial to state both the ceiling ("Temporary chats can search
+        // public web sources") and the actionable remedy ("an ordinary
+        // conversation with a configured, authorized source"). The denial
+        // itself is unchanged; pin the established sentence fragments
+        // instead of the removed "public web search only" phrasing.
+        #expect(reason?.contains("Temporary chats can search public web sources") == true)
+        #expect(reason?.contains("professional dataset search") == true)
         for json in [#"{"query":"weather"}"#, #"{"query":"weather","source":"web"}"#] {
             #expect(TemporaryChatToolPolicy.denialReason(
                 descriptor: search, arguments: Data(json.utf8)) == nil)

@@ -3334,22 +3334,28 @@ public actor FloeAgentRuntime {
                 decision: "deny:not-in-catalog"
             )
         }
+        // Temporary (ephemeral) chat runs re-validate the public-web policy at
+        // this canonical resolution boundary — the same path every delegated
+        // child call already takes BEFORE its generic membership gate
+        // (`deny:child-temporary-readonly`) — for the descriptor AND the
+        // concrete arguments. A wrapper, alias, batch or child cannot widen
+        // the descriptor-derived ceiling this way. The temporary check runs
+        // first so a temporary run reports its actual read ceiling as the
+        // denial reason even though the app also intersects the ceiling into
+        // `allowedToolNames`; both gates still deny before any effect, and a
+        // call inside the ceiling but outside the membership set falls through
+        // to the skill-capability denial below exactly as before.
+        if let reason = temporaryReadOnlyDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
+            return .denied(
+                reason: "Denied: \(reason)",
+                decision: "deny:temporary-readonly"
+            )
+        }
         let effectiveAllowedNames = configuration.allowedToolNames
         if let effectiveAllowedNames, !effectiveAllowedNames.contains(call.toolName) {
             return .denied(
                 reason: "Tool '\(call.toolName)' is outside the active skill capability set",
                 decision: "deny:skill-capability"
-            )
-        }
-        // Temporary (ephemeral) chat runs re-validate the public-web policy at
-        // this canonical resolution boundary — the same path the parent run
-        // and every delegated child call use — for the descriptor AND the
-        // concrete arguments. A wrapper, alias, batch or child cannot widen
-        // the descriptor-derived ceiling this way.
-        if let reason = temporaryReadOnlyDenial(descriptor: descriptor, arguments: call.argumentsJSON) {
-            return .denied(
-                reason: "Denied: \(reason)",
-                decision: "deny:temporary-readonly"
             )
         }
         // Fast chat runs the SAME authorized toolchain as a task: an ordinary

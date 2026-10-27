@@ -339,7 +339,15 @@ struct ChatModePolicyTests {
             temporaryReadOnly: true)
         try await runtime.start(goal: "临时聊天：我现在在哪")
 
-        #expect(executor.entries.map(\.call.id) == ["t-cal", "t-loc"])
+        // Approved calls dispatch through the concurrent task group, so the
+        // arrival order at the executor boundary is scheduling-dependent (the
+        // established convention pins dispatch by call id as a set — cf.
+        // TemporaryChatPolicyTests and ToolResultPagingTool's
+        // supportsConcurrentBatchDispatch); the denied calls must never reach
+        // the executor at all.
+        #expect(Set(executor.entries.map(\.call.id)) == ["t-cal", "t-loc"])
+        // Exactly-once: a set alone could hide a duplicate dispatch.
+        #expect(executor.entries.count == 2)
         let results = adapter.requests[1].toolResults
         let spoofDenial = try #require(results.first { $0.callID == "t-loc-bad" })
         #expect(spoofDenial.output.contains("takes no arguments"), Comment(rawValue: spoofDenial.output))
