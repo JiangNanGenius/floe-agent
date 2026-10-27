@@ -40,6 +40,7 @@ import SwiftUI
 import FloeCore
 import FloeExecution
 import FloeGit
+import FloePersistence
 import FloeSSH
 import FloeTools
 import FloeWorkspace
@@ -175,6 +176,400 @@ enum IDELanguageRunStatus: Sendable, Equatable {
     case gitHubActionsFailed(String)
 }
 
+/// A typed route for the sheet the IDE's Run control presents. A plain script
+/// run and an explicit web service are separate terminal surfaces: only the
+/// web-service terminal exposes a browser action, and it is created only from
+/// the exact durable `exec.localService` job the IDE submitted (or observed for
+/// the same entry/root).
+enum IDERunTerminalRoute {
+    case scriptRun
+    case webService(IDEServiceRunTerminalSession)
+
+    var serviceSession: IDEServiceRunTerminalSession? {
+        if case .webService(let session) = self { return session }
+        return nil
+    }
+}
+
+/// Identity of ONE IDE-started web service, captured from the durable job's
+/// payload rather than from the form's current field values. Every awaited
+/// transition compares this identity so a stale or cross-workspace callback can
+/// never rebind the terminal to another service.
+struct IDEServiceRunIdentity: Equatable, Sendable {
+    let workspaceID: UUID
+    let workspaceRootPath: String
+    let conversationID: UUID
+    let environmentID: String
+    let runtime: String
+    let entry: String
+    let cwd: String
+    let port: Int
+}
+
+struct IDEServiceRunLaunch: Equatable, Sendable {
+    let identity: IDEServiceRunIdentity
+    let job: BackgroundJob
+}
+
+/// Honest terminal state. `ready` carries the exact click-resolved endpoint so
+/// the browser action cannot substitute a different page or port.
+enum IDEServiceRunPhase: Equatable, Sendable {
+    case starting
+    case ready(URL)
+    case stopping
+    case stopped
+    case failed
+    case identityMismatch
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+}
+
+/// Pure rules for the web-service terminal. The service is eligible only while
+/// the durable job is still the same owned service, still running, and exposes a
+/// loopback preview URL on the SAME port the user selected. URLs found in logs
+/// are never inspected: `previewURL` is the only source.
+enum IDEServiceRunPolicy {
+    static let toolName = "exec.localService"
+
+    static func identity(for job: BackgroundJob, workspaceID: UUID) -> IDEServiceRunIdentity? {
+        guard job.targetTool == toolName,
+              let rootPath = job.workspaceRootPath,
+              let environmentID = job.environmentID,
+              let arguments = try? JSONDecoder().decode(
+                LocalServiceTool.Arguments.self, from: job.payloadJSON
+              ) else { return nil }
+        return IDEServiceRunIdentity(
+            workspaceID: workspaceID,
+            workspaceRootPath: standardizedPath(rootPath),
+            conversationID: job.conversationID,
+            environmentID: environmentID,
+            runtime: arguments.runtime,
+            entry: arguments.entry,
+            cwd: arguments.cwd ?? ".",
+            port: arguments.port
+        )
+    }
+
+    static func matches(_ job: BackgroundJob, _ identity: IDEServiceRunIdentity) -> Bool {
+        guard job.targetTool == toolName,
+              job.conversationID == identity.conversationID,
+              job.environmentID == identity.environmentID,
+              let rootPath = job.workspaceRootPath,
+              standardizedPath(rootPath) == identity.workspaceRootPath,
+              let arguments = try? JSONDecoder().decode(
+                LocalServiceTool.Arguments.self, from: job.payloadJSON
+              ) else { return false }
+        return arguments.runtime == identity.runtime
+            && arguments.entry == identity.entry
+            && (arguments.cwd ?? ".") == identity.cwd
+            && arguments.port == identity.port
+    }
+
+    static func progress(of job: BackgroundJob) -> LocalServiceProgress? {
+        job.progressJSON.flatMap { try? JSONDecoder().decode(LocalServiceProgress.self, from: $0) }
+    }
+
+    static func phase(
+        job: BackgroundJob,
+        identity: IDEServiceRunIdentity,
+        identityInvalid: Bool = false,
+        missing: Bool = false
+    ) -> IDEServiceRunPhase {
+        if missing { return .failed }
+        guard !identityInvalid, matches(job, identity) else { return .identityMismatch }
+        let snapshot = progress(of: job)
+        if job.state.isTerminal {
+            switch job.state {
+            case .failed, .interrupted: return .failed
+            default: return .stopped
+            }
+        }
+        if job.lastError?.hasPrefix("Stop requested") == true { return .stopping }
+        if let snapshot {
+            switch snapshot.state {
+            case "stopping": return .stopping
+            case "failed", "unavailable", "notFound": return .failed
+            case "stopped", "completed": return .stopped
+            default: break
+            }
+        }
+        if let url = previewURL(job: job, identity: identity, progress: snapshot) {
+            return .ready(url)
+        }
+        return .starting
+    }
+
+    /// A ready endpoint must be the same owned running job, on loopback, on the
+    /// exact chosen port. The page path is preserved verbatim (static previews
+    /// append the selected HTML entry).
+    static func previewURL(
+        job: BackgroundJob,
+        identity: IDEServiceRunIdentity,
+        progress: LocalServiceProgress?
+    ) -> URL? {
+        guard job.state == .running,
+              job.lastError?.hasPrefix("Stop requested") != true,
+              matches(job, identity),
+              let progress,
+              progress.state == "running",
+              let raw = progress.previewURL,
+              let url = URL(string: raw),
+              url.scheme?.lowercased() == "http",
+              url.host == "127.0.0.1",
+              let port = url.port,
+              (1024...65535).contains(port),
+              port == identity.port,
+              url.user == nil,
+              url.password == nil else { return nil }
+        return url
+    }
+
+    /// The launch is accepted only while the IDE's pinned workspace and root are
+    /// still current and the durable job is exactly the launched service.
+    static func accepts(
+        launch: IDEServiceRunLaunch,
+        workspaceID: UUID,
+        root: URL?,
+        currentWorkspaceID: UUID?,
+        currentRootURL: URL?
+    ) -> Bool {
+        guard launch.identity.workspaceID == workspaceID,
+              let root,
+              launch.identity.workspaceRootPath == standardizedPath(root.path),
+              currentWorkspaceID == workspaceID,
+              let currentRootURL,
+              standardizedPath(currentRootURL.path) == standardizedPath(root.path),
+              launch.job.conversationID == launch.identity.conversationID,
+              matches(launch.job, launch.identity) else { return false }
+        return true
+    }
+
+    static func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+}
+
+/// The service terminal reads through this narrow seam so unit tests can supply
+/// deterministic job state without a database, while production uses the same
+/// durable store and the exact owned-job cancellation.
+@MainActor
+protocol IDEServiceRunTerminalSource: AnyObject {
+    func job(id: UUID) async throws -> BackgroundJob?
+    func jobs(conversationID: UUID) async throws -> [BackgroundJob]
+    func cancel(id: UUID) async throws -> BackgroundJob
+}
+
+@MainActor
+final class IDEServiceRunTerminalProductionSource: IDEServiceRunTerminalSource {
+    private let store: BackgroundJobStore
+    private let service: BackgroundJobService?
+
+    init(store: BackgroundJobStore, service: BackgroundJobService?) {
+        self.store = store
+        self.service = service
+    }
+
+    func job(id: UUID) async throws -> BackgroundJob? {
+        try await store.job(id: id)
+    }
+
+    func jobs(conversationID: UUID) async throws -> [BackgroundJob] {
+        try await store.jobs(conversationID: conversationID, limit: 100)
+    }
+
+    func cancel(id: UUID) async throws -> BackgroundJob {
+        guard let service else {
+            throw FloeError.validationFailed("The background job service is unavailable.")
+        }
+        return try await service.cancel(id: id)
+    }
+}
+
+struct IDEServicePreviewTarget: Identifiable, Equatable {
+    let job: BackgroundJob
+    let url: URL
+    var id: UUID { job.id }
+}
+
+/// Observation and ownership for ONE explicit web service. It never owns the
+/// script-run controller or its cancellation token: Stop cancels only the
+/// bound durable service job, and closing the presented terminal does not call
+/// Stop at all.
+@MainActor
+final class IDEServiceRunTerminalSession: ObservableObject, Identifiable {
+    let id = UUID()
+    let identity: IDEServiceRunIdentity
+    @Published private(set) var job: BackgroundJob
+    @Published private(set) var progress: LocalServiceProgress?
+    @Published private(set) var stopping = false
+    @Published private(set) var identityInvalid = false
+    @Published private(set) var missing = false
+    @Published private(set) var errorMessage: String?
+    /// Honest click-time explanation when a browser request is refused (the
+    /// service stopped, rebound, or is not currently authorized).
+    @Published private(set) var browserNotice: String?
+
+    private let source: any IDEServiceRunTerminalSource
+
+    init(
+        identity: IDEServiceRunIdentity,
+        initialJob: BackgroundJob,
+        source: any IDEServiceRunTerminalSource
+    ) {
+        self.identity = identity
+        self.job = initialJob
+        self.progress = IDEServiceRunPolicy.progress(of: initialJob)
+        self.source = source
+    }
+
+    var phase: IDEServiceRunPhase {
+        IDEServiceRunPolicy.phase(
+            job: job, identity: identity,
+            identityInvalid: identityInvalid, missing: missing
+        )
+    }
+
+    var canOpenBrowser: Bool { phase.isReady }
+    var canStop: Bool {
+        guard !stopping, !missing, !identityInvalid, !job.state.isTerminal else { return false }
+        // A requested stop is still draining: do not offer a second cancel
+        // while the native service is exiting.
+        if case .stopping = phase { return false }
+        return true
+    }
+
+    var logText: String {
+        guard let progress else { return "" }
+        var parts: [String] = []
+        if !progress.stdout.isEmpty { parts.append(progress.stdout) }
+        if !progress.stderr.isEmpty { parts.append(progress.stderr) }
+        return parts.joined(separator: "\n")
+    }
+
+    /// Refresh one durable snapshot. A mismatched or missing job is reported
+    /// without overwriting the bound identity, so a stale callback cannot
+    /// transfer this terminal to another workspace's service.
+    func refresh() async {
+        do {
+            guard let current = try await source.job(id: job.id) else {
+                missing = true
+                errorMessage = IDELanguageRunText.t(
+                    "服务作业已不存在。", "The service job no longer exists.")
+                return
+            }
+            guard current.id == job.id,
+                  IDEServiceRunPolicy.matches(current, identity) else {
+                identityInvalid = true
+                errorMessage = IDELanguageRunText.t(
+                    "服务身份已变化，此终端不再控制它。",
+                    "The service identity changed; this terminal no longer controls it.")
+                return
+            }
+            identityInvalid = false
+            missing = false
+            job = current
+            progress = IDEServiceRunPolicy.progress(of: current)
+            errorMessage = nil
+            if phase.isReady { browserNotice = nil }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func observe() async {
+        while !Task.isCancelled {
+            await refresh()
+            if job.state.isTerminal || missing || identityInvalid { return }
+            do { try await Task.sleep(for: .seconds(1)) } catch { return }
+        }
+    }
+
+    /// Stop requests cancellation for EXACTLY the bound durable service job.
+    /// The script-run controller's stop is never called from this surface.
+    func stop() async {
+        guard canStop else { return }
+        let boundID = job.id
+        stopping = true
+        defer { stopping = false }
+        do {
+            let updated = try await source.cancel(id: boundID)
+            guard IDEServiceRunPolicy.matches(updated, identity) else {
+                identityInvalid = true
+                errorMessage = IDELanguageRunText.t(
+                    "停止结果不属于此服务，已忽略。",
+                    "The stop result does not belong to this service and was ignored.")
+                return
+            }
+            job = updated
+            progress = IDEServiceRunPolicy.progress(of: updated)
+            errorMessage = nil
+            browserNotice = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Re-resolve the live job and the current preview URL at click. If the
+    /// bound job stopped, the newest live job with the same captured identity
+    /// (a native restart) is used. The browser policy is consulted with the
+    /// persisted conversation before any page is returned.
+    func resolveBrowserTarget() async -> IDEServicePreviewTarget? {
+        browserNotice = nil
+        do {
+            var current: BackgroundJob?
+            if let bound = try await source.job(id: job.id),
+               bound.id == job.id,
+               IDEServiceRunPolicy.matches(bound, identity),
+               IDEServiceRunPolicy.previewURL(
+                    job: bound, identity: identity,
+                    progress: IDEServiceRunPolicy.progress(of: bound)
+               ) != nil {
+                current = bound
+            }
+            if current == nil {
+                // Store order is newest-first; a native restart therefore wins
+                // over its terminal predecessor without a chooser.
+                let candidates = try await source.jobs(
+                    conversationID: identity.conversationID)
+                current = candidates.first { candidate in
+                    guard !candidate.state.isTerminal,
+                          IDEServiceRunPolicy.matches(candidate, identity) else { return false }
+                    return IDEServiceRunPolicy.previewURL(
+                        job: candidate, identity: identity,
+                        progress: IDEServiceRunPolicy.progress(of: candidate)
+                    ) != nil
+                }
+            }
+            guard let current,
+                  let url = IDEServiceRunPolicy.previewURL(
+                    job: current, identity: identity,
+                    progress: IDEServiceRunPolicy.progress(of: current)
+                  ) else {
+                browserNotice = IDELanguageRunText.t(
+                    "服务当前没有可打开的页面。", "The service has no page that can be opened right now.")
+                await refresh()
+                return nil
+            }
+            // The browser's own policy is the final authority: a stale or
+            // forged preview URL never acquires network authority here.
+            _ = try BrowserURLPolicy.validate(
+                url.absoluteString, conversationID: identity.conversationID)
+            job = current
+            progress = IDEServiceRunPolicy.progress(of: current)
+            identityInvalid = false
+            missing = false
+            errorMessage = nil
+            return IDEServicePreviewTarget(job: current, url: url)
+        } catch {
+            browserNotice = error.localizedDescription
+            return nil
+        }
+    }
+}
+
 @MainActor
 final class IDELanguageRunController: ObservableObject, Identifiable {
     let id = UUID()
@@ -209,8 +604,13 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
     @Published private(set) var activeGitHubActionsRecordID: UUID?
 
     /// Set by the IDE so a successful dispatch can reveal the run-owned
-    /// output surface. Used for both local and remote runs.
+    /// output surface. Used for both local and remote runs and for the explicit
+    /// web-service terminal; the typed route decides which surface is shown.
     var onRequestRunTerminal: (() -> Void)?
+    /// Which terminal the sheet should reveal. A plain script run and an
+    /// explicit web service are distinct routes; only `.webService` carries a
+    /// browser action.
+    @Published private(set) var terminalRoute: IDERunTerminalRoute?
 
     let workspaceID: UUID
     let root: URL?
@@ -298,6 +698,29 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
             return !(selection.target.gitHubActionsWorkflowPath ?? "").isEmpty
         }
         return true
+    }
+
+    /// Route the presented run sheet to a web-service terminal. The launch is
+    /// accepted only while this controller's pinned workspace/root is current
+    /// and the durable job is exactly the identity captured from its payload;
+    /// a late callback from a dismissed or switched IDE is a no-op.
+    func openServiceTerminal(_ launch: IDEServiceRunLaunch) {
+        guard IDEServiceRunPolicy.accepts(
+            launch: launch,
+            workspaceID: workspaceID,
+            root: root,
+            currentWorkspaceID: center.currentWorkspace?.id,
+            currentRootURL: center.currentRootURL
+        ) else { return }
+        let source = IDEServiceRunTerminalProductionSource(
+            store: BackgroundJobStore(database: center.environment.database),
+            service: center.environment.backgroundJobService
+        )
+        let session = IDEServiceRunTerminalSession(
+            identity: launch.identity, initialJob: launch.job, source: source
+        )
+        terminalRoute = .webService(session)
+        onRequestRunTerminal?()
     }
 
     /// The durable record for the GitHub Actions run this controller started,
@@ -935,6 +1358,7 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
         localRunSessionID = sessionID
         dispatchedCommandLine = line
         status = .runningLocal
+        terminalRoute = .scriptRun
         onRequestRunTerminal?()
         startLocalMonitor(sessionID: sessionID, attempt: attempt)
     }
@@ -1233,6 +1657,7 @@ final class IDELanguageRunController: ObservableObject, Identifiable {
         remoteCancellation = cancellation
         dispatchedCommandLine = command.shellCommand
         status = .runningRemote
+        terminalRoute = .scriptRun
         onRequestRunTerminal?()
         defer {
             if remoteCancellation === cancellation { remoteCancellation = nil }

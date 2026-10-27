@@ -157,6 +157,26 @@ enum IDELanguageRunText {
         }
     }
 
+    /// Honest status for the explicit web-service terminal. Only `.ready`
+    /// enables its browser action; every other state names the actual stage.
+    static func servicePhase(_ phase: IDEServiceRunPhase) -> String {
+        switch phase {
+        case .starting:
+            return t("正在启动服务…", "Starting the service…")
+        case .ready:
+            return t("服务已就绪", "Service ready")
+        case .stopping:
+            return t("正在停止服务…", "Stopping the service…")
+        case .stopped:
+            return t("服务已停止", "Service stopped")
+        case .failed:
+            return t("服务失败", "Service failed")
+        case .identityMismatch:
+            return t("服务身份已变化，无法在此操作",
+                     "The service identity changed; it cannot be controlled here")
+        }
+    }
+
     // MARK: Guest shape
 
     static func shapeLabel(_ selection: GuestRunEntryShapeSelection) -> String {
@@ -308,18 +328,14 @@ struct IDELanguageRunView: View {
         NavigationStack {
             Group {
               if isStaticWebPage, let root = controller.root {
-                IDEWebServiceView(center: controller.center, state: state,
-                                  workspaceID: controller.workspaceID, root: root,
-                                  entry: state.activePath)
+                webServiceView(root: root)
               } else {
                Form {
                 fileSection
                 if let root = controller.root {
                     Section {
                         NavigationLink {
-                            IDEWebServiceView(center: controller.center, state: state,
-                                              workspaceID: controller.workspaceID, root: root,
-                                              entry: state.activePath)
+                            webServiceView(root: root)
                         } label: {
                             Label(IDELanguageRunText.t("作为网页服务运行", "Run as web service"), systemImage: "server.rack")
                         }
@@ -394,6 +410,20 @@ struct IDELanguageRunView: View {
     }
 
     // MARK: Sections
+
+    /// The one web-service configuration surface. A successful start hands the
+    /// exact durable job back through the controller, which swaps this sheet to
+    /// its service terminal; no port/page is asked for again.
+    private func webServiceView(root: URL) -> some View {
+        IDEWebServiceView(
+            center: controller.center,
+            state: state,
+            workspaceID: controller.workspaceID,
+            root: root,
+            entry: state.activePath,
+            onServiceStarted: { launch in controller.openServiceTerminal(launch) }
+        )
+    }
 
     private var fileSection: some View {
         Section {
@@ -952,9 +982,119 @@ struct IDERunTerminalView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button(IDELanguageRunText.t("关闭", "Close")) { dismiss() }
+                        .accessibilityIdentifier("workspace.ide.run.terminal.close")
                 }
             }
         }
+    }
+}
+
+/// The explicit web-service run terminal. It is rendered only for the typed
+/// `.webService` route; a plain script run never receives this surface or its
+/// browser action. The top-right Browser control re-resolves the live durable
+/// job and its actual preview URL at click, then opens the existing in-app
+/// browser. Stop cancels only the bound service job; closing this sheet (or the
+/// browser preview) never stops the service.
+struct IDEServiceRunTerminalView: View {
+    @ObservedObject var session: IDEServiceRunTerminalSession
+    @Environment(\.dismiss) private var dismiss
+    @State private var previewTarget: IDEServicePreviewTarget?
+    @State private var openingBrowser = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Image(systemName: phaseSymbol)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(IDELanguageRunText.servicePhase(session.phase))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("workspace.ide.service.terminal.status")
+                    Spacer()
+                    Button(role: .destructive) {
+                        Task { await session.stop() }
+                    } label: {
+                        Label(IDELanguageRunText.t("停止", "Stop"), systemImage: "stop.fill")
+                    }
+                    .disabled(!session.canStop)
+                    .accessibilityIdentifier("workspace.ide.service.terminal.stop")
+                }
+                .padding(.horizontal)
+                .padding(.vertical, 6)
+                if let notice = session.browserNotice {
+                    Label(notice, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .accessibilityIdentifier("workspace.ide.service.terminal.notice")
+                }
+                if let error = session.errorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal)
+                        .accessibilityIdentifier("workspace.ide.service.terminal.error")
+                }
+                Divider()
+                if session.logText.isEmpty {
+                    Text(IDELanguageRunText.t(
+                        "服务尚未输出日志。", "The service has not written any logs yet."))
+                        .font(.caption).foregroundStyle(.secondary).padding(8)
+                } else {
+                    ScrollView {
+                        Text(session.logText)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .accessibilityIdentifier("workspace.ide.service.terminal.logs")
+                }
+            }
+            .navigationTitle(IDELanguageRunText.t("服务终端", "Service terminal"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(IDELanguageRunText.t("关闭", "Close")) { dismiss() }
+                        .accessibilityIdentifier("workspace.ide.service.terminal.close")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task { await openBrowser() }
+                    } label: {
+                        Label(IDELanguageRunText.t("浏览器", "Browser"), systemImage: "safari")
+                    }
+                    .disabled(!session.canOpenBrowser || openingBrowser)
+                    .accessibilityIdentifier("workspace.ide.service.terminal.browser")
+                }
+            }
+            .task { await session.observe() }
+            .sheet(item: $previewTarget) { target in
+                LocalServicePreview(job: target.job, resolvedURL: target.url)
+            }
+        }
+    }
+
+    private var phaseSymbol: String {
+        switch session.phase {
+        case .starting: "hourglass"
+        case .ready: "checkmark.circle"
+        case .stopping: "stop.circle"
+        case .stopped: "stop.circle"
+        case .failed: "exclamationmark.triangle"
+        case .identityMismatch: "questionmark.circle"
+        }
+    }
+
+    private func openBrowser() async {
+        guard !openingBrowser else { return }
+        openingBrowser = true
+        defer { openingBrowser = false }
+        previewTarget = await session.resolveBrowserTarget()
     }
 }
 

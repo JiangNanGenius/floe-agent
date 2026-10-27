@@ -176,6 +176,15 @@ struct FloeAgentApp: App {
                     // one canvas-owned native CAD node, for the node preview +
                     // explicit "Open CAD workbench" entry acceptance.
                     CanvasCADEntryFixtureHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                          ProcessInfo.processInfo.arguments.contains(IDERunWebPreviewFixture.launchArgument),
+                          let previewURL = IDERunWebPreviewFixture.previewURL {
+                    // Native acceptance for the IDE web-service terminal only:
+                    // the REAL terminal/browser views over an in-memory fake
+                    // job and a page served by the UI test process. No durable
+                    // job, workspace/DB write, provider or microphone is used.
+                    IDERunWebPreviewFixtureHarness(
+                        center: environment.workspaceCenter, previewURL: previewURL)
                 } else {
                     RootView()
                 }

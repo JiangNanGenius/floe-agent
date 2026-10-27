@@ -104,18 +104,35 @@ struct LocalServicesView: View {
 
 struct LocalServicePreview: View {
     let job: BackgroundJob
+    /// A click-time endpoint resolved by the IDE service terminal. Nil keeps
+    /// the existing Settings/local-services behavior of deriving the endpoint
+    /// from the durable progress document.
+    var resolvedURL: URL? = nil
     @StateObject private var browser = BrowserSessionCenter(durableHandoffs: false)
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
             BrowserView(center: browser)
-                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("action.done") { dismiss() } } }
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("action.done") { dismiss() }
+                            .accessibilityIdentifier("workspace.ide.service.preview.done")
+                    }
+                }
         }
         .task {
-            guard let data = job.progressJSON, let progress = try? JSONDecoder().decode(LocalServiceProgress.self, from: data),
-                  let url = progress.previewURL else { return }
+            let url: URL?
+            if let resolvedURL {
+                url = resolvedURL
+            } else {
+                let progress = job.progressJSON.flatMap {
+                    try? JSONDecoder().decode(LocalServiceProgress.self, from: $0)
+                }
+                url = progress?.previewURL.flatMap { URL(string: $0) }
+            }
+            guard let url else { return }
             browser.bind(to: job.conversationID)
-            browser.addressText = url
+            browser.addressText = url.absoluteString
             browser.navigateFromAddressBar()
         }
         .onDisappear { browser.discard(conversationID: job.conversationID) }

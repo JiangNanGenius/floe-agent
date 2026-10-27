@@ -203,9 +203,22 @@ struct WorkspaceIDEView: View {
             }
         }
         .interactiveDismissDisabled(state.saving || hasOfficeEdits || state.nativeText.hasDirty)
-        .sheet(item: $presentedRunController, onDismiss: { showsRunTerminal = false }) { controller in
-            if showsRunTerminal { IDERunTerminalView(controller: controller) }
-            else { IDELanguageRunView(controller: controller, state: state) }
+        .sheet(item: $presentedRunController, onDismiss: {
+            showsRunTerminal = false
+            // A late service/run callback after the sheet closed must not
+            // silently reveal a terminal on the next presentation. The next
+            // explicit presentRun() re-installs the callback.
+            runController?.onRequestRunTerminal = nil
+        }) { controller in
+            if showsRunTerminal {
+                if let service = controller.terminalRoute?.serviceSession {
+                    IDEServiceRunTerminalView(session: service)
+                } else {
+                    IDERunTerminalView(controller: controller)
+                }
+            } else {
+                IDELanguageRunView(controller: controller, state: state)
+            }
         }
         .sheet(item: $officeShareSnapshot, onDismiss: {
             // Only the session that produced this snapshot holds it; the
