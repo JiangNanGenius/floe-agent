@@ -69,7 +69,7 @@ struct SkillHubStoreFlowTests {
         { context in
             recorder.begun()
             if recorder.failFirstAttempt && recorder.runs == 1 {
-                throw CocoaError(.fileNetworkTimedOut, userInfo: [NSLocalizedDescriptionKey: "boom"])
+                throw URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: "boom"])
             }
             let phases = [SkillHubInstallPhase.preparing, .downloading, .checking]
             for phase in phases {
