@@ -43,6 +43,18 @@ class OfficePrecisionEngineTest {
         val ingressLock = Any()
 
         val wires = ArrayList<String>()
+
+        /**
+         * The ENGINE's own dispatched wire channel only. Production keeps
+         * this separate from a page's admitted JNI send: an admitted
+         * keepalive (`tile`, `ping`, …) is posted by LOActivity's own ingress
+         * section and never flows through [OfficePrecisionEngine]'s
+         * `sendWire`, while [wires] above deliberately records BOTH channels
+         * so the lease-fence assertions can see an admitted page send. Any
+         * assertion about the engine's plan ordering must therefore read this
+         * list, not the shared one.
+         */
+        val engineWires = ArrayList<String>()
         val dispatchEvents = ArrayList<String>()
         val editAssertionsUnderMonitor = ArrayList<Boolean>()
         val digestUnderMonitor = ArrayList<Boolean>()
@@ -96,6 +108,7 @@ class OfficePrecisionEngineTest {
         override fun sendWire(message: String) {
             beforeWireSend?.invoke(message)
             wires.add(message)
+            engineWires.add(message)
             dispatchEvents.add("wire:$message")
             wireUnderMonitor.add(Thread.holdsLock(ingressLock))
         }
@@ -188,7 +201,15 @@ class OfficePrecisionEngineTest {
             "\"width\":10,\"height\":10,\"viewid\":0}"
 
     /** Drive the production pre-effect status + selection pulls. The apply
-     * itself then dispatches paste; no host ledger or verifier prior is set. */
+     * itself then dispatches paste; no host ledger or verifier prior is set.
+     *
+     * Ordering is asserted on [FakeHost.engineWires] — the engine's own
+     * channel — because a keepalive page send admitted DURING a live lease
+     * (`admittedPageSend(engine, "tile")`) is recorded in the shared [FakeHost.wires]
+     * list after the engine's pre-effect `status` wire, exactly as production
+     * allows it (LEASE_KEEPALIVE_COMMANDS). Reading the shared list here
+     * would mistake that legitimate page traffic for the engine's last plan
+     * wire. */
     private fun acquirePreEffect(
         engine: OfficePrecisionEngine,
         host: FakeHost,
@@ -196,9 +217,9 @@ class OfficePrecisionEngineTest {
         part: String = "0",
         type: String = "text",
     ) {
-        assertEquals("status", host.wires.last())
+        assertEquals("status", host.engineWires.last())
         feed(engine, statusFor(part, type))
-        assertEquals(OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION, host.wires.last())
+        assertEquals(OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION, host.engineWires.last())
         feed(engine, "textselectioncontent: $prior")
     }
 
@@ -336,6 +357,70 @@ class OfficePrecisionEngineTest {
         val replayResult = engine.readAnswer("ap2", "tok", 3L)!!
         assertEquals(OfficePrecisionState.REJECTED, replayResult.state)
         assertEquals(OfficePrecisionFailure.TARGET_UNKNOWN, replayResult.failure)
+    }
+
+    /**
+     * The capture handle must CARRY the producer's own observed part, not
+     * merely advertise it: the target handed to the fenced owner and the
+     * target a later content mutation validates/consumes are ONE immutable
+     * value. A handle whose stored `selectedPart` stayed null could never
+     * satisfy the mandatory pre-effect part gate, so every APPLY_TEXT /
+     * SET_CELL_CONTENT would be refused TARGET_UNVERIFIED before its own
+     * paste wire in all three families (the real C13 defect behind the 13
+     * grouped `expected gettextselection but was status` failures).
+     */
+    @Test
+    fun capturedHandleBindsProducerObservedPartForThePreEffectGate() {
+        val host = FakeHost(format = OfficeDocumentFormat.PPTX)
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("cap", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, statusFor("2", "presentation"))
+        val target = (engine.readAnswer("cap", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        assertEquals("2", target.selectedPart)
+        assertEquals("presentation", target.docType)
+        assertEquals(3, target.partsCount)
+
+        // A stale/foreign part at the pre-effect status pull refuses BEFORE
+        // the selection pull and BEFORE any paste wire — no late query reuse
+        // and no replay of the consumed handle.
+        engine.submit(
+            req("ap-foreign", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId),
+        )
+        assertEquals("status", host.engineWires.last())
+        val wiresAtRefusal = host.engineWires.size
+        feed(engine, statusFor("1", "presentation"))
+        val refused = engine.readAnswer("ap-foreign", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.FAILED, refused.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, refused.failure)
+        assertEquals("pre-effect-part-mismatch", refused.detail)
+        assertEquals("refused before the pre-effect selection pull", wiresAtRefusal, host.engineWires.size)
+        assertTrue(host.wires.none { it.startsWith("paste ") })
+
+        // The same lineage at the REAL captured part reaches paste, and the
+        // bound evidence carries the producer-observed part plus both native
+        // epochs — never a null guess and never an ambient cached selection.
+        engine.submit(req("cap2", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, statusFor("2", "presentation"))
+        val target2 = (engine.readAnswer("cap2", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        assertEquals("2", target2.selectedPart)
+        engine.submit(
+            req("ap-real", OfficePrecisionAction.APPLY_TEXT, text = "marker", targetHandle = target2.handleId),
+        )
+        acquirePreEffect(engine, host, "", part = "2", type = "presentation")
+        assertTrue(host.engineWires.last().startsWith("paste "))
+        feed(engine, "pasteresult: success")
+        feed(engine, "textselectioncontent: marker")
+        val applied = engine.readAnswer("ap-real", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.MUTATION_VERIFIED, applied.state)
+        val evidence = (applied.answer as OfficePrecisionAnswer.MutationApplied).preEffectEvidence
+        assertEquals("2", evidence?.partId)
+        assertEquals("the actual empty native selection is the insertion baseline", "", evidence?.selectionText)
+        assertEquals(0, evidence?.selectionByteCount)
+        assertEquals(target2.handleId, evidence?.targetHandle)
+        assertEquals(target2.inputEpoch, evidence?.inputEpoch)
+        assertEquals(target2.editEpoch, evidence?.editEpoch)
     }
 
     @Test

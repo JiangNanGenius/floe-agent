@@ -722,16 +722,18 @@ class OfficePrecisionLedger(
                 if (info == null) {
                     StepOutcome.Fail(OfficePrecisionFailure.PRODUCER_REJECTED, "status-answer-unparseable")
                 } else {
+                    // Bind the producer's OWN observed context into the minted
+                    // handle record NOW (still under `lock`), so the target
+                    // advertised to the owner and the target a later content
+                    // mutation validates/consumes are ONE immutable value.
+                    // A handle whose stored selectedPart stayed null could
+                    // never satisfy the mandatory pre-effect part gate, so
+                    // every APPLY_TEXT/SET_CELL_CONTENT would be refused
+                    // before its own paste wire.
+                    val captured = pendingCaptureTarget?.let { bindCapturedContextLocked(it, info) }
                     StepOutcome.Answer("status-answer") {
-                        val captured = pendingCaptureTarget
                         if (captured != null) {
-                            OfficePrecisionAnswer.TargetCaptured(
-                                captured.copy(
-                                    docType = info.docType,
-                                    partsCount = info.partsCount,
-                                    selectedPart = info.selectedPart,
-                                ),
-                            )
+                            OfficePrecisionAnswer.TargetCaptured(captured)
                         } else {
                             OfficePrecisionAnswer.DocumentContext(
                                 docType = info.docType,
@@ -1255,6 +1257,14 @@ class OfficePrecisionLedger(
     // Target handles (engine-minted, single-use, dual-revision CAS)
     // ------------------------------------------------------------------
 
+    /**
+     * Mints the handle BEFORE the capture's own `status:` answer exists, so
+     * the three producer-observed context fields (docType/partsCount/
+     * selectedPart) start null and are bound by
+     * [bindCapturedContextLocked] when that answer settles. The handle is
+     * only complete — and only usable for a content mutation's mandatory
+     * pre-effect part gate — after that binding.
+     */
     fun issueTarget(
         generation: Long,
         workingCopySha256: String?,
@@ -1293,6 +1303,43 @@ class OfficePrecisionLedger(
             handles.remove(oldest)
         }
         target
+    }
+
+    /**
+     * Binds the producer's OWN `status:` facts (docType/partsCount/
+     * selectedPart) into the ALREADY-MINTED handle record and returns the
+     * completed immutable target. Caller holds [lock] (invoked from
+     * [checkStep] inside [onFrame]).
+     *
+     * This is the single source of the capture's logical part: the value
+     * returned here is BOTH what [OfficePrecisionAnswer.TargetCaptured]
+     * advertises to the fenced owner and what [validateTarget] later hands to
+     * a content run as `contentTarget`. Keeping only the advertised copy
+     * (the pre-repair behaviour) left the stored record's `selectedPart`
+     * null, so [OfficePrecisionPlan.StepCheck.PreEffectTargetStatus] could
+     * never match and every APPLY_TEXT/SET_CELL_CONTENT was refused
+     * TARGET_UNVERIFIED before its own paste wire — in all three families.
+     *
+     * Nothing here is caller-supplied or model-supplied: the facts come from
+     * the native producer's own synchronous answer to this capture's `status`
+     * pull. An evicted or already-consumed record is never resurrected; the
+     * completed target is still returned so the owner's answer stays
+     * truthful about what was measured.
+     */
+    private fun bindCapturedContextLocked(
+        captured: OfficePrecisionTarget,
+        info: OfficePrecisionProtocol.DocumentStatusInfo,
+    ): OfficePrecisionTarget {
+        val bound = captured.copy(
+            docType = info.docType,
+            partsCount = info.partsCount,
+            selectedPart = info.selectedPart,
+        )
+        val record = handles[captured.handleId] ?: return bound
+        if (record.consumed) return bound
+        handles[captured.handleId] = record.copy(target = bound)
+        pendingCaptureTarget = bound
+        return bound
     }
 
     sealed class TargetCheck {

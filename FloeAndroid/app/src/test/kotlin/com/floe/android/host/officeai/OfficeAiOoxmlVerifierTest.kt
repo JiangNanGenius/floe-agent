@@ -477,6 +477,183 @@ class OfficeAiOoxmlVerifierTest {
         assertFalse("selected-slide completion alone is not target-effect proof", facts.targetEffectVerified)
     }
 
+    /**
+     * A real empty native prior means the paste CREATED a paragraph/shape, so
+     * the normalized saved part carries the inserted text plus exactly one
+     * OOXML paragraph delimiter. Every old paragraph must still be present,
+     * in order, byte-for-byte — the delimiter is part of the proven single
+     * edit, never something to trim away. Prepend, middle and append are all
+     * real positions for the created paragraph.
+     */
+    @Test
+    fun pptxNewParagraphInsertionKeepsEveryOldParagraphExactly() {
+        val base = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId1", "slide1.xml", listOf("old title", "old body"))),
+        )
+        fun inserted(vararg paragraphs: String) = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId1", "slide1.xml", paragraphs.toList())),
+        )
+        fun proven(saved: ByteArray, expected: String): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", expected, partIndex = 0,
+                    baseline = baselineOf(base, partIndex = 0, prior = ""),
+                ),
+            ),
+        )
+
+        // APPEND: the created paragraph follows every old one.
+        val appended = proven(inserted("old title", "old body", "appended marker"), "appended marker")
+        assertTrue(appended.expectedContentMatches)
+        assertTrue(appended.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, appended.replacementScope)
+        assertEquals("ppt/slides/slide1.xml", appended.partName)
+
+        // MIDDLE: the created paragraph sits between the two old ones, which
+        // both survive unchanged and in order.
+        val middle = proven(inserted("old title", "inserted middle", "old body"), "inserted middle")
+        assertTrue(middle.expectedContentMatches)
+        assertTrue(middle.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, middle.replacementScope)
+
+        // PREPEND: the created paragraph precedes every old one.
+        val prepended = proven(inserted("prepended marker", "old title", "old body"), "prepended marker")
+        assertTrue(prepended.expectedContentMatches)
+        assertTrue(prepended.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, prepended.replacementScope)
+
+        // The same delimiter rule is family-general: WordprocessingML `w:p`
+        // leaves are joined with '\n' exactly like DrawingML `a:p` leaves.
+        val docxBase = docx(listOf("first para", "last para"))
+        val docxSaved = docx(listOf("first para", "inserted para", "last para"))
+        val docxFacts = verifiedOf(
+            inspect(
+                input(
+                    docxSaved, "docx", "applyText", "inserted para",
+                    baseline = baselineOf(docxBase, prior = ""),
+                ),
+            ),
+        )
+        assertTrue(docxFacts.expectedContentMatches)
+        assertTrue(docxFacts.semanticDeltaVerified)
+        assertEquals(SemanticScope.INSERTED_AT_CURSOR, docxFacts.replacementScope)
+    }
+
+    /**
+     * The delimiter-aware insertion proof must stay fail-closed: a preexisting
+     * marker with no content delta, an old paragraph SPLIT around the
+     * insertion, a guessed extra empty paragraph, a foreign partial edit, a
+     * change confined to another slide and a stale baseline captured at a
+     * different logical part all remain UNPROVEN.
+     */
+    @Test
+    fun pptxInsertionProofRefusesPreexistingGuessedForeignAndStaleDeltas() {
+        val base = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body")),
+            ),
+        )
+        fun factsOf(
+            saved: ByteArray,
+            expected: String,
+            partIndex: Int = 1,
+            baselinePartIndex: Int? = partIndex,
+        ): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", expected, partIndex = partIndex,
+                    baseline = baselineOf(base, partIndex = baselinePartIndex, prior = ""),
+                ),
+            ),
+        )
+        fun slide1(vararg paragraphs: String) = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide")),
+                PptSlide("rId1", "slide1.xml", paragraphs.toList()),
+            ),
+        )
+
+        // (a) PREEXISTING marker: the captured part is byte-identical to the
+        // baseline, so presence alone is never promoted to a delta proof.
+        val preexisting = factsOf(base, "old body")
+        assertTrue(preexisting.expectedContentMatches)
+        assertFalse(preexisting.semanticDeltaVerified)
+        assertEquals(SemanticScope.TEXT_PRESENT_ONLY, preexisting.replacementScope)
+        assertTrue(preexisting.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (b) SPLIT old paragraph, tail form: the ONE baseline paragraph
+        // "onetwo" no longer exists — it became "one" + "xtwo". Removing
+        // "\nx" would restore the baseline text, so only a COMPLETE created
+        // paragraph run may prove an insertion.
+        val splitBase = OoxmlTestFixtures.pptxBytes(
+            listOf(PptSlide("rId2", "slide2.xml", listOf("onetwo"))),
+        )
+        fun splitFactsOf(saved: ByteArray): OfficeAiVerificationFacts = verifiedOf(
+            inspect(
+                input(
+                    saved, "pptx", "applyText", "x", partIndex = 0,
+                    baseline = baselineOf(splitBase, partIndex = 0, prior = ""),
+                ),
+            ),
+        )
+        val splitTail = splitFactsOf(
+            OoxmlTestFixtures.pptxBytes(
+                listOf(PptSlide("rId2", "slide2.xml", listOf("one", "xtwo"))),
+            ),
+        )
+        assertTrue(splitTail.expectedContentMatches)
+        assertFalse("a split old paragraph is not an insertion", splitTail.semanticDeltaVerified)
+        assertEquals(SemanticScope.TEXT_PRESENT_ONLY, splitTail.replacementScope)
+        assertTrue(splitTail.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (c) SPLIT old paragraph, head form ("onex" + "two"): the mirror of
+        // (b), where removing "x\n" would restore the baseline text.
+        val splitHead = splitFactsOf(
+            OoxmlTestFixtures.pptxBytes(
+                listOf(PptSlide("rId2", "slide2.xml", listOf("onex", "two"))),
+            ),
+        )
+        assertTrue(splitHead.expectedContentMatches)
+        assertFalse(splitHead.semanticDeltaVerified)
+        assertTrue(splitHead.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (d) GUESSED structure: an extra empty paragraph (two delimiters) is
+        // not the one exact insertion and is never trimmed into one.
+        val guessed = factsOf(slide1("old title", "old body", "", "marker"), "marker")
+        assertTrue(guessed.expectedContentMatches)
+        assertFalse(guessed.semanticDeltaVerified)
+        assertTrue(guessed.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (e) FOREIGN partial: the marker landed but an old paragraph was also
+        // rewritten, so the saved part is not ONE edit from the baseline.
+        val foreign = factsOf(slide1("old title", "rewritten body", "marker"), "marker")
+        assertTrue(foreign.expectedContentMatches)
+        assertFalse(foreign.semanticDeltaVerified)
+        assertTrue(foreign.limitations.contains(VerificationNotes.DELTA_NOT_SINGLE_EDIT))
+
+        // (f) WRONG PART: only another slide changed, so the captured slide
+        // shows neither the marker nor any delta.
+        val wrongPartSaved = OoxmlTestFixtures.pptxBytes(
+            listOf(
+                PptSlide("rId2", "slide2.xml", listOf("other slide", "marker")),
+                PptSlide("rId1", "slide1.xml", listOf("old title", "old body")),
+            ),
+        )
+        val wrong = factsOf(wrongPartSaved, "marker")
+        assertEquals("ppt/slides/slide1.xml", wrong.partName)
+        assertFalse(wrong.expectedContentMatches)
+        assertFalse(wrong.semanticDeltaVerified)
+        assertFalse(wrong.targetEffectVerified)
+
+        // (g) STALE baseline target: a baseline retained for another logical
+        // part index is never reused as this part's prior.
+        val stale = factsOf(slide1("old title", "old body", "marker"), "marker", baselinePartIndex = 0)
+        assertTrue(stale.expectedContentMatches)
+        assertFalse(stale.semanticDeltaVerified)
+        assertTrue(stale.limitations.contains(VerificationNotes.BASELINE_TARGET_MISMATCH))
+    }
+
     // -----------------------------------------------------------------
     // XLSX exact cell intent
     // -----------------------------------------------------------------
