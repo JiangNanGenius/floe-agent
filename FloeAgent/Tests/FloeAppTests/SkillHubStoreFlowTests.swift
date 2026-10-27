@@ -851,7 +851,7 @@ struct SkillHubCuratedSnapshotCacheTests {
                 from: snapshot(catalog: catalog, signature: catalog), channel: .ios, mode: mode)
             Issue.record("a feed payload cannot act as its own envelope")
         } catch {
-            expectSignatureFailure(error, "swapped envelope")
+            expectSourceFailure(error, "swapped envelope exceeds the signature-byte limit")
         }
     }
 
