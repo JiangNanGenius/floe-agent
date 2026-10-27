@@ -1,7 +1,15 @@
-<!-- docs-updated: 2026-10-25 -->
+<!-- docs-updated: 2026-10-27 -->
 # 当前版本与验证状态 / Current release and verification status
 
-文档更新时间 / Document updated: 2026-10-25. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+文档更新时间 / Document updated: 2026-10-27. 最新交付见首项，较早版本保留当时记录。审核与到期状态以 App Store Connect/TestFlight 当前显示为准。The first entry records the latest delivery; older entries retain their dated results. Check TestFlight for live approval and expiration.
+
+## 1.7.60（301）内测与无签名已交付，公测已送审 / Delivered; external review pending
+
+Skill Hub 商店布局、版本与依赖准备、模型添加、长输入、工具调用、终端及后台工作收尾已整合。完整 Swift 6 编译、单次 iOS 归档和 424 项相关测试通过，0 失败、0 跳过；真实客体精确安装、离线资源、哈希拒绝与中文字体绘制均通过。[301 交付与边界](releases/testflight/BUILD_301_DELIVERY.md)。
+
+Floe QA 已确认 `VALID`、未过期和 `IN_BETA_TESTING`；publictest1 经 Safari 提交一次，独立读回为一条 `pending_review`／`WAITING_FOR_BETA_REVIEW`。稳定 latest [无签名 Release](https://github.com/JiangNanGenius/floe-agent/releases/tag/v1.7.60)及同次 Feather 已核验实际文件、源码和摘要。App 固定 `f1307f0d`，审核说明单独修正，标签未移动；公开可安装仍待 Apple 批准。
+
+Build 301 is available internally and as a verified stable unsigned Release with a matching Feather feed. All 424 focused tests and local Swift 6/device builds passed. One publictest1 submission awaits review. This round used the existing iPad Simulator; physical-device and live remote-server acceptance are separate. The delivery record includes scoped cleanup and the remaining general Python metadata diagnostic.
 
 ## 1.7.57（298）内部与无签名已交付，公测待审 / Delivered; external review pending
 

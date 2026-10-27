@@ -77,7 +77,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.57（298）](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)：内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release 与同次 Feather 已独立核验。259 项相关测试通过，真机语音质量与 Skill 安装另行区分。[297 记录](releases/repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)与[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 298; internal and unsigned/Feather available, external review pending. Physical speech and real Skill installation remain separate checks.
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.60（301）](releases/testflight/BUILD_301_DELIVERY.md)：内部 Floe QA 可用，publictest1 等待审核，稳定 latest 无签名 Release 与同次 Feather 已独立核验。424 项相关测试通过，真机与在用远端验证单列；清理和单独发现的 Python 状态查询兼容性项见交付记录。[298 记录](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)与[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 301; internal and unsigned/Feather available, external review pending.
 
 ## 历史研究（结论以现行代码为准）
 
