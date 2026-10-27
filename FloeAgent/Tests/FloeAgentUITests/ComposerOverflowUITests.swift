@@ -57,6 +57,10 @@ final class ComposerOverflowUITests: XCTestCase {
         }
         let expand = app.buttons["composer.expand"]
         XCTAssertTrue(expand.waitForExistence(timeout: 15), "A genuinely overflowing soft-wrapped draft exposes Expand")
+        // Direct editable-width evidence on the real viewport: the field owns
+        // the row's usable width and the natural controls sit below it, not in
+        // a ~100pt column beside the text.
+        assertFieldOwnsComposerRow(app: app, input: input, rowIdentifier: "composer.row")
         let inline = XCTAttachment(screenshot: app.screenshot())
         inline.name = "Composer soft-wrapped overflow"
         inline.lifetime = .keepAlways
@@ -142,6 +146,18 @@ final class ComposerOverflowUITests: XCTestCase {
         XCTAssertLessThanOrEqual(input.frame.height, 400,
                                 "Growth stays inside the composer height budget, then scrolls")
 
+        // 2b. Direct editable-width evidence at the rejected layout: the
+        //     shipped screenshot squeezed the text into ~100pt beside five
+        //     44pt controls. The live field must now own the row's usable
+        //     width and the controls must reflow below it.
+        assertFieldOwnsComposerRow(app: app, input: input, rowIdentifier: "composer.row")
+        XCTAssertGreaterThanOrEqual(input.frame.width, 240,
+                                    "the launchpad's editable column must be practical, not a squeeze")
+        let stacked = XCTAttachment(screenshot: XCUIDevice.shared.screenshot())
+        stacked.name = "New Task composer: field owns the row, controls below (device screenshot)"
+        stacked.lifetime = .keepAlways
+        add(stacked)
+
         // 3. The single logical line was never mutated by layout.
         XCTAssertEqual(input.value as? String, mixed,
                        "Wrapping and growth must not alter the draft")
@@ -170,5 +186,30 @@ final class ComposerOverflowUITests: XCTestCase {
         finalShot.name = "New Task composer wrapped with newline"
         finalShot.lifetime = .keepAlways
         add(finalShot)
+    }
+
+    /// Direct measurement against the live host: the editable field must own
+    /// (essentially) the whole composer row at a constrained width, and the
+    /// natural controls must sit below the multiline field instead of beside
+    /// it. The row's own accessibility frame is the width the real composer
+    /// actually gives the field — a measured relation, not a screenshot
+    /// guess and not a re-stated arithmetic.
+    private func assertFieldOwnsComposerRow(
+        app: XCUIApplication,
+        input: XCUIElement,
+        rowIdentifier: String
+    ) {
+        let row = app.descendants(matching: .any).matching(identifier: rowIdentifier).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10),
+                      "the composer row must expose its live width")
+        XCTAssertGreaterThan(row.frame.width, 200, "the composer row must be measured on screen")
+        XCTAssertGreaterThanOrEqual(input.frame.width / row.frame.width, 0.90,
+            "the editable field must own the row's usable width, not a fraction beside the controls")
+        XCTAssertGreaterThanOrEqual(input.frame.width, 200,
+            "the editable text column must stay above the shared practical minimum")
+        let send = app.buttons["composer.send"]
+        XCTAssertTrue(send.exists)
+        XCTAssertGreaterThanOrEqual(send.frame.minY, input.frame.maxY - 1,
+            "natural controls must reflow below the multiline field")
     }
 }

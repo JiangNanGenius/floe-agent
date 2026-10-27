@@ -858,7 +858,14 @@ struct ThreadComposerView: View {
     }
 
     private var standardInputRow: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        // One responsive row for the field and its natural controls: the
+        // compact single row is kept while the text column is usable, and a
+        // narrow host or a multiline draft gives the field the row's full
+        // width with the controls reflowed directly below it. The field is
+        // the SAME subview in both placements (one `Layout`, never a
+        // re-created branch), so first responder, caret, undo and an active
+        // IME composition survive the reflow.
+        ComposerResponsiveRow(isFieldOverflowing: isInlineFieldOverflowing) {
             if !temporary {
                 Menu {
                 Button {
@@ -911,6 +918,9 @@ struct ThreadComposerView: View {
             .buttonStyle(.plain)
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .accessibilityLabel("composer.attach")
+            // The attachment menu keeps the leading edge of the reflowed
+            // control row; Expand/mic/voice/Stop/Send trail on the right.
+            .composerResponsiveLeadingControl()
             }
 
             // Multiline field: Return inserts a newline on both keyboards;
@@ -976,6 +986,7 @@ struct ThreadComposerView: View {
             .contentShape(Rectangle())
             .accessibilityLabel(composerPlaceholder)
             .accessibilityIdentifier("composer.input")
+            .composerResponsiveFieldSlot()
 
             // The full editor control appears only once the inline field has
             // reached its height cap and scrolls: short prompts keep the
@@ -1074,6 +1085,16 @@ struct ThreadComposerView: View {
             .accessibilityLabel(sendAccessibilityLabel)
             .accessibilityIdentifier("composer.send")
         }
+        // Identifies the row this composer actually gives the field, so the
+        // practical editable-width check can be tied to the live host width
+        // instead of a screenshot guess. `children: .contain` makes the row a
+        // native container element that RETAINS its children: the field,
+        // Expand, mic, continuous voice, Stop and Send keep their own
+        // identifiers and hit targets (without containment the container
+        // identifier propagates and overwrites them, the same failure that
+        // hit the Skill and sidebar rows).
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("composer.row")
         .padding(.horizontal, 12)
         .padding(.top, 8)
     }

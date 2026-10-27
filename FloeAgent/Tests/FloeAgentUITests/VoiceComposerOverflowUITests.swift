@@ -33,7 +33,27 @@ final class VoiceComposerOverflowUITests: XCTestCase {
         XCTAssertGreaterThan(input.frame.height, initialHeight + 8)
         XCTAssertLessThan(input.frame.height, 300)
         XCTAssertEqual(input.value as? String, text)
+        // Direct editable-width evidence in the real voice panel: the field
+        // owns the row's usable width and the natural controls (attachment,
+        // Expand, send) reflow below the multiline draft. The compact 390pt
+        // fixture and the full-width panel both take this same row.
+        let row = app.descendants(matching: .any).matching(identifier: "voice.composer.row").firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10),
+                      "the voice composer row must expose its live width")
+        XCTAssertGreaterThan(row.frame.width, 200)
+        XCTAssertGreaterThanOrEqual(input.frame.width / row.frame.width, 0.90,
+            "the voice field must own the row's usable width, not a fraction beside its controls")
+        XCTAssertGreaterThanOrEqual(input.frame.width, 200,
+            "the voice editable column must stay above the shared practical minimum")
+        let send = app.buttons["voice.composer.send"]
+        XCTAssertTrue(send.exists)
+        XCTAssertGreaterThanOrEqual(send.frame.minY, input.frame.maxY - 1,
+            "voice controls must reflow below the multiline field")
         keepScreenshot(app, name: "Voice composer wrapped at real width")
+        let deviceShot = XCTAttachment(screenshot: XCUIDevice.shared.screenshot())
+        deviceShot.name = "Voice composer: field owns the row, controls below (device screenshot)"
+        deviceShot.lifetime = .keepAlways
+        add(deviceShot)
 
         expand.tap()
         let editor = app.textViews["composer.editor.input"]

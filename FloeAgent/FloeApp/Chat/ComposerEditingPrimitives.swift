@@ -153,6 +153,79 @@ enum ComposerFieldLayout {
     }
 }
 
+/// Row composition for the composer: keep the natural controls beside the
+/// field while the text keeps a usable column, otherwise give the field the
+/// row's full width and reflow the controls into a second row.
+///
+/// The shipped New Task screenshots showed the failure this rule prevents:
+/// five 44pt controls in one row left only a sliver (~65pt on the canonical
+/// iPad in portrait) for the editable text, so even a modest mixed draft
+/// broke into a ragged staircase of tiny lines and an unbroken URL could
+/// never read as a URL. The rule is pure geometry at the row's real width:
+/// - `minimumInlineTextWidth` is the practical minimum width of the editable
+///   column while the controls stay beside it;
+/// - the same draft measured at the flanked width and at the full row width
+///   tells whether the text wraps only because the controls took its space;
+/// - the host's overflow verdict (the field scrolls at its current width)
+///   means the draft is multiline at its widest available slot as well.
+///
+/// The decision is placement-independent: it is computed from the row width,
+/// the controls' measured widths and the draft's heights at both widths,
+/// never from the layout it produced, so re-evaluating it after a flip cannot
+/// oscillate. Stacking only ever widens the field (so its measured block can
+/// never grow), and a verdict recorded at the narrower flanked width is
+/// re-derived at the wider laid-out width by the field's own report.
+enum ComposerResponsiveLayoutPolicy {
+    /// Practical minimum width for the editable text column while the
+    /// controls stay beside it. Below this the field owns the whole row.
+    static let minimumInlineTextWidth: CGFloat = 200
+
+    /// Slack when comparing the same draft measured at two widths. Different
+    /// line counts differ by whole line heights; only TextKit sub-pixel
+    /// rounding is tolerated here.
+    static let multilineHeightTolerance: CGFloat = 1
+
+    /// Width the field keeps when `controlsCount` controls share its row,
+    /// with `spacing` between every adjacent pair.
+    static func inlineTextWidth(
+        rowWidth: CGFloat,
+        controlsWidth: CGFloat,
+        controlsCount: Int,
+        spacing: CGFloat
+    ) -> CGFloat {
+        guard controlsCount > 0 else { return max(rowWidth, 0) }
+        return max(0, rowWidth - controlsWidth - spacing * CGFloat(controlsCount))
+    }
+
+    /// True when the field must own the full row and the controls reflow into
+    /// the row below it.
+    static func stacks(
+        rowWidth: CGFloat,
+        controlsWidth: CGFloat,
+        controlsCount: Int,
+        spacing: CGFloat,
+        fieldHeightAtInlineWidth: CGFloat,
+        fieldHeightAtFullWidth: CGFloat,
+        isFieldOverflowing: Bool
+    ) -> Bool {
+        let inlineWidth = inlineTextWidth(
+            rowWidth: rowWidth,
+            controlsWidth: controlsWidth,
+            controlsCount: controlsCount,
+            spacing: spacing
+        )
+        // Narrow host: the field would get less than a usable reading column.
+        if inlineWidth < minimumInlineTextWidth { return true }
+        // The draft only wraps because the controls took its width.
+        if fieldHeightAtInlineWidth > fieldHeightAtFullWidth + multilineHeightTolerance {
+            return true
+        }
+        // Multiline at the widest available slot (the host reports the field
+        // scrolls there), so the text still deserves the whole row.
+        return isFieldOverflowing
+    }
+}
+
 /// Rough token estimate for the composer footer. CJK scalars ≈ 1 token each;
 /// everything else ≈ 4 scalars per token. Always presented as an estimate,
 /// never as an exact provider count.

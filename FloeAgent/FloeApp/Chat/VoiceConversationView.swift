@@ -470,13 +470,21 @@ struct VoiceConversationView: View {
                     }
                 }
             }
-            HStack(alignment: .bottom, spacing: 10) {
+            // One responsive row, shared with the task composer: the compact
+            // single row is kept while the text column is usable, and a
+            // narrow host or multiline draft gives the field the row's full
+            // width with the controls directly below it. The field subview is
+            // never re-created (one `Layout`), so typing state, caret, undo
+            // and the live IME composition belong to the SAME editing surface
+            // before and after the reflow.
+            ComposerResponsiveRow(spacing: 10, isFieldOverflowing: composerOverflows) {
                 if !session.temporary {
                     Menu {
                         Button("chat.thread_composer_view.import_attachment", systemImage: "doc") { showsFiles = true }
                         PhotosPicker(selection: $selectedPhoto, matching: .images) { Label("voice.action.photo", systemImage: "photo") }
                     } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                     .disabled(importing)
+                    .composerResponsiveLeadingControl()
                 }
                 ComposerReturnField(
                     text: $draft,
@@ -497,6 +505,7 @@ struct VoiceConversationView: View {
                     if width > 0, abs(width - (composerWidth ?? 0)) > 0.5 { composerWidth = width }
                 }
                 .accessibilityIdentifier("voice.composer.input")
+                .composerResponsiveFieldSlot()
                 if composerOverflows {
                     Button {
                         showsFullEditor = true
@@ -512,7 +521,15 @@ struct VoiceConversationView: View {
                 Button("voice.action.send_now", systemImage: "arrow.up.circle.fill") { sendTyped() }
                     .font(.title2).labelStyle(.iconOnly).frame(width: 44, height: 44)
                     .disabled(!canSendTyped)
+                    .accessibilityIdentifier("voice.composer.send")
             }
+            // Identifies the row this screen actually gives the field, so the
+            // practical editable-width check can be tied to the live host
+            // width instead of a screenshot guess. `children: .contain` keeps
+            // the voice field, Expand, attachment and Send as their own
+            // elements; the container identifier must never overwrite them.
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("voice.composer.row")
             .padding(.horizontal, 8)
             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22))
         }

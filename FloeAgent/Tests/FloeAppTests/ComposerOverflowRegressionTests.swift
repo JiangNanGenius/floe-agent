@@ -525,5 +525,387 @@ struct ComposerOverflowRegressionTests {
         #expect(ComposerIMEPolicy.allowsScrollTransition(hasMarkedText: false))
         #expect(!ComposerIMEPolicy.allowsScrollTransition(hasMarkedText: true))
     }
+
+    // MARK: - Responsive row: the editable field's real width
+
+    /// The shipped New Task defect was geometric, not textual. On the
+    /// canonical iPad in portrait with the sidebar open (the rejected
+    /// `qa/ui-second-attachments` screenshot) the detail pane is ~421pt; the
+    /// launchpad's 24pt band padding, ThreadComposerView's 12pt card inset and
+    /// the input row's 12pt padding leave the row ~325pt, and five 44pt
+    /// controls plus their five 8pt gaps left ~65pt for the field — the
+    /// ragged staircase of tiny lines in the screenshot. These pins are the
+    /// exact arithmetic the row layout applies, so a regression to that
+    /// column fails here before it reaches a screenshot.
+    @Test("Responsive row: the shipped launchpad width gives the field the whole row")
+    func responsivePolicyStacksAtTheShippedLaunchpadWidth() {
+        let control = FloeTheme.minimumTarget
+        let row = 421 - 48 - 24 - 24
+        let inline = ComposerResponsiveLayoutPolicy.inlineTextWidth(
+            rowWidth: row,
+            controlsWidth: 5 * control,
+            controlsCount: 5,
+            spacing: 8
+        )
+        #expect(row == 325)
+        #expect(inline == 325 - 220 - 40,
+                "the flanked column is the row minus every control and gap")
+        #expect(inline == 65,
+                "the shipped column was a ~65pt sliver, matching the screenshot")
+        #expect(inline < ComposerResponsiveLayoutPolicy.minimumInlineTextWidth)
+        #expect(ComposerResponsiveLayoutPolicy.stacks(
+            rowWidth: row,
+            controlsWidth: 5 * control,
+            controlsCount: 5,
+            spacing: 8,
+            fieldHeightAtInlineWidth: 44,
+            fieldHeightAtFullWidth: 44,
+            isFieldOverflowing: false
+        ), "a ~65pt text column must never be accepted beside the controls")
+    }
+
+    @Test("Responsive row: a wide row with a short draft keeps the compact single row")
+    func responsivePolicyKeepsWideShortDraftCompact() {
+        #expect(!ComposerResponsiveLayoutPolicy.stacks(
+            rowWidth: 900,
+            controlsWidth: 5 * FloeTheme.minimumTarget,
+            controlsCount: 5,
+            spacing: 8,
+            fieldHeightAtInlineWidth: 44,
+            fieldHeightAtFullWidth: 44,
+            isFieldOverflowing: false
+        ), "a 636pt column with one short line stays the calm compact row")
+    }
+
+    @Test("Responsive row: a draft that only wraps beside the controls reflows them below")
+    func responsivePolicyStacksWhenOnlyTheControlsForceWrapping() {
+        #expect(ComposerResponsiveLayoutPolicy.stacks(
+            rowWidth: 900,
+            controlsWidth: 5 * FloeTheme.minimumTarget,
+            controlsCount: 5,
+            spacing: 8,
+            fieldHeightAtInlineWidth: 88,
+            fieldHeightAtFullWidth: 44,
+            isFieldOverflowing: false
+        ), "two lines beside the controls but one line across the row belongs below")
+    }
+
+    @Test("Responsive row: the host overflow verdict stacks the row at its widest slot")
+    func responsivePolicyStacksForTheHostOverflowVerdict() {
+        #expect(ComposerResponsiveLayoutPolicy.stacks(
+            rowWidth: 900,
+            controlsWidth: 5 * FloeTheme.minimumTarget,
+            controlsCount: 5,
+            spacing: 8,
+            fieldHeightAtInlineWidth: 192,
+            fieldHeightAtFullWidth: 192,
+            isFieldOverflowing: true
+        ), "a draft scrolling at the widest slot is multiline and gets the whole row")
+    }
+
+    @Test("Responsive row: a collapsed host reports an empty row instead of a 1pt column")
+    func responsivePolicyNeverMeasuresACollapsedRow() {
+        // SwiftUI proposes zero width to collapsed views; the layout must not
+        // turn that into a "1pt text column" that looks like a real verdict.
+        #expect(ComposerResponsiveLayoutPolicy.inlineTextWidth(
+            rowWidth: 0,
+            controlsWidth: 220,
+            controlsCount: 5,
+            spacing: 8
+        ) == 0)
+        #expect(ComposerResponsiveLayoutPolicy.inlineTextWidth(
+            rowWidth: 120,
+            controlsWidth: 0,
+            controlsCount: 0,
+            spacing: 8
+        ) == 120)
+    }
+
+    /// Real host geometry: the production row + the production field are
+    /// mounted in a real UIWindow at the viewport width the New Task
+    /// launchpad actually gives them, and the editable width is read from
+    /// the placed frames — never re-stated from the policy arithmetic.
+    @Test("Real host: a constrained row gives the live field the full width, controls below")
+    func hostedRowGivesTheFieldTheFullRowAtConstrainedWidth() async throws {
+        let fixture = try await hostedResponsiveRow(width: 325, draft: Self.mixedDraft)
+        defer { fixture.dismantle() }
+        // The shipped launchpad row is ~325pt. With four 44pt controls
+        // (attach, Expand, mic, send) and their gaps the flanked column is
+        // 117pt — far below the practical minimum — so the field must own the
+        // row and the controls must reflow below it.
+        #expect(fixture.probe.row.width > 324)
+        #expect(fixture.probe.field.width > 324,
+                "the editable field owns the row, not a ~117pt column beside the controls")
+        #expect(fixture.probe.field.width >= fixture.probe.row.width - 1,
+                "the field width is the row's actual available width, measured on the host")
+        #expect(fixture.probe.field.width >= ComposerResponsiveLayoutPolicy.minimumInlineTextWidth,
+                "the practical editable width must never fall below the shared minimum")
+        #expect(fixture.textView.frame.width > 324,
+                "the live UITextView is laid out at the row width")
+        #expect(fixture.probe.leading.minY >= fixture.probe.field.maxY - 0.5,
+                "the attachment control reflows below the text")
+        #expect(fixture.probe.trailing.minY >= fixture.probe.field.maxY - 0.5,
+                "action controls reflow below the text")
+        #expect(fixture.probe.trailing.maxX <= fixture.probe.row.maxX + 0.5,
+                "actions stay inside the row's trailing edge")
+        #expect(fixture.probe.leading.minX <= fixture.probe.row.minX + 0.5,
+                "the attachment control keeps the leading edge")
+        withExtendedLifetime(fixture) {}
+    }
+
+    /// The identity invariant the whole reflow rests on: inline → stacked is
+    /// re-placement inside one `Layout`, so the SAME UITextView/Coordinator
+    /// keeps first responder eligibility, caret, undo association and marked
+    /// text. A `ViewThatFits`/duplicate-branch would fail this.
+    @Test("Real host: reflowing the row never remounts the field or moves its caret")
+    func hostedRowReflowPreservesTheEditingSurface() async throws {
+        let undo = UndoManager()
+        let fixture = try await hostedResponsiveRow(
+            width: 900,
+            draft: "短草稿",
+            undoManager: undo
+        )
+        defer { fixture.dismantle() }
+        // Wide + one short line: the compact row, field beside the controls.
+        #expect(fixture.probe.field.width > 550)
+        #expect(fixture.probe.field.width < fixture.probe.row.width - 150,
+                "the compact row keeps the field beside its controls")
+        #expect(fixture.probe.trailing.minY < fixture.probe.field.maxY + 1,
+                "actions share the field's row while compact")
+        let identity = ObjectIdentifier(fixture.textView)
+        // The user's caret is where the reflow must leave it — untouched.
+        fixture.textView.selectedRange = NSRange(location: 3, length: 0)
+        // Host verdict flip (the production `onOverflowChange` state): the row
+        // reflows with the SAME draft and the SAME editing surface.
+        fixture.model.manualOverflow = true
+        let flipped = try await waitForFieldWidth(
+            fixture,
+            atLeast: fixture.probe.row.width - 2
+        )
+        #expect(flipped, "the multiline verdict must give the field the whole row")
+        #expect(fixture.probe.trailing.minY >= fixture.probe.field.maxY - 0.5,
+                "controls move below the reflowed field")
+        let liveViews = Self.hardwareTextViews(in: fixture.host.view)
+        #expect(liveViews.count == 1, "one editing surface for the whole composer")
+        #expect(liveViews.first.map(ObjectIdentifier.init) == identity,
+                "the reflow must not remount the field")
+        #expect(fixture.textView.selectedRange.location == 3,
+                "the caret survives the reflow")
+        #expect(fixture.textView.undoManager === undo,
+                "the shared undo history stays attached across the reflow")
+        #expect(fixture.textView.text == "短草稿",
+                "the reflow never rewrites the draft")
+        withExtendedLifetime(fixture) {}
+    }
+
+    @Test("Real host: a long draft on a wide row reflows to the full width and keeps one field")
+    func hostedRowReflowsForALongDraftAndKeepsOneField() async throws {
+        let fixture = try await hostedResponsiveRow(width: 900, draft: "短草稿")
+        defer { fixture.dismantle() }
+        let identity = ObjectIdentifier(fixture.textView)
+        let compactWidth = fixture.probe.field.width
+        // Production programmatic swap at the same host width: the field's
+        // text binding changes, `updateUIView` re-derives, the row re-measures.
+        fixture.model.text = Self.mixedDraft
+        let reflowed = try await waitForFieldWidth(
+            fixture,
+            atLeast: fixture.probe.row.width - 2
+        )
+        #expect(reflowed, "a wrapping draft must own the full row even on a wide host")
+        #expect(fixture.probe.field.width > compactWidth + 100,
+                "the reflow must widen the editable column, not merely stack it")
+        #expect(fixture.probe.trailing.minY >= fixture.probe.field.maxY - 0.5,
+                "controls reflow below the multiline field")
+        #expect(fixture.textView.text == Self.mixedDraft,
+                "the reflow never alters the draft")
+        #expect(Self.hardwareTextViews(in: fixture.host.view).count == 1)
+        #expect(Self.hardwareTextViews(in: fixture.host.view).first.map(ObjectIdentifier.init)
+            == identity, "the same editing surface is retained")
+        withExtendedLifetime(fixture) {}
+    }
+
+    // MARK: - Real hosted-row fixture
+
+    private func hostedResponsiveRow(
+        width: CGFloat,
+        draft: String,
+        undoManager: UndoManager? = nil
+    ) async throws -> HostedResponsiveRowFixture {
+        let model = ComposerRowFixtureModel(text: draft)
+        let probe = ResponsiveRowProbe()
+        let host = UIHostingController(rootView: ComposerRowFixtureHost(
+            model: model,
+            probe: probe,
+            undoManager: undoManager,
+            width: width
+        ))
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        let previousKeyWindow = scene?.windows.first { $0.isKeyWindow }
+        let window: UIWindow
+        if let scene {
+            window = UIWindow(windowScene: scene)
+        } else {
+            window = UIWindow(frame: CGRect(x: 0, y: 0, width: width, height: 400))
+        }
+        window.frame = CGRect(x: 0, y: 0, width: width, height: 400)
+        window.rootViewController = host
+        window.windowLevel = .normal + 1
+        window.makeKeyAndVisible()
+        func framesArrived() -> Bool {
+            probe.row.width > 0 && probe.field.width > 0
+                && probe.leading.width > 0 && probe.trailing.width > 0
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !framesArrived() && Date() < deadline {
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let textView = try #require(Self.hardwareTextViews(in: host.view).first,
+                                    "the hosted row must mount the real composer field")
+        // A settled geometry pass before the assertions read the frames.
+        for _ in 0..<3 {
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return HostedResponsiveRowFixture(
+            host: host,
+            window: window,
+            previousKeyWindow: previousKeyWindow,
+            probe: probe,
+            model: model,
+            textView: textView
+        )
+    }
+
+    /// Polls until the row places the field at (at least) the requested
+    /// width, driving the same layout pass the app's update cycle runs.
+    private func waitForFieldWidth(
+        _ fixture: HostedResponsiveRowFixture,
+        atLeast width: CGFloat
+    ) async throws -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if fixture.probe.field.width >= width { return true }
+            fixture.host.view.setNeedsLayout()
+            fixture.host.view.layoutIfNeeded()
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        return fixture.probe.field.width >= width
+    }
+
+    private static func hardwareTextViews(in view: UIView) -> [HardwareReturnTextView] {
+        var found: [HardwareReturnTextView] = []
+        if let textView = view as? HardwareReturnTextView { found.append(textView) }
+        for subview in view.subviews {
+            found.append(contentsOf: hardwareTextViews(in: subview))
+        }
+        return found
+    }
+}
+
+/// Frames the hosted row actually placed, in window coordinates.
+@MainActor
+private final class ResponsiveRowProbe {
+    var row = CGRect.zero
+    var field = CGRect.zero
+    var leading = CGRect.zero
+    var trailing = CGRect.zero
+}
+
+/// Mutable state of one hosted row: the draft the field binds to and the
+/// host overflow verdict that reflows it, driven exactly like production.
+/// `reportedOverflow` is the live field's own verdict (the production
+/// `onOverflowChange` feed); `manualOverflow` lets a test flip the host
+/// verdict with the draft untouched, to prove the caret survives a reflow.
+@MainActor
+private final class ComposerRowFixtureModel: ObservableObject {
+    @Published var text: String
+    @Published var reportedOverflow = false
+    @Published var manualOverflow = false
+
+    var overflowing: Bool { manualOverflow || reportedOverflow }
+
+    init(text: String) {
+        self.text = text
+    }
+}
+
+/// The production responsive row with production-width controls (attachment,
+/// Expand, mic, send) around the production `ComposerReturnField`.
+private struct ComposerRowFixtureHost: View {
+    @ObservedObject var model: ComposerRowFixtureModel
+    let probe: ResponsiveRowProbe
+    let undoManager: UndoManager?
+    let width: CGFloat
+
+    private var control: CGFloat { FloeTheme.minimumTarget }
+
+    var body: some View {
+        ComposerResponsiveRow(isFieldOverflowing: model.overflowing) {
+            Color.clear
+                .frame(width: control, height: control)
+                .composerResponsiveLeadingControl()
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .global)
+                } action: { frame in
+                    Task { @MainActor in probe.leading = frame }
+                }
+            ComposerReturnField(
+                text: $model.text,
+                placeholder: "composer.test.placeholder",
+                canSend: true,
+                lineLimit: 1...8,
+                maxHeightBudget: nil,
+                hostAvailableWidth: nil,
+                undoManager: undoManager,
+                onOverflowChange: { overflowing in
+                    Task { @MainActor in model.reportedOverflow = overflowing }
+                },
+                onReturn: {}
+            )
+            .frame(maxWidth: .infinity, minHeight: control, alignment: .leading)
+            .composerResponsiveFieldSlot()
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .global)
+            } action: { frame in
+                Task { @MainActor in probe.field = frame }
+            }
+            Color.clear.frame(width: control, height: control)
+            Color.clear.frame(width: control, height: control)
+            Color.clear
+                .frame(width: control, height: control)
+                .onGeometryChange(for: CGRect.self) { proxy in
+                    proxy.frame(in: .global)
+                } action: { frame in
+                    Task { @MainActor in probe.trailing = frame }
+                }
+        }
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .global)
+        } action: { frame in
+            Task { @MainActor in probe.row = frame }
+        }
+        .frame(width: width)
+    }
+}
+
+private struct HostedResponsiveRowFixture {
+    let host: UIHostingController<ComposerRowFixtureHost>
+    let window: UIWindow
+    let previousKeyWindow: UIWindow?
+    let probe: ResponsiveRowProbe
+    let model: ComposerRowFixtureModel
+    let textView: HardwareReturnTextView
+
+    @MainActor
+    func dismantle() {
+        window.isHidden = true
+        window.rootViewController = nil
+        previousKeyWindow?.makeKey()
+    }
 }
 #endif
