@@ -13,6 +13,7 @@ import com.floe.android.core.officeengine.precision.OfficePrecisionContentKind
 import com.floe.android.core.officeengine.precision.OfficePrecisionContentReadback
 import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionProtocol
+import com.floe.android.core.officeengine.precision.OfficePrecisionPreEffectEvidence
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
 import com.floe.android.core.officeengine.precision.OfficePrecisionResult
 import com.floe.android.core.officeengine.precision.OfficePrecisionState
@@ -719,6 +720,19 @@ private fun writePrecisionResult(reply: Parcel?, result: OfficePrecisionResult) 
             reply.writeString(answer.contentReadback.name)
             reply.writeString(answer.workingCopySha256)
             reply.writeString(answer.consumedTargetHandle)
+            val evidence = answer.preEffectEvidence
+            reply.writeInt(if (evidence == null) 0 else 1)
+            if (evidence != null) {
+                reply.writeString(evidence.opId)
+                reply.writeString(evidence.sessionToken)
+                reply.writeLong(evidence.generation)
+                reply.writeString(evidence.targetHandle)
+                reply.writeString(evidence.partId)
+                reply.writeLong(evidence.inputEpoch)
+                reply.writeLong(evidence.editEpoch)
+                reply.writeString(evidence.selectionText)
+                reply.writeInt(evidence.selectionByteCount)
+            }
         }
     }
 }
@@ -802,12 +816,30 @@ private fun readPrecisionResult(reply: Parcel): OfficePrecisionResult? {
             val readback = readbackName?.let { name ->
                 runCatching { OfficePrecisionContentReadback.valueOf(name) }.getOrNull()
             } ?: OfficePrecisionContentReadback.NOT_ATTEMPTED
+            val workingCopySha256 = reply.readString()
+            val consumedTargetHandle = reply.readString()
+            val preEffectEvidence = if (reply.readInt() == 1) {
+                OfficePrecisionPreEffectEvidence(
+                    opId = reply.readString().orEmpty(),
+                    sessionToken = reply.readString().orEmpty(),
+                    generation = reply.readLong(),
+                    targetHandle = reply.readString().orEmpty(),
+                    partId = reply.readString().orEmpty(),
+                    inputEpoch = reply.readLong(),
+                    editEpoch = reply.readLong(),
+                    selectionText = reply.readString().orEmpty(),
+                    selectionByteCount = reply.readInt(),
+                )
+            } else {
+                null
+            }
             OfficePrecisionAnswer.MutationApplied(
                 steps = steps,
                 pastedBytes = pastedBytes,
                 contentReadback = readback,
-                workingCopySha256 = reply.readString(),
-                consumedTargetHandle = reply.readString(),
+                workingCopySha256 = workingCopySha256,
+                consumedTargetHandle = consumedTargetHandle,
+                preEffectEvidence = preEffectEvidence,
             )
         }
         else -> null

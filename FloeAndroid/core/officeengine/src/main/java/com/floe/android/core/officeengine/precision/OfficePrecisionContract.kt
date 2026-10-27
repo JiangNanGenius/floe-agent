@@ -229,10 +229,11 @@ enum class OfficePrecisionAction(
     ),
 
     /**
-     * Sets ONE Calc cell's content. Internal sequence: `.uno:GoToCell` (no
+      * Sets ONE Calc cell's content. Internal sequence: `.uno:GoToCell` (no
      * ack frame in the pinned producer) → mandatory semantic POSITION
      * readback via the `.uno:CellCursor` pull (cursor MUST be at the
-     * requested cell before any effect, else FAILED) → paste
+     * requested cell before any effect, else FAILED) → captured-part status
+     * check → fresh single-cell BEFORE selection readback → paste
      * (`pasteresult:` producer completion) → confirming position readback →
      * soft CONTENT readback for LITERAL intent (exact match upgrades to
      * MUTATION_VERIFIED; explicit comparable conflict becomes UNKNOWN;
@@ -512,6 +513,28 @@ data class OfficePrecisionTarget(
     val expiresAtElapsedMs: Long,
 )
 
+/**
+ * Fresh BEFORE-content evidence acquired by the content operation itself.
+ * The target status and selection pulls run in this exact fenced op AFTER any
+ * cell navigation/cursor proof and BEFORE paste. This is not an ambient latest
+ * selection observation: identity, logical part and both native epochs are
+ * captured from the consumed target at the actual readback.
+ *
+ * This internal typed shape is appended to MutationApplied's private Binder
+ * receipt. Both the engine and App sides are compiled into the same Full APK.
+ */
+data class OfficePrecisionPreEffectEvidence(
+    val opId: String,
+    val sessionToken: String,
+    val generation: Long,
+    val targetHandle: String,
+    val partId: String,
+    val inputEpoch: Long,
+    val editEpoch: Long,
+    val selectionText: String,
+    val selectionByteCount: Int,
+)
+
 /** Typed answer payload of one QUERY_OBSERVED / NATIVE_COMPLETED / MUTATION_VERIFIED result. */
 sealed class OfficePrecisionAnswer {
     /** CAPTURE_TARGET: the minted target context (handle + dual revision). */
@@ -530,7 +553,8 @@ sealed class OfficePrecisionAnswer {
         val documentModified: Boolean?,
     ) : OfficePrecisionAnswer()
 
-    /** QUERY_TEXT_SELECTION: the producer's own selection content answer. */
+    /** QUERY_TEXT_SELECTION or an ordinary SELECT_ALL_TEXT synchronous
+     * readback: the producer's own selection content answer. */
     data class TextSelection(
         val text: String,
         val byteCount: Int,
@@ -558,9 +582,8 @@ sealed class OfficePrecisionAnswer {
     data class SlideSelected(val shownPart: String) : OfficePrecisionAnswer()
 
     /**
-     * SELECT_ALL_TEXT: byte count of the non-empty selection readback
-     * observed after the dispatched select-all (partial postcondition;
-     * content itself is not carried by this answer).
+     * SELECT_ALL_TEXT: byte count of a non-empty complex/oversize selection
+     * readback whose content is unavailable (partial postcondition only).
      */
     data class TextSelected(val effectPayloadBytes: Int) : OfficePrecisionAnswer()
 
@@ -579,6 +602,10 @@ sealed class OfficePrecisionAnswer {
         val workingCopySha256: String?,
         /** The consumed target handle (single-use CAS). */
         val consumedTargetHandle: String?,
+        /** Fresh evidence read by THIS operation before its paste; null only
+         * for a defensive small-receipt fallback or hand-built legacy test
+         * value, never a substitute acquisition path in production. */
+        val preEffectEvidence: OfficePrecisionPreEffectEvidence? = null,
     ) : OfficePrecisionAnswer()
 }
 

@@ -24,6 +24,7 @@ internal object SemanticDelta {
 
     fun proveTextDelta(
         baselineText: String?,
+        baselineClipboardText: String?,
         savedText: String,
         priorSelectionText: String?,
         expectedText: String,
@@ -36,7 +37,12 @@ internal object SemanticDelta {
         if (prior.isEmpty()) {
             return proveInsertion(baselineText, savedText, expectedText)
         }
-        if (baselineText == prior && savedText == expectedText) {
+        if (savedText == expectedText &&
+            (baselineText == prior || baselineClipboardText == prior)
+        ) {
+            // The alternate DOCX form is an exact, structure-derived Writer
+            // clipboard rendering (including list labels), never a relaxed
+            // comparison. Partial replacement still uses ONLY baselineText.
             return TextDeltaProof.Proven(SCOPE_WHOLE_BODY_REPLACED)
         }
         return proveReplacement(baselineText, savedText, prior, expectedText)

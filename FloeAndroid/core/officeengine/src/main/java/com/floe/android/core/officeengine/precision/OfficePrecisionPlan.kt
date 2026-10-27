@@ -123,6 +123,15 @@ internal object OfficePrecisionPlan {
          */
         data class StatusSelectedPartMatches(val partId: String) : StepCheck()
 
+        /** BEFORE content: current native part must still equal the consumed
+         * capture's part. This is a fresh synchronous read, not a cached fact. */
+        object PreEffectTargetStatus : StepCheck()
+
+        /** BEFORE content: retain this op's real current selection. Empty is
+         * valid insertion evidence. Calc accepts only unambiguous single-cell
+         * plain text; TSV/newline/multi-MIME evidence refuses before paste. */
+        data class PreEffectSelectionContent(val singleCellPlainText: Boolean) : StepCheck()
+
         /**
          * The post-SelectAll `gettextselection` readback must answer with a
          * NON-EMPTY selection (the real byte count alone suffices; content
@@ -163,6 +172,11 @@ internal object OfficePrecisionPlan {
 
     /** Mutation step window (mirrors the proven save-ack bound). */
     const val MUTATION_TIMEOUT_MS = 30_000L
+
+    /** Mandatory BEFORE-evidence pulls are synchronous local kit reads too,
+     * but use a short window so the expanded Calc ladder stays inside the
+     * existing 90 s client / 110 s host / 120 s mailbox outer budgets. */
+    const val PRE_EFFECT_QUERY_TIMEOUT_MS = 5_000L
 
     /** Soft readback window (short: the answer is local and prompt or absent). */
     const val SOFT_READBACK_TIMEOUT_MS = 10_000L
@@ -270,6 +284,24 @@ internal object OfficePrecisionPlan {
             val wire = OfficePrecisionProtocol.pasteText(request.text ?: return null)
                 ?: return null
             listOf(
+                // The ordinary selectSlide/selectAll flows do not themselves
+                // prove a fresh pre-effect selection to the host. Acquire the
+                // actual current part + selection INSIDE this fenced apply,
+                // immediately before content dispatch, for every family.
+                Step(
+                    name = "pre-effect-part-readback",
+                    wire = OfficePrecisionProtocol.CMD_STATUS,
+                    expect = Expectation.StatusAnswer,
+                    check = StepCheck.PreEffectTargetStatus,
+                    timeoutMs = PRE_EFFECT_QUERY_TIMEOUT_MS,
+                ),
+                Step(
+                    name = "pre-effect-selection-readback",
+                    wire = OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION,
+                    expect = Expectation.TextSelectionContent,
+                    check = StepCheck.PreEffectSelectionContent(singleCellPlainText = false),
+                    timeoutMs = PRE_EFFECT_QUERY_TIMEOUT_MS,
+                ),
                 Step(
                     name = "paste-text",
                     wire = wire,
@@ -298,7 +330,7 @@ internal object OfficePrecisionPlan {
             val goWire = OfficePrecisionProtocol.goToCell(address) ?: return null
             val pasteWire = OfficePrecisionProtocol.pasteText(request.text ?: return null)
                 ?: return null
-            val steps = ArrayList<Step>(5)
+            val steps = ArrayList<Step>(7)
             // Navigation has NO ack frame in the pinned producer; the
             // semantic POSITION readback below is the real arrival evidence
             // and runs BEFORE any content effect (target validated first).
@@ -318,6 +350,29 @@ internal object OfficePrecisionPlan {
                     expect = Expectation.CommandValues(OfficePrecisionProtocol.CELL_CURSOR_COMMAND_NAME),
                     check = StepCheck.CursorAt(column, row),
                     timeoutMs = QUERY_TIMEOUT_MS,
+                ),
+            )
+            // Only AFTER GoToCell and the exact cursor proof may the prior
+            // value be acquired: an older A1/ambient selection can never be
+            // attributed to the requested B2/B3/B4 target. The raw reply is
+            // accepted only as unambiguous single-cell plain text (no guessed
+            // TSV terminator/quote decoding); unsupported shapes stop here.
+            steps.add(
+                Step(
+                    name = "pre-effect-part-readback",
+                    wire = OfficePrecisionProtocol.CMD_STATUS,
+                    expect = Expectation.StatusAnswer,
+                    check = StepCheck.PreEffectTargetStatus,
+                    timeoutMs = PRE_EFFECT_QUERY_TIMEOUT_MS,
+                ),
+            )
+            steps.add(
+                Step(
+                    name = "pre-effect-selection-readback",
+                    wire = OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION,
+                    expect = Expectation.TextSelectionContent,
+                    check = StepCheck.PreEffectSelectionContent(singleCellPlainText = true),
+                    timeoutMs = PRE_EFFECT_QUERY_TIMEOUT_MS,
                 ),
             )
             steps.add(

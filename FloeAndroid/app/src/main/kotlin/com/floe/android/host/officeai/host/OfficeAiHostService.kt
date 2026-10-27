@@ -486,11 +486,16 @@ internal class OfficeAiHostService(
             // records the dispatch for its own proof correlation only.
             if (stopSignal()) return OfficeAiWire.failureReply("sessionEnding",
                 "the ticket stopped before dispatch; nothing was sent to the engine")
+            val effectTargetHandle = ticket.required("targetHandle").lowercase(Locale.ROOT)
+            // No ambient selection is bound here. The content plan itself must
+            // acquire fresh target/part/epoch-scoped evidence before paste and
+            // return it inside this op's MutationApplied result; only that
+            // typed result may later enter the verifier's baseline input.
             effects.recordDispatched(OfficeAiEffectRecord(
                 sessionToken = sessionToken,
                 generation = generation,
                 ownerTaskID = bind.ownerTaskID,
-                targetHandle = ticket.required("targetHandle").lowercase(Locale.ROOT),
+                targetHandle = effectTargetHandle,
                 opId = opId,
                 action = action,
                 expectedSha256 = sha256Hex(expectedRaw.toByteArray(Charsets.UTF_8)),
@@ -498,6 +503,11 @@ internal class OfficeAiHostService(
                 workingCopySha256AfterEffect = null,
                 dispatchedAtElapsedMs = ports.elapsedMs(),
             ))
+        }
+        if (action == "selectSlide" || action == "selectAllText") {
+            // A new preparatory action must not inherit an older pending
+            // selection if its own readback fails or content is unavailable.
+            selections.discardPending(sessionToken)
         }
 
         val result = ports.precision(request, timing.commandDeadlineMillis)
@@ -576,6 +586,8 @@ internal class OfficeAiHostService(
                 selectedPart = target.selectedPart,
                 partIndex = target.selectedPart?.toIntOrNull(),
                 documentModified = target.documentModified,
+                inputEpoch = target.inputEpoch,
+                editEpoch = target.editEpoch,
                 workingCopySha256AtCapture = target.workingCopySha256,
                 workingCopyBytesAtCapture = target.workingCopyBytes,
                 baselineFile = baseline?.file,
@@ -594,8 +606,12 @@ internal class OfficeAiHostService(
                     "documentModified" to answer.documentModified,
                 )
                 is OfficePrecisionAnswer.TextSelection -> {
-                    selections.observe(OfficeAiSelectionFact(sessionToken, generation,
-                        answer.text, answer.byteCount, ports.elapsedMs()))
+                    // Retain ordinary text for the ambient public-read view
+                    // only (never effect proof); multi-MIME JSON is not text.
+                    if (!answer.multiFormatJson) {
+                        selections.observe(OfficeAiSelectionFact(sessionToken, generation,
+                            answer.text, answer.byteCount, ports.elapsedMs()))
+                    }
                     facts = linkedMapOf(
                         "selectionText" to answer.text,
                         "selectionByteCount" to answer.byteCount,
@@ -618,10 +634,21 @@ internal class OfficeAiHostService(
                     "shownPart" to answer.shownPart, "selectedPart" to answer.shownPart,
                     "partIndex" to answer.shownPart.toIntOrNull(),
                 )
+                is OfficePrecisionAnswer.TextSelection -> {
+                    // Keep this preparatory reply byte-count-only. Its text
+                    // remains an ambient public-read observation; APPLY_TEXT
+                    // must acquire its own fresh causal evidence before paste.
+                    if (!answer.multiFormatJson) {
+                        selections.observe(OfficeAiSelectionFact(sessionToken, generation,
+                            answer.text, answer.byteCount, ports.elapsedMs()))
+                    }
+                    facts = linkedMapOf("selectedTextBytes" to answer.byteCount)
+                }
                 is OfficePrecisionAnswer.TextSelected -> facts = linkedMapOf(
                     "selectedTextBytes" to answer.effectPayloadBytes,
                 )
                 is OfficePrecisionAnswer.MutationApplied -> {
+                    bindPreEffectEvidence(result, answer)
                     readback = camelReadback(answer.contentReadback)
                 }
                 else -> Unit
@@ -636,6 +663,41 @@ internal class OfficeAiHostService(
             putOptional("contentReadback", readback)
             putFacts(facts)
         }
+    }
+
+    /** Bind only the causal evidence carried by this exact content result.
+     * Any absent/mismatched fact simply leaves semantic delta unproven; the
+     * mandatory core plan has already refused invalid evidence BEFORE paste. */
+    private fun bindPreEffectEvidence(
+        result: OfficePrecisionResult,
+        applied: OfficePrecisionAnswer.MutationApplied,
+    ) {
+        if (result.action.effect != com.floe.android.core.officeengine.precision.OfficePrecisionEffect.CONTENT) {
+            return
+        }
+        val evidence = applied.preEffectEvidence ?: return
+        val handle = applied.consumedTargetHandle?.lowercase(Locale.ROOT) ?: return
+        if (result.opId != evidence.opId || result.sessionToken != evidence.sessionToken ||
+            result.generation != evidence.generation ||
+            evidence.targetHandle.lowercase(Locale.ROOT) != handle
+        ) {
+            return
+        }
+        val capture = captures.get(result.sessionToken, handle) ?: return
+        selections.bindPreEffect(
+            OfficeAiPreEffectSelectionFact(
+                sessionToken = evidence.sessionToken,
+                generation = evidence.generation,
+                targetHandle = handle,
+                effectOpId = evidence.opId,
+                partId = evidence.partId,
+                inputEpoch = evidence.inputEpoch,
+                editEpoch = evidence.editEpoch,
+                selectionText = evidence.selectionText,
+                selectionByteCount = evidence.selectionByteCount,
+            ),
+            capture,
+        )
     }
 
     private fun commandStateToken(state: OfficePrecisionState): String = when (state) {
@@ -909,7 +971,7 @@ internal class OfficeAiHostService(
         var nativeTargetEffectVerified = false
         var trustedCompletedJobProof = false
         var capture: OfficeAiCaptureRecord? = null
-        var selection: OfficeAiSelectionFact? = null
+        var selection: OfficeAiPreEffectSelectionFact? = null
         when (mode) {
             "liveEffect" -> {
                 val sessionToken = ticket.required("sessionToken")
@@ -917,14 +979,15 @@ internal class OfficeAiHostService(
                 val handle = ticket.required("targetHandle").lowercase(Locale.ROOT)
                 val fence = rejoinOrFailure(sessionToken, generation, ticket.field("taskID"))
                 if (fence is FenceOutcome.Refused) return fence.settlement
+                val effectOpId = ticket.required("effectOpId")
                 nativeTargetEffectVerified = effects.provesMutationVerified(
-                    sessionToken, generation, handle, ticket.required("effectOpId"),
+                    sessionToken, generation, handle, effectOpId,
                 )
                 capture = captures.get(sessionToken, handle)
                     ?: captures.latestForSession(sessionToken, generation)?.takeIf {
                         it.targetHandle == handle
                     }
-                selection = selections.forSession(sessionToken, generation)
+                selection = selections.forEffect(sessionToken, generation, handle, effectOpId)
             }
             "completedJob" -> {
                 // A valid historical proof must NOT require a still-live
@@ -937,7 +1000,8 @@ internal class OfficeAiHostService(
                 val sessionToken = ticket.field("sessionToken")
                 if (handle != null && sessionToken != null) {
                     capture = captures.get(sessionToken, handle)
-                    selection = selections.forSession(sessionToken, capture?.generation ?: -1L)
+                    selection = selections.forEffect(sessionToken, capture?.generation ?: -1L,
+                        handle, ticket.required("effectOpId"))
                 }
             }
             "reconcile" -> {
@@ -947,7 +1011,8 @@ internal class OfficeAiHostService(
                 val sessionToken = ticket.field("sessionToken")
                 if (handle != null && sessionToken != null) {
                     capture = captures.get(sessionToken, handle)
-                    selection = selections.forSession(sessionToken, capture?.generation ?: -1L)
+                    selection = selections.forEffect(sessionToken, capture?.generation ?: -1L,
+                        handle, ticket.required("effectOpId"))
                 }
             }
         }

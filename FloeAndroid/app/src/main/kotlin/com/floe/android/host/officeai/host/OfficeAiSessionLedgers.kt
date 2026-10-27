@@ -19,7 +19,7 @@ import kotlinx.coroutines.CompletableDeferred
  *    owned operation BEFORE dispatch (a stale/foreign/manual retarget refuses
  *    before any effect);
  *  - [CaptureStore] records each engine-minted capture (generation, target
- *    handle, captured logical part index, prior selection/part facts) AND the
+ *    handle, captured logical part index, native input/edit epochs) AND the
  *    immutable pre-edit baseline retained from the ACTUAL current flushed
  *    working copy at capture time (digest bound to the capture attestation,
  *    never the initial immutable source snapshot hash);
@@ -90,6 +90,10 @@ internal data class OfficeAiCaptureRecord(
      * sheet1/slide1 default. */
     val partIndex: Int?,
     val documentModified: Boolean?,
+    /** Native epochs carried by this exact TargetCaptured. A pre-effect fact
+     * must still name both values; another capture/phase cannot donate proof. */
+    val inputEpoch: Long,
+    val editEpoch: Long,
     val workingCopySha256AtCapture: String?,
     val workingCopyBytesAtCapture: Long,
     /** The retained immutable pre-edit baseline (bytes copied from the
@@ -101,9 +105,9 @@ internal data class OfficeAiCaptureRecord(
     val capturedAtElapsedMs: Long,
     val expiresAtElapsedMs: Long,
 ) {
-    /** Prior selection text for the verifier rides the SelectionLedger (the
-     * engine selection answer is a separate query); this record binds the
-     * capture identity itself. */
+    /** Prior selection text rides the SelectionLedger (a separate query or
+     * the synchronous select-all readback); this record binds the capture
+     * identity itself. */
     fun usable(clockNow: Long): Boolean =
         clockNow < expiresAtElapsedMs && baselineFile?.isFile == true
 }
@@ -252,10 +256,10 @@ internal class EffectLedger(private val clock: () -> Long) {
     fun clear() = synchronized(lock) { records.clear() }
 }
 
-/** The latest observed selection answer for one session (typed
- * QUERY_TEXT_SELECTION facts preserved for the verifier's prior-selection
- * baseline; content itself never leaves the host except through the bounded
- * verify input). */
+/** An ambient plain-text observation from QUERY_TEXT_SELECTION or the
+ * synchronous SELECT_ALL_TEXT readback. It serves that public read reply and
+ * is NEVER eligible for effect/verifier proof; only the typed pre-effect
+ * result below can supply a baseline selection. */
 internal data class OfficeAiSelectionFact(
     val sessionToken: String,
     val generation: Long,
@@ -264,11 +268,40 @@ internal data class OfficeAiSelectionFact(
     val observedAtElapsedMs: Long,
 )
 
+/** Causal BEFORE-content evidence returned inside the exact MutationApplied
+ * result. Unlike [OfficeAiSelectionFact], this can only originate from the
+ * content plan's own fresh native readback, never the ambient latest query. */
+internal data class OfficeAiPreEffectSelectionFact(
+    val sessionToken: String,
+    val generation: Long,
+    val targetHandle: String,
+    val effectOpId: String,
+    val partId: String,
+    val inputEpoch: Long,
+    val editEpoch: Long,
+    val selectionText: String,
+    val selectionByteCount: Int,
+)
+
+/** Ambient query observations remain available for their public reply only.
+ * Effect proof is accepted exclusively through [bindPreEffect], scoped to the
+ * exact capture + session/generation/target/opId/part/epochs and bound once. */
 internal class SelectionLedger {
-    companion object { const val MAX = 8 }
+    companion object {
+        const val MAX = 8
+        const val MAX_EFFECT_BINDS = 32
+    }
+
+    private data class EffectKey(
+        val sessionToken: String,
+        val generation: Long,
+        val targetHandle: String,
+        val effectOpId: String,
+    )
 
     private val lock = Any()
     private val latest = LinkedHashMap<String, OfficeAiSelectionFact>()
+    private val effectBinds = LinkedHashMap<EffectKey, OfficeAiPreEffectSelectionFact>()
 
     fun observe(fact: OfficeAiSelectionFact) = synchronized(lock) {
         latest[fact.sessionToken] = fact
@@ -280,9 +313,49 @@ internal class SelectionLedger {
             latest[sessionToken]?.takeIf { it.generation == generation }
         }
 
-    fun forgetSession(sessionToken: String) = synchronized(lock) { latest.remove(sessionToken) }
+    /** A preparatory action invalidates only its ambient public-read cache;
+     * this cache is never a source of effect evidence. */
+    fun discardPending(sessionToken: String) = synchronized(lock) { latest.remove(sessionToken) }
 
-    fun clear() = synchronized(lock) { latest.clear() }
+    fun bindPreEffect(
+        fact: OfficeAiPreEffectSelectionFact,
+        capture: OfficeAiCaptureRecord,
+    ): Boolean = synchronized(lock) {
+        val handle = fact.targetHandle.lowercase()
+        val key = EffectKey(fact.sessionToken, fact.generation, handle, fact.effectOpId)
+        val valid = fact.sessionToken == capture.sessionToken &&
+            fact.generation == capture.generation &&
+            handle == capture.targetHandle.lowercase() &&
+            fact.effectOpId.isNotEmpty() &&
+            fact.partId.isNotEmpty() && fact.partId == capture.selectedPart &&
+            fact.inputEpoch == capture.inputEpoch && fact.editEpoch == capture.editEpoch &&
+            fact.selectionByteCount >= 0 &&
+            fact.selectionByteCount == fact.selectionText.toByteArray(Charsets.UTF_8).size
+        if (!valid || effectBinds.containsKey(key)) return@synchronized false
+        effectBinds[key] = fact.copy(targetHandle = handle)
+        while (effectBinds.size > MAX_EFFECT_BINDS) {
+            effectBinds.remove(effectBinds.keys.first())
+        }
+        true
+    }
+
+    fun forEffect(sessionToken: String, generation: Long, targetHandle: String,
+                  effectOpId: String): OfficeAiPreEffectSelectionFact? = synchronized(lock) {
+        effectBinds[EffectKey(sessionToken, generation, targetHandle.lowercase(), effectOpId)]
+    }
+
+    fun forgetSession(sessionToken: String) = synchronized(lock) {
+        latest.remove(sessionToken)
+        val keys = effectBinds.keys.iterator()
+        while (keys.hasNext()) {
+            if (keys.next().sessionToken == sessionToken) keys.remove()
+        }
+    }
+
+    fun clear() = synchronized(lock) {
+        latest.clear()
+        effectBinds.clear()
+    }
 }
 
 /**

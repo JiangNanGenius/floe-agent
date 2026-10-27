@@ -14,6 +14,7 @@ import com.floe.android.core.officeengine.precision.OfficePrecisionContentReadba
 import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
 import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
 import com.floe.android.core.officeengine.precision.OfficePrecisionResult
+import com.floe.android.core.officeengine.precision.OfficePrecisionPreEffectEvidence
 import com.floe.android.core.officeengine.precision.OfficePrecisionState
 import com.floe.android.core.officeengine.precision.OfficePrecisionTarget
 import com.floe.android.host.OfficePreviewController
@@ -449,6 +450,16 @@ class OfficeAiHostServiceTest {
         attestation = "test-attestation", submittedAtElapsedMs = 1L, completedAtElapsedMs = 2L,
     )
 
+    private fun preEffect(
+        opId: String, text: String, targetHandle: String = handle,
+        partId: String = "1", inputEpoch: Long = 0L, editEpoch: Long = 0L,
+    ) = OfficePrecisionPreEffectEvidence(
+        opId = opId, sessionToken = session, generation = 9L,
+        targetHandle = targetHandle, partId = partId,
+        inputEpoch = inputEpoch, editEpoch = editEpoch,
+        selectionText = text, selectionByteCount = bytes(text).size,
+    )
+
     private fun targetCaptured(workingCopySha: String?): OfficePrecisionAnswer =
         OfficePrecisionAnswer.TargetCaptured(
             OfficePrecisionTargetAnswerFixture.fixture(handle, workingCopySha),
@@ -717,6 +728,110 @@ class OfficeAiHostServiceTest {
         val facts = read.body["facts"] as kotlinx.serialization.json.JsonObject
         assertEquals("chosen words", (facts["selectionText"] as kotlinx.serialization.json.JsonPrimitive).content)
         assertEquals("chosen words", selections.forSession(session, 9L)?.selectionText)
+    }
+
+    @Test
+    fun c12SelectAllReadbackReachesOnlyTheBoundApplyVerifierInput() {
+        newService()
+        val snapshot = docSnapshot()
+        seedSession(snapshot)
+        val captureDigest = sha(File(snapshot.stagedWorkingCopyPath!!).readBytes())
+        val prior = "手记 § Baseline 🧪\nمرحبا שלום mixed RTL\nalpha list one"
+        val marker = "Floe LOCAL QA marker applied via scripted fixture (no cloud model)."
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-c12-1", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED, targetCaptured(captureDigest),
+        ))
+        runTicket(commandTicket("cap-c12-1", "captureTarget"))
+        // The REAL core answer type for an ordinary select-all readback now
+        // carries the same exact text that used to be discarded to a count.
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("sel-c12", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.SELECT_ALL_TEXT),
+            OfficePrecisionState.NATIVE_COMPLETED,
+            OfficePrecisionAnswer.TextSelection(prior, bytes(prior).size, multiFormatJson = false),
+        ))
+        val selected = runTicket(commandTicket("sel-c12", "selectAllText")) as OfficeAiWire.Settlement.Success
+        val selectedFacts = selected.body["facts"] as kotlinx.serialization.json.JsonObject
+        assertEquals(bytes(prior).size.toString(),
+            (selectedFacts["selectedTextBytes"] as kotlinx.serialization.json.JsonPrimitive).content)
+        assertFalse("preparatory public facts stay byte-count-only", selectedFacts.containsKey("selectionText"))
+
+        // The public workflow recaptures after selection; proof must bind the
+        // NEW handle, not a global latest-selection cache.
+        val handle2 = "f".repeat(32)
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-c12-2", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TargetCaptured(
+                OfficePrecisionTargetAnswerFixture.fixtureWith(handle2, captureDigest, 4L),
+            ),
+        ))
+        runTicket(commandTicket("cap-c12-2", "captureTarget"))
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("ap-c12", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.APPLY_TEXT),
+            OfficePrecisionState.NATIVE_COMPLETED,
+            OfficePrecisionAnswer.MutationApplied(
+                listOf("pre-effect-selection-readback", "pasteresult-success", "readback-selection-not-comparable"),
+                bytes(marker).size, OfficePrecisionContentReadback.UNAVAILABLE, captureDigest, handle2,
+                preEffectEvidence = preEffect("ap-c12", prior, handle2),
+            ),
+        ))
+        runTicket(commandTicket("ap-c12", "applyText", "targetHandle" to handle2), staged = bytes(marker))
+
+        // Even a late real query cannot rewrite the already-dispatched proof.
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("rd-c12-late", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.QUERY_TEXT_SELECTION),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TextSelection("late unrelated selection", 24, multiFormatJson = false),
+        ))
+        runTicket(commandTicket("rd-c12-late", "queryTextSelection"))
+        val export = packageFile("docx")
+        runTicket(verifyJsonBytes(
+            "docx", export.canonicalPath, sha(export.readBytes()), "applyText",
+            "verificationMode" to "liveEffect", "effectOpId" to "ap-c12",
+            "exportOpId" to "seed-export-c12", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle2, "taskID" to task, "preEditSha256" to captureDigest,
+        ), staged = bytes(marker))
+        val input = verifier.inputs.last()
+        assertEquals(prior, input.baseline?.priorSelectionText)
+        assertEquals(captureDigest, input.baseline?.sha256)
+        assertFalse("NATIVE_COMPLETED must leave the semantic-delta path mandatory",
+            input.nativeTargetEffectVerified)
+        assertEquals(prior, selections.forEffect(session, 9L, handle2, "ap-c12")?.selectionText)
+        assertNull(selections.forEffect(session, 9L, handle, "ap-c12"))
+        assertNull(selections.forEffect(session, 9L, handle2, "other-op"))
+        assertEquals("late unrelated selection", selections.forSession(session, 9L)?.selectionText)
+    }
+
+    @Test
+    fun unavailableOrMultiMimeSelectionNeverLeavesStalePlainTextProof() {
+        newService()
+        seedSession()
+        selections.observe(OfficeAiSelectionFact(session, 9L, "stale", 5, 1L))
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("sel-complex", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.SELECT_ALL_TEXT),
+            OfficePrecisionState.NATIVE_COMPLETED,
+            OfficePrecisionAnswer.TextSelected(1_048_576),
+        ))
+        runTicket(commandTicket("sel-complex", "selectAllText"))
+        assertNull("a new unavailable readback invalidates the old pending selection",
+            selections.forSession(session, 9L))
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("rd-multi", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.QUERY_TEXT_SELECTION),
+            OfficePrecisionState.QUERY_OBSERVED,
+            OfficePrecisionAnswer.TextSelection("{\"text/plain\":\"not raw body\"}", 32,
+                multiFormatJson = true),
+        ))
+        runTicket(commandTicket("rd-multi", "queryTextSelection"))
+        assertNull("multi-MIME JSON is not a plain-text semantic baseline",
+            selections.forSession(session, 9L))
     }
 
     // ------------------------------------------------------------------
@@ -1090,7 +1205,8 @@ class OfficeAiHostServiceTest {
                 com.floe.android.core.officeengine.precision.OfficePrecisionAction.SET_CELL_CONTENT),
             OfficePrecisionState.MUTATION_VERIFIED,
             OfficePrecisionAnswer.MutationApplied(listOf("ok"), 7,
-                OfficePrecisionContentReadback.MATCHED, captureDigest, handle),
+                OfficePrecisionContentReadback.MATCHED, captureDigest, handle,
+                preEffectEvidence = preEffect("ap-v", "old display")),
         ))
         runTicket(commandTicket("ap-v", "setCellContent",  "targetHandle" to handle,
             "cellAddress" to "C3", "contentKind" to "literal",
@@ -1112,7 +1228,98 @@ class OfficeAiHostServiceTest {
         assertEquals(1, input.partIndex)
         assertNotNull(input.baseline)
         assertEquals(captureDigest, input.baseline?.sha256)
+        assertEquals("old display", input.baseline?.priorSelectionText)
         assertEquals("2", (settlement.body["proofVersion"] as kotlinx.serialization.json.JsonPrimitive).content)
+    }
+
+    @Test
+    fun ordinaryFormulaFlowBindsOnlyTheApplyOperationsOwnFreshDisplay() {
+        newService()
+        val snapshot = docSnapshot(path = "qa/formula-basic.xlsx", formatExt = "xlsx")
+        seedSession(snapshot)
+        val captureDigest = sha(File(snapshot.stagedWorkingCopyPath!!).readBytes())
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-f59", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED, targetCaptured(captureDigest),
+        ))
+        runTicket(commandTicket("cap-f59", "captureTarget"))
+        // No public queryTextSelection and NO SelectionLedger.observe: the
+        // normal setCellContent operation returns its own pre-paste display.
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cell-f59", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.SET_CELL_CONTENT),
+            OfficePrecisionState.NATIVE_COMPLETED,
+            OfficePrecisionAnswer.MutationApplied(
+                listOf("cursor-at-target", "pre-effect-selection", "pasteresult-success", "cursor-confirm"),
+                11, OfficePrecisionContentReadback.FORMULA_NOT_COMPARABLE, captureDigest, handle,
+                preEffectEvidence = preEffect("cell-f59", "7"),
+            ),
+        ))
+        runTicket(commandTicket("cell-f59", "setCellContent", "targetHandle" to handle,
+            "cellAddress" to "B4", "contentKind" to "formula"), staged = bytes("=SUM(B2:B3)"))
+        val export = packageFile("xlsx")
+        runTicket(verifyJsonBytes(
+            "xlsx", export.canonicalPath, sha(export.readBytes()), "setCellContent",
+            "verificationMode" to "liveEffect", "effectOpId" to "cell-f59",
+            "exportOpId" to "seed-export-f59", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle, "taskID" to task, "cellAddress" to "B4",
+            "contentKind" to "formula", "expectPartIndex" to "1", "preEditSha256" to captureDigest,
+        ), staged = bytes("=SUM(B2:B3)"))
+        val input = verifier.inputs.last()
+        assertEquals("7", input.baseline?.priorSelectionText)
+        assertEquals(1, input.partIndex)
+        assertFalse("FORMULA_NOT_COMPARABLE is not native effect proof", input.nativeTargetEffectVerified)
+        assertEquals("7", selections.forEffect(session, 9L, handle, "cell-f59")?.selectionText)
+        assertTrue(ports.precisionRequests.none {
+            it.action == com.floe.android.core.officeengine.precision.OfficePrecisionAction.QUERY_TEXT_SELECTION
+        })
+    }
+
+    @Test
+    fun ordinaryPptxSlideFlowBindsRealEmptySelectionAtTheCapturedSlide() {
+        newService()
+        val snapshot = docSnapshot(path = "qa/slides.pptx", formatExt = "pptx")
+        seedSession(snapshot)
+        val captureDigest = sha(File(snapshot.stagedWorkingCopyPath!!).readBytes())
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("slide-f59", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.SELECT_SLIDE),
+            OfficePrecisionState.MUTATION_VERIFIED, OfficePrecisionAnswer.SlideSelected("1"),
+        ))
+        runTicket(commandTicket("slide-f59", "selectSlide", "partId" to "1"))
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("cap-p59", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.CAPTURE_TARGET),
+            OfficePrecisionState.QUERY_OBSERVED, targetCaptured(captureDigest),
+        ))
+        runTicket(commandTicket("cap-p59", "captureTarget"))
+        val marker = "selected-slide marker"
+        ports.precisionScript.add(precisionResult(
+            OfficePrecisionRequest("apply-p59", session, 9L,
+                com.floe.android.core.officeengine.precision.OfficePrecisionAction.APPLY_TEXT),
+            OfficePrecisionState.NATIVE_COMPLETED,
+            OfficePrecisionAnswer.MutationApplied(
+                listOf("pre-effect-part", "pre-effect-empty-selection", "pasteresult-success"),
+                bytes(marker).size, OfficePrecisionContentReadback.UNAVAILABLE, captureDigest, handle,
+                preEffectEvidence = preEffect("apply-p59", ""),
+            ),
+        ))
+        runTicket(commandTicket("apply-p59", "applyText", "targetHandle" to handle), staged = bytes(marker))
+        val export = packageFile("pptx")
+        runTicket(verifyJsonBytes(
+            "pptx", export.canonicalPath, sha(export.readBytes()), "applyText",
+            "verificationMode" to "liveEffect", "effectOpId" to "apply-p59",
+            "exportOpId" to "seed-export-p59", "sessionToken" to session, "generation" to "9",
+            "targetHandle" to handle, "taskID" to task, "expectPartIndex" to "1",
+            "preEditSha256" to captureDigest,
+        ), staged = bytes(marker))
+        val input = verifier.inputs.last()
+        assertEquals("a real empty selection means insertion, not missing evidence",
+            "", input.baseline?.priorSelectionText)
+        assertEquals(1, input.partIndex)
+        assertEquals("1", selections.forEffect(session, 9L, handle, "apply-p59")?.partId)
+        assertNull(selections.forEffect(session, 9L, handle, "other-op"))
     }
 
     @Test

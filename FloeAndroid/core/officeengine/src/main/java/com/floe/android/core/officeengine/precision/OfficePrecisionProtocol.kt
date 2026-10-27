@@ -175,6 +175,13 @@ object OfficePrecisionProtocol {
                     utf16ParcelBytes(answer.contentReadback.name) +
                     utf16ParcelBytes(answer.consumedTargetHandle)
                 answer.steps.take(32).forEach { bytes += utf16ParcelBytes(it) }
+                answer.preEffectEvidence?.let { evidence ->
+                    bytes += 44L + utf16ParcelBytes(evidence.opId) +
+                        utf16ParcelBytes(evidence.sessionToken) +
+                        utf16ParcelBytes(evidence.targetHandle) +
+                        utf16ParcelBytes(evidence.partId) +
+                        utf16ParcelBytes(evidence.selectionText)
+                }
             }
         }
         return bytes

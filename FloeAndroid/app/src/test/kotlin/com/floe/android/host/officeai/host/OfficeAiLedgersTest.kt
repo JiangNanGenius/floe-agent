@@ -80,6 +80,7 @@ class OfficeAiLedgersTest {
         sessionToken = token, generation = generation, ownerTaskID = "task",
         workspaceID = null, targetHandle = handle, docType = "writer", partsCount = 1,
         selectedPart = "0", partIndex = 0, documentModified = false,
+        inputEpoch = 4L, editEpoch = 5L,
         workingCopySha256AtCapture = sha, workingCopyBytesAtCapture = 4L,
         baselineFile = baseline, baselineSha256 = sha, baselineBytes = baseline?.length() ?: -1L,
         capturedAtElapsedMs = clockNow, expiresAtElapsedMs = expires,
@@ -116,6 +117,44 @@ class OfficeAiLedgersTest {
         // A remounted generation must not reuse the old selection baseline.
         assertNull(ledger.forSession(session, 10L))
         assertNull(ledger.forSession(other, 9L))
+    }
+
+    private fun preEffect(
+        handle: String, opId: String, text: String,
+        token: String = session, generation: Long = 9L,
+        partId: String = "0", inputEpoch: Long = 4L, editEpoch: Long = 5L,
+    ) = OfficeAiPreEffectSelectionFact(
+        sessionToken = token, generation = generation, targetHandle = handle,
+        effectOpId = opId, partId = partId, inputEpoch = inputEpoch, editEpoch = editEpoch,
+        selectionText = text, selectionByteCount = text.toByteArray(Charsets.UTF_8).size,
+    )
+
+    @Test
+    fun preEffectBindingRequiresExactCaptureScopeAndCannotBeRewritten() {
+        val ledger = SelectionLedger()
+        val handle = "a".repeat(32)
+        val captured = capture(session, handle, 100L)
+        // Ambient observations never become effect proof by themselves.
+        ledger.observe(OfficeAiSelectionFact(session, 9L, "ambient", 7, 1L))
+        assertNull(ledger.forEffect(session, 9L, handle, "apply-1"))
+        assertTrue(ledger.bindPreEffect(preEffect(handle, "apply-1", "before\n🧪"), captured))
+        assertEquals("before\n🧪", ledger.forEffect(session, 9L, handle, "apply-1")?.selectionText)
+        assertNull(ledger.forEffect(other, 9L, handle, "apply-1"))
+        assertNull(ledger.forEffect(session, 10L, handle, "apply-1"))
+        assertNull(ledger.forEffect(session, 9L, "b".repeat(32), "apply-1"))
+        assertNull(ledger.forEffect(session, 9L, handle, "apply-2"))
+        // Late facts, another op and every capture-scope drift fail closed.
+        assertFalse(ledger.bindPreEffect(preEffect(handle, "apply-1", "late"), captured))
+        assertEquals("before\n🧪", ledger.forEffect(session, 9L, handle, "apply-1")?.selectionText)
+        assertFalse(ledger.bindPreEffect(preEffect(handle, "apply-2", "wrong", partId = "1"), captured))
+        assertFalse(ledger.bindPreEffect(preEffect(handle, "apply-2", "wrong", inputEpoch = 6L), captured))
+        assertFalse(ledger.bindPreEffect(preEffect(handle, "apply-2", "wrong", editEpoch = 6L), captured))
+        assertFalse(ledger.bindPreEffect(preEffect(handle, "apply-2", "wrong", generation = 10L), captured))
+        assertFalse(ledger.bindPreEffect(preEffect("b".repeat(32), "apply-2", "wrong"), captured))
+        assertTrue(ledger.bindPreEffect(preEffect(handle, "apply-2", "next"), captured))
+        assertEquals("next", ledger.forEffect(session, 9L, handle, "apply-2")?.selectionText)
+        ledger.forgetSession(session)
+        assertNull(ledger.forEffect(session, 9L, handle, "apply-1"))
     }
 
     // ---- session binds ----
