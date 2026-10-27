@@ -78,13 +78,13 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # Reviewed tooling pin 6438ca0aeea4cb468788eb623553e618e7acefe8, tree 7b5e9f571431ca4a4e7a2d6aa7bd7c90c769050b.
+  # Reviewed tooling pin 832768f960122a745aad0e4bf27cb6e7b93d9cde, tree 5e1824ed62175814291fb4e86c98bc39c6667584.
   # Executable producer/signer modules are blob-identical to reviewed T4
   # f351591c (102 focused checks and the authentic guarded signing runs).
-  # This revision appends the verified 34-offer publication to the cumulative
-  # ledger (six rows / 68 facts); frozen Main author rules remain aligned.
+  # This revision appends the verified 36-offer publication to the cumulative
+  # ledger (eight rows / 72 facts); frozen Main author rules remain aligned.
   # The same strict live-Y resolver, key scope and data-only guards remain.
-  TOOLING_COMMIT: 6438ca0aeea4cb468788eb623553e618e7acefe8
+  TOOLING_COMMIT: 832768f960122a745aad0e4bf27cb6e7b93d9cde
 
 jobs:
   sign:
