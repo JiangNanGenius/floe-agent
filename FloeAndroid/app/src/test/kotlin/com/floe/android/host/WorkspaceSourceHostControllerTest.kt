@@ -26,6 +26,7 @@ import com.floe.android.safgateway.TakeOutcome
 import com.floe.android.safgateway.WriteOpen
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.MessageDigest
@@ -88,6 +89,15 @@ class WorkspaceSourceHostControllerTest {
         /** The sourceDocumentID each stageOpen carried — pins durable identity
          * truth through the native hop (provider IO repair 2026-10-25). */
         val stageDocumentIds = ConcurrentHashMap<Long, String>()
+        /** The logicalPath + sourceReference each stageOpen carried (the
+         * folder-import walk pins per-child path AND exact child identity
+         * through the native hop — G05-R3 repair 2026-10-27). */
+        val stagePaths = ConcurrentHashMap<Long, String>()
+        val stageReferences = ConcurrentHashMap<Long, String>()
+        /** Test hook fired with the finished stage's logical path (null for
+         * no-path purposes) right at stageFinish — the deterministic point
+         * to drop the owner fence between folder-import children. */
+        var onStageFinished: ((String?) -> Unit)? = null
         val stageChunkSizes = ConcurrentHashMap<Long, MutableList<Int>>()
         val snapshots = ConcurrentHashMap<Long, ByteArray>()
         /** The bytes native hashed at stage_finish. Kept as test evidence
@@ -117,6 +127,8 @@ class WorkspaceSourceHostControllerTest {
             val ticket = tickets.incrementAndGet().toLong()
             stages[ticket] = purpose to ByteArrayOutputStream()
             stageDocumentIds[ticket] = sourceDocumentID
+            stagePaths[ticket] = logicalPath
+            stageReferences[ticket] = sourceReference
             stageChunkSizes[ticket] = mutableListOf()
             return ticket
         }
@@ -138,12 +150,14 @@ class WorkspaceSourceHostControllerTest {
             val bytes = stage.second.toByteArray()
             finishedStageBodies[ticket] = stage.first to bytes
             val hex = digest(bytes)
-            return if (stage.first == "import") {
+            val status = if (stage.first == "import") {
                 body(reply, """{"ok":1,"sourceID":"imported-row","sha256":"$hex",""" +
                     """"bytes":${bytes.size},"revision":"$revision"}""")
             } else {
                 body(reply, """{"ok":1,"sha256":"$hex","bytes":${bytes.size}}""")
             }
+            onStageFinished?.invoke(stagePaths[ticket]?.takeIf { it.isNotEmpty() })
+            return status
         }
 
         override fun stageAbort(ticket: Long): Int {
@@ -298,22 +312,34 @@ class WorkspaceSourceHostControllerTest {
         val decodedDocumentIds = ConcurrentHashMap<String, String>()
         var faultOnOpenWrite: Throwable? = null
         var faultOnOpenRead: Throwable? = null
+        /** URIs the in-memory provider reports as DIRECTORY documents. */
+        val directoryUris = ConcurrentHashMap.newKeySet<String>()
+        /** Scripts a child scan per parent key (parentDocumentId, or
+         * "__root__" when the caller passes null = the tree root's own id). */
+        val childrenByParent = ConcurrentHashMap<String, List<SafDocument>>()
+        /** Counts reads attempted on DIRECTORY URIs: exactly the device
+         * failure route ("read failed: EISDIR (Is a directory)", G05-R3
+         * 2026-10-27). Every folder-import assertion demands ZERO. */
+        val eisdirDirectoryReadAttempts = AtomicInteger(0)
 
         private fun refFor(uri: String): SafDocumentRef = SafDocumentRef(null, null, null, SafUriRef(uri))
 
-        private fun documentFor(uri: String): SafDocument = SafDocument(
-            ref = refFor(uri),
-            displayName = uri.substringAfterLast('/'),
-            mimeType = "application/octet-stream",
-            size = content[uri]?.let { SafSize.Known(it.size.toLong()) } ?: SafSize.Unknown,
-            lastModifiedMillis = null,
-            capabilities = SafCapabilities(
-                write = writeCapability, delete = false, rename = false, copy = false,
-                move = false, createChildren = false, removeFromParent = false,
-                blocksOpenDocumentTree = false,
-                virtual = false, rawFlags = if (writeCapability) SafProviderFlagBits.SUPPORTS_WRITE else 0,
-            ),
-        )
+        private fun documentFor(uri: String): SafDocument {
+            val isDirectory = directoryUris.contains(uri)
+            return SafDocument(
+                ref = refFor(uri),
+                displayName = uri.substringAfterLast('/'),
+                mimeType = if (isDirectory) SafDocument.MIME_DIR else "application/octet-stream",
+                size = content[uri]?.let { SafSize.Known(it.size.toLong()) } ?: SafSize.Unknown,
+                lastModifiedMillis = null,
+                capabilities = SafCapabilities(
+                    write = writeCapability, delete = false, rename = false, copy = false,
+                    move = false, createChildren = false, removeFromParent = false,
+                    blocksOpenDocumentTree = false,
+                    virtual = false, rawFlags = if (writeCapability) SafProviderFlagBits.SUPPORTS_WRITE else 0,
+                ),
+            )
+        }
 
         override fun classifyUri(uriString: String): SafUriKind = when {
             uriString.endsWith("/tree/1") -> SafUriKind.TREE
@@ -347,6 +373,19 @@ class WorkspaceSourceHostControllerTest {
 
         override fun queryChildDocuments(tree: SafUriRef, parentDocumentId: String?, limit: Int,
                                          cursorToken: String?, cancel: SafCancelToken): ChildScan {
+            childrenByParent[(parentDocumentId ?: "__root__")]?.let { scripted ->
+                // Respect the caller's page cap honestly: offset rides the
+                // fake cursor token, mirroring the shipped held-cursor paging
+                // (a caller that keeps paging converges; budget tests need
+                // this to terminate).
+                val from = cursorToken?.removePrefix("fake-cursor-")?.toIntOrNull() ?: 0
+                val page = scripted.drop(from).take(limit)
+                val next = from + page.size
+                val more = next < scripted.size
+                return ChildScan(documents = page,
+                                 nextCursorToken = if (more) "fake-cursor-$next" else null,
+                                 truncatedByLimit = more, note = null)
+            }
             val childUri = tree.uriString + "/document/kid-1"
             return ChildScan(documents = listOf(documentFor(childUri)), nextCursorToken = null,
                              truncatedByLimit = false, note = null)
@@ -364,6 +403,18 @@ class WorkspaceSourceHostControllerTest {
         override fun openRead(ref: SafDocumentRef, mimeFilter: String?,
                               cancel: SafCancelToken): ReadOpen {
             faultOnOpenRead?.let { throw it }
+            if (directoryUris.contains(ref.uri.uriString)) {
+                // EXACT device behavior (ExternalStorageProvider): the open
+                // itself SUCCEEDS and the first read() faults —
+                // ErrnoException message "read failed: EISDIR (Is a
+                // directory)" (G05-R3 folder-import failure 2026-10-27).
+                eisdirDirectoryReadAttempts.incrementAndGet()
+                return ReadOpen.Opened(object : InputStream() {
+                    override fun read(): Int = throw IOException("read failed: EISDIR (Is a directory)")
+                    override fun read(target: ByteArray, off: Int, len: Int): Int =
+                        throw IOException("read failed: EISDIR (Is a directory)")
+                }, null)
+            }
             val bytes = content[ref.uri.uriString] ?: return ReadOpen.NotFound
             return ReadOpen.Opened(chunking(bytes), bytes.size.toLong())
         }
@@ -980,5 +1031,257 @@ class WorkspaceSourceHostControllerTest {
         assertEquals(outcome.detail, "ok", outcome.status)
         val stage = channel.finishedStageBodies.values.first { it.first == "import" }
         assertArrayEquals(bytes, stage.second)
+    }
+
+    // ------------------------------------------------------------------
+    // 3b. FOLDER import (G05-R3 repair 2026-10-27): the device failure was
+    // "ioFailed / read failed: EISDIR (Is a directory)" because the single-
+    // document ladder opened the tree root's OWN descriptor. The walk must
+    // traverse the scoped provider tree, validate names, and run the
+    // ORIGINAL per-file ladder once per child — never streaming a directory,
+    // never fabricating an empty success, never taking new permissions.
+    // ------------------------------------------------------------------
+
+    private fun fileDoc(tree: SafUriRef, docId: String, name: String, bytes: ByteArray?,
+                        virtual: Boolean = false): SafDocument {
+        val uri = tree.uriString + "/document/" + docId
+        if (bytes != null) backend.content[uri] = bytes
+        return SafDocument(
+            ref = SafDocumentRef(tree = tree, documentId = docId, parentDocumentId = null,
+                                 uri = SafUriRef(uri)),
+            displayName = name, mimeType = "application/octet-stream",
+            size = bytes?.let { SafSize.Known(it.size.toLong()) } ?: SafSize.Unknown,
+            lastModifiedMillis = null,
+            capabilities = SafCapabilities(
+                write = false, delete = false, rename = false, copy = false, move = false,
+                createChildren = false, removeFromParent = false, blocksOpenDocumentTree = false,
+                virtual = virtual, rawFlags = 0,
+            ),
+        )
+    }
+
+    private fun dirDoc(tree: SafUriRef, docId: String, name: String): SafDocument {
+        val uri = tree.uriString + "/document/" + docId
+        backend.directoryUris += uri
+        return SafDocument(
+            ref = SafDocumentRef(tree = tree, documentId = docId, parentDocumentId = null,
+                                 uri = SafUriRef(uri)),
+            displayName = name, mimeType = SafDocument.MIME_DIR, size = SafSize.Unknown,
+            lastModifiedMillis = null,
+            capabilities = SafCapabilities(
+                write = true, delete = false, rename = false, copy = false, move = false,
+                createChildren = true, removeFromParent = false, blocksOpenDocumentTree = false,
+                virtual = false, rawFlags = 0,
+            ),
+        )
+    }
+
+    private fun acceptTreeImportPick(lane: WorkspaceSourceHostController.Lane, treeUri: String,
+                                     flags: Int = FLAG_READ or FLAG_PERSISTABLE): WorkspaceSourceResult {
+        val issued = lane.requestPick(PickKind.OPEN_TREE, PickPurpose.IMPORT)!!
+        return lane.onPickerResult(issued, treeUri, flags)
+    }
+
+    @Test
+    fun folderImportTraversesTreeAndNeverStreamsTheDirectory() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        val tree = SafUriRef(treeUri)
+        // EXACT device fixture shape: one granted folder with ordinary
+        // files and one subfolder; the root itself is a DIRECTORY document.
+        backend.directoryUris += treeUri + "/document/root-doc" // resolveTreeRoot target
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Floe-G05-R3-QA"
+        backend.childrenByParent["__root__"] = listOf(
+            fileDoc(tree, "a-doc", "a.docx", "docx-bytes".toByteArray()),
+            fileDoc(tree, "b-doc", "b.xlsx", "xlsx-bytes!".toByteArray()),
+            dirDoc(tree, "sub-doc", "sub"),
+        )
+        backend.childrenByParent["sub-doc"] = listOf(
+            fileDoc(tree, "c-doc", "c.pptx", ByteArray(300_000) { (it % 251).toByte() }),
+        )
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val takesBefore = backend.takeCalls
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        // (1) the ACTUAL failure must be gone: honest success, zero
+        // directory reads.
+        assertEquals(outcome.detail, "ok", outcome.status)
+        assertEquals(0, backend.eisdirDirectoryReadAttempts.get())
+        // (2) exactly ONE native stage per child, on the child's reserved
+        // workspace path + EXACT child identity (never the tree root's).
+        val importTickets = channel.stagePaths.filterValues { it.startsWith("qa/") }
+        assertEquals(setOf("qa/a.docx", "qa/b.xlsx", "qa/sub/c.pptx"), importTickets.values.toSet())
+        importTickets.forEach { (ticket, path) ->
+            val docId = path.substringAfterLast('/')
+            val expected = when (docId) {
+                "a.docx" -> "a-doc"
+                "b.xlsx" -> "b-doc"
+                else -> "c-doc"
+            }
+            assertEquals(expected, channel.stageDocumentIds[ticket])
+            assertEquals(treeUri + "/document/" + expected, channel.stageReferences[ticket])
+        }
+        // (3) every staged body is byte-exact against the provider content.
+        for ((path, ticket) in importTickets) {
+            val expectedUri = treeUri + "/document/" + when (path) {
+                "qa/a.docx" -> "a-doc"; "qa/b.xlsx" -> "b-doc"; else -> "c-doc"
+            }
+            assertArrayEquals(backend.content.getValue(expectedUri),
+                              channel.finishedStageBodies.getValue(ticket).second)
+        }
+        // (4) summary facts + no permission drift + scratch released.
+        assertEquals("3", outcome.facts["imported"])
+        assertEquals("docx-bytes".toByteArray().size + "xlsx-bytes!".toByteArray().size + 300_000,
+                     outcome.facts["committedBytes"]!!.toInt())
+        assertEquals(takesBefore, backend.takeCalls) // traversal rides the EXISTING tree grant
+        assertEquals(3, channel.calls.count { it == "stageAbort" })
+        assertFalse(lane.state.value.busy)
+    }
+
+    @Test
+    fun fileRouteRefusesDirectoryEntryWithTypedUnsupportedAndAbortsScratch() = runBlocking {
+        // Defense-in-depth for the provider misclassification edge: if the
+        // metadata row SAYS directory, the single-document route must refuse
+        // typed — the EISDIR class of failure can no longer reach staging.
+        val dirUri = "content://com.floe.testprovider/tree/1/document/dir-doc"
+        backend.directoryUris += dirUri
+        backend.decodedDocumentIds[dirUri] = "primary:Download/SomeDir"
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptImportPick(lane, dirUri).status)
+        val outcome = lane.importAcceptedToWorkspace("x.bin")
+        assertEquals("unsupported", outcome.status)
+        assertTrue(outcome.detail, outcome.detail.contains("folder"))
+        assertEquals(0, backend.eisdirDirectoryReadAttempts.get())
+        assertTrue(channel.calls.contains("stageAbort"))
+    }
+
+    @Test
+    fun emptyFolderImportFailsClosedAndOpensNoStages() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        backend.directoryUris += treeUri + "/document/root-doc"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Empty"
+        backend.childrenByParent["__root__"] = emptyList()
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        // Never an empty success: an honest typed refusal.
+        assertEquals("unsupported", outcome.status)
+        assertTrue(outcome.detail, outcome.detail.contains("no files to import"))
+        assertEquals(0, channel.calls.count { it == "stageOpen:import" })
+        assertEquals(0, backend.eisdirDirectoryReadAttempts.get())
+    }
+
+    @Test
+    fun folderImportRefusesDuplicateTargetNamesBeforeCommittingAnything() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        val tree = SafUriRef(treeUri)
+        backend.directoryUris += treeUri + "/document/root-doc"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Dupes"
+        backend.childrenByParent["__root__"] = listOf(
+            fileDoc(tree, "x1", "same.bin", "one".toByteArray()),
+            fileDoc(tree, "x2", "same.bin", "two".toByteArray()),
+        )
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        assertEquals("conflict", outcome.status)
+        assertTrue(outcome.detail, outcome.detail.contains("share the same name"))
+        assertTrue(outcome.detail, outcome.detail.contains("nothing was imported"))
+        assertEquals(0, channel.calls.count { it == "stageOpen:import" })
+    }
+
+    @Test
+    fun folderImportSkipsVirtualChildrenHonestlyAndImportsTheRest() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        val tree = SafUriRef(treeUri)
+        backend.directoryUris += treeUri + "/document/root-doc"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Mixed"
+        backend.childrenByParent["__root__"] = listOf(
+            fileDoc(tree, "real-doc", "real.bin", "real bytes".toByteArray()),
+            fileDoc(tree, "virt-doc", "live.drawing", null, virtual = true),
+        )
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        assertEquals(outcome.detail, "ok", outcome.status)
+        assertEquals("1", outcome.facts["imported"])
+        assertTrue(outcome.detail, outcome.detail.contains("skipped 1 live item"))
+        assertEquals(setOf("qa/real.bin"), channel.stagePaths.values.toSet())
+        assertEquals(0, backend.eisdirDirectoryReadAttempts.get())
+    }
+
+    @Test
+    fun folderImportDepthBudgetRefusesTheWholeWalkBeforeCommitting() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        val tree = SafUriRef(treeUri)
+        backend.directoryUris += treeUri + "/document/root-doc"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Deep"
+        // A 10-deep directory chain exceeds the 8-level budget.
+        var parentKey = "__root__"
+        for (level in 1..10) {
+            val dirId = "d$level"
+            backend.childrenByParent[parentKey] = listOf(dirDoc(tree, dirId, "dir$level"))
+            parentKey = dirId
+        }
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        assertEquals("unsupported", outcome.status)
+        assertTrue(outcome.detail, outcome.detail.contains("too deeply"))
+        assertEquals(0, channel.calls.count { it == "stageOpen:import" })
+    }
+
+    @Test
+    fun folderImportOwnerFenceMidBatchReportsCommittedChildrenAndStops() = runBlocking {
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        val tree = SafUriRef(treeUri)
+        backend.directoryUris += treeUri + "/document/root-doc"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Fence"
+        backend.childrenByParent["__root__"] = listOf(
+            fileDoc(tree, "f1", "one.bin", "first".toByteArray()),
+            fileDoc(tree, "f2", "two.bin", "second".toByteArray()),
+        )
+        val lane = laneFor(controller())
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        // Drop the owner fence at the FIRST child's commit point: the batch
+        // must stop honestly at the next boundary, never pump into a newer
+        // root, and never pretend the un-imported second file landed.
+        channel.onStageFinished = { path -> if (path == "qa/one.bin") ownerLive.set(false) }
+        val outcome = lane.importAcceptedToWorkspace("qa")
+        channel.onStageFinished = null
+        ownerLive.set(true)
+        assertEquals("runtimeUnavailable", outcome.status)
+        assertEquals("1", outcome.facts["imported"])
+        assertEquals(setOf("qa/one.bin"), channel.stagePaths.values.toSet())
+        assertTrue(outcome.detail, outcome.detail.contains("stopped after 1 complete file"))
+    }
+
+    @Test
+    fun directPicksKeepOpaqueIdsOpaqueAndBrowseChildKeepsTheProviderName() {
+        // G05-R3 companion rule (Main review 2026-10-27): a SAF document id
+        // is an OPAQUE provider identity — decoded or not — and must NEVER
+        // be converted into a user-facing "display name". Direct platform
+        // picks therefore store the identity truth in uri/documentId with an
+        // honest display-name ABSENCE; only a browse-child selection, which
+        // carries the provider's real DISPLAY_NAME column, supplies a name.
+        val lane = laneFor(controller())
+        val treeUri = "content://com.floe.testprovider/tree/1"
+        backend.decodedDocumentIds[treeUri] = "primary:Download/Floe-G05-R3-QA"
+        assertEquals("ok", acceptTreeImportPick(lane, treeUri).status)
+        val treePick = lane.state.value.accepted!!
+        assertEquals("TREE", treePick.kind)
+        assertEquals("primary:Download/Floe-G05-R3-QA", treePick.documentId) // identity kept
+        assertNull(treePick.displayName)                                      // name NOT guessed
+        val fileUri = "content://com.floe.testprovider/tree/1/document/f-doc"
+        backend.decodedDocumentIds[fileUri] = "primary:Download/paragraphs-unicode.docx"
+        assertEquals("ok", acceptImportPick(lane, fileUri).status)
+        assertEquals("primary:Download/paragraphs-unicode.docx",
+                     lane.state.value.accepted!!.documentId)
+        assertNull(lane.state.value.accepted!!.displayName)
+        // The browsed child row's displayName is REAL provider metadata and
+        // stays usable (no new IO, no new take calls).
+        val child = lane.selectTreeChild(treeUri, "kid-1", "Quarterly report")
+        assertEquals("ok", child.status)
+        assertEquals("Quarterly report", lane.state.value.accepted!!.displayName)
+        assertEquals(treeUri, lane.state.value.accepted!!.treeAnchor)
     }
 }

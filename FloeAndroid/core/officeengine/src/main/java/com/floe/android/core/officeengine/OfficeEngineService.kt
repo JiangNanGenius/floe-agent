@@ -252,6 +252,29 @@ class OfficeEngineService : Service() {
             override fun sourceRevision(): String? = request.sourceRevision
             override fun sourceLogicalPath(): String? = request.sourceLogicalPath
             override fun documentModified(): Boolean? = this@Session.documentModified
+            override fun isPageEditMode(): Boolean = this@Session.pageEditMode
+            override fun prepareEditableView(
+                opId: String,
+                callback: (OfficePrecisionFailure?, String) -> Unit,
+            ) = this@Session.prepareEditableView(opId) { result ->
+                val failure = when (result.failure) {
+                    null -> null
+                    OfficeEditModePreparationFailure.TIMEOUT ->
+                        OfficePrecisionFailure.TIMEOUT
+                    OfficeEditModePreparationFailure.SESSION_ENDING ->
+                        OfficePrecisionFailure.SESSION_ENDING
+                    OfficeEditModePreparationFailure.TRANSPORT ->
+                        OfficePrecisionFailure.TRANSPORT
+                    else -> OfficePrecisionFailure.NOT_EDITABLE
+                }
+                // Null failure is the ONLY ready callback; detail never
+                // promotes a command send or the global load barrier.
+                callback(failure, "edit-preparation:" + result.detail)
+            }
+            override fun cancelEditableViewPreparation(opId: String) =
+                this@Session.cancelEditableViewPreparation(opId)
+            override fun sendOwnedNativeEditable() =
+                host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_EDITABLE)
             override fun sendWire(message: String) = host.postMobileMessageNative(message)
             override fun runOnControlLane(task: Runnable): Boolean = try {
                 controlExecutor.execute(task)
@@ -268,6 +291,133 @@ class OfficeEngineService : Service() {
             override fun recordDiagnostic(detail: String) =
                 this@Session.recordDiagnostic("precision", detail)
             override fun elapsedMs(): Long = android.os.SystemClock.elapsedRealtime()
+        }
+
+        private val editModePreparation = OfficeEditModePreparation(EditModePreparationHost())
+
+        /** Android/WebView joins for the bounded real page EDITMODE handshake. */
+        private inner class EditModePreparationHost : OfficeEditModePreparation.Host {
+            override fun isMountLive(): Boolean =
+                !retired && !presentationSuperseded && !cancelled.get() &&
+                    current === this@Session &&
+                    state != OfficeViewerState.CLOSING && state != OfficeViewerState.CLOSED &&
+                    !processRecoveryRequired.get()
+
+            override fun isEditableReady(): Boolean =
+                state == OfficeViewerState.READY_EDITABLE && editPermissionEstablished
+
+            override fun isPageEditMode(): Boolean = this@Session.pageEditMode
+
+            override fun sendNativeEditable(token: OfficeEditModePreparationToken): Boolean =
+                synchronized(host.nativeIngressLock) {
+                    if (!isMountLive()) {
+                        false
+                    } else {
+                        // Lock order is ALWAYS ingress -> preparation. Cancel
+                        // takes the same order, so no send starts after cancel.
+                        editModePreparation.runIfActive(token) {
+                            host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_EDITABLE)
+                        }
+                    }
+                }
+
+            override fun enterPageEditMode(
+                token: OfficeEditModePreparationToken,
+                onHookResult: (Boolean) -> Unit,
+            ) {
+                mainHandler.post {
+                    var hookFailed = false
+                    val started = synchronized(host.nativeIngressLock) {
+                        // The queued WebView runnable is an actual execution
+                        // point, not merely a callback: re-fence token + mount.
+                        editModePreparation.runIfActive(token) {
+                            if (!isMountLive()) {
+                                hookFailed = true
+                            } else {
+                                val view = webView
+                                if (view == null) {
+                                    hookFailed = true
+                                } else {
+                                    runCatching {
+                                        view.evaluateJavascript(
+                                            OfficeReadOnlyProtocol.PAGE_ENTER_EDIT_SCRIPT,
+                                        ) { raw ->
+                                            val ok = raw?.trim('"') == "true"
+                                            // Never invoke precision under the
+                                            // ingress/preparation monitors.
+                                            mainHandler.post { onHookResult(ok) }
+                                        }
+                                    }.onFailure { hookFailed = true }
+                                }
+                            }
+                        }
+                    }
+                    if (started && hookFailed) onHookResult(false)
+                }
+            }
+
+            override fun runOnControlLane(task: Runnable): Boolean = try {
+                controlExecutor.execute(task)
+                true
+            } catch (_: java.util.concurrent.RejectedExecutionException) {
+                false
+            }
+
+            override fun scheduleTimeout(delayMs: Long, task: Runnable): Any =
+                task.also { mainHandler.postDelayed(it, delayMs) }
+
+            override fun cancelTimeout(handle: Any) {
+                if (handle is Runnable) mainHandler.removeCallbacks(handle)
+            }
+
+            override fun recordDiagnostic(detail: String) {
+                this@Session.recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, detail)
+            }
+        }
+
+        private fun prepareEditableView(
+            opId: String,
+            callback: (OfficeEditModePreparationResult) -> Unit,
+        ) {
+            editRequested = true
+            editModePreparation.prepare(opId) { result ->
+                if (!result.isReady) editRequested = pageEditMode
+                publishEditState()
+                callback(result)
+            }
+        }
+
+        private fun cancelEditableViewPreparation(opId: String) {
+            synchronized(host.nativeIngressLock) {
+                editModePreparation.cancel(opId)
+            }
+        }
+
+        private fun closeEditModePreparation() {
+            synchronized(host.nativeIngressLock) {
+                editModePreparation.close()
+            }
+        }
+
+        /** Serialized page fact fan-out for precision and the pending flush. */
+        private fun onPageEditModeForOwnedOperations(on: Boolean) {
+            editModePreparation.onPageEditMode(on)
+            if (!on) {
+                precision.onPageViewingObserved()
+                val opId = saveCoordinator.pendingFlushOpId()
+                if (opId != null) {
+                    if (saveCoordinator.isFlushDispatched()) {
+                        recordDiagnostic(
+                            OfficeSessionDiagnostics.KIND_SAVE,
+                            "page viewing after flush dispatch op=$opId; awaiting real save outcome",
+                        )
+                    } else {
+                        saveCoordinator.abortDispatch(opId, "page-viewing-before-flush")?.let { outcome ->
+                            this@OfficeEngineService.completeFlush(this@Session, outcome)
+                        }
+                    }
+                }
+            }
         }
 
         /** Receipts issued for this mount, bounded; feeds the close outcome extras. */
@@ -595,6 +745,9 @@ class OfficeEngineService : Service() {
         /** Delivers the terminal result exactly once for this mount. */
         fun deliverTerminal(closedCleanly: Boolean, failure: OfficeFailureCode?, message: String?) {
             if (!terminalDelivered.compareAndSet(false, true)) return
+            // Fence any queued native/JS edit-preparation execution before
+            // settling operations; late hooks cannot enter a closing mount.
+            closeEditModePreparation()
             // Precision operations awaiting a native answer can never
             // receive one after this mount ends: settle them UNKNOWN
             // (effects uncertain, ALL data retained, never auto-undone)
@@ -670,6 +823,12 @@ class OfficeEngineService : Service() {
                     pageEditMode = on
                     recordDiagnostic(OfficeSessionDiagnostics.KIND_STATE, "page EDITMODE=$on")
                     publishEditState()
+                    runCatching {
+                        controlExecutor.execute {
+                            if (retired || presentationSuperseded || current !== this@Session) return@execute
+                            onPageEditModeForOwnedOperations(on)
+                        }
+                    }
                 }
             }
             // The native save ack (kit postDirectMessage on Android) shares
@@ -1639,6 +1798,9 @@ class OfficeEngineService : Service() {
                 completedAtElapsedMs = android.os.SystemClock.elapsedRealtime(),
             )
             dispatchReceipt(session, receipt)
+            // A queued page hook/native preparation must not fire after the
+            // exact pre-dispatch cancellation has already been acknowledged.
+            session.cancelEditableViewPreparation(opId)
         }
         return decision
     }
@@ -1984,32 +2146,82 @@ class OfficeEngineService : Service() {
                         attestation = "cancel-before-dispatch", cancelRequested = true,
                     ),
                 )
+                session.cancelEditableViewPreparation(op.opId)
+            }
+            return
+        }
+        session.prepareEditableView(op.opId) { result ->
+            // Cancellation or mount terminal may have settled this exact op
+            // while the page hook was queued. A late callback sends nothing.
+            if (session.saveCoordinator.pendingFlushOpId() != op.opId) return@prepareEditableView
+            if (!result.isReady) {
+                session.saveCoordinator.abortDispatch(
+                    op.opId,
+                    "edit-preparation:" + result.detail,
+                )?.let { outcome -> completeFlush(session, outcome) }
+            } else {
+                dispatchFlushAfterEditPreparation(session, op)
+            }
+        }
+    }
+
+    /** Sends native editable + save atomically after the REAL page edit witness. */
+    private fun dispatchFlushAfterEditPreparation(session: Session, op: OfficeSaveRequest) {
+        if (session.saveCoordinator.pendingFlushOpId() != op.opId) return
+        if (session.retired || session.cancelled.get() || current !== session) {
+            session.saveCoordinator.abortDispatch(op.opId, "mount-ended-before-flush")?.let { outcome ->
+                completeFlush(session, outcome)
             }
             return
         }
         try {
-            // Ingress-monitor re-check (Main integration 2026-10-26): the
-            // submit-time lease pre-check is a TOCTOU — a precision op can
-            // arm between it and this real dispatch. Under the SAME monitor
-            // that makes page check→send and precision arm→dispatch atomic,
-            // either the flush goes out now or nothing reached the kit and
-            // the flush settles as an honest dispatch refusal.
-            val leaseBlocked = synchronized(session.host.nativeIngressLock) {
-                if (session.precision.canDispatchCompetingNative()) {
-                    session.host.postMobileMessageNative(OfficeSaveProtocol.flushMessage(op.saveIfUnmodified))
-                    false
-                } else {
-                    true
+            var alreadySettled = false
+            val refusal = synchronized(session.host.nativeIngressLock) {
+                when {
+                    !session.precision.canDispatchCompetingNative() -> "precision-lease-at-dispatch"
+                    !session.pageEditMode -> "page-viewing-before-flush"
+                    // Mark BEFORE any native call. Cancel either wins here
+                    // (mark=false, no send) or becomes STILL_IN_FLIGHT; it can
+                    // never acknowledge pre-dispatch cancel then allow save.
+                    !session.saveCoordinator.markFlushDispatched(op.opId) -> {
+                        alreadySettled = true
+                        null
+                    }
+                    else -> {
+                        val sent = OfficeOwnedEditDispatch.run(
+                            isPageEditMode = { session.pageEditMode },
+                            sendNativeEditable = {
+                                session.host.postMobileMessageNative(OfficeReadOnlyProtocol.SET_VIEW_EDITABLE)
+                            },
+                            sendOperation = {
+                                if (session.saveCoordinator.pendingFlushOpId() != op.opId ||
+                                    !session.saveCoordinator.isFlushDispatched() ||
+                                    !session.saveCoordinator.markSaveCommandDispatched(op.opId)
+                                ) {
+                                    throw IllegalStateException("stale-flush-dispatch")
+                                }
+                                // Ack ownership starts only here, immediately
+                                // before the REAL save call—not during edit.
+                                session.host.postMobileMessageNative(
+                                    OfficeSaveProtocol.flushMessage(op.saveIfUnmodified),
+                                )
+                            },
+                        )
+                        if (sent) null else "page-viewing-before-flush"
+                    }
                 }
             }
-            if (leaseBlocked) {
-                session.saveCoordinator.abortDispatch(op.opId, "precision-lease-at-dispatch")?.let { outcome ->
+            if (alreadySettled) return
+            if (refusal != null) {
+                session.saveCoordinator.abortDispatch(op.opId, refusal)?.let { outcome ->
                     completeFlush(session, outcome)
                 }
                 return
             }
-            session.saveCoordinator.markFlushDispatched(op.opId)
-            session.recordDiagnostic(OfficeSessionDiagnostics.KIND_SAVE, "flush dispatched op=${op.opId}")
+            session.recordDiagnostic(
+                OfficeSessionDiagnostics.KIND_SAVE,
+                "flush dispatched after page-edit witness op=${op.opId}",
+            )
             armFlushTimeout(session, op)
         } catch (t: Throwable) {
             session.saveCoordinator.abortDispatch(op.opId, t.javaClass.simpleName)?.let { outcome ->

@@ -93,6 +93,11 @@ internal fun WorkspaceSourcePanel(
     val state by lane.state.collectAsState()
     var sheet by remember(lane) { mutableStateOf(SourceSheet.NONE) }
     var targetPath by remember(lane) { mutableStateOf("") }
+    /** The seed the Import form last AUTO-FILLED from the accepted pick
+     * (G05-R3 repair 2026-10-27). A newer pick while the sheet is open may
+     * replace the target ONLY while it still equals this seed; any text the
+     * user typed stays untouched. */
+    var importSeed by remember(lane) { mutableStateOf("") }
     var displayName by remember(lane) { mutableStateOf("") }
     var browse by remember(lane) { mutableStateOf(WorkspaceSourceBrowseOutcome(WorkspaceSourceResult("unbound"))) }
     // Opening the panel IS the explicit user read (same ownership as the
@@ -115,6 +120,20 @@ internal fun WorkspaceSourcePanel(
     // Row saves may return a refusal before publishing controller.lastResult.
     var rowOperationOutcome by remember(lane) { mutableStateOf<WorkspaceSourceResult?>(null) }
     LaunchedEffect(sheet) { operationOutcome = null }
+    // A NEW accepted pick while the Import form is open re-seeds the target
+    // only while it still holds the previous untouched auto-fill (G05-R3
+    // device evidence 2026-10-27: after a failed folder pick, Choose file
+    // left the old folder-derived suggestion in place). User-entered text
+    // is never overwritten, and a pick without a nameable seed changes
+    // nothing (no opaque provider id is pushed into the field).
+    LaunchedEffect(state.accepted, sheet) {
+        if (sheet != SourceSheet.IMPORT) return@LaunchedEffect
+        val suggestion = suggestedImportPath(state.accepted)
+        if (suggestion.isNotBlank() && (targetPath == importSeed || targetPath.isBlank())) {
+            targetPath = suggestion
+            importSeed = suggestion
+        }
+    }
 
     // ---- platform launch ownership (persisted, per-lane namespace) -------
     val ledger = remember(lane) { PlatformLaunchOwnership.LaneLedger(lane.launchNamespace) }
@@ -178,6 +197,7 @@ internal fun WorkspaceSourcePanel(
                               enabled = !state.busy, modifier = Modifier.weight(1f),
                               onClick = {
                                   targetPath = suggestedImportPath(state.accepted)
+                                  importSeed = targetPath
                                   sheet = SourceSheet.IMPORT
                               })
             FloeCapsuleButton(stringResource(R.string.workspace_source_save_as),
@@ -470,9 +490,22 @@ internal fun WorkspaceSourcePanel(
 
 private enum class SourceSheet { NONE, IMPORT, SAVE_AS, EXPORT, BROWSE }
 
-private fun suggestedImportPath(accepted: WorkspaceSourceAcceptedPick?): String {
-    val name = accepted?.displayName ?: accepted?.uri?.substringAfterLast('/')?.substringBefore('?')
-    val safe = name?.takeIf { !it.contains('/') && !it.contains('\\') && it != "." && it != ".." }
+/**
+ * Import-target seed from provider-backed identity ONLY (internal for the
+ * focused JVM regression; the sheet re-seeds per the untouched-seed rule).
+ * A SAF document id — decoded or not — is an OPAQUE provider identity, not
+ * a display name, so it is never a seed source either. The raw URI fallback
+ * used to print percent-encoded ids into the user-facing default
+ * ("Imported/primary%3ADownload%2FFloe-G05-R3-QA", G05-R3 device evidence
+ * 2026-10-27); only a pick that already carries the provider's real
+ * displayName (browse-child selection) seeds a name. No trustworthy name →
+ * no suggestion: the field stays empty and Import stays disabled until the
+ * user states the workspace path.
+ */
+internal fun suggestedImportPath(accepted: WorkspaceSourceAcceptedPick?): String {
+    val safe = accepted?.displayName?.takeIf {
+        it.isNotBlank() && !it.contains('/') && !it.contains('\\') && it != "." && it != ".."
+    }
     return safe?.let { "Imported/$it" } ?: ""
 }
 
@@ -551,6 +584,7 @@ private fun outcomeText(context: Context, outcome: WorkspaceSourceResult): Strin
     val key = when (outcome.status) {
         "ok" -> when {
             outcome.facts.containsKey("sourceID") -> R.string.workspace_source_ok_imported
+            outcome.facts.containsKey("imported") -> R.string.workspace_source_ok_imported
             outcome.facts.containsKey("created") -> R.string.workspace_source_ok_exported
             outcome.facts.containsKey("journal") -> R.string.workspace_source_ok_saved
             else -> R.string.workspace_source_ok_generic

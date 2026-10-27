@@ -3,6 +3,7 @@ package com.floe.android.core.officeengine.precision
 
 import com.floe.android.core.officeengine.CoolMessageTriage
 import com.floe.android.core.officeengine.OfficeDocumentFormat
+import com.floe.android.core.officeengine.OfficeOwnedEditDispatch
 
 /**
  * Session-scoped orchestrator for the fenced Office precision surface.
@@ -71,6 +72,29 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
 
         /** Last observed `.uno:ModifiedStatus` (corroboration only). */
         fun documentModified(): Boolean?
+
+        /** Latest REAL page EDITMODE fact, independent of load permission or command intent. */
+        fun isPageEditMode(): Boolean
+
+        /**
+         * Drives the existing bounded page edit-mode handshake for this owned
+         * non-query operation. Ready is reported only after a real EDITMODE-on
+         * observation (or when that observed state is already present).
+         */
+        fun prepareEditableView(
+            opId: String,
+            callback: (OfficePrecisionFailure?, String) -> Unit,
+        )
+
+        /** Fences a pending page-hook/timeout callback for this exact op. */
+        fun cancelEditableViewPreparation(opId: String)
+
+        /**
+         * Sends the EDIT mount's own setviewreadonly=false immediately before
+         * the first operation wire, inside the SAME nativeIngressLock section.
+         * This is ordered native dispatch, not a local editability witness.
+         */
+        fun sendOwnedNativeEditable()
 
         /** Posts one wire message to the kit; throws on transport failure. */
         fun sendWire(message: String)
@@ -168,6 +192,18 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
      * TOCTOU (Main ingress integration 2026-10-26).
      */
     fun canDispatchCompetingNative(): Boolean = !leaseActive()
+
+    /**
+     * Session observed a REAL page EDITMODE-off event on the control lane.
+     * A non-query run never rides through that drift: before any effect it is
+     * refused; after an effect-bearing wire it is UNKNOWN (never replayed).
+     * Read-only queries do not own or require page edit mode.
+     */
+    fun onPageViewingObserved() {
+        val run = synchronized(engineLock) { currentRun } ?: return
+        if (run.request.action.effect == OfficePrecisionEffect.QUERY) return
+        ledger.onPageViewing(run.request.opId)?.let { finishRun(it) }
+    }
 
     // ------------------------------------------------------------------
     // Submission (binder thread)
@@ -551,8 +587,10 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
     }
 
     /**
-     * Prepares one claimed run (fences, capture pre-mint, target CAS) and
-     * arms/dispatches step 0. Called ONLY with the ingress monitor held.
+     * Claims one run, then (for every non-query action) waits for the REAL
+     * page edit-mode handshake before target consumption or any plan wire.
+     * READY_EDITABLE / the load ReadOnly barrier remain eligibility gates,
+     * never substitutes for the current page EDITMODE fact.
      */
     private fun beginRun(run: OfficePrecisionLedger.OpRun) {
         if (!host.isMountLive() || !host.isReadyState() ||
@@ -575,13 +613,57 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                     ?.let { finishRun(it) }
                 return
             }
+            host.prepareEditableView(run.request.opId) { failure, detail ->
+                if (currentRun !== run) return@prepareEditableView
+                if (failure != null) {
+                    ledger.rejectRun(run, failure, detail)?.let { finishRun(it) }
+                } else {
+                    continuePreparedRun(run)
+                }
+            }
+        } else {
+            continuePreparedRun(run)
+        }
+    }
+
+    /**
+     * Async page callbacks do not inherit beginRun's caller-held monitor.
+     * Re-enter the existing ingress monitor before target CAS and step 0;
+     * immediate callbacks simply re-enter the same monitor reentrantly.
+     */
+    private fun continuePreparedRun(run: OfficePrecisionLedger.OpRun) {
+        synchronized(host.nativeIngressLock()) {
+            continuePreparedRunLocked(run)
+        }
+    }
+
+    private fun continuePreparedRunLocked(run: OfficePrecisionLedger.OpRun) {
+        if (currentRun !== run) return
+        if (!host.isMountLive() || !host.isReadyState() ||
+            run.request.sessionToken != host.sessionToken() ||
+            run.request.generation != host.generation()
+        ) {
+            ledger.rejectRun(run, OfficePrecisionFailure.SESSION_ENDING, "mount-ended-after-edit-preparation")
+                ?.let { finishRun(it) }
+            return
+        }
+        val action = run.request.action
+        if (action.effect != OfficePrecisionEffect.QUERY) {
+            if (!host.isEditableReady()) {
+                ledger.rejectRun(run, OfficePrecisionFailure.NOT_EDITABLE, "edit-permission-lost-after-preparation")
+                    ?.let { finishRun(it) }
+                return
+            }
+            if (host.saveBusy()) {
+                ledger.rejectRun(run, OfficePrecisionFailure.SAVE_IN_FLIGHT, "save-started-during-edit-preparation")
+                    ?.let { finishRun(it) }
+                return
+            }
         }
         if (action.effect == OfficePrecisionEffect.CONTENT) {
-            // Target validation under the ingress monitor: every admitted
-            // page send that raced the lease activation has already updated
-            // its epoch (forwarded callback runs inside the same monitor),
-            // so a manual change since capture provably conflicts here even
-            // when ModifiedStatus merely stayed true.
+            // Consume the single-use target only AFTER the real page edit
+            // handshake. A failed hook/timeout therefore cannot burn a fresh
+            // capture or dispatch a guessed mutation.
             val digest = host.workingCopyDigest()
             val sha = digest?.first
             when (val check = ledger.validateTarget(
@@ -648,7 +730,39 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
                 OfficePrecisionLedger.ArmDecision.DispatchNow -> {
                     if (expect != null) armTimeout(run, stepIndex, step.timeoutMs)
                     try {
-                        host.sendWire(step.wire)
+                        val dispatched = OfficeOwnedEditDispatch.run(
+                            // Queries never acquire edit authority. Every
+                            // non-query run requires the current REAL page
+                            // observation again at this exact dispatch point.
+                            isPageEditMode = {
+                                run.request.action.effect == OfficePrecisionEffect.QUERY || host.isPageEditMode()
+                            },
+                            sendNativeEditable = {
+                                if (run.request.action.effect != OfficePrecisionEffect.QUERY &&
+                                    !run.ownedEditViewAsserted
+                                ) {
+                                    // Same ingress monitor + same serial wire
+                                    // as the operation below. This is ordered
+                                    // dispatch, not an as-sent success flag.
+                                    host.sendOwnedNativeEditable()
+                                    run.ownedEditViewAsserted = true
+                                }
+                            },
+                            sendOperation = {
+                                if (currentRun !== run) {
+                                    throw IllegalStateException("stale-precision-run")
+                                }
+                                // Mark BEFORE native code can synchronously
+                                // re-enter page-off/error callbacks.
+                                ledger.noteWireDispatchStarted(run, stepIndex)
+                                host.sendWire(step.wire)
+                            },
+                        )
+                        if (!dispatched) {
+                            cancelTimeout()
+                            ledger.onPageViewing(run.request.opId)?.let { finishRun(it) }
+                            return
+                        }
                     } catch (t: Throwable) {
                         cancelTimeout()
                         ledger.abortDispatch(run, t.javaClass.simpleName)?.let { finishRun(it) }
@@ -714,6 +828,7 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
     /** Terminal bookkeeping: diagnostics, lease release, pump continuation. */
     private fun finishRun(result: OfficePrecisionResult) {
         cancelTimeout()
+        host.cancelEditableViewPreparation(result.opId)
         synchronized(engineLock) {
             if (currentRun?.request?.opId == result.opId) currentRun = null
         }
@@ -735,6 +850,7 @@ class OfficePrecisionEngine(private val host: OfficePrecisionHost) {
     /** Mount end (BYE/close/process loss): settle everything UNKNOWN, retain all data. */
     fun onMountTerminal() {
         cancelTimeout()
+        synchronized(engineLock) { currentRun?.request?.opId }?.let(host::cancelEditableViewPreparation)
         val results = ledger.onMountTerminal()
         synchronized(engineLock) { currentRun = null }
         results.forEach { result ->

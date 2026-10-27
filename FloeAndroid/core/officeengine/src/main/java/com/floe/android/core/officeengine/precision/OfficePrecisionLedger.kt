@@ -60,10 +60,10 @@ import java.security.SecureRandom
  * Completion honesty (Main early API review 2026-10-27): a position
  * readback proves ONLY position. A content mutation terminates
  * MUTATION_VERIFIED only when the SOFT real producer content readback
- * matched exactly; producer completion evidence without a matching content
- * readback terminates NATIVE_COMPLETED (tool success then requires the
- * later owned flush/export byte verification). A soft-stage mismatch/
- * timeout NEVER fails the already-completed mutation.
+ * matched exactly. Explicit comparable conflict terminates UNKNOWN with the
+ * effect uncertain; absent/unavailable readback terminates NATIVE_COMPLETED
+ * (tool success then requires later owned flush/export byte verification).
+ * Neither path auto-retries or auto-undoes the native attempt.
  *
  * Target handles are engine-minted random ids bound to (generation, flushed
  * working-copy digest, manual-input epoch, precision-edit epoch): a manual
@@ -225,6 +225,9 @@ class OfficePrecisionLedger(
          * apply to another sheet/slide/selection.
          */
         var effectDispatched: Boolean = false
+
+        /** The owned native editable command already preceded this run's first plan wire. */
+        var ownedEditViewAsserted: Boolean = false
 
         /** Head command tokens of wires actually posted for this run (error correlation). */
         val dispatchedCommands = LinkedHashSet<String>()
@@ -439,15 +442,12 @@ class OfficePrecisionLedger(
     }
 
     /**
-     * Records that one step's wire message was REALLY posted to the kit
-     * (engine calls immediately after a successful send, under the ingress
-     * monitor). Effect-bearing non-query steps mark [OpRun.effectDispatched]
-     * so the terminal advances the effect epoch even on FAILED/UNKNOWN
-     * (maybe-effect) outcomes; the head command token is retained so a later
-     * producer `error: cmd=...` for ANY dispatched command of this run can
-     * be consumed as this operation's refusal.
+     * Conservatively records the dispatch attempt IMMEDIATELY BEFORE the
+     * native call. A synchronous page-off/error callback can therefore never
+     * classify a possibly-landed wire as a no-effect refusal. The command set
+     * is idempotent; the post-send call below retains the original bookkeeping.
      */
-    internal fun noteWireDispatched(run: OpRun, stepIndex: Int) {
+    internal fun noteWireDispatchStarted(run: OpRun, stepIndex: Int) {
         synchronized(lock) {
             if (armed !== run) return
             val step = run.plan.getOrNull(stepIndex) ?: return
@@ -457,6 +457,10 @@ class OfficePrecisionLedger(
             }
         }
     }
+
+    /** Post-send bookkeeping; safe and idempotent after [noteWireDispatchStarted]. */
+    internal fun noteWireDispatched(run: OpRun, stepIndex: Int) =
+        noteWireDispatchStarted(run, stepIndex)
 
     /** The wire dispatch itself threw: nothing reached the kit (honest FAILED). */
     internal fun abortDispatch(run: OpRun, detail: String): OfficePrecisionResult? = synchronized(lock) {
@@ -526,8 +530,8 @@ class OfficePrecisionLedger(
                     val result = terminateLocked(
                         run,
                         terminalStateFor(run),
-                        null,
-                        null,
+                        terminalFailureFor(run),
+                        terminalDetailFor(run),
                         attestation = run.attestations.joinToString("+"),
                         answer = null,
                     )
@@ -557,8 +561,8 @@ class OfficePrecisionLedger(
                 val result = terminateLocked(
                     run,
                     terminalStateFor(run),
-                    null,
-                    null,
+                    terminalFailureFor(run),
+                    terminalDetailFor(run),
                     attestation = run.attestations.joinToString("+"),
                     answer = OfficePrecisionAnswer.TextSelected(frame.payloadBytes),
                 )
@@ -570,8 +574,8 @@ class OfficePrecisionLedger(
                 val result = terminateLocked(
                     run,
                     terminalStateFor(run),
-                    null,
-                    null,
+                    terminalFailureFor(run),
+                    terminalDetailFor(run),
                     attestation = run.attestations.joinToString("+"),
                     answer = null,
                 )
@@ -605,8 +609,8 @@ class OfficePrecisionLedger(
                 val result = terminateLocked(
                     run,
                     terminalStateFor(run),
-                    null,
-                    null,
+                    terminalFailureFor(run),
+                    terminalDetailFor(run),
                     attestation = run.attestations.joinToString("+"),
                     answer = null,
                 )
@@ -625,14 +629,15 @@ class OfficePrecisionLedger(
         when (val outcome = checkStep(run, step.check, expect, frame)) {
             is StepOutcome.Fail -> {
                 if (step.soft && run.nativeCompleted) {
-                    // Soft verification never fails a completed mutation.
+                    // Explicit conflict becomes UNKNOWN; unavailable evidence
+                    // only limits verification. Neither auto-replays the op.
                     run.contentReadback = outcome.softDowngrade
                     run.attestations.add(step.name + ":" + outcome.attestationToken)
                     val result = terminateLocked(
                         run,
                         terminalStateFor(run),
-                        null,
-                        null,
+                        terminalFailureFor(run),
+                        terminalDetailFor(run),
                         attestation = run.attestations.joinToString("+"),
                         answer = null,
                     )
@@ -655,8 +660,8 @@ class OfficePrecisionLedger(
                     val result = terminateLocked(
                         run,
                         terminalStateFor(run),
-                        null,
-                        null,
+                        terminalFailureFor(run),
+                        terminalDetailFor(run),
                         attestation = run.attestations.joinToString("+"),
                         answer = outcome.answer(),
                     )
@@ -889,20 +894,41 @@ class OfficePrecisionLedger(
      * SELECTION terminates NATIVE_COMPLETED — the non-empty selection
      * readback is a PARTIAL postcondition and a delayed callback frame is
      * never accepted as proof; CONTENT mutations are MUTATION_VERIFIED only
-     * with an exact content readback match — producer completion alone is
-     * honestly NATIVE_COMPLETED (pending owned flush/export verification).
+     * with an exact content readback match, UNKNOWN on an explicit comparable
+     * conflict, and NATIVE_COMPLETED when evidence is merely unavailable.
      */
     private fun terminalStateFor(run: OpRun): OfficePrecisionState =
         when (run.request.action.effect) {
             OfficePrecisionEffect.QUERY -> OfficePrecisionState.QUERY_OBSERVED
-            OfficePrecisionEffect.CONTENT ->
-                if (run.contentReadback == OfficePrecisionContentReadback.MATCHED) {
-                    OfficePrecisionState.MUTATION_VERIFIED
-                } else {
-                    OfficePrecisionState.NATIVE_COMPLETED
-                }
+            OfficePrecisionEffect.CONTENT -> when (run.contentReadback) {
+                OfficePrecisionContentReadback.MATCHED -> OfficePrecisionState.MUTATION_VERIFIED
+                // A real, comparable answer that contradicts the requested
+                // text is positive conflicting evidence after a paste ACK.
+                // It is NOT native completion and NOT a harmless formatting
+                // downgrade: the actual effect is uncertain and retained.
+                OfficePrecisionContentReadback.MISMATCHED -> OfficePrecisionState.UNKNOWN
+                else -> OfficePrecisionState.NATIVE_COMPLETED
+            }
             OfficePrecisionEffect.SELECTION -> OfficePrecisionState.NATIVE_COMPLETED
             OfficePrecisionEffect.NAVIGATION -> OfficePrecisionState.MUTATION_VERIFIED
+        }
+
+    private fun terminalFailureFor(run: OpRun): OfficePrecisionFailure? =
+        if (run.request.action.effect == OfficePrecisionEffect.CONTENT &&
+            run.contentReadback == OfficePrecisionContentReadback.MISMATCHED
+        ) {
+            OfficePrecisionFailure.TARGET_UNVERIFIED
+        } else {
+            null
+        }
+
+    private fun terminalDetailFor(run: OpRun): String? =
+        if (run.request.action.effect == OfficePrecisionEffect.CONTENT &&
+            run.contentReadback == OfficePrecisionContentReadback.MISMATCHED
+        ) {
+            "content-readback-conflict-effect-uncertain"
+        } else {
+            null
         }
 
     private fun matches(expect: OfficePrecisionPlan.Expectation, frame: ObservedFrame): Boolean =
@@ -957,8 +983,8 @@ class OfficePrecisionLedger(
             val result = terminateLocked(
                 run,
                 terminalStateFor(run),
-                null,
-                null,
+                terminalFailureFor(run),
+                terminalDetailFor(run),
                 attestation = run.attestations.joinToString("+"),
                 answer = null,
             )
@@ -968,8 +994,30 @@ class OfficePrecisionLedger(
     }
 
     // ------------------------------------------------------------------
-    // Timeouts / mount end (honest UNKNOWN; never auto-undo; data retained)
+    // Page mode drift / timeouts / mount end (never auto-undo; data retained)
     // ------------------------------------------------------------------
+
+    /**
+     * The page really entered Viewing during an owned non-query run. No new
+     * plan wire may follow. Before any effect this is a typed refusal; after
+     * an effect-bearing send the result is UNKNOWN because the earlier paste/
+     * selection/navigation may already have landed. No retry or undo is made.
+     */
+    fun onPageViewing(opId: String): OfficePrecisionResult? = synchronized(lock) {
+        val run = armed ?: return@synchronized null
+        if (run.request.opId != opId || run.request.action.effect == OfficePrecisionEffect.QUERY) {
+            return@synchronized null
+        }
+        val maybeEffect = run.effectDispatched
+        terminateLocked(
+            run,
+            if (maybeEffect) OfficePrecisionState.UNKNOWN else OfficePrecisionState.REJECTED,
+            if (maybeEffect) OfficePrecisionFailure.TARGET_UNVERIFIED else OfficePrecisionFailure.NOT_EDITABLE,
+            if (maybeEffect) "page-viewing-after-effect-dispatch" else "page-viewing-before-dispatch",
+            attestation = (run.attestations + "page-edit-mode-lost").joinToString("+"),
+            answer = null,
+        )
+    }
 
     fun onStepTimeout(opId: String, stepIndex: Int): OfficePrecisionResult? = synchronized(lock) {
         val run = armed ?: return@synchronized null
@@ -997,8 +1045,8 @@ class OfficePrecisionLedger(
             return@synchronized terminateLocked(
                 run,
                 terminalStateFor(run),
-                null,
-                null,
+                terminalFailureFor(run),
+                terminalDetailFor(run),
                 attestation = run.attestations.joinToString("+"),
                 answer = null,
             )

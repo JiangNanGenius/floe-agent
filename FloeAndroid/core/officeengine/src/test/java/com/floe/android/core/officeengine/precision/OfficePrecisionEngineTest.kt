@@ -34,11 +34,20 @@ class OfficePrecisionEngineTest {
         var modified: Boolean? = false
         var ownerTask: String? = null
         var workspace: String? = null
+        var pageEditMode = true
+        var deferEditPreparation = false
+        var editPreparationFailure: OfficePrecisionFailure? = null
+        var beforeWireSend: ((String) -> Unit)? = null
 
         /** Stand-in for LOActivity.nativeIngressLock (the session-wide monitor). */
         val ingressLock = Any()
 
         val wires = ArrayList<String>()
+        val dispatchEvents = ArrayList<String>()
+        val editAssertionsUnderMonitor = ArrayList<Boolean>()
+        val digestUnderMonitor = ArrayList<Boolean>()
+        val editPreparationCallbacks =
+            LinkedHashMap<String, (OfficePrecisionFailure?, String) -> Unit>()
 
         /** For every wire: whether the send happened UNDER the ingress monitor. */
         val wireUnderMonitor = ArrayList<Boolean>()
@@ -54,15 +63,40 @@ class OfficePrecisionEngineTest {
         override fun isEditableReady() = editableReady
         override fun isMountLive() = mountLive
         override fun saveBusy() = saveBusy
-        override fun workingCopyDigest() = digest
+        override fun workingCopyDigest(): Pair<String, Long>? {
+            digestUnderMonitor.add(Thread.holdsLock(ingressLock))
+            return digest
+        }
         override fun ownerTaskId() = ownerTask
         override fun workspaceId() = workspace
         override fun sourceId() = "src-1"
         override fun sourceRevision() = "rev-9"
         override fun sourceLogicalPath() = null
         override fun documentModified() = modified
+        override fun isPageEditMode() = pageEditMode
+        override fun prepareEditableView(
+            opId: String,
+            callback: (OfficePrecisionFailure?, String) -> Unit,
+        ) {
+            val failure = editPreparationFailure
+            when {
+                failure != null -> callback(failure, "edit-preparation:test-refusal")
+                pageEditMode && !deferEditPreparation ->
+                    callback(null, "edit-preparation:page-edit-mode-observed")
+                else -> editPreparationCallbacks[opId] = callback
+            }
+        }
+        override fun cancelEditableViewPreparation(opId: String) {
+            editPreparationCallbacks.remove(opId)
+        }
+        override fun sendOwnedNativeEditable() {
+            dispatchEvents.add("native-editable")
+            editAssertionsUnderMonitor.add(Thread.holdsLock(ingressLock))
+        }
         override fun sendWire(message: String) {
+            beforeWireSend?.invoke(message)
             wires.add(message)
+            dispatchEvents.add("wire:$message")
             wireUnderMonitor.add(Thread.holdsLock(ingressLock))
         }
         override fun runOnControlLane(task: Runnable): Boolean {
@@ -88,6 +122,14 @@ class OfficePrecisionEngineTest {
             assertTrue("no timeout armed", index >= 0)
             assertFalse("timeout already cancelled", cancelledTimeouts.contains(index))
             timeouts[index].second.run()
+        }
+
+        /** Completes only the page handshake; native assertion remains a separate dispatch fact. */
+        fun completeEditPreparation(opId: String) {
+            pageEditMode = true
+            val callback = editPreparationCallbacks.remove(opId)
+                ?: error("no deferred edit preparation for $opId")
+            callback(null, "edit-preparation:page-edit-mode-observed")
         }
 
         /**
@@ -799,6 +841,162 @@ class OfficePrecisionEngineTest {
         assertEquals(
             OfficePrecisionState.MUTATION_VERIFIED,
             engine.readAnswer("ap2", "tok", 3L)!!.state,
+        )
+    }
+
+    // ------------------------------------------------------------------
+    // Real page edit-mode handshake + ordered owned dispatch
+    // ------------------------------------------------------------------
+
+    @Test
+    fun pageViewingDefersMutationUntilActualEditAckAndOrderedNativeAssertion() {
+        val host = FakeHost()
+        host.pageEditMode = false
+        host.deferEditPreparation = true
+        val engine = OfficePrecisionEngine(host)
+
+        engine.submit(req("view-select", OfficePrecisionAction.SELECT_ALL_TEXT))
+        assertTrue(host.wires.isEmpty())
+        assertTrue(host.editPreparationCallbacks.containsKey("view-select"))
+
+        host.completeEditPreparation("view-select")
+        assertEquals(
+            listOf("native-editable", "wire:uno .uno:SelectAll"),
+            host.dispatchEvents,
+        )
+        assertEquals(listOf(true), host.editAssertionsUnderMonitor)
+        feed(engine, "textselectioncontent: selected")
+        assertEquals(
+            OfficePrecisionState.NATIVE_COMPLETED,
+            engine.readAnswer("view-select", "tok", 3L)!!.state,
+        )
+    }
+
+    @Test
+    fun pageViewingAfterEffectSendIsUnknownAndNeverReplays() {
+        val host = FakeHost()
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("view-lost", OfficePrecisionAction.SELECT_ALL_TEXT))
+        assertEquals(listOf("uno .uno:SelectAll"), host.wires)
+
+        host.pageEditMode = false
+        engine.onPageViewingObserved()
+        val result = engine.readAnswer("view-lost", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.UNKNOWN, result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, result.failure)
+        assertEquals("page-viewing-after-effect-dispatch", result.detail)
+        assertTrue(result.attestation.contains("page-edit-mode-lost"))
+        assertEquals(1, host.wires.size)
+
+        // A late answer cannot revive or repeat the already-settled effect.
+        feed(engine, "textselectioncontent: selected")
+        assertEquals(1, host.wires.size)
+        assertNull(engine.readAnswer("view-lost", "tok", 3L))
+    }
+
+    @Test
+    fun synchronousPageOffInsideNativeSendSeesConservativeEffectMarker() {
+        val host = FakeHost()
+        val engine = OfficePrecisionEngine(host)
+        host.beforeWireSend = { message ->
+            if (message == "uno .uno:SelectAll") {
+                host.beforeWireSend = null
+                host.pageEditMode = false
+                // Re-enter before sendWire returns, as a native/page callback
+                // may do. The wire is then recorded as potentially landed.
+                engine.onPageViewingObserved()
+            }
+        }
+
+        engine.submit(req("view-reentry", OfficePrecisionAction.SELECT_ALL_TEXT))
+        val result = engine.readAnswer("view-reentry", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.UNKNOWN, result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, result.failure)
+        assertEquals("page-viewing-after-effect-dispatch", result.detail)
+        assertEquals(listOf("uno .uno:SelectAll"), host.wires)
+    }
+
+    @Test
+    fun pageViewingBeforeEffectSendRejectsWithoutPlanWire() {
+        val host = FakeHost()
+        host.pageEditMode = false
+        host.deferEditPreparation = true
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("view-before", OfficePrecisionAction.SELECT_ALL_TEXT))
+        engine.onPageViewingObserved()
+
+        val result = engine.readAnswer("view-before", "tok", 3L)!!
+        assertEquals(OfficePrecisionState.REJECTED, result.state)
+        assertEquals(OfficePrecisionFailure.NOT_EDITABLE, result.failure)
+        assertEquals("page-viewing-before-dispatch", result.detail)
+        assertTrue(host.wires.isEmpty())
+        assertTrue(host.editPreparationCallbacks.isEmpty())
+    }
+
+    @Test
+    fun asyncEditContinuationConsumesTargetUnderIngressMonitor() {
+        val host = FakeHost()
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("cap-lock", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, statusFrame)
+        val target = (engine.readAnswer("cap-lock", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        host.dispatchEvents.clear()
+        host.digestUnderMonitor.clear()
+        host.pageEditMode = false
+        host.deferEditPreparation = true
+
+        engine.submit(
+            req("apply-lock", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId),
+        )
+        assertTrue(host.wires.none { it.startsWith("paste ") })
+        host.completeEditPreparation("apply-lock")
+        assertTrue(host.digestUnderMonitor.isNotEmpty())
+        assertTrue(host.digestUnderMonitor.last())
+        assertEquals("native-editable", host.dispatchEvents.first())
+        assertTrue(host.dispatchEvents.any { it.startsWith("wire:paste ") })
+
+        feed(engine, "pasteresult: success")
+        feed(engine, "textselectioncontent: x")
+        assertEquals(
+            OfficePrecisionState.MUTATION_VERIFIED,
+            engine.readAnswer("apply-lock", "tok", 3L)!!.state,
+        )
+    }
+
+    @Test
+    fun failedEditPreparationDoesNotConsumeSingleUseTarget() {
+        val host = FakeHost()
+        val engine = OfficePrecisionEngine(host)
+        engine.submit(req("cap-prep", OfficePrecisionAction.CAPTURE_TARGET))
+        feed(engine, statusFrame)
+        val target = (engine.readAnswer("cap-prep", "tok", 3L)!!
+            .answer as OfficePrecisionAnswer.TargetCaptured).target
+        host.pageEditMode = false
+        host.deferEditPreparation = true
+        host.editPreparationFailure = OfficePrecisionFailure.NOT_EDITABLE
+
+        engine.submit(
+            req("apply-prep-fail", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId),
+        )
+        assertEquals(
+            OfficePrecisionFailure.NOT_EDITABLE,
+            engine.readAnswer("apply-prep-fail", "tok", 3L)!!.failure,
+        )
+        assertTrue(host.wires.none { it.startsWith("paste ") })
+
+        host.editPreparationFailure = null
+        host.deferEditPreparation = false
+        host.pageEditMode = true
+        engine.submit(
+            req("apply-prep-ok", OfficePrecisionAction.APPLY_TEXT, text = "x", targetHandle = target.handleId),
+        )
+        assertTrue(host.wires.any { it.startsWith("paste ") })
+        feed(engine, "pasteresult: success")
+        feed(engine, "textselectioncontent: x")
+        assertEquals(
+            OfficePrecisionState.MUTATION_VERIFIED,
+            engine.readAnswer("apply-prep-ok", "tok", 3L)!!.state,
         )
     }
 
