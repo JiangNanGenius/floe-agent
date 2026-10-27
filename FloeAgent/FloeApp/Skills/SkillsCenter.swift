@@ -487,7 +487,7 @@ final class SkillsCenter: ObservableObject {
         else {
             throw SkillHubCatalogError.unavailable(FloeL10n.l("skills.hub.unavailable"))
         }
-        checkCancelled()
+        try checkCancelled()
         let current = try await environment.skillStore.all().first { $0.id == entryID }
         if let current, let proof = Self.curatedReceipt(for: current),
            proof.contentDigest == current.rewrittenDigest,
@@ -502,7 +502,7 @@ final class SkillsCenter: ObservableObject {
            origin(of: current) != .official {
             // A same-id row that cannot be proven official stays under its own
             // reviewed flows; the hub Get never silently replaces it.
-            throw SkillHubValidationError.invalid(SkillHubCopy.existingOtherSource)
+            throw FloeError.validationFailed(SkillHubCopy.existingOtherSource)
         }
         context.report(.downloading, nil)
         let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
@@ -511,7 +511,7 @@ final class SkillsCenter: ObservableObject {
         // content digest, signed review-record join and the permission-delta
         // computation all run inside `CuratedSkillHub.stage` unchanged.
         let staged = try await stageCuratedPackage(publication, id: entryID, at: scratch.url)
-        checkCancelled()
+        try checkCancelled()
         context.report(.checking, nil)
         try await requireCompatibility(staged.content.package)
         try Self.validateDependencyDeclaration(in: staged.content)
@@ -544,11 +544,11 @@ final class SkillsCenter: ObservableObject {
                 addedPackages: addedPackages)
             guard approved else { throw CancellationError() }
         }
-        checkCancelled()
+        try checkCancelled()
         context.report(.installing, nil)
         // No await between the final boundary check and entering the existing
         // commit flow: cancellation honestly cannot take effect mid-transaction.
-        checkCancelled()
+        try checkCancelled()
         guard !isWorking, !updates.isRunning, !packageMutationInProgress, !isBatchRunning,
               pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
         isWorking = true
