@@ -7,6 +7,24 @@ import FloeExecution
 import FloePackages
 import FloeTools
 
+/// The owner's real byte truth for one shared image job, published only while
+/// the service reports the live `.downloading` phase. Every field comes from
+/// an actual downloader callback: the counters are the bytes the stream
+/// reported and the total is the server's own Content-Length (`nil` when the
+/// server sent none — never a guess reconstructed from the fraction), and
+/// `bytesPerSecond` is measured from real cumulative byte growth through the
+/// shared `SpeedEstimator` window (zero until the first full window of real
+/// movement). It is not a scaled copy of `fractions`: cached reads, hashing
+/// and extraction bytes never feed it. The snapshot is cleared on any phase
+/// change, on cancellation, at the job's terminal transition and when a new
+/// attempt starts.
+struct LinuxImageTransferSnapshot: Equatable, Sendable {
+    var receivedBytes: Int64
+    var totalBytes: Int64?
+    var bytesPerSecond: Int64
+    var phase: LinuxGuestImageTransferPhase
+}
+
 /// Jobs survive navigation and are drained by the environment lifecycle before deletion.
 @MainActor final class EnvironmentPackageJobs: ObservableObject {
     static let shared = EnvironmentPackageJobs()
@@ -23,6 +41,11 @@ import FloeTools
     /// transient phase label can never overwrite the job's terminal result or
     /// its cancellation message.
     @Published private(set) var phases: [String: LinuxGuestImageTransferPhase] = [:]
+    /// Live download byte/rate truth per job id, keyed by the real owner job id
+    /// (for the shared image job that is `"linux-image:<imageID>"`). Present
+    /// only while the service reports `.downloading`; see
+    /// `LinuxImageTransferSnapshot` for the exact honesty rules.
+    @Published private(set) var transfers: [String: LinuxImageTransferSnapshot] = [:]
     /// Latest Runtime v2 startup-recovery stage (raw id) while the shared
     /// first preparation pass runs; nil once the substrate is prepared or no
     /// pass ever started. Lets the Linux component card show honest recovery
@@ -46,6 +69,7 @@ import FloeTools
         failures.remove(id)
         fractions[id] = nil
         phases[id] = nil
+        clearTransferState(id: id)
         if let progress {
             progressHandlerBindings[id] = progress
         }
@@ -57,6 +81,7 @@ import FloeTools
             tasks[id] = nil
             progressHandlerBindings[id] = nil
             phases[id] = nil
+            clearTransferState(id: id)
             revision += 1
         }
     }
@@ -67,6 +92,25 @@ import FloeTools
     /// belongs to an older sequence or to a finished job, so a late event can
     /// never regress the phase or resurrect terminal state.
     private var jobProgress: [String: LinuxGuestImageJobProgress] = [:]
+    /// Per-job rate meter for the live download byte channel. Created lazily
+    /// by the first accepted byte sample of the current download phase (the
+    /// first sample only fixes the baseline — it never publishes a speed) and
+    /// dropped whenever the phase changes, the job ends or a new attempt
+    /// starts, so a cached count or a previous attempt can never feed a rate.
+    private struct JobTransferMeter {
+        var estimator = SpeedEstimator()
+        var lastBytes: Int64?
+        var lastExpected: Int64?
+    }
+    private var transferMeters: [String: JobTransferMeter] = [:]
+    /// Cancellation bound to the EXACT attempt epoch. The byte snapshot stays
+    /// cleared for that attempt even if in-flight samples still arrive while
+    /// its transfer unwinds — but a note can never suppress a newer attempt:
+    /// reports of a different epoch ignore this entry, the entry itself only
+    /// ever exists while the job store still tracks the same attempt
+    /// (`noteCancellation` gate), and starting or finishing any attempt
+    /// removes it.
+    private var transferSuppressed: [String: UUID] = [:]
 
     /// Applies one service report through the gate and mirrors the accepted
     /// result into the published UI dictionaries.
@@ -75,9 +119,12 @@ import FloeTools
         epoch: UUID,
         sequence: UInt64,
         phase: LinuxGuestImageTransferPhase,
-        fraction: Double?
+        fraction: Double?,
+        transfer: (received: Int64, expected: Int64)? = nil,
+        now: TimeInterval = Date().timeIntervalSinceReferenceDate
     ) {
         guard var state = jobProgress[id] else { return }
+        let previousPhase = state.phase
         guard state.apply(epoch: epoch, sequence: sequence, phase: phase, fraction: fraction) else { return }
         jobProgress[id] = state
         phases[id] = state.phase
@@ -85,6 +132,76 @@ import FloeTools
         if let accepted = state.fraction {
             progressHandlerBindings[id]?(accepted)
         }
+        applyTransfer(
+            id: id, epoch: epoch, phase: phase, previousPhase: previousPhase,
+            transfer: transfer, now: now
+        )
+    }
+
+    /// Byte-channel half of `applyReport`, run only for a gated report. The
+    /// published snapshot belongs to the live download phase alone: any phase
+    /// change or non-download report clears it, the counter is monotonic
+    /// within the current asset scale, only real cumulative growth feeds the
+    /// shared rate estimator, and an unknown server total stays `nil`.
+    private func applyTransfer(
+        id: String,
+        epoch: UUID,
+        phase: LinuxGuestImageTransferPhase,
+        previousPhase: LinuxGuestImageTransferPhase?,
+        transfer: (received: Int64, expected: Int64)?,
+        now: TimeInterval
+    ) {
+        if phase != .downloading || previousPhase != phase {
+            if transfers[id] != nil { transfers[id] = nil }
+            if transferMeters[id] != nil { transferMeters[id] = nil }
+        }
+        guard phase == .downloading, let transfer else { return }
+        // Suppression is bound to one epoch: the cancelled attempt's late
+        // samples stay dropped, and no note can ever suppress a newer attempt
+        // reporting under its own epoch.
+        if transferSuppressed[id] == epoch { return }
+        var meter = transferMeters[id] ?? JobTransferMeter()
+        let expected: Int64? = transfer.expected > 0 ? transfer.expected : nil
+        if meter.lastExpected != expected {
+            // The real total changed (new asset scale or mirror): the
+            // cumulative scale restarts, so re-baseline counter and rate
+            // instead of continuing a bogus comparison across the boundary.
+            meter.estimator.reset()
+            meter.lastBytes = nil
+            meter.lastExpected = expected
+        }
+        var received = transfer.received
+        if let last = meter.lastBytes {
+            if received < last {
+                // A duplicate or reordered hop of the same phase can never
+                // regress the published counter.
+                received = last
+            } else {
+                meter.estimator.sample(now: now, bytes: received)
+                meter.lastBytes = received
+            }
+        } else {
+            meter.estimator.sample(now: now, bytes: received)
+            meter.lastBytes = received
+        }
+        transferMeters[id] = meter
+        transfers[id] = LinuxImageTransferSnapshot(
+            receivedBytes: received,
+            totalBytes: expected,
+            bytesPerSecond: Int64(meter.estimator.currentRate(now: now).rounded()),
+            phase: phase
+        )
+    }
+
+    /// Drops the published byte truth for this id plus its meter and any
+    /// cancellation suppression. Called when an attempt STARTS (a new attempt
+    /// is clean) and when it TERMINATES (nothing of the finished attempt
+    /// survives to confuse the next one); only `noteCancellation` adds
+    /// suppression, and only for the exact attempt that was cancelled.
+    private func clearTransferState(id: String) {
+        if transfers[id] != nil { transfers[id] = nil }
+        if transferMeters[id] != nil { transferMeters[id] = nil }
+        transferSuppressed.removeValue(forKey: id)
     }
 
     /// Called by operations that stream byte-level progress in a known phase.
@@ -99,8 +216,53 @@ import FloeTools
     /// Called by operations that report a phase without byte progress.
     /// Switching to a different phase clears the previous phase's fraction so
     /// a "downloading 100%" bar cannot masquerade as verification/extraction.
+    /// The phase change also clears the published byte/rate snapshot.
     func reportPhase(id: String, epoch: UUID, sequence: UInt64, phase: LinuxGuestImageTransferPhase) {
         applyReport(id: id, epoch: epoch, sequence: sequence, phase: phase, fraction: nil)
+    }
+
+    /// Called by the image job's byte-level downloader callback. Reports the
+    /// stream's REAL cumulative counter and the server's real total (`expected`
+    /// <= 0 when the server sent no Content-Length — the snapshot then keeps
+    /// `totalBytes == nil` and no fraction is published). Rides the same
+    /// epoch+sequence gate as `reportProgress`: a delayed, wrong-epoch or
+    /// post-finish hop is dropped and can never touch the byte snapshot, and
+    /// the published counter never regresses within the current asset scale.
+    /// While the accepted report is the `.downloading` phase, the snapshot
+    /// additionally carries a rate measured from real cumulative byte growth
+    /// only (0 until the first full estimator window; never derived from the
+    /// fraction, a cached count or a phase change). `now` defaults to the real
+    /// clock; focused tests inject an explicit sample time.
+    func reportBytes(
+        id: String,
+        epoch: UUID,
+        sequence: UInt64,
+        phase: LinuxGuestImageTransferPhase,
+        received: Int64,
+        expected: Int64,
+        now: TimeInterval = Date().timeIntervalSinceReferenceDate
+    ) {
+        let fraction = expected > 0 ? min(1, Double(received) / Double(expected)) : nil
+        applyReport(
+            id: id, epoch: epoch, sequence: sequence, phase: phase,
+            fraction: fraction, transfer: (received, expected), now: now
+        )
+    }
+
+    /// The owner's cancellation path records the request for the EXACT
+    /// attempt epoch. The live job store only accepts the note while it still
+    /// tracks that same attempt: the published byte/rate snapshot then drops
+    /// immediately instead of freezing at the last sample, and later samples
+    /// of the cancelled attempt cannot repopulate it. A note from an old
+    /// attempt that arrives after the job already finished or after a NEW
+    /// attempt started is dropped whole — it can never suppress the newer
+    /// attempt's bytes. Suppression also ends with any terminal transition or
+    /// new start (`clearTransferState`).
+    func noteCancellation(id: String, epoch: UUID) {
+        guard jobProgress[id]?.epoch == epoch else { return }
+        transferSuppressed[id] = epoch
+        if transfers[id] != nil { transfers[id] = nil }
+        if transferMeters[id] != nil { transferMeters[id] = nil }
     }
 
     /// Called by operations that stream byte-level progress without a stamped
@@ -119,6 +281,10 @@ import FloeTools
     func cancel(id: String) {
         guard let task = tasks[id] else { return }
         messages[id] = String(localized: "envmgr.cancelling")
+        // Plain jobs (no stamped byte channel) just drop any published
+        // snapshot; shared image jobs are cancelled through the service,
+        // which calls `noteCancellation(id:epoch:)` with the exact attempt.
+        clearTransferState(id: id)
         task.cancel()
     }
     func cancelAndWait(id: String) async {
@@ -152,6 +318,9 @@ import FloeTools
         failures.remove(id)
         fractions[id] = nil
         phases[id] = nil
+        // New attempt: drop the previous attempt's byte truth (if any) and
+        // lift its cancellation suppression.
+        clearTransferState(id: id)
         let epoch = UUID()
         jobProgress[id] = LinuxGuestImageJobProgress(epoch: epoch)
         let task = Task { try await operation(epoch) }
@@ -163,6 +332,7 @@ import FloeTools
             phases[id] = nil
             fractions[id] = nil
             jobProgress[id] = nil
+            clearTransferState(id: id)
             revision += 1
         }
         do {

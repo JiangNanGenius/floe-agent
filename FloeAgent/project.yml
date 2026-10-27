@@ -392,8 +392,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.61"
-        CURRENT_PROJECT_VERSION: "302"
+        MARKETING_VERSION: "1.7.62"
+        CURRENT_PROJECT_VERSION: "303"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -474,8 +474,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.61"
-        CURRENT_PROJECT_VERSION: "302"
+        MARKETING_VERSION: "1.7.62"
+        CURRENT_PROJECT_VERSION: "303"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -525,8 +525,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.61"
-        CURRENT_PROJECT_VERSION: "302"
+        MARKETING_VERSION: "1.7.62"
+        CURRENT_PROJECT_VERSION: "303"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -569,8 +569,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.61"
-        CURRENT_PROJECT_VERSION: "302"
+        MARKETING_VERSION: "1.7.62"
+        CURRENT_PROJECT_VERSION: "303"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -622,8 +622,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.61"
-        CURRENT_PROJECT_VERSION: "302"
+        MARKETING_VERSION: "1.7.62"
+        CURRENT_PROJECT_VERSION: "303"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -646,6 +646,7 @@ targets:
           - HomeChatSeparationTests.swift
           - BrowserProtocolTests.swift
           - ThreadTimelineTests.swift
+          - SkillInstallApprovalUITests.swift
           - VoiceInputControllerTests.swift
           - CrashAndFeedbackRegressionTests.swift
           - LuaShellInstallTests.swift
@@ -744,6 +745,17 @@ targets:
       - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
       - path: Tests/FloeAppTests/SkillHubStoreFlowTests.swift
       - path: Tests/FloeAppTests/SkillHubPublicTransportTests.swift
+      - path: Tests/FloeAppTests/SetupGuideRegressionTests.swift
+      - path: Tests/FloeAppTests/SetupGuideLaunchRegressionTests.swift
+      - path: Tests/FloeAppTests/SetupResourcePreparationTests.swift
+      - path: Tests/FloeAppTests/SetupDownloadOwnerTests.swift
+      - path: Tests/FloeAppTests/SkillInstallAuthorizationRegressionTests.swift
+      - path: Tests/FloeAgentUITests/SkillInstallApprovalUITests.swift
+      - path: Tests/FloeAppTests/SkillHubMediaTests.swift
+      - path: Tests/FloeSkillsTests/SkillHubShowcaseTests.swift
+      - path: Tests/FloeSkillsTests/SkillInstallAuthorizationTests.swift
+      - path: Tests/FloeAgentRuntimeTests/SkillInstallApprovalContinuationTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ApprovalResolutionRaceTests.swift
       - path: Tests/FloeAppTests/IDERunWebPreviewTests.swift
       - path: Tests/FloeAppTests/TerminalViewportTests.swift
       - path: Tests/FloeAppTests/ProviderFormSpecAppTests.swift

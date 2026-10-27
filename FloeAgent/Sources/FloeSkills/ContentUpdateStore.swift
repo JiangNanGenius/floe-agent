@@ -224,6 +224,15 @@ public actor ContentUpdateStore {
     /// package, then commits with one atomic manifest write. Any failure
     /// leaves the previous state and bytes active.
     @discardableResult
+    /// Commit contract for a caller whose task can be cancelled (the app's
+    /// service-owned install job): every validation and staging step checks
+    /// the CALLER task's cancellation through `Task.checkCancellation` — the
+    /// same engine the ZIP extractor already uses — and a cancellation at any
+    /// of those points removes exactly the directories this call created and
+    /// never touches the manifest. The manifest write itself is the atomic
+    /// promotion: once entered it runs to completion and its result is the
+    /// installed truth, cancellation or not. Uncancelled callers (CLI,
+    /// qualification tools) observe no change.
     public func commit(
         _ batch: [BatchItem],
         appVersion: String,
@@ -242,6 +251,7 @@ public actor ContentUpdateStore {
 
         // 1. Whole-batch validation before any bytes are written.
         for item in batch {
+            try Task.checkCancellation()
             let entry = item.entry
             guard entry.isCompatible(appVersion: appVersion) else {
                 throw ContentUpdateStoreError.conflict("incompatibleApp \(entry.id)@\(entry.version)")
@@ -286,6 +296,9 @@ public actor ContentUpdateStore {
         var createdDirectories: [URL] = []
         do {
             for item in batch {
+                // Fence per package: a cancelled job removes everything it
+                // staged (the catch below) and never reaches the manifest.
+                try Task.checkCancellation()
                 let entry = item.entry
                 let digest = entry.contentDigest.lowercased()
                 let folder = "versions/\(entry.id)/\(entry.version)-\(digest.prefix(12))"
@@ -354,6 +367,11 @@ public actor ContentUpdateStore {
         next.revision += 1
         next.retryAfter = nil
         do {
+            // Fence immediately BEFORE the atomic manifest persist: a cancel
+            // that lands after staging still never promotes. This is the last
+            // interruption point; `write(_:)` itself is never fenced or
+            // aborted, so the promotion stays atomic and its result stands.
+            try Task.checkCancellation()
             try write(next)
         } catch {
             for directory in createdDirectories {
@@ -369,6 +387,7 @@ public actor ContentUpdateStore {
 
     @discardableResult
     public func rollback(id: String, appVersion: String, toVersion: String? = nil) throws -> ContentUpdateState {
+        try Task.checkCancellation()
         let current = state.entries[id]
         let candidates = (state.history[id] ?? []).filter {
             toVersion == nil || $0.entry.version == toVersion
@@ -416,6 +435,8 @@ public actor ContentUpdateStore {
             next.pinned[id] = target.entry.version
         }
         next.revision += 1
+        // Final cancellation boundary before the atomic manifest replacement.
+        try Task.checkCancellation()
         try write(next)
         state = next
         return state
