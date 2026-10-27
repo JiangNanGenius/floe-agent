@@ -20,16 +20,29 @@ final class ComposerOverflowUITests: XCTestCase {
         // Chats section and chat rows stay lazy until the sidebar scrolls
         // them into the realized window. Scroll only the sidebar list —
         // never workspace or user data — until the seeded fixture row is
-        // hittable (existence alone is not visibility for a lazy row).
+        // visible. iOS 27 may report no AX activation point for a visible
+        // drawer row; use its verified frame, as TemporaryConversation does.
         let sidebar = app.descendants(matching: .any)
             .matching(identifier: "sidebar.list").firstMatch
         XCTAssertTrue(sidebar.waitForExistence(timeout: 10))
-        for _ in 0..<20 where !row.isHittable {
-            sidebar.swipeUp()
+        func rowIsVisible() -> Bool {
+            guard row.exists else { return false }
+            let frame = row.frame
+            let point = CGPoint(x: frame.midX, y: frame.midY)
+            return frame.width > 0 && frame.height > 0
+                && point.x.isFinite && point.y.isFinite
+                && sidebar.frame.contains(point) && app.windows.firstMatch.frame.contains(point)
         }
-        XCTAssertTrue(row.isHittable,
+        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeUp() }
+        for _ in 0..<20 where !rowIsVisible() { sidebar.swipeDown() }
+        XCTAssertTrue(rowIsVisible(),
                       "the seeded synthetic conversation must be reachable in the sidebar")
-        row.tap()
+        let screen = app.windows.firstMatch.frame
+        app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: row.frame.midX - screen.minX, dy: row.frame.midY - screen.minY))
+            .tap()
+        XCTAssertTrue(app.navigationBars["任务管理测试-C"].waitForExistence(timeout: 10),
+                      "Only the synthetic conversation may receive the test draft")
         let input = app.textViews["composer.input"]
         XCTAssertTrue(input.waitForExistence(timeout: 20))
         let text = String(repeating: "Soft wrapping must keep this complete sentence inside the composer. ", count: 16)

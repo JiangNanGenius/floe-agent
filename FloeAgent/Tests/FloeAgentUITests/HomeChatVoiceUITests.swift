@@ -84,9 +84,21 @@ final class HomeChatVoiceIPadUITests: XCTestCase {
         XCTAssertTrue(sidebar.waitForExistence(timeout: 8))
         // Preserve the reused simulator's workspaces. Chat rows can be lazy
         // and below them; scroll only the sidebar, not the open Skill Hub.
-        for _ in 0..<16 where !row.isHittable { sidebar.swipeUp() }
-        XCTAssertTrue(row.isHittable)
-        row.press(forDuration: 0.8)
+        func rowIsVisible() -> Bool {
+            guard row.exists else { return false }
+            let frame = row.frame
+            let point = CGPoint(x: frame.midX, y: frame.midY)
+            return frame.width > 0 && frame.height > 0
+                && point.x.isFinite && point.y.isFinite
+                && sidebar.frame.contains(point) && app.windows.firstMatch.frame.contains(point)
+        }
+        for _ in 0..<16 where !rowIsVisible() { sidebar.swipeUp() }
+        for _ in 0..<16 where !rowIsVisible() { sidebar.swipeDown() }
+        XCTAssertTrue(rowIsVisible())
+        let screen = app.windows.firstMatch.frame
+        app.windows.firstMatch.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: row.frame.midX - screen.minX, dy: row.frame.midY - screen.minY))
+            .press(forDuration: 0.8)
         XCTAssertTrue(app.staticTexts["已选 1"].waitForExistence(timeout: 8))
         XCTAssertFalse(app.buttons["sidebar.selectMultiple"].exists,
                        "Long press enters the original list directly, without a context-menu step")
