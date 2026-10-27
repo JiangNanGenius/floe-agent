@@ -22,7 +22,8 @@
 #    ISA string, patches/0016 htif console GETC and patches/0017 the
 #    OpenSBI reserved-memory window), iomem.c (patches/0002), fs_disk.c
 #    (patches/0003 Apple stat timestamps, then patches/0007 fd-based
-#    export-root containment), slirp/bootp.c (patches/0004, an upstream
+#    export-root containment, patches/0019 open-dir detection and
+#    patches/0021 opened-fid stat), slirp/bootp.c (patches/0004, an upstream
 #    typo that only compiles with DEBUG undefined),
 #    riscv_cpu_template.h (patches/0005 FENCE compatibility),
 #    riscv_cpu.c/riscv_cpu.h/riscv_cpu_priv.h (patches/0013 mandatory ID
@@ -73,9 +74,10 @@ misc.h sbuf.h slirp.h slirp_config.h socket.h tcp.h tcp_timer.h tcp_var.h \
 tcpip.h tftp.h udp.h"
 
 # Documented patches applied in this order to the pristine copies. 0001 and
-# 0002 both touch riscv_machine.c, and 0003 + 0007 both touch fs_disk.c,
-# which is why the order is explicit. 0006 must be applied before 0008 (it
-# does not touch virtio.c, but the slirp header layout is patch 0006's).
+# 0002 both touch riscv_machine.c, and 0003 + 0007 + 0019 + 0021 all touch
+# fs_disk.c, which is why the order is explicit. 0006 must be applied
+# before 0008 (it does not touch virtio.c, but the slirp header layout is
+# patch 0006's).
 PATCHES="0001-htif-poweroff-callback.patch \
 0002-embeddable-error-propagation.patch \
 0003-fs_disk-apple-stat-timestamps.patch \
@@ -94,7 +96,9 @@ PATCHES="0001-htif-poweroff-callback.patch \
 0016-htif-console-getc.patch \
 0017-fw-reserved-memory.patch \
 0018-virtio-queue-num-max.patch \
-0019-fs-open-dir-detect.patch"
+0019-fs-open-dir-detect.patch \
+0020-slirp-quiet-debug-default.patch \
+0021-9p-opened-fid-stat.patch"
 
 # slirp declares its own BSD structs (ipovly/tcpcb/sbuf/udphdr/arphdr/icmp)
 # whose tags collide with Darwin SDK umbrella-module headers when compiled

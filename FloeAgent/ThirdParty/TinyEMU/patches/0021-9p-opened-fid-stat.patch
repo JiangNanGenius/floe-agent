@@ -1,0 +1,25 @@
+--- a/fs_disk.c
++++ b/fs_disk.c
+@@ -129,6 +129,22 @@ static int fs_fid_stat(FSFile *f, struct stat *st)
+ {
+     if (f->dir_fd < 0)
+         return -1;
++    /* FLOE-FDSTAT (patch 0021): an opened regular-file fid owns a live
++       descriptor to the inode itself. Stat that descriptor instead of
++       re-resolving dir_fd + name, which stops resolving as soon as the
++       guest (or host) renames or unlinks the entry: apt's GetTempFile
++       cannot use O_TMPFILE here (fs_valid_name rejects an empty name),
++       so it falls back to mkstemp()+immediate unlink and then stats the
++       opened descriptor; the stale name lookup answered ENOENT and
++       apt-get update exited 100. Opened fids are only regular files or
++       directories (fs_open refuses everything else, and a symlink fails
++       O_NOFOLLOW), so this changes no symlink semantics; unopened fids
++       and directory fids keep the contained AT_SYMLINK_NOFOLLOW name
++       lookup. The fd was opened through the contained dir_fd with
++       O_NOFOLLOW; stat only reports that already-authorized handle —
++       no pathname traversal and no new file access. */
++    if (f->is_opened && !f->is_dir)
++        return fstat(f->u.fd, st);
+     return fstatat(f->dir_fd, f->name ? f->name : ".", st,
+                    AT_SYMLINK_NOFOLLOW);
+ }

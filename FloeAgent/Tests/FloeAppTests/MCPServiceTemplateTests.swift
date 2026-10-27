@@ -11,7 +11,7 @@ struct MCPServiceTemplateTests {
     func bundledContract() throws {
         let package = try MCPServiceTemplate.load()
         #expect(package.contract.templateID == "floe.mcp.node-http")
-        #expect(package.contract.templateVersion == "1.0.1")
+        #expect(package.contract.templateVersion == "1.0.3")
         #expect(package.contract.sdk.version == "1.32.2")
         #expect(!package.contract.runtime.guestExecutionVerified)
         #expect(package.contract.smokeTest.tool == "service_status")

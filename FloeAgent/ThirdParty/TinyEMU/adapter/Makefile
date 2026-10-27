@@ -66,7 +66,7 @@ TARGETS := $(BUILD)/libfloevm.a
 ifneq ($(HOST_DIR),)
 TARGETS += $(BUILD)/floe_vm_host $(BUILD)/lifecycle_test \
            $(BUILD)/two_vm_test $(BUILD)/containment_test \
-           $(BUILD)/mc_guest_bridge
+           $(BUILD)/fid_stat_test $(BUILD)/mc_guest_bridge
 endif
 
 all: $(TARGETS)
@@ -170,6 +170,14 @@ $(BUILD)/containment_test.o: $(HOST_DIR)/containment_test.c $(BUILD)/.prepared
 	$(CC) -I$(BUILD) $(CFLAGS) -c -o $@ $<
 
 $(BUILD)/containment_test: $(BUILD)/containment_test.o $(BUILD)/fs_disk.o $(BUILD)/cutils.o
+	$(CC) -o $@ $^ $(LIBS)
+
+# 9p opened-fid metadata after rename/unlink (patch 0021): same
+# patched-fs_disk.c-only link shape as containment_test.
+$(BUILD)/fid_stat_test.o: $(HOST_DIR)/fid_stat_test.c $(BUILD)/.prepared
+	$(CC) -I$(BUILD) $(CFLAGS) -c -o $@ $<
+
+$(BUILD)/fid_stat_test: $(BUILD)/fid_stat_test.o $(BUILD)/fs_disk.o $(BUILD)/cutils.o
 	$(CC) -o $@ $^ $(LIBS)
 
 # Real-guest multiclient bridge: boots the pinned guest image (runner as

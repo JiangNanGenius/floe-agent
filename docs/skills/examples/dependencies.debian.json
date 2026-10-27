@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "debian-guest",
+      "target": {
+        "os": "linux",
+        "architectures": [
+          "riscv64"
+        ]
+      },
+      "requirements": [
+        {
+          "kind": "apt",
+          "name": "python3-scipy",
+          "version": "1.15.3-1",
+          "purpose": "Numeric routines the guest Debian distribution ships.",
+          "required": true
+        },
+        {
+          "kind": "apt",
+          "name": "poppler-utils",
+          "version": "25.03.0-5+deb13u4",
+          "purpose": "PDF text and page raster helpers.",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

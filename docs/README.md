@@ -34,6 +34,8 @@
 | [../AGENTS.md](../AGENTS.md) | Repository instructions for coding agents: architecture, focused checks, release recovery and cleanup |
 | [../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md) | 项目门面：能力总览与当前交付版本 |
 | [USER_GUIDE.md](USER_GUIDE.md) / [USER_GUIDE.zh-CN.md](USER_GUIDE.zh-CN.md) | 使用说明（工具、后台任务、Python、字体、工作区、远端） |
+| [Skill 依赖作者规范](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.zh-CN.md) / [English](skills/SKILL_DEPENDENCIES_AUTHOR_GUIDE.md) | 精确依赖、版本与签名覆盖；[机器 Schema](skills/dependencies.schema.json) 和[示例](skills/examples/README.md) / Exact dependencies, versioning and signed package coverage |
+| [Skill Hub artwork](SKILL_HUB_ARTWORK.md) | 商店分类原创插图的固定来源与摘要 / Immutable sources and hashes for category illustrations |
 | [聊天、语音及搜索资格记录](qualification/FLOE_CHAT_VOICE_SEARCH_20261023.md) | 288：207 项应用内测试、设备构建及菜单检查；交付状态单独记录 / App-hosted tests, device build and interface evidence |
 | [FEATHER_SOURCE.md](FEATHER_SOURCE.md) | Feather/AltStore 安装源：稳定源地址、官网深层链接、发布校验与手动添加步骤 |
 | [Scheduled Shortcut template](FLOE_SHORTCUT_SCHEDULE_TEMPLATE.md) | 签名模板、计划身份及系统交接与清理提醒的验收边界 / Signed template, stable plan binding and cleanup acceptance boundaries |
@@ -75,7 +77,7 @@
 
 ## 发布档案（只追加、不回改）
 
-逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.57（298）](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)：内部 Floe QA 可用，publictest1 等待审核，稳定无签名 Release 与同次 Feather 已独立核验。259 项相关测试通过，真机语音质量与 Skill 安装另行区分。[297 记录](releases/repairs/FLOE_VOICE_PLAYBACK_BUILD297_20261025.md)与[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 298; internal and unsigned/Feather available, external review pending. Physical speech and real Skill installation remain separate checks.
+逐版说明、TestFlight 文案、核验、候选与修复记录已归入 [发布档案](releases/README.md)。最近已核验交付为 [1.7.60（301）](releases/testflight/BUILD_301_DELIVERY.md)：内部 Floe QA 可用，publictest1 等待审核，稳定 latest 无签名 Release 与同次 Feather 已独立核验。424 项相关测试通过，真机与在用远端验证单列；清理和单独发现的 Python 状态查询兼容性项见交付记录。[298 记录](releases/repairs/FLOE_VOICE_INTERACTION_SEARCH_BUILD298_20261025.md)与[历史版本导览](releases/HISTORY.md)保留此前状态。Latest verified delivery: 301; internal and unsigned/Feather available, external review pending.
 
 ## 历史研究（结论以现行代码为准）
 

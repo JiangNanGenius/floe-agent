@@ -18,6 +18,10 @@ import FloePersistence
 struct HomeOverviewView: View {
     @ObservedObject private var center: ConversationCenter
     @StateObject private var viewModel: HomeLaunchpadViewModel
+    /// The explicit foreground work session (Task Center control). The
+    /// coordinator owns the instance; this view only reads its published
+    /// record and sends the two user intents.
+    @ObservedObject private var workSession: BackgroundWorkSessionController
     @EnvironmentObject private var authoring: SkillAuthoringCoordinator
     @EnvironmentObject private var router: AppRouter
     @State private var searchText = ""
@@ -30,19 +34,31 @@ struct HomeOverviewView: View {
     @State private var cleanupReminders: [TaskScheduleCleanupReminder] = []
     @Environment(\.scenePhase) private var scenePhase
     @State private var pendingOccurrenceScheduleIDs: Set<UUID> = []
-    @State private var batchStartingConversation: ConversationRecord?
     @State private var archivedTasks: [ConversationRecord] = []
     @State private var presentsTaskManagement = false
     @State private var managementFilter: ConversationBatchManagementView.Filter = .active
     @State private var restoreFailure: String?
+    /// Long-press multi-select in this overview (no management sheet; bulk
+    /// archive/delete run through the existing task bulk engine). The
+    /// dedicated archived-management page keeps its own restore surface.
+    @StateObject private var selection = InlineConversationSelectionModel()
 
     init(center: ConversationCenter) {
         self.center = center
-        _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(center: center))
+        let launchpad = HomeLaunchpadViewModel(center: center)
+        _viewModel = StateObject(wrappedValue: launchpad)
+        _workSession = ObservedObject(
+            wrappedValue: launchpad.environment.backgroundRunCoordinator.workSession)
     }
 
     var body: some View {
         List {
+            // The work-session row is always present: the user must see the
+            // honest state (idle/armed/running/waiting/interrupted) and the
+            // real counts, and can start or stop from the foreground only.
+            Section {
+                workSessionRow
+            }
             if !authoring.taskCenterRecords.isEmpty {
                 Section { SkillAuthoringRows(coordinator: authoring, taskCenter: true) }
             }
@@ -237,6 +253,7 @@ struct HomeOverviewView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .disabled(selection.busy)
         .overlay {
             if overviewIsEmpty && !viewModel.isLoading {
                 ContentUnavailableView {
@@ -251,11 +268,14 @@ struct HomeOverviewView: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    openTaskManagement(.active)
+                    // The Tasks entry now opens the SAME inline selection the
+                    // long press uses — circles appear inside this list; no
+                    // selection sheet is launched.
+                    selection.begin(with: nil)
                 } label: {
                     Label(FloeL10n.l("settings.data_management_view.manage"), systemImage: "checklist")
                 }
-                .disabled(viewModel.isLoading)
+                .disabled(viewModel.isLoading || selection.busy)
                 .accessibilityIdentifier("taskCenter.manage")
             }
             ToolbarItem(placement: .primaryAction) {
@@ -294,12 +314,34 @@ struct HomeOverviewView: View {
                 Task { await load() }
             }
         }
-        .sheet(item: $batchStartingConversation) { conversation in
-            ConversationBatchManagementView(center: center, initialConversation: conversation)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selection.isActive {
+                InlineConversationSelectionBar(
+                    model: selection,
+                    center: center,
+                    visibleIDs: { visibleTaskIDs },
+                    selectedItems: { selectedTaskItems }
+                )
+            }
+        }
+        .inlineConversationSelectionChrome(
+            model: selection,
+            center: center,
+            afterRun: {
+                await load()
+                selection.pruneInvisible(visibleTaskIDs)
+            }
+        )
+        .onChange(of: visibleTaskIDList) { _, ids in
+            // A search or a finished run moving rows between sections must
+            // never leave an invisible pending selection behind.
+            selection.pruneInvisible(Set(ids))
         }
         // The canonical management surface, shared with Settings > Data
         // Management: selection, archive/restore and delete all run here
-        // through the existing lifecycle commands.
+        // through the existing lifecycle commands. Reached from the
+        // archived section; the Tasks toolbar entry now starts the same
+        // inline selection the long press uses.
         .sheet(isPresented: $presentsTaskManagement) {
             ConversationBatchManagementView(center: center, initialFilter: managementFilter)
                 .id(managementFilter)
@@ -470,6 +512,9 @@ struct HomeOverviewView: View {
 
     private func load() async {
         await viewModel.load()
+        // The work-session row shows durable facts; refresh them alongside
+        // the rest of the overview (no separate polling loop).
+        await workSession.refresh()
         let store = SQLiteTaskScheduleStore(database: viewModel.environment.database)
         schedules = (try? await store.schedules()) ?? []
         let reminderStore = TaskScheduleCleanupReminderStore(
@@ -485,11 +530,183 @@ struct HomeOverviewView: View {
             .conversations(includeArchived: true)) ?? []).filter { $0.archivedAt != nil }
     }
 
+    // MARK: - Work session row (foreground start/stop; honest counts only)
+
+    /// One compact row: honest state capsule, real counts line, explicit
+    /// start/stop button. A saved/armed record is never presented as an
+    /// accepted result, and no invented progress percent is ever rendered —
+    /// every visible number comes from the durable stores via the
+    /// controller's counts snapshot.
+    private var workSessionRow: some View {
+        let snapshot = workSession.snapshot
+        return HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(sessionTitle(for: snapshot.state))
+                    .font(FloeTheme.Typography.body.weight(.medium))
+                let detail = sessionDetail(for: snapshot)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("workbench.session.detail")
+                }
+            }
+            Spacer(minLength: 8)
+            Text(sessionStateLabel(for: snapshot.state))
+                .font(FloeTheme.Typography.metadata)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(sessionStateColor(for: snapshot.state).opacity(0.16), in: Capsule())
+                .foregroundStyle(sessionStateColor(for: snapshot.state))
+                .accessibilityIdentifier("workbench.session.state")
+            Button {
+                Task {
+                    switch snapshot.state {
+                    case .idle, .armed, .interrupted:
+                        await workSession.foregroundStart()
+                    case .running, .waiting:
+                        await workSession.foregroundStop()
+                    }
+                    await load()
+                }
+            } label: {
+                Text(sessionActionLabel(for: snapshot.state))
+                    .frame(minHeight: FloeTheme.minimumTarget)
+            }
+            .buttonStyle(.borderless)
+            .disabled(selection.busy)
+            .accessibilityIdentifier("workbench.session.control")
+        }
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func sessionTitle(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .interrupted:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        case .idle:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        case .armed, .running, .waiting:
+            return scheduleText(zh: "后台工作", en: "Background work")
+        }
+    }
+
+    private func sessionStateLabel(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .idle: return scheduleText(zh: "未开始", en: "Not started")
+        case .armed: return scheduleText(zh: "待命", en: "Ready")
+        case .running: return String(localized: "home.home_overview_view.running")
+        case .waiting: return scheduleText(zh: "等待中", en: "Waiting")
+        case .interrupted: return scheduleText(zh: "已中断", en: "Interrupted")
+        }
+    }
+
+    private func sessionStateColor(for state: BackgroundWorkSessionState) -> Color {
+        switch state {
+        case .running: return FloeTheme.success
+        case .waiting, .armed: return FloeTheme.pending
+        case .interrupted: return FloeTheme.destructive
+        case .idle: return .secondary
+        }
+    }
+
+    private func sessionActionLabel(for state: BackgroundWorkSessionState) -> String {
+        switch state {
+        case .idle, .armed: return scheduleText(zh: "开始", en: "Start")
+        case .interrupted: return scheduleText(zh: "重新开始", en: "Restart")
+        case .running, .waiting: return scheduleText(zh: "停止", en: "Stop")
+        }
+    }
+
+    /// The honest line: real durable counts and, while waiting, the named
+    /// blocker. Nothing is inferred and nothing is padded.
+    private func sessionDetail(for snapshot: BackgroundWorkSessionSnapshot) -> String {
+        var parts: [String] = []
+        let counts = snapshot.counts
+        if counts.liveRuns > 0 {
+            parts.append(FloeL10n.isChinese ? "运行 \(counts.liveRuns)" : "runs \(counts.liveRuns)")
+        }
+        if counts.runningJobs > 0 {
+            parts.append(FloeL10n.isChinese ? "任务 \(counts.runningJobs)" : "jobs \(counts.runningJobs)")
+        }
+        if counts.queuedJobs > 0 {
+            parts.append(FloeL10n.isChinese ? "排队 \(counts.queuedJobs)" : "queued \(counts.queuedJobs)")
+        }
+        if counts.claimedScheduleOccurrences > 0 {
+            parts.append(FloeL10n.isChinese ? "排程 \(counts.claimedScheduleOccurrences)" : "schedules \(counts.claimedScheduleOccurrences)")
+        }
+        if counts.pendingApprovals > 0 {
+            parts.append(FloeL10n.isChinese ? "待批准 \(counts.pendingApprovals)" : "approvals \(counts.pendingApprovals)")
+        }
+        if snapshot.state == .waiting, let reason = snapshot.waitReason {
+            parts.append(waitReasonText(reason))
+        }
+        if snapshot.state == .interrupted {
+            return scheduleText(
+                zh: "点按重新开始以继续处理任务",
+                en: "Restart to continue processing tasks."
+            )
+        }
+        if snapshot.state == .armed {
+            return ""
+        }
+        // A live session reports the REAL framework qualification: the
+        // continued-processing request/acceptance state, not the saved
+        // toggle. A stored choice is never shown as accepted.
+        if snapshot.state.isActiveSurface {
+            switch workSession.qualification {
+            case .accepted:
+                parts.append(scheduleText(zh: "可后台运行", en: "background ready"))
+            case .requested:
+                parts.append(scheduleText(zh: "等待系统", en: "waiting for system"))
+            case .none:
+                parts.append(scheduleText(zh: "仅前台运行", en: "foreground only"))
+            }
+        }
+        if parts.isEmpty {
+            switch snapshot.state {
+            case .idle:
+                return ""
+            case .running:
+                return scheduleText(zh: "正在处理当前队列", en: "Processing the current queues")
+            case .waiting:
+                return scheduleText(zh: "等待任务", en: "Waiting for work")
+            default:
+                return ""
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func waitReasonText(_ reason: BackgroundWorkSessionWaitReason) -> String {
+        switch reason {
+        case .approvals:
+            return scheduleText(zh: "等待你批准", en: "waiting on your approval")
+        case .environmentBusy:
+            return scheduleText(zh: "等待环境空闲", en: "waiting for the busy environment")
+        case .network:
+            return scheduleText(zh: "等待网络", en: "waiting for network")
+        case .dueWork:
+            return scheduleText(zh: "等待到期任务", en: "waiting for due work")
+        }
+    }
+
     private func overviewRow(_ conversation: ConversationRecord, showsState: Bool) -> some View {
         Button {
-            router.openThreadFromHome(conversation.id)
+            if selection.isActive {
+                selection.toggle(conversation.id)
+            } else {
+                router.openThreadFromHome(conversation.id)
+            }
         } label: {
             HStack(spacing: 10) {
+                if selection.isActive {
+                    InlineSelectionCircle(
+                        conversationID: conversation.id,
+                        isSelected: selection.selectedIDs.contains(conversation.id)
+                    )
+                }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(conversation.title.isEmpty
                          ? String(localized: "chat.untitled")
@@ -519,14 +736,39 @@ struct HomeOverviewView: View {
             }
         }
         .buttonStyle(.plain)
-        .contextMenu {
-            Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
-                .accessibilityIdentifier("workbench.selectMultiple")
-        }
         .frame(minHeight: FloeTheme.minimumTarget)
         .accessibilityLabel(conversation.title.isEmpty
             ? String(localized: "chat.untitled")
             : conversation.title)
+        .accessibilityIdentifier("workbench.row.\(conversation.id.uuidString)")
+        .inlineSelectionRowTraits(model: selection, conversationID: conversation.id)
+        // Long press enters the inline selection in this list directly; it
+        // never launches a management sheet and the release never navigates.
+        .inlineSelectionLongPress(conversationID: conversation.id, model: selection)
+    }
+
+    /// The conversation rows the user can currently see as manageable
+    /// tasks. Archived rows are a disjoint scope: their restore semantics
+    /// stay on the inline restore button and the dedicated archived
+    /// management page, exactly like the canonical filter split.
+    private var visibleTaskIDs: Set<UUID> {
+        Set(visibleTaskIDList)
+    }
+
+    private var visibleTaskIDList: [UUID] {
+        var ids: [UUID] = []
+        ids.append(contentsOf: runningTasks.map(\.id))
+        ids.append(contentsOf: failedTasks.map(\.id))
+        ids.append(contentsOf: completedTasks.map(\.id))
+        return ids
+    }
+
+    /// Selected visible task rows with visible titles, frozen by the
+    /// confirmation dialog.
+    private var selectedTaskItems: [TaskBulkItem] {
+        (runningTasks + failedTasks + completedTasks)
+            .filter { selection.selectedIDs.contains($0.id) }
+            .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 }
 #endif

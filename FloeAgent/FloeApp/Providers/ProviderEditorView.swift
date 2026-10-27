@@ -55,18 +55,20 @@ struct ProviderEditorView: View {
         Form {
             Section("providers.provider_editor_view.service_purpose") {
                 Label(viewModel.serviceRole.title, systemImage: viewModel.serviceRole.icon)
-                if viewModel.serviceRole == .video {
-                    Text("providers.provider_editor_view.video_models_are_an_optional_enhancement")
-                        .font(FloeTheme.Typography.metadata)
-                        .foregroundStyle(.secondary)
-                }
             }
             presetSection
             serviceOffersSection
-            protocolSection
+            if viewModel.formSpec.showsProtocolPicker {
+                protocolSection
+            }
             endpointSection
+            if viewModel.showsRegionField {
+                regionSection
+            }
             credentialsSection
-            compatibilitySection
+            if viewModel.formSpec.showsToolNameCompatibility {
+                compatibilitySection
+            }
             syncSection
             testSection
             modelsSection
@@ -154,6 +156,7 @@ struct ProviderEditorView: View {
             ModelEditorView(
                 model: model,
                 serviceRole: viewModel.serviceRole,
+                providerKind: viewModel.selectedPreset.kind,
                 isDefault: viewModel.defaultModelID == model.id,
                 onMakeDefault: { viewModel.setDefaultModel(model.id) }
             ) { updated in viewModel.updateModel(updated) }
@@ -231,6 +234,7 @@ struct ProviderEditorView: View {
             .accessibilityIdentifier("providers.supplier_field")
             .popover(isPresented: $showsCatalogPicker) {
                 ProviderCatalogPicker(
+                    role: viewModel.serviceRole,
                     presets: viewModel.availablePresets,
                     selectedPresetID: viewModel.selectedPreset.id,
                     catalog: catalog,
@@ -248,12 +252,10 @@ struct ProviderEditorView: View {
                         showsCatalogPicker = false
                     }
                 )
-                // A List/NavigationStack has no intrinsic popover size; an
-                // explicit compact-pad frame keeps the search field and rows
-                // visible (the iPhone adaptation presents a sheet and fills
-                // it). `.presentationSizing(.page)` alone collapsed the
-                // popover to ~68pt in the Simulator.
-                .frame(minWidth: 420, idealWidth: 520, minHeight: 540, idealHeight: 680)
+                // Offer a readable size without forcing a minimum height:
+                // the keyboard can leave a much shorter popover viewport.
+                // A hard minimum pushes the navigation/search bar offscreen.
+                .frame(idealWidth: 520, idealHeight: 540)
                 .presentationSizing(.page)
             }
         }
@@ -427,17 +429,42 @@ struct ProviderEditorView: View {
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)
                 .font(FloeTheme.Typography.evidence)
-            TextField("providers.headers_placeholder", text: $viewModel.nonSecretHeadersText, axis: .vertical)
-                .lineLimit(2...5)
-                .textInputAutocapitalization(.never)
-                .font(FloeTheme.Typography.evidence)
+            // Native first-party media endpoints have no documented custom
+            // header contract in this app, so their forms stay compact;
+            // chat/gateway endpoints and any provider that already carries
+            // header text keep the field (existing configuration is never
+            // hidden from the user).
+            if viewModel.formSpec.showsHeadersField || !viewModel.nonSecretHeadersText.isEmpty {
+                TextField("providers.headers_placeholder", text: $viewModel.nonSecretHeadersText, axis: .vertical)
+                    .lineLimit(2...5)
+                    .textInputAutocapitalization(.never)
+                    .font(FloeTheme.Typography.evidence)
+            }
             if viewModel.selectedPreset.defaultBaseURL.scheme == "http" {
                 Toggle("providers.allow_plain_http", isOn: $viewModel.allowsPlainHTTP)
             }
         } header: {
             Text("providers.endpoint")
         } footer: {
-            Text("providers.headers_hint")
+            if viewModel.formSpec.showsHeadersField || !viewModel.nonSecretHeadersText.isEmpty {
+                Text("providers.headers_hint")
+            }
+        }
+    }
+
+    /// Routing region, shown only when the provider already stores one (or a
+    /// future adapter contract requires it). No shipped chat/image/video
+    /// adapter consumes this value today; the field exists so a stored value
+    /// stays visible and editable instead of being hidden by the editor.
+    private var regionSection: some View {
+        Section {
+            TextField("providers.region", text: $viewModel.regionString)
+                .textInputAutocapitalization(.never)
+                .keyboardType(.asciiCapable)
+                .font(FloeTheme.Typography.evidence)
+                .accessibilityIdentifier("providers.region")
+        } header: {
+            Text("providers.region")
         }
     }
 
@@ -529,6 +556,17 @@ struct ProviderEditorView: View {
                             systemImage: "checkmark.circle.fill"
                         )
                         .foregroundStyle(FloeTheme.success)
+                    case .verifiedWithoutLiveProbe(let count):
+                        // The shipped role adapter contract is verified, but the
+                        // endpoint has no free live-probe route: never labeled
+                        // "Connected", because a media route is not proven by a
+                        // chat success and no paid generation runs here.
+                        Label(
+                            String(localized: "providers.test_route_verified") + " (\(count))",
+                            systemImage: "checkmark.circle"
+                        )
+                        .foregroundStyle(FloeTheme.success)
+                        .accessibilityIdentifier("providers.test.routeVerified")
                     case .failed:
                         Label("providers.test_failed", systemImage: "xmark.octagon.fill")
                             .foregroundStyle(FloeTheme.destructive)
@@ -542,6 +580,12 @@ struct ProviderEditorView: View {
                 Text(message)
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(FloeTheme.destructive)
+            }
+            if let note = viewModel.mediaProbeNote, !note.isEmpty {
+                Text(note)
+                    .font(FloeTheme.Typography.metadata)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("providers.test.mediaProbeNote")
             }
         }
     }
@@ -562,7 +606,10 @@ struct ProviderEditorView: View {
             Button("providers.manage_models") { showModelPicker = true }
                 .frame(minHeight: FloeTheme.minimumTarget)
                 .accessibilityIdentifier("providers.manage_models")
-            if viewModel.supportsDiscovery {
+            // The refresh button only appears where re-running the free model
+            // listing has an honest meaning for this role (media listing
+            // re-feeds the verified merge; it never stamps chat models).
+            if viewModel.supportsModelListingRefresh {
                 Button {
                     Task { await viewModel.refreshModels() }
                 } label: {

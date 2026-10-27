@@ -18,11 +18,10 @@ struct ConversationListView: View {
     @EnvironmentObject private var router: AppRouter
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pendingDeletion: ConversationRecord?
-    @State private var selectedIDs: Set<UUID> = []
-    @State private var editMode: EditMode = .inactive
     @State private var presentsArchive = false
-    @State private var batchStartingConversation: ConversationRecord?
-    @State private var confirmsBatchDelete = false
+    /// Long-press multi-select in this list (no management sheet; bulk
+    /// archive/delete run through the existing task bulk engine).
+    @StateObject private var selection = InlineConversationSelectionModel()
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(center: center))
@@ -53,19 +52,32 @@ struct ConversationListView: View {
         .navigationDestination(for: UUID.self) { conversationID in
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
         }
-        .environment(\.editMode, $editMode)
-        .sheet(item: $batchStartingConversation) { conversation in
-            ConversationBatchManagementView(center: viewModel.center, initialConversation: conversation)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if selection.isActive {
+                InlineConversationSelectionBar(
+                    model: selection,
+                    center: viewModel.center,
+                    visibleIDs: { Set(viewModel.filteredConversations.map(\.id)) },
+                    selectedItems: { selectedItems }
+                )
+            }
+        }
+        .inlineConversationSelectionChrome(
+            model: selection,
+            center: viewModel.center,
+            afterRun: {
+                await viewModel.load()
+                selection.pruneInvisible(Set(viewModel.filteredConversations.map(\.id)))
+            }
+        )
+        .onChange(of: viewModel.filteredConversations.map(\.id)) { _, ids in
+            // A search or disappearing row must never leave an invisible
+            // pending selection behind.
+            selection.pruneInvisible(Set(ids))
         }
         .alert("chat.conversation_list_view.action_failed", isPresented: Binding(get: { viewModel.actionError != nil }, set: { if !$0 { viewModel.actionError = nil } })) {
             Button("workspace.office_document_editor_view.ok", role: .cancel) { viewModel.actionError = nil }
         } message: { Text(viewModel.actionError ?? "") }
-        .confirmationDialog("chat.conversation_list_view.delete_the_selected_tasks", isPresented: $confirmsBatchDelete, titleVisibility: .visible) {
-            Button("workspace.workspace_canvas_view.delete", role: .destructive) {
-                let ids = selectedIDs
-                Task { await viewModel.delete(ids: ids); selectedIDs.formIntersection(Set(viewModel.conversations.map(\.id))) }
-            }
-        } message: { Text("chat.conversation_batch_management_view.the_task_and_its_private_workspace") }
         .sheet(isPresented: $presentsArchive) {
             NavigationStack { ArchivedConversationsView(center: viewModel.center) }
         }
@@ -116,7 +128,7 @@ struct ConversationListView: View {
     // MARK: - List
 
     private var conversationList: some View {
-        List(selection: $selectedIDs) {
+        List {
             if viewModel.filteredConversations.isEmpty {
                 // A search with no matches is an honest state, not an
                 // empty history list.
@@ -128,45 +140,76 @@ struct ConversationListView: View {
                 }
             } else {
                 ForEach(viewModel.filteredConversations) { conversation in
-                    Button {
-                        if editMode.isEditing {
-                            if !selectedIDs.insert(conversation.id).inserted { selectedIDs.remove(conversation.id) }
-                        } else { router.openConversation(conversation.id) }
-                    } label: {
-                        HStack {
-                            ConversationRow(
-                            conversation: conversation,
-                            fallbackTitle: String(localized: "chat.untitled"),
-                            searchSnippet: viewModel.searchSnippets[conversation.id],
-                            isSelected: horizontalSizeClass == .regular
-                                && router.selectedConversationID == conversation.id
-                        )
-                            ConversationActivityBadge(conversationID: conversation.id, center: viewModel.center)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .tag(conversation.id)
-                    .accessibilityHint("chat.open.hint")
-                    .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
-                    .contextMenu {
-                        Button("home.home_overview_view.select_multiple", systemImage: "checkmark.circle") { batchStartingConversation = conversation }
-                            .accessibilityIdentifier("chat.selectMultiple")
-                    }
-                    .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                        Button {
-                            Task { await viewModel.archive(conversation) }
-                        } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
-                        .tint(.orange)
-                    }
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        Button(role: .destructive) {
-                            pendingDeletion = conversation
-                        } label: { Label("workspace.workspace_canvas_view.delete", systemImage: "trash") }
-                    }
+                    conversationRow(conversation)
                 }
             }
         }
         .listStyle(.plain)
+        .disabled(selection.busy)
+    }
+
+    /// One row. Outside selection: tap opens the thread and the normal
+    /// swipe actions stay. Inside selection: the leading circle shows the
+    /// state, tap toggles it and conflicting swipe actions are hidden. A
+    /// long press ALWAYS enters the inline selection here — never a
+    /// management sheet — and the recognized gesture consumes the release,
+    /// so the row does not also navigate.
+    @ViewBuilder
+    private func conversationRow(_ conversation: ConversationRecord) -> some View {
+        let row = Button {
+            if selection.isActive {
+                selection.toggle(conversation.id)
+            } else {
+                router.openConversation(conversation.id)
+            }
+        } label: {
+            HStack {
+                if selection.isActive {
+                    InlineSelectionCircle(
+                        conversationID: conversation.id,
+                        isSelected: selection.selectedIDs.contains(conversation.id)
+                    )
+                }
+                ConversationRow(
+                    conversation: conversation,
+                    fallbackTitle: String(localized: "chat.untitled"),
+                    searchSnippet: viewModel.searchSnippets[conversation.id],
+                    isSelected: horizontalSizeClass == .regular
+                        && router.selectedConversationID == conversation.id
+                )
+                ConversationActivityBadge(conversationID: conversation.id, center: viewModel.center)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("chat.open.hint")
+        .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
+        .inlineSelectionRowTraits(model: selection, conversationID: conversation.id)
+        .inlineSelectionLongPress(conversationID: conversation.id, model: selection)
+
+        if selection.isActive {
+            row
+        } else {
+            row
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        Task { await viewModel.archive(conversation) }
+                    } label: { Label("app.floe_agent_app.archive", systemImage: "archivebox") }
+                    .tint(.orange)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        pendingDeletion = conversation
+                    } label: { Label("workspace.workspace_canvas_view.delete", systemImage: "trash") }
+                }
+        }
+    }
+
+    /// Selected rows the batch may act on, in visible order, with visible
+    /// titles only — frozen by the confirmation, never re-read at run time.
+    private var selectedItems: [TaskBulkItem] {
+        viewModel.filteredConversations
+            .filter { selection.selectedIDs.contains($0.id) }
+            .map { TaskBulkItem(id: $0.id, title: InlineSelectionCopy.untitled($0.title)) }
     }
 
     @ToolbarContentBuilder
@@ -189,21 +232,6 @@ struct ConversationListView: View {
             .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
             .disabled(viewModel.needsProvider)
             .accessibilityIdentifier("chat.new")
-        }
-        if editMode.isEditing, !selectedIDs.isEmpty {
-            ToolbarItem(placement: .bottomBar) {
-                Button("chat.conversation_list_view.archive_selection") {
-                    let ids = selectedIDs
-                    selectedIDs.removeAll()
-                    editMode = .inactive
-                    Task { await viewModel.archive(ids: ids) }
-                }
-            }
-            ToolbarItem(placement: .bottomBar) {
-                Button("home.home_overview_view.delete_selection", role: .destructive) {
-                    confirmsBatchDelete = true
-                }
-            }
         }
     }
 

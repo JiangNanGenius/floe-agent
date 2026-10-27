@@ -305,6 +305,7 @@ public struct LinuxGuestShare: Sendable, Hashable {
     public static let maximumShares = 4
     public static let environmentTag = "floe-env"
     public static let workspaceTag = "workspace"
+    public static let cacheTag = "floe-cache"
 
     public var tag: String
     public var hostDirectory: URL
@@ -322,6 +323,7 @@ public struct LinuxGuestShare: Sendable, Hashable {
 public enum LinuxGuestMountPoint {
     public static let environment = "/floe/env"
     public static let workspace = "/workspace"
+    public static let sharedCache = "/floe/cache"
 }
 
 /// Maps host paths to guest paths using the environment's 9p shares. Every
@@ -339,6 +341,7 @@ public struct LinuxGuestPathMap: Sendable {
             switch share.tag {
             case LinuxGuestShare.environmentTag: guest = LinuxGuestMountPoint.environment
             case LinuxGuestShare.workspaceTag: guest = LinuxGuestMountPoint.workspace
+            case LinuxGuestShare.cacheTag: guest = LinuxGuestMountPoint.sharedCache
             default: guest = "/floe/" + share.tag
             }
             entries.append((host, guest))

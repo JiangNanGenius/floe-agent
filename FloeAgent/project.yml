@@ -392,8 +392,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.59"
-        CURRENT_PROJECT_VERSION: "300"
+        MARKETING_VERSION: "1.7.60"
+        CURRENT_PROJECT_VERSION: "301"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -474,8 +474,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.59"
-        CURRENT_PROJECT_VERSION: "300"
+        MARKETING_VERSION: "1.7.60"
+        CURRENT_PROJECT_VERSION: "301"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -525,8 +525,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.59"
-        CURRENT_PROJECT_VERSION: "300"
+        MARKETING_VERSION: "1.7.60"
+        CURRENT_PROJECT_VERSION: "301"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -569,8 +569,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.59"
-        CURRENT_PROJECT_VERSION: "300"
+        MARKETING_VERSION: "1.7.60"
+        CURRENT_PROJECT_VERSION: "301"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -622,8 +622,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.59"
-        CURRENT_PROJECT_VERSION: "300"
+        MARKETING_VERSION: "1.7.60"
+        CURRENT_PROJECT_VERSION: "301"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -683,6 +683,19 @@ targets:
       Release: Vendor/Office/native-host.xcconfig
     sources:
       - path: Tests/FloeAppTests/BackgroundRunCoordinatorTests.swift
+      - path: Tests/FloeAppTests/BackgroundWorkSessionTests.swift
+      - path: Tests/FloeAppTests/BackgroundDownloadSettlementTests.swift
+      - path: Tests/FloeSkillsTests/SkillDependencyTests.swift
+      - path: Tests/FloeAppTests/SkillDependencyPreparationTests.swift
+      - path: Tests/FloeExecutionTests/ManagedPythonPackageInspectorTests.swift
+      - path: Tests/FloeAppTests/SkillDependencyGuestQualificationTests.swift
+      - path: Tests/FloeAppTests/WhisperBackgroundSettlementTests.swift
+      - path: Tests/FloeLocalModelsTests/BackgroundDownloadDrainTests.swift
+      - path: Tests/FloePersistenceTests/OfficialSkillVersionLedgerTests.swift
+      - path: Tests/FloeAppTests/OfficialSkillMigrationTests.swift
+      - path: Tests/FloeExecutionTests/SkillDependencyExecutionTests.swift
+      - path: Tests/FloeExecutionTests/LinuxGuestLanguagePackageTests.swift
+      - path: Tests/FloeExecutionTests/CloudWorkspaceToolContractTests.swift
       - path: Tests/FloeAppTests/TaskLiveActivityTests.swift
       - path: Tests/FloeAppTests/MCPServiceTemplateTests.swift
       - path: Tests/FloeAppTests/BrowserImpeccableCaptureTests.swift
@@ -728,6 +741,17 @@ targets:
       - path: Tests/FloeSyncTests/SyncControlPreferencesTests.swift
       - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
+      - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
+      - path: Tests/FloeAppTests/TerminalViewportTests.swift
+      - path: Tests/FloeAppTests/ProviderFormSpecAppTests.swift
+      - path: Tests/FloeProvidersTests/ProviderFormSpecTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ToolCallPreparationPresentationTests.swift
+      - path: Tests/FloeExecutionTests/RemoteSharedSkillIdentityTests.swift
+      - path: Tests/FloeExecutionTests/RemoteAgentPayloadTests.swift
+      - path: Tests/FloeExecutionTests/RemoteSharedSkillMountTests.swift
+      - path: Tests/FloeAppTests/InlineConversationSelectionTests.swift
+      - path: Tests/FloeAppTests/ComposerOverflowRegressionTests.swift
+      - path: Tests/FloeProvidersTests/KimiFunctionNameCompatibilityTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
       - path: Tests/FloeSkillsTests/SkillManagementTests.swift
       - path: Tests/FloeSkillsTests/SkillPackageTests.swift

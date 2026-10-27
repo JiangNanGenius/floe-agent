@@ -1,0 +1,274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "floe://schemas/skill-dependencies/1",
+  "title": "Floe official Skill dependency declaration v1 (references/dependencies.json)",
+  "description": "Author-facing documentation of the frozen schema. The native strict decoder in FloeAgent/Sources/FloeSkills/SkillDependency.swift is the authority: it accepts only the exact key sets below, fails closed on every unknown field, and never reads commands, URLs, environment values, permissions or approval fields (none exist in this schema). The file lives inside the canonical Skill package at references/dependencies.json, so the signed contentDigest already covers its bytes and every referenced lock; the review .sig binding therefore covers the declaration and the lock bytes with no external hashes. Old clients treat the file as inert data; a skill with NO dependencies ships no file at all (an empty profiles/requirements document is invalid and fails closed). This document describes schemaVersion 1; adding fields requires a new schemaVersion and a capable native build, raised through the existing minimumAppVersion gate.",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "profiles"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1,
+      "description": "Parser compatibility version only. Exactly 1 is supported; an unknown newer value fails compatibility instead of being guessed. This is NOT the Skill package version: floe.json id/version remain the single user-visible package authority."
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "description": "Dependency profiles. Automatic provisioning binds to the task's resolved Linux guest environment; there is no user target picker and task execution is never rerouted.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "target",
+          "requirements"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+            "description": "Unique lowercase profile slug."
+          },
+          "target": {
+            "type": "object",
+            "required": [
+              "os",
+              "architectures"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "os": {
+                "const": "linux",
+                "description": "v1 provisions only into the task's resolved Linux guest."
+              },
+              "architectures": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "riscv64",
+                    "arm64",
+                    "x86_64",
+                    "any"
+                  ]
+                }
+              }
+            }
+          },
+          "requirements": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "description": "Tagged requirement entries. Each entry carries exactly the key set for its kind; unknown keys (url, command, env, permission, approval, sha256, index, registry, script) fail closed.",
+            "items": {
+              "type": "object",
+              "oneOf": [
+                {
+                  "title": "pip",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name",
+                    "version",
+                    "purpose",
+                    "required"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "pip"
+                    },
+                    "name": {
+                      "$ref": "#/$defs/pipName"
+                    },
+                    "version": {
+                      "$ref": "#/$defs/pipVersion"
+                    },
+                    "purpose": {
+                      "$ref": "#/$defs/purpose"
+                    },
+                    "required": {
+                      "$ref": "#/$defs/required"
+                    },
+                    "lockfile": {
+                      "$ref": "#/$defs/lockfile"
+                    }
+                  }
+                },
+                {
+                  "title": "apt",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name",
+                    "version",
+                    "purpose",
+                    "required"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "apt"
+                    },
+                    "name": {
+                      "$ref": "#/$defs/aptName"
+                    },
+                    "version": {
+                      "$ref": "#/$defs/aptVersion"
+                    },
+                    "purpose": {
+                      "$ref": "#/$defs/purpose"
+                    },
+                    "required": {
+                      "$ref": "#/$defs/required"
+                    }
+                  }
+                },
+                {
+                  "title": "npm",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name",
+                    "version",
+                    "purpose",
+                    "required"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "npm"
+                    },
+                    "name": {
+                      "$ref": "#/$defs/npmName"
+                    },
+                    "version": {
+                      "$ref": "#/$defs/npmVersion"
+                    },
+                    "purpose": {
+                      "$ref": "#/$defs/purpose"
+                    },
+                    "required": {
+                      "$ref": "#/$defs/required"
+                    }
+                  }
+                },
+                {
+                  "title": "font",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "name",
+                    "version",
+                    "purpose",
+                    "required"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "font"
+                    },
+                    "name": {
+                      "$ref": "#/$defs/fontIdentity"
+                    },
+                    "version": {
+                      "$ref": "#/$defs/aptVersion"
+                    },
+                    "purpose": {
+                      "$ref": "#/$defs/purpose"
+                    },
+                    "required": {
+                      "$ref": "#/$defs/required"
+                    }
+                  }
+                },
+                {
+                  "title": "runtimeComponent",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "componentDescriptorPath",
+                    "purpose",
+                    "required"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "runtimeComponent"
+                    },
+                    "componentDescriptorPath": {
+                      "$ref": "#/$defs/componentDescriptorPath"
+                    },
+                    "purpose": {
+                      "$ref": "#/$defs/purpose"
+                    },
+                    "required": {
+                      "$ref": "#/$defs/required"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "pipName": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "PyPI distribution name; extras, ranges, URLs, paths and VCS references are rejected."
+    },
+    "pipVersion": {
+      "type": "string",
+      "pattern": "^(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9.*+!_-]{0,127}$",
+      "description": "One exact PEP 440 version. Provisioning installs name==version only; no operators, ranges or 'latest'. Only pure py3-none-any wheels are audited/installed through the managed pip path (unchanged native audit still refuses native wheels). The pin must contain a digit (floating aliases like 'latest' never pass)."
+    },
+    "aptName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9+._-]{0,127}$",
+      "description": "Debian package identity."
+    },
+    "aptVersion": {
+      "type": "string",
+      "pattern": "^(?:[0-9]+:)?(?=[A-Za-z0-9+~:.+-]*[0-9])[A-Za-z0-9][A-Za-z0-9+~:.+-]{0,127}$",
+      "description": "Exact Debian version, epoch preserved; +dfsg/-rev/+tilde suffixes stay part of the pin. The version body (after any epoch) must contain a digit, so floating aliases like 'latest' or '1:latest' never pass. Shared by the apt and font kinds: v1 has no unversioned font exception."
+    },
+    "npmName": {
+      "type": "string",
+      "pattern": "^(?:@[a-z0-9-~][a-z0-9-._~]{0,63}/)?[a-z0-9-~][a-z0-9-._~]{0,127}$"
+    },
+    "npmVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$",
+      "description": "Exact semver. Managed npm provisioning is exact name@version with real readback; a packaged package-lock.json is review evidence and is never replayed as an install."
+    },
+    "fontIdentity": {
+      "type": "string",
+      "pattern": "^fonts-[a-z0-9][a-z0-9+._-]{0,127}$",
+      "description": "Exactly one Debian font package identity (today fonts-noto-cjk) plus the shared exact Debian version pin; the fixed guest CJK availability probe is the readiness gate on top of the recorded version."
+    },
+    "lockfile": {
+      "type": "string",
+      "pattern": "^references/[^ ][^\"]{0,254}\\.txt$",
+      "description": "Package-local lock reference inside the signed archive (pip only in v1). The lock lists wheel names with sha256 digests; its bytes are covered by the package contentDigest, so review binding covers the lock without external hashes. No path traversal."
+    },
+    "componentDescriptorPath": {
+      "const": "references/engine-dependency.json",
+      "description": "The frozen runtime-component descriptor path. Identity, version, artifact sha256 and size come from the pinned descriptor through the existing managed runtime-component allowlist (today exactly impeccable-engine); the allowlist, the component-only cap and the nonblocking hook are NOT broadened here. The requirement never carries its own digest."
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Short model-safe rationale shown in skill.read; never a command."
+    },
+    "required": {
+      "type": "boolean",
+      "description": "true: that skill's dependency-aware exec.shell invocation is refused with the honest reason while the requirement is not verified ready (ordinary shell commands without skillID keep working). false: execution proceeds with a visible annotation."
+    }
+  }
+}

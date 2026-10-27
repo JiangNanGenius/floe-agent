@@ -12,25 +12,148 @@ import FloeModels
 /// Compat-mode tool name mapping shared by all three wire adapters.
 /// Some providers (DeepSeek, gateways) enforce ^[A-Za-z0-9_-]+$ function
 /// names, so dotted canonical names travel the wire as underscored spellings.
-/// The reverse map is total over the run's capability ceiling
-/// (`allToolNames`), because the runtime may legitimately invite calls to
-/// tools whose schema was budget-evicted from this request.
+/// The official Moonshot/Kimi chat endpoints (api.kimi.com, api.moonshot.cn,
+/// api.moonshot.ai) are stricter still: any request carrying a name outside
+/// ^[A-Za-z][A-Za-z0-9_-]*$ is rejected whole, before the answer starts
+/// (Build300 logged exactly
+/// {"error":{"type":"invalid_request_error","message":"function name is
+/// invalid, must start with a letter and can contain letters, numbers,
+/// underscores, and dashes"}} on protocol=chat host=api.kimi.com model=k3.1-pro
+/// with tools=23, on 4 attempts with 8 identical error mentions: an immediate
+/// request-grammar rejection, not an image decode/size failure — the chat
+/// screenshot's IMG_9719.JPG attachment only coincided with the turn). The
+/// dotted-name cause is this lane's source-path diagnosis, not a logged fact:
+/// neither the catalog default nor any preset sets `toolNameCompatibility`
+/// for these hosts and no saved override was logged, so under the previous
+/// boundary canonical dotted names (`tools.search`, `exec.shell`,
+/// `skill.read`, `checklist.updatePlan`, …) would have reached Kimi raw.
+/// Detection is by exact normalized official host only: a display alias or
+/// proxy domain that merely contains "kimi"/"moonshot" never rewrites an
+/// unrelated endpoint, and the saved `toolNameCompatibility` opt-in keeps
+/// forcing the compat spelling for every other provider exactly as before.
+/// Normalization stays at the provider wire boundary: runtime history, tool
+/// IDs, dispatch and canonical dotted names are untouched, and the reverse
+/// map recovers each canonical exactly. The map is total over one complete
+/// deterministic per-request universe (run ceiling, this turn's schemas and
+/// every assistant-history/pending call name the encoder can emit), because
+/// the runtime may legitimately invite calls to tools whose schema was
+/// budget-evicted from this request. Unknown or ambiguous spellings pass
+/// through unchanged so the runtime's not-in-catalog denial stays honest.
 public enum CompatToolNames {
+    /// Exact official chat hosts whose function-name grammar requires a
+    /// leading ASCII letter. The api.kimi.com identity reuses the typed
+    /// `KimiCodeEndpointIdentity` evidence set (for name grammar only —
+    /// image routing still requires its stricter path variants); the two
+    /// Moonshot platform hosts are the vendor's public API roots.
+    static let grammarStrictHosts: Set<String> =
+        KimiCodeEndpointIdentity.apiHosts.union(["api.moonshot.cn", "api.moonshot.ai"])
+
     public static func usesWireSafeNames(_ provider: ProviderProfile) -> Bool {
-        provider.traits().usesWireSafeToolNames
+        provider.traits().usesWireSafeToolNames || requiresLetterInitialNames(provider)
+    }
+
+    /// True only for the exact normalized official Moonshot/Kimi chat hosts.
+    public static func requiresLetterInitialNames(_ provider: ProviderProfile) -> Bool {
+        guard let host = provider.baseURL.host?.lowercased() else { return false }
+        return grammarStrictHosts.contains(host)
+    }
+
+    /// One deterministic Moonshot/Kimi-grammar hardening: after the compat
+    /// dot→underscore step, every remaining non-ASCII-alphanumeric/underscore/
+    /// dash scalar becomes an underscore, and a spelling that does not start
+    /// with an ASCII letter gains the "f_" prefix. Reversal is exact through
+    /// the per-request `wireTable`, not through string arithmetic.
+    static func letterInitialSpelling(_ canonicalName: String) -> String {
+        let compat = ToolNameSpelling.wire(canonicalName, safe: true)
+        var mapped = String(String.UnicodeScalarView(compat.unicodeScalars.map { scalar in
+            if ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
+                || ("0"..."9").contains(scalar) || scalar == "_" || scalar == "-" {
+                return scalar
+            }
+            return "_"
+        }))
+        let startsWithLetter = mapped.unicodeScalars.first.map {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0)
+        } ?? false
+        if !startsWithLetter { mapped = "f_" + mapped }
+        return mapped
     }
 
     public static func wireName(_ canonicalName: String, for provider: ProviderProfile) -> String {
-        ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
+        if requiresLetterInitialNames(provider) { return letterInitialSpelling(canonicalName) }
+        return ToolNameSpelling.wire(canonicalName, safe: usesWireSafeNames(provider))
+    }
+
+    /// Wire name using the request's deterministic collision table when one
+    /// covers the name; falls back to the per-name spelling otherwise (a
+    /// name outside this request's whole outbound universe, e.g. a forged
+    /// model emission, keeps the suffix-free hardening and then denies
+    /// honestly on the inbound lookup).
+    public static func wireName(
+        _ canonicalName: String,
+        for provider: ProviderProfile,
+        table: [String: String]
+    ) -> String {
+        table[canonicalName] ?? wireName(canonicalName, for: provider)
+    }
+
+    /// The complete outbound universe for one request: the run ceiling, this
+    /// turn's schemas, and every assistant-history/pending tool-call name the
+    /// adapters serialize. History-only names participate in collision
+    /// resolution so they can never fall back to the same hardened spelling
+    /// as an advertised tool and break exact recovery.
+    static func requestUniverse(_ request: ProviderStreamRequest) -> [String] {
+        var names = request.allToolNames
+        names.append(contentsOf: request.toolSchemas.map(\.name))
+        names.append(contentsOf: request.replayedToolPairs.map(\.call.toolName))
+        names.append(contentsOf: request.pendingToolCalls.map(\.toolName))
+        return names
+    }
+
+    /// Deterministic canonical→wire table over the request's complete tool
+    /// universe (see `requestUniverse`). On grammar-strict providers two
+    /// canonical names that harden to the same spelling (e.g.
+    /// `workspace.readFile` and `workspace_readFile`) get "_2"/"_3"… suffixes
+    /// in sorted-canonical order, making the forward map injective so the
+    /// reverse lookup recovers each canonical name exactly. The same table
+    /// serves every outbound occurrence and the inbound lookup. Non-strict
+    /// providers get an empty table and keep the legacy per-name spelling,
+    /// byte-for-byte unchanged.
+    public static func wireTable(for request: ProviderStreamRequest) -> [String: String] {
+        guard requiresLetterInitialNames(request.provider) else { return [:] }
+        let universe = Set(requestUniverse(request)).sorted()
+        var table: [String: String] = [:]
+        var used = Set<String>()
+        for canonical in universe {
+            let base = letterInitialSpelling(canonical)
+            var candidate = base
+            var suffix = 2
+            while used.contains(candidate) {
+                candidate = base + "_\(suffix)"
+                suffix += 1
+            }
+            used.insert(candidate)
+            table[canonical] = candidate
+        }
+        return table
     }
 
     /// Canonical (dotted) name for a model-emitted wire name. The universe is
     /// the run ceiling AND the schemas offered this turn — discovery tools
     /// (tools.list/tools.search) and the synthetic plan tool exist only in
-    /// toolSchemas. Unknown or ambiguous spellings pass through unchanged so
-    /// the runtime's not-in-catalog denial stays honest.
+    /// toolSchemas. On grammar-strict providers the exact collision table is
+    /// consulted first (suffix-spelled names are unique by construction);
+    /// then the shared spelling rule folds dots/case. Unknown or ambiguous
+    /// spellings pass through unchanged so the runtime's not-in-catalog
+    /// denial stays honest.
     public static func canonicalName(_ wireName: String, request: ProviderStreamRequest) -> String {
         guard usesWireSafeNames(request.provider) else { return wireName }
+        if requiresLetterInitialNames(request.provider) {
+            let table = wireTable(for: request)
+            if let canonical = table.first(where: { $0.value == wireName })?.key {
+                return canonical
+            }
+        }
         var universe = request.allToolNames
         universe.append(contentsOf: request.toolSchemas.map(\.name))
         return ToolNameSpelling.canonical(wireName, among: universe) ?? wireName
@@ -580,6 +703,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             provider: request.provider,
             model: request.model
         )
+        let nameTable = CompatToolNames.wireTable(for: request)
         let context = request.cacheContext
         var input: [ResponsesRequest.InputItem] = []
         for message in context.messages {
@@ -618,7 +742,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
             }
         }
         for pair in request.replayedToolPairs {
-            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider)
+            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider, table: nameTable)
             let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
             if replaysReasoning, pairReasoning == nil {
                 input.append(.message(
@@ -647,7 +771,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         for call in request.pendingToolCalls {
             input.append(.functionCall(
                 callID: call.id,
-                name: CompatToolNames.wireName(call.toolName, for: request.provider),
+                name: CompatToolNames.wireName(call.toolName, for: request.provider, table: nameTable),
                 arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
             ))
         }
@@ -667,7 +791,7 @@ public struct OpenAIResponsesAdapter: ProviderAdapter {
         }
         let tools = request.toolSchemas.map {
             ResponsesRequest.ToolDefinition(
-                name: CompatToolNames.wireName($0.name, for: request.provider),
+                name: CompatToolNames.wireName($0.name, for: request.provider, table: nameTable),
                 description: $0.description,
                 parameters: $0.parametersJSON
             )
@@ -822,6 +946,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
 
     func buildBody(from request: ProviderStreamRequest) -> ChatRequest {
         let replaysReasoning = ReasoningCompatibility.requiresAssistantReasoningReplay(provider: request.provider, model: request.model)
+        let nameTable = CompatToolNames.wireTable(for: request)
         let context = request.cacheContext
         var messages: [ChatRequest.Message] = context.messages.map { message in
             // Older app versions (and other providers) did not save this field.
@@ -854,7 +979,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             )
         }
         for pair in request.replayedToolPairs {
-            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider)
+            let pairName = CompatToolNames.wireName(pair.call.toolName, for: request.provider, table: nameTable)
             let pairReasoning = nonEmptyReasoning(pair.assistantReasoning)
             if replaysReasoning, pairReasoning == nil {
                 // Legacy checkpoint: the assistant turn was recorded before
@@ -893,7 +1018,7 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
                     ChatRequest.Message.ToolCall(
                         id: call.id,
                         function: .init(
-                            name: CompatToolNames.wireName(call.toolName, for: request.provider),
+                            name: CompatToolNames.wireName(call.toolName, for: request.provider, table: nameTable),
                             arguments: String(decoding: call.argumentsJSON, as: UTF8.self)
                         )
                     )
@@ -923,7 +1048,10 @@ public struct OpenAIChatCompletionsAdapter: ProviderAdapter {
             // DeepSeek and some gateways reject dots in tool names
             // (^[a-zA-Z0-9_-]+$). When the provider has toolNameCompatibility
             // enabled, convert dots to underscores for the wire only.
-            let wireName = CompatToolNames.wireName($0.name, for: request.provider)
+            // Grammar-strict Moonshot/Kimi hosts additionally get the exact
+            // collision table so every emitted name satisfies
+            // ^[A-Za-z][A-Za-z0-9_-]*$ and reverses to its canonical name.
+            let wireName = CompatToolNames.wireName($0.name, for: request.provider, table: nameTable)
             return ChatRequest.ToolDefinition(
                 name: wireName,
                 description: $0.description,
@@ -1046,6 +1174,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
 
     func buildBody(from request: ProviderStreamRequest) -> AnthropicRequest {
         let context = request.cacheContext
+        let nameTable = CompatToolNames.wireTable(for: request)
         let systemText = context.messages.filter { $0.role == "system" }.flatMap(\.content)
             .compactMap { part -> String? in if case .text(let text) = part { return text }; return nil }
             .joined(separator: "\n\n")
@@ -1077,7 +1206,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             }
             assistantBlocks.append(.toolUse(
                 id: pair.call.id,
-                name: CompatToolNames.wireName(pair.call.toolName, for: request.provider),
+                name: CompatToolNames.wireName(pair.call.toolName, for: request.provider, table: nameTable),
                 inputJSON: String(decoding: pair.call.argumentsJSON, as: UTF8.self)
             ))
             messages.append(AnthropicRequest.Message(role: "assistant", content: assistantBlocks))
@@ -1098,7 +1227,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
             assistantBlocks.append(contentsOf: request.pendingToolCalls.map { call in
                 .toolUse(
                     id: call.id,
-                    name: CompatToolNames.wireName(call.toolName, for: request.provider),
+                    name: CompatToolNames.wireName(call.toolName, for: request.provider, table: nameTable),
                     inputJSON: String(decoding: call.argumentsJSON, as: UTF8.self)
                 )
             })
@@ -1119,7 +1248,7 @@ public struct AnthropicMessagesAdapter: ProviderAdapter {
         }
         let tools = request.toolSchemas.map {
             AnthropicRequest.ToolDefinition(
-                name: CompatToolNames.wireName($0.name, for: request.provider),
+                name: CompatToolNames.wireName($0.name, for: request.provider, table: nameTable),
                 description: $0.description,
                 inputSchema: $0.parametersJSON
             )

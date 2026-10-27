@@ -34,6 +34,17 @@ public struct LocalShellTool: AgentTool {
         public var packages: [String]?
         public var packagePurpose: String?
         public var packageCapabilities: [String]?
+        /// Optional exact installed Skill id when this command belongs to that
+        /// skill's reviewed workflow. With it the app verifies the installed
+        /// record, the current run binding and the approval grant, then
+        /// automatically prepares and reads back the skill's declared
+        /// dependencies in the task's already-resolved Linux environment; a
+        /// required dependency that is not ready refuses THIS skill's
+        /// invocation with the honest reason. Omitting it keeps ordinary
+        /// behavior byte-for-byte unchanged (that path is how a run repairs
+        /// itself). Never model-mintable authority: the verification re-reads
+        /// live installed facts every time.
+        public var skillID: String?
 
         public init(
             command: String? = nil,
@@ -47,7 +58,8 @@ public struct LocalShellTool: AgentTool {
             maxOutputBytes: Int? = nil,
             packages: [String]? = nil,
             packagePurpose: String? = nil,
-            packageCapabilities: [String]? = nil
+            packageCapabilities: [String]? = nil,
+            skillID: String? = nil
         ) {
             self.command = command
             self.script = script
@@ -61,6 +73,7 @@ public struct LocalShellTool: AgentTool {
             self.packages = packages
             self.packagePurpose = packagePurpose
             self.packageCapabilities = packageCapabilities
+            self.skillID = skillID
         }
 
         public var resolvedCommand: String? {
@@ -120,7 +133,7 @@ public struct LocalShellTool: AgentTool {
 
     public static let name = "exec.shell"
     public static let toolDescription =
-        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. There is no application-level command-length limit: an oversized script body is staged as a file inside the task's guest workspace and executed as guest /bin/sh code, while stdin stays a separate bounded channel. Commands run with NO application execution deadline by default: omit timeout and the command runs until it finishes, is cancelled, or fails, and the user receives one progress reminder after 10 minutes of runtime. The requested number, its policy and the effective deadline are reported with the reason (effectiveTimeoutSeconds=unlimited for the default and advisory cases); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
+        "Execute commands or a POSIX shell script in the task's resolved Linux guest, never the iOS host. Supports python3, node, pipelines, redirections, loops and the actual installed Linux utilities. Inspect command -v and versions before relying on tools; use python3 -m pip, npm/pnpm or the guest's apt for dependencies when available. Git may be used if actually installed; git.* tools provide structured repository operations. cwd is workspace-relative. Use jobs.submit targeting exec.shell for long commands or shell.open/shell.exchange for persistent input. There is no application-level command-length limit: an oversized script body is staged as a file inside the task's guest workspace and executed as guest /bin/sh code, while stdin stays a separate bounded channel. Commands run with NO application execution deadline by default: omit timeout and the command runs until it finishes, is cancelled, or fails, and the user receives one progress reminder after 10 minutes of runtime. The requested number, its policy and the effective deadline are reported with the reason (effectiveTimeoutSeconds=unlimited for the default and advisory cases); output is bounded. Inspect exit status and saved outputs before continuing a timed-out/interrupted operation, rather than repeating side effects. When an official skill declares dependencies (see its skill.read Dependency invocation section), pass its exact id as skillID on this run's commands: verification plus automatic install/readback happen in the task's resolved environment and a not-ready required dependency refuses only that skill's invocation; commands without skillID keep the ordinary behavior. A missing or legacy non-Linux environment fails with preparation/selection guidance and never falls back to a host interpreter. A stopped guest resumes its last successful CPU/RAM shape. Use environment.linuxStatus to inspect it, and lifecycle tools to select 1–3 cores within the shared budget when needed; do not restart another task's environment to cancel your command."
     public static let parametersJSON = #"""
     {"type":"object","properties":{
       "command":{"type":"string","description":"Shell command line or whole script body. No application-level length cap: large scripts are staged as a file inside the task's guest workspace, so pipelines, redirections and loops all run as guest /bin/sh code."},
@@ -131,7 +144,8 @@ public struct LocalShellTool: AgentTool {
       "timeout":{"type":"number","description":"Duration seconds. ADVISORY by default: it is recorded in the receipt but the command is NOT killed, because default execution is unlimited. Pair with timeoutPolicy=hard for a real user-requested stop time. Canonical name; timeoutSeconds is an accepted alias."},
       "timeoutSeconds":{"type":"number","description":"Alias for timeout. If both are present they must be equal."},
       "timeoutPolicy":{"type":"string","enum":["hard","advisory"],"description":"hard = a real deadline the USER asked for: the command stops at that time (exit 124). advisory (default) = intended duration only; execution stays unlimited. Use hard ONLY for an actual user-requested deadline; a bare timeout number (including the old taught default 600) never kills."},
-      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"}},
+      "maxOutputBytes":{"type":"integer","description":"Combined output cap (default 65536, max 262144)"},
+      "skillID":{"type":"string","description":"Optional exact installed Skill id when this command belongs to that skill's reviewed workflow. Floe verifies the installed record, this run's binding and the approval grant, then automatically installs and reads back the skill's declared dependencies in the task's resolved Linux environment; a required dependency that is not ready refuses only this skill's invocation with the honest reason. Omit for ordinary commands, which run exactly as before (including repair commands)."}},
      "additionalProperties":false}
     """#
     public static let riskLabels: Set<RiskLabel> = [
@@ -145,10 +159,16 @@ public struct LocalShellTool: AgentTool {
 
     private let shell: LocalShellService
     private let pythonInstaller: ManagedPythonInstallService?
+    private let dependencyGate: (any SkillDependencyInvocationGating)?
 
-    public init(shell: LocalShellService, pythonInstaller: ManagedPythonInstallService? = nil) {
+    public init(
+        shell: LocalShellService,
+        pythonInstaller: ManagedPythonInstallService? = nil,
+        dependencyGate: (any SkillDependencyInvocationGating)? = nil
+    ) {
         self.shell = shell
         self.pythonInstaller = pythonInstaller
+        self.dependencyGate = dependencyGate
     }
 
     public func validate(_ args: Arguments) throws {
@@ -180,6 +200,13 @@ public struct LocalShellTool: AgentTool {
         if let maxOutputBytes = args.maxOutputBytes, maxOutputBytes <= 0 {
             throw FloeError.validationFailed("maxOutputBytes must be > 0")
         }
+        if let skillID = args.skillID {
+            let trimmed = skillID.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.isEmpty || (trimmed.count <= 64 && trimmed.first?.isLowercase == true
+                && trimmed.allSatisfy { $0.isLowercase || $0.isNumber || $0 == "-" }) else {
+                throw FloeError.validationFailed("skillID must be a lowercase skill identifier when provided")
+            }
+        }
         let packages = args.packages ?? []
         guard packages.count <= 16 else {
             throw FloeError.validationFailed("packages accepts at most 16 entries")
@@ -202,6 +229,46 @@ public struct LocalShellTool: AgentTool {
         try context.cancellation.throwIfCancelled()
         guard let command = args.resolvedCommand else {
             throw FloeError.validationFailed("command must not be empty")
+        }
+        // Skill-scoped dependency gate. Default (no `skillID`) never reaches
+        // any verification and behaves exactly as before; ordinary repair
+        // commands stay available. Only THIS skill's invocation can be
+        // refused, never the shell itself, and the impeccable runtime
+        // component's nonblocking hook is unchanged.
+        var dependencyAnnotation = ""
+        if let rawSkillID = args.skillID?.trimmingCharacters(in: .whitespacesAndNewlines), !rawSkillID.isEmpty {
+            guard dependencyGate != nil else {
+                return Self.output(
+                    "status=skillDependencyUnavailable\nskillID=\(rawSkillID)\nreason=official Skill dependency provisioning is not configured in this build; run the command without skillID (ordinary shell behavior is unchanged) or update Floe\nexit=75",
+                    exitStatus: 75
+                )
+            }
+            guard context.approvalGrantID != nil else {
+                return Self.output(
+                    "status=skillDependencyUnavailable\nskillID=\(rawSkillID)\nreason=dependency-aware invocation requires the run's approval grant\nexit=75",
+                    exitStatus: 75
+                )
+            }
+            switch await dependencyGate!.dependencyInvocationDecision(
+                skillID: rawSkillID,
+                environmentID: context.environmentID ?? context.environment?.id,
+                runID: context.runID,
+                approvalGrantID: context.approvalGrantID,
+                cancellation: context.cancellation
+            ) {
+            case .proceed(let annotation):
+                dependencyAnnotation = annotation
+            case .refused(let reason):
+                return Self.output(
+                    "status=skillDependencyNotReady\nskillID=\(rawSkillID)\nreason=\(reason)\nexit=75",
+                    exitStatus: 75
+                )
+            case .unavailable(let reason):
+                return Self.output(
+                    "status=skillDependencyUnavailable\nskillID=\(rawSkillID)\nreason=\(reason)\nexit=75",
+                    exitStatus: 75
+                )
+            }
         }
         // Resolve the deadline BEFORE any side effect: the legacy managed
         // packages pre-install inherits this call's resolved deadline, so a
@@ -260,6 +327,7 @@ public struct LocalShellTool: AgentTool {
                 command: command,
                 cwd: cwd,
                 installOutput: installOutput,
+                dependencyAnnotation: dependencyAnnotation,
                 resolved: resolved,
                 requestedPolicy: timeoutPolicy,
                 isBackground: isBackground
@@ -272,12 +340,14 @@ public struct LocalShellTool: AgentTool {
         command: String,
         cwd: String,
         installOutput: String,
+        dependencyAnnotation: String = "",
         resolved: LocalShellService.ResolvedDeadline,
         requestedPolicy: ShellTimeoutPolicy,
         isBackground: Bool
     ) -> ToolExecutionOutput {
         func prefix() -> String {
             var header = ""
+            if !dependencyAnnotation.isEmpty { header += "--- skill dependencies ---\n\(dependencyAnnotation)\n" }
             if !installOutput.isEmpty { header += "--- managed packages ---\n\(installOutput)\n" }
             return header
         }

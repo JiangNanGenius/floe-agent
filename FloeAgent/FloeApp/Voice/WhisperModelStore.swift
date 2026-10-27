@@ -4,6 +4,7 @@ import Foundation
 import CryptoKit
 
 import FloeCore
+import FloeLocalModelCatalog
 actor WhisperModelStore {
     static let shared = WhisperModelStore()
     struct Manifest: Decodable, Sendable {
@@ -158,6 +159,15 @@ actor WhisperModelStore {
         // must be gone before staging swaps the directory.
         guard await retireResident() else { throw Failure.busy }
         guard leases.isEmpty else { throw Failure.busy }
+        // Owned settle work for this whole installation: every delegate-
+        // callback resume of a waiter this install registers begins its
+        // event in this ledger. Verified components checkpoint after their
+        // durable staging move, before the next network wait. The final
+        // component remains held through installed.json and the directory
+        // swap; errors drain only after the operation unwinds. Each store
+        // owns its own ledger even though speech shares one URLSession.
+        let ledger = ModelDownloadSettlementLedger()
+        defer { ledger.drain() }
         let manifest = try manifest(), base = try root(), destination = try location(manifest)
         try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         let staging = base.appendingPathComponent(".download-\(manifest.id)-\(manifest.sourceRevision)", isDirectory: true)
@@ -166,7 +176,7 @@ actor WhisperModelStore {
         if let free = try base.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
            free < total * 2 { throw CocoaError(.fileWriteOutOfSpace) }
         var completed: Int64 = 0
-        for asset in manifest.files {
+        for (index, asset) in manifest.files.enumerated() {
             try Task.checkCancellation()
             let target = staging.appendingPathComponent(asset.path)
             if (try? verify(target, asset: asset)) != nil {
@@ -175,7 +185,7 @@ actor WhisperModelStore {
             }
             try? FileManager.default.removeItem(at: target)
             let completedBeforeAsset = completed
-            let temporary = try await WhisperDownloadCoordinator.shared.download(asset.url) { bytes in
+            let temporary = try await WhisperDownloadCoordinator.shared.download(asset.url, ledger: ledger) { bytes in
                 progress(completedBeforeAsset + min(bytes, asset.byteCount), total)
             }
             defer { try? FileManager.default.removeItem(at: temporary) }
@@ -183,6 +193,7 @@ actor WhisperModelStore {
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temporary, to: target)
             completed += asset.byteCount; progress(completed, total)
+            if index < manifest.files.count - 1 { ledger.checkpoint() }
         }
         try Task.checkCancellation()
         try Data(manifest.sourceRevision.utf8).write(to: staging.appendingPathComponent("installed.json"), options: .atomic)
@@ -208,13 +219,24 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
         let id: UUID
         let continuation: CheckedContinuation<URL, Error>
         let progress: @Sendable (Int64) -> Void
+        /// The calling installation operation's ledger (`nil` = caller does
+        /// not track the wake). Every acquired resume pairs a synchronous
+        /// `began` here with that operation's single tail drain, so the
+        /// background-session wake cannot release while the installer
+        /// verifies/commits the transferred bytes.
+        let ledger: ModelDownloadSettlementLedger?
         var cancelled = false
     }
     private let lock = NSLock()
     private var pending: [String: Pending] = [:]
     private static let retiredTransfersKey = "speech.transfers.retired.v1"
     private var retiredTransfers = Set<String>()
-    private var backgroundCompletion: (() -> Void)?
+    /// Service-owned drain for this background session. The stored system
+    /// completion fires exactly once on main after the tracked launch
+    /// bootstrap AND every registered settle event of the wake have drained —
+    /// the previous path released OS completion while the installation's
+    /// verification/state-commit work was still underway.
+    let settlement = FloeCore.BackgroundDownloadEventSettlement(name: "whisper-model")
     private var session: URLSession!
     private override init() {
         super.init()
@@ -232,8 +254,30 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         return root.appendingPathComponent(key + suffix)
     }
-    func registerBackgroundCompletion(_ completion: @escaping () -> Void) {
-        lock.withLock { backgroundCompletion = completion }
+    /// Stores the system completion for this background session's wake.
+    /// Every bootstrap is registered as pending BEFORE the handler is
+    /// stored: `registerSystemCompletionHandler` can fire an already
+    /// drained + finished wake immediately, and the bounded readiness work
+    /// is exactly what such a wake must drain first. Whisper's own
+    /// requested-install owner restoration is always tracked; the optional
+    /// `bootstrap:` closure adds the caller's bounded wake-readiness scan
+    /// as a second parallel tracked lease (each begins synchronously and
+    /// ends exactly once). Neither may wait on the whole agent, inference,
+    /// model loading or a user wait. One-argument call sites are unchanged.
+    func registerBackgroundCompletion(
+        _ completion: @escaping () -> Void,
+        bootstrap: (@Sendable () async -> Void)? = nil
+    ) {
+        settlement.trackBootstrap {
+            // Restore only an explicitly requested download. Starting the
+            // owner is bounded; verification/commit callbacks hold their own
+            // settle leases. Never await all future network components here.
+            await WhisperModelStore.shared.restoreInstallation()
+        }
+        if let bootstrap {
+            settlement.trackBootstrap(bootstrap)
+        }
+        settlement.registerSystemCompletionHandler(completion)
     }
 
     /// Persist the fence before cancelling the background transfer: delegate
@@ -246,7 +290,13 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
             UserDefaults.standard.set(retiredTransfers.sorted(), forKey: Self.retiredTransfersKey)
             return pending.removeValue(forKey: key)
         }
-        waiter?.continuation.resume(throwing: CancellationError())
+        if let waiter {
+            // The installer unwinds asynchronously from this resume; register
+            // the settle event synchronously so the wake waits for that
+            // durable cleanup like any other acquired waiter.
+            waiter.ledger?.began(settlement)
+            waiter.continuation.resume(throwing: CancellationError())
+        }
         let tasks = await withCheckedContinuation { continuation in
             session.getAllTasks { tasks in continuation.resume(returning: tasks) }
         }
@@ -268,7 +318,13 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
         SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+    /// `ledger` is owned by the CALLING installation operation: installers
+    /// that pass one have their waiter resumes accounted as settle events
+    /// drained at that operation's durable-commit tail. Callers that pass
+    /// `nil` (e.g. other pack stores riding the same session) keep exactly
+    /// the previous behavior and can never strand or extend another
+    /// operation's wake.
+    func download(_ url: URL, ledger: ModelDownloadSettlementLedger? = nil, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
         let key = Self.transferKey(url)
         guard !lock.withLock({ retiredTransfers.contains(key) }) else { throw CancellationError() }
         let destination = try file(key, suffix: ".download")
@@ -279,12 +335,15 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
             return try await withCheckedThrowingContinuation { continuation in
                 let registered = lock.withLock {
                     guard !retiredTransfers.contains(key) else { return false }
-                    pending[key] = Pending(id: id, continuation: continuation, progress: progress)
+                    pending[key] = Pending(id: id, continuation: continuation, progress: progress, ledger: ledger)
                     return true
                 }
                 guard registered else { continuation.resume(throwing: CancellationError()); return }
                 if Task.isCancelled {
-                    lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: CancellationError())
+                    if let waiter = lock.withLock({ pending.removeValue(forKey: key) }) {
+                        waiter.ledger?.began(settlement)
+                        waiter.continuation.resume(throwing: CancellationError())
+                    }
                     return
                 }
                 session.getAllTasks { [self] tasks in
@@ -293,7 +352,13 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
                         // A completion may have arrived between the disk check
                         // and listener registration on process restoration.
                         if FileManager.default.fileExists(atPath: destination.path) {
-                            pending.removeValue(forKey: key)?.continuation.resume(returning: destination)
+                            if let waiter = pending.removeValue(forKey: key) {
+                                // The restored finished file still has to be
+                                // verified/moved by the awaiting installer;
+                                // register the settle synchronously here.
+                                waiter.ledger?.began(settlement)
+                                waiter.continuation.resume(returning: destination)
+                            }
                             return
                         }
                         if let task = tasks.first(where: { $0.taskDescription == key }) { task.resume(); return }
@@ -317,7 +382,10 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
                 guard self.lock.withLock({ self.pending[key]?.id == id }) else { return }
                 let matches = tasks.compactMap { $0 as? URLSessionDownloadTask }.filter { $0.taskDescription == key }
                 if matches.isEmpty {
-                    self.lock.withLock { self.pending.removeValue(forKey: key) }?.continuation.resume(throwing: CancellationError())
+                    if let waiter = self.lock.withLock({ self.pending.removeValue(forKey: key) }) {
+                        waiter.ledger?.began(self.settlement)
+                        waiter.continuation.resume(throwing: CancellationError())
+                    }
                 }
                 for task in matches {
                     task.cancel { data in
@@ -347,8 +415,21 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
                 if let resume = try? file(key, suffix: ".resume") { try? FileManager.default.removeItem(at: resume) }
                 return (pending.removeValue(forKey: key), target)
             }
-            waiter?.continuation.resume(returning: target)
-        } catch { lock.withLock { pending.removeValue(forKey: key) }?.continuation.resume(throwing: error) }
+            if let waiter {
+                // The durable staged bytes moved inside the lock above; the
+                // awaiting installer now verifies and commits them. Register
+                // the settle synchronously inside this callback — the finish
+                // event can arrive the moment the callback returns — and let
+                // the operation tail end it exactly once.
+                waiter.ledger?.began(settlement)
+                waiter.continuation.resume(returning: target)
+            }
+        } catch {
+            if let failed = lock.withLock({ pending.removeValue(forKey: key) }) {
+                failed.ledger?.began(settlement)
+                failed.continuation.resume(throwing: error)
+            }
+        }
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         guard let key = task.taskDescription, let error else { return }
@@ -359,12 +440,19 @@ final class WhisperDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @u
             return pending.removeValue(forKey: key)
         }
         if let waiter {
+            // Failed/cancelled transfers settle the same way: the awaiting
+            // installer unwinds asynchronously and its own error/cancel
+            // cleanup is covered by this event, ended once at the tail.
+            waiter.ledger?.began(settlement)
             waiter.continuation.resume(throwing: waiter.cancelled ? CancellationError() : error)
         }
     }
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        let completion = lock.withLock { let value = backgroundCompletion; backgroundCompletion = nil; return value }
-        DispatchQueue.main.async { completion?() }
+        // System side done only. The stored completion fires after the
+        // tracked launch bootstrap AND every registered settle event of
+        // this wake have drained — finish-before-settle was the historical
+        // premature-OS-completion bug.
+        settlement.sessionDidFinishEvents()
     }
 }
 #endif

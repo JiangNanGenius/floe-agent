@@ -115,12 +115,12 @@ struct ModelPickerView: View {
             }
             .searchable(text: $searchText, prompt: Text("providers.search_models"))
             .refreshable {
-                guard viewModel.supportsDiscovery else { return }
+                guard viewModel.supportsModelListingRefresh else { return }
                 await viewModel.refreshModels()
             }
             .navigationTitle("providers.models_section")
             .toolbar {
-                if viewModel.supportsDiscovery {
+                if viewModel.supportsModelListingRefresh {
                     ToolbarItem(placement: .topBarLeading) {
                         Button {
                             Task { await viewModel.refreshModels() }

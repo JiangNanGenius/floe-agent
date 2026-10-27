@@ -233,9 +233,11 @@ struct ThreadComposerView: View {
     @State private var voiceSessionDraftKey: UUID?
     @State private var slashNotice: String?
     @State private var isFullEditorPresented = false
-    /// True once the inline field has reached its height cap and scrolls
-    /// internally. Only then is the full-editor control worth a row slot:
-    /// a short prompt keeps the input calm and uncluttered.
+    /// True once the inline field's measured TextKit height passes its cap
+    /// at the width the field is actually laid out at (sizing, layout and
+    /// keystroke passes share one rule; deleting text re-reports false).
+    /// Only then is the full-editor control worth a row slot: a short
+    /// prompt keeps the input calm and uncluttered.
     @State private var isInlineFieldOverflowing = false
     /// Conversation whose draft produced the latest accepted overflow
     /// report. A delayed layout callback from a previous conversation must
@@ -909,7 +911,12 @@ struct ThreadComposerView: View {
             // still has unconfirmed marked text. Growth is capped by the
             // device line budget (6 compact / 8 regular) and one third of
             // the hosting page height; beyond the cap the field scrolls
-            // internally with the caret kept visible.
+            // internally with the caret kept visible. The overflow verdict
+            // is measured at the width THIS row actually gives the field:
+            // the field re-derives it from its laid-out bounds, so the
+            // control below can never disagree with the row's real
+            // content width (and this row can never ping-pong the field
+            // width, because a wider slot only ever measures shorter text).
             ComposerReturnField(
                 text: $draft,
                 placeholder: composerPlaceholder,
@@ -926,8 +933,14 @@ struct ThreadComposerView: View {
                     draftStore.updateSelection(range, conversationID: draftKey)
                 },
                 onOverflowChange: { overflowing in
-                    // Delivered on the next main-queue turn: only a report
-                    // from the conversation on screen may change the control.
+                    // Delivered on the next main-queue turn after the
+                    // field re-measured its current text at the width it
+                    // is actually laid out at (a verdict measured against
+                    // older text is dropped by the field itself when the
+                    // draft changes). This fence additionally refuses any
+                    // report bound to a previous conversation: only the
+                    // conversation on screen may change the control, and
+                    // the field re-reports the newest draft's layout.
                     guard overflowReportKey == nil || overflowReportKey == draftKey else { return }
                     if isInlineFieldOverflowing != overflowing {
                         isInlineFieldOverflowing = overflowing

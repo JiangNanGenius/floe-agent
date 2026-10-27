@@ -92,6 +92,11 @@
     "file": "patches/0020-slirp-quiet-debug-default.patch",
     "purpose": "Default DEBUG builds to DBG_ERROR only. Preserve error diagnostics and explicit verbose-debug capability without per-packet DBG_CALL/DBG_MISC fprintf+fflush traffic observed during actual guest network qualification. No measured speedup is claimed.",
     "applies_to": "slirp/misc.c of the pinned tarball"
+   },
+   {
+    "file": "patches/0021-9p-opened-fid-stat.patch",
+    "purpose": "Stat the already-open descriptor for opened regular-file fids instead of re-resolving the contained dir_fd + name pair: after the guest or host renames or unlinks the entry, the name no longer resolves and fstatat() answered ENOENT for a perfectly live fd. apt's GetTempFile cannot use O_TMPFILE through this backend (fs_valid_name rejects an empty component), so it falls back to mkstemp()+immediate unlink and then stats the opened descriptor; the stale lookup produced the observed 'Unable to determine file size for fd 9 - fstat (2: No such file or directory)' cache-stage failures and apt-get update exit 100. Opened fids are only regular files or directories (fs_open refuses special files; symlinks fail O_NOFOLLOW), so symlink metadata semantics are unchanged; unopened fids and directory fids keep the contained AT_SYMLINK_NOFOLLOW name lookup. The fd was opened through the contained dir_fd with O_NOFOLLOW, and stat only reports that already-authorized handle — it introduces no pathname traversal and no new file access.",
+    "applies_to": "fs_disk.c of the pinned tarball (after 0003 + 0007 + 0009 + 0019)"
    }
   ],
   "trimmed_out": [

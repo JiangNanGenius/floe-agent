@@ -414,13 +414,30 @@ struct PiPAudioPreferencesTests {
 
     @Test("The legacy projection never reintroduces mutual exclusivity at runtime")
     func legacyProjectionStaysCompatible() {
-        // Settings toggle cascade rules from the Core model.
+        // POLICY UPDATE (user-approved prerequisite chain, 2026-10-27):
+        // enabling a capability enables its prerequisites, and disabling a
+        // prerequisite is REFUSED while a dependent is active — no silent
+        // cascade-off. This test previously asserted the old cascade
+        // (PiP off ⇒ feedback off); that expectation is the one the new
+        // plan intentionally overrides. The legacy-projection intent is
+        // unchanged and still asserted below.
         var options = BackgroundExecutionOptions()
         options.setScreenFeedbackEnabled(true)
         #expect(options.pictureInPictureEnabled) // feedback on ⇒ PiP on
-        options.setPictureInPictureEnabled(false)
-        #expect(!options.screenFeedbackEnabled) // PiP off ⇒ feedback off
-        // Enhanced is untouched by both cascades.
+        #expect(options.audioEnabled) // ... and the audio prerequisite
+        #expect(options.enhancedBackgroundEnabled) // ... and the enhanced root
+        // PiP off is REFUSED while screen feedback still depends on it.
+        let mutationResult430 = options.setPictureInPictureEnabled(false)
+        #expect(!mutationResult430)
+        #expect(options.pictureInPictureEnabled)
+        #expect(options.screenFeedbackEnabled)
+        // Clearing the dependent first unlocks the prerequisite.
+        options.setScreenFeedbackEnabled(false)
+        let mutationResult435 = options.setPictureInPictureEnabled(false)
+        #expect(mutationResult435)
+        #expect(!options.pictureInPictureEnabled)
+        // Enhanced stays on (disabling a prerequisite never cascaded it off,
+        // and nothing above it was turned off).
         #expect(options.enhancedBackgroundEnabled)
         options.setPictureInPictureEnabled(true)
         #expect(options.enhancedBackgroundEnabled)

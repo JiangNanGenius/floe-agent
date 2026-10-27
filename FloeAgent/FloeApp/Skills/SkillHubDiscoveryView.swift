@@ -4,7 +4,7 @@ import SwiftUI
 /// Presentation only. Items and actions are supplied by the verified store;
 /// rendering a card never downloads a package or changes effective grants.
 struct SkillHubDisplayItem: Identifiable {
-    enum Action {
+    enum Action: Equatable {
         case get, added, enable, update, unavailable
         var title: LocalizedStringKey {
             switch self {
@@ -28,6 +28,7 @@ struct SkillHubDisplayItem: Identifiable {
 enum SkillHubCategory: String, CaseIterable, Identifiable {
     case office, writing, research, design, development, product, productivity
     var id: String { rawValue }
+    var artworkName: String { "SkillHub-" + rawValue }
     var title: LocalizedStringKey { LocalizedStringKey("skills.hub.category." + rawValue) }
     var tint: Color {
         switch self {
@@ -64,55 +65,149 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     private var categories: [SkillHubCategory] {
         SkillHubCategory.allCases.filter { category in items.contains { $0.category == category } }
     }
-    private var columns: [GridItem] {
-        if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(minimum: 0))]
-        }
-        return [GridItem(.adaptive(minimum: 300), spacing: 20)]
+    private var featured: [SkillHubDisplayItem] {
+        var seen = Set<SkillHubCategory>()
+        return Array(items.filter { item in
+            item.action != .unavailable && seen.insert(item.category).inserted
+        }.prefix(5))
+    }
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let count = width >= 700 && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
+        return Array(repeating: GridItem(.flexible(minimum: 0), spacing: 20), count: count)
     }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 16) {
-                if categories.count > 1 {
-                    ScrollView(.horizontal) {
-                        HStack(spacing: 8) {
-                            categoryButton(nil)
-                            ForEach(categories) { categoryButton($0) }
-                        }
-                        .padding(.vertical, 2)
+        GeometryReader { geometry in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if normalizedQuery.isEmpty, category == nil, !featured.isEmpty {
+                        featuredShelf(wide: geometry.size.width >= 700 && !dynamicTypeSize.isAccessibilitySize)
                     }
-                    .scrollIndicators(.hidden)
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("skills.hub.directory").font(.title2.bold())
-                    if matching.isEmpty {
-                        ContentUnavailableView.search(text: normalizedQuery)
-                    } else {
-                        LazyVGrid(columns: columns, alignment: .leading, spacing: 0) {
-                            ForEach(matching) { item in
-                                directoryRow(item)
+                    if categories.count > 1 {
+                        ScrollView(.horizontal) {
+                            HStack(spacing: 8) {
+                                categoryButton(nil)
+                                ForEach(categories) { categoryButton($0) }
                             }
+                            .padding(.vertical, 2)
+                        }
+                        .scrollIndicators(.hidden)
+                    }
+                    if matching.isEmpty {
+                        if normalizedQuery.isEmpty {
+                            ContentUnavailableView("skills.empty", systemImage: "puzzlepiece.extension")
+                        } else {
+                            ContentUnavailableView.search(text: normalizedQuery)
+                        }
+                    } else if normalizedQuery.isEmpty, category == nil {
+                        ForEach(categories) { group in
+                            categoryShelf(group, width: min(geometry.size.width, 1100) - 32)
+                        }
+                    } else {
+                        LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
+                                  alignment: .leading, spacing: 12) {
+                            ForEach(matching) { item in directoryRow(item) }
                         }
                     }
+                    if normalizedQuery.isEmpty { connections() }
                 }
-                if normalizedQuery.isEmpty {
-                    connections()
-                }
+                .padding(16)
+                .frame(maxWidth: 1100)
+                .frame(maxWidth: .infinity)
             }
-            .padding(20)
-            .frame(maxWidth: 1100)
-            .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground))
+        .onChange(of: categories) { _, values in
+            if let category, !values.contains(category) { self.category = nil }
+        }
+    }
+
+    private func featuredShelf(wide: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("skills.hub.featured").font(.title2.bold())
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 14) {
+                    ForEach(featured) { item in
+                        VStack(alignment: .leading, spacing: 12) {
+                            Button { onSelect(item.id) } label: {
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Color(red: 0.055, green: 0.055, blue: 0.11)
+                                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                                        .overlay {
+                                            GeometryReader { artwork in
+                                                Image(item.category.artworkName)
+                                                    .resizable()
+                                                    .scaledToFill()
+                                                    .frame(width: artwork.size.width, height: artwork.size.height)
+                                                    .clipped()
+                                            }
+                                        }
+                                        .accessibilityHidden(true)
+                                    VStack(alignment: .leading, spacing: 8) {
+                                    Text(item.title)
+                                        .font(.title2.bold())
+                                        .foregroundStyle(.primary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(item.summary)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    .padding(16)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color(uiColor: .secondarySystemGroupedBackground),
+                                    in: RoundedRectangle(cornerRadius: 20))
+                                .clipShape(RoundedRectangle(cornerRadius: 20))
+                                .contentShape(RoundedRectangle(cornerRadius: 20))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("skills.featured.\(item.id)")
+                            HStack {
+                                Text(item.category.title).font(.subheadline).foregroundStyle(.secondary)
+                                Spacer()
+                                getButton(item, identifierPrefix: "skills.featured.get")
+                            }
+                            .padding(.horizontal, 4)
+                        }
+                        .containerRelativeFrame(.horizontal, count: wide ? 2 : 1, spacing: 14)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            .scrollIndicators(.hidden)
+            .scrollTargetBehavior(.viewAligned)
+            .accessibilityIdentifier("skills.featured.carousel")
+        }
+    }
+
+    private func categoryShelf(_ group: SkillHubCategory, width: CGFloat) -> some View {
+        let groupItems = matching.filter { $0.category == group }
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(group.title).font(.title2.bold())
+                Spacer()
+                if groupItems.count > 6 {
+                    Button { category = group } label: {
+                        Label("skills.hub.see_all", systemImage: "chevron.right")
+                            .font(.subheadline)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            LazyVGrid(columns: columns(for: width), alignment: .leading, spacing: 12) {
+                ForEach(Array(groupItems.prefix(6))) { item in directoryRow(item) }
+            }
+        }
     }
 
     private func categoryButton(_ value: SkillHubCategory?) -> some View {
         Button { category = value } label: {
             Text(value?.title ?? "skills.hub.all")
                 .font(.subheadline.weight(.medium))
-                .padding(.horizontal, 14)
-                .frame(minHeight: 44)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
                 .background(category == value ? Color.accentColor.opacity(0.14) : Color(uiColor: .secondarySystemGroupedBackground), in: Capsule())
         }
         .buttonStyle(.plain)
@@ -122,18 +217,19 @@ struct SkillHubDiscoveryView<Connections: View>: View {
 
     private func directoryRow(_ item: SkillHubDisplayItem) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
+            HStack(alignment: .center, spacing: 10) {
                 itemButton(item)
-                Spacer(minLength: 8)
                 getButton(item)
             }
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 10) {
                 itemButton(item)
-                getButton(item).padding(.leading, 58)
+                HStack { Spacer(); getButton(item) }
             }
         }
-        .padding(.vertical, 14)
-        .overlay(alignment: .bottom) { Divider() }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                    in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func itemButton(_ item: SkillHubDisplayItem) -> some View {
@@ -142,11 +238,13 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                 Image(systemName: item.systemImage)
                     .font(.title2)
                     .foregroundStyle(item.category.tint)
-                    .frame(width: 46, height: 46)
+                    .frame(width: 44, height: 44)
                     .background(item.category.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).font(.headline).foregroundStyle(.primary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text(item.summary).font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 }
@@ -158,15 +256,17 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .accessibilityIdentifier("skills.card.\(item.id)")
     }
 
-    private func getButton(_ item: SkillHubDisplayItem) -> some View {
+    private func getButton(_ item: SkillHubDisplayItem, identifierPrefix: String = "skills.get") -> some View {
         Button { onGet(item.id) } label: {
-            Text(item.action.title).font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 14).frame(minHeight: 44)
+            Text(item.action.title)
+                .font(.subheadline.weight(.semibold))
+                .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.bordered)
+        .controlSize(.small)
         .buttonBorderShape(.capsule)
         .disabled(!item.actionEnabled)
-        .accessibilityIdentifier("skills.get.\(item.id)")
+        .accessibilityIdentifier("\(identifierPrefix).\(item.id)")
     }
 }
 #endif

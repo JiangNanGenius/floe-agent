@@ -36,8 +36,9 @@ fetched and hash-verified by `fetch_source.sh` (see `PROVENANCE.json`).
 | `patches/0008-recoverable-guest-fault-paths.patch` | guest-reachable virtio aborts/unchecked allocations become device errors |
 | `patches/0011-slirp-no-sigpipe.patch` | per-socket/per-send SIGPIPE suppression for closed preview/network connections; preserves host signal policy |
 | `patches/0020-slirp-quiet-debug-default.patch` | retain network error diagnostics; disable verbose per-buffer traces by default in DEBUG builds |
+| `patches/0021-9p-opened-fid-stat.patch` | stat the opened fd for opened regular-file fids, so rename/unlink of the entry (apt `GetTempFile` mkstemp+unlink) cannot stale the metadata lookup into ENOENT; unopened/directory fids keep the contained `AT_SYMLINK_NOFOLLOW` name lookup |
 | `adapter/floe_vm.h` / `floe_vm.c` | embeddable C API: VM create / run slice / console bytes in+out / disk / 9p / slirp net / stop+destroy |
-| `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host`, `lifecycle_test`, `two_vm_test`, `containment_test` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
+| `adapter/Makefile` | builds `libfloevm.a` (+ `floe_vm_host`, `lifecycle_test`, `two_vm_test`, `containment_test`, `fid_stat_test` when `HOST_DIR` is set); `MACOS=1` adds local shim headers |
 | `adapter/macos/` | macOS-only build shims (byteswap/statfs/if_tun); Linux needs none |
 
 ## Embeddable C API (stable surface for the app integration)
@@ -117,5 +118,9 @@ virtio 控制台、virtio-blk 磁盘、virtio-9p 宿主共享目录与 slirp 用
 ### Disconnected preview regression
 
 `bash FloeAgent/Qualification/TinyEMULinux/run_slirp_sigpipe_test.sh <task-scratch>` compiles the actual vendored send paths and verifies normal delivery plus disconnected/invalid sockets with the default SIGPIPE disposition. This is a host networking regression, not full-App or physical-iPad acceptance.
+
+### Opened-fid metadata after rename/unlink
+
+`fid_stat_test` (built by `adapter/Makefile` when `HOST_DIR` is set) drives the real patched `fs_disk.c` backend: open → rename → unlink → stat/read must keep working on the opened fid (apt's temp-file pattern), while unopened fids of deleted files still stat `ENOENT` and symlink fids still report `S_ISLNK`. This is a host 9p-backend regression, not a guest/App qualification.
 
 调试构建默认保留 slirp 错误诊断；详细调用和缓冲区跟踪仍可通过调试掩码启用，避免每个网络缓冲区都触发日志刷新。

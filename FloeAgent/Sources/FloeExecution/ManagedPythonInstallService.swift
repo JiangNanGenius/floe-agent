@@ -91,11 +91,17 @@ public struct ManagedPythonInstallService: Sendable {
     ///     resolved deadline, so a default-unlimited call never hits a
     ///     hidden install budget). `nil` keeps the legacy bounded budget for
     ///     the separate package-UI/provisioning callers.
+    /// - Parameter hashesBySpec: signed-lock sha256 pins for the exact specs
+    ///   (official Skill dependency installs only). Forwarded unchanged to the
+    ///   guest's own pip hash mode; an empty map keeps today's command and
+    ///   budget byte-for-byte for every legacy caller.
     public func install(
         specs: [String],
         timeout: TimeInterval = 30,
         deadline: ShellExecutionDeadline? = nil,
         maxOutputBytes: Int = 64 * 1024,
+        findLinksGuestPath: String? = nil,
+        hashesBySpec: [String: [String]] = [:],
         cancellation: CancellationToken?,
         environment: ToolEnvironment? = nil
     ) async -> Outcome {
@@ -119,6 +125,8 @@ public struct ManagedPythonInstallService: Sendable {
                 environment: environment,
                 timeout: timeout,
                 deadline: deadline,
+                findLinksGuestPath: findLinksGuestPath,
+                hashesBySpec: hashesBySpec,
                 cancellation: cancellation
             )
             let verification = await linux.pythonVerification(specs: uniqueSpecs, environment: environment)

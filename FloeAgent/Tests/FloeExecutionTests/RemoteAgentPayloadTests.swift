@@ -62,6 +62,17 @@ struct RemoteAgentPayloadTests {
         #expect(updater.contains("JiangNanGenius/floe-agent"))
     }
 
+    @Test("Bundled agent ships the frozen shared-skills wire contract")
+    func sharedSkillsWireContract() throws {
+        let agent = try RemoteAgentPayload.agentSource()
+        #expect(agent.contains("if parsed.path==\"/v1/skills\": return self._send(200,list_skills())"))
+        #expect(agent.contains("if self.path==\"/v1/skills/pull\": return self._send(200,pull_skill(body))"))
+        #expect(agent.contains("read_skill(pieces[2],pieces[4],relative))"))
+        #expect(agent.contains("\"shared_skills\":True"))
+        #expect(agent.contains("SKILL_READ_MAX_BYTES, SKILL_STAGING_TTL = 1048576"))
+        #expect(agent.contains("f\"packages/{skill_id}/{digest}\""))
+    }
+
     @Test("Durable task ids are stable for reconnect")
     func stableTaskID() {
         let runID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!

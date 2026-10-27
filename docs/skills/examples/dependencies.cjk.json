@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "cjk-rendering",
+      "target": {
+        "os": "linux",
+        "architectures": [
+          "any"
+        ]
+      },
+      "requirements": [
+        {
+          "kind": "apt",
+          "name": "python3-matplotlib",
+          "version": "3.10.1+dfsg1-4",
+          "purpose": "Charts with axis text; the guest Debian science stack ships the riscv-native build.",
+          "required": true
+        },
+        {
+          "kind": "apt",
+          "name": "fontconfig",
+          "version": "2.15.0-2.3",
+          "purpose": "Font discovery so matplotlib resolves the CJK face below.",
+          "required": true
+        },
+        {
+          "kind": "font",
+          "name": "fonts-noto-cjk",
+          "version": "1:20240730+repack1-1",
+          "purpose": "Chinese/Japanese/Korean glyph coverage for chart labels.",
+          "required": false
+        }
+      ]
+    }
+  ]
+}

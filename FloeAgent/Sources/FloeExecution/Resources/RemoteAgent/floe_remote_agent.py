@@ -6,12 +6,12 @@ mutual TLS with one independently revocable client certificate per device.
 Jobs survive client disconnects and resume by id. Hard safety boundaries are
 enforced here instead of relying on model prompts.
 """
-import base64, hashlib, hmac, ipaddress, json, os, pathlib, re, secrets, signal, socket, ssl
+import base64, fcntl, hashlib, hmac, ipaddress, json, os, pathlib, re, secrets, signal, socket, ssl
 import subprocess, tempfile, threading, time, uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-VERSION = "1.4.5"
+VERSION = "1.5.0"
 ROOT = pathlib.Path(os.environ.get("FLOE_CLOUD_ROOT", "~/.floe/cloud-workspaces")).expanduser().resolve()
 STATE = pathlib.Path(os.environ.get("FLOE_STATE_ROOT", "~/.local/state/floe-agent")).expanduser().resolve()
 CONFIG = pathlib.Path(os.environ.get("FLOE_CONFIG_ROOT", "~/.config/floe-agent")).expanduser().resolve()
@@ -236,6 +236,253 @@ def git_action(body):
         if run_git(workspace,["status","--porcelain"])["output"].strip(): raise ValueError("commit workspace changes before switching branches")
         name=git_branch(body.get("name")); return run_git(workspace,["switch","-c",name] if action=="create_branch" else ["switch",name])
     raise ValueError("unsupported safe git action")
+
+# --- Host-shared Skill library ------------------------------------------------
+# Root holds an atomic index.json plus immutable packages/<id>/<digest>
+# directories. Task containers mount this root read-only at /opt/floe/skills
+# (created by SSHCommandService.runRouted launches); active tasks pin the exact
+# digest path, never a movable alias. Published bytes are immutable: a listed
+# id+semver can never be replaced by different content.
+SHARED_SKILLS = pathlib.Path(os.environ.get("FLOE_SHARED_SKILLS_ROOT", "~/.floe/shared/skills")).expanduser().resolve()
+SKILL_PACKAGES, SKILL_STAGING = SHARED_SKILLS / "packages", SHARED_SKILLS / ".staging"
+SKILL_INDEX, SKILL_LOCK = SHARED_SKILLS / "index.json", SHARED_SKILLS / ".index.lock"
+SKILL_MAX_FILES, SKILL_MAX_TOTAL_BYTES = 256, 8 * 1024 * 1024
+SKILL_MAX_FILE_BYTES, SKILL_MAX_MARKDOWN_BYTES, SKILL_MAX_MANIFEST_BYTES = 2 * 1024 * 1024, 256 * 1024, 64 * 1024
+SKILL_READ_MAX_BYTES, SKILL_STAGING_TTL = 1048576, 2 * 60 * 60
+SKILL_SEMVER = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?")
+SKILL_GIT = None  # test seam only: callable(arguments, cwd, timeout) -> result(returncode, stdout, stderr)
+
+def run_skill_git(arguments, cwd, timeout=120):
+    runner = SKILL_GIT
+    if runner is not None: return runner(list(arguments), str(cwd), timeout)
+    if not available("git"): raise ValueError("git is not installed on the remote host")
+    environment = os.environ.copy(); environment["GIT_TERMINAL_PROMPT"] = "0"; environment["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        return subprocess.run(["git"] + list(arguments), cwd=str(cwd), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=timeout, env=environment)
+    except subprocess.TimeoutExpired: raise ValueError("git skill operation timed out")
+
+def skill_git_output(result, action):
+    if getattr(result, "returncode", 1) != 0:
+        stderr = getattr(result, "stderr", b"") or b""
+        detail = stderr.decode("utf-8", "replace")[-512:] if isinstance(stderr, (bytes, bytearray)) else str(stderr)[-512:]
+        raise ValueError(f"{action} failed: {detail}")
+    stdout = getattr(result, "stdout", b"")
+    return stdout if isinstance(stdout, (bytes, bytearray)) else str(stdout).encode("utf-8", "replace")
+
+def skill_repository(value):
+    if not isinstance(value, str) or not 0 < len(value) <= 512 or value.startswith("-") or any(character.isspace() for character in value):
+        raise ValueError("skill repository is invalid")
+    patterns = (r"https?://[A-Za-z0-9._-]+(?::\d{1,5})?/[A-Za-z0-9._~%()+/@-]+",
+                r"git@[A-Za-z0-9._-]+:[A-Za-z0-9._~/-]+",
+                r"ssh://(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+(?::\d{1,5})?/[A-Za-z0-9._~/-]+")
+    if not any(re.fullmatch(pattern, value) for pattern in patterns):
+        raise ValueError("skill repository must be an http(s), ssh:// or user@host Git URL")
+    scheme = "https://" if value.startswith("https://") else ("http://" if value.startswith("http://") else None)
+    if scheme and "@" in value[len(scheme):].split("/", 1)[0]: raise ValueError("skill repository URLs must not embed credentials")
+    return value
+
+def skill_subdirectory(value):
+    if value is None or value == "": return ""
+    if isinstance(value, str) and "\\" in value: raise ValueError("skill subdirectory is invalid")
+    return git_path(value)
+
+def skill_frontmatter(data):
+    lines = bytes(data).decode("utf-8", "replace").splitlines()[:200]
+    if not lines or lines[0].strip() != "---": return {}
+    fields = {}
+    for line in lines[1:]:
+        if line.strip() == "---": break
+        match = re.fullmatch(r"([A-Za-z0-9_.-]+):[ \t]*(.*)", line)
+        if match: fields[match.group(1).lower()] = match.group(2).strip().strip("\"'")
+    return fields
+
+def skill_identity(markdown, manifest, skill_id):
+    fields = skill_frontmatter(markdown)
+    name = re.sub(r"[\x00-\x1f\x7f]", "", str(fields.get("display_name") or fields.get("name") or ""))[:120] or skill_id
+    version = None
+    candidate = str(fields.get("version") or "")
+    if candidate and SKILL_SEMVER.fullmatch(candidate): version = candidate
+    if version is None and manifest:
+        try: metadata = json.loads(bytes(manifest).decode("utf-8", "replace"))
+        except ValueError: metadata = None
+        if isinstance(metadata, dict):
+            candidate = str(metadata.get("version") or "")
+            if candidate and SKILL_SEMVER.fullmatch(candidate): version = candidate
+    return name, version
+
+def skill_tree_digest(entries):
+    manifest = "\n".join(f"{path}:{digest}:{mode}" for path, digest, mode in sorted(entries))
+    return hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+
+def valid_skill_entry(entry):
+    if not isinstance(entry, dict): return False
+    try: skill_id = valid_id(entry.get("id"), "skill id")
+    except ValueError: return False
+    digest = entry.get("digest")
+    return (isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+            and entry.get("relative_path") == f"packages/{skill_id}/{digest}"
+            and isinstance(entry.get("name"), str) and entry.get("name") != ""
+            and isinstance(entry.get("revision"), str) and entry.get("revision") != ""
+            and isinstance(entry.get("repository"), str) and entry.get("repository") != ""
+            and isinstance(entry.get("ref"), str) and entry.get("ref") != ""
+            and isinstance(entry.get("subdirectory"), str)
+            and isinstance(entry.get("updated_at"), (int, float))
+            and (entry.get("version") is None or isinstance(entry.get("version"), str)))
+
+def skills_index():
+    try: value = json.loads(SKILL_INDEX.read_text(encoding="utf-8"))
+    except FileNotFoundError: return {"schema_version": 1, "skills": {}, "published": {}}
+    except (OSError, ValueError): raise ValueError("shared skills index is unreadable; repair it through authorized host access")
+    if not isinstance(value, dict) or value.get("schema_version") != 1: raise ValueError("shared skills index schema is unsupported")
+    if not isinstance(value.get("skills"), dict) or not isinstance(value.get("published"), dict): raise ValueError("shared skills index is malformed")
+    return value
+
+def skills_locked(action):
+    SHARED_SKILLS.mkdir(parents=True, exist_ok=True)
+    with open(SKILL_LOCK, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try: return action()
+        finally: fcntl.flock(handle, fcntl.LOCK_UN)
+
+def reap_skill_staging():
+    import shutil
+    if not SKILL_STAGING.is_dir(): return
+    for entry in SKILL_STAGING.iterdir():
+        try:
+            if entry.is_dir() and not entry.is_symlink() and time.time() - entry.stat().st_mtime > SKILL_STAGING_TTL:
+                shutil.rmtree(entry, ignore_errors=True)
+        except OSError: pass
+
+def verify_skill_package(target, digest):
+    import hashlib
+    entries = []
+    for path in sorted(target.rglob("*")):
+        if path.is_symlink(): raise ValueError("symbolic links are not allowed inside skill packages")
+        if not path.is_file(): continue
+        mode = "100755" if os.access(path, os.X_OK) else "100644"
+        entries.append((path.relative_to(target).as_posix(), hashlib.sha256(path.read_bytes()).hexdigest(), mode))
+    if skill_tree_digest(entries) != digest: raise ValueError("existing skill package bytes do not match its digest")
+
+def list_skills():
+    index = skills_index()
+    rows = [index["skills"][key] for key in sorted(index["skills"]) if valid_skill_entry(index["skills"][key])]
+    return {"schema_version": 1, "skills": rows}
+
+def read_skill(skill_id, digest, relative):
+    skill_id = valid_id(skill_id, "skill id")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest): raise ValueError("skill digest is invalid")
+    if not isinstance(relative, str) or not relative or relative.startswith(("/", "~")) or "\0" in relative or "\\" in relative:
+        raise ValueError("skill path must be relative")
+    parts = pathlib.PurePosixPath(relative).parts
+    if not parts or ".." in parts or "." in parts or ".git" in parts: raise ValueError("skill path is invalid")
+    base = SKILL_PACKAGES / skill_id / digest
+    if os.path.islink(SKILL_PACKAGES / skill_id) or os.path.islink(base): raise ValueError("skill version directory is invalid")
+    if not base.is_dir(): raise ValueError("skill version is not published")
+    target = base
+    for part in parts:
+        target = target / part
+        if os.path.islink(target): raise ValueError("symbolic links are not allowed inside skill packages")
+    if not target.is_file(): raise ValueError("skill file not found")
+    data = target.read_bytes()
+    if len(data) > SKILL_READ_MAX_BYTES: raise ValueError("skill file is too large to read as text")
+    try: content = data.decode("utf-8")
+    except UnicodeDecodeError: raise ValueError("skill file is not UTF-8 text")
+    return {"skill_id": skill_id, "digest": digest, "path": relative, "content": content, "byte_count": len(data)}
+
+def pull_skill(body):
+    import shutil
+    skill_id = valid_id(body.get("id", ""), "skill id")
+    repository = skill_repository(body.get("repository", ""))
+    ref = git_branch(body.get("ref", ""))
+    subdirectory = skill_subdirectory(body.get("subdirectory", ""))
+    SKILL_STAGING.mkdir(parents=True, exist_ok=True)
+    reap_skill_staging()
+    staging = SKILL_STAGING / str(uuid.uuid4()); staging.mkdir(mode=0o700)
+    try:
+        repository_dir = staging / "repository.git"; package = staging / "package"
+        skill_git_output(run_skill_git(["init", "-q", "--bare", str(repository_dir)], staging, 30), "git init")
+        skill_git_output(run_skill_git(["-C", str(repository_dir), "remote", "add", "origin", repository], staging, 30), "git remote")
+        fetched = False
+        for arguments in ([["-C", str(repository_dir), "fetch", "-q", "--no-tags", "--depth", "1", "origin", ref],
+                           ["-C", str(repository_dir), "fetch", "-q", "--no-tags", "origin", ref]]):
+            if run_skill_git(arguments, staging, 180).returncode == 0: fetched = True; break
+        if not fetched: raise ValueError("git fetch failed; verify the repository URL, ref and host network access")
+        revision = skill_git_output(
+            run_skill_git(["-C", str(repository_dir), "rev-parse", "--verify", "FETCH_HEAD^{commit}"], staging, 30),
+            "git rev-parse").decode("utf-8", "replace").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", revision): raise ValueError("skill revision is not a Git commit hash")
+        arguments = ["-C", str(repository_dir), "ls-tree", "-r", "-l", "--full-tree", revision, "-z"]
+        if subdirectory: arguments += ["--", subdirectory]
+        listing = skill_git_output(run_skill_git(arguments, staging, 60), "git ls-tree")
+        prefix = (subdirectory + "/") if subdirectory else ""
+        wanted = []
+        for chunk in listing.split(b"\0"):
+            if not chunk: continue
+            head, tab, raw_path = chunk.partition(b"\t")
+            pieces = head.decode("ascii", "replace").split(" ")
+            if not tab or len(pieces) != 4: raise ValueError("skill listing is malformed")
+            mode, kind, _, size = pieces
+            path = raw_path.decode("utf-8", "surrogateescape")
+            if kind == "commit": raise ValueError("nested git repositories (submodules) are not supported in skill packages")
+            if kind != "blob": continue
+            if mode == "120000": raise ValueError("symbolic links are not supported in skill packages")
+            if mode not in ("100644", "100755"): raise ValueError("unsupported file mode in skill package")
+            parts = pathlib.PurePosixPath(path).parts
+            if not path or path.startswith("/") or ".." in parts or "." in parts or ".git" in parts:
+                raise ValueError("skill file path is invalid")
+            if prefix and not path.startswith(prefix): raise ValueError("skill listing escaped the requested subdirectory")
+            relative = path[len(prefix):] if prefix else path
+            relative_parts = pathlib.PurePosixPath(relative).parts
+            if not relative_parts or ".." in relative_parts or len(relative.encode("utf-8", "surrogateescape")) > 512:
+                raise ValueError("skill file path is invalid")
+            if size.isdigit() and int(size) > SKILL_MAX_FILE_BYTES: raise ValueError(f"skill file {relative} exceeds the per-file limit")
+            wanted.append((relative, path, mode))
+        if not wanted: raise ValueError("no files found for the requested skill repository path")
+        if len(wanted) > SKILL_MAX_FILES: raise ValueError("skill package exceeds the file-count limit")
+        blobs = {}; entries = []; total = 0; package.mkdir(parents=True)
+        for relative, path, mode in wanted:
+            blob = skill_git_output(
+                run_skill_git(["-C", str(repository_dir), "cat-file", "blob", f"{revision}:{path}"], staging, 60),
+                "git cat-file")
+            if len(blob) > SKILL_MAX_FILE_BYTES: raise ValueError(f"skill file {relative} exceeds the per-file limit")
+            if relative == "SKILL.md" and len(blob) > SKILL_MAX_MARKDOWN_BYTES: raise ValueError("SKILL.md exceeds the markdown size limit")
+            if relative == "floe.json" and len(blob) > SKILL_MAX_MANIFEST_BYTES: raise ValueError("floe.json exceeds the manifest size limit")
+            total += len(blob)
+            if total > SKILL_MAX_TOTAL_BYTES: raise ValueError("skill package exceeds the total size limit")
+            destination = package.joinpath(*pathlib.PurePosixPath(relative).parts)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o755 if mode == "100755" else 0o644)
+            with os.fdopen(descriptor, "wb") as stream: stream.write(blob)
+            blobs[relative] = blob; entries.append((relative, hashlib.sha256(blob).hexdigest(), mode))
+        if "SKILL.md" not in blobs: raise ValueError("skill package is missing SKILL.md")
+        digest = skill_tree_digest(entries)
+        name, version = skill_identity(blobs["SKILL.md"], blobs.get("floe.json"), skill_id)
+        def commit():
+            index = skills_index()
+            current = index["skills"].get(skill_id)
+            if current and current.get("digest") == digest: return current
+            published = index["published"].setdefault(skill_id, {})
+            if digest not in published and version:
+                for other, record in published.items():
+                    if other != digest and record.get("version") == version:
+                        raise ValueError(f"published skill version {skill_id}@{version} already exists with different bytes; publish a new version")
+            target = SKILL_PACKAGES / skill_id / digest
+            if target.exists():
+                if digest not in published: verify_skill_package(target, digest)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(str(package), str(target))
+            entry = {"id": skill_id, "name": name, "version": version, "repository": repository, "ref": ref,
+                     "subdirectory": subdirectory, "revision": revision, "digest": digest,
+                     "relative_path": f"packages/{skill_id}/{digest}", "updated_at": time.time()}
+            index["skills"][skill_id] = entry
+            published[digest] = {"version": version, "name": name, "revision": revision, "committed_at": entry["updated_at"]}
+            atomic_json(SKILL_INDEX, index)
+            return entry
+        return skills_locked(commit)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 def stop_share(share_id):
     record=share_record(share_id); prefix=SHARES/share_id
@@ -507,7 +754,12 @@ class Handler(BaseHTTPRequestHandler):
                 certificate={}
                 try: certificate=json.loads((STATE/"certificate-status.json").read_text())
                 except (OSError,ValueError): pass
-                return self._send(200,{"version":VERSION,"docker":available("docker"),"nginx":available("nginx"),"certbot":available("certbot"),"ufw":available("ufw"),"network_scope":scope,"detected_address":address,"certificate_maintenance":certificate,"interactive_shell":True})
+                return self._send(200,{"version":VERSION,"docker":available("docker"),"nginx":available("nginx"),"certbot":available("certbot"),"ufw":available("ufw"),"network_scope":scope,"detected_address":address,"certificate_maintenance":certificate,"interactive_shell":True,"shared_skills":True})
+            if parsed.path=="/v1/skills": return self._send(200,list_skills())
+            if parsed.path.startswith("/v1/skills/"):
+                pieces=parsed.path.strip("/").split("/")
+                if len(pieces)==6 and pieces[3]=="versions" and pieces[5]=="read": return self._send(200,read_skill(pieces[2],pieces[4],relative))
+                return self._send(404,{"error":"not_found"})
             if parsed.path=="/v1/workspaces": return self._send(200,list_workspaces())
             if parsed.path=="/v1/shares":
                 rows=[]
@@ -546,6 +798,7 @@ class Handler(BaseHTTPRequestHandler):
                 if len(pieces)==4 and pieces[3]=="close": return self._send(200,shell_close(pieces[2],self._device()))
                 return self._send(404,{"error":"not_found"})
             if self.path=="/v1/tasks": return self._send(202,launch_task(body,self._device()))
+            if self.path=="/v1/skills/pull": return self._send(200,pull_skill(body))
             if self.path=="/v1/workspaces/create": return self._send(201,create_workspace(body,self._device()))
             if self.path=="/v1/shares/plan":
                 address,scope=public_address(); domain=safe_domain(body.get("domain"))

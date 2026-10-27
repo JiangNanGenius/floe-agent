@@ -156,6 +156,199 @@ final class LinuxGuestLanguagePackageTests: XCTestCase {
         XCTAssertFalse(install.argv.contains("/floe/env/cache/pip"), install.joined)
     }
 
+    /// A fixture guest without the shared cache export whose provisioning and
+    /// install probes answer cleanly, for the pip transport contracts below.
+    private func pipInstallAnsweringRunner() -> ScriptedLinuxCommandRunner {
+        ScriptedLinuxCommandRunner { argv, _, _ in
+            let joined = argv.joined(separator: " ")
+            if joined.contains("/proc/mounts") {
+                return LinuxCommandResult(stdout: "", stderr: "", exitCode: 1)
+            }
+            if let provision = Self.pythonProvisioningAnswers(argv) { return provision }
+            if argv.contains(where: { $0.contains("floePythonInventory") }) {
+                return LinuxCommandResult(stdout: "floePythonInventory=[]\n", stderr: "", exitCode: 0)
+            }
+            return LinuxCommandResult(stdout: "Successfully installed demo-1.0\n", stderr: "", exitCode: 0)
+        }
+    }
+
+    /// The real pip grammar AND the real guest constraint: `--hash` is a
+    /// requirements-FILE option only (a CLI `--hash` is rejected with exit 2
+    /// "no such option"), and the pinned TinyEMU guest has NO `/dev/stdin`
+    /// path (2026-10-27 real-guest regression: pip exits 1 "Could not open
+    /// requirements file: [Errno 2] No such file or directory: '/dev/stdin'").
+    /// Hash mode therefore feeds the exact requirement-plus-pins bytes through
+    /// the runner's standardInput to a pin-free wrapper program
+    /// (`python3 -c WRAPPER`); the wrapper materializes them as an owned 0600
+    /// temporary requirements file INSIDE the guest and runs the venv's own
+    /// pip with `--require-hashes --requirement <that real path>`. The pins
+    /// never enter any argv and no `/dev/stdin` dependency remains.
+    func testPythonInstallHashModeFeedsPinsOnStdinThroughOwnedTempFileTransport() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
+        let runner = pipInstallAnsweringRunner()
+        let packages = LinuxGuestLanguagePackages(runner: runner)
+        let environment = makeEnvironment(environmentID, layer: layer)
+        let digestA = String(repeating: "a", count: 64)
+        let digestB = String(repeating: "f", count: 64)
+        _ = try await packages.pythonInstall(
+            specs: ["demo==1.0"],
+            environment: environment,
+            findLinksGuestPath: "/floe/cache/pip/official-wheels",
+            hashesBySpec: ["demo==1.0": [digestA, digestB]],
+            cancellation: nil)
+
+        let install = try XCTUnwrap(runner.calls.first { call in
+            call.argv.contains("-c") && call.argv.contains(where: { $0.contains("floe-pip-hash-transport") })
+        })
+        // The exact bytes the guest transport must read on stdin: one
+        // requirements line with its pins trailing, newline-terminated.
+        XCTAssertEqual(install.standardInput,
+                       "demo==1.0 --hash=sha256:\(digestA) --hash=sha256:\(digestB)\n")
+        // The outer command is `/usr/bin/env <vars> python3 -c WRAPPER`: it
+        // never names /dev/stdin, never carries a spec, a digest or pip's own
+        // hash grammar — those live in the guest transport and the file it
+        // writes, exactly as pip requires.
+        XCTAssertEqual(install.argv.first, "/usr/bin/env")
+        XCTAssertTrue(install.argv.contains("/floe/env/python/venv/bin/python3"), install.joined)
+        XCTAssertFalse(install.joined.contains("/dev/stdin"), install.joined)
+        XCTAssertFalse(install.joined.contains(digestA) || install.joined.contains(digestB), install.joined)
+        XCTAssertFalse(install.argv.contains("demo==1.0"), install.joined)
+        XCTAssertFalse(install.argv.contains { $0.hasPrefix("--hash") }, install.joined)
+        // The env and cache plumbing is unchanged by the transport.
+        XCTAssertTrue(install.argv.contains("PIP_INDEX_URL=https://mirror.example.com/simple/"), install.joined)
+        XCTAssertTrue(install.argv.contains("PIP_CACHE_DIR=/floe/env/cache/pip"), install.joined)
+        // The wrapper program: pip's identical grammar against a real guest
+        // filesystem path, an owned 0600 O_EXCL temp file with fsync,
+        // this interpreter's own pip via sys.executable, pip's exit code
+        // propagated, finally cleanup wired to SIGINT/SIGTERM cancellation,
+        // the fail-closed payload re-check, and no pin material inside it.
+        let transport = try XCTUnwrap(install.argv.first { $0.contains("floe-pip-hash-transport") })
+        for required in [
+            "\"--require-hashes\"",
+            "\"--requirement\"",
+            "\"--disable-pip-version-check\"",
+            "\"--no-input\"",
+            "tempfile.mkdtemp(prefix=\"floe-pip-req-\")",
+            "os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600",
+            "os.fsync",
+            "sys.executable",
+            "stdin=subprocess.DEVNULL",
+            "raise SystemExit(completed.returncode)",
+            "finally:",
+            "cleanup()",
+            "signal.SIGTERM",
+            "signal.SIGINT",
+            " --hash=sha256:",
+            "FIND_LINKS = [\"--find-links\", \"/floe/cache/pip/official-wheels\"]",
+        ] {
+            XCTAssertTrue(transport.contains(required), "transport must contain \(required)")
+        }
+        XCTAssertFalse(transport.contains("/dev/stdin"))
+        XCTAssertFalse(transport.contains("demo==1.0"))
+
+        // Full-closure multi-spec through the explicit-deadline branch: one
+        // line per exact pin in spec order, everything still on stdin, and
+        // the no-find-links transport literal stays empty.
+        _ = try await packages.pythonInstall(
+            specs: ["requests==2.32.4", "demo==1.0"],
+            environment: environment,
+            deadline: .seconds(600),
+            hashesBySpec: ["demo==1.0": [digestA], "requests==2.32.4": [digestB]],
+            cancellation: nil)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+
+        let closure = try XCTUnwrap(runner.calls.last { call in
+            call.argv.contains(where: { $0.contains("floe-pip-hash-transport") })
+        })
+        XCTAssertEqual(closure.standardInput,
+                       "requests==2.32.4 --hash=sha256:\(digestB)\ndemo==1.0 --hash=sha256:\(digestA)\n")
+        XCTAssertFalse(closure.joined.contains("--find-links"), closure.joined)
+        let closureTransport = try XCTUnwrap(closure.argv.first { $0.contains("floe-pip-hash-transport") })
+        XCTAssertTrue(closureTransport.contains("FIND_LINKS = []"))
+    }
+
+    func testPythonInstallNoHashKeepsThePlainArgvByteForByteAndNilStdin() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        try LanguagePackageSources(pythonIndex: "https://mirror.example.com/simple/").save(in: layer)
+        let runner = pipInstallAnsweringRunner()
+        let packages = LinuxGuestLanguagePackages(runner: runner)
+        let environment = makeEnvironment(environmentID, layer: layer)
+        _ = try await packages.pythonInstall(specs: ["demo==1.0"], environment: environment, cancellation: nil)
+        await LinuxGuestPythonProvisioner.shared.forget(environmentID: environmentID)
+
+        let install = try XCTUnwrap(runner.calls.first { call in
+            call.argv.contains("-m") && call.argv.contains("pip") && call.argv.contains("install")
+        })
+        // Byte-for-byte the pre-hash-mode command: exact argv, the spec on
+        // argv, no requirements file, no stdin.
+        XCTAssertEqual(install.argv, [
+            "/usr/bin/env",
+            "PATH=\(LinuxGuestPythonEnvironment.guestVenvPath)/bin:" + LinuxGuestNodeEnvironment.defaultGuestPath,
+            "PIP_CACHE_DIR=/floe/env/cache/pip",
+            "PIP_DISABLE_PIP_VERSION_CHECK=1",
+            "PIP_EXTRA_INDEX_URL=",
+            "PIP_INDEX_URL=https://mirror.example.com/simple/",
+            "PIP_NO_INPUT=1",
+            "PIP_TRUSTED_HOST=",
+            "PYTHONUNBUFFERED=1",
+            "VIRTUAL_ENV=\(LinuxGuestPythonEnvironment.guestVenvPath)",
+            "\(LinuxGuestPythonEnvironment.guestVenvPath)/bin/python3",
+            "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+            "demo==1.0",
+        ])
+        XCTAssertNil(install.standardInput)
+        XCTAssertFalse(install.argv.contains("--require-hashes"), install.joined)
+        XCTAssertFalse(install.argv.contains("--requirement"), install.joined)
+        XCTAssertFalse(install.argv.contains("/dev/stdin"), install.joined)
+    }
+
+    /// Invalid hash-mode inputs fail closed BEFORE the guest is touched at
+    /// all: the readiness probe, the venv provisioning and every pip command
+    /// are never issued, so a refused request mutates nothing.
+    func testPythonInstallHashModeRefusesInvalidInputBeforeAnyGuestCommand() async throws {
+        let (environmentID, layer) = try makeLayer()
+        defer { try? FileManager.default.removeItem(at: layer) }
+        let environment = makeEnvironment(environmentID, layer: layer)
+        let digest = String(repeating: "a", count: 64)
+        let cases: [(label: String, specs: [String], pins: [String: [String]])] = [
+            ("uppercase digest", ["demo==1.0"], ["demo==1.0": [String(repeating: "A", count: 64)]]),
+            ("short digest", ["demo==1.0"], ["demo==1.0": ["abc123"]]),
+            ("digest with a newline", ["demo==1.0"], ["demo==1.0": ["a\n" + String(repeating: "0", count: 63)]]),
+            ("unpinned bare spec", ["demo"], ["demo": [digest]]),
+            ("wildcard version", ["demo==1.*"], ["demo==1.*": [digest]]),
+            ("trailing newline", ["demo==1.0\n"], ["demo==1.0\n": [digest]]),
+            ("normalized duplicate project", ["demo_lib==1.0", "demo-lib==2.0"],
+             ["demo_lib==1.0": [digest], "demo-lib==2.0": [digest]]),
+            ("newline-injected spec", ["demo==1.0\n--index-url https://evil.example"],
+             ["demo==1.0\n--index-url https://evil.example": [digest]]),
+            ("option-shaped spec", ["--no-deps"], ["--no-deps": [digest]]),
+            ("pin for a spec not installed", ["demo==1.0"], ["demo==1.0": [digest], "ghost==9.9": [digest]]),
+            ("spec without any pin in a mixed batch", ["demo==1.0", "other==2.0"], ["demo==1.0": [digest]]),
+            ("duplicate project in one command", ["demo==1.0", "Demo==2.0"],
+             ["demo==1.0": [digest], "Demo==2.0": [digest]]),
+            ("oversized pin set", ["demo==1.0"], ["demo==1.0": Array(repeating: digest, count: 17)]),
+        ]
+        for testCase in cases {
+            let runner = ScriptedLinuxCommandRunner()
+            let packages = LinuxGuestLanguagePackages(runner: runner)
+            do {
+                _ = try await packages.pythonInstall(
+                    specs: testCase.specs,
+                    environment: environment,
+                    hashesBySpec: testCase.pins,
+                    cancellation: nil)
+                XCTFail("\(testCase.label) must fail closed")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.lowercased().contains("hash"),
+                              "\(testCase.label): unexpected error \(error.localizedDescription)")
+            }
+            XCTAssertTrue(runner.calls.isEmpty, "\(testCase.label) must refuse before any guest command")
+        }
+    }
+
     func testPythonUninstallAndInspectUseTheVenvEntryPoints() async throws {
         let (environmentID, layer) = try makeLayer()
         defer { try? FileManager.default.removeItem(at: layer) }

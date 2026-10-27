@@ -632,7 +632,7 @@ struct SkillLifecycleTests {
         #expect(reopened.builtinSeedFailures.isEmpty)
     }
 
-    @Test("Removing an official plugin survives reseeding and can be explicitly reinstalled")
+    @Test("Bundled plugins reject removal and recover legacy mistaken deletion")
     @MainActor func officialRemovalAndReinstall() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("skill-market-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -640,13 +640,19 @@ struct SkillLifecycleTests {
         try await environment.database.migrate()
         let center = SkillsCenter(environment: environment, installationRoot: root.appendingPathComponent("Skills"))
         let pdf = try #require(try await center.readSkills(id: "floe-pdf").first)
-        _ = try await center.manageSkill(.init(action: .remove, id: pdf.id, expectedDigest: pdf.digest))
+        await #expect(throws: (any Error).self) {
+            try await center.manageSkill(.init(action: .remove, id: pdf.id, expectedDigest: pdf.digest))
+        }
+        #expect(try await environment.skillStore.all().contains { $0.id == pdf.id })
+        #expect(try await !environment.skillStore.wasBundledSkillRemoved(id: pdf.id))
+        // Reproduce a deletion written by an older App, bypassing the new
+        // service policy. Upgrade seeding must repair only the bundled ID.
+        try await environment.skillStore.remove(id: pdf.id, expectedDigest: pdf.digest,
+                                               suppressBundledSeed: true)
         #expect(try await environment.skillStore.wasBundledSkillRemoved(id: pdf.id))
         let reopened = SkillsCenter(environment: environment, installationRoot: root.appendingPathComponent("Skills"))
-        #expect(try await reopened.readSkills(id: nil).allSatisfy { $0.id != pdf.id })
-        await reopened.installOfficialSkill(id: pdf.id)
-        #expect(reopened.errorMessage == nil)
         #expect(try await reopened.readSkills(id: pdf.id).first?.digest == pdf.digest)
+        #expect(reopened.builtinSeedFailures[pdf.id] == nil)
         #expect(try await !environment.skillStore.wasBundledSkillRemoved(id: pdf.id))
     }
 

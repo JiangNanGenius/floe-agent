@@ -24,6 +24,7 @@ public enum AgentLivenessPhase: String, Sendable, Codable, Hashable {
     case preparing
     case waitingForFirstEvent
     case streaming
+    case preparingToolCall
     case resolvingTool
     case waitingApproval
     case executingTool

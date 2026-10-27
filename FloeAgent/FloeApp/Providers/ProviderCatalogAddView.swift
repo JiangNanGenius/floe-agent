@@ -18,6 +18,11 @@ import FloeProviders
 
 /// Compact, searchable supplier selector embedded in the provider editor.
 struct ProviderCatalogPicker: View {
+    /// Product role of the editor session. Catalog results are filtered to
+    /// entries a shipped adapter can really serve for this role, so an
+    /// image/video add can never pick a chat-only gateway into a dead
+    /// configuration.
+    let role: ProviderServiceRole
     /// Built-in presets valid for the editor's service role.
     let presets: [ProviderPreset]
     /// Currently selected preset (marked in the built-in section).
@@ -45,7 +50,7 @@ struct ProviderCatalogPicker: View {
             List {
                 Section {
                     Picker("providers.catalog.filter_label", selection: $filter) {
-                        ForEach(ProviderCatalogFilter.allCases, id: \.self) { filterKind in
+                        ForEach(visibleFilters, id: \.self) { filterKind in
                             Text(filterLabel(filterKind)).tag(filterKind)
                         }
                     }
@@ -125,13 +130,34 @@ struct ProviderCatalogPicker: View {
 
     // MARK: - Search results (pure local)
 
+    /// Segment options valid for the editor's role. On-device entries only
+    /// exist for the conversation role; media roles never show that segment.
+    private var visibleFilters: [ProviderCatalogFilter] {
+        switch role {
+        case .conversation:
+            ProviderCatalogFilter.allCases
+        case .image, .video:
+            ProviderCatalogFilter.allCases.filter { $0 != .local }
+        }
+    }
+
     private var results: [ProviderCatalogEntry] {
         guard let catalog else { return [] }
-        return catalog.search(
+        let matches = catalog.search(
             query: query,
             filter: filter,
             configuredPresetIDs: configuredPresetIDs
         )
+        switch role {
+        case .conversation:
+            return matches
+        case .image, .video:
+            // Only entries whose shipped adapter contract can really serve
+            // this media role with verified (or account-listable) identifiers.
+            return matches.filter {
+                ProviderFormSpecResolver.isCatalogEntry($0, eligibleFor: role.catalogRole)
+            }
+        }
     }
 
     // MARK: - Footer

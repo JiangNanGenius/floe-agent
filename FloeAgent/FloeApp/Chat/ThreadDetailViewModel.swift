@@ -1878,6 +1878,7 @@ final class ThreadDetailViewModel: ObservableObject {
                     self.reasoningAnimator.update(target: reasoningTarget)
                     self.hasProviderActivity = true
                 case .toolLifecycle(.requested):
+                    if self.liveStateName == "preparingToolCall" { self.liveStateName = "streamingModel" }
                     // Tool boundary: the answer segment is durable now. Clear
                     // both live buffers so their persisted rows — not a
                     // duplicate live reasoning block — take over.
@@ -1906,6 +1907,11 @@ final class ThreadDetailViewModel: ObservableObject {
                 case .contextCompacted(let record):
                     self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.context_compacted_about_tokens", record.beforeEstimatedTokens, record.afterEstimatedTokens)
                 case .livenessChanged(let snapshot):
+                    if snapshot.phase == .preparingToolCall {
+                        self.liveStateName = "preparingToolCall"
+                    } else if self.liveStateName == "preparingToolCall" {
+                        self.liveStateName = "streamingModel"
+                    }
                     if snapshot.phase == .compacting {
                         self.compactionStatus = FloeL10n.l("chat.thread_detail_view_model.auto_compacting_context")
                         self.liveStateName = "compacting"

@@ -3,12 +3,14 @@
 // SPDX-License-Identifier: MPL-2.0
 //
 // One shared, service-owned playback authority lives outside the views. The
-// task PiP surface is its owner: a real running task with its PiP source
-// (inline foreground OR system PiP) starts the service — ambient enabled by
+// owner is the real running task, claimed by either the task PiP surface or
+// the standalone audio capability (run-coordinator-driven, no PiP view
+// required): a real running task starts the service — ambient enabled by
 // default with initial gain 0, where the loop is *really playing*, just
 // muted, so raising the volume is instant with no restart. Explicit PiP
-// close, task terminal with an emptied batch, or run-surface teardown stops
-// it; an automatic foreground-return collapse does NOT.
+// close with no standalone owner, task terminal with an emptied batch, or
+// run-surface teardown stops it; an automatic foreground-return collapse
+// does NOT. Settings changes alone never start or stop the owner.
 //
 // Shared-session ownership is an explicit lease with exactly one holder:
 // this service activates (or adopts a deferred video-side activation), and
@@ -276,6 +278,15 @@ final class PiPAudioService: ObservableObject {
     var previewBound: TimeInterval = PiPAudioService.defaultPreviewBound
 
     private(set) var isTaskOwnerActive = false
+    /// The two independent owner inputs behind the single task ownership:
+    /// the PiP surface (video service) and the standalone audio capability
+    /// (run coordinator, for a real running task batch with the audio
+    /// capability honored and no PiP surface required). The owner is active
+    /// while EITHER input claims the batch; ownership semantics — fresh
+    /// generation, cleared holds, batch re-arm — are identical because the
+    /// task, not a view, owns the session.
+    private(set) var isPiPSurfaceOwnerActive = false
+    private(set) var isStandaloneAudioOwnerActive = false
     private var previewActive = false
     private var previewSoundSelection: PiPAmbientSound?
     private var previewGeneration: UInt64 = 0
@@ -355,22 +366,41 @@ final class PiPAudioService: ObservableObject {
 
     var currentPreferences: PiPAudioPreferences { preferences }
 
-    // MARK: - Owner lifecycle (task PiP surface start/stop)
+    // MARK: - Owner lifecycle (task PiP surface / standalone audio start/stop)
 
-    /// The task PiP surface is the owner: a real running task with its PiP
-    /// source prepared/active starts the service; explicit close, system
+    /// The task PiP surface is one owner input: a real running task with its
+    /// PiP source prepared/active starts the service; explicit close, system
     /// close or run-surface teardown stops it. An automatic foreground-return
     /// collapse never reaches here (the video service keeps the owner).
     func handleTaskPiPActiveChanged(_ active: Bool) {
-        guard active != isTaskOwnerActive else { return }
-        if active {
+        applyOwnerInputs(pip: active, standalone: isStandaloneAudioOwnerActive)
+    }
+
+    /// The standalone audio capability's owner input, driven by the run
+    /// coordinator from the REAL run batch (never from a settings change and
+    /// never from the PiP view): while the audio capability is honored and
+    /// the batch has live runs, the SERVICE owns the ambient/task-speech
+    /// session. With a PiP surface also active the two inputs share one
+    /// owner; the combined transition alone bumps the generation, so a
+    /// surface handover cannot restart or stop the loop silently.
+    func handleStandaloneAudioOwnerChanged(_ active: Bool) {
+        guard active != isStandaloneAudioOwnerActive else { return }
+        applyOwnerInputs(pip: isPiPSurfaceOwnerActive, standalone: active)
+    }
+
+    private func applyOwnerInputs(pip: Bool, standalone: Bool) {
+        isPiPSurfaceOwnerActive = pip
+        isStandaloneAudioOwnerActive = standalone
+        let combined = pip || standalone
+        guard combined != isTaskOwnerActive else { return }
+        if combined {
             if let provider = preferencesProvider {
                 preferences = provider().normalized
             }
             isTaskOwnerActive = true
             ownerGeneration &+= 1
             batchTerminal = false
-            // A fresh PiP session starts un-paused on the CURRENT route and
+            // A fresh task owner starts un-paused on the CURRENT route and
             // regardless of how the previous one ended.
             pausedByTransport = false
             pausedByInterruption = false
@@ -765,6 +795,8 @@ final class PiPAudioService: ObservableObject {
     /// deactivate a session another feature has retaken.
     func shutdownForTeardown(reason: String) {
         isTaskOwnerActive = false
+        isPiPSurfaceOwnerActive = false
+        isStandaloneAudioOwnerActive = false
         batchTerminal = false
         pausedByTransport = false
         pausedByInterruption = false

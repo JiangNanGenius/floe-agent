@@ -253,7 +253,7 @@ final class SkillsCenter: ObservableObject {
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly, let ownerID = context.conversationID,
               context.approvalGrantID != nil else { throw SkillHubInstallError.userChoiceBlocked }
-        guard !isWorking, !updates.isRunning, !packageMutationInProgress,
+        guard !isWorking, !updates.isRunning, !packageMutationInProgress, !isBatchRunning,
               pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
         let current = try await environment.skillStore.all().first { $0.id == request.id }
         if let current, let proof = Self.curatedReceipt(for: current),
@@ -284,6 +284,7 @@ final class SkillsCenter: ObservableObject {
         defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
         let staged = try await stageCuratedPackage(publication, id: request.id, at: scratch.url)
         try await requireCompatibility(staged.content.package)
+        try Self.validateDependencyDeclaration(in: staged.content)
         try context.cancellation.throwIfCancelled()
         let candidate: SkillUpgradeCandidate?
         if let current {
@@ -323,6 +324,21 @@ final class SkillsCenter: ObservableObject {
               committed.rewrittenDigest == staged.receipt.contentDigest else { throw SkillUpgradeError.localConflict }
         let receipt = try hubInstallReceipt(committed, status: current == nil ? .installed : .replaced)
         await load()
+        // Official install: persist the validated ownership record. When this
+        // tool path already runs bound to a resolved Linux task environment,
+        // the shared resource preparation (coalesced downloads into the
+        // environment's shared /floe/cache, per-family install + exact
+        // readback) starts now in THAT environment; without one (or on the
+        // global UI path) preparation defers honestly to first task use —
+        // never ambient selection, never a faked ready.
+        if staged.content.files[SkillDependency.packagePath] != nil {
+            _ = await dependencyPreparation?.prepareAtInstall(
+                skillID: request.id,
+                environmentID: context.environmentID,
+                runID: context.runID,
+                cancellation: context.cancellation
+            )
+        }
         return receipt
     }
 
@@ -364,6 +380,7 @@ final class SkillsCenter: ObservableObject {
             let staged = try await self.stageCuratedPackage(publication, id: id, at: scratch.url)
             let snapshot = staged.content
             try await self.requireCompatibility(snapshot.package)
+            try Self.validateDependencyDeclaration(in: snapshot)
             guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else { throw SkillUpgradeError.invalidSource }
             self.pendingInstallation = PendingInstallation(sourceURL: sourceURL,
                 skillMarkdown: String(decoding: snapshot.files["SKILL.md"] ?? Data(), as: UTF8.self),
@@ -383,6 +400,21 @@ final class SkillsCenter: ObservableObject {
 
     /// Discovery reads only the signed catalog. Archives are staged only when
     /// the user opens an update, using the existing reviewed installation path.
+    /// Official curated staging gate for the dependency declaration: when the
+    /// digest-verified package carries `references/dependencies.json`, its
+    /// bytes must strict-decode (schema v1, exact keys, exact pins) and every
+    /// referenced lock / component descriptor must exist inside the signed
+    /// package. Anything else fails the staging closed BEFORE review or
+    /// commit — an official package can never install a half-declared
+    /// dependency set that later "prepares" unpredictably. Packages without
+    /// the file keep the exact existing behavior (the file is inert for old
+    /// clients and never exists for them).
+    static func validateDependencyDeclaration(in snapshot: SkillContentSnapshot) throws {
+        guard let declarationBytes = snapshot.files[SkillDependency.packagePath] else { return }
+        let declaration = try SkillDependency.decode(declarationBytes)
+        try SkillDependency.validate(declaration, packageFiles: snapshot.files)
+    }
+
     func refreshOfficialCatalog(force: Bool = false, applyAutomaticUpdates: Bool = true) async {
         guard !isCheckingCatalog,
               pendingUpgrade == nil, pendingInstallation == nil,
@@ -501,7 +533,8 @@ final class SkillsCenter: ObservableObject {
     }
 
     private var canStartUpdateOperation: Bool {
-        !isWorking && !updates.isRunning && !isCheckingCatalog && !packageMutationInProgress && pendingUpgrade == nil && pendingInstallation == nil
+        !isWorking && !updates.isRunning && !isCheckingCatalog && !packageMutationInProgress
+            && !isBatchRunning && pendingUpgrade == nil && pendingInstallation == nil
     }
 
     var canCheckUpdates: Bool { canStartUpdateOperation && installed.contains { updateSource(for: $0) != nil } }
@@ -802,6 +835,14 @@ final class SkillsCenter: ObservableObject {
             _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             journal.phase = "complete"
             try self.writeJournal(journal, at: history)
+            // An update replaces the immutable package + descriptor pair: the
+            // dependency ownership record re-persists from the NEW exact bytes.
+            // Plans/receipts bound to the previous pair stay pinned to those
+            // bytes (their next use revalidates or is honestly revoked — no
+            // silent swap, no hidden same-version refresh).
+            if candidate.snapshot.files[SkillDependency.packagePath] != nil {
+                _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: current.id)
+            }
             updates.set(.init(installedDigest: candidate.snapshot.package.canonicalSHA256, sourceIdentity: updateSourceIdentity(candidate.source), phase: .upToDate), for: current.id)
             self.cancelUpgrade()
         } catch {
@@ -821,6 +862,15 @@ final class SkillsCenter: ObservableObject {
             else { throw SkillUpgradeError.localConflict }
             _ = try SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(current.id), expectedDigest: journal.newDigest, manifestOverride: Self.manifestOverride(fromJSON: journal.newManifestJSON))
             try await self.restoreUpgrade(journal, at: path)
+            // Rollback restores the previous immutable package + descriptor
+            // pair; the ownership record re-persists from those exact bytes.
+            // Dependencies the current environments cannot satisfy after the
+            // rollback are reported honestly per requirement at the next
+            // invocation — nothing is removed automatically.
+            if let restored = try? SkillContentSnapshot(root: self.installationRoot.appendingPathComponent(skill.id), expectedDigest: journal.oldSkill.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: journal.oldSkill)),
+               restored.files[SkillDependency.packagePath] != nil {
+                _ = await self.dependencyPreparation?.declareInstalledPackage(skillID: skill.id)
+            }
         }
     }
 
@@ -904,6 +954,7 @@ final class SkillsCenter: ObservableObject {
     /// Nil in hosts/tests without the native component wiring; the read path
     /// then keeps its historical Markdown-only behavior.
     private let runtimeComponents: SkillRuntimeComponentCenter?
+    private let dependencyPreparation: SkillDependencyPreparationCenter?
     private var packageMutationInProgress = false
     private var builtinSeedTask: Task<Void, Never>?
     @Published private(set) var builtinSeedFailures: [String: String] = [:]
@@ -968,6 +1019,100 @@ final class SkillsCenter: ObservableObject {
         )
     }
 
+    /// Pre-commit gate for the official publication identity ledger. The
+    /// authoritative enforcement is transactional inside `skillStore.save`
+    /// (identity + skill metadata commit together; a conflict rolls both
+    /// back). This read only turns an already-known conflict/damage into a
+    /// clearer early message; a database failure propagates and the curated
+    /// commit is refused — there is no silent empty ledger.
+    private func precheckOfficialPublication(_ candidate: OfficialSkillPublicationRecord) async throws {
+        let rows = try await environment.skillStore.all()
+        try await seedOfficialPublicationIdentities(rows: rows)
+        guard let seen = try await environment.skillStore.officialPublication(id: candidate.skillID, version: candidate.version) else { return }
+        guard seen.contentDigest == candidate.contentDigest else {
+            throw OfficialSkillPublicationConflict(
+                skillID: candidate.skillID, version: candidate.version,
+                seenDigest: seen.contentDigest, candidateDigest: candidate.contentDigest
+            )
+        }
+    }
+
+    /// Reconcile every retained receipt before a curated write. There is no
+    /// process-global "done" bit: another database, a partial migration or a
+    /// failed read must never bypass historical version immutability.
+    private func seedOfficialPublicationIdentities(rows: [PersistedSkill]) async throws {
+        let previous = try upgradeJournals().map { $0.1.oldSkill }
+        try await Self.seedOfficialPublicationIdentities(
+            rows: rows + previous, store: environment.skillStore)
+    }
+
+    static func seedOfficialPublicationIdentities(
+        rows: [PersistedSkill], store: SQLiteSkillStore
+    ) async throws {
+        var candidates: [OfficialSkillPublicationRecord] = []
+        var seen = Set<String>()
+        for row in rows {
+            guard let receipt = curatedReceipt(for: row),
+                  receipt.feedStatus == .production,
+                  receipt.reviewDecision == .approve,
+                  receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.reviewKeyID == CuratedSkillHub.productionKeyID,
+                  receipt.hubRepository == CuratedSkillHub.hubRepository,
+                  receipt.contentDigest == row.rewrittenDigest,
+                  receipt.entryID == row.id,
+                  receipt.entryVersion == row.version else { continue }
+            // Keep contradicting digests in the batch so the transaction
+            // rejects them, rather than deduplicating the contradiction away.
+            let key = "\(receipt.entryID)@\(receipt.entryVersion):\(receipt.contentDigest)"
+            guard seen.insert(key).inserted else { continue }
+            candidates.append(OfficialSkillPublicationRecord(
+                skillID: receipt.entryID, version: receipt.entryVersion,
+                contentDigest: receipt.contentDigest, publicationCommit: receipt.publicationCommit,
+                updatedAt: row.updatedAt))
+        }
+        if !candidates.isEmpty { try await store.seedOfficialPublications(candidates) }
+    }
+
+    /// Only a live, enabled, granted and digest-verified official install can
+    /// prepare dependencies. A declaration from an external package is data,
+    /// never an installation authorization.
+    static func dependencyAuthority(
+        row: PersistedSkill, snapshot: SkillContentSnapshot,
+        grantedCapabilities: Set<String>
+    ) -> SkillDependencyAuthority? {
+        guard row.status == "enabled",
+              let receipt = curatedReceipt(for: row),
+              receipt.entryID == row.id,
+              receipt.entryVersion == row.version,
+              snapshot.package.manifest.id == row.id,
+              snapshot.package.manifest.version == row.version,
+              receipt.contentDigest == row.rewrittenDigest,
+              receipt.contentDigest == snapshot.package.canonicalSHA256,
+              Set(snapshot.package.manifest.capabilities).isSubset(of: grantedCapabilities),
+              let bytes = snapshot.files[SkillDependency.packagePath]
+        else { return nil }
+        let authority = SkillDependencyAuthority(
+            skillID: row.id, packageVersion: row.version,
+            contentDigest: receipt.contentDigest, packageSHA256: receipt.packageSHA256,
+            catalogSHA256: receipt.catalogSHA256, reviewSHA256: receipt.reviewSHA256,
+            publicationCommit: receipt.publicationCommit,
+            feedStatus: receipt.feedStatus, reviewDecision: receipt.reviewDecision,
+            feedSignatureKeyID: receipt.feedSignatureKeyID, reviewKeyID: receipt.reviewKeyID,
+            hubRepository: receipt.hubRepository, declarationBytes: bytes,
+            declarationSHA256: FloeDigest.sha256Hex(bytes), packageFiles: snapshot.files)
+        guard SkillDependencyPreparationCenter.isFormallyValid(authority),
+              (try? SkillDependencyPreparationCenter.decodeAndValidate(authority)) != nil else { return nil }
+        return authority
+    }
+
+    func dependencyAuthorization(skillID: String) async -> SkillDependencyAuthority? {
+        guard let row = try? await environment.skillStore.all().first(where: { $0.id == skillID }),
+              let snapshot = try? snapshot(for: row, runID: nil),
+              let grants = try? await environment.skillStore.allowedCapabilities(skillID: skillID)
+        else { return nil }
+        return Self.dependencyAuthority(row: row, snapshot: snapshot, grantedCapabilities: grants)
+    }
+
     /// Live revalidation used by the component center on EVERY fresh use: the
     /// row must still be installed and enabled, the receipt digest must still
     /// match the row and the re-verified snapshot, the snapshot must still
@@ -989,10 +1134,11 @@ final class SkillsCenter: ObservableObject {
         environment.conversationCenter.modelPreferences.defaultAgentModelID
     }
 
-    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil) {
+    init(environment: AppEnvironment, installationRoot: URL? = nil, resourceStager: SkillWorkspaceResourceStager? = nil, runtimeComponents: SkillRuntimeComponentCenter? = nil, dependencyPreparation: SkillDependencyPreparationCenter? = nil) {
         self.environment = environment
         self.resourceStager = resourceStager
         self.runtimeComponents = runtimeComponents
+        self.dependencyPreparation = dependencyPreparation
         let support = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -1001,9 +1147,11 @@ final class SkillsCenter: ObservableObject {
     }
 
     func load() async {
-        do { try await recoverUpgrades() } catch { errorMessage = error.localizedDescription }
+        do { try await recoverUpgrades() } catch { errorMessage = Self.userMessage(for: error) }
         do {
-            installed = try await environment.skillStore.all()
+            let rows = try await environment.skillStore.all()
+            installed = rows
+            try await seedOfficialPublicationIdentities(rows: rows)
             let journals = try upgradeJournals().map(\.1).filter { $0.phase == "complete" }
                 .sorted { $0.createdAt > $1.createdAt }
             var sources: [String: GitHubSkillSource] = [:], digests: [String: String] = [:]
@@ -1015,7 +1163,7 @@ final class SkillsCenter: ObservableObject {
             journalSources = sources
             rollbackEligibleDigests = digests
         } catch {
-            if !Task.isCancelled && !(error is CancellationError) { errorMessage = error.localizedDescription }
+            if !Task.isCancelled && !(error is CancellationError) { errorMessage = Self.userMessage(for: error) }
         }
     }
 
@@ -1547,6 +1695,16 @@ final class SkillsCenter: ObservableObject {
                 gitHubBinding: pending.gitHubBinding,
                 curatedReceipt: pending.curatedReceipt
             )
+            // Global-UI confirmed official install: this half has no run or
+            // environment, so only the ownership record is persisted and the
+            // shared preparation is marked deferred honestly. The UI may show
+            // "installed/verified" — never "packages ready".
+            if pending.curatedReceipt != nil, pending.snapshot?.files[SkillDependency.packagePath] != nil,
+               let skillID = pending.snapshot?.package.manifest.id {
+                _ = await self.dependencyPreparation?.prepareAtInstall(
+                    skillID: skillID, environmentID: nil, runID: nil, cancellation: nil
+                )
+            }
         }
     }
 
@@ -1643,8 +1801,105 @@ final class SkillsCenter: ObservableObject {
     }
 
     func remove(_ skill: PersistedSkill) async {
+        // Preinstalled guides ship with the app. The service-level guard in
+        // `manageSkill` stays the authority; the UI pre-check keeps the
+        // banner copy bilingual instead of surfacing the tool-channel string.
+        guard !SkillBatchSelectionPolicy.isPreinstalled(skill.id) else {
+            errorMessage = SkillBatchCopy.preinstalledCannotRemove
+            return
+        }
         await perform {
             _ = try await self.manageSkill(.init(action: .remove, id: skill.id, expectedDigest: skill.rewrittenDigest))
+        }
+    }
+
+    // MARK: - Inline batch management (Installed list)
+
+    /// Batch runs are SERVICE-owned: the Installed list closing or rotating
+    /// never interrupts an in-flight enable/disable/delete pass, and each
+    /// item goes through the exact same single-target `manageSkill` guards
+    /// (preinstalled rejection, digest CAS, busy fence, backup rollback).
+    /// Items are processed one at a time in submission order; every item
+    /// reports its own durable-read-verified outcome so the view keeps only
+    /// unresolved selections for a truthful retry.
+    @Published private(set) var isBatchRunning = false
+    @Published private(set) var lastBatchSummary: SkillBatchSummary?
+    private var batchTask: Task<Void, Never>?
+
+    func runSkillBatch(operation: SkillBatchOperation, items: [SkillBatchItem]) {
+        guard !items.isEmpty else { return }
+        guard !isBatchRunning, batchTask == nil else { return }
+        guard !isWorking, !updates.isRunning else {
+            errorMessage = SkillBatchCopy.busy
+            return
+        }
+        errorMessage = nil
+        // A new accepted run replaces the previous result line and any
+        // stale per-row issue immediately; the summary's `runToken`
+        // additionally makes every run a distinct identity so equal
+        // outcomes still reconcile the selection through onChange.
+        lastBatchSummary = nil
+        isBatchRunning = true
+        let task = Task { [weak self] in
+            guard let self else { return }
+            let summary = await SkillBatchRunner().run(operation: operation, items: items) { item in
+                await self.performSkillBatchItem(operation: operation, item: item)
+            }
+            self.lastBatchSummary = summary
+            self.batchTask = nil
+            self.isBatchRunning = false
+        }
+        batchTask = task
+    }
+
+    private func performSkillBatchItem(operation: SkillBatchOperation, item: SkillBatchItem) async -> SkillBatchItemOutcome {
+        let state = await skillBatchRowState(id: item.id)
+        if let resolved = SkillBatchDecision.preflight(operation: operation, item: item, state: state) {
+            return resolved
+        }
+        do {
+            // The CAS revision is the digest of the row the user actually
+            // selected/confirmed, never a freshly fetched replacement: an
+            // update in another window makes this item fail honestly
+            // instead of silently acting on the new package.
+            switch operation {
+            case .enable:
+                _ = try await manageSkill(.init(action: .setEnabled, id: item.id, expectedDigest: item.expectedDigest, enabled: true))
+            case .disable:
+                _ = try await manageSkill(.init(action: .setEnabled, id: item.id, expectedDigest: item.expectedDigest, enabled: false))
+            case .delete:
+                _ = try await manageSkill(.init(action: .remove, id: item.id, expectedDigest: item.expectedDigest))
+            }
+            // Success is proven only by a durable read of the expected
+            // revision, not by the command's return string.
+            return SkillBatchDecision.afterCommand(
+                operation: operation,
+                item: item,
+                state: await skillBatchRowState(id: item.id)
+            )
+        } catch {
+            // The command can throw after the store actually committed (for
+            // example during post-transaction reload). Only a fresh,
+            // SUCCESSFUL read is the authority.
+            return SkillBatchDecision.afterFailure(
+                operation: operation,
+                item: item,
+                state: await skillBatchRowState(id: item.id),
+                errorText: SkillBatchCopy.failureText(for: error)
+            )
+        }
+    }
+
+    /// Tri-state durable read: `present` / `missing` / `unreadable`. A failed
+    /// read is never collapsed into "missing".
+    private func skillBatchRowState(id: String) async -> SkillBatchRowState {
+        do {
+            guard let row = try await environment.skillStore.all().first(where: { $0.id == id }) else {
+                return .missing
+            }
+            return .present(enabled: row.status == "enabled", digest: row.rewrittenDigest)
+        } catch {
+            return .unreadable(SkillBatchCopy.readFailure)
         }
     }
 
@@ -1718,6 +1973,38 @@ final class SkillsCenter: ObservableObject {
                 // Recording downloads nothing, stages nothing new and executes
                 // nothing — readiness runs only at the approved exec.shell
                 // boundary. Packages without the descriptor file are untouched.
+                if let dependencyPreparation, let runID,
+                   let declarationBytes = snapshot.files[SkillDependency.packagePath] {
+                    // A verified exact read of an installed official package
+                    // that carries the dependency declaration records an
+                    // immutable (environment, run)-bound plan pinning package
+                    // version + contentDigest + declaration digest, and the
+                    // skill.read response gains the invocation contract.
+                    // Recording installs nothing.
+                    let grants = try? await environment.skillStore.allowedCapabilities(skillID: row.id)
+                    let dependencyAuthority = grants.flatMap {
+                        Self.dependencyAuthority(
+                            row: row, snapshot: snapshot, grantedCapabilities: $0
+                        )
+                    }
+                    _ = await dependencyPreparation.recordPlan(
+                        skillID: row.id,
+                        environmentID: resourceContext.environmentID,
+                        runID: runID,
+                        authority: dependencyAuthority
+                    )
+                    if let dependencyAuthority,
+                       let declaration = try? SkillDependencyPreparationCenter.decodeAndValidate(dependencyAuthority) {
+                        markdown += "\n" + SkillDependencyPreparationCenter.invocationInfo(
+                            skillID: row.id, declaration: declaration
+                        ) + "\n"
+                    } else {
+                        markdown += "\n## Dependency invocation\nThe packaged dependency declaration failed strict validation for this build (or this is not an installed official curated package); automatic provisioning is unavailable for this skill and required resources must not be assumed present. Ordinary exec.shell commands without skillID are unchanged.\n"
+                    }
+                    if let status = await dependencyPreparation.sharedPreparationStatus(skillID: row.id) {
+                        markdown += "\nPreparation status:\n\(status)\n"
+                    }
+                }
                 if let runtimeComponents, let runID,
                    snapshot.files[SkillRuntimeDependency.engineDependencyPackagePath] != nil {
                     let stagedRoot: String? = {
@@ -1764,14 +2051,21 @@ final class SkillsCenter: ObservableObject {
         if let builtin = DomainSkillLibrary.all.first(where: { $0.id == skill.id }), !builtin.exposed {
             throw FloeError.validationFailed("System guides are read-only and update only with the app")
         }
+        // Every removal path — UI row, inline batch and the assistant's
+        // skill.manage — funnels through this boundary. Preinstalled IDs are
+        // DomainSkillLibrary identities: disable them; never remove them.
+        if request.action == .remove, skillIsPreinstalled(skill.id) {
+            throw FloeError.validationFailed("Preinstalled guides ship with the app; disable them instead of removing")
+        }
         let packageURL = installationRoot.appendingPathComponent(skill.id, isDirectory: true)
         switch request.action {
         case .setEnabled:
             try await environment.skillStore.setEnabled(request.enabled!, id: skill.id, expectedDigest: request.expectedDigest)
         case .remove:
-            // Exposed official plugins can be removed. Their persisted user
-            // intent prevents launch-time seeding from undoing that choice.
-            // Keep a recoverable package outside the active store. If the DB
+            // Non-preinstalled skills can be removed; the persisted user
+            // intent keeps hub catalog sync from silently reinstalling them.
+            // Keep a recoverable package outside the active store and only
+            // roll the move back when the actual backup exists. If the DB
             // mutation fails, restore the package before reporting failure.
             let recovery = installationRoot.deletingLastPathComponent().appendingPathComponent("RemovedSkills", isDirectory: true)
             try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
@@ -1784,6 +2078,12 @@ final class SkillsCenter: ObservableObject {
                 if exists { try FileManager.default.moveItem(at: backup, to: packageURL) }
                 throw error
             }
+            // Uninstalling a skill removes OWNERSHIP RECORDS ONLY. Declared
+            // apt/pip/npm packages stay in every environment untouched — no
+            // automatic deletion, ever. Explicit environment-package removal
+            // remains a user action in the package UI where nothing else
+            // installed still needs the exact spec.
+            await dependencyPreparation?.forgetSkill(skill.id)
             await load()
             return "status=removed id=\(skill.id) recoverablePackage=\(exists ? backup.path : "none")"
         case .update:
@@ -1846,100 +2146,15 @@ final class SkillsCenter: ObservableObject {
         let seedKey = "floe.domainSkillSeeded"
         let seeded = defaults.dictionary(forKey: seedKey) as? [String: String] ?? [:]
         var updatedSeeds = seeded
-        let validator = SkillPackageValidator()
         for definition in DomainSkillLibrary.all {
             do {
-                if definition.exposed, try await environment.skillStore.wasBundledSkillRemoved(id: definition.id) { continue }
-                let temporary = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
-                defer { try? FileManager.default.removeItem(at: temporary) }
-                try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
-                let markdown = """
-                ---
-                name: \(definition.id)
-                display_name: \(definition.name)
-                description: \(definition.description)
-                ---
-
-                \(definition.markdown)
-                """
-                try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
-                let manifest: [String: Any] = [
-                    "schemaVersion": 1,
-                    "id": definition.id,
-                    "version": definition.version,
-                    "capabilities": [String](),
-                    "tools": [String](),
-                    "platforms": ["ios"],
-                    "scriptRuntime": "none",
-                    "pythonPackages": [[String: Any]]()
-                ]
-                let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
-                try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
-                if let exactFiles = BundledDomainSkills.officialSeedFiles[definition.id] {
-                    for (path, data) in exactFiles {
-                        let destination = temporary.appendingPathComponent(path)
-                        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        try data.write(to: destination, options: .atomic)
-                    }
+                let verified = try await seedBundledDomainSkill(definition, updatedSeeds: &updatedSeeds)
+                // Only a pass that verified the trusted install state for a
+                // preinstalled ID may clear its persisted removal intents.
+                // A partial failure keeps the markers so a later pass retries.
+                if verified {
+                    try await environment.skillStore.clearBundledSkillRemovalMarkers(id: definition.id)
                 }
-                let package = try validator.validate(packageAt: temporary)
-                if OfficialSkillHub.skillIDs.contains(definition.id) {
-                    guard package.canonicalSHA256 == BundledDomainSkills.officialPackageDigests[definition.id] else {
-                        throw FloeError.validationFailed("Bundled official seed differs from the signed GitHub package")
-                    }
-                }
-
-                let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
-                if let existing {
-                    if OfficialSkillHub.skillIDs.contains(definition.id) {
-                        guard OfficialSkillHub.acceptsBundledUpgrade(id: definition.id,
-                            sourceURL: existing.sourceURL, installedVersion: existing.version,
-                            bundledVersion: definition.version, sourceDigest: existing.sourceDigest,
-                            installedDigest: existing.rewrittenDigest),
-                              (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(existing.id),
-                                  expectedDigest: existing.rewrittenDigest)) != nil else { continue }
-                        try await installCanonicalPackage(at: temporary,
-                            sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                            initialStatus: existing.status, replaceExisting: true, bundledSeed: true)
-                        updatedSeeds[definition.id] = package.canonicalSHA256
-                        continue
-                    }
-                    // App bundles never replace a GitHub/user-managed source.
-                    guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { continue }
-                    let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
-                    let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
-                    if contentMatches {
-                        updatedSeeds[definition.id] = package.canonicalSHA256
-                        continue
-                    }
-                    if !bundledIsNewer {
-                        // Same or older bundled version with different digest:
-                        // the user edited this skill — respect their copy.
-                        updatedSeeds[definition.id] = existing.rewrittenDigest
-                        continue
-                    }
-                    // A local revision must be resolved explicitly, not overwritten.
-                    guard existing.rewrittenDigest == existing.sourceDigest else { continue }
-                    // Upgrade: preserve the user's enabled state (and, through
-                    // the store metadata, their capability grants).
-                    try await installCanonicalPackage(
-                        at: temporary,
-                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                        initialStatus: existing.status,
-                        replaceExisting: true,
-                        bundledSeed: true
-                    )
-                } else {
-                    try await installCanonicalPackage(
-                        at: temporary,
-                        sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
-                        initialStatus: "enabled",
-                        replaceExisting: true,
-                        bundledSeed: true
-                    )
-                }
-                updatedSeeds[definition.id] = package.canonicalSHA256
             } catch {
                 builtinSeedFailures[definition.id] = error.localizedDescription
                 // A single broken seed must never block app startup.
@@ -1949,6 +2164,126 @@ final class SkillsCenter: ObservableObject {
         defaults.set(updatedSeeds, forKey: seedKey)
         defaults.set(Self.domainSkillSeedVersion, forKey: "floe.domainSkillSeedVersion")
         await load()
+    }
+
+    /// Seeds one preinstalled guide from the trusted app bundle and reports
+    /// whether this pass VERIFIED the trusted install state (`true`) or
+    /// deliberately deferred to user-managed content (`false`).
+    ///
+    /// A persisted removal marker no longer suppresses the bundled repair:
+    /// preinstalled IDs are protected through every removal path, and a
+    /// historical mistaken deletion (older releases allowed it) must restore
+    /// on the first seeding pass after this upgrade — even when both legacy
+    /// markers are still persisted and even when the earlier deletion moved
+    /// the package to the `RemovedSkills` backup leaving no directory. A
+    /// still-installed GitHub/user-managed package, a user-edited copy, a
+    /// disabled state and existing backups are never overwritten.
+    private func seedBundledDomainSkill(
+        _ definition: DomainSkillLibrary.Definition,
+        updatedSeeds: inout [String: String]
+    ) async throws -> Bool {
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent("floe-domain-skill-\(definition.id)-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.createDirectory(at: temporary, withIntermediateDirectories: true)
+        let markdown = """
+        ---
+        name: \(definition.id)
+        display_name: \(definition.name)
+        description: \(definition.description)
+        ---
+
+        \(definition.markdown)
+        """
+        try Data(markdown.utf8).write(to: temporary.appendingPathComponent("SKILL.md"), options: .atomic)
+        let manifest: [String: Any] = [
+            "schemaVersion": 1,
+            "id": definition.id,
+            "version": definition.version,
+            "capabilities": [String](),
+            "tools": [String](),
+            "platforms": ["ios"],
+            "scriptRuntime": "none",
+            "pythonPackages": [[String: Any]]()
+        ]
+        let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.sortedKeys])
+        try manifestData.write(to: temporary.appendingPathComponent("floe.json"), options: .atomic)
+        if let exactFiles = BundledDomainSkills.officialSeedFiles[definition.id] {
+            for (path, data) in exactFiles {
+                let destination = temporary.appendingPathComponent(path)
+                try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: destination, options: .atomic)
+            }
+        }
+        let validator = SkillPackageValidator()
+        let package = try validator.validate(packageAt: temporary)
+        if OfficialSkillHub.skillIDs.contains(definition.id) {
+            guard package.canonicalSHA256 == BundledDomainSkills.officialPackageDigests[definition.id] else {
+                throw FloeError.validationFailed("Bundled official seed differs from the signed GitHub package")
+            }
+        }
+
+        let existing = try? await environment.skillStore.all().first { $0.id == definition.id }
+        if let existing {
+            if OfficialSkillHub.skillIDs.contains(definition.id) {
+                guard OfficialSkillHub.acceptsBundledUpgrade(id: definition.id,
+                    sourceURL: existing.sourceURL, installedVersion: existing.version,
+                    bundledVersion: definition.version, sourceDigest: existing.sourceDigest,
+                    installedDigest: existing.rewrittenDigest),
+                      (try? SkillContentSnapshot(root: installationRoot.appendingPathComponent(existing.id),
+                          expectedDigest: existing.rewrittenDigest)) != nil else { return false }
+                try await installCanonicalPackage(at: temporary,
+                    sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                    initialStatus: existing.status, replaceExisting: true, bundledSeed: true)
+                updatedSeeds[definition.id] = package.canonicalSHA256
+                return true
+            }
+            // App bundles never replace a GitHub/user-managed source.
+            guard existing.sourceURL == DomainSkillLibrary.sourceURL(for: definition.id) else { return false }
+            let bundledIsNewer = Self.isVersion(definition.version, newerThan: existing.version)
+            let contentMatches = existing.rewrittenDigest == package.canonicalSHA256
+            if contentMatches {
+                updatedSeeds[definition.id] = package.canonicalSHA256
+                return true
+            }
+            if !bundledIsNewer {
+                // Same or older bundled version with different digest:
+                // the user edited this skill — respect their copy.
+                updatedSeeds[definition.id] = existing.rewrittenDigest
+                return false
+            }
+            // A local revision must be resolved explicitly, not overwritten.
+            guard existing.rewrittenDigest == existing.sourceDigest else { return false }
+            // Upgrade: preserve the user's enabled state (and, through
+            // the store metadata, their capability grants).
+            try await installCanonicalPackage(
+                at: temporary,
+                sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                initialStatus: existing.status,
+                replaceExisting: true,
+                bundledSeed: true
+            )
+        } else {
+            // Missing row for a preinstalled ID — including a historical
+            // mistaken removal with its persisted markers. Install the
+            // trusted bundle (any stale package directory left behind by the
+            // interrupted replacement is atomically staged over).
+            try await installCanonicalPackage(
+                at: temporary,
+                sourceURL: URL(string: DomainSkillLibrary.sourceURL(for: definition.id))!,
+                initialStatus: "enabled",
+                replaceExisting: true,
+                bundledSeed: true
+            )
+        }
+        updatedSeeds[definition.id] = package.canonicalSHA256
+        return true
+    }
+
+    /// True for every DomainSkillLibrary identity — these ship with the app
+    /// and are protected from removal at the service boundary.
+    func skillIsPreinstalled(_ id: String) -> Bool {
+        SkillBatchSelectionPolicy.isPreinstalled(id)
     }
 
     /// Numeric dotted-version comparison ("1.10.0" > "1.4.0").
@@ -2014,6 +2349,7 @@ final class SkillsCenter: ObservableObject {
         defer { if !callerHoldsMutationLock { packageMutationInProgress = false } }
         let prepared = try Self.prepareCanonicalPackage(at: url, override: manifestOverride)
         let package = prepared.package
+        var officialPublicationCandidate: OfficialSkillPublicationRecord?
         if let receipt = curatedReceipt {
             guard receipt.feedStatus == .production,
                   receipt.feedSignatureKeyID == CuratedSkillHub.productionKeyID,
@@ -2022,6 +2358,28 @@ final class SkillsCenter: ObservableObject {
                   receipt.entryID == package.manifest.id,
                   receipt.entryVersion == package.manifest.version,
                   receipt.contentDigest == package.canonicalSHA256 else { throw SkillUpgradeError.localConflict }
+            // Version management (frozen rule #1, client-side second line):
+            // receipt equality alone cannot prove historical immutability — a
+            // freshly signed replacement entry with the SAME id+semver and a
+            // DIFFERENT contentDigest would pass it. The candidate identity
+            // is pre-checked for a clear early message and then written in
+            // the SAME database transaction as the skill metadata by
+            // `skillStore.save`: a same-version different-digest row (or a
+            // damaged stored row, or any ledger/database failure) throws and
+            // rolls the entire commit back — files included, through the
+            // staging service's existing rollback. External GitHub same-
+            // commit updates never carry a curated receipt and keep their
+            // historical behavior. Publisher CI remains mandatory for history
+            // this client never observed.
+            let candidate = OfficialSkillPublicationRecord(
+                skillID: package.manifest.id,
+                version: package.manifest.version,
+                contentDigest: package.canonicalSHA256,
+                publicationCommit: receipt.publicationCommit
+            )
+            guard candidate.isCanonical else { throw SkillUpgradeError.localConflict }
+            try await precheckOfficialPublication(candidate)
+            officialPublicationCandidate = candidate
         }
         if DomainSkillLibrary.all.contains(where: { $0.id == package.manifest.id }), !bundledSeed {
             let legacyProof = verifiedUpgrade.map {
@@ -2112,7 +2470,14 @@ final class SkillsCenter: ObservableObject {
         let metadata = InitialSkillMetadata(store: environment.skillStore, skill: skill,
             capabilities: SkillBulkUpdatePlan.installationGrants(
                 declared: package.declaredCapabilities.map(\.rawValue),
-                upgradeAdded: verifiedUpgrade?.addedCapabilities))
+                upgradeAdded: verifiedUpgrade?.addedCapabilities),
+            officialPublication: officialPublicationCandidate)
+        // Identity + metadata commit atomically inside the staging service's
+        // metadata persist (skillStore.save transaction). A ledger conflict
+        // or damage throws BEFORE the skill row is committed, and the file
+        // move is rolled back by the staging service exactly like any other
+        // metadata failure — there is no post-success best-effort write and
+        // no ignored persistence error.
         _ = try await SkillInstallStagingService(installationRoot: installationRoot, metadataStore: metadata)
             .installRewrittenPackage(
                 at: url, provenance: provenance, replaceExisting: replaceExisting,
@@ -2124,8 +2489,10 @@ final class SkillsCenter: ObservableObject {
         let store: SQLiteSkillStore
         let skill: PersistedSkill
         let capabilities: [String]
+        var officialPublication: OfficialSkillPublicationRecord? = nil
         func persist(_ record: SkillInstallationRecord) async throws {
-            try await store.save(skill, grantCapabilities: capabilities)
+            try await store.save(skill, grantCapabilities: capabilities,
+                                 officialPublication: officialPublication)
         }
     }
 
@@ -2269,8 +2636,24 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    private static func userMessage(for error: Error) -> String {
+        switch error {
+        case is OfficialSkillPublicationConflict:
+            FloeL10n.l("skills.hub.publication_conflict")
+        case is OfficialSkillPublicationLedgerDamage:
+            FloeL10n.l("skills.hub.installation_record_unavailable")
+        case is OfficialSkillPublicationCandidateInvalid:
+            FloeL10n.l("skills.hub.version_unverified")
+        default:
+            error.localizedDescription
+        }
+    }
+
     private func perform(_ operation: @escaping () async throws -> Void) async {
-        guard !isWorking, !updates.isRunning else {
+        // A running service-owned batch is also "busy": single-row import,
+        // install, official get or rollback windows must not interleave
+        // with batch items.
+        guard !isWorking, !updates.isRunning, !isBatchRunning else {
             errorMessage = FloeL10n.l("skills.operation.busy")
             return
         }
@@ -2278,7 +2661,11 @@ final class SkillsCenter: ObservableObject {
         errorMessage = nil
         defer { isWorking = false }
         do { try await operation(); await load() }
-        catch { errorMessage = error.localizedDescription }
+        catch {
+            if !Task.isCancelled && !(error is CancellationError) {
+                errorMessage = Self.userMessage(for: error)
+            }
+        }
     }
 
     private static func identifier(_ name: String) throws -> String {
@@ -2389,4 +2776,44 @@ final class SkillsCenter: ObservableObject {
         }
     }
 }
+
+// MARK: - Official Skill dependency invocation gate
+
+extension SkillsCenter: SkillDependencyInvocationGating {
+    /// The `exec.shell` gate. Verification re-reads the LIVE installed record
+    /// (enabled row + typed curated receipt + digest-verified snapshot +
+    /// current grants) through the center; the current-run plan binding and
+    /// the runtime-issued approval grant must both be present. A required
+    /// dependency that is not verified ready refuses only THIS skill's
+    /// dependency-aware invocation with the model-safe reason; optional gaps
+    /// return as a visible annotation. Nothing here approves, mints authority
+    /// or reroutes an environment, and commands that do not carry `skillID`
+    /// never reach this code.
+    func dependencyInvocationDecision(
+        skillID: String,
+        environmentID: String?,
+        runID: UUID,
+        approvalGrantID: UUID?,
+        cancellation: CancellationToken?
+    ) async -> SkillDependencyInvocationDecision {
+        guard approvalGrantID != nil else {
+            return .unavailable(reason: "dependency-aware invocation requires the run's approval grant")
+        }
+        guard let dependencyPreparation else {
+            return .unavailable(reason: SkillDependencyReason.provisioningUnavailable)
+        }
+        switch await dependencyPreparation.invoke(
+            skillID: skillID,
+            environmentID: environmentID,
+            runID: runID,
+            cancellation: cancellation
+        ) {
+        case .ready(let annotation):
+            return .proceed(annotation: annotation)
+        case .refused(let reason):
+            return .refused(reason: reason)
+        }
+    }
+}
+
 #endif

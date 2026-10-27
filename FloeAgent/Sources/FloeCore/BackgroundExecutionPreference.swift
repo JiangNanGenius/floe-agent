@@ -18,11 +18,38 @@ public enum BackgroundExecutionPreference: String, Sendable, Codable, CaseIterab
     case screenShare
 }
 
-/// Independently enabled background capabilities. Screen feedback presents
-/// its guidance in PiP, so it cannot remain enabled without that surface.
-/// The legacy enum remains readable for existing settings and callers.
+/// Enabled background capabilities in the user-approved prerequisite chain
+/// (latest plan, 2026-10-27 — it OVERRIDES the older "three fully
+/// independent toggles" cascade-off model):
+///
+///   enhanced background → standalone task audio → Picture-in-Picture → screen feedback
+///
+/// The chain is central policy (these setters enforce it; Settings and any
+/// future surface only reflect it):
+///  • Enabling a capability enables every prerequisite above it — screen
+///    feedback pulls in PiP, audio and enhanced processing; the PiP surface
+///    rides the audio-session promise; audio rides enhanced processing.
+///  • A prerequisite CANNOT be disabled while a dependent is still enabled:
+///    the setter refuses (no-op, returns `false`) instead of silently
+///    cascading the user's other choices off. The UI presents the refusal
+///    as a disabled/actionable row listing exactly what must be turned off
+///    first (`activeDependentsBlockingDisable`).
+///  • Migration never rewrites a stored explicit choice: objects persisted
+///    before the audio capability derive `audioEnabled` from the visual
+///    choices that always implied it, and a stored
+///    `enhancedBackgroundEnabled: false` survives decode untouched (no
+///    upgrade silently gains continued processing, gains volume, or starts
+///    audio playing — playback always requires a real running task).
+///
+/// The Lock Screen / Dynamic Island activity stays OUTSIDE the chain:
+/// implied by nothing, changing nothing. The legacy enum remains readable
+/// for existing settings and callers.
 public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable {
     public var enhancedBackgroundEnabled: Bool
+    /// Standalone task audio (the service-owned ambient loop and stage
+    /// speech run as the task's session, not as a PiP view accessory). Off
+    /// by default: upgrading never auto-plays audio.
+    public var audioEnabled: Bool
     public var pictureInPictureEnabled: Bool
     public var screenFeedbackEnabled: Bool
     /// Independent Lock Screen / Dynamic Island presentation of tasks that are
@@ -30,13 +57,22 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
     /// by another capability and never changes one.
     public var taskLiveActivityEnabled: Bool
 
+    /// Raw construction for policy callers and tests. Repairs only the
+    /// audio/visual foundation upward (a visual surface never exists
+    /// without the audio session promise it rides on); the enhanced flag is
+    /// taken verbatim so stored legacy combinations stay inspectable. User
+    /// mutations go through the setters, which enforce the FULL chain.
     public init(
         enhancedBackgroundEnabled: Bool = true,
+        audioEnabled: Bool = false,
         pictureInPictureEnabled: Bool = false,
         screenFeedbackEnabled: Bool = false,
         taskLiveActivityEnabled: Bool = false
     ) {
         self.enhancedBackgroundEnabled = enhancedBackgroundEnabled
+        // A visual surface without its audio foundation is an inconsistent
+        // value even at construction: repair up the visual chain only.
+        self.audioEnabled = audioEnabled || pictureInPictureEnabled || screenFeedbackEnabled
         self.pictureInPictureEnabled = pictureInPictureEnabled || screenFeedbackEnabled
         self.screenFeedbackEnabled = screenFeedbackEnabled
         self.taskLiveActivityEnabled = taskLiveActivityEnabled
@@ -51,6 +87,7 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
 
     private enum CodingKeys: String, CodingKey {
         case enhancedBackgroundEnabled
+        case audioEnabled
         case pictureInPictureEnabled
         case screenFeedbackEnabled
         case taskLiveActivityEnabled
@@ -59,7 +96,11 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
     /// Decoding migration: an object stored before a key existed keeps every
     /// choice it does contain and takes the shipping default for the missing
     /// one. A required-key decode would fail the whole object, silently
-    /// discarding the user's other background choices.
+    /// discarding the user's other background choices. A stored object from
+    /// before the audio capability derives `audioEnabled` from the visual
+    /// choices that always implied it, so existing surfaces keep working;
+    /// this only records the capability — playback still requires a real
+    /// running task, and the upgrade itself never starts audio.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         enhancedBackgroundEnabled = try container.decodeIfPresent(
@@ -71,15 +112,26 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
         screenFeedbackEnabled = try container.decodeIfPresent(
             Bool.self, forKey: .screenFeedbackEnabled
         ) ?? false
+        audioEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .audioEnabled
+        ) ?? (pictureInPictureEnabled || screenFeedbackEnabled)
         taskLiveActivityEnabled = try container.decodeIfPresent(
             Bool.self, forKey: .taskLiveActivityEnabled
         ) ?? false
     }
 
     /// Apply after decoding or direct property updates before persistence/use.
+    /// Enforces the audio→PiP→feedback foundation chain upward (a surface
+    /// never survives without its audio prerequisite, and a stored PiP
+    /// choice never loses its audio basis). The enhanced flag is never
+    /// repaired here: a stored `enhancedBackgroundEnabled: false` survives
+    /// migration unchanged, so no upgrade silently grants continued
+    /// processing — the full chain applies to the user's NEXT action
+    /// through the setters.
     public var normalized: Self {
         Self(
             enhancedBackgroundEnabled: enhancedBackgroundEnabled,
+            audioEnabled: audioEnabled,
             pictureInPictureEnabled: pictureInPictureEnabled,
             screenFeedbackEnabled: screenFeedbackEnabled,
             taskLiveActivityEnabled: taskLiveActivityEnabled
@@ -92,14 +144,112 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
         taskLiveActivityEnabled = enabled
     }
 
-    public mutating func setPictureInPictureEnabled(_ enabled: Bool) {
-        pictureInPictureEnabled = enabled
-        if !enabled { screenFeedbackEnabled = false }
+    /// Enhanced background processing is the ROOT of the prerequisite chain.
+    /// Enabling it grants nothing else by itself. Disabling it is REFUSED
+    /// (no-op, returns `false`) while audio, PiP or screen feedback is still
+    /// enabled — the user must turn the dependents off first; nothing is
+    /// silently cascaded off and no running task is ever killed by a toggle.
+    @discardableResult
+    public mutating func setEnhancedBackgroundEnabled(_ enabled: Bool) -> Bool {
+        guard enabled || activeDependentsBlockingDisable(of: .enhancedBackground).isEmpty else {
+            return false
+        }
+        enhancedBackgroundEnabled = enabled
+        return true
     }
 
-    public mutating func setScreenFeedbackEnabled(_ enabled: Bool) {
-        screenFeedbackEnabled = enabled
-        if enabled { pictureInPictureEnabled = true }
+    /// Standalone task audio. Enabling it enables its prerequisite (enhanced
+    /// processing). Disabling is REFUSED while PiP or screen feedback still
+    /// rides on it. Selection alone never plays sound and never changes any
+    /// volume: playback belongs to a real running task (or an explicit
+    /// preview action).
+    @discardableResult
+    public mutating func setAudioEnabled(_ enabled: Bool) -> Bool {
+        if enabled {
+            audioEnabled = true
+            enhancedBackgroundEnabled = true
+            return true
+        }
+        guard activeDependentsBlockingDisable(of: .audio).isEmpty else { return false }
+        audioEnabled = false
+        return true
+    }
+
+    /// The PiP surface. Enabling pulls in audio and enhanced processing;
+    /// disabling is REFUSED while screen feedback still presents inside it.
+    @discardableResult
+    public mutating func setPictureInPictureEnabled(_ enabled: Bool) -> Bool {
+        if enabled {
+            pictureInPictureEnabled = true
+            audioEnabled = true
+            enhancedBackgroundEnabled = true
+            return true
+        }
+        guard activeDependentsBlockingDisable(of: .pictureInPicture).isEmpty else { return false }
+        pictureInPictureEnabled = false
+        return true
+    }
+
+    /// Screen feedback presents inside PiP, so enabling it pulls in the
+    /// whole prerequisite chain (PiP, audio, enhanced processing). It has
+    /// no dependents, so disabling is always allowed.
+    @discardableResult
+    public mutating func setScreenFeedbackEnabled(_ enabled: Bool) -> Bool {
+        if enabled {
+            screenFeedbackEnabled = true
+            pictureInPictureEnabled = true
+            audioEnabled = true
+            enhancedBackgroundEnabled = true
+        } else {
+            screenFeedbackEnabled = false
+        }
+        return true
+    }
+
+    /// The capabilities that currently BLOCK disabling `capability`: the
+    /// enabled dependents that would lose their prerequisite. Settings uses
+    /// this for the disabled/actionable row state and the "turn off X
+    /// first" copy; the setters above enforce the same rule, so the policy
+    /// is never UI-only. The deepest capability and the independent live
+    /// activity have no dependents.
+    public func activeDependentsBlockingDisable(of capability: BackgroundExecutionCapability) -> [BackgroundExecutionCapability] {
+        let dependentPairs: [(BackgroundExecutionCapability, Bool)]
+        switch capability {
+        case .enhancedBackground:
+            dependentPairs = [(.audio, audioEnabled),
+                              (.pictureInPicture, pictureInPictureEnabled),
+                              (.screenFeedback, screenFeedbackEnabled)]
+        case .audio:
+            dependentPairs = [(.pictureInPicture, pictureInPictureEnabled),
+                              (.screenFeedback, screenFeedbackEnabled)]
+        case .pictureInPicture:
+            dependentPairs = [(.screenFeedback, screenFeedbackEnabled)]
+        case .screenFeedback, .taskLiveActivity:
+            dependentPairs = []
+        }
+        return dependentPairs.filter(\.1).map(\.0)
+    }
+
+    /// The prerequisites that enabling `capability` pulls in (empty when
+    /// nothing is missing). Settings uses this for the "turning this on
+    /// also turns on X" copy.
+    public func prerequisitesEnabledByTurningOn(_ capability: BackgroundExecutionCapability) -> [BackgroundExecutionCapability] {
+        let prerequisitePairs: [(BackgroundExecutionCapability, Bool)]
+        switch capability {
+        case .enhancedBackground:
+            prerequisitePairs = []
+        case .audio:
+            prerequisitePairs = [(.enhancedBackground, enhancedBackgroundEnabled)]
+        case .pictureInPicture:
+            prerequisitePairs = [(.audio, audioEnabled), (.enhancedBackground, enhancedBackgroundEnabled)]
+        case .screenFeedback:
+            prerequisitePairs = [(.pictureInPicture, pictureInPictureEnabled),
+                                 (.audio, audioEnabled),
+                                 (.enhancedBackground, enhancedBackgroundEnabled)]
+        case .taskLiveActivity:
+            prerequisitePairs = []
+        }
+        return prerequisitePairs.filter { !$0.1 }.map(\.0)
     }
 
     /// Compatibility projection only; continued processing must consult the
@@ -108,6 +258,16 @@ public struct BackgroundExecutionOptions: Sendable, Codable, Equatable, Hashable
         if screenFeedbackEnabled { return .screenShare }
         return pictureInPictureEnabled ? .pictureInPicture : .standard
     }
+}
+
+/// The hierarchy positions plus the independent live activity surface. The
+/// raw values are stable diagnostics labels, not user copy.
+public enum BackgroundExecutionCapability: String, Sendable, Codable, CaseIterable, Hashable {
+    case enhancedBackground
+    case audio
+    case pictureInPicture
+    case screenFeedback
+    case taskLiveActivity
 }
 
 public extension BackgroundExecutionPreference {

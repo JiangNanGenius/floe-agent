@@ -15,25 +15,29 @@ import FloePersistence
 import FloeTools
 import FloeWorkspace
 
-/// Holds the system completion handler for the background session until all
-/// pending delegate events are drained.
+/// Holds the system completion handler for the background session until the
+/// system finish event HAS arrived AND every async settle/drain the
+/// coordinator registered has completed. The completion is then called
+/// exactly once on the main thread (see `BackgroundDownloadEventSettlement`).
+/// The launch hook in `FloeAgentApp` keeps calling the one-argument
+/// `register` unchanged; the two-argument form additionally tracks the
+/// bounded wake bootstrap ATOMICALLY before the handler is stored, so a
+/// finish that already arrived can never release the wake before the
+/// bootstrap is accounted. The coordinator drives event accounting through
+/// `settlement`.
 final class JobDownloadBackgroundEvents: @unchecked Sendable {
     static let shared = JobDownloadBackgroundEvents()
-    private let lock = NSLock()
-    private var completionHandler: (() -> Void)?
+    let settlement = BackgroundDownloadEventSettlement(name: "job-downloads")
 
     func register(_ handler: @escaping () -> Void) {
-        lock.lock()
-        completionHandler = handler
-        lock.unlock()
+        settlement.registerSystemCompletionHandler(handler)
     }
 
-    func finish() {
-        lock.lock()
-        let handler = completionHandler
-        completionHandler = nil
-        lock.unlock()
-        handler?()
+    func register(
+        _ handler: @escaping () -> Void,
+        bootstrap: @escaping @Sendable () async -> Void
+    ) {
+        settlement.registerSystemCompletionHandler(handler, bootstrap: bootstrap)
     }
 }
 
@@ -50,7 +54,23 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
     /// across process relaunches; these maps only accelerate progress writes.
     private var progressState: [UUID: (received: Int64, expected: Int64, lastWrite: Date)] = [:]
     private var resumeAttempts: [UUID: Int] = [:]
+    /// Ownership generation per job. `cancel` bumps it (and cancels the owned
+    /// delayed-retry task) so a sleeping retry can never resume work for a
+    /// job the user already cancelled, and a settle task rechecks it after
+    /// every await. The monotonic counter is coordinator-local; the durable
+    /// job row stays the state authority.
+    private var jobGenerations: [UUID: UInt64] = [:]
+    private var pendingRetryTasks: [UUID: Task<Void, Never>] = [:]
     private let stateLock = NSLock()
+
+    /// The service-owned drain for this background session's async settle
+    /// work. Every follow-up Task registers synchronously inside the
+    /// delegate callback and settles on completion, so the system
+    /// completion handler runs exactly once, on the main thread, after the
+    /// whole wake's work has drained.
+    private var settlement: BackgroundDownloadEventSettlement {
+        JobDownloadBackgroundEvents.shared.settlement
+    }
 
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
@@ -100,6 +120,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             return true
         }
         _ = try await store.transition(id: job.id, to: .running)
+        bumpGeneration(job.id)
         let task = session.downloadTask(with: url)
         task.taskDescription = job.id.uuidString
         task.priority = URLSessionTask.highPriority
@@ -108,10 +129,61 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
     }
 
     func cancel(jobID: UUID) async {
+        // Take ownership of the cancel first: bumping the generation and
+        // cancelling the coordinator-owned delayed retry makes every sleeping
+        // retry path fail its re-check, so a cancelled job can never get a
+        // late `.resume()` (the historical bug re-checked the job BEFORE the
+        // sleep but not after). Any in-flight settle rechecks the same facts
+        // and cleans the owned staging itself.
+        bumpGeneration(jobID)
+        let retry: Task<Void, Never>? = stateLock.withLock {
+            pendingRetryTasks.removeValue(forKey: jobID)
+        }
+        retry?.cancel()
         let tasks = await session.allTasks
         for task in tasks where task.taskDescription == jobID.uuidString {
             task.cancel()
         }
+    }
+
+    private func bumpGeneration(_ jobID: UUID) -> UInt64 {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        let next = (jobGenerations[jobID] ?? 0) &+ 1
+        jobGenerations[jobID] = next
+        return next
+    }
+
+    private func currentGeneration(_ jobID: UUID) -> UInt64 {
+        stateLock.withLock { jobGenerations[jobID] ?? 0 }
+    }
+
+    /// The delayed-retry re-check contract: resume only while the job is
+    /// still the durable running owner, the ownership generation is
+    /// unchanged, and nobody cancelled the owned retry task.
+    nonisolated static func shouldResumeAfterRetryDelay(
+        jobState: BackgroundJobState?,
+        generationAtScheduling: UInt64,
+        generationNow: UInt64,
+        retryTaskCancelled: Bool
+    ) -> Bool {
+        jobState == .running
+            && generationAtScheduling == generationNow
+            && !retryTaskCancelled
+    }
+
+    /// One durable-settle ownership rule, applied at EVERY await boundary of
+    /// a settle (entry, and again immediately before the completion write):
+    /// the task may transition the durable row only while its generation
+    /// still owns the job AND the row is actually running. A cancelled or
+    /// superseded settle instead removes its owned staging (the historical
+    /// bug: cancelled settles returned here leaving the full payload behind)
+    /// and never announces anything.
+    nonisolated static func ownsDurableSettle(
+        generationMatches: Bool,
+        jobState: BackgroundJobState?
+    ) -> Bool {
+        generationMatches && jobState == .running
     }
 
     // MARK: - URLSessionDownloadDelegate
@@ -154,8 +226,15 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         didFinishDownloadingTo location: URL
     ) {
         guard let raw = downloadTask.taskDescription, let jobID = UUID(uuidString: raw) else { return }
-        // The temporary file is removed when this callback returns, so stage
-        // it into app-owned storage synchronously and finish asynchronously.
+        // Register the async follow-up SYNCHRONOUSLY inside this delegate
+        // callback: `urlSessionDidFinishEvents` for this wake can arrive the
+        // moment the callback returns, and the system completion must then
+        // wait for the settle to drain instead of killing the process under
+        // it. The temporary file is removed when this callback returns, so
+        // stage it into app-owned storage synchronously and finish
+        // asynchronously.
+        settlement.beginEvent()
+        let generation = currentGeneration(jobID)
         let stagingDirectory: URL
         do {
             let support = try FileManager.default.url(
@@ -165,7 +244,10 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             stagingDirectory = support.appendingPathComponent("FloeAgent/JobDownloads/\(jobID.uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
         } catch {
-            Task { await self.fail(jobID: jobID, message: error.localizedDescription) }
+            Task {
+                await self.fail(jobID: jobID, message: error.localizedDescription)
+                self.settlement.endEvent()
+            }
             return
         }
         let staging = stagingDirectory.appendingPathComponent("payload.bin")
@@ -175,18 +257,51 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             }
             try FileManager.default.moveItem(at: location, to: staging)
         } catch {
-            Task { await self.fail(jobID: jobID, message: error.localizedDescription) }
+            Task {
+                await self.fail(jobID: jobID, message: error.localizedDescription)
+                self.settlement.endEvent()
+            }
             return
         }
         let statusCode = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         let contentType = downloadTask.response?.mimeType ?? "application/octet-stream"
-        Task { await self.settle(jobID: jobID, staging: staging, statusCode: statusCode, contentType: contentType) }
+        Task {
+            await self.settle(
+                jobID: jobID, staging: staging, stagingDirectory: stagingDirectory,
+                generationAtStart: generation, statusCode: statusCode, contentType: contentType
+            )
+            self.settlement.endEvent()
+        }
     }
 
-    private func settle(jobID: UUID, staging: URL, statusCode: Int, contentType: String) async {
+    private func settle(
+        jobID: UUID,
+        staging: URL,
+        stagingDirectory: URL,
+        generationAtStart: UInt64,
+        statusCode: Int,
+        contentType: String
+    ) async {
         let store = BackgroundJobStore(database: database)
         do {
-            guard let job = try await store.job(id: jobID), job.state == .running else {
+            // Ownership is decided by ONE rule at every await boundary: the
+            // generation this settle started under must still own the row
+            // AND the row must actually be running. A cancelled or
+            // superseded job must not settle into a terminal state, and its
+            // staged payload is coordinator-owned garbage: remove the
+            // staging directory (the historical bug left it behind forever
+            // on exactly this path).
+            let storedJob = try await store.job(id: jobID)
+            guard Self.ownsDurableSettle(
+                generationMatches: generationAtStart == currentGeneration(jobID),
+                jobState: storedJob?.state
+            ) else {
+                removeOwnedStaging(stagingDirectory)
+                clearBookkeeping(for: jobID)
+                return
+            }
+            guard let job = storedJob, job.state == .running else {
+                removeOwnedStaging(stagingDirectory)
                 clearBookkeeping(for: jobID)
                 return
             }
@@ -194,7 +309,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             let cap = args.maxBytes ?? Self.defaultMaxBytes
             let byteCount = (try? staging.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
             guard byteCount <= cap else {
-                try? FileManager.default.removeItem(at: staging)
+                removeOwnedStaging(stagingDirectory)
                 _ = try? await store.transition(id: jobID, to: .failed) {
                     $0.lastError = "Download exceeded the \(cap)-byte job cap"
                 }
@@ -203,7 +318,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             }
 
             guard (200..<300).contains(statusCode) else {
-                try? FileManager.default.removeItem(at: staging)
+                removeOwnedStaging(stagingDirectory)
                 _ = try? await store.transition(id: jobID, to: .failed) {
                     $0.lastError = "Download failed with HTTP \(statusCode)"
                 }
@@ -251,7 +366,7 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
                         destination = resolved
                         workspaceRelative = args.destination
                     } catch {
-                        try? FileManager.default.removeItem(at: staging)
+                        removeOwnedStaging(stagingDirectory)
                         _ = try? await store.transition(id: jobID, to: .failed) {
                             $0.lastError = error.localizedDescription
                                 + " Ask the user, then resubmit with overwrite=true to replace it."
@@ -279,13 +394,43 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
             if let fallbackNote { summaryText += "\nnote=\(fallbackNote)" }
             let finalSummary = summaryText
             let finalPath = workspaceRelative ?? destination.path
-            _ = try? await store.transition(id: jobID, to: .completed) {
-                $0.resultSummary = finalSummary
-                $0.resultDigest = digest
-                $0.resultPath = finalPath
+            // Final ownership re-check with the SAME rule as entry: a
+            // cancel that landed while the file was being committed must not
+            // announce a completed job. The committed artifact stays (it is
+            // user-visible work or the app-owned fallback, not staging);
+            // only a workspace-committed job's leftover staging directory is
+            // cleaned — a fallback artifact physically lives inside it.
+            let stillOwns = Self.ownsDurableSettle(
+                generationMatches: generationAtStart == currentGeneration(jobID),
+                jobState: (try? await store.job(id: jobID))?.state
+            )
+            guard stillOwns else {
+                if workspaceRelative != nil { removeOwnedStaging(stagingDirectory) }
+                clearBookkeeping(for: jobID)
+                return
             }
+            // A durable DB failure is NOT readiness: the throw must not be
+            // swallowed into a completed notification. The committed file is
+            // preserved and the job honestly stays non-terminal until a
+            // later pass/reconciliation settles it.
+            do {
+                _ = try await store.transition(id: jobID, to: .completed) {
+                    $0.resultSummary = finalSummary
+                    $0.resultDigest = digest
+                    $0.resultPath = finalPath
+                }
+            } catch {
+                FloeLogger(category: .persistence).warning(
+                    "jobDownloadCompleteTransitionFailed job=\(jobID.uuidString) (DB failure is not readiness; artifact preserved)"
+                )
+                return
+            }
+            if workspaceRelative != nil { removeOwnedStaging(stagingDirectory) }
             await self.notifyTerminal(jobID: jobID)
         } catch {
+            // Reached only BEFORE any destination was committed: the staging
+            // directory is pure owned garbage here, safe to remove.
+            removeOwnedStaging(stagingDirectory)
             await fail(jobID: jobID, message: error.localizedDescription)
         }
     }
@@ -293,6 +438,14 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
     private func stagingDirectoryURL(_ jobID: UUID) -> URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return support.appendingPathComponent("FloeAgent/JobDownloads/\(jobID.uuidString)", isDirectory: true)
+    }
+
+    /// Removes the coordinator-OWNED staging directory. The staged payload is
+    // only garbage once the job settled; leaving it behind (the historical
+    // leak: cancelled settles and cap/HTTP failures removed only the file,
+    // never the directory) accumulates full download copies forever.
+    private func removeOwnedStaging(_ directory: URL) {
+        try? FileManager.default.removeItem(at: directory)
     }
 
     private func fail(jobID: UUID, message: String) async {
@@ -311,6 +464,9 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         // jobs.cancel cancels the task after the record is already cancelled.
         if error.domain == NSURLErrorDomain && error.code == NSURLErrorCancelled { return }
 
+        // Register this wake's follow-up work synchronously, before the
+        // system can report finish events.
+        settlement.beginEvent()
         stateLock.lock()
         let attempts = (resumeAttempts[jobID] ?? 0) + 1
         resumeAttempts[jobID] = attempts
@@ -318,19 +474,55 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
         let resumeData = error.userInfo["NSURLSessionDownloadTaskResumeDataKey"] as? Data
         if let resumeData, attempts <= Self.maxAutoResumeAttempts {
             // Transparent resume: the job stays running; the model never sees
-            // the transient network interruption.
-            Task {
+            // the transient network interruption. The event stays registered
+            // for the whole delay so the system completion cannot fire while
+            // the retry decision is still pending.
+            let generationAtScheduling = currentGeneration(jobID)
+            let retry: Task<Void, Never> = Task {
                 let store = BackgroundJobStore(database: self.database)
-                guard (try? await store.job(id: jobID))?.state == .running else { return }
+                guard (try? await store.job(id: jobID))?.state == .running else {
+                    self.settlement.endEvent()
+                    return
+                }
                 try? await Task.sleep(nanoseconds: UInt64(min(30, attempts * 5)) * 1_000_000_000)
+                // The fix for the historical bug: the job and the ownership
+                // generation are re-checked AFTER the sleep and immediately
+                // before `.resume()`, and `cancel` cancelled this owned task
+                // anyway, so a cancelled or superseded job can never be
+                // silently re-started by a stale timer.
+                let stateAfterSleep: BackgroundJobState?
+                if Task.isCancelled {
+                    stateAfterSleep = nil
+                } else {
+                    stateAfterSleep = (try? await store.job(id: jobID))?.state
+                }
+                guard Self.shouldResumeAfterRetryDelay(
+                    jobState: stateAfterSleep,
+                    generationAtScheduling: generationAtScheduling,
+                    generationNow: self.currentGeneration(jobID),
+                    retryTaskCancelled: Task.isCancelled
+                ) else {
+                    self.clearBookkeeping(for: jobID)
+                    self.settlement.endEvent()
+                    return
+                }
                 let resumed = self.session.downloadTask(withResumeData: resumeData)
                 resumed.taskDescription = jobID.uuidString
                 resumed.priority = URLSessionTask.highPriority
                 resumed.resume()
+                // The resumed task produces its own delegate events on the
+                // next callback; this registered event is settled.
+                self.settlement.endEvent()
             }
+            stateLock.lock()
+            pendingRetryTasks[jobID] = retry
+            stateLock.unlock()
+            // The task clears its own entry when it ends.
+            Task { await retry.value; self.clearRetryEntry(jobID: jobID, task: retry) }
             return
         }
         Task {
+            defer { self.settlement.endEvent() }
             let store = BackgroundJobStore(database: database)
             _ = try? await store.transition(id: jobID, to: .failed) {
                 $0.lastError = error.localizedDescription
@@ -341,16 +533,30 @@ final class JobDownloadCoordinator: NSObject, URLSessionDownloadDelegate, @unche
     }
 
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        JobDownloadBackgroundEvents.shared.finish()
+        // Mark the system side complete ONLY. The stored completion fires
+        // after every registered settle/retry event has also drained — this
+        // was the finish-before-settle bug.
+        settlement.sessionDidFinishEvents()
     }
 
     // MARK: - Helpers
+
+    private func clearRetryEntry(jobID: UUID, task: Task<Void, Never>) {
+        stateLock.lock()
+        // Remove only this ending task's own entry: a newer retry (or a
+        // cancel that already removed it) must not be overwritten.
+        if pendingRetryTasks[jobID] == task {
+            pendingRetryTasks[jobID] = nil
+        }
+        stateLock.unlock()
+    }
 
     /// Synchronous lock wrapper so async callers never touch NSLock directly.
     private func clearBookkeeping(for jobID: UUID) {
         stateLock.lock()
         progressState[jobID] = nil
         resumeAttempts[jobID] = nil
+        jobGenerations[jobID] = nil
         stateLock.unlock()
     }
 

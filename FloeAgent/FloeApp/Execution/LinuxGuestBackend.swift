@@ -60,6 +60,7 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
     /// guest start must be able to resolve an external workspace before any
     /// window has touched the workspace UI.
     let workspaceStore: any WorkspaceStore
+    let sharedDownloadCacheURL: URL?
     /// The run shape armed by `FloePlatformServices` for the start currently
     /// in flight (an accepted IDE script-run shape), or nil for every ordinary
     /// start. Read-only during descriptor build: a concurrent status probe must
@@ -71,13 +72,15 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         defaultImageID: String,
         pinnedImageSource: PinnedImageSource,
         workspaceStore: any WorkspaceStore,
-        armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)? = nil
+        armedRunShape: (@Sendable (String) -> ShellGuestRunShapeIntent?)? = nil,
+        sharedDownloadCacheURL: URL? = nil
     ) {
         self.registry = registry
         self.defaultImageID = defaultImageID
         self.pinnedImageSource = pinnedImageSource
         self.workspaceStore = workspaceStore
         self.armedRunShape = armedRunShape
+        self.sharedDownloadCacheURL = sharedDownloadCacheURL
     }
 
     func linuxGuestEnvironment(id: String) async -> LinuxGuestEnvironmentDescriptor? {
@@ -93,6 +96,14 @@ struct AppLinuxGuestEnvironmentProvider: LinuxGuestEnvironmentProviding {
         if let workspace = try? await registry.workspaceRoot(for: id),
            !shares.contains(where: { $0.hostDirectory.standardizedFileURL == workspace.standardizedFileURL }) {
             shares.append(LinuxGuestShare(tag: "workspace", hostDirectory: workspace))
+        }
+        if let cache = sharedDownloadCacheURL {
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: cache.path, isDirectory: &isDirectory),
+               isDirectory.boolValue,
+               (try? cache.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true {
+                shares.append(LinuxGuestShare(tag: LinuxGuestShare.cacheTag, hostDirectory: cache))
+            }
         }
 
         let imageID = await pinnedImageSource.baseImageID(for: record.id) ?? defaultImageID
@@ -273,7 +284,8 @@ enum LinuxGuestBackendAssembly {
             // request so the registry/pool admit that shape explicitly.
             armedRunShape: { environmentID in
                 FloePlatformServices.shared.runShapeCenter.armedIntent(environmentID: environmentID)
-            }
+            },
+            sharedDownloadCacheURL: wiring.runtimeV2 == nil ? nil : (try? RuntimeV2Layout.production())?.cacheDirectory
         )
         let guestRegistry = TinyEMULinuxGuestRegistry(
             environments: environmentProvider,

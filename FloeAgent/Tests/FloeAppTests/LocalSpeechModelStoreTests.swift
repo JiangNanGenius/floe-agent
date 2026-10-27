@@ -1,10 +1,41 @@
 #if canImport(UIKit)
 import XCTest
 import CryptoKit
+import FloeCore
+import FloeLocalModelCatalog
 @testable import FloeApp
 
 @MainActor
 final class LocalSpeechModelStoreTests: XCTestCase {
+    func testSpeechOutputDownloadHoldsWakeThroughVerifiedPackageCommit() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "local-speech-settlement.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let bytes = Data("verified-output-model".utf8)
+        let model = fixture(bytes)
+        let settlement = BackgroundDownloadEventSettlement(name: "tts-owned-test")
+        let marker = root.appendingPathComponent("models/tts-\(model.id)-\(model.revision)/installed.json")
+        let observation = SpeechSettlementObservation()
+        settlement.registerSystemCompletionHandler {
+            observation.record(markerExists: FileManager.default.fileExists(atPath: marker.path))
+        }
+        let downloader = SettledSpeechDownloadFixture(root: root.appendingPathComponent("transfers"),
+            bytes: bytes, settlement: settlement)
+        let store = LocalSpeechModelStore(catalog: LocalSpeechCatalog(schemaVersion: 1, models: [model]),
+            root: root.appendingPathComponent("models"), defaults: UserDefaults(suiteName: suite)!, downloader: downloader)
+        await store.beginInstallation(model)
+        try await waitForCompletion(store)
+        for _ in 0..<100 where observation.count == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        let installed = await store.isInstalled(model)
+        let usedLedger = await downloader.usedLedger
+        XCTAssertTrue(installed)
+        XCTAssertTrue(usedLedger, "The output model installer must pass its own settlement ledger")
+        XCTAssertEqual(observation.count, 1)
+        XCTAssertTrue(observation.markerExistedAtCompletion, "System completion must follow the verified package commit")
+    }
+
     /// A rejected (corrupt/hash-mismatched) download of a REPLACEMENT pack must
     /// fail visibly, leave the currently installed pack usable, and a retry
     /// with healthy transport bytes must recover. The product deliberately
@@ -776,4 +807,37 @@ private actor TimedDownloadFixture: LocalSpeechDownloading {
         return file
     }
 }
+private final class SpeechSettlementObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fires = 0
+    private var committed = false
+    var count: Int { lock.withLock { fires } }
+    var markerExistedAtCompletion: Bool { lock.withLock { committed } }
+    func record(markerExists: Bool) { lock.withLock { fires += 1; committed = markerExists } }
+}
+
+private actor SettledSpeechDownloadFixture: LocalSpeechDownloading {
+    let root: URL
+    let bytes: Data
+    let settlement: BackgroundDownloadEventSettlement
+    private(set) var usedLedger = false
+    init(root: URL, bytes: Data, settlement: BackgroundDownloadEventSettlement) {
+        self.root = root; self.bytes = bytes; self.settlement = settlement
+    }
+    func download(_ url: URL, progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        throw LocalSpeechModelStore.Failure.unavailable
+    }
+    func download(_ url: URL, ledger: ModelDownloadSettlementLedger,
+                  progress: @escaping @Sendable (Int64) -> Void) async throws -> URL {
+        usedLedger = true
+        ledger.began(settlement)
+        settlement.sessionDidFinishEvents()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("finished.download")
+        try bytes.write(to: file, options: .atomic)
+        progress(Int64(bytes.count))
+        return file
+    }
+}
+
 #endif

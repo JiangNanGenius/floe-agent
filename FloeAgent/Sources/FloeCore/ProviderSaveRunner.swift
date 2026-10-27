@@ -72,6 +72,7 @@ public struct ProviderSaveDraft: Sendable, Equatable {
     public let baseURLString: String
     public let displayName: String
     public let presetID: String?
+    public let region: String?
     public let existingSecretRef: SecretReference?
     public let nonSecretHeaders: [String: String]
     public let isEnabled: Bool
@@ -115,7 +116,8 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         existingCreatedAt: Date?,
         existingSyncRevision: Int64,
         existingBaseURL: URL? = nil,
-        existingKind: ProviderKind? = nil
+        existingKind: ProviderKind? = nil,
+        region: String? = nil
     ) {
         self.providerID = providerID
         self.kind = kind
@@ -123,6 +125,7 @@ public struct ProviderSaveDraft: Sendable, Equatable {
         self.baseURLString = baseURLString
         self.displayName = displayName
         self.presetID = presetID
+        self.region = region
         self.existingSecretRef = existingSecretRef
         self.nonSecretHeaders = nonSecretHeaders
         self.isEnabled = isEnabled
@@ -195,6 +198,7 @@ public struct ProviderSaveDraft: Sendable, Equatable {
             displayName: normalizedName,
             presetID: presetID,
             secretRef: secretRef,
+            region: region,
             nonSecretHeaders: nonSecretHeaders,
             isEnabled: isEnabled,
             allowsPlainHTTP: allowsPlainHTTP,

@@ -95,6 +95,12 @@ final class ProviderEditorViewModel: ObservableObject {
         case idle
         case testing
         case succeeded(modelCount: Int)
+        /// A media role whose shipped role-adapter contract is verified but
+        /// whose endpoint has no free live-probe route. The editor presents
+        /// this as a contract verification, never as "Connected": chat
+        /// success is not media readiness and media readiness is proven by
+        /// the real adapter, not by a paid generation.
+        case verifiedWithoutLiveProbe(modelCount: Int)
         case failed(String)
     }
 
@@ -105,6 +111,14 @@ final class ProviderEditorViewModel: ObservableObject {
     /// User-facing provider name (editable; falls back to the preset label).
     @Published var displayName: String
     @Published var baseURLString: String
+    /// Persisted routing region. The field is only exposed when a saved
+    /// provider already carries a value or when a shipped adapter contract
+    /// requires one. Today no chat/image/video adapter consumes
+    /// `ProviderProfile.region` (Volcengine Ark and DashScope embed their
+    /// region in the documented endpoint host), so the resolver never
+    /// requires it; whatever the user sees in this field round-trips
+    /// through the save draft into `ProviderProfile.region`.
+    @Published var regionString: String = ""
     @Published var apiKey: String = ""
     /// Whether the API key field is currently revealed (plain text). Toggled
     /// by the eye button; revealing reads from Keychain and shows the stored
@@ -132,6 +146,11 @@ final class ProviderEditorViewModel: ObservableObject {
     // MARK: - Status
 
     @Published private(set) var testState: ConnectionTestState = .idle
+    /// Secret-free skip summary from the last media-role probe: identifiers
+    /// the endpoint listing returned that the official manifest or a declared
+    /// catalog offer does not verify for this role are reported here instead
+    /// of being stamped with media capabilities.
+    @Published private(set) var mediaProbeNote: String?
     @Published private(set) var secretStatus: SyncStatus = .synced
     @Published private(set) var isSaving = false
     @Published private(set) var nativeToolStatusByModelID: [UUID: NativeToolCapabilityStatus] = [:]
@@ -198,6 +217,12 @@ final class ProviderEditorViewModel: ObservableObject {
     /// saved in the same bundle transaction as the primary role.
     private var additionalRoleModels: [ProviderServiceRole: [ModelProfile]] = [:]
     private var declinedServiceRoles: Set<ProviderServiceRole> = []
+    /// Candidate rows this session auto-staged from the verified media table
+    /// for a NEW media-role add. Rows the user edited are removed from the
+    /// set, so a later supplier change only replaces untouched staged rows.
+    private var stagedOfficialSeedIDs: Set<UUID> = []
+    /// The verified media table last applied, compared on supplier changes.
+    private var appliedMediaSeedIDs: [String] = []
     /// Verified catalog identifiers staged for a distinct-connection offer
     /// opened as its own editor (for example the Google Gemini
     /// OpenAI-compatible conversation route). Catalog-declared only: nothing
@@ -237,6 +262,10 @@ final class ProviderEditorViewModel: ObservableObject {
             self.syncEnabled = existing.secretRef?.synchronizable ?? true
             self.nonSecretHeadersText = Self.headersText(from: existing.nonSecretHeaders)
             self.catalogPresetID = existing.presetID
+            // Preserve a stored region (sync/import could have carried one);
+            // the save draft carries it back verbatim unless the user edits
+            // the visible field.
+            self.regionString = existing.region ?? ""
         } else {
             self.providerID = UUID()
             let preset = Self.presets(for: self.serviceRole)[0]
@@ -288,6 +317,7 @@ final class ProviderEditorViewModel: ObservableObject {
         }
         refreshConnectionCredentialState()
         refreshServiceOffers()
+        restageMediaSeeds()
     }
 
     /// Pre-fills the editor from one official-catalog entry. The entry's
@@ -324,6 +354,7 @@ final class ProviderEditorViewModel: ObservableObject {
         catalogPresetID = entry.presetID
         refreshConnectionCredentialState()
         refreshServiceOffers()
+        restageMediaSeeds()
         // Selecting a multi-role vendor raises the ONE-TIME native prompt;
         // extras are opted in there, never as a permanent inline invitation.
         presentServiceOfferPromptIfNeeded()
@@ -728,13 +759,63 @@ final class ProviderEditorViewModel: ObservableObject {
 
     var availableProtocols: [ModelProtocol] { selectedPreset.supportedProtocols }
 
+    /// Role-specific form contract resolved from the CURRENT fields. It is
+    /// computed, never stored, so field edits always re-derive the honest
+    /// route contract. The effective preset identity follows the actual
+    /// endpoint for the shared `custom` kind (a Kimi Code `/coding[/v1]`
+    /// base resolves to the Kimi template, exactly like the existing
+    /// image-model-selection rule), so adapter truth and candidate trust
+    /// follow the URL the user will really call.
+    var formSpec: ProviderFormSpec {
+        ProviderFormSpecResolver.resolve(
+            role: serviceRole.catalogRole,
+            preset: effectiveFormPreset,
+            baseURL: URL(string: baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)),
+            catalogEntry: resolvedCatalogEntry()
+        )
+    }
+
+    /// The preset identity the shipped adapters actually see for the current
+    /// kind + endpoint. Editing `selectedPreset` itself is unchanged; this
+    /// only resolves the endpoint-derived route for contract decisions
+    /// (`ProviderPreset.preset(for:baseURL:)` is the same rule the Kimi
+    /// image hint already uses).
+    var effectiveFormPreset: ProviderPreset {
+        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard selectedPreset.kind == .custom, let url = URL(string: trimmed) else {
+            return selectedPreset
+        }
+        return ProviderPreset.preset(for: .custom, baseURL: url)
+    }
+
     var availablePresets: [ProviderPreset] {
         if existing?.kind == .googleGemini { return [.googleGemini] }
-        return Self.presets(for: serviceRole)
+        return formSpec.eligiblePresets
     }
 
     var supportsDiscovery: Bool {
         selectedPreset.supportsModelDiscovery
+    }
+
+    /// True when "refresh model list" has an honest meaning for the current
+    /// role and connection: the chat role with a discovering preset, or a
+    /// media role whose free `GET /models` listing feeds the verified merge.
+    var supportsModelListingRefresh: Bool {
+        formSpec.showsModelListingRefresh
+    }
+
+    /// The editor shows the region field only to preserve an existing value
+    /// or when a shipped adapter contract requires one (currently none).
+    var showsRegionField: Bool {
+        !regionString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || formSpec.requiredRegion != nil
+    }
+
+    /// The trimmed region every save carries into `ProviderProfile.region`
+    /// through the draft (nil when blank).
+    var regionValueForSave: String? {
+        let trimmed = regionString.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     var needsKimiImageModelSelection: Bool {
@@ -744,21 +825,18 @@ final class ProviderEditorViewModel: ObservableObject {
         return ProviderPreset.preset(for: selectedPreset.kind, baseURL: baseURL).id == .kimiCode
     }
 
+    /// Manifest-backed official candidates for this media role, in the stable
+    /// verified order. The chat role never shows them; Kimi Code account
+    /// models are deliberately not invented locally — the endpoint's own
+    /// model listing is that route's only honest source.
     var officialMediaPresets: [MediaModelDescriptor] {
         guard serviceRole != .conversation else { return [] }
-        let family: MediaProviderFamily?
-        switch selectedPreset.kind {
-        case .openAI: family = .openAI
-        case .googleGemini: family = .googleGemini
-        case .volcengineArk: family = .volcengineArk
-        case .alibabaStudio: family = .alibabaModelStudio
-        case .anthropic, .local, .custom: family = nil
+        let mediaKind: MediaKind = serviceRole == .video ? .video : .image
+        return formSpec.seedModelIDs.compactMap { remoteID in
+            OfficialMediaModelCatalog.models.first {
+                $0.kind == mediaKind && $0.remoteModelID == remoteID
+            }
         }
-        guard let family else { return [] }
-        return OfficialMediaModelCatalog.models(
-            provider: family,
-            kind: serviceRole == .video ? .video : .image
-        )
     }
 
     /// Loads the current secret-sync state for an existing provider, or
@@ -773,6 +851,12 @@ final class ProviderEditorViewModel: ObservableObject {
                 for remoteID in serviceOfferSeedModels {
                     addManualModel(remoteID: remoteID, displayName: remoteID)
                 }
+            } else {
+                // A new media-role add pre-stages the verified official
+                // candidates for the actual connection as pre-selected
+                // candidates, so the initiating role is immediately usable
+                // without running the chat listing or inventing identifiers.
+                stageOfficialMediaSeeds()
             }
             defaultModelID = center.modelPreferences.defaultAgentModelID
             return
@@ -851,7 +935,8 @@ final class ProviderEditorViewModel: ObservableObject {
             existingCreatedAt: existing?.createdAt,
             existingSyncRevision: existing?.syncRevision ?? 0,
             existingBaseURL: existing?.baseURL,
-            existingKind: existing?.kind
+            existingKind: existing?.kind,
+            region: regionValueForSave
         )
     }
 
@@ -867,8 +952,17 @@ final class ProviderEditorViewModel: ObservableObject {
     /// array means a save may proceed to side effects. No credential, sync or
     /// database work.
     func preflight() -> [ProviderConfigurationIssue] {
-        if case .failure(let report) = makeSaveRequest() { return report.issues }
-        return []
+        var issues: [ProviderConfigurationIssue] = []
+        if case .failure(let report) = makeSaveRequest() {
+            issues.append(contentsOf: report.issues)
+        }
+        if let gate = Self.newAddSelectionGateIssue(
+            isNewProvider: existing == nil,
+            selectedCount: modelsForSave.count
+        ) {
+            issues.append(gate)
+        }
+        return issues
     }
 
     /// Builds a ProviderProfile from the editable fields. Never embeds the
@@ -919,6 +1013,7 @@ final class ProviderEditorViewModel: ObservableObject {
     private func discoverModels(testConnectivity: Bool) async {
         testState = .testing
         errorMessage = nil
+        mediaProbeNote = nil
         do {
             let profile = try buildProfile()
             let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -929,6 +1024,10 @@ final class ProviderEditorViewModel: ObservableObject {
                 // Use the same Keychain resolution as ConversationCenter so
                 // the editor and runtime agree on which namespace to read.
                 credentials = center.resolveCredentials(for: profile)
+            }
+            if serviceRole != .conversation {
+                await probeMediaRole(profile: profile, credentials: credentials)
+                return
             }
             let adapter = adapterFactory.adapter(for: profile)
             if testConnectivity {
@@ -948,6 +1047,96 @@ final class ProviderEditorViewModel: ObservableObject {
             let message = SecretRedactor.redact(error.localizedDescription)
             testState = .failed(message)
             errorMessage = message
+        }
+    }
+
+    /// Honest media-role test. Media readiness is claimed ONLY from the
+    /// shipped role adapter contract for the actual connection. Where the
+    /// endpoint exposes the free OpenAI-compatible model listing, that
+    /// listing doubles as an unpaid credential check; its results go through
+    /// the verified merge, so chat models are never stamped as media models.
+    /// A paid generation is never triggered from this editor.
+    private func probeMediaRole(
+        profile: ProviderProfile,
+        credentials: ProviderCredentials
+    ) async {
+        let spec = formSpec
+        guard spec.roleAdapterAvailable else {
+            // Ordinary UI copy uses the existing readable bilingual route
+            // errors; the module's raw English reason stays diagnostic-only.
+            testState = .failed(Self.mediaRouteUnavailableMessage(for: serviceRole))
+            return
+        }
+        // A brand-new add re-applies the verified table after endpoint edits.
+        // An existing provider is never silently re-seeded here: its saved
+        // selection is the user's, and the merge below only ever adds rows
+        // the endpoint itself verified.
+        if existing == nil {
+            stageOfficialMediaSeeds()
+        }
+        // Candidate count the role can actually use (verified table plus any
+        // previously staged/added rows), not just the current selection.
+        let readyCandidateCount = candidateModels.filter { modelServesCurrentRole($0) }.count
+        switch spec.mediaProbe {
+        case .contractOnly:
+            testState = .verifiedWithoutLiveProbe(modelCount: readyCandidateCount)
+        case .contractWithCredentialListing, .chatOnly:
+            let adapter = adapterFactory.adapter(for: profile)
+            do {
+                let models = try await adapter.listModels(
+                    provider: profile,
+                    credentials: credentials
+                )
+                let outcome = Self.mediaMergePlan(
+                    existing: candidateModels,
+                    discovered: models,
+                    spec: spec,
+                    providerID: providerID
+                )
+                candidateModels = outcome.models
+                for model in candidateModels
+                where nativeToolStatusByModelID[model.id] != .verified {
+                    nativeToolStatusByModelID[model.id] =
+                        NativeToolCapabilityProbe.initialStatus(for: model)
+                }
+                if !outcome.skippedRemoteIDs.isEmpty {
+                    mediaProbeNote = FloeL10n.l(
+                        "providers.media_probe_skipped",
+                        outcome.skippedRemoteIDs.count
+                    )
+                }
+                testState = .succeeded(
+                    modelCount: candidateModels.filter { modelServesCurrentRole($0) }.count
+                )
+            } catch {
+                let message = SecretRedactor.redact(error.localizedDescription)
+                testState = .failed(message)
+            }
+        case .unavailable:
+            testState = .failed(Self.mediaRouteUnavailableMessage(for: serviceRole))
+        }
+    }
+
+    /// Readable bilingual failure text for a connection the role's shipped
+    /// adapter cannot serve. Reuses existing catalog strings so ordinary
+    /// screens never surface internal implementation wording.
+    static func mediaRouteUnavailableMessage(for role: ProviderServiceRole) -> String {
+        switch role {
+        case .image: FloeL10n.l("image.unsupported")
+        case .video:
+            FloeL10n.l("canvas.generation.error.video_provider_unsupported")
+        case .conversation:
+            FloeL10n.l("providers.test_failed")
+        }
+    }
+
+    /// True when one candidate row actually serves the editor's current
+    /// product role (surface check, not a capability-bit guess).
+    private func modelServesCurrentRole(_ model: ModelProfile) -> Bool {
+        switch serviceRole {
+        case .conversation: model.supportsChatAgentSurface
+        case .image: model.supportsImageGenerationSurface
+        case .video: model.supportsVideoGenerationSurface
         }
     }
 
@@ -1043,6 +1232,9 @@ final class ProviderEditorViewModel: ObservableObject {
     func updateModel(_ model: ModelProfile) {
         guard let index = candidateModels.firstIndex(where: { $0.id == model.id }) else { return }
         let previous = candidateModels[index]
+        // A user-edited auto-staged row is now user content: a later
+        // supplier change must never replace it.
+        stagedOfficialSeedIDs.remove(model.id)
         var normalized = model
         if serviceRole == .conversation {
             normalized.capabilities.insert(.text)
@@ -1143,15 +1335,174 @@ final class ProviderEditorViewModel: ObservableObject {
         addManualModel(remoteID: descriptor.remoteModelID, displayName: descriptor.displayName)
     }
 
-    private static func presets(for role: ProviderServiceRole) -> [ProviderPreset] {
+    /// Supplier presets the shipped adapters can actually serve for one
+    /// role. Image: OpenAI, Volcengine Ark, Alibaba, Google Gemini and the
+    /// verified Kimi Code endpoint; video: Volcengine Ark, Alibaba and Google
+    /// Gemini only. A generic custom endpoint can never become a video
+    /// supplier and Anthropic has no image route, so those dead options are
+    /// no longer offered.
+    static func presets(for role: ProviderServiceRole) -> [ProviderPreset] {
+        ProviderFormSpecResolver.eligiblePresets(for: role.catalogRole)
+    }
+
+    /// Re-apply the verified media candidate table for the NEW-add flow when
+    /// the supplier identity changes. Untouched auto-staged rows from the
+    /// previous verified table are removed (they belong to a different
+    /// endpoint contract); user-edited, deselected, manual and discovered
+    /// rows always survive.
+    private func restageMediaSeeds() {
+        guard existing == nil, serviceRole != .conversation else { return }
+        if appliedMediaSeedIDs != formSpec.seedModelIDs {
+            for id in stagedOfficialSeedIDs {
+                candidateModels.removeAll { $0.id == id }
+                selectedModelIDs.remove(id)
+                nativeToolStatusByModelID.removeValue(forKey: id)
+            }
+            stagedOfficialSeedIDs = []
+        }
+        stageOfficialMediaSeeds()
+    }
+
+    /// Stages the verified official identifiers for this media role that are
+    /// not already candidates as pre-selected rows. No identifier is ever
+    /// invented: the table is the product-owned manifest plus declared
+    /// catalog offers, both filtered by the shipped role adapter.
+    private func stageOfficialMediaSeeds() {
+        guard serviceRole != .conversation else { return }
+        let seeds = formSpec.seedModelIDs
+        appliedMediaSeedIDs = seeds
+        var known = Set(candidateModels.map(\.remoteModelID))
+        for remoteID in seeds where known.insert(remoteID).inserted {
+            let staged = Self.normalizedRoleModel(
+                Self.syntheticRoleModel(remoteID, role: serviceRole),
+                role: serviceRole,
+                providerID: providerID
+            )
+            candidateModels.append(staged)
+            nativeToolStatusByModelID[staged.id] = NativeToolCapabilityProbe.initialStatus(for: staged)
+            selectedModelIDs.insert(staged.id)
+            stagedOfficialSeedIDs.insert(staged.id)
+        }
+    }
+
+    /// Pure media-role merge for a model-listing round trip. Existing rows
+    /// are preserved exactly (user overrides win). A newly seen identifier
+    /// becomes a media candidate only when the verified table contains it —
+    /// or, for the Kimi Code endpoint, when the account itself listed it.
+    /// Everything else is reported as skipped and is NEVER stamped with the
+    /// role's media capabilities. New rows arrive unselected so the user
+    /// explicitly confirms them.
+    struct MediaMergeOutcome: Equatable {
+        let models: [ModelProfile]
+        let verifiedAddedIDs: [UUID]
+        let skippedRemoteIDs: [String]
+    }
+
+    static func mediaMergePlan(
+        existing: [ModelProfile],
+        discovered: [ModelProfile],
+        spec: ProviderFormSpec,
+        providerID: UUID
+    ) -> MediaMergeOutcome {
+        guard let role = ProviderServiceRole(rawValue: spec.role.rawValue) else {
+            return MediaMergeOutcome(models: existing, verifiedAddedIDs: [], skippedRemoteIDs: [])
+        }
+        var models = existing
+        var known = Set(existing.map(\.remoteModelID))
+        var added: [UUID] = []
+        var skipped: [String] = []
+        for discoveredModel in discovered {
+            let remoteID = discoveredModel.remoteModelID
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !remoteID.isEmpty, !known.contains(remoteID) else { continue }
+            let eligible = spec.trustsDiscoveryForMedia || spec.isVerifiedMediaModel(remoteID)
+            guard eligible else {
+                skipped.append(remoteID)
+                continue
+            }
+            let staged = normalizedRoleModel(
+                syntheticRoleModel(remoteID, role: role),
+                role: role,
+                providerID: providerID
+            )
+            models.append(staged)
+            known.insert(remoteID)
+            added.append(staged.id)
+        }
+        return MediaMergeOutcome(
+            models: models,
+            verifiedAddedIDs: added,
+            skippedRemoteIDs: skipped
+        )
+    }
+
+    /// Preflight finding for a brand-new provider save: an add with zero
+    /// selected models is not a usable configuration, so it is rejected with
+    /// zero side effects. Editing an existing provider still allows saving
+    /// while it is being configured (the list keeps empty providers visible).
+    static func newAddSelectionGateIssue(
+        isNewProvider: Bool,
+        selectedCount: Int
+    ) -> ProviderConfigurationIssue? {
+        guard isNewProvider, selectedCount == 0 else { return nil }
+        return ProviderConfigurationIssue(
+            field: .form,
+            problem: .malformed,
+            messageKey: "providers.no_models"
+        )
+    }
+
+    /// Pure default-routing fill for a media-role save. An existing global
+    /// default is NEVER overwritten; a missing one is filled only with a
+    /// canonical model that passes the same adapter usability check the
+    /// runtime uses, so the initiating role becomes usable without silently
+    /// re-pointing a working configuration at a new route.
+    static func fillingMissingRoleDefaults(
+        _ preferences: ModelSelectionPreferences,
+        canonical: [ModelProfile],
+        role: ProviderServiceRole,
+        provider: ProviderProfile
+    ) -> ModelSelectionPreferences {
+        var updated = preferences
+        guard provider.isEnabled else { return updated }
         switch role {
         case .conversation:
-            ProviderPreset.chatPresets
+            return updated
         case .image:
-            ProviderPreset.imagePresets
+            guard ImageProviderAdapterFactory().adapter(for: provider) != nil else {
+                return updated
+            }
+            let usable = canonical.filter {
+                $0.isEnabled && $0.supportsImageGenerationSurface
+            }
+            switch updated.auxiliaryImageMode {
+            case .shared:
+                // The shared route needs both operations, matching the
+                // picker's own sharedCandidates contract.
+                if updated.sharedImageModelID == nil {
+                    updated.sharedImageModelID = usable.first(where: {
+                        $0.capabilities.contains(.imageEditing)
+                    })?.id
+                }
+            case .separate:
+                if updated.imageGenerationModelID == nil {
+                    updated.imageGenerationModelID = usable.first?.id
+                }
+                if updated.imageEditingModelID == nil {
+                    updated.imageEditingModelID = canonical.first(where: {
+                        $0.isEnabled && $0.capabilities.contains(.imageGeneration)
+                            && $0.capabilities.contains(.imageEditing)
+                    })?.id
+                }
+            }
         case .video:
-            [.volcengineArk, .alibabaStudio, .googleGemini, .custom]
+            if updated.defaultVideoModelID == nil {
+                updated.defaultVideoModelID = canonical.first(where: {
+                    VideoModelRegistry.isUsable(model: $0, provider: provider)
+                })?.id
+            }
         }
+        return updated
     }
 
     /// Runs an explicit, inert native-tool round trip for one candidate model.
@@ -1186,6 +1537,7 @@ final class ProviderEditorViewModel: ObservableObject {
         candidateModels.removeAll { $0.id == id }
         nativeToolStatusByModelID.removeValue(forKey: id)
         selectedModelIDs.remove(id)
+        stagedOfficialSeedIDs.remove(id)
         if defaultModelID == id { defaultModelID = nil }
     }
 
@@ -1238,12 +1590,34 @@ final class ProviderEditorViewModel: ObservableObject {
         case .failure(let report):
             fieldIssues = report.issues
             lastFailurePhase = .preflight
-            let message = report.issues
+            var messages = report.issues
                 .map { Self.presentableMessage(for: $0) }
-                .joined(separator: "\n")
+            if let gate = Self.newAddSelectionGateIssue(
+                isNewProvider: existing == nil,
+                selectedCount: modelsForSave.count
+            ) {
+                messages.append(Self.presentableMessage(for: gate))
+                fieldIssues = [gate] + report.issues
+            }
             ProviderSavePhaseLogger.log(.failed)
+            let message = messages.joined(separator: "\n")
             errorMessage = SecretRedactor.redact(message)
             saveErrorMessage = SecretRedactor.redact(message)
+            return false
+        }
+        // A brand-new provider must carry at least one selected model before
+        // ANY side effect. Editing an existing provider stays allowed so a
+        // half-configured provider remains saveable.
+        if let gate = Self.newAddSelectionGateIssue(
+            isNewProvider: existing == nil,
+            selectedCount: request.selectedModels.count
+        ) {
+            fieldIssues = [gate]
+            lastFailurePhase = .preflight
+            let message = Self.presentableMessage(for: gate)
+            ProviderSavePhaseLogger.log(.failed)
+            errorMessage = message
+            saveErrorMessage = message
             return false
         }
 
@@ -1363,6 +1737,25 @@ final class ProviderEditorViewModel: ObservableObject {
                 // look like the provider failed to save.
                 let message = SecretRedactor.redact(error.localizedDescription)
                 errorMessage = message
+            }
+        } else {
+            // Media role: the initiating role becomes immediately usable.
+            // Existing global defaults are never overwritten; only a missing
+            // role default is filled with a canonical model that passes the
+            // runtime's own adapter usability check.
+            let updated = Self.fillingMissingRoleDefaults(
+                center.modelPreferences,
+                canonical: canonical,
+                role: serviceRole,
+                provider: request.profile
+            )
+            if updated != center.modelPreferences {
+                do {
+                    try await center.saveModelPreferences(updated)
+                } catch {
+                    let message = SecretRedactor.redact(error.localizedDescription)
+                    errorMessage = message
+                }
             }
         }
         // The optional-role prompt is shown once per provider: a successful

@@ -6,32 +6,126 @@ import FoundationNetworking
 
 #if os(iOS)
 /// Bridges URLSession background relaunch callbacks back to UIKit without
-/// making the catalog target depend on the application target.
-@MainActor
-public final class LocalModelBackgroundEvents {
+/// making the catalog target depend on the application target. The facade
+/// is a thin, thread-safe entry into the per-identifier settlement
+/// primitive: the stored system completion runs exactly once on main AFTER
+/// every settle event this wake registered has drained (component
+/// verification, the durable staging commit, the manifest write and the
+/// directory swap) — never while that work is still underway. `AppDelegate`
+/// keeps calling `register(identifier:completion:)` unchanged. The lookup
+/// is lock-protected with no actor hop, so the launch hook and the download
+/// delegate resolve the SAME instance from any thread in any order, and
+/// registration order can neither lose a completion nor fire one twice.
+/// The optional `bootstrap:` argument lets the launch hook attach bounded
+/// wake-readiness work (finite due scans, never inference or a whole-agent
+/// wait) BEFORE the handler is stored; two-argument `register` call sites
+/// are unchanged.
+public final class LocalModelBackgroundEvents: @unchecked Sendable {
     public static let shared = LocalModelBackgroundEvents()
-    private var completions: [String: () -> Void] = [:]
-    private var sessionsThatAlreadyFinished: Set<String> = []
 
     private init() {}
 
-    public func register(identifier: String, completion: @escaping () -> Void) {
-        if sessionsThatAlreadyFinished.remove(identifier) != nil {
-            completion()
-        } else {
-            completions[identifier] = completion
+    /// Stores the system completion for this identifier's wake.
+    /// `bootstrap` is the caller-provided BOUNDED wake readiness work
+    /// (finite metadata/due scans only — never a whole-agent wait,
+    /// inference or user wait). When present, its lease is registered as
+    /// pending BEFORE the handler is stored: a late handler on an already
+    /// drained+finished wake would otherwise fire immediately past the
+    /// still-running readiness work. Callers that pass no bootstrap keep
+    /// the previous two-argument behavior unchanged.
+    public func register(
+        identifier: String,
+        completion: @escaping () -> Void,
+        bootstrap: (@Sendable () async -> Void)? = nil
+    ) {
+        let settlement = LocalModelDownloadSettlements.settlement(for: identifier)
+        if let bootstrap {
+            settlement.trackBootstrap(bootstrap)
         }
-    }
-
-    fileprivate func finish(identifier: String) {
-        if let completion = completions.removeValue(forKey: identifier) {
-            completion()
-        } else {
-            sessionsThatAlreadyFinished.insert(identifier)
-        }
+        settlement.registerSystemCompletionHandler(completion)
     }
 }
 #endif
+
+/// Service-owned settlement lookup: one `FloeCore.BackgroundDownloadEventSettlement`
+/// per background session identifier (`org.floeagent.local-model.<model>.<component>`).
+/// Creation is lock-protected so the launch-hook facade and the delegate
+/// callbacks always share the same instance. Identifiers stay fully
+/// separated — a wake belongs to exactly one session — and per-model /
+/// per-component state survives across wakes with no cross-identifier
+/// hold or release.
+enum LocalModelDownloadSettlements {
+    nonisolated(unsafe) private static var settlements: [String: BackgroundDownloadEventSettlement] = [:]
+    private static let lock = NSLock()
+
+    static func settlement(for identifier: String) -> BackgroundDownloadEventSettlement {
+        lock.withLock {
+            if let existing = settlements[identifier] { return existing }
+            let created = BackgroundDownloadEventSettlement(name: "local-model.\(identifier)")
+            settlements[identifier] = created
+            return created
+        }
+    }
+}
+
+/// Exactly-once pairing helper shared by the two model-download owners.
+/// A settle event begun synchronously inside a delegate callback is counted
+/// here against the settlement it belongs to; the owning download/install
+/// operation checkpoints completed components before the next network wait
+/// and drains exactly once at its tail — AFTER durable bytes/state have been committed (or after failure cleanup restored the
+/// previous state) — so no background-session wake can be released
+/// mid-commit. Draining is idempotent; a defensive late `began` after the
+/// drain self-pairs (begin + immediate end) and can never strand a future
+/// wake for that identifier.
+public final class ModelDownloadSettlementLedger: @unchecked Sendable {
+    public init() {}
+
+    private let lock = NSLock()
+    private var counts: [ObjectIdentifier: (settlement: BackgroundDownloadEventSettlement, count: Int)] = [:]
+    private var drained = false
+
+    /// Registers one owned async follow-up begun by a delegate callback.
+    /// Call synchronously inside the callback that schedules the work.
+    public func began(_ settlement: BackgroundDownloadEventSettlement) {
+        settlement.beginEvent()
+        lock.lock()
+        guard !drained else {
+            lock.unlock()
+            settlement.endEvent()
+            return
+        }
+        let key = ObjectIdentifier(settlement)
+        let entry = counts[key] ?? (settlement, 0)
+        counts[key] = (entry.settlement, entry.count + 1)
+        lock.unlock()
+    }
+
+    /// A verified component has been moved into durable staging. Release
+    /// only events already settled, before waiting on the NEXT network
+    /// component. The final component stays held through the package commit.
+    public func checkpoint() {
+        lock.lock()
+        let snapshot = Array(counts.values)
+        counts.removeAll()
+        lock.unlock()
+        for entry in snapshot {
+            for _ in 0..<entry.count { entry.settlement.endEvent() }
+        }
+    }
+
+    /// Ends every registered event of this operation exactly once.
+    public func drain() {
+        lock.lock()
+        guard !drained else { lock.unlock(); return }
+        drained = true
+        let snapshot = Array(counts.values)
+        counts.removeAll()
+        lock.unlock()
+        for entry in snapshot {
+            for _ in 0..<entry.count { entry.settlement.endEvent() }
+        }
+    }
+}
 
 public struct LocalModelDownloadProgress: Sendable, Equatable {
     public var modelID: String
@@ -318,6 +412,15 @@ public actor LocalModelStore {
     ) async throws -> URL {
         let traceID = UUID().uuidString
         let startedAt = Date()
+        // Settle events begun inside the component delegate callbacks drain
+        // at this operation's tail: on success only after snapshot
+        // validation, the manifest write and the staging→directory swap
+        // have committed durable state; on failure/cancellation only after
+        // staging cleanup and backup restoration. No background-session
+        // wake for this entry's identifiers may release its system
+        // completion before that point.
+        let ledger = ModelDownloadSettlementLedger()
+        defer { ledger.drain() }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let values = try root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
         let available = values.volumeAvailableCapacityForImportantUsage ?? 0
@@ -355,9 +458,11 @@ public actor LocalModelStore {
                     displayComponent: artifact.path,
                     overallBase: base,
                     overallWeight: weight,
+                    ledger: ledger,
                     progress: progress
                 )
                 completedBytes += max(artifact.byteCount, 0)
+                if index < entry.artifacts.count - 1 { ledger.checkpoint() }
             }
             switch entry.runtimeFormat {
             case .mlx:
@@ -552,6 +657,7 @@ public actor LocalModelStore {
         displayComponent: String,
         overallBase: Double,
         overallWeight: Double,
+        ledger: ModelDownloadSettlementLedger,
         progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
     ) async throws {
         let startedAt = Date()
@@ -560,6 +666,8 @@ public actor LocalModelStore {
         )
         let resumeURL = resumeDataURL(modelID: modelID, component: component)
         let resumeData = try? Data(contentsOf: resumeURL)
+        let sessionIdentifier = "org.floeagent.local-model.\(modelID).\(component)"
+        let settlement = LocalModelDownloadSettlements.settlement(for: sessionIdentifier)
         let operation = ComponentDownloadDelegate(
             destination: destination,
             resumeDataURL: resumeURL,
@@ -567,11 +675,13 @@ public actor LocalModelStore {
             component: displayComponent,
             overallBase: overallBase,
             overallWeight: overallWeight,
+            settlement: settlement,
+            ledger: ledger,
             progress: progress
         )
         #if os(iOS)
         let configuration = URLSessionConfiguration.background(
-            withIdentifier: "org.floeagent.local-model.\(modelID).\(component)"
+            withIdentifier: sessionIdentifier
         )
         configuration.sessionSendsLaunchEvents = true
         configuration.isDiscretionary = false
@@ -624,7 +734,7 @@ public actor LocalModelStore {
     }
 }
 
-private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     private let destination: URL
     private let resumeDataURL: URL
     private let modelID: String
@@ -632,11 +742,31 @@ private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDeleg
     private let overallBase: Double
     private let overallWeight: Double
     private let progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
+    /// Per-session-identifier settlement shared with the launch-hook facade.
+    private let settlement: BackgroundDownloadEventSettlement
+    /// Counts the settle event begun by this callback so the owning
+    /// `LocalModelStore.download` operation ends it exactly once at its
+    /// durable-commit tail.
+    private let ledger: ModelDownloadSettlementLedger
     private let lock = NSLock()
     private var continuation: CheckedContinuation<URLResponse, Error>?
     private var response: URLResponse?
     private var movedFile = false
     private var permitsResumePersistence = true
+    /// True once this transfer's FIRST terminal delegate callback has run.
+    /// Gates BOTH the settle-event registration and the resume handoff to
+    /// exactly once per transfer, independent of whether `start` has
+    /// attached yet — the event contract is callback-bound, not
+    /// continuation-bound (see `finish`).
+    private var settled = false
+    private var terminalCallbackClaimed = false
+    /// Terminal result stored when the callback arrived BEFORE `start`
+    /// attached (background-session restore replay: URLSession can deliver
+    /// replayed callbacks the moment the session is created, and
+    /// `session.allTasks` awaits before `start` runs). The awaiting
+    /// operation consumes it in `start`, so its verification/commit work
+    /// and the ledger tail drain still run; the resume is never lost.
+    private var storedResult: Result<URLResponse, Error>?
     private let startedAt = Date()
 
     init(
@@ -646,6 +776,8 @@ private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDeleg
         component: String,
         overallBase: Double,
         overallWeight: Double,
+        settlement: BackgroundDownloadEventSettlement,
+        ledger: ModelDownloadSettlementLedger,
         progress: (@Sendable (LocalModelDownloadProgress) -> Void)?
     ) {
         self.destination = destination
@@ -654,13 +786,56 @@ private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDeleg
         self.component = component
         self.overallBase = overallBase
         self.overallWeight = overallWeight
+        self.settlement = settlement
+        self.ledger = ledger
         self.progress = progress
     }
 
     func start(task: URLSessionDownloadTask) async throws -> URLResponse {
-        try await withCheckedThrowingContinuation { continuation in
-            lock.withLock { self.continuation = continuation }
-            task.resume()
+        enum Binding {
+            case attached
+            case awaitingReplay
+            case replayed(Result<URLResponse, Error>)
+            case consumed
+        }
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URLResponse, Error>) in
+            let binding: Binding = lock.withLock {
+                if settled {
+                    // The terminal callback already ran (restore-replay
+                    // order). Hand back its stored result instead of
+                    // installing a continuation that nothing can resume.
+                    if let stored = storedResult {
+                        storedResult = nil
+                        return .replayed(stored)
+                    }
+                    return .consumed
+                }
+                guard self.continuation == nil else { return .consumed }
+                self.continuation = continuation
+                return terminalCallbackClaimed ? .awaitingReplay : .attached
+            }
+            switch binding {
+            case .attached:
+                task.resume()
+            case .awaitingReplay:
+                // The callback is registering its ledger event. It will
+                // resume this continuation only after that registration.
+                task.cancel()
+                break
+            case .replayed(let result):
+                // The task is terminal (its callbacks were replayed by
+                // URLSession when the restored session was created); its
+                // settle event was registered inside that callback. Do not
+                // resume it. allTasks can already have dropped the terminal
+                // task, leaving the caller's replacement task suspended;
+                // cancel that unused task (a no-op if already completed).
+                task.cancel()
+                continuation.resume(with: result)
+            case .consumed:
+                // Defensive: a second attach for one transfer. Never strand
+                // the caller's continuation.
+                continuation.resume(throwing: URLError(.cancelled))
+            }
         }
     }
 
@@ -739,19 +914,53 @@ private final class ComponentDownloadDelegate: NSObject, URLSessionDownloadDeleg
     }
 
     private func finish(_ result: Result<URLResponse, Error>) {
-        let continuation: CheckedContinuation<URLResponse, Error>? = lock.withLock {
-            defer { self.continuation = nil }
-            return self.continuation
+        let firstTerminal = lock.withLock {
+            guard !terminalCallbackClaimed else { return false }
+            terminalCallbackClaimed = true
+            return true
         }
-        continuation?.resume(with: result)
+        guard firstTerminal else { return }
+        // Publish a replayable result only AFTER the event is registered.
+        // A concurrent start must not consume it and drain the operation
+        // while finish is still between its lock and ledger.began.
+        ledger.began(settlement)
+        let waiting: CheckedContinuation<URLResponse, Error>? = lock.withLock {
+            settled = true
+            let waiting = self.continuation
+            self.continuation = nil
+            if waiting == nil {
+                // Restore-replay order: no operation has attached through
+                // `start` yet. Store the terminal result so the owning
+                // operation still awaits this transfer, runs its
+                // validation/commit and drains the event registered below.
+                storedResult = result
+            }
+            return waiting
+        }
+        // This terminal callback schedules the component's owned async
+        // settle follow-up in the awaiting download task (HTTP status/size/
+        // format validation now, and the durable staging commit at the
+        // operation tail). The event MUST be registered synchronously here,
+        // inside the delegate callback — BEFORE any continuation handoff and
+        // regardless of whether `start` has attached: `urlSessionDidFinishEvents`
+        // for this wake can arrive the moment the callback returns, and the
+        // system completion must then wait for the settle to drain instead
+        // of letting the process be suspended or killed mid-commit. The
+        // matching `endEvent` runs exactly once when the owning `download`
+        // operation drains its ledger — on every success, error and
+        // cancellation path.
+        waiting?.resume(with: result)
     }
 
     #if os(iOS)
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         guard let identifier = session.configuration.identifier else { return }
-        Task { @MainActor in
-            LocalModelBackgroundEvents.shared.finish(identifier: identifier)
-        }
+        // System side complete ONLY. The stored launch completion fires
+        // exactly once on main after every settle event this wake
+        // registered has drained — the previous path hopped through a
+        // `Task { @MainActor }` and released OS completion while the
+        // verification/install/state-commit work was still running.
+        LocalModelDownloadSettlements.settlement(for: identifier).sessionDidFinishEvents()
     }
     #endif
 }

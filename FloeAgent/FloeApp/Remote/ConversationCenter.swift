@@ -8461,7 +8461,7 @@ final class ConversationCenter: ObservableObject {
             runID: snapshot.runID,
             stage: progress.stage,
             progress: progress.value,
-            isGenerating: snapshot.stateName == "streamingModel"
+            isGenerating: ["streamingModel", "preparingToolCall"].contains(snapshot.stateName)
         )
         if let waiting = snapshot.pendingApproval {
             environment.backgroundRunCoordinator.didUpdatePendingApproval(

@@ -1,6 +1,7 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import Foundation
 import FloeCore
+import FloeProviders
 
 /// Product role selected before configuring a provider. Wire protocol and
 /// credentials remain provider properties; this role only supplies honest
@@ -56,6 +57,16 @@ enum ProviderServiceRole: String, CaseIterable, Identifiable {
         if models.contains(where: \.supportsChatAgentSurface) { return .conversation }
         if models.contains(where: \.supportsVideoGenerationSurface) { return .video }
         return .image
+    }
+
+    /// Module-side identity of the same product role, used by the
+    /// role-specific form contract and the service-offer resolvers.
+    var catalogRole: ProviderCatalogServiceRole {
+        switch self {
+        case .conversation: .conversation
+        case .image: .image
+        case .video: .video
+        }
     }
 }
 #endif

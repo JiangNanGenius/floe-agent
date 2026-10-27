@@ -16,10 +16,11 @@ public func registerShellTools(
     sessions: ShellSessionCenter,
     pythonInstaller: ManagedPythonInstallService? = nil,
     capabilityInstaller: CapabilityInstaller? = nil,
-    wasmStore: SignedWasmCapabilityStore? = nil
+    wasmStore: SignedWasmCapabilityStore? = nil,
+    dependencyGate: (any SkillDependencyInvocationGating)? = nil
 ) -> Bool {
     ToolCatalog.register(LocalShellTool.self)
-    registry.register(LocalShellTool(shell: shell, pythonInstaller: pythonInstaller))
+    registry.register(LocalShellTool(shell: shell, pythonInstaller: pythonInstaller, dependencyGate: dependencyGate))
 
     ToolCatalog.register(ShellOpenTool.self)
     ToolCatalog.register(ShellExchangeTool.self)
