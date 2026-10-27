@@ -710,6 +710,89 @@ struct SkillDependencyGuestQualificationTests {
             Issue.record("real-guest apt qualification failed: \(error)")
         }
     }
+    @Test("Diagnostic only: opened descriptor metadata across rename/unlink on guest and shared filesystems",
+          .enabled(if: ProcessInfo.processInfo.environment["FLOE_GUEST_FD_DIAGNOSTIC"] == "1"))
+    func guestOpenDescriptorMetadataDiagnostic() async throws {
+        let environment = AppEnvironment.live()
+        await environment.bootstrap()
+        guard let guest = await bootOwnedGuest(
+            environment: environment, services: FloePlatformServices.shared,
+            phase: { print("FLOE_FD_PROBE_PHASE \($0)") }) else { return }
+        do {
+            // Fixed synthetic files in this disposable guest only. Never
+            // operate on the shared model/package cache or user workspaces.
+            let script = #"""
+            import json, os, stat, subprocess, tempfile
+            def metadata(fd):
+                try:
+                    s = os.fstat(fd)
+                    return dict(ok=True, size=s.st_size, inode=s.st_ino, device=s.st_dev,
+                                mode=oct(stat.S_IFMT(s.st_mode)))
+                except OSError as e:
+                    return dict(ok=False, errno=e.errno, message=str(e))
+            rows = []
+            for base in ('/tmp', '/run', '/var/lib/apt/lists/partial',
+                         '/var/cache/apt/archives/partial', '/floe/env'):
+                row = dict(base=base)
+                fd = duplicate = None
+                original = renamed = None
+                try:
+                    os.makedirs(base, exist_ok=True)
+                    fs = subprocess.run(['stat', '-f', '-c', '%T', base], capture_output=True,
+                                        text=True, timeout=10)
+                    row['filesystem'] = fs.stdout.strip()
+                    row['filesystemExit'] = fs.returncode
+                    fd, original = tempfile.mkstemp(prefix='floe-fd-probe-', dir=base)
+                    os.write(fd, b'probe')
+                    duplicate = os.dup(fd)
+                    row['before'] = metadata(fd)
+                    row['duplicateBefore'] = metadata(duplicate)
+                    renamed = original + '.renamed'
+                    os.rename(original, renamed)
+                    row['afterRename'] = metadata(fd)
+                    row['duplicateAfterRename'] = metadata(duplicate)
+                    os.unlink(renamed)
+                    row['afterUnlink'] = metadata(fd)
+                    row['duplicateAfterUnlink'] = metadata(duplicate)
+                    try:
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        row['readAfterUnlink'] = os.read(fd, 5).decode('ascii')
+                    except OSError as e:
+                        row['readAfterUnlink'] = dict(errno=e.errno, message=str(e))
+                    try:
+                        row['procLink'] = os.readlink('/proc/self/fd/' + str(fd))
+                    except OSError as e:
+                        row['procLink'] = dict(errno=e.errno, message=str(e))
+                except Exception as e:
+                    row['probeError'] = repr(e)
+                finally:
+                    for descriptor in (fd, duplicate):
+                        if descriptor is not None:
+                            os.close(descriptor)
+                    for path in (original, renamed):
+                        if path is not None:
+                            try: os.unlink(path)
+                            except FileNotFoundError: pass
+                rows.append(row)
+            print('FLOE_FD_PROBE_REPORT ' + json.dumps(dict(
+                libc=os.confstr('CS_GNU_LIBC_VERSION'), procFD=os.path.isdir('/proc/self/fd'),
+                rows=rows), sort_keys=True))
+            """#
+            let result = try await guest.runner.run(
+                environmentID: guest.environmentID, argv: ["python3", "-c", script],
+                workingDirectory: nil, standardInput: nil, timeout: 180,
+                maxOutputBytes: 64 * 1024, cancellation: nil)
+            print(SecretRedactor.redact(result.stdout))
+            #expect(result.exitCode == 0, "Descriptor diagnostic process failed: \(bounded(result.stderr))")
+            #expect(result.stdout.contains("FLOE_FD_PROBE_REPORT "))
+            // This test records anomalies; it never asserts POSIX or apt
+            // readiness. Only the real apt install/readback test qualifies it.
+            print("FLOE_FD_PROBE_DIAGNOSTIC_ONLY exit=\(result.exitCode)")
+        } catch {
+            Issue.record("Guest descriptor diagnostic failed: \(error)")
+        }
+        await guest.teardown()
+    }
 }
 
 private extension ManagedPythonInstallService.Outcome {
