@@ -29,9 +29,9 @@ import org.junit.Test
  *    before it can never apply to another sheet/slide/selection, while a
  *    fresh capture stays usable and pure queries never invalidate;
  *  - UNKNOWN never auto-undoes and retains data;
- *  - position readback proves ONLY position: content mutations terminate
- *    NATIVE_COMPLETED without an exact soft content-readback match, and
- *    selection effects terminate NATIVE_COMPLETED (partial postcondition).
+ *  - position readback proves ONLY position: exact content match verifies,
+ *    explicit comparable conflict is UNKNOWN, unavailable evidence is
+ *    NATIVE_COMPLETED; selection stays partial NATIVE_COMPLETED.
  */
 class OfficePrecisionLedgerTest {
 
@@ -627,7 +627,7 @@ class OfficePrecisionLedgerTest {
     }
 
     @Test
-    fun applyTextReadbackMismatchStaysNativeCompletedNeverFailed() {
+    fun applyTextExplicitReadbackMismatchIsUnknownEffectNotNativeCompleted() {
         val l = ledger()
         val run = claimArmed(
             l,
@@ -636,16 +636,16 @@ class OfficePrecisionLedgerTest {
         armDispatched(l, run, 0)
         l.onFrame(pasteFrame("success"))
         armDispatched(l, run, 1)
-        // e.g. Calc display re-formatting: the mutation completed, but the
-        // content claim cannot be upgraded — honest NATIVE_COMPLETED.
+        // Exact C07 class: pasteresult=success followed by a REAL comparable
+        // answer that contradicts the requested text. ACK + conflict is not
+        // completion; the possible effect is retained and never replayed.
         val event = l.onFrame(selectionContentFrame("1.5"))
             as OfficePrecisionLedger.LedgerEvent.Terminal
-        assertEquals(OfficePrecisionState.NATIVE_COMPLETED, event.result.state)
-        assertNull(event.result.failure)
-        val applied = event.result.answer as OfficePrecisionAnswer.MutationApplied
-        assertEquals(OfficePrecisionContentReadback.MISMATCHED, applied.contentReadback)
-        assertEquals(handle, applied.consumedTargetHandle)
-        assertEquals("pending-flush-or-export-verification", event.result.detail)
+        assertEquals(OfficePrecisionState.UNKNOWN, event.result.state)
+        assertEquals(OfficePrecisionFailure.TARGET_UNVERIFIED, event.result.failure)
+        assertEquals("content-readback-conflict-effect-uncertain", event.result.detail)
+        assertNull(event.result.answer)
+        assertTrue(event.result.attestation.contains("content-readback:readback-mismatch"))
     }
 
     @Test

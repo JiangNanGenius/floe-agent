@@ -23,7 +23,7 @@
     <string name="workspace_source_import_title">从文件系统导入</string>
     <string name="workspace_source_target_path">工作区内路径</string>
     <string name="workspace_source_display_name">文件名</string>
-    <string name="workspace_source_import_hint">先选取外部文件，再指定它在工作区中的位置。</string>
+    <string name="workspace_source_import_hint">先选取外部文件或文件夹，再指定它在工作区中的位置。</string>
     <string name="workspace_source_pick_document">选取文件…</string>
     <string name="workspace_source_pick_folder">选取文件夹…</string>
     <string name="workspace_source_save_as_title">另存为（新文件）</string>
@@ -35,7 +35,7 @@
     <string name="workspace_source_export_hint">先选取目标文件夹，再导出。只会新建文档，不替换任何文件。</string>
     <string name="workspace_source_export_confirm">导出副本</string>
     <string name="workspace_source_browse_title">浏览外部文件夹</string>
-    <string name="workspace_source_browse_hint">请先用"选取文件夹…"选择该文件夹，再在此处列出内容。文件夹可继续打开，只有文件可被选取导入。</string>
+    <string name="workspace_source_browse_hint">请先用"选取文件夹…"选择该文件夹，再在此处列出内容。浏览用于选取单个文件；选定文件夹后直接点"导入"即可导入其中的文件。</string>
     <string name="workspace_source_browse_go">列出内容</string>
     <string name="workspace_source_browse_empty">此文件夹为空。</string>
     <string name="workspace_source_use_file">使用此文件</string>

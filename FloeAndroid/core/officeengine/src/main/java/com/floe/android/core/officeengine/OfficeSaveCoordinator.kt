@@ -13,10 +13,11 @@ package com.floe.android.core.officeengine
  * no correlation; it is tracked here only for cancel-before-dispatch and
  * busy visibility.
  *
- * A `.uno:Save` ack that arrives with NO pending flush (e.g. the page's own
- * save button) is recorded as an external fact ([ExternalSaveRecord]) and
- * never completes a host operation. An ack stamped `isAutosave=true` while
- * a host flush is pending is a genuine collision the pinned protocol cannot
+ * A `.uno:Save` ack that arrives with NO pending flush OR before that flush's
+ * real save command entered its native call (page edit/native editable
+ * preparation included) is external, never the host op's proof. Only the
+ * actual save-command window can complete the pending host op. An ack stamped
+ * `isAutosave=true` inside that window is a genuine collision the protocol cannot
  * disambiguate: the pending flush settles UNKNOWN, never "success".
  *
  * Cancellation honesty: the pinned producer has NO save-cancel command.
@@ -63,7 +64,10 @@ class OfficeSaveCoordinator {
     data class PendingFlush(
         val opId: String,
         val saveIfUnmodified: Boolean,
+        /** Dispatch/cancel ownership started; the save command may still be fenced. */
         var dispatched: Boolean = false,
+        /** The actual save command entered its native call; acks may now belong to this op. */
+        var saveCommandDispatched: Boolean = false,
         var cancelRequested: Boolean = false,
     )
 
@@ -120,6 +124,19 @@ class OfficeSaveCoordinator {
         val pending = pendingFlush ?: return false
         if (pending.opId != opId) return false
         pending.dispatched = true
+        return true
+    }
+
+    /**
+     * Arms ack ownership IMMEDIATELY BEFORE the real save native call. Any
+     * earlier page/manual/autosave completion is external to this host op,
+     * including during page edit preparation and the native editable send.
+     */
+    @Synchronized
+    fun markSaveCommandDispatched(opId: String): Boolean {
+        val pending = pendingFlush ?: return false
+        if (pending.opId != opId || !pending.dispatched) return false
+        pending.saveCommandDispatched = true
         return true
     }
 
@@ -185,8 +202,8 @@ class OfficeSaveCoordinator {
 
     /**
      * Consumes one parsed `.uno:Save` completion frame. Returns the pending
-     * flush outcome, or an [ExternalSaveRecord] when no host op is pending
-     * (second return value), or null when the frame is not a save result.
+     * flush outcome, or an [ExternalSaveRecord] when no save-command-owned
+     * host op can accept it (second return value), or null for non-save.
      */
     @Synchronized
     fun onNativeSaveResult(
@@ -203,7 +220,9 @@ class OfficeSaveCoordinator {
             null -> FlushVerdict.NO_PROOF // unparseable frame is never evidence
         }
         val pending = pendingFlush
-        if (pending == null) {
+        if (pending == null || !pending.saveCommandDispatched) {
+            // A submitted op waiting for page edit/native editable has NOT
+            // sent save yet. An older manual/auto completion must not settle it.
             return null to ExternalSaveRecord(verdict, resultValue, isAutosave)
         }
         // A concurrent autosave ack cannot be attributed to the host op, and
@@ -223,6 +242,7 @@ class OfficeSaveCoordinator {
     fun onSaveErrorFrame(cmd: String?, kind: String?): FlushOutcome? {
         if (!OfficeSaveProtocol.isSaveRelatedError(cmd, kind)) return null
         val pending = pendingFlush ?: return null
+        if (!pending.saveCommandDispatched) return null
         pendingFlush = null
         return FlushOutcome(pending.opId, FlushVerdict.NATIVE_FAILED, "error:cmd=$cmd kind=$kind", pending.cancelRequested)
     }

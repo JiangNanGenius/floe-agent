@@ -22,10 +22,11 @@ package com.floe.android.core.officeengine.precision
  *  - MANDATORY steps gate the effect and its positional truth: a failure or
  *    timeout there is a real FAILED/UNKNOWN.
  *  - The SOFT content-readback stage runs only AFTER the producer's own
- *    completion evidence arrived; it can UPGRADE the terminal state to
- *    MUTATION_VERIFIED (exact content match) but can never fail the
- *    operation — a mismatch/absence honestly leaves it NATIVE_COMPLETED
- *    (pending the owned flush/export byte verification).
+ *    completion evidence arrived. Exact match upgrades MUTATION_VERIFIED;
+ *    an explicit comparable mismatch is positive conflicting evidence and
+ *    terminates UNKNOWN (maybe-effect, retained, never replayed). Missing,
+ *    oversize, multiformat or otherwise unavailable readback remains
+ *    inconclusive NATIVE_COMPLETED pending owned flush/export verification.
  */
 internal object OfficePrecisionPlan {
 
@@ -133,10 +134,9 @@ internal object OfficePrecisionPlan {
         object NonEmptySelectionContent : StepCheck()
 
         /**
-         * SOFT content postcondition: the readback selection text is
-         * compared with the request's applied text. Exact match upgrades to
-         * MUTATION_VERIFIED; anything else downgrades to NATIVE_COMPLETED —
-         * it NEVER fails the completed mutation.
+         * SOFT content postcondition: exact match upgrades MUTATION_VERIFIED;
+         * an explicit comparable mismatch terminates UNKNOWN with the effect
+         * uncertain. Unavailable/unsupported readback stays NATIVE_COMPLETED.
          */
         object AppliedTextReadback : StepCheck()
     }
@@ -151,8 +151,9 @@ internal object OfficePrecisionPlan {
         val check: StepCheck,
         val timeoutMs: Long,
         /**
-         * Soft stages run only after producer completion evidence; their
-         * failure/timeout downgrades verification instead of failing the op.
+         * Soft stages run after producer completion evidence. Explicit
+         * conflicting content is UNKNOWN; unavailable evidence only limits
+         * verification and does not fabricate a mismatch.
          */
         val soft: Boolean = false,
     )
@@ -276,10 +277,9 @@ internal object OfficePrecisionPlan {
                     check = StepCheck.PasteSuccess,
                     timeoutMs = MUTATION_TIMEOUT_MS,
                 ),
-                // SOFT content postcondition: after a producer-confirmed
-                // paste the core normally leaves the pasted text selected,
-                // so the same pinned readback can confirm the exact bytes.
-                // Any other outcome stays NATIVE_COMPLETED — never FAILED.
+                // SOFT content postcondition: exact match verifies; an
+                // explicit comparable conflict is UNKNOWN (maybe-effect),
+                // while no-answer/unsupported evidence stays inconclusive.
                 Step(
                     name = "content-readback",
                     wire = OfficePrecisionProtocol.CMD_GET_TEXT_SELECTION,
