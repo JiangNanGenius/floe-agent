@@ -339,4 +339,20 @@
     <string name="history_rename_failed">Couldn’t rename this task. Try again.</string>
     <string name="queue_refresh_failed">Couldn’t refresh queued messages.</string>
     <string name="queue_refresh_action">Refresh</string>
+
+    <!-- D04 owned run-output cards (⇄ per-item sealed file outputs) -->
+    <string name="run_output_save">Save a copy</string>
+    <string name="run_output_open">Open</string>
+    <string name="run_output_saving">Saving…</string>
+    <string name="run_output_saved">Saved to your file</string>
+    <string name="run_output_save_cancelled">Save cancelled</string>
+    <string name="run_output_save_failed">Save failed</string>
+    <string name="run_output_missing">File no longer available</string>
+    <string name="run_output_changed">File contents changed</string>
+    <string name="run_output_oversized">File too large to open here</string>
+    <string name="run_output_rejected">Output record could not be verified</string>
+    <string name="run_output_loading">Checking files…</string>
+    <string name="run_output_unavailable">File service unavailable</string>
+    <string name="run_output_truncated">Some outputs may not be listed</string>
+    <string name="run_output_refresh">Check again</string>
 </resources>

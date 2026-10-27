@@ -117,9 +117,18 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
     /// runner never reaches execution (the service's own
     /// "not available in this build" refusal and the injected admitted set
     /// fail closed).
+    /// `document.office.edit` carries NO directly admitted actions: the
+    /// ORIGINAL service admits a deferred payload only when the registered
+    /// `NativeJobServiceAdapter` owns its action (`adapter != nil` in
+    /// submit), and the Office AI adapter owns exactly `apply`. Reads,
+    /// preparatory selection/navigation and `collect` therefore can never be
+    /// submitted as jobs (collect must seal into a REAL current call, and a
+    /// raw background executor context could never satisfy that — the tool
+    /// additionally refuses any `jobs.*` call context by itself).
     public static let androidJobPolicy: NativeJobActionPolicy = NativeJobActionPolicy(handlers: [
         "exec.shell": NativeJobHandler(allowedActions: [NativeJobActionPolicy.anyAction]),
         "web.fetch": NativeJobHandler(allowedActions: [NativeJobActionPolicy.anyAction]),
+        "document.office.edit": NativeJobHandler(allowedActions: []),
     ])
 
     // MARK: - Composition (trusted host only)
@@ -166,7 +175,18 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         } catch {
             return false
         }
-        guard adapters.keys.allSatisfy({ (policy ?? Self.androidJobPolicy).supportedTargetNames.contains($0) }) else {
+        let resolvedPolicy = policy ?? Self.androidJobPolicy
+        var resolvedAdapters = adapters
+        if resolvedPolicy.supportedTargetNames.contains(OfficeDocumentEditTool.name),
+           resolvedAdapters[OfficeDocumentEditTool.name] == nil {
+            // Idempotent production injection of the ORIGINAL adapter seam:
+            // the Office AI deferred apply runs through the SAME Core bridge
+            // (ONE capture/model-think/apply invariant for inline + job), and
+            // a caller-provided adapter for the target always wins.
+            resolvedAdapters[OfficeDocumentEditTool.name] =
+                OfficeEditJobAdapter.make(port: OfficeAIHostBridge.shared)
+        }
+        guard resolvedAdapters.keys.allSatisfy({ resolvedPolicy.supportedTargetNames.contains($0) }) else {
             // An adapter for a target the policy does not admit would be
             // silently unreachable; refuse the plan instead of shipping a
             // dead seam.
@@ -181,8 +201,8 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             transport: transport,
             settlementGate: settlementGate,
             outputRootURL: resolvedRoot,
-            policy: policy ?? Self.androidJobPolicy,
-            adapters: adapters,
+            policy: resolvedPolicy,
+            adapters: resolvedAdapters,
             onTerminal: onTerminal,
             shellConfiguration: shellConfiguration,
             processorOwnership: processorOwnership
@@ -219,6 +239,13 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
         guard let plan = withState({ planStorage }) else { return nil }
 
         let shared = ToolRunnerRegistry.shared
+        if plan.policy.supportedTargetNames.contains(OfficeDocumentEditTool.name) {
+            // Register the Office AI tool runner BEFORE resolving job targets
+            // so the ORIGINAL J1 admitted-set intersection reflects the ACTUAL
+            // executable surface (isAvailable = live host lane), never a
+            // hoped-for later registration.
+            OfficeAIComposition.shared.installToolIfNeeded()
+        }
         let jobRegistry = ToolRunnerRegistry()
         var admitted: Set<String> = []
         for target in plan.policy.supportedTargetNames {
@@ -301,7 +328,10 @@ public final class RuntimeFacadeJobBindings: @unchecked Sendable {
             serviceStorage = nil; jobRegistryStorage = nil; planStorage = nil; admittedStorage = []
         }
         jobOwnershipBox.set(nil)
-        ToolRunnerRegistry.shared.unregister { ["jobs.submit", "jobs.status", "jobs.result", "jobs.cancel"].contains($0) }
+        ToolRunnerRegistry.shared.unregister {
+            ["jobs.submit", "jobs.status", "jobs.result", "jobs.cancel"].contains($0)
+                || $0 == OfficeDocumentEditTool.name
+        }
         G03JobLifecycle.uninstall(epoch: epoch)
         return true
     }

@@ -49,6 +49,44 @@ object CoolMessageTriage {
         FILEMODE,
         HAS_PASSWORD_TO_MODIFY,
         ERROR,
+
+        // --- G05-R2 precision surface observations (P-A) -----------------
+        // Native→page frames the precision engine correlates BEFORE the
+        // WebView relay. Classification stays cheap and fail-closed; the
+        // (bounded) payload extraction happens in OfficePrecisionEngine and
+        // ONLY while an armed operation step can consume it, so the relay
+        // hot path never copies selection/content bytes nobody asked for.
+
+        /** `commandvalues: {json}` (getCommandValues answers + deltas). */
+        COMMAND_VALUE,
+
+        /** `textselectioncontent:` (gettextselection answer; raw or \n+JSON). */
+        TEXT_SELECTION_CONTENT,
+
+        /** `complexselection:` (producer: selection too large/complex). */
+        COMPLEX_SELECTION,
+
+        /** `pasteresult: success|fallback` (paste completion evidence). */
+        PASTE_RESULT,
+
+        /** `cellcursor:` push (EMPTY or the six-number twip/col/row payload). */
+        CELL_CURSOR,
+
+        /** `celladdress:` push (focused-cell address; content never logged). */
+        CELL_ADDRESS,
+
+        /** `cellformula:` push (focused-cell formula text; content never logged). */
+        CELL_FORMULA,
+
+        /** `presentationinfo: {json}` (getpresentationinfo answer). */
+        PRESENTATION_INFO,
+
+        /** `textselection: <payload>` (TEXT_SELECTION callback effect frame). */
+        TEXT_SELECTION,
+
+        /** `graphicselection: <payload>` (GRAPHIC_SELECTION callback frame). */
+        GRAPHIC_SELECTION,
+
         OTHER,
     }
 
@@ -70,7 +108,7 @@ object CoolMessageTriage {
             prefix.startsWith("tile:") || prefix.startsWith("tilecombine:") ||
                 prefix.startsWith("delta:") -> TriageResult(Kind.TILE_DELIVERY)
             prefix.startsWith("invalidatetiles:") -> TriageResult(Kind.TILE_INVALIDATE)
-            prefix.startsWith("setpart:") -> TriageResult(Kind.PART_SET)
+            prefix.startsWith("setpart:") -> TriageResult(Kind.PART_SET, part = parsePart(message))
             prefix.startsWith("statechanged:") -> TriageResult(Kind.STATE_CHANGED, stateChange = parseStateChange(message))
             prefix.startsWith("unocommandresult:") || prefix.startsWith("commandresult:") ->
                 TriageResult(Kind.UNO_COMMAND_RESULT, commandResult = parseCommandResult(message))
@@ -78,6 +116,23 @@ object CoolMessageTriage {
             prefix.startsWith("filemode:") -> TriageResult(Kind.FILEMODE, fileMode = parseFileMode(message))
             prefix.startsWith("haspasswordtomodify:") -> TriageResult(Kind.HAS_PASSWORD_TO_MODIFY)
             prefix.startsWith("error:") -> TriageResult(Kind.ERROR, error = parseError(message))
+            // --- precision-surface answer/effect frames (P-A). Prefixes are
+            // unambiguous against the entries above ("textselectioncontent:"
+            // does NOT start with "textselection:", "cellviewcursor:" does
+            // NOT start with "cellcursor:"). Save-relevant frames keep their
+            // exact existing classification and behaviour.
+            prefix.startsWith("commandvalues:") ->
+                TriageResult(Kind.COMMAND_VALUE, commandValue = parseCommandValue(message))
+            prefix.startsWith("textselectioncontent:") -> TriageResult(Kind.TEXT_SELECTION_CONTENT)
+            prefix.startsWith("complexselection:") -> TriageResult(Kind.COMPLEX_SELECTION)
+            prefix.startsWith("pasteresult:") ->
+                TriageResult(Kind.PASTE_RESULT, pasteVerdict = parsePasteVerdict(message))
+            prefix.startsWith("cellcursor:") -> TriageResult(Kind.CELL_CURSOR)
+            prefix.startsWith("celladdress:") -> TriageResult(Kind.CELL_ADDRESS)
+            prefix.startsWith("cellformula:") -> TriageResult(Kind.CELL_FORMULA)
+            prefix.startsWith("presentationinfo:") -> TriageResult(Kind.PRESENTATION_INFO)
+            prefix.startsWith("textselection:") -> TriageResult(Kind.TEXT_SELECTION)
+            prefix.startsWith("graphicselection:") -> TriageResult(Kind.GRAPHIC_SELECTION)
             else -> TriageResult(Kind.OTHER)
         }
     }
@@ -91,6 +146,9 @@ object CoolMessageTriage {
         val perm: String? = null,
         val fileMode: FileMode? = null,
         val error: ErrorInfo? = null,
+        val commandValue: CommandValueInfo? = null,
+        val pasteVerdict: String? = null,
+        val part: PartInfo? = null,
     )
 
     data class ProgressInfo(val id: String?, val text: String?, val value: Int?)
@@ -118,6 +176,18 @@ object CoolMessageTriage {
 
     /** `error: cmd=<cmd> kind=<kind> ...` tokens when present (null otherwise). */
     data class ErrorInfo(val cmd: String?, val kind: String?)
+
+    /**
+     * One `commandvalues:` header (P-A precision surface): the answered
+     * [commandName] and, when the producer embedded it as a JSON string
+     * (e.g. `.uno:CellCursor`), the bounded raw [commandValues] payload.
+     * Object-shaped commandValues stay null (fail-closed; the precision
+     * engine only consumes the string-shaped CellCursor/ReadOnly answers).
+     */
+    data class CommandValueInfo(val commandName: String?, val commandValues: String?)
+
+    /** One `setpart: part=<id>` echo (the part the producer actually shows). */
+    data class PartInfo(val part: String?)
 
     private fun ByteArray.prefixAscii(max: Int): String {
         val end = minOf(max, size)
@@ -225,6 +295,45 @@ object CoolMessageTriage {
             }
         }
         return ErrorInfo(cmd, kind)
+    }
+
+    /** Bounded scalar cap for precision-frame header fields. */
+    private const val MAX_HEADER_FIELD_CHARS = 512
+
+    /**
+     * Parses the `commandvalues:` JSON header: `commandName` and — only when
+     * string-shaped — the bounded `commandValues` scalar. Deliberately
+     * tolerant and fail-closed (same discipline as [parseCommandResult]);
+     * full payloads are NEVER parsed here (the precision engine extracts
+     * them bounded, only while an armed step can consume them).
+     */
+    private fun parseCommandValue(message: ByteArray): CommandValueInfo? {
+        val text = String(message, Charsets.UTF_8)
+        val brace = text.indexOf('{')
+        if (brace < 0) return null
+        val json = text.substring(brace)
+        val name = jsonStringField(json, "commandName")?.take(MAX_HEADER_FIELD_CHARS)
+        val values = jsonStringField(json, "commandValues")?.take(MAX_HEADER_FIELD_CHARS)
+        if (name == null && values == null) return null
+        return CommandValueInfo(name, values)
+    }
+
+    /** `pasteresult:` verdict token; only the two pinned values are meaningful. */
+    private fun parsePasteVerdict(message: ByteArray): String? {
+        val payload = payloadText(message, "pasteresult:".length)
+        val token = payload.substringBefore(' ').take(32)
+        return when (token) {
+            "success", "fallback" -> token
+            else -> null
+        }
+    }
+
+    /** `setpart: part=<id>` echo (bounded; the id the producer shows). */
+    private fun parsePart(message: ByteArray): PartInfo? {
+        val payload = payloadText(message, "setpart:".length)
+        if (!payload.startsWith("part=")) return null
+        val value = payload.removePrefix("part=").trim().take(MAX_HEADER_FIELD_CHARS)
+        return PartInfo(value.ifEmpty { null })
     }
 
     private fun jsonNumberField(json: String, key: String): Int? {

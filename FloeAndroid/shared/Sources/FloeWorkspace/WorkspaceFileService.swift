@@ -145,6 +145,13 @@ public struct WorkspaceFileService: Sendable {
     /// Hard bounds for hostile or exceptionally large File Provider trees.
     public static let maxDirectoryEntries = 5_000
     public static let maxSearchFiles = 10_000
+    /// Upper bound for the bytes `replaceBinaryFile` accepts as a source
+    /// snapshot: the native Office AI "save the original" bridge streams
+    /// snapshots up to this size with bounded buffers and never holds the
+    /// whole document in memory. This is that API's own input budget; it
+    /// does not relax the guard's model-text write caps for ordinary tool
+    /// writes, and it fails closed above the bound.
+    public static let officeBinaryReplacementBudget = 256 * 1024 * 1024
     /// Directories pruned during search (VCS internals, build products).
     private static let searchSkipDirectories: Set<String> = [
         ".git", ".svn", ".hg", "node_modules", ".build", "DerivedData", ".swiftpm"
@@ -153,8 +160,10 @@ public struct WorkspaceFileService: Sendable {
     public let guardResolver: WorkspacePathGuard
 
     /// Optional gate invoked with the RESOLVED target URL before any mutation
-    /// (create-overwrite, write, patch, binary write, move source/destination,
-    /// copy destination, delete). Reads never invoke it. The design freeze
+    /// (create-overwrite, write, patch, binary write, binary replacement —
+    /// once before streaming the replacement and again immediately before the
+    /// final atomic commit — move source/destination, copy destination,
+    /// delete). Reads never invoke it. The design freeze
     /// registry wires this to block ordinary writes to a frozen design
     /// original; the trusted design commit port constructs its service
     /// WITHOUT a gate (it is the verified adoption path).
@@ -777,6 +786,287 @@ public struct WorkspaceFileService: Sendable {
         return WriteOutcome(bytesWritten: count, sha256: digest, mtime: modified?.timeIntervalSince1970 ?? 0)
     }
 
+    /// Atomically replaces an EXISTING workspace file with the bytes of an
+    /// external source snapshot. This is the native Office AI "save the
+    /// original" bridge: the AI-produced document is exported to a recoverable
+    /// snapshot outside the workspace first, and this call commits those exact
+    /// bytes over the original the user opened, under the same service policy
+    /// every other write uses.
+    ///
+    /// Contract (service policy only — no new storage, permission or approval
+    /// system):
+    /// - The workspace mutation lock is held for the whole transaction, the
+    ///   same `WorkspaceMutationLocks`/`ManagedFileMutationLock.shared`
+    ///   serialization every other `WorkspaceFileService` write uses.
+    /// - `expectedOriginalSHA256` is required and must match the digest of an
+    ///   existing regular destination file. A missing original is a typed
+    ///   conflict and is NEVER created silently; a digest mismatch means the
+    ///   original changed since the caller read it.
+    /// - The required original digest is verified before the expensive copy,
+    ///   then rechecked by `AtomicFileCommitter`'s replace-if-unchanged policy
+    ///   at the commit entry, and finally rechecked by this service inside the
+    ///   pre-commit verification hook — the closest controllable point before
+    ///   the atomic move/replace.
+    /// - The source snapshot is never consumed: its bytes are streamed with a
+    ///   bounded buffer into an owned same-directory transaction stage, which
+    ///   is proven to be a regular, no-follow, exactly-sized file whose
+    ///   digest matches the source and `expectedSourceSHA256` after EOF. The
+    ///   source file stays intact on success, failure and cancellation.
+    /// - `expectedSourceBytes`/`expectedSourceSHA256` must match the actual
+    ///   streamed source (declared bytes outside 1...`officeBinaryReplacementBudget`
+    ///   are refused before any copying; the source must not change size or
+    ///   mtime during the copy). Whole-file RAM conversion is not used.
+    /// - `mutationGuard`/freeze gate runs before the copy starts and again
+    ///   inside the pre-commit hook immediately before the final commit, with
+    ///   the path guards reasserted, so a late in-session change or a frozen
+    ///   original is refused instead of overwritten.
+    /// - Cancellation and every validation failure preserve both the original
+    ///   and the source; only this service's owned unused stage is removed.
+    /// - On success the returned `WriteOutcome` carries the real receipt:
+    ///   committed byte count, the post-commit digest of the destination and
+    ///   its new mtime.
+    ///
+    /// Concurrency honesty: the mutation lock serializes cooperating service
+    /// writers and the digest checks are the existing staged-commit CAS policy.
+    /// An arbitrary out-of-band program writing the same path can still race
+    /// in the small window between the final verification and the filesystem
+    /// move; no OS-level content compare-and-swap is claimed beyond what
+    /// `AtomicFileCommitter` already provides.
+    @discardableResult
+    public func replaceBinaryFile(
+        _ path: String,
+        from source: URL,
+        expectedOriginalSHA256: String,
+        expectedSourceSHA256: String,
+        expectedSourceBytes: Int,
+        cancellation: CancellationToken? = nil
+    ) throws -> WriteOutcome {
+        let lock = WorkspaceMutationLocks.lock(for: guardResolver.rootURL)
+        lock.lock(); defer { lock.unlock() }
+        try cancellation?.throwIfCancelled()
+
+        guard let originalDigest = Self.normalizedSHA256Hex(expectedOriginalSHA256) else {
+            throw WorkspaceToolError.invalidArguments(
+                "expectedOriginalSHA256 must be a full 64-hex-digit SHA-256"
+            )
+        }
+        guard let sourceDigest = Self.normalizedSHA256Hex(expectedSourceSHA256) else {
+            throw WorkspaceToolError.invalidArguments(
+                "expectedSourceSHA256 must be a full 64-hex-digit SHA-256"
+            )
+        }
+        guard expectedSourceBytes >= 1 else {
+            throw WorkspaceToolError.invalidArguments("expectedSourceBytes must be at least 1")
+        }
+        guard expectedSourceBytes <= Self.officeBinaryReplacementBudget else {
+            throw WorkspaceToolError.tooLarge(limit: Self.officeBinaryReplacementBudget)
+        }
+
+        // Destination path policy — the same guard discipline `importUserFile`
+        // applies: containment, secret exclusion, no symlinked ancestor may
+        // silently select a different document's file.
+        let destination = try guardResolver.resolve(path)
+        try rejectWorkspaceRootMutation(destination, operation: "binary replacement")
+        let root = guardResolver.rootURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard destination.path.hasPrefix(root.path + "/") else { throw WorkspaceToolError.escapesRoot(path) }
+        let lexical = root.appendingPathComponent(path).standardizedFileURL
+        var cursor = lexical
+        while cursor.path != root.path && cursor.path.hasPrefix(root.path + "/") {
+            if (try? cursor.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+                throw WorkspaceToolError.escapesRoot(path)
+            }
+            cursor.deleteLastPathComponent()
+        }
+        try guardResolver.assertWritable(destination)
+
+        // The original must already exist as a regular file; a missing
+        // original is a conflict, never a silent create.
+        var destinationIsDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: destination.path, isDirectory: &destinationIsDirectory) else {
+            throw WorkspaceToolError.conflict(
+                expected: "existing original \(originalDigest)", actual: "missing original"
+            )
+        }
+        guard !destinationIsDirectory.boolValue else { throw WorkspaceToolError.isDirectory(path) }
+        let destinationAttributes = try fileManager.attributesOfItem(atPath: destination.path)
+        guard (destinationAttributes[.type] as? FileAttributeType) == .typeRegular else {
+            throw WorkspaceToolError.invalidArguments("replacement target is not a regular file: \(path)")
+        }
+        let destinationSize = (destinationAttributes[.size] as? NSNumber)?.intValue ?? 0
+        guard destinationSize <= Self.officeBinaryReplacementBudget else {
+            throw WorkspaceToolError.tooLarge(limit: Self.officeBinaryReplacementBudget)
+        }
+
+        // Required original digest, verified BEFORE the expensive copy.
+        let originalNow = try FloeDigest.sha256Hex(
+            ofFileAt: destination, isCancelled: { cancellation?.isCancelled == true }
+        )
+        guard originalNow == originalDigest else {
+            throw WorkspaceToolError.conflict(
+                expected: "sha256 \(originalDigest)", actual: "sha256 \(originalNow)"
+            )
+        }
+
+        // The existing freeze gate must actually execute before any mutation
+        // work for this target (a second execution runs pre-commit below).
+        try assertNotFrozen(destination)
+
+        // Source preconditions: a real, regular, non-symlink snapshot whose
+        // on-disk size equals the caller's declared byte budget entry, and
+        // which is not the original itself (the snapshot must stay
+        // recoverable; replacing would consume it).
+        guard fileManager.fileExists(atPath: source.path) else {
+            throw WorkspaceToolError.notFound(source.lastPathComponent)
+        }
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
+        let sourceBefore = try source.resourceValues(forKeys: keys)
+        guard sourceBefore.isRegularFile == true, sourceBefore.isSymbolicLink != true else {
+            throw WorkspaceToolError.invalidArguments("replacement requires a regular non-symlink source file")
+        }
+        guard sourceBefore.fileSize == expectedSourceBytes else {
+            throw WorkspaceToolError.conflict(
+                expected: "source size \(expectedSourceBytes)", actual: "source size \(sourceBefore.fileSize ?? -1)"
+            )
+        }
+        // Same underlying file (hardlink or path alias) as the original would
+        // consume the recoverable snapshot through the replacement, so both
+        // the resolved-path form and the actual stat volume/file identity are
+        // refused. Foundation's URLResourceKey has no file-identity key in
+        // these toolchains, so this uses FileManager's documented attribute
+        // keys; platforms without stat identity fall back to the path check.
+        let sourceAttributes = try fileManager.attributesOfItem(atPath: source.path)
+        let sourceSystemNumber = (sourceAttributes[.systemNumber] as? NSNumber)?.int64Value
+        let sourceFileNumber = (sourceAttributes[.systemFileNumber] as? NSNumber)?.int64Value
+        let destinationSystemNumber = (destinationAttributes[.systemNumber] as? NSNumber)?.int64Value
+        let destinationFileNumber = (destinationAttributes[.systemFileNumber] as? NSNumber)?.int64Value
+        let sameInode = sourceSystemNumber != nil && sourceSystemNumber == destinationSystemNumber
+            && sourceFileNumber != nil && sourceFileNumber == destinationFileNumber
+        guard source.standardizedFileURL.resolvingSymlinksInPath() != destination, !sameInode else {
+            throw WorkspaceToolError.invalidArguments("replacement source must differ from the workspace original")
+        }
+
+        let parent = destination.deletingLastPathComponent()
+        if let available = try fileManager.attributesOfFileSystem(forPath: parent.path)[.systemFreeSize] as? NSNumber,
+           available.uint64Value < UInt64(expectedSourceBytes) {
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        let staging = parent.appendingPathComponent(".floe-binary-replace-" + UUID().uuidString)
+        defer { try? fileManager.removeItem(at: staging) }
+        guard fileManager.createFile(atPath: staging.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
+
+        // Stream the snapshot into the owned same-directory stage with a
+        // bounded buffer; cancellation, growth, shrink and EOF are all proven
+        // against the declared size. The source is opened read-only and is
+        // never moved, truncated or deleted.
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        let output = try FileHandle(forWritingTo: staging)
+        var stageHandleClosed = false
+        defer { if !stageHandleClosed { try? output.close() } }
+        var copied = 0
+        while true {
+            try cancellation?.throwIfCancelled()
+            guard let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty else { break }
+            guard copied <= expectedSourceBytes - chunk.count else {
+                throw WorkspaceToolError.conflict(expected: "unchanged source snapshot", actual: "source grew")
+            }
+            try output.write(contentsOf: chunk)
+            copied += chunk.count
+        }
+        // Flush and close the owned stage BEFORE any atomic adoption so the
+        // staged bytes on disk are complete for the committer's verification
+        // and the final move/replace.
+        try output.synchronize()
+        try output.close()
+        stageHandleClosed = true
+        let sourceAfter = try source.resourceValues(forKeys: keys)
+        guard copied == expectedSourceBytes,
+              sourceAfter.fileSize == sourceBefore.fileSize,
+              sourceAfter.contentModificationDate == sourceBefore.contentModificationDate else {
+            throw WorkspaceToolError.conflict(expected: "unchanged source snapshot", actual: "source changed")
+        }
+        let stagedDigest = try FloeDigest.sha256Hex(
+            ofFileAt: staging, isCancelled: { cancellation?.isCancelled == true }
+        )
+        let sourceDigestNow = try FloeDigest.sha256Hex(
+            ofFileAt: source, isCancelled: { cancellation?.isCancelled == true }
+        )
+        guard stagedDigest == sourceDigestNow, sourceDigestNow == sourceDigest else {
+            throw WorkspaceToolError.conflict(
+                expected: "sha256 \(sourceDigest)", actual: "source or staged copy changed"
+            )
+        }
+
+        // Commit through the shared staged-commit path with its
+        // replace-if-unchanged CAS. The committer re-checks the original
+        // digest at commit entry; this service's verification hook is the
+        // last controllable gate before the atomic move/replace.
+        try cancellation?.throwIfCancelled()
+        let policy = FileCommitPolicy(
+            conflict: .replaceIfUnchanged(
+                expectedSHA256: originalDigest, expectedMTime: nil, mtimeTolerance: 0
+            ),
+            maxBytes: Self.officeBinaryReplacementBudget,
+            verifyBeforeCommit: { stagedURL in
+                let fm = FileManager.default
+                try self.assertNotFrozen(destination)
+                let stagedKeys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+                let stagedValues = try stagedURL.resourceValues(forKeys: stagedKeys)
+                guard stagedValues.isRegularFile == true, stagedValues.isSymbolicLink != true,
+                      stagedValues.fileSize == expectedSourceBytes else {
+                    throw WorkspaceToolError.conflict(
+                        expected: "owned transaction stage", actual: "staged file changed"
+                    )
+                }
+                let stagedHash = try FloeDigest.sha256Hex(ofFileAt: stagedURL)
+                guard stagedHash == sourceDigest else {
+                    throw WorkspaceToolError.conflict(
+                        expected: "sha256 \(sourceDigest)", actual: "staged file changed"
+                    )
+                }
+                var originalStillThere: ObjCBool = false
+                guard fm.fileExists(atPath: destination.path, isDirectory: &originalStillThere),
+                      !originalStillThere.boolValue else {
+                    throw WorkspaceToolError.conflict(
+                        expected: "existing original \(originalDigest)", actual: "original missing at commit"
+                    )
+                }
+                try self.guardResolver.assertWritable(destination)
+                let originalFinal = try FloeDigest.sha256Hex(ofFileAt: destination)
+                guard originalFinal == originalDigest else {
+                    throw WorkspaceToolError.conflict(
+                        expected: "sha256 \(originalDigest)", actual: "sha256 \(originalFinal)"
+                    )
+                }
+            },
+            checkCancellation: { try cancellation?.throwIfCancelled() }
+        )
+        let receipt = try AtomicFileCommitter.commit(stagedFile: staging, to: destination, policy: policy)
+        // A committed replacement must have replaced an existing original; if
+        // the platform reports otherwise this was an unintended create and the
+        // contract is broken, so it is surfaced, not swallowed.
+        guard receipt.replacedExisting else {
+            throw WorkspaceToolError.conflict(
+                expected: "replaced existing original \(originalDigest)",
+                actual: "committed without an existing original"
+            )
+        }
+        // The receipt digest must be the bytes we streamed, read back from the
+        // committed destination itself.
+        guard receipt.byteCount == expectedSourceBytes, receipt.sha256 == sourceDigest else {
+            throw WorkspaceToolError.conflict(
+                expected: "sha256 \(sourceDigest) in \(expectedSourceBytes) bytes",
+                actual: "committed \(receipt.sha256) in \(receipt.byteCount) bytes"
+            )
+        }
+        let modified = try destination.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        return WriteOutcome(
+            bytesWritten: receipt.byteCount,
+            sha256: receipt.sha256,
+            mtime: modified?.timeIntervalSince1970 ?? 0
+        )
+    }
+
     /// Deletes a file or directory. Non-empty directories are only removed
     /// when `recursive` is true; otherwise they are refused so a stray path
     /// cannot wipe a subtree silently.
@@ -937,6 +1227,17 @@ public struct WorkspaceFileService: Sendable {
 
     static func sha256Hex(of data: Data) -> String {
         FloeDigest.sha256Hex(data)
+    }
+
+    /// Normalizes a required full SHA-256 hex digest. Only a complete 64
+    /// hex-digit string is accepted, lowercased; empty, short, long or
+    /// non-hex input returns nil so callers fail closed instead of
+    /// accidentally comparing against a prefix.
+    static func normalizedSHA256Hex(_ value: String) -> String? {
+        guard value.count == 64 else { return nil }
+        let lowered = value.lowercased()
+        guard lowered.allSatisfy(\.isHexDigit) else { return nil }
+        return lowered
     }
 
     static func normalizedRelativePath(_ path: String) -> String {

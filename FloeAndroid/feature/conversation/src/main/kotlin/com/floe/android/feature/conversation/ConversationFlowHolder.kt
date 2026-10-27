@@ -1932,6 +1932,37 @@ class ConversationFlowHolder(
         if (host.openRichArtifactPreview(session, artifactId)) ConversationFlowResult.Accepted
         else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
 
+    /** Run-output cards: byte access ALWAYS re-enters the native owner by
+     * (run, output) identity; these wrappers only start host effects and
+     * never claim progress from a true return alone. */
+    fun saveRunOutput(card: RunOutputCardUi): ConversationFlowResult {
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (!state.rows.runOutputIsActionable(card)) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        return if (host.saveRunOutputCopy(session, card.runId, card.outputId))
+            ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    fun openRunOutput(card: RunOutputCardUi): ConversationFlowResult {
+        val state = snapshot.value ?: return rejected(ConversationRejectedReason.NO_SESSION)
+        if (!state.rows.runOutputIsActionable(card)) return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        if (!RunOutputCardPresentation.supportsOpen(card.mimeType, card.displayName)) {
+            return rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+        }
+        return if (host.openRunOutputFile(session, card.runId, card.outputId))
+            ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+    }
+
+    fun cancelRunOutputSave(card: RunOutputCardUi): ConversationFlowResult =
+        if (host.cancelRunOutputSave(session, card.runId, card.outputId))
+            ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+
+    fun refreshRunOutputs(runId: String): ConversationFlowResult =
+        if (host.refreshRunOutputs(session, runId)) ConversationFlowResult.Accepted
+        else rejected(ConversationRejectedReason.HOST_UNAVAILABLE)
+
     /** Read-aloud is offered only when the host projects voice as usable; a
      * false host state never claims the affordance works. */
     fun speakMessage(text: String): ConversationFlowResult {

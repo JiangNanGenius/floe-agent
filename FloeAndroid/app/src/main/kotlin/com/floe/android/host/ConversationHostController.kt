@@ -39,6 +39,7 @@ import com.floe.android.contracts.Revision
 import com.floe.android.feature.conversation.RunningInputModeUi
 import com.floe.android.feature.conversation.RunningInputRequest
 import com.floe.android.feature.conversation.RunLaunchRequest
+import com.floe.android.feature.conversation.RunOutputCardUi
 import com.floe.android.feature.conversation.StagedAttachmentUi
 import com.floe.android.feature.conversation.TaskBulkOperationUi
 import com.floe.android.feature.conversation.TemporaryEndTargetUi
@@ -47,6 +48,12 @@ import com.floe.android.feature.conversation.TemporarySessionRef
 import com.floe.android.feature.conversation.ThreadUiState
 import com.floe.android.feature.conversation.TimelineRowUi
 import com.floe.android.feature.providers.ProviderCredentialStateUi
+import com.floe.android.FloeApplication
+import com.floe.android.host.output.RunOutputHostService
+import com.floe.android.host.output.RunOutputListResult
+import com.floe.android.host.output.RunOutputOfficeSnapshotStager
+import com.floe.android.host.output.RunOutputSaveOutcome
+import com.floe.android.host.output.runOutputPdfOpenAgreement
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -133,6 +140,18 @@ class ConversationHostController internal constructor(
     // overwriting the one visible-holder signal in this conflated flow.
     private val privacyVisibleHolder = java.util.concurrent.atomic.AtomicReference<
         com.floe.android.feature.conversation.ConversationFlowHolder?>(null)
+
+    /** Narrow read-only join for the G05-R2 Office AI host lane (Main
+     * host20): the EXACT durable conversation id the visible detail surface
+     * currently reports through the same privacy-clear ownership binding
+     * (null while Home/settings/a transient selection owns the surface, or
+     * between a selection commit and the destination's re-report). The AI
+     * lane consults it ONLY as the transient current-chat admission before a
+     * NEW viewer launch — never as the durable owner fence — so it can
+     * neither steal the foreground from another chat/settings/picker nor
+     * invalidate an already-owned VIEWING document. */
+    internal fun currentVisibleConversationId(): String? =
+        privacyVisibleHolder.get()?.session?.conversationId
 
     internal fun bindPrivacyVisibleHolder(
         holder: com.floe.android.feature.conversation.ConversationFlowHolder?,
@@ -921,6 +940,13 @@ class ConversationHostController internal constructor(
                         entry.holder.applyHostSnapshot(entry.builder.build())
                         loadMessagePage(session, entry)
                         resumeLiveRuns(session, entry, reply)
+                        // D04: cards survive App reload from REAL stored
+                        // records — re-read the native owned reader for the
+                        // conversation's recent runs (bounded), independent
+                        // of whether an event pump replays them.
+                        refreshRunOutputCards(entry, session.conversationId,
+                            session.sessionEpoch,
+                            reply.runs.takeLast(runOutputRefreshMaxRuns).map { it.runID })
                         // The authoritative CAS snapshot (run revision,
                         // approval requestedAt, pending-input versions and
                         // queue order) for the selected run.
@@ -2126,6 +2152,10 @@ class ConversationHostController internal constructor(
             // the selected run's live tail so B keeps streaming.
             eventPumps.remove(runID)?.close()
             if (entry.builder.selectedRunId != runID) refreshHistorySoon()
+            // D04: the completion-critical toolResult records (with sealed
+            // output receipts) are durable at this boundary — refresh this
+            // run's owned-output cards from the native reader.
+            refreshRunOutputCards(entry, conversationId, sessionEpoch, listOf(runID))
             reconcileTerminalCommitted(entry, runID, streamGeneration)
             refreshRunSnapshot(
                 entry, runID, streamGeneration = streamGeneration,
@@ -5339,6 +5369,177 @@ class ConversationHostController internal constructor(
         session: ConversationSessionToken,
         artifactId: String,
     ): Boolean = false
+
+    /* ---------------------------- D04 owned run outputs ------------------------ */
+
+    /** Bounded cold-load / terminal refresh window for owned-output cards. */
+    private val runOutputRefreshMaxRuns = 24
+
+    private fun isCanonicalUuid(raw: String): Boolean = runCatching {
+        java.util.UUID.fromString(raw).toString().equals(raw, ignoreCase = true)
+    }.getOrDefault(false)
+
+    private fun isCanonicalOutputId(raw: String): Boolean = raw.matches(Regex("[0-9a-f]{64}"))
+
+    /** Re-reads the native OWNED reader for the given runs and republishes
+     * the card rows. Ordinary conversations only: a temporary session never
+     * reaches native (no durable rows, no cards, no backdoor). Refusals
+     * degrade to the honest non-actionable "unavailable" state on existing
+     * verified cards — success is never fabricated. */
+    private fun refreshRunOutputCards(
+        entry: ConversationFlowHolderEntry,
+        conversationId: String,
+        sessionEpoch: Long,
+        runIDs: List<String>,
+    ) {
+        val service: RunOutputHostService = host.runOutputs ?: return
+        if (entry.builder.isTemporary) return
+        val capped = runIDs.filter { isCanonicalUuid(it) }.distinct().take(runOutputRefreshMaxRuns)
+        if (capped.isEmpty()) return
+        if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return
+        host.scope.launch(host.ioDispatcher) {
+            for (runID in capped) {
+                if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch
+                val result = service.receipts(conversationId, runID)
+                if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch
+                when (result) {
+                    is RunOutputListResult.Ok -> entry.builder.applyRunOutputs(
+                        runID,
+                        result.items.map { descriptor ->
+                            RunOutputCardUi(
+                                runId = descriptor.runID,
+                                outputId = descriptor.outputID,
+                                producerCallId = descriptor.producerCallID,
+                                displayName = descriptor.displayName,
+                                mimeType = descriptor.mimeType,
+                                byteCount = descriptor.byteCount,
+                                availabilityRaw = descriptor.availabilityRaw,
+                            )
+                        },
+                        scanTruncated = result.scanTruncated || result.truncatedItems,
+                    )
+                    is RunOutputListResult.Refused ->
+                        entry.builder.markRunOutputsUnavailable(runID)
+                }
+            }
+            if (ownCurrentEntry(entry, conversationId, sessionEpoch)) {
+                entry.holder.applyHostSnapshot(entry.builder.build())
+            }
+        }
+    }
+
+    override fun saveRunOutputCopy(
+        session: ConversationSessionToken,
+        runId: String,
+        outputId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        val service = host.runOutputs ?: return false
+        val card = entry.builder.cachedRunOutputCard(runId, outputId) ?: return false
+        if (card.availabilityRaw != "available") return false
+        if (!isCanonicalUuid(session.conversationId) || !isCanonicalUuid(runId) ||
+            !isCanonicalOutputId(outputId)) return false
+        val conversationId = session.conversationId
+        val sessionEpoch = session.sessionEpoch
+        entry.builder.setRunOutputActionState(runId, outputId, "saving")
+        entry.holder.applyHostSnapshot(entry.builder.build())
+        host.scope.launch(host.ioDispatcher) {
+            // Native open re-derives the exact owned durable record and runs
+            // the FULL streamed digest verification before the destination
+            // pick is even requested; a refusal there never claims progress.
+            val started = service.requestSaveCopy(conversationId, runId, outputId) { outcome ->
+                host.scope.launch(host.ioDispatcher) {
+                    if (!ownCurrentEntry(entry, conversationId, sessionEpoch)) return@launch
+                    val state = when (outcome) {
+                        is RunOutputSaveOutcome.Saved -> "saved"
+                        is RunOutputSaveOutcome.Cancelled -> "cancelled"
+                        is RunOutputSaveOutcome.Failed -> "failed"
+                    }
+                    entry.builder.setRunOutputActionState(runId, outputId, state)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                    refreshRunOutputCards(entry, conversationId, sessionEpoch, listOf(runId))
+                }
+            }
+            if (!started) {
+                if (ownCurrentEntry(entry, conversationId, sessionEpoch)) {
+                    entry.builder.setRunOutputActionState(runId, outputId, null)
+                    entry.holder.applyHostSnapshot(entry.builder.build())
+                }
+            }
+        }
+        return true
+    }
+
+    override fun openRunOutputFile(
+        session: ConversationSessionToken,
+        runId: String,
+        outputId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        val card = entry.builder.cachedRunOutputCard(runId, outputId) ?: return false
+        if (card.availabilityRaw != "available") return false
+        if (!isCanonicalUuid(session.conversationId) || !isCanonicalUuid(runId) ||
+            !isCanonicalOutputId(outputId)) return false
+        val epoch = host.nativeRootEpoch() ?: return false
+        val generation = host.commandClient.generation()
+        val conversationId = session.conversationId
+        val sessionEpoch = session.sessionEpoch
+        // The EXACT ordinary-conversation owner fence both routes re-check
+        // through staging AND launch: entry identity + session epoch + the
+        // captured native root epoch + App command generation. Temporary chat
+        // returned above; Notes/Canvas never reach this file's callbacks.
+        val ownerCurrent = {
+            ownCurrentEntry(entry, conversationId, sessionEpoch) &&
+                !entry.builder.isTemporary &&
+                host.nativeRootEpoch() == epoch &&
+                host.commandClient.generation() == generation
+        }
+        // Lane 17: a durable PDF run output opens IN-APP through the App's
+        // own preview consumer (verified staged bytes -> the SAME isolated
+        // renderer + real system Print). The route requires the verified
+        // sealed MIME to MATCH the `.pdf` extension (agreement, never either
+        // alone); any other host-refused type still gets no fake affordance.
+        if (runOutputPdfOpenAgreement(card.mimeType, card.displayName)) {
+            val pdf = (host.appContext as? FloeApplication)?.runOutputPdf ?: return false
+            return pdf.openRunOutputPdf(
+                RunOutputOfficeSnapshotStager.Owner(conversationId, runId, outputId, epoch, generation),
+                ownerCurrent,
+            )
+        }
+        // EXISTING in-app Office path (DOCX/XLSX/PPTX). No external intent
+        // fallback, no local preview invention.
+        if (!OfficePreviewController.supports(card.displayName)) return false
+        val office = (host.appContext as? FloeApplication)?.officePreviews ?: return false
+        if (office.isBusy) return false
+        office.openRunOutput(
+            RunOutputOfficeSnapshotStager.Owner(conversationId, runId, outputId, epoch, generation),
+            ownerCurrent,
+        )
+        return true
+    }
+
+    override fun cancelRunOutputSave(
+        session: ConversationSessionToken,
+        runId: String,
+        outputId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session) return false
+        return host.runOutputs?.cancelActiveSave("user cancelled", runId, outputId) == true
+    }
+
+    override fun refreshRunOutputs(
+        session: ConversationSessionToken,
+        runId: String,
+    ): Boolean {
+        val entry = holders[session.conversationId] ?: return false
+        if (entry.holder.session != session || entry.builder.isTemporary) return false
+        if (host.runOutputs == null) return false
+        refreshRunOutputCards(entry, session.conversationId, session.sessionEpoch, listOf(runId))
+        return true
+    }
 
     override fun copyMessageText(
         session: ConversationSessionToken,

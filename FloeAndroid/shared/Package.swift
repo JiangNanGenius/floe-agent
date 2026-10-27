@@ -657,7 +657,7 @@ let package = Package(
             "FloeBrowser", "FloeCore", "FloeModels", "FloeTools", "FloeTransport",
         ], swiftSettings: strictSettings),
         .testTarget(name: "FloeWorkspaceTests", dependencies: [
-            "FloeWorkspace", "FloeCore", "FloeTools", "CFloeArchive", "ZIPFoundation",
+            "FloeWorkspace", "FloeCore", "FloeTools", "FloeModels", "CFloeArchive", "ZIPFoundation",
             .product(name: "Crypto", package: "swift-crypto"),
         ], swiftSettings: strictSettings),
         // G03-R2 workspace transfer suites (job-4d35db884ec64d95 cohort, per

@@ -14,6 +14,7 @@ import com.floe.android.core.officeengine.OfficeHostSaveVerdict
 import com.floe.android.core.officeengine.OfficeRequestPolicy
 import com.floe.android.core.officeengine.OfficeSaveOperation
 import com.floe.android.core.officeengine.OfficeSaveReceipt
+import com.floe.android.core.officeengine.OfficeSaveRequest
 import com.floe.android.core.officeengine.OfficeSaveState
 import com.floe.android.safgateway.AndroidSafBackend
 import com.floe.android.safgateway.PickRequestSpec
@@ -109,6 +110,15 @@ internal class OfficeSaveCopyHandoff(
      * can never lose its binding.
      */
     private val onSessionsIdle: () -> Unit,
+    /**
+     * Additive Office AI lane seam (Main host20 contract): invoked FIRST,
+     * exactly once, for EVERY shape-validated receipt — the AI waiter's own
+     * validation is separate and the STAGED_EXPORT/OUTPUT_READY Save-Copy
+     * filter below it stays UNCHANGED, so a foreign AI export receipt never
+     * reaches the manual picker flow. The default `{}` keeps every existing
+     * behavior and assertion byte-identical.
+     */
+    private val receiptObserver: (OfficeSaveReceipt) -> Unit = {},
 ) {
 
     private companion object {
@@ -269,12 +279,22 @@ internal class OfficeSaveCopyHandoff(
      * else is refused fail-closed.
      */
     fun onReceipt(receipt: OfficeSaveReceipt): Boolean {
+        // Common shape validation for EVERY receipt (the AI observer's gate).
+        if (!OP_ID.matches(receipt.opId) || receipt.generation < 1L) return false
+        if (receipt.sessionToken.isBlank() || receipt.sessionToken.length > 128 ||
+            receipt.sessionToken.any { it.code < 0x20 || it == '/' || it == '\\' }
+        ) {
+            return false
+        }
+        // Additive Office AI lane observer FIRST for every shape-validated
+        // receipt (Main host20). Its failure can never break the Save-Copy
+        // filter below (observer work is the AI waiter table only).
+        runCatching { receiptObserver(receipt) }.onFailure { diagnostic = it }
         if (receipt.operation != OfficeSaveOperation.STAGED_EXPORT ||
             receipt.state != OfficeSaveState.OUTPUT_READY
         ) {
             return false
         }
-        if (!OP_ID.matches(receipt.opId) || receipt.generation < 1L) return false
         val format = receipt.format?.lowercase(Locale.ROOT) ?: return false
         if (format !in OfficeRequestPolicy.EXPORT_FORMATS) return false
         val sha = receipt.outputSha256 ?: return false
@@ -553,6 +573,18 @@ internal class OfficeSaveCopyHost(context: Context) {
     private val stagingRoot = File(appContext.applicationInfo.dataDir, "files/OfficeSaveCopyScratch")
     private val outputsRoot = File(appContext.noBackupFilesDir, "floe-office-outputs")
 
+    /** The single Office AI lane receipt observer (host20): set by the
+     * RuntimeHost-owned pump for its bound epoch and cleared on retire.
+     * Null = inert; every existing behavior is byte-identical. */
+    @Volatile
+    private var aiReceiptObserver: ((OfficeSaveReceipt) -> Unit)? = null
+
+    /** Exact op keys dispatched through the AI lane. A receipt/prepare for a
+     * tracked op must NEVER hand the FOREGROUND viewer a manual SAF picker —
+     * the AI chain consumes its own typed receipts (Main host20). Bounded;
+     * ops are never reused, so entries simply age out. */
+    private val aiOperationGuard = com.floe.android.host.officeai.OfficeAiOperationGuard()
+
     private val handoff = OfficeSaveCopyHandoff(
         service = gatewayService,
         backend = backend,
@@ -561,18 +593,86 @@ internal class OfficeSaveCopyHost(context: Context) {
         scheduler = ::scheduleIo,
         settlementSink = ::deliverSettlement,
         onSessionsIdle = ::releaseIdleConnection,
+        receiptObserver = { receipt -> aiReceiptObserver?.invoke(receipt) },
     )
 
     /** The single parent endpoint the module fences by same-UID + descriptor. */
     val channel: IBinder by lazy {
         OfficeHostSaveChannel.parentBinder(
             onPrepare = { request ->
-                handoff.onPrepare(request)?.let { pick -> SafPickerIntents.from(pick.spec) }
+                if (isAiOwnedOperation(request.sessionToken, request.opId)) {
+                    // A foreign AI export must never open the manual SAF
+                    // picker; the AI chain consumes its own receipts.
+                    null
+                } else {
+                    handoff.onPrepare(request)?.let { pick -> SafPickerIntents.from(pick.spec) }
+                }
             },
             onPickResult = { result -> handoff.onPickResult(result) },
             onReceipt = { receipt -> handoff.onReceipt(receipt) },
             onEditState = { state -> handoff.onEditState(state) },
         )
+    }
+
+    /** Attaches (or clears with null) the single Office AI lane receipt
+     * observer feeding the handoff's shape-validated receipt stream. The
+     * channel-28 registration ownership and the Save-Copy filter below the
+     * observer are untouched. */
+    internal fun attachAiReceiptObserver(observer: ((OfficeSaveReceipt) -> Unit)?) {
+        aiReceiptObserver = observer
+    }
+
+    private fun isAiOwnedOperation(sessionToken: String, opId: String): Boolean =
+        aiOperationGuard.contains(sessionToken, opId)
+
+    /**
+     * Submits one AI-lane save/export op through THIS host's OWN
+     * transaction-20 binding — the same [OfficeEngineCommands.submitSave]
+     * the viewer flow uses (no second binder, no channel-28 change). The
+     * exact op is tracked BEFORE dispatch so its OUTPUT_READY can only
+     * settle the AI waiter, never the manual picker.
+     *
+     * The typed outcome keeps the dispatch-proof distinction Main's final
+     * review requires (same doctrine as the precision adapter): a missing
+     * command binding proves nothing was sent ([NotBound] shape via
+     * [com.floe.android.host.officeai.OfficeAiSaveSubmit.NotBound]); a lost
+     * reply AFTER the transaction was issued is
+     * [com.floe.android.host.officeai.OfficeAiSaveSubmit.AttemptedWithoutReply]
+     * — the op may hold the engine and must resolve through the registered
+     * receipt waiter or stay UNKNOWN/retained, never a re-send.
+     */
+    internal fun aiSubmitSave(
+        request: OfficeSaveRequest,
+    ): com.floe.android.host.officeai.OfficeAiSaveSubmit {
+        ensureConnected()
+        aiOperationGuard.track(request.sessionToken, request.opId)
+        val client = synchronized(bindLock) { commands }
+            ?: return com.floe.android.host.officeai.OfficeAiSaveSubmit.NotBound
+        // submitSave is documented fail-closed (returns null on any transport
+        // problem AFTER the transaction was attempted); a throwing client
+        // frame is treated identically — attempted-without-reply.
+        val code = runCatching { client.submitSave(request) }.getOrNull()
+        return code?.let { com.floe.android.host.officeai.OfficeAiSaveSubmit.Code(it) }
+            ?: com.floe.android.host.officeai.OfficeAiSaveSubmit.AttemptedWithoutReply
+    }
+
+    /** The ENGINE's native mount generation for the exact session token
+     * (0 when no live mount / no command binding) — read through the same
+     * deterministic acquisition seam the viewer uses. */
+    internal fun aiReadGeneration(sessionToken: String): Long {
+        ensureConnected()
+        val client = synchronized(bindLock) { commands } ?: return 0L
+        return runCatching { client.readGeneration(sessionToken) }.getOrDefault(0L)
+    }
+
+    /** The ENGINE's live edit-state projection for the exact session +
+     * native generation (null when unresolvable). Observed facts only —
+     * READY_EDITABLE/editPermissionEstablished are real engine witnesses,
+     * never an App "editable" flag. */
+    internal fun aiReadState(sessionToken: String, generation: Long): OfficeEditState? {
+        ensureConnected()
+        val client = synchronized(bindLock) { commands } ?: return null
+        return runCatching { client.readState(sessionToken, generation) }.getOrNull()
     }
 
     private val bindLock = Any()

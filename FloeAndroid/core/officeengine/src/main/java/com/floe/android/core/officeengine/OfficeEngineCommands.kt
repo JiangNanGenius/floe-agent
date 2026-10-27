@@ -7,6 +7,16 @@ import android.os.Binder
 import android.os.IBinder
 import android.os.Parcel
 import android.os.Process
+import com.floe.android.core.officeengine.precision.OfficePrecisionAction
+import com.floe.android.core.officeengine.precision.OfficePrecisionAnswer
+import com.floe.android.core.officeengine.precision.OfficePrecisionContentKind
+import com.floe.android.core.officeengine.precision.OfficePrecisionContentReadback
+import com.floe.android.core.officeengine.precision.OfficePrecisionFailure
+import com.floe.android.core.officeengine.precision.OfficePrecisionProtocol
+import com.floe.android.core.officeengine.precision.OfficePrecisionRequest
+import com.floe.android.core.officeengine.precision.OfficePrecisionResult
+import com.floe.android.core.officeengine.precision.OfficePrecisionState
+import com.floe.android.core.officeengine.precision.OfficePrecisionTarget
 
 /**
  * Pure transaction table for the narrow App→engine command surface.
@@ -78,12 +88,47 @@ object OfficeEngineCommandsPolicy {
      */
     const val TRANSACTION_REGISTER_HOST_CHANNEL = 28
 
+    /**
+     * App→module: admit one TYPED precision operation (G05-R2 P-A).
+     *
+     * Transaction-table verification (2026-10-27): this descriptor's actual
+     * table is exactly the constants in this object (20–28 before this
+     * addition; the binder's onTransact allow-set mirrors it and every
+     * other code falls through to super). The module's other binders
+     * (CloseAck=1, HostSave=2..5) use DIFFERENT descriptors/objects, and
+     * the platform's own codes (INTERFACE_TRANSACTION/PING/DUMP/…) live far
+     * above the app range — so 29/30 are genuinely free, not assumed.
+     *
+     * The request carries ONLY the structured allowlisted action + typed
+     * parameters (never raw wire/UNO/key/body strings); the reply is the
+     * coarse admission code, and the exact typed result (including the
+     * precise refusal failure) is read through
+     * [TRANSACTION_READ_PRECISION_ANSWER].
+     */
+    const val TRANSACTION_POST_PRECISION_COMMAND = 29
+
+    /**
+     * App→module: read (and consume) the terminal result of one exact
+     * fenced precision operation — the ONLY path typed answer content
+     * leaves the engine, to the same-UID owner behind the exact
+     * token/generation fence.
+     */
+    const val TRANSACTION_READ_PRECISION_ANSWER = 30
+
     /** SUBMIT_SAVE reply codes. */
     const val SUBMIT_ACCEPTED = 1
     const val SUBMIT_REJECTED_SHAPE = -1
     const val SUBMIT_REJECTED_SESSION = -2
     const val SUBMIT_REJECTED_BUSY = -3
     const val SUBMIT_REJECTED_STATE = -4
+
+    /** POST_PRECISION_COMMAND reply codes (typed failure via READ_PRECISION_ANSWER). */
+    const val PRECISION_ACCEPTED = 1
+    const val PRECISION_REJECTED_SHAPE = -1
+    const val PRECISION_REJECTED_SESSION = -2
+    const val PRECISION_REJECTED_BUSY = -3
+    const val PRECISION_REJECTED_STATE = -4
+    const val PRECISION_REJECTED_SIZE = -5
 
     /** CANCEL_SAVE reply codes. */
     const val CANCEL_UNKNOWN_OP = 0
@@ -253,6 +298,50 @@ class OfficeEngineCommands(private val binder: IBinder) {
             { reply -> reply.readInt() == 1 },
         ) ?: false
 
+    /**
+     * Admits one TYPED precision operation (G05-R2 P-A). Returns the coarse
+     * admission code ([OfficeEngineCommandsPolicy.PRECISION_ACCEPTED] /
+     * PRECISION_REJECTED_*); the EXACT typed result (including the precise
+     * refusal failure and any typed answer content) is read through
+     * [readPrecisionAnswer]. Null on transport failure (fail-closed; an
+     * unknown transport outcome is never dressed up as accepted).
+     *
+     * The request carries ONLY structured allowlisted actions and typed
+     * parameters — raw wire commands, UNO names, key/mouse events and
+     * message bodies are not part of this surface.
+     */
+    fun postPrecisionCommand(request: OfficePrecisionRequest): Int? =
+        transact(
+            OfficeEngineCommandsPolicy.TRANSACTION_POST_PRECISION_COMMAND,
+            { data -> writePrecisionRequest(data, request) },
+            { reply -> reply.readInt() },
+        )
+
+    /**
+     * Reads (and consumes) the terminal result of one exact fenced
+     * precision operation. Null while the operation is pending/in-flight,
+     * when the op is unknown to this engine, or when the token/generation
+     * fence did not match — never a fabricated result. This is the ONLY
+     * path typed answer content leaves the engine.
+     */
+    fun readPrecisionAnswer(
+        opId: String,
+        sessionToken: String,
+        generation: Long,
+    ): OfficePrecisionResult? =
+        transact(
+            OfficeEngineCommandsPolicy.TRANSACTION_READ_PRECISION_ANSWER,
+            { data ->
+                data.writeString(opId)
+                data.writeString(sessionToken)
+                data.writeLong(generation)
+            },
+            { reply ->
+                if (reply.readInt() != 1) return@transact null
+                readPrecisionResult(reply)
+            },
+        )
+
     /** Observed edit/dirty/undo state for the exact mount (null when fenced/absent). */
     fun readState(sessionToken: String, generation: Long): OfficeEditState? =
         transact(
@@ -325,6 +414,8 @@ internal class OfficeEngineCommandBinder(
                 OfficeEngineCommandsPolicy.TRANSACTION_SETTLE_HOST_SAVE,
                 OfficeEngineCommandsPolicy.TRANSACTION_READ_GENERATION,
                 OfficeEngineCommandsPolicy.TRANSACTION_REGISTER_HOST_CHANNEL,
+                OfficeEngineCommandsPolicy.TRANSACTION_POST_PRECISION_COMMAND,
+                OfficeEngineCommandsPolicy.TRANSACTION_READ_PRECISION_ANSWER,
             )
         ) {
             return super.onTransact(code, data, reply, flags)
@@ -432,7 +523,317 @@ internal class OfficeEngineCommandBinder(
                 val channel = data.readStrongBinder()
                 reply?.writeInt(if (service.registerHostChannelFromBinder(channel)) 1 else 0)
             }
+
+            OfficeEngineCommandsPolicy.TRANSACTION_POST_PRECISION_COMMAND -> {
+                // Oversize requests are REFUSED whole (fail-closed); the
+                // bounded surface never silently truncates a caller payload.
+                if (data.dataSize() > OfficePrecisionProtocol.MAX_REQUEST_BYTES) {
+                    reply?.writeInt(OfficeEngineCommandsPolicy.PRECISION_REJECTED_SIZE)
+                } else {
+                    val request = readPrecisionRequest(data)
+                    if (request == null) {
+                        reply?.writeInt(OfficeEngineCommandsPolicy.PRECISION_REJECTED_SHAPE)
+                    } else {
+                        val result = service.postPrecisionCommandFromBinder(request)
+                        reply?.writeInt(precisionAdmissionCode(result))
+                    }
+                }
+            }
+
+            OfficeEngineCommandsPolicy.TRANSACTION_READ_PRECISION_ANSWER -> {
+                val opId = data.readString().orEmpty()
+                val token = data.readString().orEmpty()
+                val generation = data.readLong()
+                val result = service.readPrecisionAnswerFromBinder(opId, token, generation)
+                if (result == null) {
+                    reply?.writeInt(0)
+                } else {
+                    writePrecisionResult(reply, result)
+                }
+            }
         }
         return true
     }
+}
+
+// ----------------------------------------------------------------------
+// Precision parcel marshalling (G05-R2 P-A). Field order MUST stay in sync
+// between the write/read pairs. Bounded by contract: request text ≤
+// MAX_TEXT_BYTES, answer payloads ≤ MAX_ANSWER_BYTES (both enforced before
+// marshalling); nullable scalars travel as -1 markers (the readState
+// pattern), nullable strings as null.
+// ----------------------------------------------------------------------
+
+/** Coarse admission code for one precision result (exact failure via READ). */
+internal fun precisionAdmissionCode(result: OfficePrecisionResult): Int {
+    if (result.state == OfficePrecisionState.ADMITTED) {
+        return OfficeEngineCommandsPolicy.PRECISION_ACCEPTED
+    }
+    return when (result.failure) {
+        OfficePrecisionFailure.INVALID_REQUEST,
+        OfficePrecisionFailure.CONTENT_UNSAFE,
+        -> OfficeEngineCommandsPolicy.PRECISION_REJECTED_SHAPE
+        OfficePrecisionFailure.SESSION_MISMATCH,
+        OfficePrecisionFailure.SESSION_ENDING,
+        OfficePrecisionFailure.OWNER_MISMATCH,
+        -> OfficeEngineCommandsPolicy.PRECISION_REJECTED_SESSION
+        OfficePrecisionFailure.MUTATION_IN_FLIGHT,
+        OfficePrecisionFailure.SAVE_IN_FLIGHT,
+        OfficePrecisionFailure.QUEUE_FULL,
+        -> OfficeEngineCommandsPolicy.PRECISION_REJECTED_BUSY
+        OfficePrecisionFailure.REQUEST_TOO_LARGE,
+        OfficePrecisionFailure.ANSWER_TOO_LARGE,
+        -> OfficeEngineCommandsPolicy.PRECISION_REJECTED_SIZE
+        else -> OfficeEngineCommandsPolicy.PRECISION_REJECTED_STATE
+    }
+}
+
+private fun writePrecisionRequest(data: Parcel, request: OfficePrecisionRequest) {
+    data.writeString(request.opId)
+    data.writeString(request.sessionToken)
+    data.writeLong(request.generation)
+    data.writeString(request.action.name)
+    data.writeString(request.text)
+    data.writeString(request.contentKind?.name)
+    data.writeString(request.cellAddress)
+    data.writeString(request.partId)
+    data.writeString(request.targetHandle)
+    data.writeString(request.ownerTaskId)
+    data.writeString(request.workspaceId)
+}
+
+private fun readPrecisionRequest(data: Parcel): OfficePrecisionRequest? {
+    val opId = data.readString() ?: return null
+    val sessionToken = data.readString() ?: return null
+    val generation = data.readLong()
+    val actionName = data.readString() ?: return null
+    val action = runCatching { OfficePrecisionAction.valueOf(actionName) }.getOrNull()
+        ?: return null
+    val text = data.readString()
+    val contentKindName = data.readString()
+    val contentKind = contentKindName?.let { name ->
+        runCatching { OfficePrecisionContentKind.valueOf(name) }.getOrNull()
+    }
+    val cellAddress = data.readString()
+    val partId = data.readString()
+    val targetHandle = data.readString()
+    val ownerTaskId = data.readString()
+    val workspaceId = data.readString()
+    return OfficePrecisionRequest(
+        opId = opId,
+        sessionToken = sessionToken,
+        generation = generation,
+        action = action,
+        text = text,
+        contentKind = contentKind,
+        cellAddress = cellAddress,
+        partId = partId,
+        targetHandle = targetHandle,
+        ownerTaskId = ownerTaskId,
+        workspaceId = workspaceId,
+    )
+}
+
+private fun writePrecisionResult(reply: Parcel?, result: OfficePrecisionResult) {
+    reply ?: return
+    reply.writeInt(1)
+    reply.writeString(result.opId)
+    reply.writeString(result.sessionToken)
+    reply.writeLong(result.generation)
+    reply.writeString(result.state.name)
+    reply.writeString(result.action.name)
+    reply.writeString(result.failure?.name)
+    reply.writeString(result.detail)
+    reply.writeString(result.attestation)
+    reply.writeLong(result.submittedAtElapsedMs)
+    reply.writeLong(result.completedAtElapsedMs)
+    when (val answer = result.answer) {
+        null -> reply.writeInt(0)
+        is OfficePrecisionAnswer.TargetCaptured -> {
+            val t = answer.target
+            reply.writeInt(1)
+            reply.writeString(t.handleId)
+            reply.writeLong(t.generation)
+            reply.writeString(t.sourceId)
+            reply.writeString(t.sourceRevision)
+            reply.writeString(t.sourceLogicalPath)
+            reply.writeString(t.workspaceId)
+            reply.writeString(t.ownerTaskId)
+            reply.writeString(t.workingCopySha256)
+            reply.writeLong(t.workingCopyBytes)
+            reply.writeLong(t.inputEpoch)
+            reply.writeLong(t.editEpoch)
+            reply.writeInt(boolWord(t.documentModified))
+            reply.writeString(t.docType)
+            reply.writeInt(t.partsCount ?: -1)
+            reply.writeString(t.selectedPart)
+            reply.writeLong(t.capturedAtElapsedMs)
+            reply.writeLong(t.expiresAtElapsedMs)
+        }
+        is OfficePrecisionAnswer.DocumentContext -> {
+            reply.writeInt(2)
+            reply.writeString(answer.docType)
+            reply.writeInt(answer.partsCount ?: -1)
+            reply.writeString(answer.selectedPart)
+            reply.writeInt(answer.widthTwip ?: -1)
+            reply.writeInt(answer.heightTwip ?: -1)
+            reply.writeInt(answer.viewId ?: -1)
+            reply.writeInt(boolWord(answer.readOnly))
+            reply.writeInt(boolWord(answer.documentModified))
+        }
+        is OfficePrecisionAnswer.TextSelection -> {
+            reply.writeInt(3)
+            reply.writeString(answer.text)
+            reply.writeInt(answer.byteCount)
+            reply.writeInt(if (answer.multiFormatJson) 1 else 0)
+        }
+        is OfficePrecisionAnswer.CellCursor -> {
+            reply.writeInt(4)
+            reply.writeInt(answer.column ?: -1)
+            reply.writeInt(answer.row ?: -1)
+            reply.writeInt(answer.xTwip ?: -1)
+            reply.writeInt(answer.yTwip ?: -1)
+            reply.writeInt(answer.widthTwip ?: -1)
+            reply.writeInt(answer.heightTwip ?: -1)
+            reply.writeInt(if (answer.empty) 1 else 0)
+        }
+        is OfficePrecisionAnswer.PresentationInfo -> {
+            reply.writeInt(5)
+            reply.writeInt(answer.byteCount)
+            reply.writeInt(answer.slideCount ?: -1)
+        }
+        is OfficePrecisionAnswer.SlideSelected -> {
+            reply.writeInt(6)
+            reply.writeString(answer.shownPart)
+        }
+        is OfficePrecisionAnswer.TextSelected -> {
+            reply.writeInt(7)
+            reply.writeInt(answer.effectPayloadBytes)
+        }
+        is OfficePrecisionAnswer.MutationApplied -> {
+            reply.writeInt(8)
+            val steps = answer.steps.take(32)
+            reply.writeInt(steps.size)
+            steps.forEach { reply.writeString(it) }
+            reply.writeInt(answer.pastedBytes)
+            reply.writeString(answer.contentReadback.name)
+            reply.writeString(answer.workingCopySha256)
+            reply.writeString(answer.consumedTargetHandle)
+        }
+    }
+}
+
+private fun readPrecisionResult(reply: Parcel): OfficePrecisionResult? {
+    val opId = reply.readString() ?: return null
+    val sessionToken = reply.readString().orEmpty()
+    val generation = reply.readLong()
+    val stateName = reply.readString() ?: return null
+    val actionName = reply.readString() ?: return null
+    val state = runCatching { OfficePrecisionState.valueOf(stateName) }.getOrNull()
+        ?: return null
+    val action = runCatching { OfficePrecisionAction.valueOf(actionName) }.getOrNull()
+        ?: return null
+    val failureName = reply.readString()
+    val failure = failureName?.let { name ->
+        runCatching { OfficePrecisionFailure.valueOf(name) }.getOrNull()
+    }
+    val detail = reply.readString()
+    val attestation = reply.readString().orEmpty()
+    val submittedAt = reply.readLong()
+    val completedAt = reply.readLong()
+    val answer = when (reply.readInt()) {
+        0 -> null
+        1 -> OfficePrecisionAnswer.TargetCaptured(
+            OfficePrecisionTarget(
+                handleId = reply.readString().orEmpty(),
+                generation = reply.readLong(),
+                sourceId = reply.readString(),
+                sourceRevision = reply.readString(),
+                sourceLogicalPath = reply.readString(),
+                workspaceId = reply.readString(),
+                ownerTaskId = reply.readString(),
+                workingCopySha256 = reply.readString(),
+                workingCopyBytes = reply.readLong(),
+                inputEpoch = reply.readLong(),
+                editEpoch = reply.readLong(),
+                documentModified = wordBool(reply.readInt()),
+                docType = reply.readString(),
+                partsCount = reply.readInt().takeIf { it >= 0 },
+                selectedPart = reply.readString(),
+                capturedAtElapsedMs = reply.readLong(),
+                expiresAtElapsedMs = reply.readLong(),
+            ),
+        )
+        2 -> OfficePrecisionAnswer.DocumentContext(
+            docType = reply.readString(),
+            partsCount = reply.readInt().takeIf { it >= 0 },
+            selectedPart = reply.readString(),
+            widthTwip = reply.readInt().takeIf { it >= 0 },
+            heightTwip = reply.readInt().takeIf { it >= 0 },
+            viewId = reply.readInt().takeIf { it >= 0 },
+            readOnly = wordBool(reply.readInt()),
+            documentModified = wordBool(reply.readInt()),
+        )
+        3 -> OfficePrecisionAnswer.TextSelection(
+            text = reply.readString().orEmpty(),
+            byteCount = reply.readInt(),
+            multiFormatJson = reply.readInt() == 1,
+        )
+        4 -> OfficePrecisionAnswer.CellCursor(
+            column = reply.readInt().takeIf { it >= 0 },
+            row = reply.readInt().takeIf { it >= 0 },
+            xTwip = reply.readInt().takeIf { it >= 0 },
+            yTwip = reply.readInt().takeIf { it >= 0 },
+            widthTwip = reply.readInt().takeIf { it >= 0 },
+            heightTwip = reply.readInt().takeIf { it >= 0 },
+            empty = reply.readInt() == 1,
+        )
+        5 -> OfficePrecisionAnswer.PresentationInfo(
+            byteCount = reply.readInt(),
+            slideCount = reply.readInt().takeIf { it >= 0 },
+        )
+        6 -> OfficePrecisionAnswer.SlideSelected(shownPart = reply.readString().orEmpty())
+        7 -> OfficePrecisionAnswer.TextSelected(effectPayloadBytes = reply.readInt())
+        8 -> {
+            val count = reply.readInt().coerceIn(0, 32)
+            val steps = (0 until count).mapNotNull { reply.readString() }
+            val pastedBytes = reply.readInt()
+            val readbackName = reply.readString()
+            val readback = readbackName?.let { name ->
+                runCatching { OfficePrecisionContentReadback.valueOf(name) }.getOrNull()
+            } ?: OfficePrecisionContentReadback.NOT_ATTEMPTED
+            OfficePrecisionAnswer.MutationApplied(
+                steps = steps,
+                pastedBytes = pastedBytes,
+                contentReadback = readback,
+                workingCopySha256 = reply.readString(),
+                consumedTargetHandle = reply.readString(),
+            )
+        }
+        else -> null
+    }
+    return OfficePrecisionResult(
+        opId = opId,
+        sessionToken = sessionToken,
+        generation = generation,
+        action = action,
+        state = state,
+        failure = failure,
+        detail = detail,
+        answer = answer,
+        attestation = attestation,
+        submittedAtElapsedMs = submittedAt,
+        completedAtElapsedMs = completedAt,
+    )
+}
+
+private fun boolWord(value: Boolean?): Int = when (value) {
+    null -> -1
+    true -> 1
+    false -> 0
+}
+
+private fun wordBool(word: Int): Boolean? = when {
+    word < 0 -> null
+    else -> word == 1
 }

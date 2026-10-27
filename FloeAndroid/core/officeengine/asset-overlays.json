@@ -528,9 +528,9 @@
       "operation": "replace",
       "destination": "dist/cool.html",
       "originalSha256": "0d22b650206d396e8bf6a85a28bcd4077d654f86dae2afc4aee6c8b8288bcb2c",
-      "reason": "Change only the visible product name, vendor label and branding URL/theme placeholders, and reference the self-authored deferred floe-writer-viewport-sync.js after bundle.js; retain the upstream MPL-2.0 notice and all other behaviour.",
+      "reason": "Change only the visible product name, vendor label and branding URL/theme placeholders, and reference the self-authored deferred Floe overlay scripts (floe-impress-pcw-fix.js, floe-impress-follow-controls-fix.js, floe-writer-viewport-sync.js) after bundle.js; retain the upstream MPL-2.0 notice and all other behaviour.",
       "source": "dist/cool.html",
-      "sha256": "5bb079547f7c95fb88f7d1716e73acfa78844180d590137fb606b18e275761b9"
+      "sha256": "3167f06000ca819d2dc96260a82f796154fe0c14c54137962fd178d1b8d1c989"
     },
     {
       "operation": "add",
@@ -546,7 +546,7 @@
       "originalSha256": null,
       "reason": "Machine-readable index of original notices, overlay operations, external pins, source access and unresolved items.",
       "source": "notices/source-index.json",
-      "sha256": "5ca1f08641a4edda40866e9586c50ebdd40288692a347e9caf19ff098700ed82"
+      "sha256": "0796d728b92480a07af5448f4156c5a443fc373f5ca82df6f395e8ae6b65ab6f"
     },
     {
       "operation": "replace",
@@ -1043,6 +1043,14 @@
       "reason": "Narrow self-authored MPL-2.0 deferred overlay for the pinned Writer initial-layout gap: after the real page load and Writer docloaded edges for the same captured map/document/layer/layout identities, it retires its listeners, captures numeric-only geometry, and only when the measured Writer body is still non-positive mirrors the complete pinned dist/global.js visualViewport binding once from the live positive visual viewport: scroll to the visual origin, set body height from visualViewport.height, and set the bounded --viewport-bottom-inset from html.clientHeight, offsetTop and height. If that viewport is unavailable or still zero it uses one standards-based live vh/dvh constraint and resets the inset instead of a pixel snapshot. The pinned handler's existing scroll/resize listeners and normal CSS remain the update path for later orientation and soft-keyboard changes. It then waits exactly one owned requestAnimationFrame (pinned Socket.js dispatches docloaded before applying Writer status geometry), revalidates every identity, invokes the existing ViewLayoutBase.onResize path once and posts one strict numeric packet through the existing host bridge for bounded RAM diagnostics. No timer, recurring frame, retry, poll, forced readiness, permission change or native producer edit; bundle.js and dist/src remain byte-identical upstream files.",
       "source": "dist/floe-writer-viewport-sync.js",
       "sha256": "885df166ab18e701770b755d1393be67a588a66b6afe19f61ecb261809a0f595"
+    },
+    {
+      "operation": "add",
+      "destination": "dist/floe-impress-follow-controls-fix.js",
+      "source": "dist/floe-impress-follow-controls-fix.js",
+      "sha256": "e96f32f503ecb2d6669a950db465de466f2827fbfd285da4ff5af3ca178595a1",
+      "originalSha256": null,
+      "reason": "Fix the exact phone-only Impress defect captured on the Samsung API33 C06 run (two console errors 'UIManager: Button with id \"slide-presentation-follow[-me]\" not found.' with the document rendered and native state READY_EDITABLE): the bundled SlideShowPresenter.showFollow unconditionally asks UIManager.showButton to toggle the two follow controls, but at the pinned revision they exist only in the Impress notebookbar gated by !window.ThisIsAMobileApp (Control.NotebookbarImpress.js) and small-screen devices never build a notebookbar (Control.UIManager.js getCurrentMode() returns 'classic'), so every phone presentation logged both errors at presenter construction. The deferred overlay restricts the two toggles to UI shapes where UIManager.showButton's own lookup (notebookbar object, or classic map.topToolbar.hasItem) would actually find the control. It adds no button, changes UIManager and its general missing-button error logging not at all, preserves stock behaviour byte-identically where the controls exist (tablet/desktop), and fails closed when the lookup throws."
     }
   ],
   "sourceAccess": {

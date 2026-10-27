@@ -117,6 +117,29 @@ data class ToolEventProjectionUi(
     val harnessSuppressed: Boolean = false,
 )
 
+/** One SEALED per-item run output ("this run produced this user file"), as
+ * the host re-derived it from the run's OWN durable toolResult records and
+ * the native verified availability view. Nothing here comes from model
+ * markdown, raw paths or arbitrary artifact metadata; [displayName] and
+ * [mimeType] are labels only — every byte access re-enters the native
+ * owner through (runId, outputId) and re-verifies there. */
+data class RunOutputCardUi(
+    val runId: String,
+    val outputId: String,
+    val producerCallId: String,
+    val displayName: String,
+    val mimeType: String,
+    /** Sealed byte count (display only; the native reader re-measures). */
+    val byteCount: Long,
+    /** Native availability view: "available" | "missing" | "changed" |
+     * "oversized" | "rejected" | "loading" | "unavailable". Only "available"
+     * ever enables an action; other tokens render visible, honest states. */
+    val availabilityRaw: String,
+    /** Transient host action state (RAM only, never persisted): null |
+     * "saving" | "saved" | "cancelled" | "failed" | "opening". */
+    val actionStateRaw: String? = null,
+)
+
 /** One persisted run event projected for display. */
 data class RunEventUi(
     val id: String,
@@ -734,6 +757,17 @@ sealed interface TimelineRowUi {
         val isLatest: Boolean,
     ) : TimelineRowUi {
         override val id get() = "stepGroup.${events.firstOrNull()?.id ?: "empty"}"
+    }
+
+    /** Per-item sealed file outputs owned by one run, rendered beside that
+     * run's recorded activity. [scanTruncated] honestly flags that the
+     * native bounded scan stopped before the run tail (never "no more"). */
+    data class RunOutputGroup(
+        val runId: String,
+        val outputs: List<RunOutputCardUi>,
+        val scanTruncated: Boolean = false,
+    ) : TimelineRowUi {
+        override val id get() = "runOutputs.$runId"
     }
 
     data class Terminal(val event: RunEventUi) : TimelineRowUi {

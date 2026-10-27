@@ -47,6 +47,38 @@
             android:process=":floe_office" />
 
         <!--
+          PDF preview surface (Main qualified the local PDF slice
+          2026-10-27): same crash-isolated engine process, non-exported,
+          launchable only from this module's own viewer Intent with a
+          verified-snapshot request. The Activity RE-PROVES the real bytes
+          (containment, op-name binding, magic, length, SHA) before the
+          renderer is touched, so the Intent is a handoff, never authority.
+        -->
+        <activity
+            android:name="com.floe.android.core.officeengine.pdf.OfficePdfPreviewActivity"
+            android:exported="false"
+            android:process=":floe_office"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density|fontScale|locale|layoutDirection"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
+        <!--
+          Isolated PDF renderer (platform PdfRenderer guidance: a file from
+          an untrusted source should be rendered "in a separate, isolated
+          process with minimum permissions"). Receives ONLY binder-duped
+          READ-ONLY file descriptors + page index + bounded zoom — no paths,
+          no network, no storage authority, no app data. isolatedProcess
+          gives it its own isolated UID with no access to this app's data;
+          the framework stops the process once unbound. THIS is the security
+          boundary; the same-UID :floe_office above is crash/lifecycle
+          segregation only, explicitly not a sandbox.
+        -->
+        <service
+            android:name="com.floe.android.core.officeengine.pdf.OfficePdfRendererService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":floe_pdf" />
+
+        <!--
           Host owner anchor, intentionally in the DEFAULT (main app) process:
           no android:process attribute. Bound-only by the foreground
           OfficePreviewActivity (BIND_AUTO_CREATE | BIND_ADJUST_WITH_ACTIVITY)

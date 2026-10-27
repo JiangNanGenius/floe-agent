@@ -44,6 +44,18 @@ import kotlinx.coroutines.isActive
 class FloeApplication : Application() {
     internal lateinit var officePreviews: com.floe.android.host.OfficePreviewController
         private set
+    /** D04 owned run-output consumer lane (Application-owned like the
+     * Office preview controller; isolated/office processes never create it —
+     * both early returns above run first). */
+    internal var runOutputs: com.floe.android.host.output.RunOutputHostService? = null
+        private set
+    /** Lane 17: App-owned OPEN consumer for verified durable run-output PDFs
+     * (staged proof -> owner-fenced non-exported preview -> the SAME isolated
+     * renderer + system print seam). Main-process only, like [runOutputs];
+     * it owns no credential/runtime state and never runs in the isolated
+     * PDF or Office processes. */
+    internal var runOutputPdf: com.floe.android.host.output.RunOutputPdfPreviewController? = null
+        private set
     lateinit var linuxSetup: com.floe.android.host.linux.LocalRuntimeSetupHost
         private set
     private lateinit var linuxShell: com.floe.android.host.linux.LinuxShellPump
@@ -106,12 +118,23 @@ class FloeApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Isolated PDF rendering receives only verified file descriptors;
+        // it must never bootstrap the credential, store or Agent owners.
+        if (android.os.Process.isIsolated()) return
         // The native Office module owns its own service and engine in this
         // same-UID process. Starting another credential/store/Core owner here
         // would duplicate the main process's lifecycle and database writers.
         // Its standalone components must not access main-host lateinit state.
         if (Application.getProcessName() == "$packageName:floe_office") return
         officePreviews = com.floe.android.host.OfficePreviewController(this, hostScope)
+        runOutputs = com.floe.android.host.output.RunOutputHostService(
+            this, hostScope,
+            currentNativeEpoch = { runtimeHost?.nativeRootEpoch() },
+        )
+        // Composed from the App's OWNED run-output lane only (no global
+        // singleton, no first-document fallback: every launch re-enters the
+        // exact conversation/run/output receipt through the stager).
+        runOutputPdf = com.floe.android.host.output.RunOutputPdfPreviewController(this, hostScope)
         linuxSetup = com.floe.android.host.linux.LocalRuntimeSetupHost(this, hostScope)
         linuxShell = com.floe.android.host.linux.LinuxShellPump(this, hostScope)
         workspaceSources = com.floe.android.host.WorkspaceSourcePump(this, hostScope) {
@@ -189,6 +212,7 @@ class FloeApplication : Application() {
             host.networkWorkspaceHost = networkWorkspaceHost
             host.workspaceGitTrust = workspaceGitTrust
             host.workspaceTerminal = workspaceTerminal
+            host.runOutputs = runOutputs
             host.runForeground = com.floe.android.host.RunForegroundBinding(
                 controller = com.floe.android.runlifecycle.RunForegroundController.forApplication(this),
                 nativeSnapshot = com.floe.android.host.RunForegroundNativeSnapshotSource {
@@ -317,6 +341,11 @@ class FloeApplication : Application() {
                         if (browserEpoch > 0) browser.stopAndJoin(browserEpoch, 8_000)
                     }
                     workspaceGitTrust.boundEpoch()?.let { workspaceGitTrust.retireStopped(it) }
+                    // D04: settle any pending owned-output Save Copy pick;
+                    // the native lane itself needs no epoch retire (every
+                    // call re-validates the live root epoch and a stale
+                    // claim is a typed refusal).
+                    runOutputs?.onRuntimeStopped()
                     runtimeHost?.runForeground?.releaseAllForShutdown()
                 }
             }
@@ -324,6 +353,15 @@ class FloeApplication : Application() {
     }
 
     @Volatile private var activityForeground = false
+
+    /** Narrow read-only join for the G05-R2 Office AI host lane (Main
+     * host20): the ACTUAL MainActivity resume/pause projection this App
+     * already maintains for the workspace-actions scene. The AI lane uses it
+     * ONLY as the transient admission BEFORE a NEW viewer launch (never as
+     * the durable document-owner fence — opening the Office viewer pauses
+     * this Activity, and an otherwise-owned VIEWING document must stay
+     * valid). Reads no private state, grants nothing. */
+    internal fun isActivityInForeground(): Boolean = activityForeground
 
     internal fun setActivityForeground(active: Boolean) {
         activityForeground = active

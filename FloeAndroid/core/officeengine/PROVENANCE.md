@@ -42,6 +42,19 @@ MPL-2.0 source notices. Original library, font and data acknowledgements remain
 in the packaged upstream licence/NOTICE documents. No Apple symbol/font exports
 or upstream proprietary brand artwork are included in Floe's replacements.
 
+Beyond branding/theme neutralisation, the overlay carries three narrow
+self-authored deferred frontend repairs, each pinned to the exact upstream
+control path it fixes and each covered by a deterministic semantic check in
+`tools/`: the Impress mobile DOM-placement fix
+(`dist/floe-impress-pcw-fix.js`), the Writer first-paint layout re-sync
+(`dist/floe-writer-viewport-sync.js`) and the Impress mobile
+presentation-follow controls fix (`dist/floe-impress-follow-controls-fix.js`,
+checked by `tools/test_presentation_controls.js`), which stops the stock
+`SlideShowPresenter.showFollow` from asking `UIManager` to toggle the two
+notebookbar-only `slide-presentation-follow[-me]` controls that no mobile UI
+provides at this revision. No upstream behaviour is otherwise altered, no
+error path is suppressed and no producer byte is rewritten.
+
 The matching Floe source archive contains these host sources, overlays,
 manifest, observer tests and staging tool. Unmodified upstream core/frontend
 and external dependency pins are linked at their immutable revision. The source

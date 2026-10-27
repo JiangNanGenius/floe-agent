@@ -1120,6 +1120,16 @@ public enum AndroidRuntimeBootstrap {
                 "credentialDeletionsPending": live.recovery.credentialDeletionsPending,
                 "credentialDeletionsDrained": live.recovery.credentialDeletionsDrained,
                 "credentialDeletionsDeferred": live.recovery.credentialDeletionsDeferred,
+                // D04 (job-3135f83ef97c4a21): counts of the ONE run-output
+                // tombstone retry pass run at this readiness boundary.
+                // Retained variants keep both trees and requests; failures
+                // stay diagnosable. Never more than integers.
+                "runOutputCleanupCompleted": live.recovery.runOutputCleanupCompleted,
+                "runOutputCleanupRetainedLiveConversations":
+                    live.recovery.runOutputCleanupRetainedLiveConversations,
+                "runOutputCleanupRetainedLiveOwners":
+                    live.recovery.runOutputCleanupRetainedLiveOwners,
+                "runOutputCleanupFailed": live.recovery.runOutputCleanupFailed,
             ]
             object["boundHandlerKeys"] = live.registry.boundHandlerKeys
             object["mailbox"] = safeJSONObject(live.mailbox.statsJSON())

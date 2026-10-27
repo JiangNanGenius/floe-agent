@@ -36,7 +36,21 @@ set_target_properties(FloeAndroidCore PROPERTIES
 # per-generation readiness ingress/invalidation surface. Both are trusted-
 # host-only (no V3 key, no model route); all semantics live in
 # FloeAndroidCore. Additive TU only; all prior wrappers unchanged.
-add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp)
+#
+# D04 RUN-OUTPUT CONSUMER (2026-10-27, job-6f953da44de048d0):
+# floe_run_output_jni.cpp appended the same way — the narrow epoch-fenced
+# trusted-host owned run-output reader/egress lane (exact persisted receipt
+# -> lease -> streamed verify -> bounded 64 KiB egress). Not a V3 command,
+# never model-reachable; no path/receipt/digest argument ever crosses from
+# the JVM side. All semantics live in FloeAndroidCore. Additive TU only;
+# all prior wrappers unchanged.
+# OFFICE-AI15 (2026-10-27, job-1db1a7a8d5da457a): floe_office_ai_jni.cpp appended
+# the same way — the Office AI trusted-host mailbox pump ABI (bind/next/
+# describe/payload/isLive/shouldStop/complete/close/stats) over the epoch-bound
+# Swift mailbox. Not a V3 command, never model-reachable; all semantics live
+# in FloeAndroidCore/OfficeAI (mailbox + edit-context store + bridge). Additive
+# TU only; all prior wrappers byte-identical.
+add_library(floe_jni SHARED floe_jni.cpp floe_secret_jni.cpp floe_runtime_jni.cpp floe_attachment_staging_jni.cpp floe_security_corpus_jni.cpp floe_provider_catalog_jni.cpp floe_provider_draft_probe_jni.cpp floe_skills_folder_staging_jni.cpp floe_provider_modelset_jni.cpp floe_privacy_jni.cpp floe_linux_shell_jni.cpp floe_run_foreground_jni.cpp floe_jobs_jni.cpp floe_linux_workspace_jni.cpp floe_linux_runtime_cleanup_jni.cpp floe_linux_readiness_jni.cpp floe_workspace_source_jni.cpp floe_git_trust_jni.cpp floe_terminal_jni.cpp floe_browser_jni.cpp floe_git_actions_jni.cpp floe_network_workspace_jni.cpp floe_run_output_jni.cpp floe_office_ai_jni.cpp)
 target_link_libraries(floe_jni PRIVATE FloeAndroidCore)
 target_link_options(floe_jni PRIVATE "-Wl,-z,max-page-size=16384")
 

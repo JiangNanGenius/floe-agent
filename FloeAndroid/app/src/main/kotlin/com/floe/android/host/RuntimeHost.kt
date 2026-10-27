@@ -3,11 +3,16 @@ package com.floe.android.host
 
 import com.floe.android.RuntimeBootstrapCapability
 import com.floe.android.SecretGatewayCapability
+import com.floe.android.host.officeai.AppOfficeAiDocumentPorts
+import com.floe.android.host.officeai.NativeOfficeAiTransport
+import com.floe.android.host.officeai.OfficeAiHostPump
+import com.floe.android.host.officeai.OfficeAiOoxmlVerifier
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -79,6 +84,42 @@ class RuntimeHost internal constructor(
     /** Same Application owner and native epoch as the provider transport. */
     internal var networkWorkspaceHost: NetworkWorkspaceHostController? = null
     internal var workspaceSourceHost: WorkspaceSourceHostController? = null
+    /** D04 owned run-output lane (list / verified Save Copy / Office egress
+     * helper). Stateless per call: every query carries the CURRENT accepted
+     * native root epoch and the Swift side re-validates it, so no explicit
+     * bind/retire dance exists here; the Application retires only the
+     * service's pending Save Copy pick at `Stopped`. */
+    internal var runOutputs: com.floe.android.host.output.RunOutputHostService? = null
+
+    /**
+     * G05-R2 Office AI host lane (Main host20): ONE serialized epoch pump
+     * over the delivered OfficeAiNative claims. It binds only to the ACTUAL
+     * accepted root epoch at [onBootstrapCapability] `OwnedStoreReady`
+     * (bounded attempts, no idle poller) — a successful bind is what makes
+     * `document.office.edit` really available on the Swift side; a refused
+     * bind leaves the tool honestly absent (never a constructor-stub true).
+     * Stop/retire runs through the pump's own drain contract before Root
+     * close: an unproven drain keeps the old generation honestly pending.
+     */
+    internal var officeAi: OfficeAiHostPump? = null
+    private var officeAiControl: Job? = null
+    private var officeAiRetire: Job? = null
+    private val officeAiLock = Any()
+
+    /**
+     * Observation-only projection of the shell's modal surfaces (Settings
+     * Dialog, preview Dialog, open navigation drawer) maintained by FloeShell
+     * for the Office AI lane's TRANSIENT launch admission (Main review
+     * 2026-10-27): the privacy visible-holder binding does NOT clear while
+     * SettingsSheet layers over the still-composed chat, so
+     * [com.floe.android.host.ConversationHostController.currentVisibleConversationId]
+     * alone cannot prove no modal owns the surface. Nothing reads this for
+     * privacy, navigation or rendering behavior — it is written by ONE
+     * LaunchedEffect observer in the shell and consumed only by the AI
+     * launch admission before the viewer claims (never after VIEWING).
+     */
+    @Volatile
+    internal var uiModalSurfaceOwned = false
 
     internal enum class BackgroundAvailability { NOTIFICATIONS_BLOCKED, SYSTEM_UNAVAILABLE }
     internal val backgroundAvailabilityNotice = MutableStateFlow<BackgroundAvailability?>(null)
@@ -174,6 +215,90 @@ class RuntimeHost internal constructor(
         webSearch.stop()
         home.stop()
         observationJob?.cancel()
+        // The Office AI pump drains through its OWN contract first: an
+        // unproven drain keeps the old generation owned/pending honestly
+        // (no force clean-cancel while native/provider IO is live).
+        officeAiControl?.cancel()
+        officeAiControl = null
+        officeAi?.let { lane ->
+            val epoch = lane.boundNativeEpoch
+            if (epoch > 0 && lane.stopAndJoin(epoch, OFFICE_AI_STOP_WAIT_MS) && officeAi === lane) {
+                officeAi = null
+            }
+        }
+    }
+
+    // ------------------------------------------------- Office AI host lane
+
+    /**
+     * Bounded owned start (Main host20 doctrine, mirroring the browser
+     * lane): re-validate the CURRENT accepted epoch before every attempt,
+     * rebind a replaced generation only through the previous pump's real
+     * drain (an unproven drain fails closed and retries), and never leave a
+     * constructor-stub availability behind.
+     */
+    private fun startOfficeAiLane() {
+        synchronized(officeAiLock) {
+            if (officeAiControl?.isActive == true) return
+            officeAiControl = scope.launch(ioDispatcher) {
+                val lane = officeAi ?: createOfficeAiPump() ?: return@launch
+                officeAi = lane
+                for (attempt in 0 until OFFICE_AI_START_ATTEMPTS) {
+                    val epoch = nativeRootEpoch()
+                    if (epoch != null && epoch > 0) {
+                        val previous = lane.boundNativeEpoch
+                        if (previous > 0 && previous != epoch) {
+                            if (!lane.stopAndJoin(previous, OFFICE_AI_STOP_WAIT_MS)) return@launch
+                        }
+                        if (lane.start(epoch)) return@launch
+                    }
+                    delay(OFFICE_AI_START_BACKOFF_MILLIS * (attempt + 1))
+                }
+            }
+        }
+    }
+
+    private fun createOfficeAiPump(): OfficeAiHostPump? {
+        if (!::appContext.isInitialized) return null
+        val application = appContext as? com.floe.android.FloeApplication ?: return null
+        // Main-process owner only: the isolated provider/office processes
+        // never duplicate this lane (their early-return bootstrap owns no
+        // RuntimeHost at all; this guard mirrors the Application doctrine).
+        if (android.os.Process.isIsolated()) return null
+        val controller = runCatching { application.officePreviews }.getOrNull() ?: return null
+        return OfficeAiHostPump(
+            scope = scope,
+            ioDispatcher = ioDispatcher,
+            currentNativeEpoch = ::nativeRootEpoch,
+            ports = AppOfficeAiDocumentPorts(this, controller),
+            transport = NativeOfficeAiTransport,
+            verifier = OfficeAiOoxmlVerifier,
+        )
+    }
+
+    /** Root stop / retirement: bounded owned drain attempts, then leave the
+     * lane honestly pending if the drain is unproven. */
+    private fun stopOfficeAiLane() {
+        synchronized(officeAiLock) {
+            officeAiControl?.cancel()
+            officeAiControl = null
+            if (officeAiRetire?.isActive == true) return
+            officeAiRetire = scope.launch(ioDispatcher) {
+                val lane = officeAi ?: return@launch
+                val epoch = lane.boundNativeEpoch
+                if (epoch <= 0) {
+                    if (officeAi === lane) officeAi = null
+                    return@launch
+                }
+                for (attempt in 0 until OFFICE_AI_RETIRE_ATTEMPTS) {
+                    if (lane.stopAndJoin(epoch, OFFICE_AI_STOP_WAIT_MS)) {
+                        if (officeAi === lane) officeAi = null
+                        return@launch
+                    }
+                    delay(OFFICE_AI_RETIRE_BACKOFF_MILLIS)
+                }
+            }
+        }
     }
 
     private suspend fun observeCapabilities() {
@@ -212,6 +337,9 @@ class RuntimeHost internal constructor(
                 // G02: republish the REAL native domain readiness (handler
                 // registry + composition constructors), not source optimism.
                 g02ReadinessAdapter.pollAndPublish()
+                // Office AI host lane follows the ACTUAL accepted root epoch
+                // with bounded attempts (same doctrine as the browser lane).
+                startOfficeAiLane()
             }
             is RuntimeBootstrapCapability.Failed ->
                 update { it.copy(store = RuntimeHostReadiness.StoreReadiness.Failed(value.reason)) }
@@ -223,6 +351,7 @@ class RuntimeHost internal constructor(
                     )
                 }
                 g02ReadinessAdapter.reset()
+                stopOfficeAiLane()
             }
         }
     }
@@ -493,6 +622,14 @@ class RuntimeHost internal constructor(
         if (raw.length <= 128) raw else raw.take(128) + "…"
 
     companion object {
+        /** Office AI lane start doctrine: bounded attempts, no idle poller
+         * (same shape as the browser lane). */
+        internal const val OFFICE_AI_START_ATTEMPTS = 4
+        internal const val OFFICE_AI_START_BACKOFF_MILLIS = 150L
+        internal const val OFFICE_AI_STOP_WAIT_MS = 8_000L
+        internal const val OFFICE_AI_RETIRE_ATTEMPTS = 8
+        internal const val OFFICE_AI_RETIRE_BACKOFF_MILLIS = 1_000L
+
         /** Structural refusal metadata only — never echo the goal/payload. */
         private val RUN_FAILURE_DETAIL_KEYS = listOf(
             "wire", "code", "reason", "binding", "phase",

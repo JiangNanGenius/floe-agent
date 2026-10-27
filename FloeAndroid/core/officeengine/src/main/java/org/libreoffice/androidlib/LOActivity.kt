@@ -60,6 +60,9 @@ interface EngineBridge {
 
 class LOActivity(private val bridge: EngineBridge) {
 
+    /** Short ingress exclusion; never held while awaiting a native reply. */
+    internal val nativeIngressLock = Any()
+
     companion object {
         private const val TAG = "FloeLOActivity"
 
@@ -151,9 +154,11 @@ class LOActivity(private val bridge: EngineBridge) {
     @JavascriptInterface
     fun postMobileMessage(message: String) {
         try {
-            if (bridge.onMessageFromJs(message)) {
-                postMobileMessageNative(message)
-                bridge.onMessageForwarded(message)
+            synchronized(nativeIngressLock) {
+                if (bridge.onMessageFromJs(message)) {
+                    postMobileMessageNative(message)
+                    bridge.onMessageForwarded(message)
+                }
             }
         } catch (t: Throwable) {
             Log.e(TAG, "postMobileMessage routing failed", t)

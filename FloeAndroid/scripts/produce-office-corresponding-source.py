@@ -14,8 +14,8 @@ module:
      module build source (``build.gradle.kts``, manifest, resources), the
      observer tests, the staging tool and its README (public build recipe),
      the public producer manifest + payload pins (all 14 native library
-     hashes, the deliberate official-libc++ exclusion), the 143-entry asset
-     overlay manifest with every actual overlay file it binds, the bilingual
+      hashes, the deliberate official-libc++ exclusion), the full asset
+      overlay manifest with every actual overlay file it binds, the bilingual
      notices page, the public-safe notice/source index, and PROVENANCE.md;
   3. rendered README.md / MANIFEST.json binding everything to the FINAL
      immutable Floe source commit, the FINAL signed Full APK sha256 and the
@@ -68,8 +68,8 @@ Fail-closed bindings (enforced, never downgraded to warnings):
   with each other (manifest digest == pin, per-library hashes, anchor asset
   hashes, every overlay original/new hash, the notice-page digest, the
   source index's own digest via the overlay add entry — no cycle because
-  the index never self-embeds its hash, and the 142-record index must match
-  the 143 overlay entries minus its own record);
+   the index never self-embeds its hash, and the index record set must match
+   the overlay entries minus its own record);
 * the overlay ``sourceAccess`` and ``floeCorrespondingSource`` blocks must
   name exactly ``android/v<release-version>`` and this release's public
   archive URL; the deliberate ``libc++_shared.so`` exclusion is preserved:
@@ -124,7 +124,20 @@ from typing import Dict, List, Optional, Tuple
 TOOL_NAME = "produce-office-corresponding-source"
 # 1.0.0: first release; wraps the proven Linux/IDE combined CCS output
 # byte-exact and adds the pinned Office engine public group.
-TOOL_VERSION = "1.0.0"
+# 1.0.1: layout refresh for the current frozen public source. The Office
+# engine tree added core/officeengine/tools/test_writer_viewport_sync.js, the
+# deterministic public-safe semantic check for the shipped
+# floe-writer-viewport-sync.js overlay; the exact-layout enumeration names it
+# and the rendered README tree line describes it. No assertion, scan, deny
+# list, redaction or binding logic was otherwise changed.
+# 1.0.2: layout refresh for the current frozen public source. The Office
+# engine tree added core/officeengine/tools/test_presentation_controls.js,
+# the deterministic public-safe semantic check for the shipped
+# floe-impress-follow-controls-fix.js overlay (phone Impress follow-controls
+# repair); the exact-layout enumeration names it and the rendered README
+# tree line describes both semantic checks. No assertion, scan, deny list,
+# redaction or binding logic was otherwise changed.
+TOOL_VERSION = "1.0.2"
 SCHEMA_VERSION = 1
 
 EPOCH_MTIME = 0
@@ -182,7 +195,9 @@ LIBCXX_NAME = "libc++_shared.so"
 ROOT_DOCS = sorted(["PROVENANCE.md", "asset-overlays.json", "build.gradle.kts",
                     "consumer-rules.pro", "payload-pins.json",
                     "producer-manifest.json"])
-TOOLS_FILES = sorted(["tools/README.md", "tools/prepare_payload.py"])
+TOOLS_FILES = sorted(["tools/README.md", "tools/prepare_payload.py",
+                      "tools/test_presentation_controls.js",
+                      "tools/test_writer_viewport_sync.js"])
 # Files present in the module tree that are NOT part of the public offer:
 # host integration notes (contain host-local paths) and the developer-side
 # witness harness (references a private contract document).
@@ -1016,9 +1031,11 @@ def render_readme(b: Dict[str, object]) -> str:
         "                 assets and observer tests",
         "  build.gradle.kts, consumer-rules.pro, src/main/AndroidManifest.xml",
         "                 the module build source wiring",
-        "  tools/         prepare_payload.py + README.md: the public staging",
-        "                 recipe for the pinned producer payload (no downloads",
-        "                 performed by this archive's producer)",
+        "  tools/         prepare_payload.py, README.md and the shipped-overlay",
+        "                 semantic checks test_writer_viewport_sync.js and",
+        "                 test_presentation_controls.js: the",
+        "                 public staging recipe for the pinned producer payload",
+        "                 (no downloads performed by this archive's producer)",
         "MANIFEST.json    full member hashes and every binding this tool checked",
         "```",
         "",
