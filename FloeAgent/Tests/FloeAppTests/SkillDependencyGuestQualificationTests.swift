@@ -13,8 +13,14 @@
 // uses). There is no mock, no host interpreter and no native fallback: every
 // command below executes inside THIS test's own guest.
 //
-// Required stages (a failure in any one FAILS the test; nothing is skipped
-// or cached-faked):
+// SPLIT (2026-10-27, job-2e854a51185441e3): the file now carries TWO serial
+// opt-in methods over the SAME production boot/cleanup helpers, so Main can
+// run the apt case alone during the real-guest apt repair without paying the
+// ~6-minute Python/pip wheel-download window again. The original Python
+// method KEEPS its exact historical name (Main owns the run filters and
+// markers):
+//
+//   `guestRealPipAptAndWheelStoreQualification()` — Python channel, stages 1–4b:
 //   1. boot + architecture truth: the owned project container (never the
 //      ambient first project) becomes available and the guest itself answers
 //      `uname -m` = riscv64;
@@ -43,18 +49,32 @@
 //       file and runs pip against that real path — `/dev/stdin` is NOT
 //       assumed (the real guest has no such path; 2026-10-27 regression)
 //       and a CLI `--hash` is a pip grammar error (exit 2 "no such option"),
-//       so this stage is the transport contract the real regression needs;
-//   5. small Debian package: query the guest's OWN apt candidate for `hello`
-//      after `apt-get update`, freeze that exact version string, run the NEW
+//       so this stage is the transport contract the real regression needs.
+//
+//   `guestAptExactInstallQualification()` — Debian channel, stages 5–6:
+//   5. small Debian package: run `apt-get update` IN THE QUALIFICATION and
+//      ENFORCE its exit BEFORE any candidate parsing, then query the guest's
+//      OWN `apt-cache policy hello` and enforce its exit BEFORE the candidate
+//      parse, freeze that exact version string, run the production
 //      `aptInstallExact` signed transaction with it, read the version back
 //      through `aptReadback` (dpkg-query), and EXECUTE /usr/bin/hello.
+//      A failure at either gate is a FAIL (never a pass, never a skip) and
+//      captures the FULL exit/stdout/stderr tails plus a fixed bounded
+//      guest-side diagnostics battery (identity, clock, resolv, sources,
+//      keyrings, lists dirs, DNS probe, HTTP mirror probe, apt config) so the
+//      first apt-only run already returns the true root-cause evidence. The
+//      previous shape discarded the update output and recorded an empty
+//      policy stdout, which is exactly what hid the real stderr in the
+//      2026-10-27 survey run (both update and policy exited 100).
+//   6. optional font stage, gated by the SECOND flag below.
 //
 // Optional heavy stage, gated by a SECOND explicit flag
-// `FLOE_SKILL_DEPENDENCY_GUEST_FONT_QUALIFICATION=1`: fontconfig +
-// fonts-noto-cjk candidates frozen and installed exactly, then the fixed
-// stdlib-ctypes FreeType probe must actually render a Chinese and a Japanese
-// glyph at 32 px (and must honestly answer NOT-ready before the fonts are
-// installed). Without that flag no font payload is ever downloaded here.
+// `FLOE_SKILL_DEPENDENCY_GUEST_FONT_QUALIFICATION=1` (apt method only):
+// fontconfig + fonts-noto-cjk candidates frozen and installed exactly, then
+// the fixed stdlib-ctypes FreeType probe must actually render a Chinese and a
+// Japanese glyph at 32 px (and must honestly answer NOT-ready before the
+// fonts are installed). Without that flag no font payload is ever downloaded
+// here.
 //
 // Ownership boundary and cleanup (bounded, ordered, awaited): only THIS
 // test's temp workspace root and the environment derived from it are touched.
@@ -66,13 +86,16 @@
 //
 // SELECTORS (for Main's unified run — disabled opt-in is reported as
 // disabled, NEVER as a pass):
-//   * FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION=1 enables the required
-//     stages above (real boot + installs; budget up to the 20-minute first
-//     image/install/boot window plus several minutes of emulated apt/pip).
+//   * FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION=1 enables BOTH methods above
+//     (suite `.serialized` keeps them serial; each boots its own fixture).
 //   * FLOE_SKILL_DEPENDENCY_GUEST_FONT_QUALIFICATION=1 (plus the base flag)
-//     adds the font render stage (large download).
-//   Test id: FloeApp.SkillDependencyGuestQualification /
-//   guestRealPipAptAndWheelStoreQualification().
+//     adds the font render stage to the apt method (large download).
+//   * Apt-only repair iteration (the whole point of the split):
+//       -only-testing:FloeAppTests/SkillDependencyGuestQualificationTests/guestAptExactInstallQualification()
+//     with FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION=1 — boot ≈ 30 s, apt
+//     verdict within ~1–2 minutes, no Python download window.
+//   Python-only: -only-testing:…/guestRealPipAptAndWheelStoreQualification().
+//   Final qualification may keep BOTH methods selected together.
 // Run under the canonical reused Simulator with the repo's
 // `select_test_simulator.py --with-lock` serialization; first-use services
 // (LinuxGuestPythonProvisioner etc.) are reused, not recreated.
@@ -91,7 +114,7 @@ import FloeExecution
 import FloeTools
 import FloeEnvironments
 
-@Suite("FloeApp.SkillDependencyGuestQualification")
+@Suite("FloeApp.SkillDependencyGuestQualification", .serialized)
 @MainActor
 struct SkillDependencyGuestQualificationTests {
 
@@ -130,7 +153,10 @@ struct SkillDependencyGuestQualificationTests {
     }
 
     private func bounded(_ text: String, limit: Int = 500) -> String {
-        String(text.suffix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
+        let redacted = SecretRedactor.redact(text).replacingOccurrences(
+            of: #"(?i)(https?://)[^/\s\"'@]+@"#,
+            with: "$1[redacted]@", options: .regularExpression)
+        return String(redacted.suffix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func aptCandidateLine(_ policyOutput: String, identity: String) -> String? {
@@ -148,44 +174,63 @@ struct SkillDependencyGuestQualificationTests {
         return nil
     }
 
-    @Test(
-        "Real RISC-V guest: uname truth, cache mount truth, mpmath exact pip install + venv import/version/calculation, offline wheel-store consumption, production hash-mode install (wrong digest refused by pip's own hash verdict, verified wheel digest installed through the owned temp-file transport), hello exact apt pin + dpkg readback + execution (+ optional CJK render)",
-        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION"] == "1")
-    )
-    func guestRealPipAptAndWheelStoreQualification() async throws {
-        let environment = AppEnvironment.live()
-        await environment.bootstrap()
-        let services = FloePlatformServices.shared
-        let root = try makeWorkspaceRoot()
-        let started = Date()
-        func phase(_ name: String) {
-            print("FLOE_DEPGUEST_PHASE \(name) t=\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+    /// Shared production boot preamble for BOTH methods: prepare + boot the
+    /// owned fixture through the actual app services and resolve the
+    /// canonical management lease. Returns nil after recording the honest
+    /// failure and cleaning exactly its own partial state.
+    private struct BootedGuest {
+        let root: URL
+        let environmentID: String
+        let runner: any LinuxCommandRunning
+        let env: ToolEnvironment
+        let services: FloePlatformServices
+        let leaseFinish: (@Sendable () async -> Void)?
+
+        /// ORDERED, AWAITED cleanup of exactly what THIS test owns:
+        /// finish the lease → stop the guest → delete the fixture environment
+        /// → remove the temp root. The pinned image, caches, other
+        /// environments and all user data are untouched.
+        func teardown() async {
+            await leaseFinish?()
+            if !environmentID.isEmpty {
+                do { try await services.stopEnvironment(id: environmentID) }
+                catch { print("FLOE_DEPGUEST_CLEANUP_STOP_FAILED environment=\(environmentID.prefix(8)) error=\(String(error.localizedDescription.suffix(200)).trimmingCharacters(in: .whitespacesAndNewlines))") }
+                do { try await services.deleteEnvironment(id: environmentID) }
+                catch { print("FLOE_DEPGUEST_CLEANUP_DELETE_FAILED environment=\(environmentID.prefix(8)) error=\(String(error.localizedDescription.suffix(200)).trimmingCharacters(in: .whitespacesAndNewlines)) — a stopped fixture record remains for Main; it is not deleted elsewhere") }
+            }
+            try? FileManager.default.removeItem(at: root)
+        }
+    }
+
+    private func bootOwnedGuest(
+        environment: AppEnvironment,
+        services: FloePlatformServices,
+        phase: @escaping (String) -> Void
+    ) async -> BootedGuest? {
+        let root: URL
+        do { root = try makeWorkspaceRoot() }
+        catch {
+            Issue.record("could not create this test's private workspace root: \(error)")
+            return nil
         }
         var ownedEnvironmentID = ""
         var leaseFinish: (@Sendable () async -> Void)?
-        // ORDERED, AWAITED cleanup of exactly what THIS test owns:
-        // finish the lease → stop the guest → delete the fixture environment
-        // → remove the temp root. The pinned image, caches, other
-        // environments and all user data are untouched.
-        func cleanup() async {
+        func partialCleanup() async {
             await leaseFinish?()
             leaseFinish = nil
             if !ownedEnvironmentID.isEmpty {
-                do { try await services.stopEnvironment(id: ownedEnvironmentID) }
-                catch { print("FLOE_DEPGUEST_CLEANUP_STOP_FAILED environment=\(ownedEnvironmentID.prefix(8)) error=\(bounded(error.localizedDescription))") }
-                do { try await services.deleteEnvironment(id: ownedEnvironmentID) }
-                catch { print("FLOE_DEPGUEST_CLEANUP_DELETE_FAILED environment=\(ownedEnvironmentID.prefix(8)) error=\(bounded(error.localizedDescription)) — a stopped fixture record remains for Main; it is not deleted elsewhere") }
+                try? await services.stopEnvironment(id: ownedEnvironmentID)
+                try? await services.deleteEnvironment(id: ownedEnvironmentID)
             }
             try? FileManager.default.removeItem(at: root)
         }
         do {
-            // 1) Prepare + boot through the actual production services.
             try await services.prepareWorkspaceEnvironment(root: root)
             guard let environmentID = await environmentID(
                 forRoot: root, registry: environment.environmentRegistry) else {
                 Issue.record("No Linux project environment exists for this test's workspace root")
-                await cleanup()
-                return
+                await partialCleanup()
+                return nil
             }
             ownedEnvironmentID = environmentID
             phase("activateWithPreparation.begin")
@@ -197,18 +242,65 @@ struct SkillDependencyGuestQualificationTests {
             guard ready else {
                 let postStatus = await services.linuxEnvironmentStatus(id: environmentID)
                 Issue.record("Linux guest never became available after preparation/boot status=\(String(describing: postStatus))")
-                await cleanup()
-                return
+                await partialCleanup()
+                return nil
             }
             phase("guest.booted")
             guard let runner = services.linuxCommandRunner() else {
                 Issue.record("The production Linux command runner is not registered (host has no local Linux service)")
-                await cleanup()
-                return
+                await partialCleanup()
+                return nil
             }
-            func guest(_ argv: [String], timeout: TimeInterval, maxBytes: Int = 256 * 1024) async throws -> LinuxCommandResult {
-                try await runner.run(
-                    environmentID: environmentID,
+            let executions = EnvironmentExecutionCoordinator(
+                roots: EnvironmentRoots(), registry: environment.environmentRegistry)
+            let lease = try await executions.acquireManagement(
+                environmentID: environmentID, cancellation: CancellationToken())
+            guard let env = lease.context.environment else {
+                Issue.record("The canonical lease resolved no ToolEnvironment")
+                await lease.finish()
+                await partialCleanup()
+                return nil
+            }
+            leaseFinish = lease.finish
+            return BootedGuest(
+                root: root,
+                environmentID: environmentID,
+                runner: runner,
+                env: env,
+                services: services,
+                leaseFinish: lease.finish
+            )
+        } catch {
+            await partialCleanup()
+            Issue.record("real-guest dependency boot failed: \(error)")
+            return nil
+        }
+    }
+
+    @Test(
+        "Real RISC-V guest: uname truth, cache mount truth, mpmath exact pip install + venv import/version/calculation, offline wheel-store consumption, production hash-mode install (wrong digest refused by pip's own hash verdict, verified wheel digest installed through the owned temp-file transport)",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION"] == "1")
+    )
+    func guestRealPipAptAndWheelStoreQualification() async throws {
+        let environment = AppEnvironment.live()
+        await environment.bootstrap()
+        let services = FloePlatformServices.shared
+        let started = Date()
+        func phase(_ name: String) {
+            print("FLOE_DEPGUEST_PHASE \(name) t=\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+        }
+        guard let guest = await bootOwnedGuest(
+            environment: environment, services: services, phase: phase) else { return }
+        var finished = false
+        func cleanup() async {
+            if finished { return }
+            finished = true
+            await guest.teardown()
+        }
+        do {
+            func runGuest(_ argv: [String], timeout: TimeInterval, maxBytes: Int = 256 * 1024) async throws -> LinuxCommandResult {
+                try await guest.runner.run(
+                    environmentID: guest.environmentID,
                     argv: argv,
                     workingDirectory: nil,
                     standardInput: nil,
@@ -219,7 +311,7 @@ struct SkillDependencyGuestQualificationTests {
             }
 
             // Architecture truth from the guest itself.
-            let uname = try await guest(["uname", "-m"], timeout: 60)
+            let uname = try await runGuest(["uname", "-m"], timeout: 60)
             let arch = uname.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
             print("FLOE_DEPGUEST_UNAME_ARCH=\(arch) exit=\(uname.exitCode)")
             #expect(arch == "riscv64", "the pinned TinyEMU guest must answer uname -m riscv64 (got \(arch))")
@@ -227,26 +319,12 @@ struct SkillDependencyGuestQualificationTests {
             // 2) Shared-cache mount truth (exact field-2 check, same robust
             //    verb the managed installs use; honest fail if the pinned
             //    image + share do not actually mount /floe/cache).
-            let mount = try await guest(["/bin/sh", "-c",
+            let mount = try await runGuest(["/bin/sh", "-c",
                 #"awk '$2=="/floe/cache"{found=1} END{exit found?0:1}' /proc/mounts"#], timeout: 30, maxBytes: 4 * 1024)
             print("FLOE_DEPGUEST_CACHE_MOUNT_EXIT=\(mount.exitCode)")
             #expect(mount.exitCode == 0, "/floe/cache is not mounted in this real guest — the shared wheel store could never be consumed; failing honestly")
 
-            // The canonical managed-environment lease (same resolution the
-            // production dependency center uses for THIS environment id).
-            let executions = EnvironmentExecutionCoordinator(
-                roots: EnvironmentRoots(), registry: environment.environmentRegistry)
-            let lease = try await executions.acquireManagement(
-                environmentID: environmentID, cancellation: CancellationToken())
-            guard let env = lease.context.environment else {
-                Issue.record("The canonical lease resolved no ToolEnvironment")
-                await lease.finish()
-                await cleanup()
-                return
-            }
-            leaseFinish = lease.finish
             let installer = try #require(environment.managedPythonInstaller)
-            let packages = LinuxGuestLanguagePackages(runner: runner)
             let venvPython = LinuxGuestPythonEnvironment.guestVenvPath + "/bin/python3"
 
             // 3) pip exact pin through the REAL managed service (first use
@@ -263,7 +341,7 @@ struct SkillDependencyGuestQualificationTests {
                 specs: ["mpmath==1.3.0"],
                 timeout: 600,
                 cancellation: nil,
-                environment: env
+                environment: guest.env
             )
             guard case .ok(let pipOutput) = pipOutcome else {
                 let detail: String
@@ -279,7 +357,7 @@ struct SkillDependencyGuestQualificationTests {
             }
             print("FLOE_DEPGUEST_PIP_INSTALL tail=\(bounded(pipOutput))")
             phase("pip.proof.venv")
-            let proof = try await guest([venvPython, "-c",
+            let proof = try await runGuest([venvPython, "-c",
                 "import mpmath; mpmath.mp.dps=30; print(mpmath.__version__); print(mpmath.__file__); print(mpmath.sqrt(2))"],
                 timeout: 300, maxBytes: 8 * 1024)
             #expect(proof.exitCode == 0, "venv python proof run failed: \(bounded(proof.stderr))")
@@ -332,19 +410,19 @@ struct SkillDependencyGuestQualificationTests {
             try SkillDependencyPreparationCenter.persistWheelBinding(
                 storeURL: hostStoreRoot, bundle: storeBundle, binding: binding)
             phase("wheelstore.offline.reinstall")
-            let uninstall = await installer.uninstall(distribution: "mpmath", environment: env, cancellation: nil)
+            let uninstall = await installer.uninstall(distribution: "mpmath", environment: guest.env, cancellation: nil)
             guard case .ok = uninstall else {
                 Issue.record("pre-offline-test uninstall failed: \(bounded(uninstall.describeForQualification()))")
                 await cleanup()
                 return
             }
-            let offline = try await guest(
+            let offline = try await runGuest(
                 [venvPython, "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
                  "--no-index", "--find-links", "/floe/cache/pip/official-wheels", "mpmath==1.3.0"],
                 timeout: 600)
             #expect(offline.exitCode == 0,
                     "pip --no-index --find-links install failed (wheel not discoverable through the mount?): \(bounded(offline.stdout + offline.stderr))")
-            let offlineProof = try await guest([venvPython, "-c",
+            let offlineProof = try await runGuest([venvPython, "-c",
                 "import mpmath; mpmath.mp.dps=30; print(mpmath.__version__, mpmath.sqrt(2))"], timeout: 300, maxBytes: 4 * 1024)
             #expect(offlineProof.exitCode == 0
                     && offlineProof.stdout.contains("1.3.0")
@@ -370,7 +448,7 @@ struct SkillDependencyGuestQualificationTests {
             //     verified wheel digest must install and compute at exact
             //     precision.
             phase("hashmode.uninstall.before")
-            let preHashUninstall = await installer.uninstall(distribution: "mpmath", environment: env, cancellation: nil)
+            let preHashUninstall = await installer.uninstall(distribution: "mpmath", environment: guest.env, cancellation: nil)
             guard case .ok = preHashUninstall else {
                 Issue.record("pre-hash-mode uninstall failed: \(bounded(preHashUninstall.describeForQualification()))")
                 await cleanup()
@@ -384,7 +462,7 @@ struct SkillDependencyGuestQualificationTests {
                 findLinksGuestPath: "/floe/cache/pip/official-wheels",
                 hashesBySpec: ["mpmath==1.3.0": [wrongDigest]],
                 cancellation: nil,
-                environment: env
+                environment: guest.env
             )
             guard case .failed(let wrongHashMessage) = wrongHashOutcome else {
                 Issue.record("guest pip ACCEPTED a wrong sha256 pin in hash mode — digest verification is not real: \(bounded(wrongHashOutcome.describeForQualification()))")
@@ -416,7 +494,7 @@ struct SkillDependencyGuestQualificationTests {
             #expect(transportFailureMarkers.first { wrongNormalized.contains($0) } == nil,
                     "the wrong-digest refusal carries a transport-failure marker; the hash verdict must stand on its own: \(bounded(wrongHashMessage))")
             print("FLOE_DEPGUEST_HASHMODE_WRONGREFUSED marker=\(matchedVerdict ?? "none") tail=\(bounded(wrongHashMessage, limit: 220))")
-            let wrongImport = try await guest([venvPython, "-c", "import mpmath"], timeout: 120, maxBytes: 4 * 1024)
+            let wrongImport = try await runGuest([venvPython, "-c", "import mpmath"], timeout: 120, maxBytes: 4 * 1024)
             #expect(wrongImport.exitCode != 0,
                     "the refused wrong-hash install must leave mpmath NOT installed, import exit was \(wrongImport.exitCode)")
             phase("hashmode.verifieddigest.install")
@@ -426,7 +504,7 @@ struct SkillDependencyGuestQualificationTests {
                 findLinksGuestPath: "/floe/cache/pip/official-wheels",
                 hashesBySpec: ["mpmath==1.3.0": [verified.sha256]],
                 cancellation: nil,
-                environment: env
+                environment: guest.env
             )
             guard case .ok(let verifiedHashOutput) = verifiedHashOutcome else {
                 let detail: String
@@ -440,7 +518,7 @@ struct SkillDependencyGuestQualificationTests {
                 await cleanup()
                 return
             }
-            let hashProof = try await guest([venvPython, "-c",
+            let hashProof = try await runGuest([venvPython, "-c",
                 "import mpmath; mpmath.mp.dps=30; print(mpmath.__version__); print(mpmath.sqrt(2))"],
                 timeout: 300, maxBytes: 8 * 1024)
             #expect(hashProof.exitCode == 0
@@ -449,63 +527,187 @@ struct SkillDependencyGuestQualificationTests {
                     "the hash-mode-installed mpmath did not import/compute at exact precision: \(bounded(hashProof.stdout)) \(bounded(hashProof.stderr))")
             print("FLOE_DEPGUEST_HASHMODE_OK verifiedDigest=\(String(verified.sha256.prefix(12))) wrongDigestRefused=yes installTail=\(bounded(verifiedHashOutput, limit: 160))")
 
-            // 5) Small Debian package through the NEW exact-pin transaction.
-            phase("apt.update.candidate.hello")
-            _ = try await guest(["apt-get", "update"], timeout: 600, maxBytes: 128 * 1024)
-            let policy = try await guest(["/bin/sh", "-c", "apt-cache policy hello"], timeout: 120, maxBytes: 32 * 1024)
+            await cleanup()
+            print("FLOE_DEPGUEST_OK bootSeconds=\(String(format: "%.1f", Date().timeIntervalSince(started))) arch=riscv64 mpmath=1.3.0 wheelOffline=\(storeBundle.filename)")
+            print("NOTE: this is the actual-guest component proof (pip/wheel-store/mount). The apt pin/readback/execute and font render legs are proven by guestAptExactInstallQualification() in this suite. Signed-package authorization and Hub live-install end-to-end remain covered by the center unit fixtures and Root's install acceptance.")
+        } catch {
+            await cleanup()
+            Issue.record("real-guest dependency qualification failed: \(error)")
+        }
+    }
+
+    @Test(
+        "Real RISC-V guest (apt-only isolation): apt-get update + apt-cache policy truth with full exit/stdout/stderr capture and fixed diagnostics before candidate parse, hello exact apt pin through production aptInstallExact + dpkg readback + execution (+ optional fontconfig/fonts-noto-cjk pins and CJK render)",
+        .enabled(if: ProcessInfo.processInfo.environment["FLOE_SKILL_DEPENDENCY_GUEST_QUALIFICATION"] == "1")
+    )
+    func guestAptExactInstallQualification() async throws {
+        let environment = AppEnvironment.live()
+        await environment.bootstrap()
+        let services = FloePlatformServices.shared
+        let started = Date()
+        func phase(_ name: String) {
+            print("FLOE_DEPGUEST_PHASE \(name) t=\(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+        }
+        guard let guest = await bootOwnedGuest(
+            environment: environment, services: services, phase: phase) else { return }
+        var finished = false
+        func cleanup() async {
+            if finished { return }
+            finished = true
+            await guest.teardown()
+        }
+        do {
+            func runGuest(_ argv: [String], timeout: TimeInterval, maxBytes: Int = 256 * 1024) async throws -> LinuxCommandResult {
+                try await guest.runner.run(
+                    environmentID: guest.environmentID,
+                    argv: argv,
+                    workingDirectory: nil,
+                    standardInput: nil,
+                    timeout: timeout,
+                    maxOutputBytes: maxBytes,
+                    cancellation: nil
+                )
+            }
+
+            // Architecture truth from the guest itself (same boot sanity the
+            // full suite asserts; cheap, keeps this method independently
+            // meaningful during the repair loop).
+            let uname = try await runGuest(["uname", "-m"], timeout: 60)
+            let arch = uname.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("FLOE_DEPGUEST_UNAME_ARCH=\(arch) exit=\(uname.exitCode)")
+            #expect(arch == "riscv64", "the pinned TinyEMU guest must answer uname -m riscv64 (got \(arch))")
+
+            let packages = LinuxGuestLanguagePackages(runner: guest.runner)
+
+            /// Fixed, bounded, guest-side READ-ONLY diagnostics battery. Every
+            /// probe is a hard-coded `/bin/sh -c` script (no interpolation of
+            /// anything dynamic into argv), captured with exit/stdout/stderr.
+            /// It exists so ONE apt-only run already returns the true
+            /// root-cause evidence instead of an empty stdout.
+            func aptDiagnostics() async -> String {
+                let probes: [(label: String, script: String, maxBytes: Int)] = [
+                    ("id", "id 2>&1", 8 * 1024),
+                    ("clock-utc", "date -u +%Y-%m-%dT%H:%M:%SZ 2>&1", 8 * 1024),
+                    ("resolv", "cat /etc/resolv.conf 2>&1", 8 * 1024),
+                    ("sources", #"cat /etc/apt/sources.list 2>&1; echo ---; ls -la /etc/apt/sources.list.d 2>&1; for f in /etc/apt/sources.list.d/*; do [ -f "$f" ] && { echo "== $f"; cat "$f" 2>&1; }; done"#, 32 * 1024),
+                    ("keyrings", "ls -la /etc/apt/trusted.gpg.d /etc/apt/keyrings /usr/share/keyrings 2>&1", 32 * 1024),
+                    ("lists-dir", "ls -ld /var/lib/apt/lists /var/lib/apt/lists/partial 2>&1; ls -la /var/lib/apt/lists 2>&1", 32 * 1024),
+                    ("dns-deb", "getent hosts deb.debian.org 2>&1; echo getent_exit=$?", 8 * 1024),
+                    ("http-mirror-probe", #"python3 -c "import urllib.request as u; print(u.urlopen('http://deb.debian.org/debian/', timeout=30).status)" 2>&1"#, 8 * 1024),
+                    ("apt-config", "apt-config dump 2>&1", 64 * 1024),
+                ]
+                var lines: [String] = []
+                for probe in probes {
+                    do {
+                        let result = try await runGuest(["/bin/sh", "-c", probe.script], timeout: 90, maxBytes: probe.maxBytes)
+                        let combined = result.stdout + (result.stderr.isEmpty ? "" : "\n[stderr] " + result.stderr)
+                        lines.append("[apt-diag:\(probe.label)] exit=\(result.exitCode) output=\(bounded(combined, limit: 900))")
+                    } catch {
+                        lines.append("[apt-diag:\(probe.label)] runner-threw=\(bounded(error.localizedDescription))")
+                    }
+                }
+                let block = lines.joined(separator: "\n")
+                print("FLOE_DEPGUEST_APT_DIAGNOSTICS\n\(block)")
+                return block
+            }
+
+            // 5) apt-get update FIRST, FULLY CAPTURED and ENFORCED before any
+            //    candidate parsing. The discarded `_ =` output of the old
+            //    combined shape hid the real stderr (exit 100 with no recorded
+            //    detail); a network/mirror error must FAIL here, loudly, with
+            //    exit/stdout/stderr and the diagnostics battery — never pass,
+            //    never skip.
+            phase("apt.update")
+            let update = try await runGuest(["apt-get", "update"], timeout: 600, maxBytes: 128 * 1024)
+            print("FLOE_DEPGUEST_APT_UPDATE exit=\(update.exitCode) stdout=\(bounded(update.stdout, limit: 1_800)) stderr=\(bounded(update.stderr, limit: 1_800))")
+            guard update.exitCode == 0 else {
+                let diagnostics = await aptDiagnostics()
+                Issue.record("apt-get update failed in the real guest BEFORE any candidate parse — exit=\(update.exitCode); stderr tail: \(bounded(update.stderr, limit: 4_000)); stdout tail: \(bounded(update.stdout, limit: 2_000)); diagnostics:\n\(diagnostics)")
+                await cleanup()
+                return
+            }
+
+            // apt-cache policy hello: the previous shape recorded only an
+            // empty stdout (apt answers exit 100 with its message on stderr
+            // when the cache holds no such package — a direct consequence of
+            // the update above having failed). Enforce the exit BEFORE the
+            // candidate parse and capture BOTH streams either way.
+            phase("apt.policy.hello")
+            let policy = try await runGuest(["/bin/sh", "-c", "apt-cache policy hello"], timeout: 120, maxBytes: 32 * 1024)
+            print("FLOE_DEPGUEST_APT_POLICY hello exit=\(policy.exitCode) stdout=\(bounded(policy.stdout, limit: 1_500)) stderr=\(bounded(policy.stderr, limit: 1_500))")
+            guard policy.exitCode == 0 else {
+                let diagnostics = await aptDiagnostics()
+                Issue.record("apt-cache policy hello failed before the candidate parse — exit=\(policy.exitCode); stderr tail: \(bounded(policy.stderr, limit: 4_000)); stdout tail: \(bounded(policy.stdout, limit: 2_000)); diagnostics:\n\(diagnostics)")
+                await cleanup()
+                return
+            }
             guard let candidate = aptCandidateLine(policy.stdout, identity: "hello") else {
-                Issue.record("could not freeze an exact apt candidate for hello from the guest: \(bounded(policy.stdout))")
+                let diagnostics = await aptDiagnostics()
+                Issue.record("could not freeze an exact apt candidate for hello from the guest — exit=\(policy.exitCode); stdout tail: \(bounded(policy.stdout, limit: 2_000)); stderr tail: \(bounded(policy.stderr, limit: 2_000)); diagnostics:\n\(diagnostics)")
                 await cleanup()
                 return
             }
             print("FLOE_DEPGUEST_APT_CANDIDATE hello=\(candidate)")
             phase("apt.installExact.hello")
             _ = try await packages.aptInstallExact(
-                identity: "hello", version: candidate, environment: env, cancellation: nil)
-            let readback = try await packages.aptReadback(identity: "hello", environment: env, cancellation: nil)
+                identity: "hello", version: candidate, environment: guest.env, cancellation: nil)
+            let readback = try await packages.aptReadback(identity: "hello", environment: guest.env, cancellation: nil)
             #expect(readback == candidate, "dpkg readback \(String(describing: readback)) != frozen candidate \(candidate)")
             phase("apt.execute.hello")
-            let helloRun = try await guest(["/usr/bin/hello"], timeout: 60, maxBytes: 4 * 1024)
+            let helloRun = try await runGuest(["/usr/bin/hello"], timeout: 60, maxBytes: 4 * 1024)
             #expect(helloRun.exitCode == 0 && helloRun.stdout.contains("Hello"),
                     "/usr/bin/hello did not execute cleanly: exit=\(helloRun.exitCode) out=\(bounded(helloRun.stdout))")
             print("FLOE_DEPGUEST_APT_OK hello=\(candidate) stdout=\(bounded(helloRun.stdout, limit: 120))")
 
             // Optional declared-font render stage (never without its own
-            // explicit flag: no unconditional heavy font download).
+            // explicit flag: no unconditional heavy font download). Same
+            // enforcement discipline: update/policy capture before parse.
             if Self.fontEnabled {
                 phase("font.probe.before")
-                let before = try await packages.cjkFontProbe(environment: env, cancellation: nil)
+                let before = try await packages.cjkFontProbe(environment: guest.env, cancellation: nil)
                 print("FLOE_DEPGUEST_FONT_PROBE_BEFORE=\(before)")
                 #expect(!before, "the FreeType probe must honestly answer not-ready before the declared fonts are installed (an always-true probe is a broken probe)")
-                _ = try await guest(["apt-get", "update"], timeout: 600, maxBytes: 128 * 1024)
+                phase("font.apt.update")
+                let fontUpdate = try await runGuest(["apt-get", "update"], timeout: 600, maxBytes: 128 * 1024)
+                print("FLOE_DEPGUEST_APT_UPDATE_FONT exit=\(fontUpdate.exitCode) stdout=\(bounded(fontUpdate.stdout, limit: 1_800)) stderr=\(bounded(fontUpdate.stderr, limit: 1_800))")
+                guard fontUpdate.exitCode == 0 else {
+                    let diagnostics = await aptDiagnostics()
+                    Issue.record("the pre-font apt-get update failed before any font candidate parse — exit=\(fontUpdate.exitCode); stderr tail: \(bounded(fontUpdate.stderr, limit: 4_000)); diagnostics:\n\(diagnostics)")
+                    await cleanup()
+                    return
+                }
                 for identity in ["fontconfig", "fonts-noto-cjk"] {
-                    let fontPolicy = try await guest(["/bin/sh", "-c", "apt-cache policy \(identity)"], timeout: 120, maxBytes: 32 * 1024)
+                    let fontPolicy = try await runGuest(["/bin/sh", "-c", "apt-cache policy \(identity)"], timeout: 120, maxBytes: 32 * 1024)
+                    print("FLOE_DEPGUEST_APT_POLICY \(identity) exit=\(fontPolicy.exitCode) stdout=\(bounded(fontPolicy.stdout, limit: 1_500)) stderr=\(bounded(fontPolicy.stderr, limit: 1_500))")
+                    guard fontPolicy.exitCode == 0 else {
+                        Issue.record("apt-cache policy \(identity) failed before the candidate parse — exit=\(fontPolicy.exitCode); stderr tail: \(bounded(fontPolicy.stderr, limit: 4_000))")
+                        await cleanup()
+                        return
+                    }
                     guard let pin = aptCandidateLine(fontPolicy.stdout, identity: identity) else {
-                        Issue.record("could not freeze an exact apt candidate for \(identity): \(bounded(fontPolicy.stdout))")
+                        Issue.record("could not freeze an exact apt candidate for \(identity): \(bounded(fontPolicy.stdout)) / \(bounded(fontPolicy.stderr))")
                         await cleanup()
                         return
                     }
                     phase("font.installExact.\(identity)")
                     _ = try await packages.aptInstallExact(
-                        identity: identity, version: pin, environment: env, cancellation: nil)
-                    let fontReadback = try await packages.aptReadback(identity: identity, environment: env, cancellation: nil)
+                        identity: identity, version: pin, environment: guest.env, cancellation: nil)
+                    let fontReadback = try await packages.aptReadback(identity: identity, environment: guest.env, cancellation: nil)
                     #expect(fontReadback == pin, "\(identity) readback \(String(describing: fontReadback)) != frozen pin \(pin)")
                     print("FLOE_DEPGUEST_FONT_PINNED \(identity)=\(pin)")
                 }
                 phase("font.probe.after")
-                let after = try await packages.cjkFontProbe(environment: env, cancellation: nil)
+                let after = try await packages.cjkFontProbe(environment: guest.env, cancellation: nil)
                 print("FLOE_DEPGUEST_FONT_PROBE_AFTER=\(after)")
                 #expect(after, "the fixed FreeType glyph-render probe did not pass after the declared fontconfig+fonts-noto-cjk pins installed — renderer or faces are genuinely not ready")
             }
 
-            await leaseFinish?()
-            leaseFinish = nil
             await cleanup()
-            print("FLOE_DEPGUEST_OK bootSeconds=\(String(format: "%.1f", Date().timeIntervalSince(started))) arch=riscv64 mpmath=1.3.0 wheelOffline=\(storeBundle.filename) hello=\(candidate) fontStage=\(Self.fontEnabled ? "rendered" : "not-enabled")")
-            print("NOTE: this is the actual-guest component proof (pip/apt/wheel-store/mount/render). Signed-package authorization and Hub live-install end-to-end remain covered by the center unit fixtures and Root's install acceptance.")
+            print("FLOE_DEPGUEST_APT_STAGE_OK bootSeconds=\(String(format: "%.1f", Date().timeIntervalSince(started))) arch=riscv64 hello=\(candidate) fontStage=\(Self.fontEnabled ? "rendered" : "not-enabled")")
+            print("NOTE: apt component proof only; pip/hash/wheel-store legs live in guestRealPipAptAndWheelStoreQualification(). Signed-package authorization and Hub live-install end-to-end remain covered by the center unit fixtures and Root's install acceptance.")
         } catch {
             await cleanup()
-            Issue.record("real-guest dependency qualification failed: \(error)")
+            Issue.record("real-guest apt qualification failed: \(error)")
         }
     }
 }
