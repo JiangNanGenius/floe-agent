@@ -1144,6 +1144,11 @@ targets:
       - path: Tests/FloeToolsTests/MCPRemoteToolSourceTests.swift
       - path: Tests/FloeImagesTests/QRCodeGenerateToolTests.swift
       - path: Tests/FloeAgentRuntimeTests/RunOutputTransportTests.swift
+      # Owned staged-export V2 (art-native source integration 2026-10-28):
+      # the browser.exportFile contract/service/transaction suite is App-host
+      # source delivered by this lane; explicit FloeAppTests membership so
+      # gen_project.sh includes it. Regenerate after any change here.
+      - path: Tests/FloeAppTests/BrowserStagedExportServiceTests.swift
     dependencies:
       - target: FloeAgent
       - package: FloeCADKit

@@ -148,6 +148,69 @@ private final class BrowserToolEnvironment: @unchecked Sendable {
         }
     }
 
+    /// Fixed staged-export pull: commits the full-resolution PNG that this
+    /// task's OWN preview page staged (the art/canvas packages' Export PNG /
+    /// Download PNG controls) as a NEW workspace file. Destination and write
+    /// authority come only from the runtime-issued ToolContext (task file
+    /// scope + workspace path guard, create-new only); the bound page
+    /// contributes validated bytes through the fixed native read-back script,
+    /// never authority. This is internal browser/media measurement — engine
+    /// execution stays in the resolved Linux environment through exec.shell.
+    @MainActor
+    func exportStagedFile(
+        context: ToolContext,
+        tabID: UUID?,
+        path: String,
+        expectedWidth: Int?,
+        expectedHeight: Int?
+    ) async throws -> ToolExecutionOutput {
+        let resolved = try session(for: context)
+        guard let root = context.workspaceRootURL, root.isFileURL,
+              let environmentID = context.environmentID, !environmentID.isEmpty else {
+            throw FloeError.validationFailed("Staged file export requires this task's workspace and execution environment")
+        }
+        let physicalRoot = root.standardizedFileURL.resolvingSymlinksInPath()
+        let pathRejections = StagedExportValidation.destinationRejections(path)
+        guard pathRejections.isEmpty else {
+            throw FloeError.validationFailed(pathRejections.joined(separator: "; "))
+        }
+        try context.authorizeWorkspacePath(path)
+        let pathGuard = WorkspacePathGuard(
+            rootURL: physicalRoot,
+            maxReadBytes: StagedExportContract.maxFileBytes,
+            maxWriteBytes: StagedExportContract.maxFileBytes
+        )
+        // Create-new only: an existing destination (file, directory or symlink)
+        // is refused before any page read. This guard resolution is the policy
+        // authority for containment and secrets; the service then re-anchors the
+        // same destination by descriptor and publishes with one atomic
+        // no-overwrite syscall, which is what actually excludes a late race.
+        let destination = try pathGuard.resolve(path, for: .createNew)
+        guard destination.path.hasPrefix(physicalRoot.path + "/") else {
+            throw FloeError.validationFailed("The export destination belongs to a different workspace")
+        }
+        let session = resolved.session
+        guard let selectedTab = tabID ?? session.activeTabID else {
+            throw FloeError.validationFailed("Open the artifact preview in a browser tab before exporting its staged file")
+        }
+        let receipt = try await session.stagedExports.export(
+            BrowserStagedExportService.Request(
+                tabID: selectedTab,
+                workspaceRootURL: physicalRoot,
+                destinationURL: destination,
+                relativePath: path,
+                expectedWidth: expectedWidth,
+                expectedHeight: expectedHeight
+            ),
+            cancellation: context.cancellation
+        )
+        let bytes = try receipt.encodedJSON()
+        return ToolExecutionOutput(
+            summary: String(decoding: bytes, as: UTF8.self),
+            fullOutputSHA256: FloeDigest.sha256Hex(bytes)
+        )
+    }
+
     /// Resolves the exact run that owns a durable browser handoff for this
     /// call. Main-run calls use their actual `context.runID`. A delegated
     /// child uses the runtime-issued `ChildExecutionIdentity`: the original
@@ -474,6 +537,56 @@ private struct BrowserScreenshotTool: AgentTool {
     }
 }
 
+/// Commits the full-resolution PNG that this task's own preview page staged
+/// for export as a NEW workspace file — the delivered-artifact route for the
+/// art/poster packages, whose pages rasterize at exact declared pixel sizes
+/// that a viewport screenshot can never represent. The page cannot start
+/// this operation, cannot choose the destination and its bytes are re-derived
+/// natively (declared-size caps before decode, native SHA-256, PNG structure);
+/// a data-URL click download alone materializes no file in WKWebView, and this
+/// typed pull is the only page-to-workspace file route.
+private struct BrowserExportStagedFileTool: AgentTool {
+    struct Arguments: Decodable, Sendable {
+        let tabID: UUID?
+        let path: String
+        let expectedWidth: Int?
+        let expectedHeight: Int?
+    }
+    static let name = "browser.exportFile"
+    static let toolDescription = "Commit the full-resolution PNG that this task's own preview page staged for export (its Export PNG / Download PNG control) as a NEW workspace file. The page must be this task's authorized local preview in this task's browser and must have staged the raster first; native reads it back through a fixed script, verifies the byte count, checksum and PNG structure, and never overwrites an existing file. Verify the committed file (for example the package's verify_png.py through exec.shell) and publish it with workspace.publishOutput. A browser.screenshot capture is viewport-bounded preview evidence, never this deliverable."
+    static let parametersJSON = #"{"type":"object","properties":{"tabID":{"type":"string","format":"uuid"},"path":{"type":"string","maxLength":1024,"description":"Workspace-relative destination file ending in .png; must not exist yet"},"expectedWidth":{"type":"integer","minimum":1,"maximum":16384,"description":"Required exact pixel width of the staged raster"},"expectedHeight":{"type":"integer","minimum":1,"maximum":16384,"description":"Required exact pixel height of the staged raster"}},"required":["path"],"additionalProperties":false}"#
+    static let riskLabels: Set<RiskLabel> = [.writesFiles]
+    static let isSideEffecting = true
+    static let toolEffect: ToolEffect = .mutating
+    let environment: BrowserToolEnvironment
+    func validate(_ args: Arguments) throws {
+        let rejections = StagedExportValidation.destinationRejections(
+            args.path.trimmingCharacters(in: .whitespaces))
+        guard rejections.isEmpty else {
+            throw FloeError.validationFailed(rejections.joined(separator: "; "))
+        }
+        if let width = args.expectedWidth,
+           !(1...StagedExportContract.maxDimension).contains(width) {
+            throw FloeError.validationFailed("expectedWidth must be between 1 and \(StagedExportContract.maxDimension)")
+        }
+        if let height = args.expectedHeight,
+           !(1...StagedExportContract.maxDimension).contains(height) {
+            throw FloeError.validationFailed("expectedHeight must be between 1 and \(StagedExportContract.maxDimension)")
+        }
+    }
+    @MainActor func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
+        try context.cancellation.throwIfCancelled()
+        try validate(args)
+        return try await environment.exportStagedFile(
+            context: context,
+            tabID: args.tabID,
+            path: args.path.trimmingCharacters(in: .whitespaces),
+            expectedWidth: args.expectedWidth,
+            expectedHeight: args.expectedHeight
+        )
+    }
+}
+
 private struct BrowserClickVisualTextTool: AgentTool {
     struct Arguments: Decodable, Sendable {
         let tabID: UUID?
@@ -640,6 +753,7 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     ToolCatalog.register(BrowserClickPointTool.self)
     ToolCatalog.register(BrowserTypeTool.self)
     ToolCatalog.register(BrowserScrollTool.self)
+    ToolCatalog.register(BrowserExportStagedFileTool.self)
     registry.register(BrowserNavigateTool(environment: environment))
     registry.register(BrowserObserveTool(environment: environment))
     registry.register(BrowserEventsTool(environment: environment))
@@ -650,5 +764,6 @@ func registerBrowserTools(center: BrowserSessionCenter, registry: ToolRunnerRegi
     registry.register(BrowserClickPointTool(environment: environment))
     registry.register(BrowserTypeTool(environment: environment))
     registry.register(BrowserScrollTool(environment: environment))
+    registry.register(BrowserExportStagedFileTool(environment: environment))
 }
 #endif

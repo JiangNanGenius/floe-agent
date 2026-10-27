@@ -166,6 +166,12 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     /// the service itself never issues work to other sessions.
     private(set) lazy var impeccableCaptures = BrowserImpeccableCaptureService(session: self)
 
+    /// Task-owned staged-export pull service (`browser.exportFile`). Same
+    /// fence discipline as the capture service: in-flight exports are fenced
+    /// synchronously from the lifecycle points below, and a page can never
+    /// start an export — only an authorized native tool call can.
+    private(set) lazy var stagedExports = BrowserStagedExportService(session: self)
+
     private weak var host: BrowserTaskSessionHost?
     private let protocolVersion: String
     /// Internal for the task-owned Impeccable capture service only.
@@ -246,6 +252,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
     func close(_ id: UUID) {
         guard !isReleased, tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         impeccableCaptures.fence(tabID: id, reason: .tabClosed)
+        stagedExports.fenceTab(id, reason: .tabClosed)
         tabs[index].webView.stopLoading()
         tabs.remove(at: index)
         if activeTabID == id { activeTabID = tabs[min(index, tabs.count - 1)].id }
@@ -256,11 +263,17 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         if let currentURL = activeWebView?.url,
            Self.isLocalPreview(currentURL),
            addressText == Self.visibleAddress(for: activeWebView) {
-            if let activeTabID { impeccableCaptures.fence(tabID: activeTabID, reason: .reload) }
+            if let activeTabID {
+                impeccableCaptures.fence(tabID: activeTabID, reason: .reload)
+                stagedExports.fenceTab(activeTabID, reason: .reload)
+            }
             activeWebView?.reload()
             return
         }
-        if let activeTabID { impeccableCaptures.fence(tabID: activeTabID, reason: .navigation) }
+        if let activeTabID {
+            impeccableCaptures.fence(tabID: activeTabID, reason: .navigation)
+            stagedExports.fenceTab(activeTabID, reason: .navigation)
+        }
         let candidate = addressText.contains("://") ? addressText : "https://\(addressText)"
         guard let url = try? BrowserURLPolicy.validate(candidate, conversationID: conversationID),
               let activeWebView else { return }
@@ -296,6 +309,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             // The user can move any tab at any moment now; every capture
             // bound to this session fences at the instant of takeover.
             impeccableCaptures.fenceAll(reason: .userTakeover)
+            stagedExports.fenceAll(reason: .userTakeover)
             surfaceState = .needsUser("User takeover is active")
         } else if case .needsUser = surfaceState {
             surfaceState = .ready
@@ -311,6 +325,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             tabs[index].documentGeneration += 1
             tabs[index].visualFallbackEvidence = nil
             impeccableCaptures.fence(tabID: tabs[index].id, reason: .ownerHandoff)
+            stagedExports.fenceTab(tabs[index].id, reason: .ownerHandoff)
         }
     }
 
@@ -320,6 +335,7 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         guard !isReleased else { return }
         isReleased = true
         impeccableCaptures.fenceAll(reason: .released)
+        stagedExports.fenceAll(reason: .released)
         let probes = Array(pendingProbes.values)
         pendingProbes.removeAll()
         probes.forEach { $0.invalidate() }
@@ -402,15 +418,19 @@ final class BrowserTaskSession: NSObject, ObservableObject {
             case .navigate(let value):
                 let url = try BrowserURLPolicy.validate(value, conversationID: conversationID)
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
+                stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.load(URLRequest(url: url))
             case .back:
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
+                stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.goBack()
             case .forward:
                 impeccableCaptures.fence(tabID: tabID, reason: .navigation)
+                stagedExports.fenceTab(tabID, reason: .navigation)
                 tab.webView.goForward()
             case .reload:
                 impeccableCaptures.fence(tabID: tabID, reason: .reload)
+                stagedExports.fenceTab(tabID, reason: .reload)
                 tab.webView.reload()
             case .observe(let cursor):
                 return await observeResult(command, tabID: tabID, cursor: cursor)
@@ -1003,7 +1023,10 @@ final class BrowserTaskSession: NSObject, ObservableObject {
         }
     }
 
-    private func appendEvent(
+    /// Internal for the task-owned staged-export service receipts only
+    /// (`Browser.exportDelivered` / `Browser.exportRejected` on the existing
+    /// events surface); every other caller stays inside this session.
+    func appendEvent(
         tabID: UUID,
         method: String,
         detail: String? = nil,
@@ -1323,6 +1346,7 @@ extension BrowserTaskSession: WKNavigationDelegate, WKUIDelegate {
         // Fence at the moment of the document change, before anything else
         // can answer against the replaced page.
         impeccableCaptures.fence(tabID: tabs[index].id, reason: .navigation)
+        stagedExports.fenceTab(tabs[index].id, reason: .navigation)
         tabs[index].revision = 0
         tabs[index].visualFallbackEvidence = nil
         appendEvent(
