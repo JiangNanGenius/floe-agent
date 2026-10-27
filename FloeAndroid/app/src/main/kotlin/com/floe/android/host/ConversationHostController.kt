@@ -5512,7 +5512,25 @@ class ConversationHostController internal constructor(
         // fallback, no local preview invention.
         if (!OfficePreviewController.supports(card.displayName)) return false
         val office = (host.appContext as? FloeApplication)?.officePreviews ?: return false
-        if (office.isBusy) return false
+        if (office.isBusy) {
+            // Honest VISIBLE refusal: the single Office viewer slot is held
+            // by another owned operation (for example the task's still-open
+            // viewer). The guard stays — this route never retargets or
+            // replaces the live viewer — but a busy refusal must not be a
+            // silent no-op the discarded Rejected result leaves invisible.
+            // The note is advisory App state (feature-presentation literal
+            // "open-blocked"), cleared by the next admitted attempt; the
+            // authoritative admission check stays inside admit().
+            entry.builder.setRunOutputActionState(runId, outputId, "open-blocked")
+            entry.holder.applyHostSnapshot(entry.builder.build())
+            return false
+        }
+        // An admitted retry must not keep a stale refusal caption.
+        if (entry.builder.cachedRunOutputCard(runId, outputId)?.actionStateRaw
+                == "open-blocked") {
+            entry.builder.setRunOutputActionState(runId, outputId, null)
+            entry.holder.applyHostSnapshot(entry.builder.build())
+        }
         office.openRunOutput(
             RunOutputOfficeSnapshotStager.Owner(conversationId, runId, outputId, epoch, generation),
             ownerCurrent,

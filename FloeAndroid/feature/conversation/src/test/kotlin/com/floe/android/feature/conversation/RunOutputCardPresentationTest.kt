@@ -87,9 +87,13 @@ class RunOutputCardPresentationTest {
             RunOutputCardPresentation.actionStateLabelRes("cancelled"))
         assertEquals(R.string.run_output_save_failed,
             RunOutputCardPresentation.actionStateLabelRes("failed"))
+        assertEquals(R.string.run_output_open_blocked,
+            RunOutputCardPresentation.actionStateLabelRes("open-blocked"))
         assertNull(RunOutputCardPresentation.actionStateLabelRes(null))
         assertNull(RunOutputCardPresentation.actionStateLabelRes("opening"))
         assertTrue(RunOutputCardPresentation.showsBusy("saving"))
+        // The advisory busy-refusal note labels but never fakes in-flight.
+        assertFalse(RunOutputCardPresentation.showsBusy("open-blocked"))
     }
 
     @Test
@@ -104,6 +108,14 @@ class RunOutputCardPresentationTest {
         val busyRows: List<TimelineRowUi> = listOf(
             TimelineRowUi.RunOutputGroup("run-1", listOf(busy)))
         assertFalse(busyRows.runOutputIsActionable(busy))
+        // The advisory "open-blocked" refusal note keeps the card
+        // re-tappable: closing the live viewer and tapping Open again is the
+        // honest recovery it captions (actual C14: a busy-slot Open was
+        // honestly refused but silently invisible after one tap).
+        val noted = card(action = "open-blocked")
+        val notedRows: List<TimelineRowUi> = listOf(
+            TimelineRowUi.RunOutputGroup("run-1", listOf(noted)))
+        assertTrue(notedRows.runOutputIsActionable(noted))
         // Refreshed away / replaced projections cannot acknowledge old taps.
         val missingRows: List<TimelineRowUi> = listOf(
             TimelineRowUi.RunOutputGroup("run-2", listOf(card())))

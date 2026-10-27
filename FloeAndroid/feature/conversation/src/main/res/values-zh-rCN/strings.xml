@@ -345,6 +345,7 @@
     <string name="run_output_saved">已保存到你的文件</string>
     <string name="run_output_save_cancelled">已取消保存</string>
     <string name="run_output_save_failed">保存失败</string>
+    <string name="run_output_open_blocked">请先关闭当前打开的文档，再重新点按打开</string>
     <string name="run_output_missing">文件已不可用</string>
     <string name="run_output_changed">文件内容已变化</string>
     <string name="run_output_oversized">文件过大，无法在此打开</string>
