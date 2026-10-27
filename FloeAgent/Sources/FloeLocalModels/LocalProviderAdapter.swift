@@ -2308,6 +2308,11 @@ public struct LocalProviderAdapter: ProviderAdapter {
             appleReasoning = supportsReasoning ? .low : .automatic
             appleSuffix = ""
         }
+        // Apple Intelligence starts OFF for a brand-new device. This row is
+        // only authoritative the first time the on-device provider is
+        // reconciled: the store keeps an existing row's own enabled value, so
+        // anyone who already turned the system model on (or off) is never
+        // re-decided by an update, a relaunch or a later availability change.
         models.append(ModelProfile(
             id: AppleFoundationModelIdentity.profileID,
             providerID: provider.id,
@@ -2315,7 +2320,8 @@ public struct LocalProviderAdapter: ProviderAdapter {
             displayName: "Apple Foundation Model" + appleSuffix,
             limits: appleLimits,
             capabilities: appleCapabilities,
-            reasoningEffort: appleReasoning
+            reasoningEffort: appleReasoning,
+            isEnabled: false
         ))
         for entry in CuratedLocalModelCatalog.entries {
             guard await store.installedModelURL(id: entry.id) != nil else { continue }

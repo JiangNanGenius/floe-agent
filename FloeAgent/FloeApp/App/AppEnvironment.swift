@@ -2530,6 +2530,12 @@ final class AppEnvironment: ObservableObject {
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
+                // The setup guide keeps its own resumable position record. A
+                // test that resets onboarding must start from the first
+                // section, so the record goes with the marker. It carries no
+                // configuration and no secret: section identity, the chosen
+                // preset and per-section status only.
+                SetupGuideProgressStore.clear()
             }
             // DESTRUCTIVE test-only reset for a THROWAWAY simulator/CI runner
             // only: wipes all provider/model configuration so a test can

@@ -19,6 +19,12 @@ final class LocalModelsCenter: ObservableObject {
     @Published private(set) var runtimeState: RuntimeState = .unloaded
     @Published private(set) var incompatibleReasons: [String: String] = [:]
     @Published private(set) var removingIDs: Set<String> = []
+    /// Per-model download failure. The global `errorMessage` is a single
+    /// surface that can belong to any earlier action, so a finished-with-error
+    /// transfer must stay bound to the model it actually failed on: that is
+    /// the only way a reader can tell "this resource failed" from "some other
+    /// thing reported something".
+    @Published private(set) var failedDownloads: [String: String] = [:]
     @Published private(set) var benchmarkingIDs: Set<String> = []
     @Published private(set) var benchmarkResults: [String: LocalModelBenchmarkResult] = [:]
     @Published private(set) var appleFoundationAvailability: AppleFoundationModelAvailability = .unsupportedOS
@@ -265,6 +271,10 @@ final class LocalModelsCenter: ObservableObject {
         }.map(\.remoteModelID))
         let resumable = await store.resumableModelIDs()
         pausedDownloads.formUnion(resumable.subtracting(activeDownloads))
+        // An installed pack cannot still be a failed download.
+        for id in installed.intersection(failedDownloads.keys) {
+            failedDownloads[id] = nil
+        }
         FloeLogger(category: .providers).debug(
             "localModelCatalogRefreshed installed=\(installed.count) activeDownloads=\(activeDownloads.count)"
         )
@@ -285,6 +295,7 @@ final class LocalModelsCenter: ObservableObject {
     func download(_ entry: LocalModelCatalogEntry) {
         guard !activeDownloads.contains(entry.id) else { return }
         pausedDownloads.remove(entry.id)
+        failedDownloads[entry.id] = nil
         activeDownloads.insert(entry.id)
         errorMessage = nil
         FloeLogger(category: .providers).info("localModelDownloadRequested model=\(entry.id)")
@@ -294,6 +305,10 @@ final class LocalModelsCenter: ObservableObject {
                 _ = try await self.store.download(entry) { [weak self] progress in
                     Task { @MainActor in self?.downloadProgress[entry.id] = progress }
                 }
+                // Success clears the per-model failure and the stale byte
+                // mirror, so no reader can see a finished transfer as queued.
+                self.failedDownloads[entry.id] = nil
+                self.downloadProgress[entry.id] = nil
                 await self.refresh()
                 await self.onCatalogChanged?()
                 // A completed download is new model data on disk.
@@ -308,6 +323,9 @@ final class LocalModelsCenter: ObservableObject {
                 FloeLogger(category: .providers).warning(
                     "localModelDownloadUIFailed model=\(entry.id) domain=\(nsError.domain) code=\(nsError.code)"
                 )
+                // Bound to THIS model. A later reader never has to guess
+                // whether an unrelated global message belonged to it.
+                self.failedDownloads[entry.id] = SecretRedactor.redact(error.localizedDescription)
                 self.errorMessage = error.localizedDescription
             }
             self.activeDownloads.remove(entry.id)
@@ -325,6 +343,7 @@ final class LocalModelsCenter: ObservableObject {
     func cancel(_ entry: LocalModelCatalogEntry) {
         pausedDownloads.remove(entry.id)
         activeDownloads.remove(entry.id)
+        failedDownloads[entry.id] = nil
         downloadProgress[entry.id] = nil
         downloadTasks[entry.id]?.cancel()
         downloadTasks[entry.id] = nil

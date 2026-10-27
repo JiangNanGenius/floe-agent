@@ -25,20 +25,49 @@ actor WhisperModelStore {
             }
         }
     }
+    /// What the store is really doing for the current pack. A completed byte
+    /// transfer is NOT readiness: the components are hashed after they
+    /// arrive and the staged directory is swapped last, so those steps get
+    /// their own phase and a caller can never show 100% as "installed".
+    enum InstallationPhase: String, Sendable, Equatable {
+        case downloading, verifying, committing
+    }
     struct InstallationState: Sendable {
         var running = false
         var completed: Int64 = 0
         var total: Int64 = 0
         var error: String?
+        var phase = InstallationPhase.downloading
+        /// The pack identity THIS job is working on (`<manifest id>`), so a
+        /// row stays bound to the job and not to whatever the user selects
+        /// while it runs.
+        var modelIdentity: String?
+        /// Smoothed bytes/second measured only from real network callbacks.
+        /// Zero outside the downloading phase, so a hashed or cached
+        /// component never shows an inflated speed.
+        var bytesPerSecond: Int64 = 0
     }
     private var installation = InstallationState()
     private var installationID = UUID()
     private var installationTask: Task<Void, Never>?
-    func installationState() -> InstallationState { installation }
+    /// Fenced per installation: a late callback from an older job can never
+    /// advance the newer job's rate.
+    private var speedEstimator = SpeedEstimator()
+    private var speedWindow = 0
+    func installationState() -> InstallationState {
+        var snapshot = installation
+        snapshot.bytesPerSecond = snapshot.running && snapshot.phase == .downloading
+            ? Int64(speedEstimator.currentRate(now: Date().timeIntervalSinceReferenceDate).rounded())
+            : 0
+        return snapshot
+    }
     func beginInstallation() {
         guard installationTask == nil else { return }
         UserDefaults.standard.set(true, forKey: "whisper.installation.requested")
-        installation = InstallationState(running: true)
+        speedEstimator.reset()
+        speedWindow += 1
+        installation = InstallationState(running: true, phase: .downloading,
+                                         modelIdentity: (try? manifest())?.id)
         let id = UUID()
         installationID = id
         installationTask = Task {
@@ -50,6 +79,8 @@ actor WhisperModelStore {
             } catch is CancellationError {
             } catch { installation.error = error.localizedDescription }
             installation.running = false
+            installation.bytesPerSecond = 0
+            speedEstimator.reset()
             installationTask = nil
         }
     }
@@ -63,6 +94,18 @@ actor WhisperModelStore {
     private func updateProgress(_ done: Int64, total: Int64, id: UUID) {
         guard installationID == id, installation.running else { return }
         installation.completed = max(installation.completed, done); installation.total = total
+        // Only a real cumulative byte increase feeds the rate; a repeated
+        // callback for the same offset is not network progress.
+        speedEstimator.sample(now: Date().timeIntervalSinceReferenceDate, bytes: installation.completed)
+    }
+
+    /// Records what the installation is actually doing. Called at the real
+    /// boundaries inside `install(progress:)`, so a UI never has to guess
+    /// whether 100% of the bytes means the pack is usable.
+    private func setPhase(_ phase: InstallationPhase, id: UUID) {
+        guard installationID == id, installation.running else { return }
+        installation.phase = phase
+        if phase != .downloading { speedEstimator.reset() }
     }
     private var leases = Set<UUID>()
     private var installing = false
@@ -173,6 +216,13 @@ actor WhisperModelStore {
         let staging = base.appendingPathComponent(".download-\(manifest.id)-\(manifest.sourceRevision)", isDirectory: true)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         let total = manifest.files.reduce(Int64(0)) { $0 + $1.byteCount }
+        // Publish the real total and the pack identity before the first byte
+        // moves, so a row can show an actual size instead of a guess.
+        if installation.running {
+            installation.total = total
+            installation.modelIdentity = manifest.id
+            installation.phase = .downloading
+        }
         if let free = try base.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
            free < total * 2 { throw CocoaError(.fileWriteOutOfSpace) }
         var completed: Int64 = 0
@@ -185,10 +235,15 @@ actor WhisperModelStore {
             }
             try? FileManager.default.removeItem(at: target)
             let completedBeforeAsset = completed
+            if installation.running { installation.phase = .downloading; speedEstimator.reset() }
             let temporary = try await WhisperDownloadCoordinator.shared.download(asset.url, ledger: ledger) { bytes in
                 progress(completedBeforeAsset + min(bytes, asset.byteCount), total)
             }
             defer { try? FileManager.default.removeItem(at: temporary) }
+            // Hashing a several-hundred-MB component is real work after the
+            // last byte arrives: report it instead of letting the row sit at
+            // a full bar with no stage.
+            if installation.running { setPhase(.verifying, id: installationID) }
             try verify(temporary, asset: asset)
             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: temporary, to: target)
@@ -196,6 +251,9 @@ actor WhisperModelStore {
             if index < manifest.files.count - 1 { ledger.checkpoint() }
         }
         try Task.checkCancellation()
+        // Staged bytes are verified; the directory swap and installed marker
+        // are the install step. Readiness arrives only after this completes.
+        if installation.running { setPhase(.committing, id: installationID) }
         try Data(manifest.sourceRevision.utf8).write(to: staging.appendingPathComponent("installed.json"), options: .atomic)
         if FileManager.default.fileExists(atPath: destination.path) {
             _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging)

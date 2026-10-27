@@ -6,6 +6,17 @@ import FloeCore
 import FloeSecurity
 import FloeProviders
 
+/// A voice the user chose that is not playable yet, kept with the same
+/// revision fence the first-install path uses: a later explicit choice always
+/// wins, and nothing is substituted when the pack finally arrives. Declared at
+/// file scope so its Sendable conformance never crosses the service's
+/// MainActor isolation.
+struct TTSPendingVoice: Codable, Equatable, Sendable {
+    let modelID: String
+    let voiceID: String
+    let revision: Int
+}
+
 /// Three-state outcome of the local-pack load-validation hook. `deferred`
 /// leaves the retry gate closed (transient lease/memory/thermal); a real
 /// failure waits for an explicit retry so a broken pack is never marked good.
@@ -31,6 +42,10 @@ final class TTSSettingsService: ObservableObject {
     /// this instead of an immediately-ready "Installed" state.
     struct LocalProgressOperation: Equatable, Sendable { let modelID: String; let key: String }
     @Published private(set) var localProgressOperation: LocalProgressOperation?
+    /// The voice the user asked for while its pack is still missing. The
+    /// current playable source keeps playing until this pack is installed and
+    /// validated; it is never previewed with another voice or a cloud route.
+    @Published private(set) var pendingVoice: TTSPendingVoice?
     private let defaults: UserDefaults
     private let keychain: any KeychainProbeStore
     private let modelStore: LocalSpeechModelStore
@@ -41,6 +56,7 @@ final class TTSSettingsService: ObservableObject {
     private static let selectionRevisionKey = "voice.output.selectionRevision"
     private static let firstInstallKey = "voice.output.firstInstallSelection"
     private static let pendingSelectionKey = "voice.output.pendingSelection"
+    private static let pendingVoiceKey = "voice.output.pendingVoice.v1"
     private var installationObserver: AnyCancellable?
     private struct PendingSelection: Codable { let modelID: String; let revision: Int }
     private var profiles: [String: TTSSettingsSnapshot] = [:]
@@ -49,6 +65,12 @@ final class TTSSettingsService: ObservableObject {
     private var localStatePump: Task<Void, Never>?
     private var migrationValidationStarted = false
     private var firstInstallValidationStarted = false
+    /// One validation pass at a time for an explicit pending voice. A second
+    /// trigger re-enters and re-reads instead of stacking a probe.
+    private var pendingVoiceValidationStarted = false
+    /// Bumped by every new or dropped pending-voice intent. Any validation
+    /// result produced under an older generation is stale and cannot commit.
+    private var pendingVoiceGeneration = 0
     private var pendingLocalMigration: Bool?
 
     init(defaults: UserDefaults = .standard,
@@ -311,6 +333,118 @@ final class TTSSettingsService: ObservableObject {
 
     // MARK: - Local packs
 
+    /// Browses and selects a voice that is not installed yet. The current
+    /// source stays active; only the intent and its revision are stored. The
+    /// returned pack lets the caller offer one explicit Download action — a
+    /// selection alone never starts a transfer.
+    func chooseVoice(modelID: String, voiceID: String) -> LocalSpeechModel? {
+        guard let model = localVisibleModels.first(where: { $0.id == modelID }),
+              model.voices.contains(where: { $0.id == voiceID }) else {
+            localMigrationNote = "voice.local.error.catalog"
+            return nil
+        }
+        let pending = TTSPendingVoice(modelID: modelID, voiceID: voiceID,
+                                   revision: defaults.integer(forKey: Self.selectionRevisionKey))
+        // A newer intent supersedes any validation still in flight for the
+        // older one, so a late validator result can never commit it.
+        pendingVoiceGeneration += 1
+        pendingVoiceValidationStarted = false
+        persist(pending: pending)
+        if localInstalledModelIDs.contains(modelID) {
+            // The bytes are on disk, but "installed" is not "usable": apply
+            // through the SAME validation gate a fresh install uses, so a pack
+            // whose load validation failed or is still deferred is never
+            // selected. The current playable source keeps playing meanwhile.
+            Task { [weak self] in await self?.applyPendingVoiceSelection() }
+            return nil
+        }
+        return model
+    }
+
+    /// Drops a pending voice choice (the user changed their mind, or the
+    /// transfer was cancelled). Nothing else changes.
+    func clearPendingVoice() {
+        pendingVoiceGeneration += 1
+        pendingVoiceValidationStarted = false
+        defaults.removeObject(forKey: Self.pendingVoiceKey)
+        pendingVoice = nil
+    }
+
+    private func persist(pending: TTSPendingVoice) {
+        guard let data = try? JSONEncoder().encode(pending) else { return }
+        defaults.set(data, forKey: Self.pendingVoiceKey)
+        pendingVoice = pending
+    }
+
+    private func loadedPendingVoice() -> TTSPendingVoice? {
+        guard let data = defaults.data(forKey: Self.pendingVoiceKey),
+              let value = try? JSONDecoder().decode(TTSPendingVoice.self, from: data)
+        else { return nil }
+        return value
+    }
+
+    /// Applies a pending voice ONLY when the pack is really installed, the
+    /// load validation passed and the user has not chosen anything since.
+    /// Every fact — identity, revision and install proof — is re-read at the
+    /// commit point, after all the awaits, so a selection made while the
+    /// validator was suspended wins and no stale callback resurrects an older
+    /// intent. A superseded pending voice is dropped silently: nothing is
+    /// substituted, nothing is previewed and no paid route is reached for.
+    private func applyPendingVoiceSelection() async {
+        guard let pending = loadedPendingVoice() else { return }
+        guard pending.revision == defaults.integer(forKey: Self.selectionRevisionKey) else {
+            clearPendingVoice()
+            return
+        }
+        let generation = pendingVoiceGeneration
+        guard let model = try? await modelStore.catalog().first(where: { $0.id == pending.modelID }),
+              !model.isHidden,
+              model.voices.contains(where: { $0.id == pending.voiceID }),
+              await modelStore.isInstalled(model) else { return }
+        guard !pendingVoiceValidationStarted else { return }
+        pendingVoiceValidationStarted = true
+        let validation = await localPackValidator(model, pending.voiceID)
+        pendingVoiceValidationStarted = false
+        // Superseded during the validation window: the newer intent owns the
+        // commit, so this pass reports nothing and writes nothing.
+        guard generation == pendingVoiceGeneration else { return }
+        switch validation {
+        case .deferred:
+            return
+        case .failed:
+            localMigrationNote = "voice.local.error.verify"
+            return
+        case .passed:
+            break
+        }
+        // Every awaited fact is settled BEFORE the commit re-read: the user
+        // may have switched source, cancelled, or picked another voice while
+        // the validator or the store hop was in flight, and their later choice
+        // is authoritative. Nothing below this line may await, so no window
+        // remains between the check and the write.
+        let stillInstalled = await modelStore.isInstalled(model)
+        guard stillInstalled else { return }
+        guard generation == pendingVoiceGeneration,
+              let fresh = loadedPendingVoice(), fresh == pending,
+              fresh.revision == defaults.integer(forKey: Self.selectionRevisionKey)
+        else { return }
+        applyPendingVoice(model: model, pending: fresh)
+    }
+
+    private func applyPendingVoice(model: LocalSpeechModel, pending: TTSPendingVoice) {
+        defaults.set(true, forKey: Self.firstInstallKey)
+        clearPendingVoice()
+        // Global controls survive the switch; only the source identity moves.
+        update {
+            $0.provider = .onDevice
+            $0.billingRoute = .payAsYouGo
+            $0.modelID = model.id
+            $0.voiceID = pending.voiceID
+            $0.language = nil
+            $0.connectionProviderID = nil
+        }
+    }
+
     func install(_ model: LocalSpeechModel) async {
         if !model.isHidden, !defaults.bool(forKey: Self.firstInstallKey) {
             let pending = PendingSelection(modelID: model.id, revision: defaults.integer(forKey: Self.selectionRevisionKey))
@@ -321,6 +455,9 @@ final class TTSSettingsService: ObservableObject {
     }
     func cancelInstallation() async {
         defaults.removeObject(forKey: Self.pendingSelectionKey)
+        // The transfer stopped, so the voice it was preparing is no longer on
+        // its way. The user can ask for it again explicitly.
+        clearPendingVoice()
         firstInstallValidationStarted = false
         await modelStore.cancelInstallation()
         await refreshLocalSpeechState()
@@ -337,6 +474,9 @@ final class TTSSettingsService: ObservableObject {
     /// bytes verify and the load-validation hook passes; the voice is the
     /// catalog default, never a hardcoded provider voice id.
     private func finishFirstInstallationSelection() async {
+        // An explicit pending voice is the user's own decision and wins over
+        // the catalog default; this path stays out of the way entirely.
+        guard loadedPendingVoice() == nil else { return }
         guard !defaults.bool(forKey: Self.firstInstallKey),
               let bytes = defaults.data(forKey: Self.pendingSelectionKey),
               let pending = try? JSONDecoder().decode(PendingSelection.self, from: bytes),
@@ -393,6 +533,13 @@ final class TTSSettingsService: ObservableObject {
     /// install-complete notification, user selection updates, launch and the
     /// idle pump — views never own this flow.
     func syncLocalSelection() async {
+        // One commit order: an explicit voice the user asked for is applied
+        // first and marks the first-install selection as done, so the
+        // first-install default cannot overwrite it afterwards. When the
+        // explicit intent still points at a pack that is not installed, the
+        // default selection waits too — the currently playable source stays
+        // until the user's own pack arrives or the intent is dropped.
+        await applyPendingVoiceSelection()
         await finishFirstInstallationSelection()
         await reconcileLocalMigration()
     }
@@ -453,6 +600,15 @@ final class TTSSettingsService: ObservableObject {
     /// Re-sync published state after a direct store mutation (e.g. pack
     /// removal from the detail view) without waiting for the next pump tick.
     func refreshAfterExternalChange() async { await refreshLocalSpeechState() }
+
+    /// The stored intent is published on first read so a reopened page shows
+    /// the same "will apply when ready" line without another disk probe.
+    func restorePendingVoice() {
+        if pendingVoice == nil, let stored = loadedPendingVoice(),
+           stored.revision == defaults.integer(forKey: Self.selectionRevisionKey) {
+            pendingVoice = stored
+        }
+    }
 
     private func refreshLocalSpeechState() async {
         let installation = await modelStore.state()
