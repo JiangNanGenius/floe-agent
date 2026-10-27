@@ -8219,16 +8219,11 @@ final class ConversationCenter: ObservableObject {
         try? await saveModelPreferences(preferences)
     }
 
-    /// On the first launch only, an already-synced text model completes the
-    /// wizard automatically. A skipped wizard is never shown again.
+    /// Refresh saved choices without treating model availability as guide
+    /// completion. Only the user's explicit Finish/Skip changes that status;
+    /// an existing model never skips the remaining setup sections.
     func reconcileOnboardingForLaunch() async {
         await reload()
-        guard modelPreferences.onboardingStatus == .unseen,
-              let first = availableAgentModels.first else { return }
-        var preferences = modelPreferences
-        preferences.defaultAgentModelID = first.id
-        preferences.onboardingStatus = .completed
-        try? await saveModelPreferences(preferences)
     }
 
     /// Deletes a provider (cascades to its models) and refreshes.

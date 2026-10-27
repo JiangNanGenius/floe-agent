@@ -104566,6 +104566,23 @@
           }
         }
       }
+    },
+    "skills.hub.delta.reason": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This update needs additional access. Allow it to continue installing, or deny it to stop."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此更新需要新增访问权限。允许后继续安装，拒绝则停止。"
+          }
+        }
+      }
     }
   },
   "version": "1.0"
