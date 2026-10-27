@@ -78,14 +78,14 @@ concurrency:
 
 env:
   HUB_REPOSITORY: JiangNanGenius/floe-skill-hub
-  # Reviewed tooling pin 3d5484df12b82ed7a5f324cb8c3d401dfbef3e92, tree ffa73a837a720a56d27712c65f13561fdc380265.
+  # Reviewed tooling pin 0e4a5e89686ea543418bb59ed77804983df32b3b, tree a98f79e82afe874c6cc14d6ce8a256b1baee0ab7.
   # The 2026-10-28 platform-admission amendment validates every offered
   # mandatory skill on its explicitly qualified channels, preserving full
-  # per-channel runtime/H6 and publication-history checks. Current 37/36
+  # per-channel runtime/H6 and publication-history checks. Current 39/36
   # publication payloads retain their exact signed bytes. The cumulative
-  # ledger now covers ten rows / 73 facts including the iOS-only admission.
+  # ledger now covers twelve rows / 75 facts including the iOS-only admissions.
   # The same strict live-Y resolver, key scope and data-only guards remain.
-  TOOLING_COMMIT: 3d5484df12b82ed7a5f324cb8c3d401dfbef3e92
+  TOOLING_COMMIT: 0e4a5e89686ea543418bb59ed77804983df32b3b
 
 jobs:
   sign:
