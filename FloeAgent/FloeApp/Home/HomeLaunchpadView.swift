@@ -42,7 +42,7 @@ struct HomeLaunchpadView: View {
         // Creative design entry (designStart) and any foreign draft identity
         // never consume the queue, so a wrong route cannot take over.
         let acceptsShortcutInbox = draftStorageID == ComposerDraftStore.homeDraftID
-            && !designStart
+            && !designStart && !ComposerDraftStore.isHomeComposerUITestEnabled
         _viewModel = StateObject(wrappedValue: HomeLaunchpadViewModel(
             center: center,
             selectedProjectID: workspaceID,
@@ -189,6 +189,7 @@ struct HomeLaunchpadView: View {
 
     private var acceptsExternalTaskImports: Bool {
         !designStart && viewModel.draftStorageID == ComposerDraftStore.homeDraftID
+            && !ComposerDraftStore.isHomeComposerUITestEnabled
     }
 
     private var launchTitleKey: String {

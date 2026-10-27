@@ -596,7 +596,23 @@ final class ComposerDraftStore: ObservableObject {
 
     /// Stable identity for the Home launchpad draft. Independent of the
     /// per-launch draft conversation UUID that Home rotates after each send.
-    static let homeDraftID = UUID(uuidString: "8F4D0A6E-3B1C-4E2A-9D55-2C8F1A77E010")!
+    nonisolated static var homeDraftID: UUID {
+        if isHomeComposerUITestEnabled {
+            return UUID(uuidString: "B8C9FB32-82EC-4D16-BEA3-29DA33B18302")!
+        }
+        return UUID(uuidString: "8F4D0A6E-3B1C-4E2A-9D55-2C8F1A77E010")!
+    }
+
+    /// A separate DEBUG-only draft identity protects the reused simulator's
+    /// unsent Home draft; no qualification text can overwrite that slot.
+    nonisolated static var isHomeComposerUITestEnabled: Bool {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        return args.contains("-ui-testing") && args.contains("--ui-test-home-composer")
+        #else
+        return false
+        #endif
+    }
 
     static let shared = ComposerDraftStore()
 

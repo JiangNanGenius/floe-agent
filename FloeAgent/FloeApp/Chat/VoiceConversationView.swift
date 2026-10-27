@@ -294,7 +294,13 @@ struct VoiceConversationView: View {
     @State private var attachments: [AttachmentRef] = []
     @State private var sending = false
     @State private var importing = false
-    @FocusState private var typing: Bool
+    @State private var typing = false
+    @State private var showsFullEditor = false
+    @State private var composerOverflows = false
+    @State private var composerWidth: CGFloat?
+    @State private var viewportHeight: CGFloat?
+    @State private var editorSelection: NSRange?
+    @State private var composerUndoManager = UndoManager()
 
     init(session: ContinuousVoiceScreenSession, environment: AppEnvironment) {
         self.session = session
@@ -367,6 +373,19 @@ struct VoiceConversationView: View {
                 .environmentObject(environment.speechService)
                 .environment(\.continuousVoiceActive, true)
             }
+            .sheet(isPresented: $showsFullEditor) {
+                ComposerFullEditorSheet(
+                    text: $draft,
+                    restoredSelection: editorSelection,
+                    undoManager: composerUndoManager,
+                    canSend: canSendTyped,
+                    onSend: { sendTyped() },
+                    onFinalSelection: { range in
+                        guard session.isActive else { return }
+                        editorSelection = range
+                    }
+                )
+            }
             .fileImporter(isPresented: $showsFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 guard case .success(let urls) = result else { return }
                 Task { await importFiles(urls) }
@@ -383,6 +402,9 @@ struct VoiceConversationView: View {
             }
         }
         .accessibilityIdentifier("voice.conversation")
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            if height > 0, abs(height - (viewportHeight ?? 0)) > 0.5 { viewportHeight = height }
+        }
     }
 
     private var currentCaption: String {
@@ -456,12 +478,40 @@ struct VoiceConversationView: View {
                     } label: { Image(systemName: "plus").frame(width: 44, height: 44) }
                     .disabled(importing)
                 }
-                TextField("voice.action.type", text: $draft, axis: .vertical)
-                    .lineLimit(1...4).focused($typing)
-                    .padding(.vertical, 12)
+                ComposerReturnField(
+                    text: $draft,
+                    placeholder: FloeL10n.l("voice.action.type"),
+                    canSend: canSendTyped,
+                    lineLimit: 1...4,
+                    maxHeightBudget: viewportHeight,
+                    hostAvailableWidth: composerWidth,
+                    restoredSelection: editorSelection,
+                    undoManager: composerUndoManager,
+                    onSelectionChange: { editorSelection = $0 },
+                    onOverflowChange: { composerOverflows = $0 },
+                    onEditingChange: { typing = $0 },
+                    onReturn: { sendTyped() }
+                )
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+                    if width > 0, abs(width - (composerWidth ?? 0)) > 0.5 { composerWidth = width }
+                }
+                .accessibilityIdentifier("voice.composer.input")
+                if composerOverflows {
+                    Button {
+                        showsFullEditor = true
+                    } label: {
+                        Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.plain)
+                    .padding(8)
+                    .frame(minWidth: FloeTheme.minimumTarget, minHeight: FloeTheme.minimumTarget)
+                    .accessibilityLabel("composer.expand")
+                    .accessibilityIdentifier("voice.composer.expand")
+                }
                 Button("voice.action.send_now", systemImage: "arrow.up.circle.fill") { sendTyped() }
                     .font(.title2).labelStyle(.iconOnly).frame(width: 44, height: 44)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sending || importing)
+                    .disabled(!canSendTyped)
             }
             .padding(.horizontal, 8)
             .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 22))
@@ -497,7 +547,12 @@ struct VoiceConversationView: View {
                 .lineLimit(1).font(.subheadline.weight(.semibold))
         }
     }
+    private var canSendTyped: Bool {
+        session.isActive && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !sending && !importing && !VoiceComposerUITestMode.isEnabled
+    }
     private func sendTyped() {
+        guard canSendTyped else { return }
         let text = draft
         let files = attachments
         sending = true
@@ -535,4 +590,53 @@ struct VoiceConversationView: View {
         } catch { session.failureKey = "voice.error.attachment" }
     }
 }
+
+/// DEBUG-only UI qualification never starts capture, inference or a stored conversation.
+@MainActor
+enum VoiceComposerUITestMode {
+    static var isEnabled: Bool {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        return args.contains("-ui-testing") && args.contains("--ui-test-voice-composer")
+        #else
+        return false
+        #endif
+    }
+}
+
+#if DEBUG
+struct VoiceComposerUITestHarness: View {
+    @Environment(\.horizontalSizeClass) private var sizeClass
+    @EnvironmentObject private var environment: AppEnvironment
+    @StateObject private var presentation = ContinuousVoicePresentation()
+    @State private var session: ContinuousVoiceScreenSession?
+    private var compactFixture: Bool {
+        ProcessInfo.processInfo.arguments.contains("--ui-test-compact-width")
+    }
+
+    var body: some View {
+        Group {
+            if let session {
+                VoiceConversationView(session: session, environment: environment)
+            } else {
+                ProgressView()
+            }
+        }
+        .frame(maxWidth: compactFixture ? 390 : .infinity)
+        .environment(\.horizontalSizeClass, compactFixture ? .compact : sizeClass)
+        .task {
+            guard VoiceComposerUITestMode.isEnabled, session == nil else { return }
+            let request = ContinuousVoiceRequest(
+                windowID: "voice-composer-ui-fixture", conversationID: nil,
+                modelID: UUID(uuidString: "8406E5F8-C7E2-4C83-85DD-4BEA81D6C302")!,
+                workspaceID: nil, attachments: [], onConversationCreated: { _ in }
+            )
+            guard presentation.present(request) else { return }
+            session = ContinuousVoiceScreenSession(request: request, presentation: presentation, environment: environment)
+            // Deliberately no session.start(): this fixture proves editing, not audio readiness.
+        }
+    }
+}
+#endif
+
 #endif

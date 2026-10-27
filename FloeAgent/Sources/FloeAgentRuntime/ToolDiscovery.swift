@@ -81,16 +81,17 @@ enum ToolDiscovery {
     /// Conversation schemas must not direct the model to skill/task tools
     /// outside its ceiling. The dispatcher still searches only its filtered,
     /// live catalog; this wording never changes admission or execution policy.
-    static func runtimeDescriptors(scopedConversation: Bool, publicWebOnly: Bool) -> [ToolCatalog.Descriptor] {
+    /// Ordinary runs (including ordinary fast chat, which now offers the same
+    /// authorized toolchain as a task) keep the standard wording; a temporary
+    /// conversation honestly scopes the directory to its read ceiling.
+    static func runtimeDescriptors(publicWebOnly: Bool) -> [ToolCatalog.Descriptor] {
         // Captured-result paging is runtime metadata over this task's own
         // captures (post-redaction), never a new authority: it stays offered
-        // in a scoped/temporary conversation too, where retention is RAM-only.
-        guard scopedConversation || publicWebOnly else {
+        // in a temporary conversation too, where retention is RAM-only.
+        guard publicWebOnly else {
             return [descriptor, listDescriptor, ToolResultPagingTool.descriptor]
         }
-        let scope = publicWebOnly
-            ? "this temporary conversation's allowed public web tools"
-            : "this conversation's allowed public web tools and reads of its bound attached files"
+        let scope = "this temporary conversation's allowed public web tools and basic on-device reads (calendar events, reminders, maps place search, Home accessories, Watch status and the current location)"
         var search = descriptor
         search.toolDescription = "Find definitions for currently available tools within \(scope). Search by exact tool name or capability. This runtime metadata helper only loads permitted schemas; it never executes tools, grants permission or enables an unavailable provider. A forbidden name or capability cannot be unlocked by searching."
         var list = listDescriptor

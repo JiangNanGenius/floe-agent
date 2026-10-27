@@ -74,4 +74,101 @@ final class ComposerOverflowUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 10))
         XCTAssertEqual(input.value as? String, text, "Closing the editor retains the same draft")
     }
+
+    /// The shipped-build failure this round repairs: a long ONE-LINE mixed
+    /// Chinese/Latin draft typed into the real New Task launchpad composer
+    /// (HomeLaunchpadView → ThreadComposerView → ComposerReturnField, in
+    /// the bottom `safeAreaInset` band) neither wrapped nor revealed
+    /// Expand. This drives that exact production surface and width — not
+    /// the thread fixture above, which passed before the repair.
+    func testNewTaskLaunchpadComposerWrapsGrowsAndExpands() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        app.launchArguments = ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+                               "-ui-testing", "-ui-testing-ipad", "--ui-test-skip-onboarding",
+                               "--ui-test-task-management-fixture", "--ui-test-home-composer"]
+        app.launch()
+        defer { app.terminate() }
+
+        let input = app.textViews["composer.input"]
+        let homeToggle = app.buttons["home.temporary.toggle"]
+        // Home's toolbar marker distinguishes the canonical New Task
+        // launchpad from any thread that a previous session may have left
+        // selected. Reach it explicitly when it is not already shown.
+        if !(input.waitForExistence(timeout: 8) && homeToggle.waitForExistence(timeout: 1)) {
+            let sidebar = app.descendants(matching: .any)
+                .matching(identifier: "sidebar.list").firstMatch
+            XCTAssertTrue(sidebar.waitForExistence(timeout: 10))
+            let newTask = app.descendants(matching: .any)
+                .matching(identifier: "sidebar.workbench.new_task").firstMatch
+            for _ in 0..<10 where !newTask.isHittable { sidebar.swipeDown() }
+            XCTAssertTrue(newTask.waitForExistence(timeout: 10),
+                          "New Task must be reachable from the sidebar")
+            newTask.tap()
+        }
+        XCTAssertTrue(input.waitForExistence(timeout: 15),
+                      "The New Task composer must be on screen")
+        XCTAssertTrue(homeToggle.exists,
+                      "Acceptance is on the Home launchpad, never an existing thread")
+
+        let restHeight = input.frame.height
+        XCTAssertLessThan(restHeight, 120, "An empty launchpad composer rests near one line")
+
+        // One logical line mixing CJK, spaced Latin and an unbroken URL —
+        // the actual screenshot shape. Nothing is sent; send stays
+        // hardware Cmd+Return-only.
+        let mixed = String(
+            repeating: "新建任务里这段中文mixed with English plus an unbroken https://example.invalid/",
+            count: 24)
+        input.tap()
+        input.typeText(mixed)
+
+        // 1. Dynamic growth: wrapping at the ROW'S ACTUAL width must grow
+        //    the field past its resting line, through the shared budget.
+        var grew = false
+        for _ in 0..<40 {
+            if input.frame.height > restHeight + 8 { grew = true; break }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertTrue(grew,
+                      "A one-line mixed draft must wrap and grow the composer at the real row width")
+
+        // 2. Beyond the collapsed visible area the Expand control appears
+        //    at the cap (one third of the page, ≤ 8 lines).
+        let expand = app.buttons["composer.expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 15),
+                      "The launchpad composer must expose Expand once the draft passes its cap")
+        XCTAssertLessThanOrEqual(input.frame.height, 400,
+                                "Growth stays inside the composer height budget, then scrolls")
+
+        // 3. The single logical line was never mutated by layout.
+        XCTAssertEqual(input.value as? String, mixed,
+                       "Wrapping and growth must not alter the draft")
+
+        // 4. Expand preserves the whole draft; collapse retains it too.
+        expand.tap()
+        let editor = app.textViews["composer.editor.input"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 10))
+        XCTAssertEqual(editor.value as? String, mixed, "Expanding retains the whole draft")
+        let expandedShot = XCTAttachment(screenshot: app.screenshot())
+        expandedShot.name = "New Task full editor complete draft"
+        expandedShot.lifetime = .keepAlways
+        add(expandedShot)
+        app.buttons["composer.editor.done"].tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        XCTAssertEqual(input.value as? String, mixed, "Closing the editor retains the same draft")
+
+        // 5. The preserved send policy: Return inserts a newline, never
+        //    sends, on the launchpad surface too.
+        input.tap()
+        input.typeText(XCUIKeyboardKey.return.rawValue + "第二行")
+        let after = input.value as? String ?? ""
+        XCTAssertTrue(after.contains("\n第二行"), "Return must insert a newline, never send")
+        XCTAssertTrue(input.exists, "Typing or Return on the launchpad composer sends nothing")
+        let finalShot = XCTAttachment(screenshot: app.screenshot())
+        finalShot.name = "New Task composer wrapped with newline"
+        finalShot.lifetime = .keepAlways
+        add(finalShot)
+    }
 }

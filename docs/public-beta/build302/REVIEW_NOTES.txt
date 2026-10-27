@@ -1,0 +1,9 @@
+Floe Agent 1.7.61 (Build 302)
+
+Floe is an assistant using the user's configured AI provider. No Floe account or demo account is required. Cloud AI and speech require the reviewer's own provider settings; no paid provider credentials are included.
+
+This update fixes duplicate spoken-message submissions, improves long-message wrapping and expansion, and adds conversation pinning. Long-press a conversation to open its actions; choose Multi-select to show selection circles. Ordinary chat and voice reuse enabled tools within existing task permissions. Access to protected device data remains subject to the app settings and system authorization. Current time is provided as context; location is obtained on demand and is not inferred from the time zone. Temporary conversations remain unsaved.
+
+Skill Hub entries open a native detail page. Get for a reviewed official catalog entry starts its verified installation and displays progress, cancellation and retry. External skill imports retain their existing review. Installation does not grant access to accounts or device data. Bundled-skill deletion protection and existing dependency validation remain in place.
+
+Suggested checks: open Skill Hub details and a Get operation; enter a long mixed-language message on New Task and expand it; long-press a saved conversation, choose Multi-select, exit, then pin and unpin it. With your own configured model and speech service, start voice chat and confirm one spoken request produces one sent message. These beta changes do not publish or replace the existing formal App Store submission.

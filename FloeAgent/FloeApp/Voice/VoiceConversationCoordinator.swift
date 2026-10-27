@@ -44,6 +44,19 @@
 //   syllable is retained.
 // - Mute stops physical mic collection; no hidden capture, no auto-submit of
 //   a muted draft, and answer playback stays available.
+// - ONE auto-submit idempotency anchor per session (2026-10-27 duplicate
+//   utterance): the recognition path re-decodes the whole uncommitted window,
+//   so the SAME spoken utterance can return later as a non-prefix rewrite —
+//   typically flipped between Simplified and Traditional Han. Automatic paths
+//   (staging, the round-end re-arm and the endpoint decision itself) refuse a
+//   draft that is the folded form of the utterance already handed to the
+//   driving seam while NO real microphone speech has arrived since that
+//   submit. Exactly one utterance is remembered per session, never a text
+//   history: the same words spoken again after fresh microphone speech stay
+//   fully usable, a typed `submitText` or `sendNow` is deliberate intent and
+//   launches, and a launch that produced nothing hands the draft back
+//   unre-fenced. Late partials, finals, stream restarts and superseded-session
+//   callbacks can never mint a turn without a new utterance.
 // - Background/lock/interruption/route loss pause the session and cancel the
 //   current generation and audio. Resume is manual only. The pending unsent
 //   transcript survives.
@@ -336,6 +349,19 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// never auto-cancel this answer (settled 2026-10-25). Never a history:
     /// the same words stay fully usable in every later round.
     private var lastSubmittedText = ""
+    /// The session's pre-auto-submit idempotency anchor: the folded identity
+    /// of the ONE utterance already handed to the driving seam, plus whether
+    /// real microphone speech arrived since. Automatic paths consult it before
+    /// arming or launching an endpoint; `sendNow()` and typed `submitText(_:)`
+    /// are deliberate intent and never do (2026-10-27 duplicate-utterance
+    /// repair — a Whisper re-decode of the same window, often in the other Han
+    /// script, must never mint a second turn).
+    private var autoSubmitIdentity = VoiceConversationUtteranceIdentity()
+    /// True once real microphone speech arrived after a draft was carried
+    /// across a transcription restart or a manual resume. Without such speech,
+    /// a rebuilt stream that re-recognizes the carried sentence is the SAME
+    /// utterance and must not be joined into a doubled draft.
+    private var carriedDraftFreshSpeech = false
     /// Text kept across a manual pause; prepended to the first partial of the
     /// rebuilt transcription session so the pending utterance completes.
     private var resumePrefix: String?
@@ -460,6 +486,11 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         interruptedRoundContext = nil
         playingUnitProgress = nil
         lastSubmittedText = ""
+        // A new session generation owns a new utterance identity: the previous
+        // session's submitted words can never fence (or mint) a turn here, and
+        // no carried draft survives the boundary.
+        autoSubmitIdentity.reset()
+        carriedDraftFreshSpeech = false
         transcriptTextSeen = false
         voicedSecondsWithoutText = 0
         observedSecondsWithoutText = 0
@@ -645,6 +676,8 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         guard state == .paused else { return }
         teardownInFlight = false
         resumePrefix = stagedTranscript.isEmpty ? nil : stagedTranscript
+        // The carried draft is fresh only if the user actually speaks again.
+        carriedDraftFreshSpeech = false
         rawTranscript = ""
         transcriptBaseline = ""
         pausedReason = nil
@@ -956,7 +989,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             rapidEmptyRestarts = 0
         }
         report("transcriptStreamRestart")
-        if !stagedTranscript.isEmpty { resumePrefix = stagedTranscript }
+        if !stagedTranscript.isEmpty {
+            resumePrefix = stagedTranscript
+            // Only NEW unmuted microphone speech after this carry makes the
+            // rebuilt stream's first sentence a genuinely different utterance.
+            carriedDraftFreshSpeech = false
+        }
         rawTranscript = ""
         transcriptBaseline = ""
         do {
@@ -1019,6 +1057,19 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         micSamplesSeen = true
         if level.isSpeech {
             micQuietRun = 0
+            // Physical freshness for the auto-submit anchor and for a draft
+            // carried across a stream restart: only a REAL voiced microphone
+            // sample can make later text a new utterance. Text alone never
+            // proves it — a Whisper re-decode of old audio produces text with
+            // no new speech at all (2026-10-27 duplicate-utterance repair).
+            // A level delivered while MUTED is queued late audio from a
+            // capture the coordinator already stopped: it keeps the meter and
+            // quiet bookkeeping exactly as before, but it can never release
+            // the replay fence (only unmuted owned capture proves speech).
+            if !isMuted {
+                autoSubmitIdentity.noteSpeech()
+                if resumePrefix != nil { carriedDraftFreshSpeech = true }
+            }
         } else {
             micQuietRun += sampleSeconds
         }
@@ -1202,7 +1253,18 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             display = raw
         }
         if let prefix = resumePrefix, !prefix.isEmpty {
-            display = VoiceConversationFrameMath.joinCompletedSentences([prefix, display])
+            if !carriedDraftFreshSpeech,
+               VoiceConversationUtteranceIdentity.rerecognizesCarry(carry: prefix, in: display) {
+                // The rebuilt stream re-recognized the carried sentence with
+                // NO new microphone speech: joining would put the same words
+                // twice into one draft. Take the fresher whole accumulation
+                // instead and retire the carry (2026-10-27 restart-boundary
+                // duplicate-join repair).
+                report("resumeCarryRerecognized", "chars=\(prefix.count)")
+                resumePrefix = nil
+            } else {
+                display = VoiceConversationFrameMath.joinCompletedSentences([prefix, display])
+            }
         }
         stagedTranscript = display.trimmingCharacters(in: .whitespacesAndNewlines)
         if isMuted {
@@ -1296,8 +1358,28 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
             return
         }
         if state == .listening, !stagedTranscript.isEmpty {
-            scheduleEndpoint(for: stagedTranscript)
+            armEndpointOrFenceReplay(stagedTranscript, stage: "staging")
         }
+    }
+
+    /// Re-arm endpointing for a staged draft, UNLESS that draft is the same
+    /// utterance this session already submitted and no real microphone speech
+    /// arrived since (a late final, a re-decode or a Simplified↔Traditional
+    /// script flip of already-consumed audio). Such a replay is discarded with
+    /// the baseline advanced past the backend's accumulation, so it can never
+    /// become the draft an armed or re-armed endpoint auto-sends after a round
+    /// — the reported duplicate question with two separate answers.
+    ///
+    /// Deliberate intent never routes through here: `sendNow()` and typed
+    /// `submitText(_:)` call `submit` directly (product decision 2026-10-27).
+    private func armEndpointOrFenceReplay(_ text: String, stage: String) {
+        guard state == .listening, !isMuted, !text.isEmpty else { return }
+        if autoSubmitIdentity.blocksAutomaticSubmit(text) {
+            report("duplicateUtteranceFenced", "stage=\(stage) chars=\(text.count)")
+            discardStagedText()
+            return
+        }
+        scheduleEndpoint(for: text)
     }
 
     private func scheduleEndpoint(for text: String) {
@@ -1341,7 +1423,10 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
     /// The endpoint decision itself — unchanged in substance from the
     /// settled policy: hesitation/noise-only residue is discarded with the
     /// baseline advanced (never re-sent, never merged into the next draft),
-    /// a valid final submits exactly once. Reached from an armed timer (the
+    /// a valid final submits exactly once — and a valid final that is only a
+    /// replay of the utterance this session already submitted (folded form,
+    /// no real microphone speech since) is fenced instead of launched.
+    /// Reached from an armed timer (the
     /// quiet window is already satisfied, or the stretch has no real level
     /// samples at all) and from the event-driven release of a deferred
     /// window — the joint gate changes WHEN the decision is taken, never
@@ -1350,6 +1435,26 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         let final = stagedTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard VoiceConversationTurnValidity.isValidTurn(final) else {
             report("endpointDiscarded")
+            stagedTranscript = ""
+            transcriptBaseline = rawTranscript
+            resumePrefix = nil
+            return
+        }
+        fenceAutomaticReplayOrLaunch(final, stage: "endpoint")
+    }
+
+    /// The AUTO-submit side of the 2026-10-27 duplicate-utterance repair: the
+    /// authoritative gate immediately before an automatic launch. Every armed
+    /// or event-released endpoint decision passes here, whatever re-armed it,
+    /// so a rewrite of the utterance this session already submitted (with no
+    /// real microphone speech since) can never mint a second turn. The
+    /// discarded text leaves the draft AND the baseline advances past the
+    /// backend's current accumulation, so the same words cannot simply
+    /// re-stage on the next partial. The allowed path keeps the settled
+    /// `endpointFired` diagnostic order unchanged.
+    private func fenceAutomaticReplayOrLaunch(_ final: String, stage: String) {
+        if autoSubmitIdentity.blocksAutomaticSubmit(final) {
+            report("duplicateUtteranceFenced", "stage=\(stage) chars=\(final.count)")
             stagedTranscript = ""
             transcriptBaseline = rawTranscript
             resumePrefix = nil
@@ -1371,6 +1476,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         round = Round(token: token)
         currentRound = token
         lastSubmittedText = text
+        // Anchor the replay fence for this session: the SAME recognized
+        // utterance arriving again — as a late final, a re-decode or a Han
+        // script flip — with no real microphone speech since this submit is
+        // old audio, not new intent. Deliberate manual/typed launches anchor
+        // here too; they simply never consult it.
+        autoSubmitIdentity.noteSubmit(text)
         stagedTranscript = ""
         answerText = ""
         turnErrorMessage = nil
@@ -1573,6 +1684,13 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         let text = lastSubmittedText
         guard !text.isEmpty, stagedTranscript.isEmpty else { return }
         stagedTranscript = text
+        // The launch never reached the model, so this exact text was never
+        // answered: it is NOT a replay of a consumed utterance. Release the
+        // fence for the recovered draft — the explicit retry and the round-end
+        // re-arm must still be able to send the user's words. The retry's own
+        // submit re-anchors it again (2026-10-27: failure-draft
+        // recoverability stays outside the duplicate fence).
+        autoSubmitIdentity.reset()
         report("stagedRestoredAfterFailedLaunch")
     }
 
@@ -1935,10 +2053,12 @@ final class VoiceConversationCoordinator: ObservableObject, VoiceConversationSpe
         guard state == .waitingModel || state == .answering || state == .submitting else { return }
         state = .listening
         // A real utterance spoken while the answer played (barge candidate or
-        // plain double-talk) keeps endpointing; noise clears on fire.
-        if !isMuted, !stagedTranscript.isEmpty {
-            scheduleEndpoint(for: stagedTranscript)
-        }
+        // plain double-talk) keeps endpointing; noise clears on fire. A draft
+        // that is only the SAME utterance re-accumulating (script flip or late
+        // final, with no real microphone speech since the submit) is fenced
+        // here instead — re-arming it is exactly what turned one spoken
+        // question into two persisted questions (2026-10-27).
+        armEndpointOrFenceReplay(stagedTranscript, stage: "roundEnd")
     }
 
     // MARK: - VoiceConversationSpeechOutput (the app TTS bridge feeds this)

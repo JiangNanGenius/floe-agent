@@ -392,8 +392,8 @@ targets:
         # Xcode's debug dylib moves those callbacks out of that image.
         ENABLE_DEBUG_DYLIB: NO
         SWIFT_STRICT_CONCURRENCY: complete
-        MARKETING_VERSION: "1.7.60"
-        CURRENT_PROJECT_VERSION: "301"
+        MARKETING_VERSION: "1.7.61"
+        CURRENT_PROJECT_VERSION: "302"
         FLOE_GITHUB_OAUTH_CLIENT_ID: "Ov23litEyLPjXVLEDzWW"
         GENERATE_INFOPLIST_FILE: NO
         CODE_SIGN_ENTITLEMENTS: FloeApp/Entitlements/Floe.entitlements
@@ -474,8 +474,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeScreenShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.60"
-        CURRENT_PROJECT_VERSION: "301"
+        MARKETING_VERSION: "1.7.61"
+        CURRENT_PROJECT_VERSION: "302"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -525,8 +525,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeShare
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.60"
-        CURRENT_PROJECT_VERSION: "301"
+        MARKETING_VERSION: "1.7.61"
+        CURRENT_PROJECT_VERSION: "302"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -569,8 +569,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.60"
-        CURRENT_PROJECT_VERSION: "301"
+        MARKETING_VERSION: "1.7.61"
+        CURRENT_PROJECT_VERSION: "302"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -622,8 +622,8 @@ targets:
         PRODUCT_MODULE_NAME: FloeFileProvider
         TARGETED_DEVICE_FAMILY: "1,2"
         SWIFT_VERSION: "6.0"
-        MARKETING_VERSION: "1.7.60"
-        CURRENT_PROJECT_VERSION: "301"
+        MARKETING_VERSION: "1.7.61"
+        CURRENT_PROJECT_VERSION: "302"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_USER_SCRIPT_SANDBOXING: YES
       configs:
@@ -742,6 +742,7 @@ targets:
       - path: Tests/FloeSyncTests/CredentialSyncMigrationTests.swift
       - path: Tests/FloeAppTests/SkillsUpdatePresentationTests.swift
       - path: Tests/FloeAppTests/SkillManagementSelectionTests.swift
+      - path: Tests/FloeAppTests/SkillHubStoreFlowTests.swift
       - path: Tests/FloeAppTests/TerminalViewportTests.swift
       - path: Tests/FloeAppTests/ProviderFormSpecAppTests.swift
       - path: Tests/FloeProvidersTests/ProviderFormSpecTests.swift
@@ -750,6 +751,7 @@ targets:
       - path: Tests/FloeExecutionTests/RemoteAgentPayloadTests.swift
       - path: Tests/FloeExecutionTests/RemoteSharedSkillMountTests.swift
       - path: Tests/FloeAppTests/InlineConversationSelectionTests.swift
+      - path: Tests/FloeAppTests/ConversationPinningTests.swift
       - path: Tests/FloeAppTests/ComposerOverflowRegressionTests.swift
       - path: Tests/FloeProvidersTests/KimiFunctionNameCompatibilityTests.swift
       - path: Tests/FloeAppTests/SkillWorkspaceResourceStagerTests.swift
@@ -772,6 +774,7 @@ targets:
       - path: Tests/FloeAgentRuntimeTests/ChildResultPagingIsolationTests.swift
       - path: Tests/FloeAgentRuntimeTests/ActiveParentTestFixture.swift
       - path: Tests/FloePersistenceTests/V53ConversationVisibilityTests.swift
+      - path: Tests/FloePersistenceTests/ConversationPinningStoreTests.swift
       - path: Tests/FloeSkillsTests/GitHubDirectoryUpdateTests.swift
       - path: Tests/FloeSkillsTests/SkillWorkspaceInstallToolTests.swift
       - path: Tests/FloeSkillsTests/SkillHubTransportBudgetTests.swift
@@ -791,9 +794,9 @@ targets:
       - path: Tests/FloeCoreTests/VoicePlaybackReceiptTests.swift
       - path: Tests/FloeProvidersTests/ChatReasoningTests.swift
       - path: Tests/FloeAgentRuntimeTests/ChatModePolicyTests.swift
+      - path: Tests/FloeAgentRuntimeTests/ContextTimeLocationTests.swift
       - path: Tests/FloeAgentRuntimeTests/LocalRuntimeCurationTests.swift
       - path: Tests/FloeAgentRuntimeTests/ProfessionalSearchAuthorizationTests.swift
-      - path: Tests/FloeToolsTests/ChatToolPolicyTests.swift
       - path: Tests/FloePersistenceTests/ChatPreferenceStoreTests.swift
       - path: Tests/FloeAppTests/ChatModeRestorationTests.swift
       - path: Tests/FloeCoreTests/BackgroundExecutionOptionsTests.swift

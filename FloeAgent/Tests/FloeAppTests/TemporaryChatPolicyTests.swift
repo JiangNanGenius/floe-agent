@@ -1,17 +1,18 @@
-// FloeAppTests — Temporary chat public-web ceiling and RAM-only ownership.
+// FloeAppTests — Temporary chat read ceiling and RAM-only ownership.
 //
-// A temporary (ephemeral) chat offers only public web search/fetch
-// (`web.search` and the Bocha AI-summary `web.searchAI` when configured, plus
-// `web.fetch`). Personal-data, workspace, device and discovery reads are
-// outside that ceiling even though ordinary runs may still use them.
+// A temporary (ephemeral) chat offers the audited read set: public web
+// search/fetch (`web.search`, the Bocha AI-summary `web.searchAI` when
+// configured, and `web.fetch`) plus six basic on-device reads
+// (`apple.calendar.list`, `apple.reminders.list`, `apple.maps.search`,
+// `apple.home.list`, `apple.watch.status`, `apple.location.current`).
+// Personal-data history, workspace, discovery and remote reads stay outside
+// the ceiling even though ordinary runs may still use them.
 //
 // The paging ownership cases below are retained as defense-in-depth for the
 // RAM snapshot mechanism (`ApplePersonalListPaging` +
-// `PersonalToolOwnerID(context:)`): if a personal tool were ever invoked with
-// a temporary context, its snapshot must still be owned per run, must never
-// cross a session epoch, and must be revoked with the session. The policy and
-// composition tests prove that this surface is not reachable in the first
-// place.
+// `PersonalToolOwnerID(context:)`): a personal tool invoked with a
+// temporary context owns its snapshot per run, must never cross a session
+// epoch, and must be revoked with the session.
 
 #if canImport(UIKit)
 import Foundation
@@ -183,8 +184,8 @@ struct TemporaryChatPolicyTests {
         #expect(stillThere.returnedCount == 1)
     }
 
-    @Test("The temporary policy keeps only public web search/fetch, never private or write tools")
-    func temporaryCeilingIsPublicWebOnly() {
+    @Test("The temporary policy keeps the audited read set, never private or write tools")
+    func temporaryCeilingIsAuditedReadSet() {
         let descriptors: [ToolCatalog.Descriptor] = [
             ToolCatalog.Descriptor(
                 name: "web.fetch",
@@ -208,6 +209,16 @@ struct TemporaryChatPolicyTests {
                 name: "apple.calendar.list",
                 riskLabels: [.persistsPersonalData],
                 isSideEffecting: false
+            ),
+            ToolCatalog.Descriptor(
+                name: "apple.location.current",
+                riskLabels: [],
+                isSideEffecting: false
+            ),
+            ToolCatalog.Descriptor(
+                name: "apple.reminders.update",
+                riskLabels: [.persistsPersonalData],
+                isSideEffecting: true
             ),
             ToolCatalog.Descriptor(
                 name: "mail.read",
@@ -242,16 +253,32 @@ struct TemporaryChatPolicyTests {
             ),
         ]
         let ceiling = TemporaryChatToolPolicy.allowedToolNames(from: descriptors)
-        #expect(ceiling == ["web.fetch", "web.search", "web.searchAI"])
+        #expect(ceiling == [
+            "apple.calendar.list", "apple.location.current",
+            "web.fetch", "web.search", "web.searchAI",
+        ])
         for name in [
-            "apple.calendar.list", "mail.read", "notes.read",
+            "apple.reminders.update", "mail.read", "notes.read",
             "skill.list", "apple.calendar.update", "mail.setRead", "mail.download",
         ] {
             #expect(!ceiling.contains(name), "\(name) is outside temporary chat")
         }
-        // Private reads are refused at execution even with ordinary-looking
-        // read arguments; the public pair is accepted when the provider is.
-        for name in ["apple.calendar.list", "mail.read", "notes.read", "skill.list"] {
+        // The admitted reads are accepted at execution with genuine arguments;
+        // the location read takes NO arguments. Private reads are refused at
+        // execution even with ordinary-looking read arguments.
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: descriptors.first { $0.name == "apple.calendar.list" }!,
+            arguments: Data(#"{"limit":5}"#.utf8)
+        ) == nil)
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: descriptors.first { $0.name == "apple.location.current" }!,
+            arguments: Data("{}".utf8)
+        ) == nil)
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: descriptors.first { $0.name == "apple.location.current" }!,
+            arguments: Data(#"{"query":"Sydney"}"#.utf8)
+        ) != nil)
+        for name in ["mail.read", "notes.read", "skill.list"] {
             let descriptor = descriptors.first { $0.name == name }!
             #expect(TemporaryChatToolPolicy.denialReason(
                 descriptor: descriptor,
@@ -273,12 +300,13 @@ struct TemporaryChatPolicyTests {
 
 // MARK: - Public web App composition
 
-/// Temporary chat always keeps the public-web-only ceiling, but provider
-/// readiness is a separate gate: each provider-backed search tool is removed
-/// until its provider is configured, while `web.fetch` remains usable without
-/// any provider. These tests pin the real `ConversationCenter` composition
-/// against the real settings store (`WebSearchSettingsCenter.toolIsAvailable`),
-/// not a synthetic policy-only fixture.
+/// Temporary chat keeps the audited read ceiling, but provider readiness is
+/// a separate gate: each provider-backed search tool is removed until its
+/// provider is configured, while `web.fetch` and the basic device reads (no
+/// provider needed) remain available. These tests pin the real
+/// `ConversationCenter` composition against the real settings store
+/// (`WebSearchSettingsCenter.toolIsAvailable`), not a synthetic policy-only
+/// fixture.
 @Suite("FloeApp.TemporaryChatComposition")
 struct TemporaryChatCompositionTests {
 
@@ -298,15 +326,17 @@ struct TemporaryChatCompositionTests {
         )
     }
 
-    /// The real catalog slice a temporary chat offers: provider-backed search,
-    /// public fetch, private reads and one denied write. Only public web
-    /// search/fetch tools may survive composition.
+    /// The real catalog slice a temporary chat offers: provider-backed
+    /// search, public fetch, the admitted basic device reads, private reads
+    /// and one denied write. Only the audited read set may survive
+    /// composition.
     private func offeredDescriptors() -> [ToolCatalog.Descriptor] {
         [
             descriptor("web.search", risks: [.networkAccess], effect: .readOnly),
             descriptor("web.searchAI", risks: [.networkAccess], effect: .readOnly),
             descriptor("web.fetch", risks: [.networkAccess], effect: .readOnly),
             descriptor("apple.calendar.list", risks: [.persistsPersonalData]),
+            descriptor("apple.location.current", risks: []),
             descriptor(
                 "mail.read",
                 schema: #"{"type":"object","properties":{"action":{"type":"string","enum":["folders","list","message"]}},"required":["action"],"additionalProperties":false}"#,
@@ -318,7 +348,12 @@ struct TemporaryChatCompositionTests {
         ]
     }
 
-    @Test("An unconfigured search provider leaves exactly the public fetch tool")
+    /// Every composition result: the provider-free reads always survive.
+    private var providerFreeReads: Set<String> {
+        ["web.fetch", "apple.calendar.list", "apple.location.current"]
+    }
+
+    @Test("An unconfigured search provider leaves exactly the provider-free read set")
     func unconfiguredSearchKeepsPublicFetchOnly() {
         let ceiling = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors(),
@@ -327,9 +362,9 @@ struct TemporaryChatCompositionTests {
         // Both provider-backed search tools are absent...
         #expect(!ceiling.contains("web.search"))
         #expect(!ceiling.contains("web.searchAI"))
-        // ...and no private read fills the gap. `web.fetch` needs no provider
-        // and stays available for an ordinary public page research turn.
-        #expect(ceiling == ["web.fetch"])
+        // ...and no private read fills the gap. `web.fetch` and the basic
+        // device reads need no provider and stay available.
+        #expect(ceiling == providerFreeReads)
     }
 
     @Test("Each configured provider adds only its own public search tool")
@@ -338,7 +373,7 @@ struct TemporaryChatCompositionTests {
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { $0 == "web.search" }
         )
-        #expect(webOnly == ["web.search", "web.fetch"])
+        #expect(webOnly == providerFreeReads.union(["web.search"]))
         // Provider-filter probe: Bocha's AI-summary tool is a public web read,
         // and it survives when the composition is told only that tool's
         // provider is ready. (The real `toolIsAvailable` treats any ready
@@ -348,17 +383,16 @@ struct TemporaryChatCompositionTests {
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { $0 == "web.searchAI" }
         )
-        #expect(bochaOnly == ["web.searchAI", "web.fetch"])
+        #expect(bochaOnly == providerFreeReads.union(["web.searchAI"]))
         // Any-ready covers the ordinary any-provider case (including Bocha,
         // whose provider also satisfies web.search's availability check).
         let anyReady = ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: { _ in true }
         )
-        #expect(anyReady == ["web.search", "web.searchAI", "web.fetch"])
+        #expect(anyReady == providerFreeReads.union(["web.search", "web.searchAI"]))
         // No private read fills any provider gap.
         for ceiling in [webOnly, bochaOnly, anyReady] {
-            #expect(!ceiling.contains("apple.calendar.list"))
             #expect(!ceiling.contains("mail.read"))
             #expect(!ceiling.contains("notes.read"))
             #expect(!ceiling.contains("workspace.writeFile"))
@@ -393,8 +427,7 @@ struct TemporaryChatCompositionTests {
             offeredDescriptors: offeredDescriptors(),
             webSearchAvailable: available
         )
-        #expect(ceiling == ["web.search", "web.fetch"])
-        #expect(!ceiling.contains("apple.calendar.list"))
+        #expect(ceiling == providerFreeReads.union(["web.search"]))
         #expect(!ceiling.contains("mail.read"))
         #expect(!ceiling.contains("notes.read"))
         #expect(!ceiling.contains("workspace.writeFile"))

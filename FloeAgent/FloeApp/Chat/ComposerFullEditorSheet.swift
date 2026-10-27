@@ -337,8 +337,10 @@ private struct FullEditorTextView: UIViewRepresentable {
         uiView.sharedUndoManager = undoManager
         // Mirror the composer's live guard; never re-derive a second rule.
         controller.sendAllowed = canSend
-        // Never clobber in-flight IME composition or echo the user's edit.
-        if uiView.markedTextRange == nil, uiView.text != text {
+        // Never clobber in-flight IME composition or echo the user's edit —
+        // the same policy the inline field applies.
+        if ComposerIMEPolicy.allowsTextReplacement(hasMarkedText: uiView.markedTextRange != nil),
+           uiView.text != text {
             uiView.text = text
         }
         if !uiView.isFirstResponder {

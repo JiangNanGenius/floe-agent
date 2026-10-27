@@ -105,6 +105,10 @@ public actor ConversationRunService {
     /// layers), and the prior voice-playback receipt may be quoted. Frozen
     /// from the immutable configuration; never model- or text-minted.
     private let chatFastMode: Bool
+    /// True for a temporary (ephemeral) run: the fast envelope states the
+    /// temporary read ceiling instead of the ordinary full-toolchain line.
+    /// Frozen from the immutable configuration.
+    private let temporaryReadOnly: Bool
     private let dynamicApprovalPolicy: DynamicApprovalPolicy
     private let logger = FloeLogger(category: .runtime)
     private var streamedText = ""
@@ -324,6 +328,7 @@ public actor ConversationRunService {
         self.modelSupportsTools = configuration.toolsEnabled && configuration.model.capabilities.contains(.tools)
         self.usesLocalPrompt = configuration.provider.kind == .local
         self.chatFastMode = configuration.chatFastMode
+        self.temporaryReadOnly = configuration.temporaryReadOnly
         let dynamicApprovalPolicy = DynamicApprovalPolicy(policy)
         self.dynamicApprovalPolicy = dynamicApprovalPolicy
         // The sink forwards into the service via closures so callbacks reach
@@ -346,7 +351,8 @@ public actor ConversationRunService {
                         ? configuration.model.limits.contextTokens
                         : nil,
                     currentDate: promptAnchorDate, timeZone: promptAnchorZone,
-                    chatFastMode: configuration.chatFastMode)
+                    chatFastMode: configuration.chatFastMode,
+                    temporaryReadOnly: configuration.temporaryReadOnly)
             }
         } else {
             refreshContext = nil
@@ -541,7 +547,8 @@ public actor ConversationRunService {
             compactForLocal: usesLocalPrompt,
             hasImageAttachments: !currentUserImages.isEmpty,
             localContextTokens: usesLocalPrompt ? primaryModel.limits.contextTokens : nil,
-            chatFastMode: chatFastMode
+            chatFastMode: chatFastMode,
+            temporaryReadOnly: temporaryReadOnly
         ))
         try await runtime.start(goal: goal, images: currentUserImages)
     }
@@ -567,7 +574,8 @@ public actor ConversationRunService {
             compactForLocal: usesLocalPrompt,
             hasImageAttachments: !currentUserImages.isEmpty,
             localContextTokens: usesLocalPrompt ? primaryModel.limits.contextTokens : nil,
-            chatFastMode: chatFastMode
+            chatFastMode: chatFastMode,
+            temporaryReadOnly: temporaryReadOnly
         ))
         try await runtime.start(goal: goal, images: currentUserImages)
     }
@@ -2132,8 +2140,15 @@ public actor ConversationRunService {
         /// no task-pipeline instruction layers, no workflow-guidance or
         /// discovery-routing lines, no plan/goal layer re-injection and a
         /// bounded attachment list; task-mode composition is byte-identical
-        /// when this flag is false.
-        chatFastMode: Bool = false
+        /// when this flag is false. The catalog itself is the ordinary
+        /// authorized toolchain either way — this flag selects the envelope,
+        /// never the capability set.
+        chatFastMode: Bool = false,
+        /// True for a temporary (ephemeral) run: the fast envelope states the
+        /// temporary read ceiling honestly (public web search/fetch plus the
+        /// basic on-device reads) instead of the ordinary full-toolchain
+        /// line. Frozen from the immutable configuration.
+        temporaryReadOnly: Bool = false
     ) -> String {
         if chatFastMode {
             return Self.buildFastChatContextMessage(
@@ -2143,7 +2158,8 @@ public actor ConversationRunService {
                 compactForLocal: compactForLocal,
                 localContextTokens: localContextTokens,
                 currentDate: currentDate,
-                timeZone: timeZone
+                timeZone: timeZone,
+                temporaryReadOnly: temporaryReadOnly
             )
         }
         var lines: [String] = ["# Run context"]
@@ -2276,12 +2292,14 @@ public actor ConversationRunService {
 
     /// The fast conversation run context: a brief conversational envelope.
     /// Essential identity (date/time, zone), a bounded attached-file list,
-    /// the quoted untrusted prior-voice note and the one-line capability
-    /// ceiling — and nothing else. No task-pipeline instructions, no
+    /// the quoted untrusted prior-voice note and a one-line statement of what
+    /// may run — and nothing else. No task-pipeline instructions, no
     /// workflow guidance or discovery routing, no plan/goal/memory/skill/
-    /// workspace-note re-injection. The ceiling itself is enforced by the
-    /// runtime (`ChatToolPolicy`), independently of this text; the envelope
-    /// only states honestly what the model may legitimately expect.
+    /// workspace-note re-injection. The capability boundary itself is
+    /// enforced by the runtime (`temporaryReadOnly` for temporary runs; the
+    /// ordinary authorized toolchain otherwise), independently of this text;
+    /// the envelope only states honestly what the model may legitimately
+    /// expect.
     static func buildFastChatContextMessage(
         _ context: RunContext?,
         toolsAvailable: Bool,
@@ -2289,11 +2307,17 @@ public actor ConversationRunService {
         compactForLocal: Bool,
         localContextTokens: Int?,
         currentDate: Date,
-        timeZone: TimeZone
+        timeZone: TimeZone,
+        temporaryReadOnly: Bool = false
     ) -> String {
         var lines: [String] = ["# Conversation context"]
         lines.append("Current local date and time at run start: \(localTimestamp(currentDate, in: timeZone))")
         lines.append("Current time zone: \(timeZone.identifier) (UTC\(utcOffset(timeZone.secondsFromGMT(for: currentDate))))")
+        // The clock and zone are the ONLY location-adjacent facts injected
+        // here: they never reveal where the user is. The model must ask or
+        // use the offered current-location tool instead of inferring a place
+        // from the time zone.
+        lines.append("The injected clock and time zone do not reveal the user's location: never infer a place from the time zone. When the user asks where they are or what is nearby, use the offered current-location tool.")
         if hasImageAttachments {
             lines.append("""
             Attached images are included directly in the current user message. Treat \
@@ -2324,7 +2348,11 @@ public actor ConversationRunService {
             }
         }
         if toolsAvailable {
-            lines.append("Capability ceiling for this conversation: public web search/fetch and reading the exact attached files listed above — only the tools actually offered in this request. Nothing else can run here; never assume personal data, workspace, host or task capabilities exist.")
+            if temporaryReadOnly {
+                lines.append("Capability ceiling for this temporary conversation: public web search/fetch plus basic on-device reads (calendar events, reminders, maps place search, Home accessories, Watch status and the current location) — only the tools actually offered in this request, using permissions already granted. Nothing else can run here: no writing, executing, installs, background jobs, workspace access, personal-data history, remote hosts or delegation.")
+            } else {
+                lines.append("Tools: use the tools actually offered in this request — the same enabled, permission-authorized toolset as an ordinary task — discovering definitions progressively with tools.search/tools.list. Approvals and every tool boundary behave exactly as in a task; never claim a search, read, send, change or execution that a structured tool result did not confirm.")
+            }
         } else {
             lines.append("Available tools: none (native tool calling is disabled for this model).")
         }
@@ -2356,7 +2384,8 @@ public actor ConversationRunService {
             compactForLocal: compactForLocal,
             overlay: context?.contentOverlay ?? .empty,
             localSectionBudgetTokens: localSectionBudgetTokens,
-            chatFastMode: true
+            chatFastMode: true,
+            temporaryReadOnly: temporaryReadOnly
         )
     }
 

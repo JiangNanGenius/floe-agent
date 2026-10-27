@@ -255,6 +255,12 @@ enum VoiceBargeConfirmDecision: Equatable, Sendable {
 ///   identity open past its 1.2 s pause bound for a bounded freshness
 ///   window; snapshot comparison is punctuation-free, so incremental
 ///   replacement of the same utterance still counts as new text.
+/// - Comparison folds Traditional→Simplified Han (the fold never touches the
+///   displayed or submitted text): a re-decode of identical audio in the
+///   other script is the SAME utterance, so it can neither confirm an
+///   interruption nor survive as a fresh draft (2026-10-27 duplicate-
+///   utterance repair; see `VoiceConversationUtteranceIdentity` for the
+///   auto-submit side of the same defect).
 enum VoiceConversationBargeArbiter {
     /// Deliberate, bounded spoken-interruption command set (product-settled
     /// 2026-10-25). These are IMPERATIVE instructions whose user intent is
@@ -280,15 +286,48 @@ enum VoiceConversationBargeArbiter {
         bargeCommands.contains(normalized(text))
     }
 
-    /// Comparison form: casefolded, with only letters/digits kept. ASR
-    /// partials and the played text differ in punctuation and spacing; they
-    /// do NOT differ in the spoken characters themselves.
+    /// Comparison form: casefolded, with only letters/digits kept, and Han
+    /// script folded Traditional→Simplified. ASR partials and the played text
+    /// differ in punctuation and spacing; they do NOT differ in the spoken
+    /// characters themselves — with ONE exception measured in the field: a
+    /// re-decode of the SAME uncommitted audio window can flip 繁↔简 (the
+    /// 2026-10-27 duplicate-utterance report: one spoken question persisted
+    /// twice as a Simplified and a Traditional question with two answers).
+    /// The fold therefore lives ONLY in this comparison form. Staged,
+    /// submitted and displayed text never passes through it, so what the user
+    /// sees and what the model receives stays exactly as recognized.
     static func normalized(_ text: String) -> String {
         var out = ""
-        for character in text.lowercased() where character.isLetter || character.isNumber {
+        for character in foldedHan(text.lowercased()) where character.isLetter || character.isNumber {
             out.append(character)
         }
         return out
+    }
+
+    /// Traditional→Simplified fold used by the comparison form only. The
+    /// transform runs ONLY when the text actually contains Han, and a nil
+    /// result degrades to the unfolded text — the exact pre-folding
+    /// character-identical behavior. A fence can never be built on a
+    /// transform that did not run.
+    static func foldedHan(_ text: String) -> String {
+        guard containsHan(text) else { return text }
+        return text.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? text
+    }
+
+    /// CJK unified, Extension A, compatibility ideographs and Extensions B–G.
+    /// A cheap scalar scan that keeps every Latin/punctuation comparison on
+    /// the original fast path.
+    private static func containsHan(_ text: String) -> Bool {
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            if (value >= 0x3400 && value <= 0x4DBF)
+                || (value >= 0x4E00 && value <= 0x9FFF)
+                || (value >= 0xF900 && value <= 0xFAFF)
+                || (value >= 0x20_000 && value <= 0x31_34F) {
+                return true
+            }
+        }
+        return false
     }
 
     /// True when `text` equals or is the tail of the CURRENT round's own
@@ -296,8 +335,10 @@ enum VoiceConversationBargeArbiter {
     /// between "late accumulation of what this answer was asked with" and
     /// "user repeated their exact words" — and the ambiguous direction is
     /// the reported silent self-interruption, so it never confirms.
-    /// Anchored to the single current utterance on purpose: no history, so
-    /// the same words are fully usable again in any later round.
+    /// Compared in the folded form, so a Simplified↔Traditional rewrite of
+    /// the same recognized words is caught exactly like a character-identical
+    /// re-accumulation. Anchored to the single current utterance on purpose:
+    /// no history, so the same words are fully usable again in any later round.
     static func matchesCurrentSubmissionTail(_ text: String, submitted: String) -> Bool {
         let current = normalized(text)
         let old = normalized(submitted)
@@ -334,6 +375,96 @@ enum VoiceConversationBargeArbiter {
         }
         if isOutputEcho(trimmed, playedReference: playedReference) { return .rejectedOutputEcho }
         return .confirm
+    }
+}
+
+// MARK: - Automatic-resubmit utterance identity
+
+/// The ONE pre-auto-submit idempotency anchor of a voice session
+/// (2026-10-27 duplicate-utterance repair).
+///
+/// WHY IT EXISTS: the recognition path re-decodes the whole uncommitted audio
+/// window on every pass, so the SAME spoken utterance can arrive again later
+/// as a non-prefix rewrite — frequently in the other Han script. Such a
+/// rewrite staged as a fresh draft, survived the round, and the endpoint auto-
+/// submitted it once the answer drained: one spoken question became two
+/// persisted questions with two separate answers.
+///
+/// WHAT IT IS: per SESSION and per UTTERANCE, never a global text history. It
+/// remembers exactly one thing — the folded form of the last utterance this
+/// session handed to the driving seam — plus whether REAL microphone speech
+/// arrived after that submit. A staged draft is only treated as a replay when
+/// BOTH hold: it is the same recognized words (folded containment: equal, a
+/// tail, a growing partial or a merged re-accumulation of that utterance) AND
+/// no microphone speech was heard since the submit. Any fresh speech releases
+/// it immediately, so genuinely repeating the same words out loud stays fully
+/// usable, and the same words in a later round stay usable because exactly one
+/// utterance is ever remembered.
+///
+/// WHAT IT NEVER TOUCHES: deliberate user intent. `sendNow()` and typed
+/// `submitText(_:)` launch without consulting it (product decision 2026-10-27:
+/// a manual send or a typed message IS the intent), and a pre-launch failure
+/// releases it so the user's recovered words stay retryable. Raw text
+/// equality alone is never the rule: without a fresh-speech anchor the fence
+/// would swallow genuine repeats, and with no text anchor it would fence
+/// nothing.
+struct VoiceConversationUtteranceIdentity: Sendable {
+    /// Folded comparison form of the last utterance handed to the seam.
+    private(set) var foldedSubmitted = ""
+    /// True once real (echo-processed) microphone speech arrived after that
+    /// submit: freshness is physical provenance, never a string guess.
+    private(set) var hasFreshSpeech = false
+    /// True while an anchor exists for the current session generation.
+    private(set) var isActive = false
+
+    /// Records what the coordinator just submitted. Called for EVERY launch —
+    /// automatic or deliberate — because a late rewrite of words the user
+    /// manually sent is still old audio, not a new turn.
+    mutating func noteSubmit(_ text: String) {
+        foldedSubmitted = VoiceConversationBargeArbiter.normalized(text)
+        hasFreshSpeech = false
+        isActive = !foldedSubmitted.isEmpty
+    }
+
+    /// A voiced microphone sample arrived. Only meaningful after a submit;
+    /// it never arms anything by itself.
+    mutating func noteSpeech() {
+        if isActive { hasFreshSpeech = true }
+    }
+
+    /// Session boundary, or a launch that never reached the model and whose
+    /// draft was handed back to the user: forget the anchor entirely.
+    mutating func reset() {
+        foldedSubmitted = ""
+        hasFreshSpeech = false
+        isActive = false
+    }
+
+    /// True when `text` is the SAME recognized utterance as the anchored one
+    /// and no fresh microphone speech has arrived since that submit: a late
+    /// final, a re-decode or a script flip of already-consumed audio — never
+    /// new intent, so it must not launch a second run.
+    func blocksAutomaticSubmit(_ text: String) -> Bool {
+        guard isActive, !hasFreshSpeech else { return false }
+        let current = VoiceConversationBargeArbiter.normalized(text)
+        guard !current.isEmpty else { return false }
+        // Folded containment in either direction: the replay can be the whole
+        // utterance, one side of it (a growing or truncated re-decode) or the
+        // utterance merged with its own accumulation.
+        return foldedSubmitted.contains(current) || current.contains(foldedSubmitted)
+    }
+
+    /// True when the text of a REBUILT recognition stream already carries, at
+    /// its own start, the draft that was handed across the restart: joining
+    /// the carried prefix with it would put the same sentence twice into one
+    /// draft. The coordinator only consults this while NO fresh microphone
+    /// speech has arrived since the carry, so a genuine repeat spoken across
+    /// the boundary still joins normally.
+    static func rerecognizesCarry(carry: String, in text: String) -> Bool {
+        let carried = VoiceConversationBargeArbiter.normalized(carry)
+        let recognized = VoiceConversationBargeArbiter.normalized(text)
+        guard !carried.isEmpty, !recognized.isEmpty else { return false }
+        return recognized.hasPrefix(carried)
     }
 }
 

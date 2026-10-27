@@ -76,6 +76,17 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         return Array(repeating: GridItem(.flexible(minimum: 0), spacing: 20), count: count)
     }
 
+    /// One composition decision per shelf, derived from the shelf's effective
+    /// column width — never per item. Build 301 feedback: a per-item
+    /// `ViewThatFits` flipped the CTA below "Office" but left it inline for
+    /// "PDF", so rows in the SAME shelf had inconsistent heights.
+    private func shelfInlineCTA(width: CGFloat) -> Bool {
+        let count = width >= 700 && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
+        let columnWidth = SkillHubRowLayout.columnWidth(gridWidth: width, columns: count, gutter: 20)
+        return SkillHubRowLayout.prefersInlineCTA(columnWidth: columnWidth,
+                                                  isAccessibilityText: dynamicTypeSize.isAccessibilitySize)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
@@ -106,7 +117,8 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                     } else {
                         LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
                                   alignment: .leading, spacing: 12) {
-                            ForEach(matching) { item in directoryRow(item) }
+                            let inlineCTA = shelfInlineCTA(width: min(geometry.size.width, 1100) - 32)
+                            ForEach(matching) { item in directoryRow(item, inlineCTA: inlineCTA) }
                         }
                     }
                     if normalizedQuery.isEmpty { connections() }
@@ -128,7 +140,12 @@ struct SkillHubDiscoveryView<Connections: View>: View {
             ScrollView(.horizontal) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(featured) { item in
-                        VStack(alignment: .leading, spacing: 12) {
+                        // One coherent card: artwork + text open the detail,
+                        // and the category + CTA footer live INSIDE the same
+                        // card background. `maxHeight: .infinity` equalizes
+                        // every card to the shelf height so the row is
+                        // visually consistent instead of per-item ragged.
+                        VStack(alignment: .leading, spacing: 0) {
                             Button { onSelect(item.id) } label: {
                                 VStack(alignment: .leading, spacing: 0) {
                                     Color(red: 0.055, green: 0.055, blue: 0.11)
@@ -144,34 +161,40 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                                         }
                                         .accessibilityHidden(true)
                                     VStack(alignment: .leading, spacing: 8) {
-                                    Text(item.title)
-                                        .font(.title2.bold())
-                                        .foregroundStyle(.primary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Text(item.summary)
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 3)
-                                        .fixedSize(horizontal: false, vertical: true)
+                                        Text(item.title)
+                                            .font(.title2.bold())
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                        Text(item.summary)
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                                            .fixedSize(horizontal: false, vertical: true)
                                     }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(16)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(uiColor: .secondarySystemGroupedBackground),
-                                    in: RoundedRectangle(cornerRadius: 20))
-                                .clipShape(RoundedRectangle(cornerRadius: 20))
                                 .contentShape(RoundedRectangle(cornerRadius: 20))
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("skills.featured.\(item.id)")
                             HStack {
                                 Text(item.category.title).font(.subheadline).foregroundStyle(.secondary)
+                                    .lineLimit(1)
                                 Spacer()
                                 getButton(item, identifierPrefix: "skills.featured.get")
                             }
-                            .padding(.horizontal, 4)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 14)
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .background(Color(uiColor: .secondarySystemGroupedBackground),
+                            in: RoundedRectangle(cornerRadius: 20))
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
                         .containerRelativeFrame(.horizontal, count: wide ? 2 : 1, spacing: 14)
+                        .accessibilityIdentifier("skills.featured.card.\(item.id)")
                     }
                 }
                 .scrollTargetLayout()
@@ -197,7 +220,8 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                 }
             }
             LazyVGrid(columns: columns(for: width), alignment: .leading, spacing: 12) {
-                ForEach(Array(groupItems.prefix(6))) { item in directoryRow(item) }
+                let inlineCTA = shelfInlineCTA(width: width)
+                ForEach(Array(groupItems.prefix(6))) { item in directoryRow(item, inlineCTA: inlineCTA) }
             }
         }
     }
@@ -213,23 +237,36 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .buttonStyle(.plain)
         .foregroundStyle(category == value ? Color.accentColor : .primary)
         .accessibilityAddTraits(category == value ? .isSelected : [])
+        .accessibilityIdentifier("skills.category.\(value?.id ?? "all")")
     }
 
-    private func directoryRow(_ item: SkillHubDisplayItem) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 10) {
-                itemButton(item)
-                getButton(item)
-            }
-            VStack(alignment: .leading, spacing: 10) {
-                itemButton(item)
-                HStack { Spacer(); getButton(item) }
+    private func directoryRow(_ item: SkillHubDisplayItem, inlineCTA: Bool) -> some View {
+        // The composition comes from the shelf-level decision above, so every
+        // row in a shelf aligns; buttons keep their natural intrinsic size.
+        // The content frame FILLS the grid cell height (mirroring the
+        // featured cards' `maxHeight: .infinity`): siblings whose title or
+        // summary wrap to 1 vs 2 lines still paint equal card backgrounds
+        // within the same shelf row — content-driven, no fixed pixel heights.
+        Group {
+            if inlineCTA {
+                HStack(alignment: .center, spacing: 10) {
+                    itemButton(item)
+                    getButton(item)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    itemButton(item)
+                    HStack { Spacer(); getButton(item) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .background(Color(uiColor: .secondarySystemGroupedBackground),
                     in: RoundedRectangle(cornerRadius: 14))
+        .accessibilityIdentifier("skills.row.\(item.id)")
     }
 
     private func itemButton(_ item: SkillHubDisplayItem) -> some View {

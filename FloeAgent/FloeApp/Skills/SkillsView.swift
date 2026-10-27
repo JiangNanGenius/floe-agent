@@ -33,6 +33,9 @@ struct SkillsView: View {
     }
     @State private var mcpSheet: MCPHubSheet?
     @State private var discoveryDetailID: String?
+    /// Route to the service-owned hub download panel (closing it never
+    /// touches the job; the hub chip reopens the SAME job).
+    @State private var downloadPanel: SkillHubPanelRoute?
     /// Shared scripted auto-update policy; the same defaults value is managed
     /// by Settings → Content updates. Never a second copy.
     @AppStorage(ContentUpdateCenter.scriptedAutoInstallDefaultsKey)
@@ -124,7 +127,11 @@ struct SkillsView: View {
             else if skill.status != "enabled" { Task { await center.setEnabled(true, skill: skill) } }
             else { updatingSkill = skill }
         } else if center.curatedCards.contains(where: { $0.entry.id == id }) {
-            Task { await center.prepareCuratedInstallation(id: id) }
+            // Official signed catalog: the human Get starts the verified
+            // install directly as a service-owned job. A repeated tap reuses
+            // the same job — it only reopens the panel.
+            center.requestHubInstall(id: id)
+            if center.hubInstallJobs[id] != nil { downloadPanel = SkillHubPanelRoute(skillID: id) }
         } else { Task { await center.installOfficialSkill(id: id) } }
     }
 
@@ -172,6 +179,19 @@ struct SkillsView: View {
                     onSelect: { discoveryDetailID = $0 }, onGet: performStoreAction,
                     connections: { connectorActions }
                 )
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    // The download is service-owned: this chip reappears for
+                    // the SAME job after the panel, sheet or detail page closes.
+                    if let job = center.hubChipJob {
+                        SkillHubDownloadChip(center: center, skillID: job.skillID) {
+                            downloadPanel = SkillHubPanelRoute(skillID: job.skillID)
+                        }
+                        .padding(.horizontal, 20).padding(.bottom, 8)
+                        .frame(maxWidth: 480)
+                        .frame(maxWidth: .infinity)
+                        .background(.bar)
+                    }
+                }
             } else {
                 List {
                     if visibleInstalled.isEmpty && mcpCenter.servers.isEmpty {
@@ -271,33 +291,19 @@ struct SkillsView: View {
         }
         .navigationDestination(item: $discoveryDetailID) { id in
             if let item = discoveryItems.first(where: { $0.id == id }) {
-                let definition = DomainSkillLibrary.all.first { $0.id == id }
-                let curated = center.curatedCards.first { $0.entry.id == id }?.entry
-                Form {
-                    Section {
-                        Label(item.title, systemImage: item.systemImage).font(.title2.bold())
-                        Text(item.summary)
-                        Button(item.action.title) { performStoreAction(id) }
-                            .disabled(!item.actionEnabled)
-                    }
-                    Section("skills.hub.about") {
-                        LabeledContent("skills.hub.publisher", value: curated == nil ? "Floe" : CuratedSkillHub.publisher)
-                        LabeledContent("skills.hub.version", value: curated?.version ?? center.catalogPackages[id]?.version ?? definition?.version ?? "")
-                        if let upstream = curated?.upstream {
-                            LabeledContent("skills.hub.source", value: upstream.repository)
-                            LabeledContent("skills.hub.license", value: upstream.repositoryLicense)
-                        }
-                        if let publication = center.curatedPublication, curated != nil {
-                            LabeledContent("skills.hub.publication", value: String(publication.publicationCommit.prefix(12)))
-                        }
+                SkillHubDetailView(
+                    center: center, item: item,
+                    onStoreAction: performStoreAction,
+                    onOpenUpdateDetails: {
                         if let skill = center.installed.first(where: { $0.id == id }) {
-                            Button("skills.update.details") { updatingSkill = skill }
+                            updatingSkill = skill
                         }
                     }
-                }
-                .navigationTitle(item.title)
-                .navigationBarTitleDisplayMode(.inline)
+                )
             }
+        }
+        .sheet(item: $downloadPanel) { route in
+            SkillHubInstallPanel(center: center, skillID: route.skillID)
         }
         .sheet(item: $mcpSheet) { destination in
             switch destination {
@@ -1340,9 +1346,11 @@ private struct SkillInstallReviewSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("action.cancel") { Task { await center.cancelPendingInstallation(); dismiss() } }
+                        .accessibilityIdentifier("skills.review.cancel")
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("action.install") { Task { await center.confirmPendingInstallation(); dismiss() } }
+                        .accessibilityIdentifier("skills.review.install")
                 }
             }
         }

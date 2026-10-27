@@ -19,9 +19,15 @@ struct ConversationListView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var pendingDeletion: ConversationRecord?
     @State private var presentsArchive = false
-    /// Long-press multi-select in this list (no management sheet; bulk
-    /// archive/delete run through the existing task bulk engine).
+    /// Multi-select in this list (corrected contract: the row long press
+    /// opens the native context menu and ONLY its Multi-select item enters
+    /// the inline circles; bulk archive/delete run through the existing
+    /// task bulk engine — no management sheet).
     @StateObject private var selection = InlineConversationSelectionModel()
+    /// Menu/single-selection rename host state (same durable command the
+    /// sidebar rename sheet uses).
+    @State private var renameTarget: ConversationRecord?
+    @State private var renameDraft = ""
 
     init(center: ConversationCenter) {
         _viewModel = StateObject(wrappedValue: ConversationListViewModel(center: center))
@@ -52,13 +58,39 @@ struct ConversationListView: View {
         .navigationDestination(for: UUID.self) { conversationID in
             ThreadDetailView(conversationID: conversationID, center: viewModel.center)
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            // Corrected selection chrome: the header (count · select-all ·
+            // Done) sits above the list and only the compact batch actions
+            // stay at the bottom — one strip is never overloaded.
+            if selection.isActive {
+                InlineConversationSelectionHeader(
+                    model: selection,
+                    visibleIDs: { Set(viewModel.filteredConversations.map(\.id)) }
+                )
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if selection.isActive {
-                InlineConversationSelectionBar(
+                InlineConversationSelectionActionBar(
                     model: selection,
                     center: viewModel.center,
-                    visibleIDs: { Set(viewModel.filteredConversations.map(\.id)) },
-                    selectedItems: { selectedItems }
+                    selectedItems: { selectedItems },
+                    onRename: { conversationID in
+                        if let record = viewModel.conversations.first(where: { $0.id == conversationID }) {
+                            renameTarget = record
+                        }
+                    },
+                    moveTargets: { inlineMoveTargets() },
+                    onMove: { conversationID, workspaceID in
+                        Task {
+                            do {
+                                try await viewModel.center.moveConversation(
+                                    id: conversationID, to: workspaceID)
+                            } catch {
+                                viewModel.actionError = error.localizedDescription
+                            }
+                        }
+                    }
                 )
             }
         }
@@ -80,6 +112,11 @@ struct ConversationListView: View {
         } message: { Text(viewModel.actionError ?? "") }
         .sheet(isPresented: $presentsArchive) {
             NavigationStack { ArchivedConversationsView(center: viewModel.center) }
+        }
+        .sheet(item: $renameTarget) { conversation in
+            ChatConversationRenameSheet(conversation: conversation) { title in
+                try await viewModel.center.renameConversation(id: conversation.id, title: title)
+            }
         }
         .alert("app.floe_agent_app.delete_task", isPresented: Binding(
             get: { pendingDeletion != nil },
@@ -148,12 +185,15 @@ struct ConversationListView: View {
         .disabled(selection.busy)
     }
 
-    /// One row. Outside selection: tap opens the thread and the normal
-    /// swipe actions stay. Inside selection: the leading circle shows the
-    /// state, tap toggles it and conflicting swipe actions are hidden. A
-    /// long press ALWAYS enters the inline selection here — never a
-    /// management sheet — and the recognized gesture consumes the release,
-    /// so the row does not also navigate.
+    /// One row. An ORDINARY row shows no circles: a long press opens the
+    /// NATIVE context menu (Pin/Unpin, Rename, Move, Multi-select, Archive,
+    /// Delete) and never enters selection directly; only Multi-select
+    /// activates the inline circles HERE and selects this row. Inside the
+    /// mode a tap toggles the circle without navigating (the row is a plain
+    /// Button branch — the router is untouched), the menu and the conflicting
+    /// swipe actions are hidden, and Done restores the ordinary rows. The
+    /// explicit iPad selection highlight on the open conversation keeps
+    /// meaning "open" and is never used as a checkbox.
     @ViewBuilder
     private func conversationRow(_ conversation: ConversationRecord) -> some View {
         let row = Button {
@@ -184,7 +224,10 @@ struct ConversationListView: View {
         .accessibilityHint("chat.open.hint")
         .accessibilityIdentifier("chat.row.\(conversation.id.uuidString)")
         .inlineSelectionRowTraits(model: selection, conversationID: conversation.id)
-        .inlineSelectionLongPress(conversationID: conversation.id, model: selection)
+        .conversationRowContextMenu(
+            selectionModel: selection,
+            actions: rowMenuActions(conversation)
+        )
 
         if selection.isActive {
             row
@@ -201,6 +244,58 @@ struct ConversationListView: View {
                         pendingDeletion = conversation
                     } label: { Label("workspace.workspace_canvas_view.delete", systemImage: "trash") }
                 }
+        }
+    }
+
+    /// The row menu's actions, all on the EXISTING durable commands: the
+    /// center's pin (schema v55 row column), the shared rename validation,
+    /// explicit ownership migration, and the same single-task archive /
+    /// delete paths the swipe actions use. Multi-select is the only
+    /// selection entry.
+    private func rowMenuActions(_ conversation: ConversationRecord) -> ConversationRowMenuActions {
+        ConversationRowMenuActions(
+            isPinned: conversation.pinnedAt != nil,
+            onPinToggle: {
+                let pinNext = conversation.pinnedAt == nil
+                Task {
+                    do {
+                        try await viewModel.center.setConversationPinned(
+                            id: conversation.id, pinned: pinNext)
+                    } catch {
+                        viewModel.actionError = error.localizedDescription
+                    }
+                }
+            },
+            onRename: {
+                renameTarget = conversation
+            },
+            moveTargets: { inlineMoveTargets() },
+            onMove: { workspaceID in
+                Task {
+                    do {
+                        try await viewModel.center.moveConversation(
+                            id: conversation.id, to: workspaceID)
+                    } catch {
+                        viewModel.actionError = error.localizedDescription
+                    }
+                }
+            },
+            onMultiSelect: {
+                selection.startMultiSelect(with: conversation.id)
+            },
+            onArchive: {
+                Task { await viewModel.archive(conversation) }
+            },
+            onDelete: {
+                pendingDeletion = conversation
+            }
+        )
+    }
+
+    /// Same project workspaces the sidebar move menu offers.
+    private func inlineMoveTargets() -> [InlineMoveTarget] {
+        viewModel.center.environment.workspaceCenter.projectWorkspaces.map {
+            InlineMoveTarget(id: $0.id, name: $0.name)
         }
     }
 
@@ -357,6 +452,54 @@ struct ArchivedConversationsView: View {
         for id in ids { try? await center.deleteConversation(id: id) }
         selection.removeAll()
         await load()
+    }
+}
+
+/// Chat-list rename sheet for the corrected row menu / single-selection
+/// rename. Same registered keys and validation as the sidebar's rename
+/// sheet; the durable command is the center's existing `renameConversation`
+/// (trim, non-empty, 120-char cap, manual-title origin).
+private struct ChatConversationRenameSheet: View {
+    let conversation: ConversationRecord
+    let save: (String) async throws -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var errorMessage: String?
+    @State private var isSaving = false
+
+    init(conversation: ConversationRecord, save: @escaping (String) async throws -> Void) {
+        self.conversation = conversation
+        self.save = save
+        _title = State(initialValue: conversation.title)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("app.floe_agent_app.task_name", text: $title)
+                if let errorMessage {
+                    Text(errorMessage).foregroundStyle(FloeTheme.destructive)
+                }
+            }
+            .navigationTitle("app.floe_agent_app.rename_task")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("action.cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("action.save") {
+                        Task {
+                            isSaving = true
+                            defer { isSaving = false }
+                            do { try await save(title); dismiss() }
+                            catch { errorMessage = error.localizedDescription }
+                        }
+                    }
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

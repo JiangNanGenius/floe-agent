@@ -39,7 +39,7 @@ struct ProfessionalSearchPolicyTests {
         }
     }
 
-    @Test("Professional-only setup is ordinary-ready but not temporary/fast-chat-ready")
+    @Test("Professional-only setup is ordinary-ready but not temporary-ready")
     func professionalOnlyReadiness() throws {
         let (defaults, suite) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -60,10 +60,6 @@ struct ProfessionalSearchPolicyTests {
         #expect(ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: descriptors(), webSearchAvailable: publicAvailability
         ) == ["web.fetch"])
-        #expect(ConversationCenter.chatToolCeiling(
-            offeredDescriptors: descriptors(), hasResourceContext: false,
-            webSearchAvailable: publicAvailability
-        ) == ["web.fetch"])
         let frozen = ProfessionalSearchAuthority.freeze(
             registry: registry, allowedToolNames: ["web.search"]
         )
@@ -81,8 +77,7 @@ struct ProfessionalSearchPolicyTests {
     }
 
     @Test("Public-provider-only readiness keeps the ordinary and restricted web source")
-    func publicProviderReadiness() throws {
-        let (defaults, suite) = try makeDefaults()
+    func publicProviderReadiness() throws {        let (defaults, suite) = try makeDefaults()
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set(try JSONEncoder().encode([
             WebSearchProviderInstance(configuration: WebSearchProviderConfiguration(
@@ -110,10 +105,6 @@ struct ProfessionalSearchPolicyTests {
         #expect(ConversationCenter.temporaryToolCeiling(
             offeredDescriptors: descriptors(), webSearchAvailable: publicAvailability
         ) == ["web.search", "web.fetch"])
-        #expect(ConversationCenter.chatToolCeiling(
-            offeredDescriptors: descriptors(), hasResourceContext: false,
-            webSearchAvailable: publicAvailability
-        ) == ["web.search", "web.fetch"])
         let note = WebSearchSettingsCenter.runtimeProviderNote(
             defaults: defaults, cloudData: { _ in nil },
             frozenProfessionalAccounts: []
@@ -122,14 +113,13 @@ struct ProfessionalSearchPolicyTests {
         #expect(note?.contains("source=professional") == false)
     }
 
-    @Test("Restricted run surfaces and explicit task limits deny native professional authority")
+    @Test("Professional search follows actual provider eligibility: chat mode and read-only tasks stay eligible")
     func runSurfaceAndTaskPolicyEligibility() {
         let policy = TaskPolicy(conversationID: UUID())
         func eligible(
             surface: AgentRunSurface = .ordinary,
             notes: Bool = false,
             temporary: Bool = false,
-            fast: Bool = false,
             mode: ConversationMode = .goal,
             tools: Bool = true,
             local: Bool = false,
@@ -137,7 +127,7 @@ struct ProfessionalSearchPolicyTests {
         ) -> Bool {
             ConversationCenter.allowsNativeProfessionalSearch(
                 runSurface: surface, isNotesAssistant: notes,
-                isTemporary: temporary, chatFastMode: fast,
+                isTemporary: temporary,
                 conversationMode: mode, toolsEnabled: tools,
                 isLocalProvider: local, taskPolicy: taskPolicyOverride ?? policy
             )
@@ -146,7 +136,10 @@ struct ProfessionalSearchPolicyTests {
         #expect(!eligible(surface: .canvas))
         #expect(!eligible(notes: true))
         #expect(!eligible(temporary: true))
-        #expect(!eligible(fast: true))
+        // Ordinary chat (fast mode) keeps the ordinary toolchain, so native
+        // professional search follows the real provider/account eligibility
+        // there — chat mode itself is not a denial reason.
+        #expect(eligible(mode: .chat))
         #expect(!eligible(mode: .plan))
         #expect(!eligible(tools: false))
         #expect(!eligible(local: true))

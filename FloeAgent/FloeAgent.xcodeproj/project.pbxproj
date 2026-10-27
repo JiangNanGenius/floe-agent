@@ -30,9 +30,9 @@
 		075390C32FF78D04726E9561 /* MemoryDreamService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16D569760F69C04D0B6C33D1 /* MemoryDreamService.swift */; };
 		075A235F5E11F029668790EC /* ProviderCatalogPickerUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 879216097372B853E89FDB18 /* ProviderCatalogPickerUITests.swift */; };
 		0784641B328CB46A8B5EACC7 /* TaskScheduleShortcutImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE7DAB4837F85E54940265A8 /* TaskScheduleShortcutImport.swift */; };
+		07C5687BA907D75D99A298A3 /* SkillHubDownloadPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C2A8AE2B3550AC83DD67B28 /* SkillHubDownloadPanel.swift */; };
 		07D1C1304E9448BD34727FE9 /* OfficeConflictReviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC5A01D009413E26CBFDA461 /* OfficeConflictReviewView.swift */; };
 		081AB4E3CD40268786B80D92 /* DocumentIntakeQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C0BB36E038F6A370EFFC4D /* DocumentIntakeQueue.swift */; };
-		08363E980AAE4BDE9494653F /* ChatToolPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76BFA47BF70BE91FF29C83E9 /* ChatToolPolicyTests.swift */; };
 		089D513D837438C091ED08A0 /* FloeModels in Frameworks */ = {isa = PBXBuildFile; productRef = 6D3CC5A66BC37258D46FDF3D /* FloeModels */; };
 		08B106CE2C6C44108F1B69F1 /* SharedDocumentsEnumerators.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE092FD8EFF04B542E4175BC /* SharedDocumentsEnumerators.swift */; };
 		08C1D1CFB085F7933B03B84F /* FloeWorkspace in Frameworks */ = {isa = PBXBuildFile; productRef = 88998EEAC884C7033D8C41A8 /* FloeWorkspace */; };
@@ -95,6 +95,7 @@
 		15B44FA2338F7B0D1F4B42B1 /* ZIPFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = 1056BCC717D138D80173BA80 /* ZIPFoundation */; };
 		15CEAE20B9B55FA1F532F3FA /* SpeechOutputSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D265E7DCF1B31E651EBE564 /* SpeechOutputSource.swift */; };
 		15D7B36ED59F3539ABF68CC1 /* SelectedScheduleTerminalRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF1CA2FC02248FE6E61833DB /* SelectedScheduleTerminalRecoveryTests.swift */; };
+		15FD0B19A17416B532515B1E /* VoiceComposerOverflowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 531F432D9B01CB5CCA96444E /* VoiceComposerOverflowUITests.swift */; };
 		16803A444C43C3B228DB9373 /* EnvironmentManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 708D6B2D7B29C76527311E41 /* EnvironmentManagerView.swift */; };
 		170790C2DB0ABA058CBB6933 /* DesignLaunchBinding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50975D63E9A04367A6DFFB0A /* DesignLaunchBinding.swift */; };
 		1757E635A68CC4F02FEE012B /* CanvasGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 615A8177FD0D62C875B5688B /* CanvasGeometry.swift */; };
@@ -232,6 +233,7 @@
 		39F33A581D2377864245D577 /* ExternalWorkspaceTemplateAccessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09CB04D2BFAC5929E4265F1F /* ExternalWorkspaceTemplateAccessTests.swift */; };
 		39F9E370BC686FEDAF1C417A /* SpeechOwnershipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D162E5E29F6CF538F4DF1C9D /* SpeechOwnershipTests.swift */; };
 		3A0CA01CD5672CE72E217281 /* StorageAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3916B4FC6B84026774CE957D /* StorageAccountingTests.swift */; };
+		3A5501121DE5B8D439A5EAFD /* SkillHubStoreFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 664CC843DF66F4FFD04F43B4 /* SkillHubStoreFlowTests.swift */; };
 		3AAA2FF10AA7144B162F4518 /* SkillSourceTrackingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00688BD7C875E6C301B76B2 /* SkillSourceTrackingTests.swift */; };
 		3ACBDB1D694AE9818F8CDAD0 /* TextReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DD836F861D74C157E9767B2 /* TextReaderView.swift */; };
 		3B2190A142F0E3D577C2A39E /* BrowserImpeccableContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27EF4CDD101A4ED13AE81955 /* BrowserImpeccableContract.swift */; };
@@ -325,6 +327,7 @@
 		51E246BAF1FC416B068AE89A /* OfficeDocumentRegionToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 537B99D492711ED2A524DA40 /* OfficeDocumentRegionToolTests.swift */; };
 		51FC0B9E3FDE98C725F6BA0E /* ConversationListViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66624FE4F8480041F7602716 /* ConversationListViewModel.swift */; };
 		51FCF6A6E9D5A4E1D002B085 /* WhisperBackgroundSettlementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 209B4249A3D9111ED822E5C0 /* WhisperBackgroundSettlementTests.swift */; };
+		5227A418C636607C4CDD3590 /* SkillHubDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F54E8FF596A5BEFDA5413033 /* SkillHubDetailView.swift */; };
 		52A8476FF309A8252EB8AEC2 /* IDEGitHubActionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEE385662E04046A5263BBC8 /* IDEGitHubActionsTests.swift */; };
 		5342A8949FA00D4BA29C79D5 /* ContinuousVoicePresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E86A8E54493DBC09A0A8BD0 /* ContinuousVoicePresentation.swift */; };
 		538AD6B7D9C4176AC052D2CA /* PiPAmbientDeepBlue.wav in Resources */ = {isa = PBXBuildFile; fileRef = 78EAFE2944E0A80DBAAA4EED /* PiPAmbientDeepBlue.wav */; };
@@ -416,6 +419,7 @@
 		6848F057C5F33AAEB90B9CFD /* ConversationVoiceInterfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = F492A5F0A9E9A27FBE0DCF7A /* ConversationVoiceInterfaces.swift */; };
 		68EE6E280767323E7DF96992 /* FloeScheduledTask.shortcut in Resources */ = {isa = PBXBuildFile; fileRef = DD88049CD81D3B84B9C9D876 /* FloeScheduledTask.shortcut */; };
 		6973F414B96F2DD9372BF007 /* LinuxGuestImageDownloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56FD58BBA3D4A7B8FB00AE0F /* LinuxGuestImageDownloader.swift */; };
+		69DDFBBEC2BC876E27209E27 /* ConversationPinningStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDA939E3191C24211B369E20 /* ConversationPinningStoreTests.swift */; };
 		69F334E18B84CA6FFD5E3771 /* DesignCapabilityProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0769785EB89BCD9F9F7ED776 /* DesignCapabilityProbe.swift */; };
 		69F6C1D3E373A17388772DDB /* TaskScheduleAutomationBadgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEF80AF5A3555323D0D06EA1 /* TaskScheduleAutomationBadgeTests.swift */; };
 		69FAA600F280DC8AA5A9808A /* OfficeSimulatorStageUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F6C522E2812A592828A4CF4 /* OfficeSimulatorStageUITests.swift */; };
@@ -467,6 +471,7 @@
 		7770D9896AEA0BF64CF25598 /* MemoryCancellationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D00122BB0FA97DFB947886 /* MemoryCancellationTests.swift */; };
 		784FA7A7965AAE2F946434AD /* CADWorkbenchHostUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43D7F54EF158BB08BE04D76A /* CADWorkbenchHostUITests.swift */; };
 		78DAD1CF36BCF4D29B0B1DA6 /* SkillDependencyPreparationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 765EA911CA0A8A2DD55660F9 /* SkillDependencyPreparationTests.swift */; };
+		7941E639437F5858EA467902 /* SidebarSelectionUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25274B57F5AD43F1127A406 /* SidebarSelectionUITests.swift */; };
 		79513D3F13F2694F56459286 /* MossTTSNano in Frameworks */ = {isa = PBXBuildFile; productRef = EE62AE60895CE30400FEC899 /* MossTTSNano */; };
 		7953AFC1E2B30BB419F8EEFE /* TaskLifecycleUITestFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86C1C1314602F9C1DD0216E /* TaskLifecycleUITestFixture.swift */; };
 		79856E280D985CD5273E8C86 /* FloeSystemAlarmLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FD0ADD86371FED943DCDBBF /* FloeSystemAlarmLiveActivity.swift */; };
@@ -524,6 +529,7 @@
 		88B730D8D33C92B2D1F5A906 /* StepGroupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE1EE021FED26EBFA80248B6 /* StepGroupView.swift */; };
 		88CD26485537E8F12630A635 /* OfficeAutomaticApplyToolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9D075DF79A74BDC388FCE00 /* OfficeAutomaticApplyToolTests.swift */; };
 		88CDE2E5D7360F030FA978B3 /* WorkbenchEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96B20E630A7185A0F5A14CD8 /* WorkbenchEnvironment.swift */; };
+		8926C5A5ADFF912D91E22B0E /* SkillHubInstallService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46FEF7A1F2D0B57C904F716 /* SkillHubInstallService.swift */; };
 		896228729C07DED7D28B1630 /* IDELanguageRunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B4C5A9025E3F2EFAD8D1CE6 /* IDELanguageRunView.swift */; };
 		89B023C074580181D49D192A /* ModelPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADE9E409B66EBC3967853B86 /* ModelPickerView.swift */; };
 		8A12DCCAD1C2D0AF155AC58E /* FloeSingleFlightGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F5196726B82CC4C5130AA12 /* FloeSingleFlightGate.swift */; };
@@ -820,6 +826,7 @@
 		D3D5EBC6A047C138E29DBEA8 /* DesignConversationPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A49DFFCC64085B95DA548BC0 /* DesignConversationPageView.swift */; };
 		D3EBC3F17EF417A23E63C56B /* FloeShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 3BAA7AD6EAE3979E983C9E76 /* FloeShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		D49729B8CD03335BB94C01AA /* KimiImageProviderPresetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD960B82A1A158F5A290D89F /* KimiImageProviderPresetTests.swift */; };
+		D4C7B51FAE5BCCAAA61B7F1B /* ContextTimeLocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3D8A69270B4286B0BF70F23 /* ContextTimeLocationTests.swift */; };
 		D5C613D8019900C3017BCF44 /* SyncControlPreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABFA842B4702F6F267A0E803 /* SyncControlPreferencesTests.swift */; };
 		D5E9D224CB632D019CE62E39 /* BackgroundWorkSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28EF4AA2A9E00F7D8E744902 /* BackgroundWorkSessionTests.swift */; };
 		D674048A581E869B1F37D991 /* CreativeDesignStartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFA29AB69117AD72CBDC3A8B /* CreativeDesignStartView.swift */; };
@@ -862,6 +869,7 @@
 		E191A7C8EB1354CD5A9BCD75 /* FloeShortcutsInitializationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CB5FF8ADE2A5CCD3D40B809 /* FloeShortcutsInitializationTests.swift */; };
 		E265A571C1D59164FE486335 /* RemoteSharedSkillsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F51A9C6F9B16BF1EBEC57B3 /* RemoteSharedSkillsView.swift */; };
 		E2667D676B12957E2787BD59 /* FilesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00969624B0A954308417634B /* FilesViewModel.swift */; };
+		E26C77FB5ACCFD2F5EAF036B /* SkillHubDiscoveryUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2554D39A48C77A22DEE46D /* SkillHubDiscoveryUITests.swift */; };
 		E28CF9438A445A3211CA0B98 /* LocalLinuxTerminalRealVMTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A215E12AB436586E9B2DE7A4 /* LocalLinuxTerminalRealVMTests.swift */; };
 		E2A306D0563A8BB30FA8E380 /* LocalPreviewServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 219CD6341FB443743691F92D /* LocalPreviewServer.swift */; };
 		E2D2BDB4FA66151CCC91F7D0 /* ThreadTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8B270D611B66EBCE12B3968 /* ThreadTimeline.swift */; };
@@ -877,6 +885,7 @@
 		E71BE9B97FA13949E2682E98 /* OrdinaryDocumentActionProfileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B08D7F804AC733A0DBC93AA4 /* OrdinaryDocumentActionProfileTests.swift */; };
 		E7554CB9EB51843F8FBFC5D2 /* IDEActivityBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B25959E4F8222EDB001D367 /* IDEActivityBar.swift */; };
 		E7714C611FD72ED8D0163675 /* CredentialSyncMigrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFF793644F0E79A188CB7A31 /* CredentialSyncMigrationTests.swift */; };
+		E78C19AD662EFF88057A7A2B /* ConversationPinningTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46E78391747BFD6635FF00A /* ConversationPinningTests.swift */; };
 		E7F2B9E23C0AB5DFBA8A8223 /* GuestRuntimeAssembly.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC330B4DFDA361217E319768 /* GuestRuntimeAssembly.swift */; };
 		E835F7180E59CE5B63D9A4A8 /* CodeBlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CD1B5E050E9A7C4092CBB5 /* CodeBlockView.swift */; };
 		E83831BA420D82099D0BED03 /* InlineConversationSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CFA40B7279427D969F5B0CB /* InlineConversationSelection.swift */; };
@@ -1223,6 +1232,7 @@
 		2B7ED13E8B700DF4CDE979AD /* ToolDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolDiscoveryTests.swift; sourceTree = "<group>"; };
 		2B9C5090578CF227D170098C /* LocalSpeechModelStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSpeechModelStoreTests.swift; sourceTree = "<group>"; };
 		2BCB2AF610435402F4FD408B /* OfficePrintCopyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficePrintCopyTests.swift; sourceTree = "<group>"; };
+		2C2A8AE2B3550AC83DD67B28 /* SkillHubDownloadPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubDownloadPanel.swift; sourceTree = "<group>"; };
 		2C4FE642486885CDD514009A /* ImportantFileShortcutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportantFileShortcutTests.swift; sourceTree = "<group>"; };
 		2CA3163CD02BDC8D4255197F /* IDEWorkspaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IDEWorkspaceTabs.swift; sourceTree = "<group>"; };
 		2CB02CACBA3CCB3E8E8A8311 /* OfficeWorkbookCellCreationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeWorkbookCellCreationTests.swift; sourceTree = "<group>"; };
@@ -1377,6 +1387,7 @@
 		52D9BCACE744F05C27341A43 /* HomeChatSeparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChatSeparationTests.swift; sourceTree = "<group>"; };
 		52EAF0302B89FA6FFFD6A697 /* HostKeyTrustSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostKeyTrustSheet.swift; sourceTree = "<group>"; };
 		531772E03835546E29F3B7DF /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
+		531F432D9B01CB5CCA96444E /* VoiceComposerOverflowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceComposerOverflowUITests.swift; sourceTree = "<group>"; };
 		533B35B37CF7B7268AEB05B9 /* FeedbackReportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackReportView.swift; sourceTree = "<group>"; };
 		5369FD272644A35E60E42386 /* NotesDocumentTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesDocumentTabs.swift; sourceTree = "<group>"; };
 		537B99D492711ED2A524DA40 /* OfficeDocumentRegionToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeDocumentRegionToolTests.swift; sourceTree = "<group>"; };
@@ -1438,6 +1449,7 @@
 		654F2096179E6443AC45B1F5 /* SkillHubAppBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubAppBridge.swift; sourceTree = "<group>"; };
 		657CA0170579444D3F779F33 /* ChatAttachmentOpenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatAttachmentOpenTests.swift; sourceTree = "<group>"; };
 		661B0EF976FE62AE65B7537A /* LocalServiceTool.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalServiceTool.swift; sourceTree = "<group>"; };
+		664CC843DF66F4FFD04F43B4 /* SkillHubStoreFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubStoreFlowTests.swift; sourceTree = "<group>"; };
 		66624FE4F8480041F7602716 /* ConversationListViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationListViewModel.swift; sourceTree = "<group>"; };
 		669D4D581CE25AD46AF69F67 /* SpeechOutputSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechOutputSourceTests.swift; sourceTree = "<group>"; };
 		6704E2791094659EB11FBB09 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -1485,7 +1497,6 @@
 		75EC88BFEA8FB7EA6A2E1D8D /* FloeTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloeTheme.swift; sourceTree = "<group>"; };
 		760ECB0E6B01EA7AC99B8744 /* NetworkStatusMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkStatusMonitor.swift; sourceTree = "<group>"; };
 		765EA911CA0A8A2DD55660F9 /* SkillDependencyPreparationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillDependencyPreparationTests.swift; sourceTree = "<group>"; };
-		76BFA47BF70BE91FF29C83E9 /* ChatToolPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatToolPolicyTests.swift; sourceTree = "<group>"; };
 		7717DA306D84D0D348202E29 /* ConversationVoiceTurnDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationVoiceTurnDriver.swift; sourceTree = "<group>"; };
 		7846CD1BBE3A01E9CFE5CDFE /* LocalSkillCreator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalSkillCreator.swift; sourceTree = "<group>"; };
 		7858BFEF9F60D96BAA0E621E /* Whisper */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Whisper; path = FloeApp/Resources/Whisper; sourceTree = SOURCE_ROOT; };
@@ -1728,6 +1739,8 @@
 		B411EDF873B55072F23B97F0 /* FileInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorView.swift; sourceTree = "<group>"; };
 		B433C2002563758FD2C20D28 /* SkillRuntimeDependencyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillRuntimeDependencyTests.swift; sourceTree = "<group>"; };
 		B46932D248DEB95A5975790A /* ImportDestinationCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImportDestinationCenter.swift; sourceTree = "<group>"; };
+		B46E78391747BFD6635FF00A /* ConversationPinningTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPinningTests.swift; sourceTree = "<group>"; };
+		B46FEF7A1F2D0B57C904F716 /* SkillHubInstallService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubInstallService.swift; sourceTree = "<group>"; };
 		B506E531228784E598D7DEC2 /* ComposerOverflowRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerOverflowRegressionTests.swift; sourceTree = "<group>"; };
 		B52255258EA1EE476256544E /* DocumentExportServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentExportServiceTests.swift; sourceTree = "<group>"; };
 		B536F4DA6282AE9A983C8498 /* RemoteImageUnavailableView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteImageUnavailableView.swift; sourceTree = "<group>"; };
@@ -1878,6 +1891,7 @@
 		DD56C9FD834083C232613E7B /* ManagedPythonPackageInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedPythonPackageInspectorTests.swift; sourceTree = "<group>"; };
 		DD88049CD81D3B84B9C9D876 /* FloeScheduledTask.shortcut */ = {isa = PBXFileReference; path = FloeScheduledTask.shortcut; sourceTree = "<group>"; };
 		DD90CEEA4320683846571263 /* AgentModelSelectionResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentModelSelectionResolver.swift; sourceTree = "<group>"; };
+		DDA939E3191C24211B369E20 /* ConversationPinningStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPinningStoreTests.swift; sourceTree = "<group>"; };
 		DE4A05DEA6026A0D2B0B79DF /* OfficeNativeAutomaticExecutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeNativeAutomaticExecutionTests.swift; sourceTree = "<group>"; };
 		DE7D9B197F8A707329E5EF4A /* CalendarOccurrenceIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CalendarOccurrenceIdentityTests.swift; sourceTree = "<group>"; };
 		DE86794829F35622F77D0A95 /* OfficeTouchQualificationProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeTouchQualificationProbe.swift; sourceTree = "<group>"; };
@@ -1936,6 +1950,7 @@
 		EC1E9EC5FF07FB15909621BE /* BackgroundJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundJobTests.swift; sourceTree = "<group>"; };
 		EC43F05A112AC475A073FDFB /* SilentSpeechPlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SilentSpeechPlaybackTests.swift; sourceTree = "<group>"; };
 		EC728ADED0A9BA021575550A /* RunOutputTransportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunOutputTransportTests.swift; sourceTree = "<group>"; };
+		ED2554D39A48C77A22DEE46D /* SkillHubDiscoveryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubDiscoveryUITests.swift; sourceTree = "<group>"; };
 		ED3BF697D18546CF27232342 /* BrowserImpeccableProducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserImpeccableProducer.swift; sourceTree = "<group>"; };
 		EDE1BD6032424B1BDDC631C7 /* OfficeExplicitTargetAppTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeExplicitTargetAppTests.swift; sourceTree = "<group>"; };
 		EE32851919961BD7F25EBFF4 /* TemporaryReadOnlyRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemporaryReadOnlyRuntimeTests.swift; sourceTree = "<group>"; };
@@ -1953,12 +1968,15 @@
 		F154C825E0923E5172D956C7 /* FeedbackTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedbackTokenStore.swift; sourceTree = "<group>"; };
 		F208E2FD680BDF6761B18C22 /* ComposerOverflowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerOverflowUITests.swift; sourceTree = "<group>"; };
 		F23CC877DDE2D9D12D3E0DBC /* SkillWorkspaceInstallToolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillWorkspaceInstallToolTests.swift; sourceTree = "<group>"; };
+		F25274B57F5AD43F1127A406 /* SidebarSelectionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSelectionUITests.swift; sourceTree = "<group>"; };
 		F2C540C2E6BB473445CBC494 /* FloeWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FloeWidgets.entitlements; sourceTree = "<group>"; };
 		F377823D3646BCC3D7217DE9 /* ChildRunPayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChildRunPayloadTests.swift; sourceTree = "<group>"; };
 		F3CCD67C30536BD99F824F2C /* ShareIntakeCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareIntakeCenter.swift; sourceTree = "<group>"; };
+		F3D8A69270B4286B0BF70F23 /* ContextTimeLocationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextTimeLocationTests.swift; sourceTree = "<group>"; };
 		F45D36BF6CCD7DE422A618F0 /* ComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerTests.swift; sourceTree = "<group>"; };
 		F492A5F0A9E9A27FBE0DCF7A /* ConversationVoiceInterfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationVoiceInterfaces.swift; sourceTree = "<group>"; };
 		F499370272EB0BEEEA44D795 /* LibArchive.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = LibArchive.xcframework; path = Vendor/LibArchive/LibArchive.xcframework; sourceTree = "<group>"; };
+		F54E8FF596A5BEFDA5413033 /* SkillHubDetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkillHubDetailView.swift; sourceTree = "<group>"; };
 		F5E18D2CD25230D158008D8A /* WorkspaceIDEView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceIDEView.swift; sourceTree = "<group>"; };
 		F616C55F12A3CDA614BBFED0 /* OfficeRealEngineUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OfficeRealEngineUITests.swift; sourceTree = "<group>"; };
 		F69849D5B4E6C5701169D1F8 /* SharedDocumentsFileProviderItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedDocumentsFileProviderItem.swift; sourceTree = "<group>"; };
@@ -2227,6 +2245,8 @@
 				183A97BE093D68D231492DC7 /* RemoteImageInspectToolTests.swift */,
 				725BE47119CCC3DF63FC2881 /* SetupGuideUITests.swift */,
 				DC65B816FEB4D02B972AE2DC /* ShellCoreUtilityTests.swift */,
+				F25274B57F5AD43F1127A406 /* SidebarSelectionUITests.swift */,
+				ED2554D39A48C77A22DEE46D /* SkillHubDiscoveryUITests.swift */,
 				3453A73FCC9986445D9D3949 /* SkillLifecycleTests.swift */,
 				1F00FE870F600026D4457980 /* StorageDataManagementUITests.swift */,
 				2E47EC0D4490B49AD44060DE /* SyncSettingsUITests.swift */,
@@ -2237,6 +2257,7 @@
 				8B08660C290B434D4D59DC2E /* TerminalPollCadenceTests.swift */,
 				6CF6ABBBF0C1CC1845F5CA5B /* TextReaderUITests.swift */,
 				FF07847A2353D846B363915C /* ThreadTimelineTests.swift */,
+				531F432D9B01CB5CCA96444E /* VoiceComposerOverflowUITests.swift */,
 				18C94A3850D88CA96343408E /* VoiceInputControllerTests.swift */,
 				9F8CF8AEDC1F7EF6F6413D1D /* WorkspaceIDEUITests.swift */,
 			);
@@ -2450,6 +2471,7 @@
 				AE00AF52C2BED7ED23F79257 /* ContinuousVoicePresentationTests.swift */,
 				E70339082D673C12BAC25E38 /* ContinuousVoiceRunDriverTests.swift */,
 				445859C8B4161698EE6F5106 /* ContinuousVoiceSpeechBridgeTests.swift */,
+				B46E78391747BFD6635FF00A /* ConversationPinningTests.swift */,
 				176486D5EC9F3771924E9E20 /* CreativeDestinationRouteTests.swift */,
 				8AFA175A385DE61D4830BF9D /* DefaultAskDocumentPolicyAppTests.swift */,
 				4B407869D6B20C61E00C30E0 /* DesignAdapterReopenTests.swift */,
@@ -2550,6 +2572,7 @@
 				4AEA9BFEA4BB48349F0F6A8C /* SkillAuthoringPackageTests.swift */,
 				9FFADE785CAAE02620042320 /* SkillDependencyGuestQualificationTests.swift */,
 				765EA911CA0A8A2DD55660F9 /* SkillDependencyPreparationTests.swift */,
+				664CC843DF66F4FFD04F43B4 /* SkillHubStoreFlowTests.swift */,
 				3735B4913841D43B7EF193FE /* SkillManagementSelectionTests.swift */,
 				931CDDB861F7EFCF1D74858E /* SkillOriginTests.swift */,
 				839EF9AF138C157F8722A392 /* SkillRuntimeComponentTests.swift */,
@@ -2629,6 +2652,7 @@
 				17A7A8B7BDFD357955631513 /* ChildRunPersistenceTests.swift */,
 				94E85B49344D2CF8C81020AE /* ChildRunResumeTests.swift */,
 				99CFF4252734BBEEE4706FC4 /* ChildToolDiscoveryTests.swift */,
+				F3D8A69270B4286B0BF70F23 /* ContextTimeLocationTests.swift */,
 				B976F65D3ADEEA233FB58C84 /* DependencyWaitTests.swift */,
 				F6C30FE60836D472C9A097BB /* DeterministicLocalApprovalRuntimeTests.swift */,
 				4A59619945E871C3F2F9F034 /* LocalRuntimeCurationTests.swift */,
@@ -2715,7 +2739,10 @@
 				E98968508572720EDB1137A1 /* SkillBatchSelection.swift */,
 				909E4582AA11AABA78776396 /* SkillDependencyPreparationCenter.swift */,
 				654F2096179E6443AC45B1F5 /* SkillHubAppBridge.swift */,
+				F54E8FF596A5BEFDA5413033 /* SkillHubDetailView.swift */,
 				001850994D0F91FF12458267 /* SkillHubDiscoveryView.swift */,
+				2C2A8AE2B3550AC83DD67B28 /* SkillHubDownloadPanel.swift */,
+				B46FEF7A1F2D0B57C904F716 /* SkillHubInstallService.swift */,
 				E93170C1D12076CD16FF1678 /* SkillRuntimeComponentCenter.swift */,
 				4C7A649C2A6EC1875B18948E /* SkillsCenter.swift */,
 				583BB494E657BD1BC7481C75 /* SkillsView.swift */,
@@ -3198,6 +3225,7 @@
 				C9678424ECB237AC56147C23 /* ChatPreferenceStoreTests.swift */,
 				F377823D3646BCC3D7217DE9 /* ChildRunPayloadTests.swift */,
 				5203FDB43E6298E75BE1E5C0 /* ChildRunStoreTests.swift */,
+				DDA939E3191C24211B369E20 /* ConversationPinningStoreTests.swift */,
 				51A5EBF050599F2BACC4F717 /* OfficialSkillVersionLedgerTests.swift */,
 				924803E7956ED286A1917E29 /* RunLifecycleRetentionTests.swift */,
 				E8D45D132E426973F9083EBA /* RunReplyReaderTests.swift */,
@@ -3256,7 +3284,6 @@
 		94556151A7D53995F9A3209D /* FloeToolsTests */ = {
 			isa = PBXGroup;
 			children = (
-				76BFA47BF70BE91FF29C83E9 /* ChatToolPolicyTests.swift */,
 				1E31DEE4E5396760EAB75F07 /* MCPRemoteToolSourceTests.swift */,
 				CA694D561B90FFD830CFEF59 /* TemporaryChatToolPolicyTests.swift */,
 				1E28316A7F5E8647F551B1AA /* ToolRunnerRegistryTests.swift */,
@@ -4574,7 +4601,10 @@
 				1A26E055886345F7511EF67A /* SkillDependencyPreparationCenter.swift in Sources */,
 				1BE8EAF7BEFC52CFA4846703 /* SkillDreamService.swift in Sources */,
 				5403A49327401CA247D65F9B /* SkillHubAppBridge.swift in Sources */,
+				5227A418C636607C4CDD3590 /* SkillHubDetailView.swift in Sources */,
 				9F763E1D25CBF9EA98876055 /* SkillHubDiscoveryView.swift in Sources */,
+				07C5687BA907D75D99A298A3 /* SkillHubDownloadPanel.swift in Sources */,
+				8926C5A5ADFF912D91E22B0E /* SkillHubInstallService.swift in Sources */,
 				A0F4ED3493ADF99F6C820A65 /* SkillRuntimeComponentCenter.swift in Sources */,
 				63BAAC6ABF2E920CCE3586C1 /* SkillUpdateCoordinator.swift in Sources */,
 				A497D9BEBB646BE337AB6D1A /* SkillWorkspaceInstaller.swift in Sources */,
@@ -4694,6 +4724,8 @@
 				075A235F5E11F029668790EC /* ProviderCatalogPickerUITests.swift in Sources */,
 				F362292CA55B5398F2BC7BD2 /* ProviderHotfixUITests.swift in Sources */,
 				912A144E85A4C312537582FC /* SetupGuideUITests.swift in Sources */,
+				7941E639437F5858EA467902 /* SidebarSelectionUITests.swift in Sources */,
+				E26C77FB5ACCFD2F5EAF036B /* SkillHubDiscoveryUITests.swift in Sources */,
 				80CC18DA42562A75DA3A2B8C /* StorageDataManagementUITests.swift in Sources */,
 				6045112F9A180B4BE2084A67 /* SyncSettingsUITests.swift in Sources */,
 				47621E346694BAC8DD590887 /* TaskBulkManagementUITests.swift in Sources */,
@@ -4701,6 +4733,7 @@
 				FEC2C05CD374B2984BB9419E /* TemporaryChatTests.swift in Sources */,
 				40B4046395A861BE8EEC37F1 /* TemporaryConversationUITests.swift in Sources */,
 				A7EAD761449EAB48868A05D2 /* TextReaderUITests.swift in Sources */,
+				15FD0B19A17416B532515B1E /* VoiceComposerOverflowUITests.swift in Sources */,
 				61AD095E7C541FFF41F7DBD8 /* WorkspaceIDEUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -4741,7 +4774,6 @@
 				BAB3D7E30C8CC97873826006 /* ChatModeRestorationTests.swift in Sources */,
 				63A686FAB484ABE9275DBF8F /* ChatPreferenceStoreTests.swift in Sources */,
 				F89132504695586DF8CCF3CA /* ChatReasoningTests.swift in Sources */,
-				08363E980AAE4BDE9494653F /* ChatToolPolicyTests.swift in Sources */,
 				2B52B528B310EC2BBD008080 /* ChildResultPagingIsolationTests.swift in Sources */,
 				33F4BE4172631C28613BFA46 /* ChildRunPayloadTests.swift in Sources */,
 				0412D9153FD15A02015A84CC /* ChildRunPersistenceTests.swift in Sources */,
@@ -4757,10 +4789,13 @@
 				724FC0D0669FF7441E8BAB10 /* ContentUpdateActionTests.swift in Sources */,
 				91EF544AB5F6A11102AF1996 /* ContentUpdateRealSignedFeedTests.swift in Sources */,
 				72F15BB25D642639C88FA6FA /* ContentUpdateStoreTests.swift in Sources */,
+				D4C7B51FAE5BCCAAA61B7F1B /* ContextTimeLocationTests.swift in Sources */,
 				EDBAC09D9DFB3805A5C11CEF /* ContinuousVoiceMicrophoneActivationTests.swift in Sources */,
 				1C8178D7E152DA84A1519F0F /* ContinuousVoicePresentationTests.swift in Sources */,
 				2428176C76B207AD370E55FC /* ContinuousVoiceRunDriverTests.swift in Sources */,
 				5BAA5A4ACE016FA6DF6D39E9 /* ContinuousVoiceSpeechBridgeTests.swift in Sources */,
+				69DDFBBEC2BC876E27209E27 /* ConversationPinningStoreTests.swift in Sources */,
+				E78C19AD662EFF88057A7A2B /* ConversationPinningTests.swift in Sources */,
 				A6C15214795012140B3AC46D /* CrashAndFeedbackRegressionTests.swift in Sources */,
 				F8DBE0266A9870E3784913D7 /* CreativeAssetIngestionTests.swift in Sources */,
 				460E3172C944226127594E5C /* CreativeDestinationRouteTests.swift in Sources */,
@@ -4960,6 +4995,7 @@
 				C3FBF1E304F1EFDB0A6288F3 /* SkillDependencyGuestQualificationTests.swift in Sources */,
 				78DAD1CF36BCF4D29B0B1DA6 /* SkillDependencyPreparationTests.swift in Sources */,
 				BD0889BAF700D072DD2CFF97 /* SkillDependencyTests.swift in Sources */,
+				3A5501121DE5B8D439A5EAFD /* SkillHubStoreFlowTests.swift in Sources */,
 				9AA2182E4070B18FFAB32526 /* SkillHubToolContractTests.swift in Sources */,
 				8B059AA187B9DAC4C1B3A2C4 /* SkillHubTransportBudgetTests.swift in Sources */,
 				CA014FF410250DD56A683A39 /* SkillLifecycleTests.swift in Sources */,
@@ -5177,7 +5213,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -5203,7 +5239,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -5234,7 +5270,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5245,7 +5281,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -5261,7 +5297,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5272,7 +5308,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -5346,7 +5382,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5357,7 +5393,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";
@@ -5392,7 +5428,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5403,7 +5439,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -5503,7 +5539,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeWidgets/FloeWidgets.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5514,7 +5550,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.widgets;
 				PRODUCT_MODULE_NAME = FloeWidgets;
 				PRODUCT_NAME = "Floe Widgets";
@@ -5533,7 +5569,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CODE_SIGN_ENTITLEMENTS = FloeApp/Entitlements/Floe.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -5559,7 +5595,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				"OTHER_LDFLAGS[sdk=iphoneos*]" = (
 					"-framework",
 					CPDFium,
@@ -5589,7 +5625,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeFileProvider/FloeFileProvider.entitlements;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5600,7 +5636,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.fileprovider;
 				PRODUCT_MODULE_NAME = FloeFileProvider;
 				PRODUCT_NAME = FloeFileProvider;
@@ -5616,7 +5652,7 @@
 				CODE_SIGN_ENTITLEMENTS = FloeScreenShare/FloeScreenShare.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Distribution";
 				CODE_SIGN_STYLE = Manual;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5627,7 +5663,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.screenshare;
 				PRODUCT_MODULE_NAME = FloeScreenShare;
 				PRODUCT_NAME = "Floe Screen Share";
@@ -5671,7 +5707,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = FloeShare/FloeShare.entitlements;
-				CURRENT_PROJECT_VERSION = 301;
+				CURRENT_PROJECT_VERSION = 302;
 				DEVELOPMENT_TEAM = QYL72C43K6;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -5682,7 +5718,7 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.7.60;
+				MARKETING_VERSION = 1.7.61;
 				PRODUCT_BUNDLE_IDENTIFIER = org.floeagent.ios.share;
 				PRODUCT_MODULE_NAME = FloeShare;
 				PRODUCT_NAME = "Floe Share";

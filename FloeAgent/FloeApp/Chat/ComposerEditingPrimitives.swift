@@ -25,6 +25,28 @@ enum ComposerSendKeyPolicy {
     }
 }
 
+/// Input-method guard for every mutation the composer layout applies to the
+/// live editing surface. An in-flight composition (marked text) belongs to
+/// the user's IME session: rewriting the text, swapping the font or
+/// reconfiguring the TextKit container (which is what an
+/// `isScrollEnabled` flip does) mid-composition can drop or corrupt the
+/// candidate run. Layout *reports* (the host's expand visibility) never
+/// touch the container and are never deferred; container/echo mutations
+/// are. The verdict measured during composition stays pending and lands
+/// the moment the composition commits.
+enum ComposerIMEPolicy {
+    /// True when the composer may replace live text or swap the font.
+    static func allowsTextReplacement(hasMarkedText: Bool) -> Bool {
+        !hasMarkedText
+    }
+
+    /// True when the composer may flip the field's inline/scroll layout
+    /// state. Deferred (not dropped) while an input method is composing.
+    static func allowsScrollTransition(hasMarkedText: Bool) -> Bool {
+        !hasMarkedText
+    }
+}
+
 /// Sizing rules for the growing composer field.
 enum ComposerFieldMetrics {
     /// Visible line budget before the field switches to internal

@@ -393,6 +393,191 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    // MARK: - Official catalog direct download (human Get, service-owned job)
+
+    /// Live and terminal hub download jobs keyed by catalog id. The center
+    /// owns the Task, so closing the panel or navigating away never stops a
+    /// job; a repeated Get tap reuses the same job. Published for the
+    /// hub chip, the download panel and the detail page.
+    @Published private(set) var hubInstallJobs: [String: SkillHubInstallJob] = [:]
+    private lazy var hubInstalls = SkillHubInstallCoordinator { [weak self] jobs in
+        self?.hubInstallJobs = jobs
+    }
+
+    /// True while any hub download job owns the single-writer store.
+    var hasLiveHubInstall: Bool { hubInstalls.jobs.values.contains { $0.isLive } }
+
+    /// The job the hub chip represents: a LIVE attempt wins; otherwise the
+    /// most recent retryable terminal job. Dictionary order must never
+    /// silently pick which failed job the user sees.
+    var hubChipJob: SkillHubInstallJob? {
+        if let live = hubInstalls.jobs.values.first(where: { $0.isLive }) { return live }
+        return hubInstalls.jobs.values.filter { $0.canRetry }
+            .max(by: { $0.startedAt < $1.startedAt })
+    }
+
+    /// Explicit human "Get" on the OFFICIAL signed audited catalog starts
+    /// the existing verified staging + install transaction directly as a
+    /// download job. The tap itself is the install consent for the verified
+    /// package's declared INTERNAL capability ceiling (user direction
+    /// 2026-10-27): a fresh audited entry installs through the same trusted
+    /// official path that already registers `installationGrants(declared:)`,
+    /// with NO generic full inspector detour. This is not a global review
+    /// bypass: an UPDATE that adds scope parks for a focused added-access
+    /// confirmation inside this job; a same-id row from another source is
+    /// refused; the model tool path (`installHubSkill` with its
+    /// ToolContext/approval grant) and external URL/GitHub/folder/creator
+    /// installs keep their EXISTING review flows untouched. Real
+    /// task/file/account/system permissions are unchanged — every side
+    /// effect still passes the normal per-run approval gates.
+    func requestHubInstall(id: String) {
+        guard let card = curatedCards.first(where: { $0.entry.id == id }) else {
+            errorMessage = FloeL10n.l("skills.hub.catalog_unavailable")
+            return
+        }
+        guard card.showsInstallAction else {
+            errorMessage = FloeL10n.l("skills.hub.unavailable")
+            return
+        }
+        let name = card.entry.name.value(preferredLanguages: Locale.preferredLanguages)
+        let decision = hubInstalls.request(skillID: id, displayName: name) { [weak self] context in
+            guard let self else { throw SkillUpgradeError.localConflict }
+            return try await self.runHubInstall(entryID: id, context: context)
+        }
+        if case .busyWithOther = decision {
+            errorMessage = FloeL10n.l("skills.operation.busy")
+        }
+    }
+
+    /// Request cancellation at the next stage boundary. A job parked at the
+    /// focused scope confirmation resolves as "not now" (nothing installs);
+    /// a job whose verified commit has already started completes honestly.
+    func cancelHubInstall(id: String) {
+        hubInstalls.cancel(skillID: id)
+    }
+
+    /// The focused added-scope decision inside the native panel/detail.
+    /// Only the current parked job is resolved; anything stale is a no-op.
+    func resolveHubScopeApproval(id: String, generation: Int, approved: Bool) {
+        guard let job = hubInstallJobs[id], job.generation == generation,
+              job.phase == .awaitingScopeApproval else { return }
+        hubInstalls.resolveScopeApproval(skillID: id, generation: job.generation, approved: approved)
+    }
+
+    /// Settles the in-flight pipeline of one entry (test/verification seam).
+    func settleHubInstall(id: String) async {
+        await hubInstalls.settle(skillID: id)
+    }
+
+    private func runHubInstall(entryID: String,
+                               context: SkillHubInstallCoordinator.PipelineContext) async throws -> SkillHubInstallOutcome {
+        func checkCancelled() throws {
+            if context.isCancelRequested() { throw CancellationError() }
+        }
+        context.report(.preparing, nil)
+        guard let publication = curatedPublication else {
+            throw SkillHubCatalogError.unavailable(FloeL10n.l("skills.hub.catalog_unavailable"))
+        }
+        // Re-verify the offer against the CURRENT signed publication; a
+        // revoked or drifted entry can never install from an old card.
+        guard let card = CuratedSkillHub.cards(feed: publication.feed, mode: .production, appVersion: appVersion)
+            .first(where: { $0.entry.id == entryID }),
+              card.showsInstallAction,
+              card.entry.status.published, card.entry.status.reviewed, card.entry.status.qualified
+        else {
+            throw SkillHubCatalogError.unavailable(FloeL10n.l("skills.hub.unavailable"))
+        }
+        checkCancelled()
+        let current = try await environment.skillStore.all().first { $0.id == entryID }
+        if let current, let proof = Self.curatedReceipt(for: current),
+           proof.contentDigest == current.rewrittenDigest,
+           origin(of: current) == .official,
+           availableVersion(for: current) == nil {
+            // Live row already carries the pinned publication content with
+            // nothing newer published: honest no-op, never a re-download.
+            return .alreadyInstalled
+        }
+        if let current,
+           Self.curatedReceipt(for: current)?.contentDigest != current.rewrittenDigest,
+           origin(of: current) != .official {
+            // A same-id row that cannot be proven official stays under its own
+            // reviewed flows; the hub Get never silently replaces it.
+            throw SkillHubValidationError.invalid(SkillHubCopy.existingOtherSource)
+        }
+        context.report(.downloading, nil)
+        let scratch = try await StorageCleanupLeaseCenter.shared.reserveLeasedScratchPath(purpose: "skills")
+        defer { try? FileManager.default.removeItem(at: scratch.url); scratch.lease.release() }
+        // Existing signed chain: exact archive size + sha256, canonical
+        // content digest, signed review-record join and the permission-delta
+        // computation all run inside `CuratedSkillHub.stage` unchanged.
+        let staged = try await stageCuratedPackage(publication, id: entryID, at: scratch.url)
+        checkCancelled()
+        context.report(.checking, nil)
+        try await requireCompatibility(staged.content.package)
+        try Self.validateDependencyDeclaration(in: staged.content)
+        let candidate: SkillUpgradeCandidate?
+        if let current {
+            let previous = try SkillContentSnapshot(root: installationRoot.appendingPathComponent(current.id),
+                expectedDigest: current.rewrittenDigest, manifestOverride: Self.sidecarManifest(for: current))
+            candidate = try staged.upgradeCandidate(installed: previous)
+        } else { candidate = nil }
+        // Pure consent gate on the verified delta: a fresh Get installs
+        // directly (the explicit tap already consents to the package's
+        // declared internal capability ceiling, registered by the same
+        // trusted official path); an UPDATE that ADDS scope is never
+        // silently bypassed and parks for the focused added-access
+        // confirmation instead of the generic inspector.
+        let decision = SkillHubConsentDecision.decide(
+            existingRow: current != nil,
+            permissionDeltaRequiresApproval: staged.permissionDelta.requiresCombinedApproval,
+            missingCapabilities: staged.permissionDelta.missingCapabilities,
+            missingTools: staged.permissionDelta.missingTools,
+            missingPackages: staged.permissionDelta.missingPythonPackageSpecs)
+        switch decision {
+        case .directFreshInstall, .directUpdate:
+            break
+        case .requiresScopeApproval(let addedCapabilities, let addedTools, let addedPackages):
+            let approved = await hubInstalls.requestScopeApproval(
+                context: context,
+                addedCapabilities: addedCapabilities,
+                addedTools: addedTools,
+                addedPackages: addedPackages)
+            guard approved else { throw CancellationError() }
+        }
+        checkCancelled()
+        context.report(.installing, nil)
+        // No await between the final boundary check and entering the existing
+        // commit flow: cancellation honestly cannot take effect mid-transaction.
+        checkCancelled()
+        guard !isWorking, !updates.isRunning, !packageMutationInProgress, !isBatchRunning,
+              pendingUpgrade == nil else { throw SkillUpgradeError.localConflict }
+        isWorking = true
+        defer { isWorking = false }
+        guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
+            throw SkillUpgradeError.invalidSource
+        }
+        if let candidate {
+            pendingCuratedUpgradeReceipt = staged.receipt
+            try await stageUpgradeForReview(candidate, at: scratch.url)
+            try await applyReviewedUpgradeCore()
+        } else {
+            try await installCanonicalPackage(at: scratch.url, sourceURL: sourceURL,
+                sourceDigest: staged.content.package.canonicalSHA256,
+                rewriteModelID: "hub-reviewed-" + publication.publicationCommit,
+                manifestOverride: staged.content.package.manifest, curatedReceipt: staged.receipt)
+        }
+        guard let committed = try await environment.skillStore.all().first(where: { $0.id == entryID }),
+              committed.rewrittenDigest == staged.receipt.contentDigest else { throw SkillUpgradeError.localConflict }
+        await load()
+        // A dependency-carrying package keeps the honest deferred ownership
+        // record: preparation runs when the skill first executes in a bound
+        // task environment. The job claims installed only — never "ready".
+        if staged.content.files[SkillDependency.packagePath] != nil {
+            _ = await dependencyPreparation?.prepareAtInstall(skillID: entryID, environmentID: nil, runID: nil, cancellation: nil)
+        }
+        return .installed
+    }
+
     @Published private(set) var catalogPackages: [String: OfficialSkillHub.Package] = [:]
     @Published private(set) var isCheckingCatalog = false
     @Published private(set) var catalogError: String?

@@ -470,7 +470,8 @@ struct MCPRemoteToolSourceTests {
         #expect(raw.descriptor.isSideEffecting)
         #expect(raw.descriptor.riskLabels == [.networkAccess, .modifiesRemoteSystem])
         #expect(!TemporaryChatToolPolicy.isReadOnlySafe(raw.descriptor))
-        #expect(!ChatToolPolicy.isAllowedName(legacyName))
+        #expect(TemporaryChatToolPolicy.denialReason(
+            descriptor: raw.descriptor, arguments: Data("{}".utf8)) != nil)
         let account = try #require(VolcengineProfessionalSearch.registeredInstances(
             registry: registry
         ).first { $0.serverID == config.id })
@@ -606,13 +607,9 @@ struct MCPRemoteToolSourceTests {
         let professional = Data(#"{"query":"q","source":"professional"}"#.utf8)
         #expect(TemporaryChatToolPolicy.denialReason(
             descriptor: base, arguments: professional) != nil)
-        #expect(ChatToolPolicy.denialReason(
-            descriptor: base, arguments: professional, resourceContext: nil) != nil)
         for json in [#"{"query":"q"}"#, #"{"query":"q","source":"web"}"#] {
             #expect(TemporaryChatToolPolicy.denialReason(
                 descriptor: base, arguments: Data(json.utf8)) == nil)
-            #expect(ChatToolPolicy.denialReason(
-                descriptor: base, arguments: Data(json.utf8), resourceContext: nil) == nil)
         }
     }
 

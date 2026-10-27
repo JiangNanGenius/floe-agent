@@ -835,9 +835,9 @@ struct ToolResultCaptureTests {
         #expect(section.contains(#""required":["path"]"#))
         // A fuzzy capability query must not pretend to be an exact schema hit.
         #expect(ToolDiscovery.exactNameMatches(["run a shell command"], descriptors: offered).isEmpty)
-        // The paging tool is offered in ordinary and scoped conversations.
-        for scoped in [true, false] {
-            let descriptors = ToolDiscovery.runtimeDescriptors(scopedConversation: scoped, publicWebOnly: scoped)
+        // The paging tool is offered in ordinary and temporary conversations.
+        for publicWebOnly in [true, false] {
+            let descriptors = ToolDiscovery.runtimeDescriptors(publicWebOnly: publicWebOnly)
             #expect(descriptors.map(\.name).contains(ToolResultPagingTool.name))
         }
     }

@@ -239,6 +239,13 @@ struct ThreadComposerView: View {
     /// Only then is the full-editor control worth a row slot: a short
     /// prompt keeps the input calm and uncluttered.
     @State private var isInlineFieldOverflowing = false
+    /// The width the row ACTUALLY gives the input field, measured on the
+    /// row's own layout (never proposed/blind-guessed). Fed into the shared
+    /// field so the first verdict for a restored or pasted large draft can
+    /// land at the real content width even on a host — the New Task
+    /// launchpad's bottom `safeAreaInset` band — that may answer content
+    /// changes from a cached sizing pass without a finite proposal.
+    @State private var composerFieldHostWidth: CGFloat?
     /// Conversation whose draft produced the latest accepted overflow
     /// report. A delayed layout callback from a previous conversation must
     /// not reveal (or hide) the control of the conversation on screen now.
@@ -913,16 +920,21 @@ struct ThreadComposerView: View {
             // the hosting page height; beyond the cap the field scrolls
             // internally with the caret kept visible. The overflow verdict
             // is measured at the width THIS row actually gives the field:
-            // the field re-derives it from its laid-out bounds, so the
-            // control below can never disagree with the row's real
-            // content width (and this row can never ping-pong the field
-            // width, because a wider slot only ever measures shorter text).
+            // the field re-derives it from its laid-out bounds AND from the
+            // row width measured below (the New Task launchpad band can
+            // answer content changes from a cached sizing pass, where only
+            // an explicit row measurement guarantees a verdict at the real
+            // content width), so the control below can never disagree with
+            // the row's real content width (and this row can never
+            // ping-pong the field width, because a wider slot only ever
+            // measures shorter text).
             ComposerReturnField(
                 text: $draft,
                 placeholder: composerPlaceholder,
                 canSend: canSend && !isAttachmentProcessing && !isSavingChatReasoning,
                 lineLimit: 1...8,
                 maxHeightBudget: composerHeightBudget,
+                hostAvailableWidth: composerFieldHostWidth,
                 restoredSelection: editorSelection,
                 undoManager: composerUndoManager,
                 onSelectionChange: { range in
@@ -949,6 +961,18 @@ struct ThreadComposerView: View {
                 onReturn: { onSend() }
             )
             .frame(maxWidth: .infinity, minHeight: FloeTheme.minimumTarget, alignment: .leading)
+            // The slot's real width, reported by SwiftUI's own layout —
+            // including rotation, split-view drags, keyboard insets and the
+            // expand control appearing or leaving (which widens/narrows
+            // this very slot). Only a genuine change updates state, so the
+            // field's coalesced re-derive cannot loop.
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { newWidth in
+                if composerFieldHostWidth != newWidth {
+                    composerFieldHostWidth = newWidth
+                }
+            }
             .contentShape(Rectangle())
             .accessibilityLabel(composerPlaceholder)
             .accessibilityIdentifier("composer.input")

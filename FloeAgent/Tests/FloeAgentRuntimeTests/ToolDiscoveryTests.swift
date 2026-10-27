@@ -7,31 +7,42 @@ import FloeModels
 
 @Suite("Deferred tool discovery")
 struct ToolDiscoveryTests {
-    @Test("scoped discovery schemas provide usable guidance without granting executable permissions")
+    @Test("runtime discovery schemas provide usable guidance without granting executable permissions")
     func scopedSchemaGuidanceKeepsAuthoritySeparate() throws {
-        let ordinary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: false)
-        let temporary = ToolDiscovery.runtimeDescriptors(scopedConversation: true, publicWebOnly: true)
-        let task = ToolDiscovery.runtimeDescriptors(scopedConversation: false, publicWebOnly: false)
-        #expect(task.map(\.authorizationIdentity) == [ToolDiscovery.descriptor.authorizationIdentity, ToolDiscovery.listDescriptor.authorizationIdentity, ToolResultPagingTool.descriptor.authorizationIdentity])
+        // Ordinary runs — including ordinary fast chat, which now offers the
+        // same authorized toolchain as a task — use the standard wording.
+        let ordinary = ToolDiscovery.runtimeDescriptors(publicWebOnly: false)
+        // Temporary conversations honestly scope the directory to the
+        // temporary read ceiling.
+        let temporary = ToolDiscovery.runtimeDescriptors(publicWebOnly: true)
+        #expect(ordinary.map(\.authorizationIdentity) == [ToolDiscovery.descriptor.authorizationIdentity, ToolDiscovery.listDescriptor.authorizationIdentity, ToolResultPagingTool.descriptor.authorizationIdentity])
         for descriptors in [ordinary, temporary] {
             // tools.readResult is runtime metadata over the task's OWN
             // post-redaction captures (RAM-only in a temporary conversation),
             // so it stays offered with the same read-only, no-approval shape.
             #expect(descriptors.map(\.name) == ["tools.search", "tools.list", "tools.readResult"])
-            #expect(descriptors.map(\.parametersJSON) == task.map(\.parametersJSON))
+            #expect(descriptors.map(\.parametersJSON) == ordinary.map(\.parametersJSON))
             for descriptor in descriptors {
                 #expect(descriptor.riskLabels.isEmpty)
                 #expect(!descriptor.isSideEffecting)
                 #expect(descriptor.effect == .readOnly)
                 #expect(!descriptor.requiresHostScope)
-                #expect(!ChatToolPolicy.isAllowedName(descriptor.name))
+                // The metadata helpers are not executable tools: no policy
+                // admits them and every policy refuses them at execution.
+                #expect(TemporaryChatToolPolicy.readOnlyDescriptor(descriptor) == nil)
+                #expect(TemporaryChatToolPolicy.denialReason(
+                    descriptor: descriptor, arguments: Data("{}".utf8)) != nil)
                 #expect(!descriptor.toolDescription.contains("skill.search"))
                 #expect(!descriptor.toolDescription.contains("skill.read"))
             }
         }
-        #expect(ordinary[0].toolDescription.contains("bound attached files"))
-        #expect(temporary[0].toolDescription.contains("temporary"))
-        #expect(!temporary[0].toolDescription.contains("attached files"))
+        // The ordinary directory is NOT scoped to a conversation ceiling.
+        #expect(!ordinary[0].toolDescription.contains("temporary conversation"))
+        #expect(!ordinary[0].toolDescription.contains("basic on-device reads"))
+        // The temporary directory names the honest temporary scope.
+        #expect(temporary[0].toolDescription.contains("temporary conversation"))
+        #expect(temporary[0].toolDescription.contains("basic on-device reads"))
+        #expect(!temporary[0].toolDescription.contains("skill.search"))
     }
 
     @Test func retiredNamesNeverReappearFromPersistedDescriptors() throws {

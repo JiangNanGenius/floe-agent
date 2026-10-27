@@ -25,7 +25,9 @@ public actor DatabaseManager {
     /// match the highest registered migration; every historical bump
     /// paired this constant with the new migration so that
     /// `user_version == currentSchemaVersion` after `migrate()`.
-    public static let currentSchemaVersion = 53
+    /// Note: the v54 lane shipped `PRAGMA user_version = 54` while this
+    /// constant still read 53; v55 restores the alignment invariant.
+    public static let currentSchemaVersion = 55
 
     public init(path: URL) throws {
         self.pool = try DatabasePool(path: path.path, configuration: Self.configuration())
@@ -96,6 +98,7 @@ public actor DatabaseManager {
         V52PersonalizationRetention.register(into: &migrator)
         V53ConversationVisibility.register(into: &migrator)
         V54JobAdvisoryGroups.register(into: &migrator)
+        V55ConversationPinning.register(into: &migrator)
     }
 
     private static func configuration() -> Configuration {

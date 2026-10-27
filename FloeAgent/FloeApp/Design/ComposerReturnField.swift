@@ -22,6 +22,20 @@
 // from the width the view is ACTUALLY laid out at — reported by the live
 // view's layout pass, the keystroke pass and any real sizing pass alike —
 // never from a character count and never only from a SwiftUI proposal.
+// Hosts additionally feed the row's real width through `hostAvailableWidth`
+// (measured with `onGeometryChange`), because a bottom-pinned
+// `safeAreaInset` band (the New Task launchpad) can answer content changes
+// from cached measurement without ever re-running `sizeThatFits`: with only
+// the proposal/bounds chain the field would sit clipped at its resting
+// height with no verdict and no expand control. Every accepted mutation
+// (programmatic draft swap, budget change, host-width change) therefore
+// re-derives the verdict IMMEDIATELY at the best known real width — the
+// laid-out bounds width, else the host row width — instead of hoping a
+// SwiftUI sizing pass arrives. And a container transition (the
+// `isScrollEnabled` flip, which reconfigures TextKit) is deferred — never
+// dropped — while an input method holds marked text, so a Chinese-IME
+// candidate run is never disturbed; it lands the moment composition
+// commits.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
@@ -55,6 +69,18 @@ final class HardwareReturnTextView: UITextView {
     /// rotation, split-view drags, keyboard changes or a restored large
     /// draft even when no sizing pass ran.
     var onLaidOutWidthChange: ((CGFloat) -> Void)?
+
+    /// Composition probe. Production reads the live `markedTextRange`
+    /// (nil override); behavior tests inject the value so the IME
+    /// deferral can be pinned without synthesizing a hardware input
+    /// method session — UIKit exposes marked text only on the view.
+    var markedTextProbe: (() -> Bool)?
+
+    /// Whether an input method currently holds an unconfirmed marked run,
+    /// as the composer's transition guard sees it.
+    var hasActiveComposition: Bool {
+        markedTextProbe?() ?? (markedTextRange != nil)
+    }
 
     private var lastNotifiedLayoutWidth: CGFloat = -1
 
@@ -151,6 +177,15 @@ struct ComposerReturnField: UIViewRepresentable {
     /// Height available to the hosting page; the field never grows beyond
     /// one third of it. Nil disables the height rule.
     var maxHeightBudget: CGFloat? = nil
+    /// The width the host row ACTUALLY gives this field, measured by the
+    /// host (`onGeometryChange` on the row slot). Secondary truth after the
+    /// live laid-out bounds: it lets the first verdict land while the view
+    /// has no laid-out frame yet (pre-placement measurement of a restored
+    /// or pasted large draft), so a bottom-pinned `safeAreaInset` host that
+    /// answers layout from cache cannot leave the field clipped at its
+    /// resting height with no expand control. Nil keeps callers that do not
+    /// measure the row (canvas assistant, previews) exactly as before.
+    var hostAvailableWidth: CGFloat? = nil
     /// Caret/selection captured in the full editor (or on the previous
     /// launch). Applied only once the initial text exists and only while the
     /// user is not editing, so it never fights the live caret.
@@ -173,6 +208,8 @@ struct ComposerReturnField: UIViewRepresentable {
     /// resets its own state on that switch). Nil keeps callers that do not
     /// need the signal unchanged.
     var onOverflowChange: ((Bool) -> Void)? = nil
+    /// Live focus callback for hosts that switch between voice and text panels.
+    var onEditingChange: ((Bool) -> Void)? = nil
     var onReturn: () -> Void
 
     private let textInsets = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
@@ -251,14 +288,16 @@ struct ComposerReturnField: UIViewRepresentable {
         uiView.sharedUndoManager = undoManager
         var needsRemeasure = false
         let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: uiView.traitCollection)
-        if uiView.markedTextRange == nil, uiView.font != font {
+        if ComposerIMEPolicy.allowsTextReplacement(hasMarkedText: uiView.hasActiveComposition),
+           uiView.font != font {
             uiView.font = font
             uiView.placeholderLabel.font = font
             context.coordinator.noteTextChange()
             needsRemeasure = true
         }
         // Never clobber in-flight IME composition or echo the user's own edit.
-        if uiView.markedTextRange == nil, uiView.text != text {
+        if ComposerIMEPolicy.allowsTextReplacement(hasMarkedText: uiView.hasActiveComposition),
+           uiView.text != text {
             uiView.text = text
             context.coordinator.noteTextChange()
             needsRemeasure = true
@@ -266,16 +305,28 @@ struct ComposerReturnField: UIViewRepresentable {
         if previous.maxHeightBudget != maxHeightBudget || previous.lineLimit != lineLimit {
             needsRemeasure = true
         }
+        // The row's real width changed (rotation, split-view drag, the
+        // expand control appearing/disappearing shrinks or frees the slot).
+        let hostWidthChanged = previous.hostAvailableWidth != hostAvailableWidth
+        if hostWidthChanged {
+            needsRemeasure = true
+        }
         // A programmatic draft swap (dictation landing, slash command, the
-        // send clear, a restored or conversation-switched draft) or a
-        // budget/line-limit change at the SAME laid-out width produces no
-        // `layoutSubviews` width notification: the intrinsic invalidation
-        // hop is what asks SwiftUI for one fresh sizing pass, whose real
-        // proposal then re-derives and re-reports the overflow verdict.
-        // This runs during the state update — never inside layout — so the
-        // deferred coalescing stays loop-free.
+        // send clear, a restored or conversation-switched draft), a
+        // budget/line-limit change or a host-width change at the SAME
+        // laid-out width produces no `layoutSubviews` width notification,
+        // and a bottom-pinned `safeAreaInset` band (the New Task launchpad)
+        // may answer the new content from a cached measurement without ever
+        // re-running `sizeThatFits` — relying on that hop alone was the New
+        // Task defect: the field stayed clipped at its resting height and
+        // `composer.expand` never appeared. The intrinsic invalidation hop
+        // stays (it lets SwiftUI grow the frame where it does measure), but
+        // the verdict is now ALSO re-derived immediately at the best known
+        // real width: the laid-out bounds first, else the host row width.
+        // This runs during the state update — never inside layout — and the
+        // coalescing reporter keeps it loop-free.
         if needsRemeasure {
-            uiView.invalidateIntrinsicContentSize()
+            requestRemeasureHop(uiView: uiView, coordinator: context.coordinator)
         }
         // A restored caret (full editor dismissed, task reopened) only lands
         // while the field itself is not the editing surface.
@@ -306,8 +357,16 @@ struct ComposerReturnField: UIViewRepresentable {
         context: Context
     ) -> CGSize? {
         let proposed = proposal.width
+        // Measurement width priority: the width SwiftUI actually proposes,
+        // else the width the view is laid out at, else the width the host
+        // row actually gives the field (measured), else the historical
+        // 320pt fallback. A restored/pasted large draft on a surface that
+        // places the slot without a finite proposal must still be measured
+        // at the row's real width, not at a guessed 320.
         let width = max(proposed.flatMap { $0.isFinite && $0 > 1 ? $0 : nil }
-            ?? (uiView.bounds.width > 1 ? uiView.bounds.width : 320), 1)
+            ?? (uiView.bounds.width > 1 ? uiView.bounds.width : nil)
+            ?? hostAvailableWidth.flatMap { $0 > 1 ? $0 : nil }
+            ?? 320, 1)
         // The height this pass reports must correspond to the width this
         // pass was asked about; `ComposerFieldLayout.verdict` applies the
         // existing line budget (6 compact / 8 regular), the one-third
@@ -337,6 +396,7 @@ struct ComposerReturnField: UIViewRepresentable {
         let laidOutWidth = uiView.bounds.width > 1 ? uiView.bounds.width : nil
         let truthWidth = laidOutWidth
             ?? proposed.flatMap { $0.isFinite && $0 > 1 ? $0 : nil }
+            ?? hostAvailableWidth.flatMap { $0 > 1 ? $0 : nil }
         if let truthWidth {
             let hostVerdict = truthWidth == width
                 ? verdict
@@ -392,6 +452,28 @@ struct ComposerReturnField: UIViewRepresentable {
             availableHeight: maxHeightBudget,
             restingMinimumHeight: restingMinHeight
         )
+    }
+
+    /// The re-derive hop `updateUIView` takes for every accepted content,
+    /// font, budget or host-width change: invalidate SwiftUI's cached
+    /// measurement AND re-derive the overflow verdict immediately at the
+    /// best known REAL width — the laid-out bounds first, else the host
+    /// row's measured width. A host that answers the new content from a
+    /// cached sizing pass without ever proposing a finite width again (the
+    /// New Task launchpad's bottom `safeAreaInset` band) still converges,
+    /// because the verdict no longer depends on a hypothetical sizing run.
+    /// Extracted as the single production statement so behavior tests drive
+    /// exactly it rather than an equivalent.
+    func requestRemeasureHop(
+        uiView: HardwareReturnTextView,
+        coordinator: Coordinator
+    ) {
+        uiView.invalidateIntrinsicContentSize()
+        if uiView.bounds.width > 1 {
+            coordinator.noteLaidOutWidth(uiView.bounds.width, in: uiView)
+        } else if let hostAvailableWidth, hostAvailableWidth > 1 {
+            coordinator.noteHostAvailableWidth(hostAvailableWidth, in: uiView)
+        }
     }
 
     // MARK: - Measurement
@@ -455,6 +537,12 @@ struct ComposerReturnField: UIViewRepresentable {
         /// `isScrollEnabled` change is applied to the same field that was
         /// measured (never a reused coordinator's older view).
         private weak var latestOverflowView: HardwareReturnTextView?
+        /// A container transition measured while an input method held
+        /// marked text: kept (never dropped) and applied the moment the
+        /// composition commits. The flip reconfigures the NSTextContainer,
+        /// which must not happen mid-candidate.
+        private var deferredScrollTarget: Bool?
+        private weak var deferredScrollView: HardwareReturnTextView?
 
         init(field: ComposerReturnField) {
             self.field = field
@@ -494,15 +582,67 @@ struct ComposerReturnField: UIViewRepresentable {
             latestOverflowCallback = nil
             latestOverflowView = nil
             if let overflow, let textView, textView.isScrollEnabled != overflow {
-                // The one seam for scroll flips: it re-pins the composer
-                // container contract (width tracking + zero padding) so the
-                // LIVE text keeps wrapping at the actual laid-out width in
-                // both states, and reveals the caret the moment the field
-                // starts to scroll internally.
-                textView.applyComposerScrollState(overflow, revealCaret: overflow)
+                if ComposerIMEPolicy.allowsScrollTransition(
+                    hasMarkedText: textView.hasActiveComposition
+                ) {
+                    // The one seam for scroll flips: it re-pins the composer
+                    // container contract (width tracking + zero padding) so the
+                    // LIVE text keeps wrapping at the actual laid-out width in
+                    // both states, and reveals the caret the moment the field
+                    // starts to scroll internally.
+                    textView.applyComposerScrollState(overflow, revealCaret: overflow)
+                    deferredScrollTarget = nil
+                    deferredScrollView = nil
+                } else {
+                    // A Chinese-IME (or any marked-text) composition owns the
+                    // editing run right now: the flip reconfigures the
+                    // NSTextContainer and must not disturb it. Remember the
+                    // verdict and re-derive on composition end — never mutate
+                    // marked text, never silently drop the transition.
+                    deferredScrollTarget = overflow
+                    deferredScrollView = textView
+                }
             }
             guard let overflow else { return }
+            // The host signal is pure SwiftUI state (the expand control's
+            // visibility); delivering it cannot touch the text container, so
+            // IME composition never defers the report itself.
             report?(overflow)
+        }
+
+        /// Applies whatever the layout actually requires NOW that an input
+        /// method's composition has ended: NOT the boolean remembered during
+        /// composition (marked text inflates the measurement), but a fresh
+        /// verdict re-derived from the committed text at the real width.
+        /// Called from the delegate seams that observe composition end
+        /// (text change, selection change, editing end); refuses while a
+        /// composition is still active.
+        func flushDeferredTransition(in textView: HardwareReturnTextView) {
+            guard deferredScrollTarget != nil, deferredScrollView === textView else { return }
+            guard ComposerIMEPolicy.allowsScrollTransition(
+                hasMarkedText: textView.hasActiveComposition
+            ) else { return }
+            deferredScrollTarget = nil
+            deferredScrollView = nil
+            if textView.bounds.width > 1 {
+                noteLaidOutWidth(textView.bounds.width, in: textView)
+            } else if let width = field.hostAvailableWidth, width > 1 {
+                noteHostAvailableWidth(width, in: textView)
+            }
+        }
+
+        /// Re-derives the overflow verdict at the width the host row
+        /// ACTUALLY gives this field, before/without any laid-out frame or
+        /// SwiftUI sizing proposal (the New Task launchpad measures its
+        /// bottom band through a `safeAreaInset`, where a real finite
+        /// proposal is not guaranteed on every content change).
+        func noteHostAvailableWidth(_ width: CGFloat, in textView: HardwareReturnTextView) {
+            let verdict = field.verdict(at: width, textView: textView, coordinator: self)
+            scheduleOverflowReport(
+                verdict.scrolls,
+                textView: textView,
+                report: field.onOverflowChange
+            )
         }
 
         func noteTextChange() {
@@ -512,8 +652,14 @@ struct ComposerReturnField: UIViewRepresentable {
             // field view is reused across task switches). Drop it: a later
             // pass at the laid-out width re-measures and re-reports the new
             // truth, so a stale verdict can never toggle the host's
-            // full-editor control for a draft it never measured.
+            // full-editor control for a draft it never measured. The same
+            // rule retires a transition deferred during composition — the
+            // freshest measurement (keystroke end of this handler, or the
+            // updateUIView re-derive after a programmatic swap) re-establishes
+            // it against the CURRENT text.
             latestOverflow = nil
+            deferredScrollTarget = nil
+            deferredScrollView = nil
         }
 
         /// Re-derives the overflow verdict at the width this view was just
@@ -578,9 +724,15 @@ struct ComposerReturnField: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            let hardware = textView as? HardwareReturnTextView
             // Cancels any undelivered verdict measured against the
             // pre-keystroke text before re-deriving below.
             noteTextChange()
+            // Then: a composition that just ended (or never existed) lets
+            // any transition deferred during it land against fresh truth.
+            if let hardware {
+                flushDeferredTransition(in: hardware)
+            }
             field.text = textView.text
             // Scroll-enabled UITextView has no useful intrinsic height. Ask
             // SwiftUI to remeasure after each user edit, without mutating
@@ -595,12 +747,18 @@ struct ComposerReturnField: UIViewRepresentable {
             // hides the full-editor control immediately, even if SwiftUI
             // answers the new height from a sizing path that never reaches
             // the host report.
-            if let hardware = textView as? HardwareReturnTextView, hardware.bounds.width > 1 {
+            if let hardware, hardware.bounds.width > 1 {
                 noteLaidOutWidth(hardware.bounds.width, in: hardware)
             }
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            // Candidate-window navigation ends a composition with or
+            // without a delegate text change; land any deferred transition
+            // against fresh truth the moment marked text is gone.
+            if let hardware = textView as? HardwareReturnTextView {
+                flushDeferredTransition(in: hardware)
+            }
             // Hardware-arrow navigation past the cap must keep the caret
             // visible even when the text itself did not change.
             if textView.isScrollEnabled {
@@ -609,7 +767,15 @@ struct ComposerReturnField: UIViewRepresentable {
             reportSelectionIfChanged(textView)
         }
 
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            field.onEditingChange?(true)
+        }
+
         func textViewDidEndEditing(_ textView: UITextView) {
+            field.onEditingChange?(false)
+            if let hardware = textView as? HardwareReturnTextView {
+                flushDeferredTransition(in: hardware)
+            }
             reportSelectionIfChanged(textView)
         }
 

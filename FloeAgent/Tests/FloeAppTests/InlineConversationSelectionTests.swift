@@ -1,15 +1,23 @@
 // FloeAppTests — inline conversation selection contracts.
 //
-// The long-press multi-select shared by the sidebar, Chat list and Task
-// Center overview must: enter selection immediately on press (never a
-// management sheet), scope select-all to the visible slice, prune invisible
-// selections on filter changes, freeze confirmation targets against later
-// selection changes, gate ALL mutations while a batch runs, keep failed /
-// unverified / not-attempted items selected for a truthful retry, and stop
-// cooperatively between items through the EXISTING TaskBulkRunner. These
-// tests pin the model against synthetic receipts and the real runner with
-// synthetic identities only; the destructive lifecycle commands themselves
-// stay covered by TaskBulkManagementTests.
+// Corrected contract (2026-10-27, binding user correction): an ordinary row
+// shows no circles and no trailing ellipsis; the long press opens the NATIVE
+// context menu and NEVER enters selection directly. Only the menu's
+// Multi-select item activates the inline mode through `startMultiSelect`,
+// selecting the invoking row; inside the mode taps toggle without
+// navigating, Done exits, and the batch controls are scoped (archive/delete
+// need a selection; rename/move appear only for exactly one selected row —
+// `InlineSelectionCommandScope`). The legacy direct entry `begin(with:)`
+// stays covered below because the Task Center host still uses it until Main
+// adopts the shared menu. Select-all stays scoped to the visible slice,
+// invisible selections are pruned on filter changes, confirmation targets
+// freeze against later selection changes, ALL mutations are gated while a
+// batch runs, failed / unverified / not-attempted items stay selected for a
+// truthful retry, and batches stop cooperatively between items through the
+// EXISTING TaskBulkRunner. These tests pin the model against synthetic
+// receipts and the real runner with synthetic identities only; the
+// destructive lifecycle commands themselves stay covered by
+// TaskBulkManagementTests.
 
 #if canImport(UIKit)
 import Foundation
@@ -85,8 +93,10 @@ struct InlineConversationSelectionTests {
 
     // MARK: - Entry and toggling
 
-    @Test("A long press selects the pressed row immediately and opens the mode")
+    @Test("Legacy Task Center press entry still selects the pressed row immediately")
     func beginSelectsPressedRow() {
+        // `begin(with:)` is retained ONLY for the legacy direct-press host;
+        // the corrected surfaces enter through startMultiSelect below.
         let model = makeModel()
         let a = UUID()
         model.begin(with: a)
@@ -100,6 +110,101 @@ struct InlineConversationSelectionTests {
         model.begin(with: nil)
         #expect(model.isActive)
         #expect(model.selectedIDs.isEmpty)
+    }
+
+    // MARK: - Corrected menu entry (binding 2026-10-27)
+
+    @Test("Menu Multi-select activates the mode and selects the invoking row")
+    func startMultiSelectEntersWithInvokingRow() {
+        let model = makeModel()
+        let a = UUID()
+        model.startMultiSelect(with: a)
+        #expect(model.isActive)
+        #expect(model.selectedIDs == [a])
+    }
+
+    @Test("Long press alone opens no circles: outside the mode a toggle does nothing")
+    func longPressItselfNeverEntersSelection() {
+        // The corrected row surfaces attach the NATIVE context menu (a view
+        // concern) and NO direct-press gesture. Model-level: the only way
+        // the corrected surfaces activate selection is startMultiSelect;
+        // a stray toggle while inactive can never open the mode.
+        let model = makeModel()
+        model.toggle(UUID())
+        #expect(!model.isActive)
+        #expect(model.selectedIDs.isEmpty)
+    }
+
+    @Test("Multi-select while open adds the invoking row without clearing selections")
+    func startMultiSelectKeepsExistingSelection() {
+        // Defensive: the menu is hidden while the mode is open, so this only
+        // documents that the entry is additive, never a reset.
+        let model = makeModel()
+        let a = UUID()
+        let b = UUID()
+        model.startMultiSelect(with: a)
+        model.toggle(b)
+        model.startMultiSelect(with: b)
+        #expect(model.selectedIDs == [a, b])
+        model.startMultiSelect(with: a)
+        #expect(model.selectedIDs == [a, b])
+    }
+
+    @Test("Done after the menu entry restores ordinary rows and clears the selection")
+    func doneAfterMenuEntryRestoresRows() {
+        let model = makeModel()
+        let a = UUID()
+        model.startMultiSelect(with: a)
+        model.end()
+        #expect(!model.isActive)
+        #expect(model.selectedIDs.isEmpty)
+        // Rows leave selection mode: a tap outside the mode can never toggle.
+        model.toggle(a)
+        #expect(model.selectedIDs.isEmpty)
+    }
+
+    @Test("Multi-select is refused while a batch runs")
+    func startMultiSelectGatedByBusy() async {
+        let model = makeModel()
+        let a = UUID()
+        let b = UUID()
+        model.startMultiSelect(with: a)
+        let gate = HoldGate()
+        let batch = Task {
+            await model.run(
+                operation: .archive,
+                frozen: [item(a)],
+                execute: { op, its, _ in
+                    await gate.wait()
+                    return TaskBulkSummary(
+                        operation: op,
+                        results: its.map { TaskBulkItemResult(item: $0, outcome: .archived) },
+                        wasCancelled: false)
+                },
+                afterRun: {}
+            )
+        }
+        while !model.busy {
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+        model.startMultiSelect(with: b)
+        #expect(model.selectedIDs == [a])
+        await gate.release()
+        await batch.value
+        // The batch archived `a`, so it left the selection; now the menu
+        // entry works again.
+        model.startMultiSelect(with: b)
+        #expect(model.selectedIDs == [b])
+    }
+
+    @Test("Command placement follows the selection size: batch needs one row, rename/move need exactly one")
+    func commandScopeRules() {
+        #expect(!InlineSelectionCommandScope.offersBatchCommands(selectedCount: 0))
+        #expect(InlineSelectionCommandScope.offersBatchCommands(selectedCount: 1))
+        #expect(InlineSelectionCommandScope.offersBatchCommands(selectedCount: 7))
+        #expect(!InlineSelectionCommandScope.offersSingleItemCommands(selectedCount: 0))
+        #expect(InlineSelectionCommandScope.offersSingleItemCommands(selectedCount: 1))
+        #expect(!InlineSelectionCommandScope.offersSingleItemCommands(selectedCount: 2))
     }
 
     @Test("Tapping a row outside the mode selects nothing")
@@ -438,6 +543,15 @@ struct InlineConversationSelectionTests {
         #expect(InlineSelectionIdentifiers.stop == "tasks.inline.stop")
         #expect(InlineSelectionIdentifiers.confirmArchive == "tasks.inline.confirm.archive")
         #expect(InlineSelectionIdentifiers.confirmDelete == "tasks.inline.confirm.delete")
+        #expect(InlineSelectionIdentifiers.rename == "tasks.inline.rename")
+        #expect(InlineSelectionIdentifiers.move == "tasks.inline.move")
+        #expect(InlineSelectionIdentifiers.menuPin == "conversation.menu.pin")
+        #expect(InlineSelectionIdentifiers.menuUnpin == "conversation.menu.unpin")
+        #expect(InlineSelectionIdentifiers.menuRename == "conversation.menu.rename")
+        #expect(InlineSelectionIdentifiers.menuMove == "conversation.menu.move")
+        #expect(InlineSelectionIdentifiers.menuMultiSelect == "conversation.menu.multiSelect")
+        #expect(InlineSelectionIdentifiers.menuArchive == "conversation.menu.archive")
+        #expect(InlineSelectionIdentifiers.menuDelete == "conversation.menu.delete")
     }
 
     @Test("Result copy reports every real outcome category separately")

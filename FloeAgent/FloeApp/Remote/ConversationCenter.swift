@@ -1025,10 +1025,10 @@ final class ConversationCenter: ObservableObject {
         return markers.contains { normalized.contains($0) }
     }
 
-    /// The temporary public-web ceiling for the run's offered descriptors:
+    /// The temporary read ceiling for the run's offered descriptors:
     /// public search tools require a ready provider; `web.fetch` does not.
-    /// Personal data and authenticated remote reads remain outside this
-    /// ceiling. Pure and injectable so the
+    /// Enabled basic device reads retain their system authorization checks;
+    /// other private and authenticated remote reads remain outside. Pure and injectable so the
     /// App-host suite pins the composition against the REAL settings store
     /// (`WebSearchSettingsCenter.toolIsAvailable`) instead of a synthetic
     /// policy-only fixture.
@@ -1056,7 +1056,6 @@ final class ConversationCenter: ObservableObject {
         runSurface: AgentRunSurface,
         isNotesAssistant: Bool,
         isTemporary: Bool,
-        chatFastMode: Bool,
         conversationMode: ConversationMode,
         toolsEnabled: Bool,
         isLocalProvider: Bool,
@@ -1065,7 +1064,6 @@ final class ConversationCenter: ObservableObject {
         runSurface == .ordinary
             && !isNotesAssistant
             && !isTemporary
-            && !chatFastMode
             && conversationMode != .plan
             && toolsEnabled
             && !isLocalProvider
@@ -1351,8 +1349,8 @@ final class ConversationCenter: ObservableObject {
         // history first so that work is immediately navigable while it runs.
         do {
             try await NotesRepository.shared.reconcileAssistantOwnership(database: environment.database)
-            conversations = try await environment.conversationStore.conversations()
-                .sorted { $0.updatedAt > $1.updatedAt }
+            conversations = ConversationListOrdering.sorted(
+                try await environment.conversationStore.conversations())
             // Entry state derives from DURABLE binding/envelope truth, so a
             // relaunch/restore republishes it without opening any page.
             await environment.designEntryState.refreshAll(
@@ -1601,12 +1599,14 @@ final class ConversationCenter: ObservableObject {
             return
         }
         if let index = conversations.firstIndex(where: { $0.id == conversationID }) {
-            guard conversations[index].updatedAt != fresh.updatedAt || conversations[index].title != fresh.title else { return }
+            guard conversations[index].updatedAt != fresh.updatedAt
+                    || conversations[index].title != fresh.title
+                    || conversations[index].pinnedAt != fresh.pinnedAt else { return }
             conversations[index] = fresh
         } else {
             conversations.insert(fresh, at: 0)
         }
-        conversations.sort { $0.updatedAt > $1.updatedAt }
+        ConversationListOrdering.sort(&conversations)
     }
 
     /// One-shot cold-launch repair. iOS cannot keep a local provider loop
@@ -3134,29 +3134,6 @@ final class ConversationCenter: ObservableObject {
             mode.rawValue, conversationID: conversationID)
     }
 
-    /// The fast-chat tool ceiling for the run's actually offered descriptors:
-    /// the `ChatToolPolicy` two-family set (public web trio + bound-file
-    /// reads when the run has frozen associated resources), narrowed by
-    /// provider readiness exactly like `temporaryToolCeiling` — an
-    /// unconfigured provider-backed search is never advertised. `web.fetch`
-    /// needs no provider and always stays. Pure and injectable for the
-    /// App-host suite.
-    nonisolated static func chatToolCeiling(
-        offeredDescriptors: [ToolCatalog.Descriptor],
-        hasResourceContext: Bool,
-        webSearchAvailable: (String) -> Bool = {
-            WebSearchSettingsCenter.publicWebToolIsAvailable($0)
-        }
-    ) -> Set<String> {
-        var ceiling = ChatToolPolicy.allowedToolNames(
-            from: offeredDescriptors, hasResourceContext: hasResourceContext)
-        for name in TemporaryChatToolPolicy.providerBackedWebSearchToolNames
-        where !webSearchAvailable(name) {
-            ceiling.remove(name)
-        }
-        return ceiling
-    }
-
     /// True when this run already carries a frozen chat reasoning decision
     /// in its durable `.status` thread. The decision is recorded before the
     /// run's first provider request, so reading the earliest bounded page is
@@ -3611,11 +3588,11 @@ final class ConversationCenter: ObservableObject {
             // child dispatch, so wrappers/aliases/batch/jobs/delegation
             // cannot widen it.
             //
-            // The offered descriptors must pass the public-web name and
-            // metadata checks: web.search, web.searchAI and web.fetch only.
-            // Search also requires its configured provider. Personal,
-            // workspace, device and authenticated remote reads stay out,
-            // alongside writes, execution, jobs, delegation and sends.
+            // Offered descriptors must pass the name and metadata checks
+            // for public web tools or approved basic device reads.
+            // Search still requires its configured provider; system reads
+            // retain their authorization. Writes, execution, jobs, remote
+            // control and other private reads stay outside this ceiling.
             let temporaryCeiling = Self.temporaryToolCeiling(
                 offeredDescriptors: availableDescriptors)
             // Existing per-user scope is preserved: the descriptor ceiling is
@@ -3624,54 +3601,15 @@ final class ConversationCenter: ObservableObject {
             allowedToolNames = (allowedToolNames
                 ?? Set(availableDescriptors.map(\.name))).intersection(temporaryCeiling)
         }
-        // Fast chat: the narrow ceiling applies to ORDINARY `.chat` runs only.
-        // A temporary session keeps the stricter public-web-only ceiling
-        // untouched above — chat mode changes only reasoning and prompt there.
-        // This intersection is LAST, at the same position the temporary
-        // ceiling occupies: user capability toggles, task policy, provider
-        // ceilings and skills still only narrow further.
-        let chatFastMode = requestedChatMode && !isTemporary
-        var chatResourceCeiling: ChatToolPolicy.ResourceContext? = nil
-        if chatFastMode {
-            // Frozen associated-resource proof: this round's staged copies
-            // under the resolved task root PLUS the conversation's durable
-            // attachment records (earlier rounds' files stay in the same
-            // root — the importer skips existing copies). No resolved task
-            // workspace ⇒ no bound paths ⇒ the ceiling fails CLOSED to the
-            // public web family alone; there is no scratch root and no
-            // workspace.searchFiles expansion.
-            var boundPaths: [String] = []
-            if runWorkspaceRoot != nil {
-                boundPaths = workspaceAttachmentPaths
-                let durableAttachments = (try? await conversationStore
-                    .attachments(conversationID: conversationID)) ?? []
-                for attachment in durableAttachments {
-                    let basename = (attachment.displayName as NSString).lastPathComponent
-                    guard !basename.isEmpty, basename != ".", basename != ".." else { continue }
-                    boundPaths.append("Attachments/\(attachment.id.uuidString)/\(basename)")
-                }
-            }
-            let context = ChatToolPolicy.ResourceContext(
-                conversationID: conversationID, boundRelativePaths: boundPaths)
-            if !context.isEmpty {
-                chatResourceCeiling = context
-            }
-            let ceiling = Self.chatToolCeiling(
-                offeredDescriptors: availableDescriptors,
-                hasResourceContext: chatResourceCeiling != nil)
-            allowedToolNames = (allowedToolNames
-                ?? Set(availableDescriptors.map(\.name))).intersection(ceiling)
-        }
         // Freeze exact native professional-query authority only after every
         // task/skill/provider/route/restricted-mode ceiling is final. Public
-        // web readiness is independent: temporary/fast chat, plan, Canvas,
+        // web readiness is independent: temporary chat, plan, Canvas,
         // Notes, local models, network/remote-denied tasks and an explicit
         // allowlist without web.search receive no professional account access.
         let allowsProfessionalSearch = Self.allowsNativeProfessionalSearch(
             runSurface: runSurface,
             isNotesAssistant: isNotesAssistant,
             isTemporary: isTemporary,
-            chatFastMode: chatFastMode,
             conversationMode: effectiveExecutionMode.conversationMode,
             toolsEnabled: effectiveExecutionMode.toolsEnabled,
             isLocalProvider: provider.kind == .local,
@@ -3820,18 +3758,11 @@ final class ConversationCenter: ObservableObject {
             // wrapper/alias/batch call cannot widen the descriptor-derived
             // ceiling. The flag travels with the immutable configuration.
             temporaryReadOnly: isTemporary,
-            // Fast-chat authority for the runtime. The flag (and with it the
-            // brief conversational envelope and the verify-pass skip) covers
-            // every REQUESTED `.chat` turn, including voice-driven temporary
-            // ones; the ChatToolPolicy ceiling itself is only ever narrowed
-            // for ordinary runs (a temporary session keeps the stricter
-            // public-web-only ceiling above, and with a nil resource context
-            // the chat ceiling can never exceed it anyway). `chatResourceCeiling`
-            // is the frozen exact-path proof built at launch; `reasoningPolicy`
-            // is the run's frozen chat resolution (`.modelDefault` for every
-            // task mode).
+            // Chat uses the brief conversational envelope and skips the
+            // optional self-review pass; it does not narrow the ordinary
+            // task-authorized toolchain. Temporary sessions retain their
+            // separate read-only ceiling and RAM-only transport.
             chatFastMode: requestedChatMode,
-            chatResourceCeiling: chatResourceCeiling,
             reasoningPolicy: chatReasoningPolicy,
             // Explicit execution environment for the run and its delegated
             // children (see `runBoundExecutionEnvironmentID`). A temporary
@@ -6799,7 +6730,7 @@ final class ConversationCenter: ObservableObject {
                (try? await environment.conversationStore.conversation(id: id)) != nil,
                !conversations.contains(where: { $0.id == id }) {
                 conversations.append(removedConversation)
-                conversations.sort { $0.updatedAt > $1.updatedAt }
+                ConversationListOrdering.sort(&conversations)
             }
             await reload()
             await environment.workspaceCenter.reload()
@@ -6858,7 +6789,7 @@ final class ConversationCenter: ObservableObject {
             if let removedConversation,
                !conversations.contains(where: { $0.id == id }) {
                 conversations.append(removedConversation)
-                conversations.sort { $0.updatedAt > $1.updatedAt }
+                ConversationListOrdering.sort(&conversations)
             }
             throw error
         }
@@ -6868,6 +6799,27 @@ final class ConversationCenter: ObservableObject {
         try await environment.conversationStore.setArchived(id: id, archived: false)
         await reload()
         publishSession(id)
+    }
+
+    /// Durable sidebar pin on the conversation row itself (schema v55).
+    /// Pinned rows sort first WITHIN their existing group, most recent pin
+    /// first; unpinning restores the plain recency order. A RAM-only
+    /// temporary chat is explicitly refused: pinning must NEVER silently
+    /// save it. The user first uses the existing successful Keep promotion;
+    /// only the resulting ordinary conversation can be pinned. Temporary
+    /// mode itself is untouched, and the ephemeral store additionally
+    /// refuses `setPinned` through the store-protocol default.
+    func setConversationPinned(id: UUID, pinned: Bool) async throws {
+        guard !isTemporaryConversation(id) else {
+            throw FloeError.validationFailed(
+                "Temporary chats are pinned only after a successful Keep"
+            )
+        }
+        try await environment.conversationStore.setPinned(
+            id: id,
+            pinnedAt: pinned ? Date() : nil
+        )
+        await refreshConversationInList(id)
     }
 
     /// Explicit ownership migration. Follow-up sends can never silently

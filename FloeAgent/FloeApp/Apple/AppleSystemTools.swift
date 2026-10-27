@@ -194,7 +194,13 @@ struct AppleCalendarListTool: AgentTool {
                 return AppleToolOutput.cursorError(error)
             }
         }
-        guard try await store.requestFullAccessToEvents() else {
+        if context.temporaryReadOnly || context.publicWebOnly {
+            // A temporary read uses existing access and never requests a
+            // broader EventKit authorization as a side effect of reading.
+            guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else {
+                return AppleToolOutput.make("status=permissionDenied capability=calendar", exitStatus: 77)
+            }
+        } else if !(try await store.requestFullAccessToEvents()) {
             return AppleToolOutput.make("status=permissionDenied capability=calendar", exitStatus: 77)
         }
         let start = try AppleToolOutput.date(args.start) ?? Date()
@@ -742,7 +748,13 @@ struct AppleReminderListTool: AgentTool {
             }
         }
         let store = EKEventStore()
-        guard try await store.requestFullAccessToReminders() else {
+        if context.temporaryReadOnly || context.publicWebOnly {
+            // A temporary read uses existing access and never requests a
+            // broader EventKit authorization as a side effect of reading.
+            guard EKEventStore.authorizationStatus(for: .reminder) == .fullAccess else {
+                return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77)
+            }
+        } else if !(try await store.requestFullAccessToReminders()) {
             return AppleToolOutput.make("status=permissionDenied capability=reminders", exitStatus: 77)
         }
         let query = args.query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1077,7 +1089,11 @@ struct AppleCurrentLocationTool: AgentTool {
     func validate(_ args: Arguments) throws {}
     func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
-        let value = try await currentLocation()
+        // Temporary (ephemeral) conversations use only the EXISTING
+        // authorization answer: they never consume the single system prompt.
+        // Ordinary runs keep the established request-on-first-use behavior.
+        let value = try await currentLocation(
+            allowsAuthorizationRequest: !(context.temporaryReadOnly || context.publicWebOnly))
         // A run cancelled while the fix was in flight must not expose a
         // location it just received.
         try context.cancellation.throwIfCancelled()
@@ -1087,8 +1103,9 @@ struct AppleCurrentLocationTool: AgentTool {
 
 extension AppleCurrentLocationTool {
     @MainActor
-    private func currentLocation() async throws -> SendableLocation {
-        try await (locationService ?? LocationServicesCenter.shared).currentLocation()
+    private func currentLocation(allowsAuthorizationRequest: Bool) async throws -> SendableLocation {
+        try await (locationService ?? LocationServicesCenter.shared)
+            .currentLocation(allowsAuthorizationRequest: allowsAuthorizationRequest)
     }
 }
 

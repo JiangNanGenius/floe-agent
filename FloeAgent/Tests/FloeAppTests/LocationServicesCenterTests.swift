@@ -681,6 +681,80 @@ struct LocationServicesCenterTests {
         #expect(error as? FloeError == .validationFailed("Location permission was denied"))
         #expect(driver.startedFixIDs.isEmpty)
     }
+
+    // MARK: - Temporary chat: existing authorization only, never a prompt
+
+    @Test("A conversational temporary-chat read with existing authorization returns the fix without any prompt")
+    func temporaryReadUsesExistingAuthorizationWithoutPrompt() async throws {
+        let (service, driver) = makeService(status: .authorizedWhenInUse)
+        enterForeground(service)
+        let expected = sample()
+        let task = Task {
+            try await AppleCurrentLocationTool(locationService: service).execute(
+                AppleCurrentLocationTool.Arguments(),
+                context: ToolContext(
+                    runID: UUID(),
+                    publicWebOnly: true,
+                    cancellation: CancellationToken(),
+                    temporaryReadOnly: true
+                )
+            )
+        }
+        try await waitUntil { driver.startedFixIDs.count == 1 }
+        driver.deliverFix(id: driver.startedFixIDs[0], location: expected)
+        let output = try await task.value
+        #expect(output.exitStatus == 0)
+        #expect(output.summary.contains("latitude=-33.86"))
+        // The temporary path never asked the system for authorization.
+        #expect(driver.authorizationRequestCount == 0)
+    }
+
+    @Test("A conversational temporary-chat read before any authorization answer fails with guidance, no prompt, no GPS")
+    func temporaryReadNeverConsumesTheSystemPrompt() async {
+        let (service, driver) = makeService(status: .notDetermined)
+        enterForeground(service)
+        let result = await Task {
+            try await AppleCurrentLocationTool(locationService: service).execute(
+                AppleCurrentLocationTool.Arguments(),
+                context: ToolContext(
+                    runID: UUID(),
+                    publicWebOnly: true,
+                    cancellation: CancellationToken(),
+                    temporaryReadOnly: true
+                )
+            )
+        }.result
+        guard case .failure(let error) = result else {
+            Issue.record("an unanswered conversational read must fail honestly")
+            return
+        }
+        #expect(error as? FloeError == .validationFailed(
+            "Location access has not been allowed in Floe yet. Open Floe and allow location access, then try again."
+        ))
+        #expect(driver.authorizationRequestCount == 0)
+        #expect(driver.startedFixIDs.isEmpty)
+        // The one system prompt is still available to the ordinary flow.
+        service.requestInitialAuthorizationIfNeeded()
+        #expect(driver.authorizationRequestCount == 1)
+    }
+
+    @Test("The direct service seam refuses a no-request conversational read before any answer")
+    func currentLocationCanRefuseAuthorizationRequests() async {
+        let (service, driver) = makeService(status: .notDetermined)
+        enterForeground(service)
+        let result = await Task {
+            try await service.currentLocation(allowsAuthorizationRequest: false)
+        }.result
+        guard case .failure(let error) = result else {
+            Issue.record("a no-request read before any answer must fail honestly")
+            return
+        }
+        #expect(error as? FloeError == .validationFailed(
+            "Location access has not been allowed in Floe yet. Open Floe and allow location access, then try again."
+        ))
+        #expect(driver.authorizationRequestCount == 0)
+        #expect(driver.startedFixIDs.isEmpty)
+    }
     #endif
 }
 #endif

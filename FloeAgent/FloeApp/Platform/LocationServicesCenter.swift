@@ -54,6 +54,12 @@ enum LocationFixFailure: Error, Equatable, Sendable {
     case timedOut
     case unavailable(String)
     case cancelled
+    /// An on-demand conversational read (temporary chat) arrived before any
+    /// authorization answer: it must never consume the single system prompt,
+    /// so it fails with guidance to grant access through the ordinary flow
+    /// first. The ordinary agent path (`allowsAuthorizationRequest == true`)
+    /// keeps the established request-on-first-use behavior.
+    case existingAuthorizationRequired
     /// The production service intentionally performs no CoreLocation work in
     /// an App-hosted unit-test process (see `isUnitTestHostProcess`).
     case systemSuppressed
@@ -461,7 +467,13 @@ final class LocationServicesCenter: ObservableObject {
     /// One current fix for an explicit location/weather/nearby step in a real
     /// task. Waits (bounded) for the initial permission answer before the GPS
     /// window starts; the 15-second fix timeout measures only that window.
-    func currentLocation() async throws -> SendableLocation {
+    ///
+    /// - Parameter allowsAuthorizationRequest: false for on-demand
+    ///   conversational reads (temporary chat) that must use the EXISTING
+    ///   authorization answer: an unanswered permission fails with actionable
+    ///   guidance instead of consuming the single system prompt. Ordinary
+    ///   task/chat runs keep the existing request-on-first-use behavior.
+    func currentLocation(allowsAuthorizationRequest: Bool = true) async throws -> SendableLocation {
         // A request cancelled before it starts must not touch the system.
         if Task.isCancelled { throw FloeError.cancelled }
         guard allowsSystemLocation else { throw floeError(for: .systemSuppressed) }
@@ -473,6 +485,11 @@ final class LocationServicesCenter: ObservableObject {
             throw floeError(for: .permissionDenied)
         }
         if status == .notDetermined {
+            // Conversational reads never burn the one system prompt: only the
+            // ordinary agent path may request access on first real use.
+            guard allowsAuthorizationRequest else {
+                throw floeError(for: .existingAuthorizationRequired)
+            }
             guard canPresentAuthorizationRequest else {
                 throw floeError(for: .authorizationNeedsForeground)
             }
@@ -780,6 +797,10 @@ final class LocationServicesCenter: ObservableObject {
             return .syncUnavailable(reason)
         case .cancelled:
             return .cancelled
+        case .existingAuthorizationRequired:
+            return .validationFailed(
+                "Location access has not been allowed in Floe yet. Open Floe and allow location access, then try again."
+            )
         case .systemSuppressed:
             return .validationFailed("Location is unavailable in this process")
         }

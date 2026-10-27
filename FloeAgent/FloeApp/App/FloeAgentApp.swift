@@ -100,6 +100,9 @@ struct FloeAgentApp: App {
         #endif
         #if DEBUG
         AppEnvironment.qualificationLaunchEnvironment = environment
+        if ComposerDraftStore.isHomeComposerUITestEnabled {
+            ComposerDraftStore.shared.clear(conversationID: ComposerDraftStore.homeDraftID)
+        }
         #endif
         let router = AppRouter()
         _environment = StateObject(wrappedValue: environment)
@@ -146,7 +149,14 @@ struct FloeAgentApp: App {
         WindowGroup {
             Group {
                 #if DEBUG
-                if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
+                if VoiceComposerUITestMode.isEnabled {
+                    VoiceComposerUITestHarness()
+                } else if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
+                          ProcessInfo.processInfo.arguments.contains("--ui-test-compact-skillhub") {
+                    NavigationStack { SkillsView(center: environment.skillsCenter) }
+                        .frame(maxWidth: 390)
+                        .environment(\.horizontalSizeClass, .compact)
+                } else if ProcessInfo.processInfo.arguments.contains("--ui-test-long-reasoning"),
                    ProcessInfo.processInfo.arguments.contains("-ui-testing") {
                     LongReasoningTestHarness()
                 } else if ProcessInfo.processInfo.arguments.contains("--ui-test-workbench-fixture"),
@@ -321,9 +331,11 @@ struct RootView: View {
     /// navigation and the environment remain app-wide shared objects.
     @SceneStorage("floe.windowSceneIdentity") private var sceneID = UUID().uuidString
     @State private var expandedWorkspaceIDs: Set<UUID> = []
-    /// Long-press conversation selection in the sidebar: circles appear in
-    /// this list, bulk archive/delete run through the existing task bulk
-    /// engine, and navigation / temporary-session ownership is untouched.
+    /// Sidebar conversation selection: the row long press opens the native
+    /// context menu (Pin/Unpin, Rename, Move, Multi-select, Archive, Delete)
+    /// and ONLY Multi-select reveals the inline circles in this list; bulk
+    /// archive/delete run through the existing task bulk engine, and
+    /// navigation / temporary-session ownership is untouched.
     @StateObject private var inlineSelection = InlineConversationSelectionModel()
     @State private var renamingConversation: ConversationRecord?
     @State private var deletingConversation: ConversationRecord?
@@ -1331,6 +1343,17 @@ struct RootView: View {
 
     private var sidebarContent: some View {
         VStack(spacing: 0) {
+            // Corrected selection chrome: count · select-all · Done live in a
+            // narrow header ABOVE the list, batch actions stay at the bottom,
+            // so the narrow sidebar never carries one overloaded horizontal
+            // row of controls.
+            if inlineSelection.isActive {
+                InlineConversationSelectionHeader(
+                    model: inlineSelection,
+                    visibleIDs: { inlineSidebarVisibleIDs }
+                )
+                Divider()
+            }
             List(selection: $router.sidebarSelection) {
                 Section {
                     Label("workbench.new_task", systemImage: "square.and.pencil")
@@ -1410,11 +1433,30 @@ struct RootView: View {
             .accessibilityIdentifier("sidebar.list")
             .disabled(inlineSelection.busy)
             if inlineSelection.isActive {
-                InlineConversationSelectionBar(
+                // Compact batch area: archive / delete, plus rename / move
+                // when exactly one row is selected. Commands stay on the
+                // existing bulk engine and single-task lifecycle services.
+                InlineConversationSelectionActionBar(
                     model: inlineSelection,
                     center: environment.conversationCenter,
-                    visibleIDs: { inlineSidebarVisibleIDs },
-                    selectedItems: { inlineSidebarSelectedItems }
+                    selectedItems: { inlineSidebarSelectedItems },
+                    onRename: { conversationID in
+                        if let record = environment.conversationCenter.conversations.first(
+                            where: { $0.id == conversationID }) {
+                            renamingConversation = record
+                        }
+                    },
+                    moveTargets: {
+                        environment.workspaceCenter.projectWorkspaces.map {
+                            InlineMoveTarget(id: $0.id, name: $0.name)
+                        }
+                    },
+                    onMove: { conversationID, workspaceID in
+                        Task {
+                            try? await environment.conversationCenter.moveConversation(
+                                id: conversationID, to: workspaceID)
+                        }
+                    }
                 )
                 Divider()
             }
@@ -1536,16 +1578,21 @@ struct RootView: View {
         }
     }
 
-    /// One sidebar conversation row. Long press ALWAYS enters the inline
-    /// selection (leading circles appear here; no management sheet and no
-    /// navigation — the row is `selectionDisabled` while selected so the
-    /// release cannot commit a list selection, and the recognized gesture
-    /// consumes the touch). Outside selection the normal swipe actions and
-    /// the per-row action menu stay; while selection is open they are the
-    /// conflicting controls and are hidden, and a tap toggles the circle
-    /// instead of navigating. `router.sidebarSelection` is never touched by
-    /// selection itself, so the open conversation and temporary-session
-    /// ownership are unaffected.
+    /// One sidebar conversation row. An ORDINARY row shows no trailing
+    /// ellipsis and no circles. A long press opens the NATIVE context menu
+    /// (Pin/Unpin, Rename, Move, Multi-select, Archive, Delete) — it never
+    /// enters selection directly. Only the Multi-select item activates the
+    /// inline circles HERE and selects this row: the circle REPLACES the
+    /// leading conversation bubble (one leading glyph per row, stable title
+    /// baseline and row height), a tap toggles without navigating, and the
+    /// row stays `selectionDisabled` so the release can never commit a list
+    /// selection — the opened-conversation highlight keeps meaning "open",
+    /// never a checkbox. The context menu and the per-row conflicting
+    /// controls stay hidden while a selection is open; the normal swipe
+    /// actions cover archive/delete outside it. Done exits and restores the
+    /// ordinary rows plus the current conversation. `router.sidebarSelection`
+    /// is never touched by the mode, so the open conversation and
+    /// temporary-session ownership are unaffected.
     @ViewBuilder
     private func conversationSidebarRow(_ conversation: ConversationRecord) -> some View {
         let base = HStack(spacing: 8) {
@@ -1554,20 +1601,25 @@ struct RootView: View {
                     conversationID: conversation.id,
                     isSelected: inlineSelection.selectedIDs.contains(conversation.id)
                 )
+                Text(conversation.title.isEmpty
+                     ? String(localized: "chat.untitled") : conversation.title)
+            } else {
+                Label(conversation.title.isEmpty
+                      ? String(localized: "chat.untitled") : conversation.title,
+                      systemImage: "bubble.left")
             }
-            Label(conversation.title.isEmpty ? String(localized: "chat.untitled") : conversation.title, systemImage: "bubble.left")
             Spacer(minLength: 0)
             ConversationActivityBadge(conversationID: conversation.id, center: environment.conversationCenter)
-            if !inlineSelection.isActive {
-                sidebarRowActionsMenu(conversation)
-            }
         }
         .lineLimit(1)
         .tag(SidebarSelection.workbench(.conversation(conversation.id)))
         .accessibilityIdentifier("sidebar.conversation.\(conversation.id.uuidString)")
         .inlineSelectionRowTraits(model: inlineSelection, conversationID: conversation.id)
         .contentShape(Rectangle())
-        .inlineSelectionLongPress(conversationID: conversation.id, model: inlineSelection)
+        .conversationRowContextMenu(
+            selectionModel: inlineSelection,
+            actions: sidebarRowMenuActions(conversation)
+        )
 
         if inlineSelection.isActive {
             base
@@ -1589,55 +1641,59 @@ struct RootView: View {
         }
     }
 
-    /// The single-task actions that previously lived in the long-press
-    /// menu. Long press now opens the inline selection, so they stay
-    /// reachable through this explicit per-row control (hidden while a
-    /// selection is active, together with the swipe actions).
-    private func sidebarRowActionsMenu(_ conversation: ConversationRecord) -> some View {
-        Menu {
-            Button {
-                renamingConversation = conversation
-            } label: {
-                Label("workspace.file_tree_view.rename", systemImage: "pencil")
-            }
-            Menu("app.floe_agent_app.move_to_project") {
-                ForEach(environment.workspaceCenter.projectWorkspaces) { workspace in
-                    Button(workspace.name) {
-                        Task {
-                            try? await environment.conversationCenter.moveConversation(
-                                id: conversation.id,
-                                to: workspace.id
-                            )
-                        }
+    /// The row's native context-menu actions: durable pin toggle on the
+    /// conversation row itself (temporary RAM chats are never listed here,
+    /// and the center refuses them anyway), the former per-row rename/move/
+    /// archive/delete commands unchanged, and Multi-select as the ONLY
+    /// selection entry. Move offers the same project workspaces the old
+    /// menu did; archive/delete reuse the existing single-task lifecycle
+    /// commands and confirmations.
+    private func sidebarRowMenuActions(_ conversation: ConversationRecord) -> ConversationRowMenuActions {
+        ConversationRowMenuActions(
+            isPinned: conversation.pinnedAt != nil,
+            onPinToggle: {
+                let pinNext = conversation.pinnedAt == nil
+                Task {
+                    do {
+                        try await environment.conversationCenter.setConversationPinned(
+                            id: conversation.id, pinned: pinNext)
+                    } catch {
+                        // The only reachable refusal is a temporary-session
+                        // pin; sidebar rows are durable conversations, so a
+                        // failure here is a storage error. Row commands stay
+                        // quiet like the existing archive/delete paths.
+                        FloeLogger(category: .app).warning(
+                            "conversationPinToggleFailed id=\(conversation.id.uuidString) pinned=\(pinNext)"
+                        )
                     }
                 }
-            }
-            Button {
+            },
+            onRename: {
+                renamingConversation = conversation
+            },
+            moveTargets: {
+                environment.workspaceCenter.projectWorkspaces.map {
+                    InlineMoveTarget(id: $0.id, name: $0.name)
+                }
+            },
+            onMove: { workspaceID in
+                Task {
+                    try? await environment.conversationCenter.moveConversation(
+                        id: conversation.id,
+                        to: workspaceID
+                    )
+                }
+            },
+            onMultiSelect: {
+                inlineSelection.startMultiSelect(with: conversation.id)
+            },
+            onArchive: {
                 Task { try? await environment.conversationCenter.archiveConversation(id: conversation.id) }
-            } label: {
-                Label("app.floe_agent_app.archive_task", systemImage: "archivebox")
-            }
-            Button(role: .destructive) {
+            },
+            onDelete: {
                 deletingConversation = conversation
-            } label: {
-                Label("app.floe_agent_app.delete_task_2", systemImage: "trash")
             }
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                // The glyph stays compact; the hit target keeps the app's
-                // standard minimum (same 44pt used across controls).
-                .frame(width: FloeTheme.minimumTarget, height: FloeTheme.minimumTarget)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .accessibilityLabel(ChatBilingualCatalog.localized(
-            key: "sidebar.row_actions",
-            en: "Task actions",
-            zh: "任务操作"
-        ))
-        .accessibilityIdentifier("sidebar.rowActions.\(conversation.id.uuidString)")
+        )
     }
 
     /// Sidebar conversation rows the user can currently see: expanded

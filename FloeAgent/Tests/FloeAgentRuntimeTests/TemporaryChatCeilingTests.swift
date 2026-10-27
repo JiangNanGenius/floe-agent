@@ -1,11 +1,11 @@
-// FloeAgentRuntimeTests — Temporary chat public-web ceiling end-to-end
+// FloeAgentRuntimeTests — Temporary chat read ceiling end-to-end
 // through the REAL runtime: the descriptor-derived ceiling the center
 // computes (`TemporaryChatToolPolicy.allowedToolNames(from descriptors:)`) is
 // enforced on the provider wire (schemas/allToolNames), at main-run dispatch
 // and at child dispatch, with the typed `temporaryReadOnly` runtime authority.
 // Private reads, discovery, mixed tools, wrappers, delegation and batch/jobs
-// cannot widen it; in-ceiling public web search/fetch reads still execute
-// normally.
+// cannot widen it; in-ceiling public web search/fetch and the basic on-device
+// reads still execute normally.
 
 import Foundation
 import Testing
@@ -21,9 +21,10 @@ import FloeTestSupport
 struct TemporaryChatCeilingTests {
 
     /// Descriptors the executor "installs": a representative ordinary catalog
-    /// including genuinely read-only private tools. The temporary ceiling must
-    /// narrow this to the public web tools — absence from the catalog is NOT
-    /// what denies the private families.
+    /// including genuinely read-only private tools and the real metadata of
+    /// the admitted device reads. The temporary ceiling must narrow this to
+    /// the audited read set — absence from the catalog is NOT what denies
+    /// the private families.
     private func ordinaryCatalog() -> [String: ToolCatalog.Descriptor] {
         [
             "web.fetch": ToolCatalog.Descriptor(
@@ -44,6 +45,18 @@ struct TemporaryChatCeilingTests {
                 isSideEffecting: false,
                 effect: .readOnly
             ),
+            "apple.calendar.list": ToolCatalog.Descriptor(
+                name: "apple.calendar.list",
+                riskLabels: [.persistsPersonalData],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
+            "apple.location.current": ToolCatalog.Descriptor(
+                name: "apple.location.current",
+                riskLabels: [],
+                isSideEffecting: false,
+                effect: .readOnly
+            ),
             "notes.read": ToolCatalog.Descriptor(
                 name: "notes.read",
                 riskLabels: [.readsFiles],
@@ -53,12 +66,6 @@ struct TemporaryChatCeilingTests {
             "mail.read": ToolCatalog.Descriptor(
                 name: "mail.read",
                 riskLabels: [.networkAccess, .accessesCredentials],
-                isSideEffecting: false,
-                effect: .readOnly
-            ),
-            "apple.calendar.list": ToolCatalog.Descriptor(
-                name: "apple.calendar.list",
-                riskLabels: [.persistsPersonalData],
                 isSideEffecting: false,
                 effect: .readOnly
             ),
@@ -155,14 +162,14 @@ struct TemporaryChatCeilingTests {
         )
     }
 
-    @Test("Main-run dispatch: private reads and writes never execute and stay off the provider wire; public web fetch executes")
+    @Test("Main-run dispatch: private reads and writes never execute and stay off the provider wire; admitted reads execute")
     func mainRunCeilingIsEnforced() async throws {
         // Deliberately WIDER than the ceiling: the canonical policy must deny
         // a private read even when a wrapper puts its name in the active set.
         let wideNames: Set<String> = [
             "web.fetch", "web.search", "web.searchAI", "notes.read", "mail.read",
-            "apple.calendar.list", "media.models", "workspace.writeFile",
-            "exec.shell",
+            "apple.calendar.list", "apple.location.current", "media.models",
+            "workspace.writeFile", "exec.shell",
         ]
         let adapter = MockAdapter()
         adapter.script = [
@@ -179,8 +186,17 @@ struct TemporaryChatCeilingTests {
                 .toolRequest(try TestFixtures.toolCall(
                     id: "denied-exec", toolName: "exec.shell", arguments: #"{"command":"id"}"#)),
                 .toolRequest(try TestFixtures.toolCall(
+                    id: "denied-location-args", toolName: "apple.location.current",
+                    arguments: #"{"query":"Sydney"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
                     id: "allowed-fetch", toolName: "web.fetch",
                     arguments: #"{"url":"https://example.com"}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "allowed-calendar", toolName: "apple.calendar.list",
+                    arguments: #"{"limit":5}"#)),
+                .toolRequest(try TestFixtures.toolCall(
+                    id: "allowed-location", toolName: "apple.location.current",
+                    arguments: "{}")),
             ],
             [.completed(.init(stopReason: .endTurn))],
         ]
@@ -191,14 +207,18 @@ struct TemporaryChatCeilingTests {
             allowedToolNames: wideNames)
         try await runtime.start(goal: "research a public page with web.fetch")
 
-        // Only the public web fetch reached the executor; every private or
-        // mutating call was denied by the canonical temporary boundary.
-        #expect(executor.entries.map(\.call.toolName) == ["web.fetch"])
-        #expect(executor.entries.first?.call.id == "allowed-fetch")
+        // Only the admitted reads reached the executor; every private,
+        // argument-spoofing or mutating call was denied by the canonical
+        // temporary boundary.
+        #expect(executor.entries.map(\.call.id) == ["allowed-fetch", "allowed-calendar", "allowed-location"])
         let decisions = audit.entries.map(\.decision)
         #expect(decisions.contains("deny:temporary-readonly"))
+        let locationArgDenial = try #require(
+            adapter.requests[1].toolResults.first { $0.callID == "denied-location-args" })
+        #expect(locationArgDenial.output.contains("takes no arguments"),
+                Comment(rawValue: locationArgDenial.output))
 
-        // The provider wire itself advertises only the public web tools plus
+        // The provider wire itself advertises only the audited read set plus
         // the always-callable discovery tools — schemas and the raw
         // allToolNames list cannot leak private or denied families.
         let wireRequest = try #require(adapter.requests.first)
@@ -206,13 +226,15 @@ struct TemporaryChatCeilingTests {
         let schemaNames = Set(wireRequest.toolSchemas.map(\.name))
         #expect(schemaNames.isSubset(of: wireCeiling))
         #expect(Set(wireRequest.allToolNames).isSubset(of: wireCeiling))
-        for privateName in ["notes.read", "mail.read", "apple.calendar.list", "media.models", "workspace.writeFile", "exec.shell"] {
+        #expect(wireCeiling.contains("apple.calendar.list"))
+        #expect(wireCeiling.contains("apple.location.current"))
+        for privateName in ["notes.read", "mail.read", "media.models", "workspace.writeFile", "exec.shell"] {
             #expect(!schemaNames.contains(privateName), "\(privateName) must not reach the wire")
             #expect(!wireRequest.allToolNames.contains(privateName), "\(privateName) must not be advertised")
         }
-        // The public web read executed with the temporary runtime authority
+        // The admitted reads executed with the temporary runtime authority
         // and the public-web-only execution context.
-        let contextEntry = try #require(executor.entries.first { $0.call.id == "allowed-fetch" })
+        let contextEntry = try #require(executor.entries.first { $0.call.id == "allowed-calendar" })
         #expect(contextEntry.context.temporaryReadOnly)
         #expect(contextEntry.context.publicWebOnly)
     }
@@ -257,13 +279,13 @@ struct TemporaryChatCeilingTests {
                 rootTaskID: UUID(),
                 delegateCallID: "call-temp"
             )
-            // The child inherits the parent's ACTUAL temporary name set (fetch,
-            // search and configured AI search), plus private/mixed/write/
-            // execution/delegation names that are deliberately wider than the
-            // ceiling. Deriving the public half from `temporaryCeiling()` keeps the
-            // fixture faithful if the policy ever adds another public web tool.
+            // The child inherits the parent's ACTUAL temporary name set (the
+            // audited read set), plus private/mixed/write/execution/
+            // delegation names that are deliberately wider than the ceiling.
+            // Deriving the admitted half from `temporaryCeiling()` keeps the
+            // fixture faithful if the policy ever adds another read tool.
             let childAllowedNames = temporaryCeiling().union([
-                "notes.read", "mail.read", "apple.calendar.list", "media.models",
+                "notes.read", "mail.read", "media.models",
                 "workspace.writeFile", "exec.shell", "delegate", "batch.run",
                 "jobs.submit", "memory.remember",
             ])
@@ -280,7 +302,7 @@ struct TemporaryChatCeilingTests {
             }
 
             for denied in [
-                "notes.read", "mail.read", "apple.calendar.list", "media.models",
+                "notes.read", "mail.read", "media.models",
                 "workspace.writeFile", "exec.shell", "delegate", "batch.run",
                 "jobs.submit", "memory.remember",
             ] {
@@ -290,10 +312,17 @@ struct TemporaryChatCeilingTests {
                     call, identity: identity, childContext: childContext())
                 #expect(result.status == .denied, "\(denied) must be denied, got \(result.status.rawValue)")
             }
+            // The location read is admitted but takes NO arguments.
+            let locationArgs = try TestFixtures.toolCall(
+                id: "child-location-args", toolName: "apple.location.current",
+                arguments: #"{"query":"Sydney"}"#)
+            let locationArgsResult = await runtime.dispatchChildTool(
+                locationArgs, identity: identity, childContext: childContext())
+            #expect(locationArgsResult.status == .denied)
             #expect(executor.entries.isEmpty)
 
-            // The public web tools stay reachable for temporary children, and the
-            // public-web-only boundary reaches the actual execute path.
+            // The audited reads stay reachable for temporary children, and
+            // the public-web-only boundary reaches the actual execute path.
             let fetch = try TestFixtures.toolCall(
                 id: "child-fetch", toolName: "web.fetch",
                 arguments: #"{"url":"https://example.com"}"#)
@@ -312,7 +341,20 @@ struct TemporaryChatCeilingTests {
             let aiSearched = await runtime.dispatchChildTool(
                 aiSearch, identity: identity, childContext: childContext())
             #expect(aiSearched.status == .ok)
-            #expect(executor.entries.map(\.call.toolName) == ["web.fetch", "web.search", "web.searchAI"])
+            let calendar = try TestFixtures.toolCall(
+                id: "child-calendar", toolName: "apple.calendar.list",
+                arguments: #"{"limit":5}"#)
+            let calendared = await runtime.dispatchChildTool(
+                calendar, identity: identity, childContext: childContext())
+            #expect(calendared.status == .ok)
+            let location = try TestFixtures.toolCall(
+                id: "child-location", toolName: "apple.location.current",
+                arguments: "{}")
+            let located = await runtime.dispatchChildTool(
+                location, identity: identity, childContext: childContext())
+            #expect(located.status == .ok)
+            #expect(executor.entries.map(\.call.toolName)
+                    == ["web.fetch", "web.search", "web.searchAI", "apple.calendar.list", "apple.location.current"])
             #expect(executor.entries.allSatisfy { $0.context.publicWebOnly })
             #expect(executor.entries.allSatisfy { $0.context.temporaryReadOnly })
 

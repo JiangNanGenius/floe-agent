@@ -37,7 +37,9 @@ struct V53ConversationVisibilityTests {
         let manager = try DatabaseManager.inMemory()
         try await manager.migrate()
         #expect(try await manager.userVersion() == DatabaseManager.currentSchemaVersion)
-        #expect(DatabaseManager.currentSchemaVersion == 53)
+        // The constant grows with every later migration; v53 is only the
+        // floor (the fresh database above already proves v53 applied).
+        #expect(DatabaseManager.currentSchemaVersion >= 53)
         try await manager.writer { db in
             try db.execute(sql: "INSERT INTO conversations(id,title,created_at,updated_at) VALUES ('normal','Normal','t1','t2')")
         }
