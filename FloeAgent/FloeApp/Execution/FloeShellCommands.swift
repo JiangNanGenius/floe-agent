@@ -316,6 +316,8 @@ enum FloeShellCommands {
                     // a timeout and has no partial output.
                     FloeShellWrite(stderr, reason + "\n"); return 75
                 case .failed(let message): FloeShellWrite(stderr, message + "\n"); return 1
+                case .outcomeUnknown(let jobID, let message):
+                    FloeShellWrite(stderr, "outcomeUnknown jobID=\(jobID): \(message)\n"); return 125
                 }
             }
             registry.register(entry.command, handler: handler)

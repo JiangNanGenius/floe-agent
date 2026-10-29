@@ -128,6 +128,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
     public var capturedOutputTruncated: Bool = false
     public var callID: String
     public var status: Status
+    public var outcomeUnknown: Bool
     /// Ordinary results use 4096 characters; native skill reads may carry a
     /// bounded complete document so JSON/scripts survive checkpoints intact.
     public var outputSummary: String
@@ -171,10 +172,12 @@ public struct ToolResult: Sendable, Codable, Hashable {
         provenance: ToolResultProvenance? = nil,
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
-        capturedOutputTruncated: Bool = false
+        capturedOutputTruncated: Bool = false,
+        outcomeUnknown: Bool = false
     ) {
         self.callID = callID
         self.status = status
+        self.outcomeUnknown = outcomeUnknown
         self.maximumSummaryCharacters = min(max(0, maximumSummaryCharacters), 262_144)
         self.outputSummary = String(outputSummary.prefix(self.maximumSummaryCharacters))
         self.capturedOutput = capturedOutput
@@ -203,6 +206,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
     public static func == (lhs: ToolResult, rhs: ToolResult) -> Bool {
         lhs.callID == rhs.callID
             && lhs.status == rhs.status
+            && lhs.outcomeUnknown == rhs.outcomeUnknown
             && lhs.outputSummary == rhs.outputSummary
             && lhs.maximumSummaryCharacters == rhs.maximumSummaryCharacters
             && lhs.outputDigest == rhs.outputDigest
@@ -215,6 +219,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(callID)
         hasher.combine(status)
+        hasher.combine(outcomeUnknown)
         hasher.combine(outputSummary)
         hasher.combine(maximumSummaryCharacters)
         hasher.combine(outputDigest)
@@ -225,13 +230,14 @@ public struct ToolResult: Sendable, Codable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case callID, status, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters
+        case callID, status, outcomeUnknown, outputSummary, outputDigest, exitStatus, artifacts, outputFiles, provenance, maximumSummaryCharacters
     }
 
     public init(from decoder: any Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         callID = try values.decode(String.self, forKey: .callID)
         status = try values.decode(Status.self, forKey: .status)
+        outcomeUnknown = try values.decodeIfPresent(Bool.self, forKey: .outcomeUnknown) ?? false
         maximumSummaryCharacters = min(max(0, try values.decodeIfPresent(Int.self, forKey: .maximumSummaryCharacters) ?? 4096), 262_144)
         outputSummary = String(try values.decode(String.self, forKey: .outputSummary).prefix(maximumSummaryCharacters))
         outputDigest = try values.decode(String.self, forKey: .outputDigest)
@@ -247,6 +253,7 @@ public struct ToolResult: Sendable, Codable, Hashable {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(callID, forKey: .callID)
         try values.encode(status, forKey: .status)
+        if outcomeUnknown { try values.encode(true, forKey: .outcomeUnknown) }
         try values.encode(outputSummary, forKey: .outputSummary)
         if maximumSummaryCharacters != 4096 { try values.encode(maximumSummaryCharacters, forKey: .maximumSummaryCharacters) }
         try values.encode(outputDigest, forKey: .outputDigest)

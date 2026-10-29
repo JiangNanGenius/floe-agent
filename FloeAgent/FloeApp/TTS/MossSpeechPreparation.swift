@@ -1,0 +1,104 @@
+// FloeApp — Accepted MOSS flatPause integration into the local speech path.
+//
+// This is a narrow source-preparation layer, not a model or parameter change:
+// MOSS Nano, its default voice, reference assets and sampling options stay
+// untouched. Only eligible paragraphs of short, strict ZH/EN alternation get
+// their internal full stops softened to fullwidth commas before synthesis.
+// Everything else is passed through unchanged.
+
+import Foundation
+import FloeProviders
+
+enum MossSpeechPreparation {
+    static let mossEngine = "mossTTSNano"
+
+    static func isMossEngine(_ engine: String?) -> Bool {
+        engine == mossEngine
+    }
+
+    /// Plans complete blank-line paragraphs. Ineligible paragraphs are
+    /// returned byte-identical. The caller still owns Markdown/URL projection
+    /// and sentence segmentation.
+    static func prepareParagraphs(_ text: String, engine: String?) -> String {
+        guard isMossEngine(engine), !text.isEmpty else { return text }
+        let paragraphs = text.components(separatedBy: "\n\n")
+        return paragraphs.map { paragraph in
+            let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return paragraph }
+            let plan = MossProsodyPlanner.flatPause(trimmed)
+            guard plan.eligible, let range = paragraph.range(of: trimmed) else { return paragraph }
+            return String(paragraph[..<range.lowerBound]) + plan.spoken
+                + String(paragraph[range.upperBound...])
+        }.joined(separator: "\n\n")
+    }
+}
+
+/// Bounded batch lookahead for the narrow alternation case. A candidate batch
+/// is the set of complete sentences the production segmenter released for one
+/// streamed addition. The buffer never crosses an addition, so a single short
+/// sentence is spoken immediately instead of waiting for the model to finish.
+/// Four alternating short candidates are planned together; the buffer is
+/// hard-capped and `finish()`/cancellation always flushes pending complete
+/// sentences unchanged.
+struct MossProsodyStreamPreparation {
+    static let maximumPending = 8
+
+    private var pending: [String] = []
+
+    mutating func accept(_ segments: [String]) -> [String] {
+        guard !segments.isEmpty else { return [] }
+        var output: [String] = []
+        for segment in segments {
+            let trimmed = segment.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let kind = MossProsodyPlanner.classify(trimmed)
+            if pending.isEmpty {
+                if kind != .other {
+                    pending = [trimmed]
+                } else {
+                    output.append(trimmed)
+                }
+                continue
+            }
+            let lastKind = MossProsodyPlanner.classify(pending[pending.count - 1])
+            if kind != .other, kind.language != nil,
+               kind.language != lastKind.language, lastKind.language != nil {
+                pending.append(trimmed)
+                if pending.count >= 4 {
+                    output.append(contentsOf: flushPlanned())
+                } else if pending.count >= Self.maximumPending {
+                    output.append(contentsOf: flushUnchanged())
+                }
+            } else {
+                output.append(contentsOf: flushUnchanged())
+                if kind != .other {
+                    pending = [trimmed]
+                } else {
+                    output.append(trimmed)
+                }
+            }
+        }
+        // Never hold a batch open across an addition: a short single sentence
+        // must not wait for the next token or model completion.
+        output.append(contentsOf: flushUnchanged())
+        return output
+    }
+
+    mutating func finish() -> [String] {
+        flushUnchanged()
+    }
+
+    private mutating func flushPlanned() -> [String] {
+        let units = pending
+        pending = []
+        guard !units.isEmpty else { return [] }
+        let plan = MossProsodyPlanner.flatPause(units.joined(separator: " "))
+        return plan.eligible ? [plan.spoken] : units
+    }
+
+    private mutating func flushUnchanged() -> [String] {
+        let value = pending
+        pending = []
+        return value
+    }
+}

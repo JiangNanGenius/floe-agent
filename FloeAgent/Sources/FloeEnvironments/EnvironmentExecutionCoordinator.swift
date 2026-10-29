@@ -57,6 +57,33 @@ public actor EnvironmentExecutionCoordinator {
     }
 
     private func lease(_ original: ToolContext, record: ContainerRecord) async throws -> ToolEnvironmentLease {
+        if record.effectiveExecutionBackend == .macBridge {
+            guard record.kind.isWritableLayer, record.state == .active, !record.requiresRebuild,
+                  record.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat),
+                  !stopping.contains(record.id) else {
+                throw FloeError.validationFailed("The Mac environment is stopped or being removed")
+            }
+            if let parentID = record.parentID {
+                guard let parent = await registry.record(id: parentID), parent.state == .active,
+                      parent.effectiveExecutionBackend == .macBridge, !parent.requiresRebuild,
+                      parent.isCompatible(withLayerFormat: ContainerRecord.currentLayerFormat),
+                      !stopping.contains(parentID) else {
+                    throw FloeError.validationFailed("The parent Mac environment is unavailable")
+                }
+            }
+            var context = original
+            context.environmentID = record.id
+            let writable = roots.layerURL(id: record.id, kind: record.kind)
+            context.environment = ToolEnvironment(id: record.id, writableLayerURL: writable,
+                layerURLs: [writable], variables: [
+                    "FLOE_ENVIRONMENT_ID": record.id, "FLOE_EXECUTION_BACKEND": "macBridge"
+                ])
+            let leaseID = UUID()
+            active[record.id, default: [:]][leaseID] = original.cancellation
+            return ToolEnvironmentLease(context: context) { [weak self] in
+                await self?.release(environmentID: record.id, leaseID: leaseID)
+            }
+        }
         let stack = await registry.layerStack(for: record.id, bundledBaseURL: bundledBaseURL)
         guard let latest = await registry.record(id: record.id), latest.state == .active,
               !latest.requiresRebuild, !stopping.contains(record.id) else {

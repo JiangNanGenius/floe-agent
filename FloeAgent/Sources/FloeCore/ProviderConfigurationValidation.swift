@@ -209,7 +209,9 @@ public enum ProviderConfigurationValidation {
     /// authentication family and the provider routing family are unchanged.
     /// Same-host path or provider-alias changes (e.g. `/v1` →
     /// `/compatible-mode/v1`, or a catalog alias of the same provider) do NOT
-    /// force redundant credential entry; a different port, scheme, host or
+    /// force redundant credential entry, except known subscription billing
+    /// endpoints, which require a separate key even on the same origin.
+    /// A different port, scheme, host or
     /// provider family/authentication does.
     public enum ProviderConnectionIdentity: Sendable {
         public struct Key: Equatable, Sendable, Hashable, CustomStringConvertible {
@@ -237,7 +239,7 @@ public enum ProviderConfigurationValidation {
                 scheme: scheme,
                 host: host,
                 port: baseURL.port ?? defaultPort(scheme) ?? 0,
-                routeFamily: kind.rawValue,
+                routeFamily: ProviderBillingEndpoint.resolve(baseURL)?.rawValue ?? kind.rawValue,
                 authStyle: authStyle(for: kind)
             )
         }

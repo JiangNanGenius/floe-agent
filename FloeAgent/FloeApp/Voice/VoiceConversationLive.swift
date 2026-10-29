@@ -75,6 +75,7 @@
 import Foundation
 import AVFoundation
 import FloeCore
+import FloeProviders
 
 // MARK: - Authorization bridge (reuses the exact dictation prompts)
 
@@ -1434,7 +1435,9 @@ extension VoiceConversationCoordinator {
     /// The production wiring: same system permission prompts as dictation,
     /// one duplex live stack per session (AEC-processed mic capture + the
     /// shared player-node output the TTS bridge feeds), a real clock,
-    /// markdown→plain normalization for SPEECH and redacted logging.
+    /// provider-independent whole-body speech projection (code/tables removed,
+    /// URLs retained for the selected source's own projection) and redacted
+    /// logging.
     ///
     /// Simulator note: capture/AEC are unavailable by design (see
     /// `VoiceConversationLiveStack.activate`); UI acceptance must inject
@@ -1443,7 +1446,8 @@ extension VoiceConversationCoordinator {
     static func live(
         driving: any VoiceConversationTurnDriving,
         language: VoiceRecognitionLanguage = .automatic,
-        diagnostics: (any VoiceConversationDiagnostics)? = FloeVoiceConversationDiagnostics()
+        diagnostics: (any VoiceConversationDiagnostics)? = FloeVoiceConversationDiagnostics(),
+        speechNormalizer: (@Sendable (String) -> String)? = nil
     ) -> VoiceConversationCoordinator {
         VoiceConversationCoordinator(
             authorization: SystemSpeechAuthorizationProvider(),
@@ -1451,7 +1455,9 @@ extension VoiceConversationCoordinator {
             driving: driving,
             clock: VoiceConversationSystemScheduler(),
             diagnostics: diagnostics,
-            speechNormalizer: { AnswerSpeechText.plainText($0) }
+            speechNormalizer: speechNormalizer ?? {
+                AnswerSpeechText.spokenText($0, destination: .cloud)
+            }
         )
     }
 }

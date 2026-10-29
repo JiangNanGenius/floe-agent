@@ -565,6 +565,11 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
     /// Continuous-voice barge-in: user speech may interrupt answer audio
     /// (default ON per settled spec).
     public var allowBargeIn: Bool
+    /// Read full URLs aloud in the LOCAL/on-device read-aloud projection
+    /// (default OFF). Cloud voices always receive the authored URL; this
+    /// preference never moves an in-flight utterance and does not affect the
+    /// display body. Older persisted JSON without the key decodes to false.
+    public var readLinksAloud: Bool
     /// Explicit reuse of an already-configured provider connection (its Keychain
     /// secret) instead of a dedicated TTS key. nil = dedicated TTS key only.
     /// Reuse is opt-in per provider kind and never a silent fallback.
@@ -588,6 +593,7 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         speechPitchSemitones: Double = 0.0,
         autoReadEnabled: Bool = false,
         allowBargeIn: Bool = true,
+        readLinksAloud: Bool = false,
         connectionProviderID: UUID? = nil,
         language: String? = nil
     ) {
@@ -607,6 +613,7 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
         self.speechPitchSemitones = controls.speechPitchSemitones
         self.autoReadEnabled = autoReadEnabled
         self.allowBargeIn = allowBargeIn
+        self.readLinksAloud = readLinksAloud
         self.connectionProviderID = connectionProviderID
         let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
         self.language = (trimmedLanguage?.isEmpty == false) ? trimmedLanguage : nil
@@ -653,6 +660,8 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
                 Bool.self, forKey: .autoReadEnabled),
             allowBargeIn: try container.decode(
                 Bool.self, forKey: .allowBargeIn),
+            readLinksAloud: try container.decodeIfPresent(
+                Bool.self, forKey: .readLinksAloud) ?? false,
             connectionProviderID: try container.decodeIfPresent(
                 UUID.self, forKey: .connectionProviderID),
             language: try container.decodeIfPresent(String.self, forKey: .language))
@@ -661,11 +670,219 @@ public struct TTSSettingsSnapshot: Codable, Sendable, Hashable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case provider, billingRoute, alibabaRegion, openAIBaseURL, modelID, voiceID
         case speechRateRatio, speechPitchSemitones, autoReadEnabled, allowBargeIn
-        case connectionProviderID, language
+        case readLinksAloud, connectionProviderID, language
     }
 
     public static let systemDefault = TTSSettingsSnapshot()
 
     /// Persisted-storage schema version (kept in the JSON envelope).
     public static let schemaVersion = 1
+}
+
+// MARK: - File transcription (ASR) configuration
+
+/// One bounded cloud transcription request. The audio bytes stay in memory
+/// only for the duration of the request; the adapter never writes them to a
+/// cache or a temporary file. `endpointBaseURL` follows the same explicit
+/// OpenAI-compatible base semantics as TTS: nil means the official endpoint.
+public struct ASRTranscriptionRequest: Sendable {
+    public var endpointBaseURL: String?
+    public var modelID: String
+    /// Optional ISO/BCP-47 language hint (for example `en` or `zh`).
+    public var language: String?
+    public var filename: String
+    public var mimeType: String
+    public var audio: Data
+    /// Locally measured duration used only when the provider omits segment
+    /// timestamps. It is never invented by the adapter.
+    public var durationSeconds: Double?
+
+    public init(
+        endpointBaseURL: String? = nil,
+        modelID: String,
+        language: String? = nil,
+        filename: String,
+        mimeType: String,
+        audio: Data,
+        durationSeconds: Double? = nil
+    ) {
+        self.endpointBaseURL = endpointBaseURL
+        self.modelID = modelID
+        self.language = language
+        self.filename = filename
+        self.mimeType = mimeType
+        self.audio = audio
+        self.durationSeconds = durationSeconds
+    }
+}
+
+/// One provider-timed transcript segment. Start/end are seconds in the source
+/// media timeline.
+public struct ASRTranscriptionSegment: Codable, Sendable, Hashable {
+    public var start: Double
+    public var end: Double
+    public var text: String
+
+    public init(start: Double, end: Double, text: String) {
+        self.start = start
+        self.end = end
+        self.text = text
+    }
+}
+
+public struct ASRTranscriptionResult: Sendable, Hashable {
+    public var text: String
+    public var segments: [ASRTranscriptionSegment]
+    public var language: String?
+
+    public init(text: String, segments: [ASRTranscriptionSegment], language: String? = nil) {
+        self.text = text
+        self.segments = segments
+        self.language = language
+    }
+}
+
+/// Redacted file-transcription failures. Provider response text, headers and
+/// endpoint credentials are never carried.
+public enum ASRTranscriptionError: Error, Sendable, Hashable {
+    case invalidConfiguration(String)
+    case credentialMissing
+    case authentication
+    case quotaOrRateLimited
+    case httpStatus(Int)
+    case transport(TTSTransportFailure)
+    case providerRejected
+    case emptyResult
+    case responseTooLarge
+}
+
+/// Explicit OpenAI-compatible transcription endpoint resolution. The official
+/// base stays the default. A configured value must be HTTPS with an explicit
+/// host and no embedded credentials, query or fragment. Reverse-proxy path
+/// prefixes are preserved; a value that already ends in
+/// `/audio/transcriptions` is used verbatim, and a repeated trailing `/v1` is
+/// collapsed so `/v1/v1` or a doubled transcription path is never produced.
+public enum OpenAITranscriptionEndpoint {
+    public static let officialBaseURL = "https://api.openai.com/v1"
+    public static let transcriptionPath = "/audio/transcriptions"
+    public static let maxBaseURLCharacters = 2_048
+    public static let officialURL = URL(string: officialBaseURL + transcriptionPath)!
+
+    public static func validationProblem(for raw: String) -> String? {
+        guard let trimmed = trimmed(raw) else { return nil }
+        if case .problem(let problem) = parse(trimmed) { return problem }
+        return nil
+    }
+
+    public static func normalized(_ raw: String?) throws -> String? {
+        guard let trimmed = trimmed(raw) else { return nil }
+        switch parse(trimmed) {
+        case .problem(let problem):
+            throw ASRTranscriptionError.invalidConfiguration(problem)
+        case .parsed(let parsed):
+            return parsed.canonicalBase
+        }
+    }
+
+    public static func endpointURL(base raw: String?) throws -> URL {
+        guard let trimmed = trimmed(raw) else { return officialURL }
+        switch parse(trimmed) {
+        case .problem(let problem):
+            throw ASRTranscriptionError.invalidConfiguration(problem)
+        case .parsed(let parsed):
+            return try parsed.endpointURL()
+        }
+    }
+
+    public static func originChanged(from old: String?, to new: String?) -> Bool {
+        originKey(old) != originKey(new)
+    }
+
+    private struct Parsed {
+        let host: String
+        let port: Int?
+        let path: String
+
+        var origin: String { "\(host):\(port ?? 443)" }
+        var canonicalBase: String {
+            var value = path
+            while value.hasSuffix("/") { value.removeLast() }
+            var result = "https://" + host
+            if let port { result += ":" + String(port) }
+            return result + value
+        }
+        var composedPath: String {
+            var value = path
+            while value.hasSuffix("/") { value.removeLast() }
+            while value.hasSuffix("/v1/v1") { value.removeLast(3) }
+            if value.hasSuffix(transcriptionPath) { return value }
+            if value.isEmpty {
+                value = "/v1"
+            } else if !value.hasSuffix("/v1") {
+                value += "/v1"
+            }
+            return value + transcriptionPath
+        }
+        func endpointURL() throws -> URL {
+            var components = URLComponents()
+            components.scheme = "https"
+            components.host = host
+            components.port = port
+            components.percentEncodedPath = composedPath
+            guard let url = components.url else {
+                throw ASRTranscriptionError.invalidConfiguration("endpoint is not a valid URL")
+            }
+            return url
+        }
+    }
+
+    private enum ParseOutcome {
+        case parsed(Parsed)
+        case problem(String)
+    }
+
+    private static func trimmed(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
+    private static func parse(_ value: String) -> ParseOutcome {
+        guard value.count <= maxBaseURLCharacters else {
+            return .problem("endpoint is too long")
+        }
+        if value.unicodeScalars.contains(where: {
+            CharacterSet.whitespacesAndNewlines.contains($0)
+                || CharacterSet.controlCharacters.contains($0)
+        }) {
+            return .problem("endpoint must be a single URL without spaces")
+        }
+        guard let components = URLComponents(string: value),
+              components.scheme?.lowercased() == "https" else {
+            return .problem("endpoint must use https")
+        }
+        guard let host = components.host, !host.isEmpty, !host.hasPrefix(".") else {
+            return .problem("endpoint must include a host name")
+        }
+        if components.user != nil || components.password != nil {
+            return .problem("endpoint credentials belong in the API key field, not in the URL")
+        }
+        if components.query != nil { return .problem("endpoint must not include query parameters") }
+        if components.fragment != nil { return .problem("endpoint must not include a fragment") }
+        if let port = components.port, !(1...65_535).contains(port) {
+            return .problem("endpoint port is invalid")
+        }
+        return .parsed(Parsed(
+            host: host.lowercased(),
+            port: components.port == 443 ? nil : components.port,
+            path: components.percentEncodedPath))
+    }
+
+    private static func originKey(_ raw: String?) -> String {
+        guard let trimmed = trimmed(raw) else { return "api.openai.com:443" }
+        switch parse(trimmed) {
+        case .problem: return "invalid"
+        case .parsed(let parsed): return parsed.origin
+        }
+    }
 }

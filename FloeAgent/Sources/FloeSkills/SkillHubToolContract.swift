@@ -211,6 +211,7 @@ public enum SkillHubContractLimits {
 public enum SkillHubChannel: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
     case ios
     case android
+    case macosOriginal = "macos-original"
 }
 
 /// Feed honesty marker: production feeds carry real signed review; fixture
@@ -225,6 +226,7 @@ public enum SkillHubFeedStatus: String, Codable, Sendable, Equatable, Hashable, 
 public enum SkillHubInstallOffer: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
     case none
     case qualified
+    case upstreamOriginal
     case fixtureSimulated
 }
 
@@ -518,6 +520,7 @@ public protocol SkillHubCatalogProviding: Sendable {
     /// return entries with the pinned publication Y (and audited X) already
     /// resolved; the tool bounds and scores them.
     func verifiedCatalogEntries() async throws -> [SkillHubCatalogEntry]
+    func verifiedCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry]
     /// Verified exact-id detail (reviewed metadata, bundled reviewed
     /// instructions, package-relative inventory), or nil when the verified
     /// catalog has no such entry. Never registers, enables, activates or
@@ -528,6 +531,9 @@ public protocol SkillHubCatalogProviding: Sendable {
 }
 
 public extension SkillHubCatalogProviding {
+    func verifiedCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry] {
+        try await verifiedCatalogEntries()
+    }
     func verifiedCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
         try await verifiedCatalogDetail(id: id)
     }

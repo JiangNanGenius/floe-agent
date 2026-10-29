@@ -41,6 +41,7 @@ let package = Package(
         .library(name: "FloeTestSupport", targets: ["FloeTestSupport"])
     ],
     dependencies: [
+        .package(path: "../FloeMacBridge"),
         .package(path: "ThirdParty/WasmKit"),
         .package(url: "https://github.com/apple/swift-system", exact: "1.8.0"),
         .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.8.0"),
@@ -301,6 +302,7 @@ let package = Package(
         .target(
             name: "FloeExecution",
             dependencies: [
+                .product(name: "FloeMacBridgeProtocol", package: "FloeMacBridge"),
                 .product(name: "WasmKit", package: "WasmKit"),
                 .product(name: "WasmKitWASI", package: "WasmKit"),
                 .product(name: "SystemPackage", package: "swift-system"),
@@ -765,6 +767,15 @@ let package = Package(
                 .product(name: "WAT", package: "WasmKit"), .product(name: "Crypto", package: "swift-crypto")
             ],
             path: "Tests/FloeExecutionTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .enableExperimentalFeature("StrictConcurrency")
+            ]
+        ),
+        .testTarget(
+            name: "FloeMacBridgeTests",
+            dependencies: ["FloeExecution"],
+            path: "Tests/FloeMacBridgeTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
                 .enableExperimentalFeature("StrictConcurrency")

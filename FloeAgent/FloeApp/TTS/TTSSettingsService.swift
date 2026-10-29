@@ -292,6 +292,13 @@ final class TTSSettingsService: ObservableObject {
         return true
     }
 
+    /// Exact saved/default snapshot for one ready source. Assistant file tools
+    /// use this to reuse the user's selected voice/endpoint/profile without
+    /// changing the ordinary read-aloud selection.
+    func assistantSnapshot(for source: SpeechOutputSource) -> TTSSettingsSnapshot? {
+        savedSnapshot(for: source)
+    }
+
     /// Installed pack descriptor usable as a selection target. Hidden legacy
     /// descriptors only exist in `localManagedModels` while installed, so a
     /// hidden match is already release-held; visible packs must be installed.
@@ -353,6 +360,7 @@ final class TTSSettingsService: ObservableObject {
     private func applyGlobalControls(to value: inout TTSSettingsSnapshot) {
         value.autoReadEnabled = snapshot.autoReadEnabled
         value.allowBargeIn = snapshot.allowBargeIn
+        value.readLinksAloud = snapshot.readLinksAloud
         value.speechRateRatio = snapshot.speechRateRatio
         value.speechPitchSemitones = snapshot.speechPitchSemitones
     }

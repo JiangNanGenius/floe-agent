@@ -348,6 +348,16 @@ public actor LocalShellService {
                 outcome: "notStarted:\(reason.prefix(120))",
                 approvalGrantID: context.approvalGrantID?.uuidString
             )
+        case .outcomeUnknown(let jobID, _):
+            entry = ShellOperationJournal.Entry(
+                runID: context.runID.uuidString, toolCallID: context.toolCallID,
+                sessionID: context.clientScopedSessionToken,
+                commandSHA256: FloeDigest.sha256Hex(Data(command.utf8)), cwd: cwd,
+                exitCode: nil, stdoutBytes: 0, stderrBytes: 0,
+                truncated: true, durationMs: durationMs,
+                outcome: "outcomeUnknown:\(jobID)",
+                approvalGrantID: context.approvalGrantID?.uuidString
+            )
         case .failed(let message):
             entry = ShellOperationJournal.Entry(
                 runID: context.runID.uuidString,

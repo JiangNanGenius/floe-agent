@@ -27,6 +27,7 @@ struct MCPServiceCreationBinding: Codable, Equatable, Sendable {
     var providerID: UUID
     var modelID: UUID
     var modelName: String
+    var executionOS: String? = nil
 }
 
 struct MCPServiceCreationServiceEvent: Sendable {

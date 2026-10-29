@@ -173,7 +173,7 @@ public struct SkillSearchTool: AgentTool {
         if let catalog {
             let entries: [SkillHubCatalogEntry]
             do {
-                entries = Array(try await catalog.verifiedCatalogEntries()
+                entries = Array(try await catalog.verifiedCatalogEntries(context: context)
                     .prefix(SkillHubSearch.maximumSnapshotEntries))
                 catalogAvailability = SkillHubCatalogAvailability(state: .available, message: nil)
             } catch {
@@ -198,7 +198,7 @@ public struct SkillSearchTool: AgentTool {
                 .sorted { $0.id < $1.id }
                 .filter { includedIDs.contains($0.id) && seenIDs.insert($0.id).inserted }
             hubQueryMatches = perQuery
-            hubNextAction = "hubMatches are uninstalled curated-catalog metadata: review one with skill.read(id:, source:\"hub\") and install a qualified entry with skill.install(source:\"hub\", id:). They are not installed, enabled or active."
+            hubNextAction = "hubMatches are uninstalled curated-catalog metadata: review one with skill.read(id:, source:\"hub\") and install an available signed entry with skill.install(source:\"hub\", id:). They are not installed, enabled or active."
         }
         struct Response: Encodable {
             let matches: [ManagedSkill]
@@ -370,7 +370,7 @@ public struct SkillReadTool: AgentTool {
             isInstalled: managed == nil ? nil : (installedRow != nil),
             installedVersion: installedRow?.version,
             installedDigest: installedRow?.digest,
-            nextAction: "This is uninstalled curated-catalog review metadata; the instructions text is review content only and is NOT active. isInstalled/installedDigest describe this device's own pinned skill, separate from the catalog digests. To install a qualified entry, use skill.install(source: \"hub\", id: \"\(detail.entry.id)\") under the existing approval and grant-delta flow."
+            nextAction: "This is uninstalled curated-catalog review metadata; the instructions text is review content only and is NOT active. isInstalled/installedDigest describe this device's own pinned skill, separate from the catalog digests. To install an available signed entry, use skill.install(source: \"hub\", id: \"\(detail.entry.id)\") under the existing approval and grant-delta flow."
         )
         let data = try JSONEncoder().encode(response)
         guard data.count <= 262_144 else { throw FloeError.validationFailed("Skill response exceeds 256 KiB; read one exact id with a smaller limit") }

@@ -103,6 +103,7 @@ public actor DatabaseManager {
 
     private static func configuration() -> Configuration {
         var configuration = Configuration()
+        configuration.observesSuspensionNotifications = true
         configuration.prepareDatabase { db in
             // Enforce foreign keys for every connection in the pool or queue.
             try db.execute(sql: "PRAGMA foreign_keys = ON")
@@ -117,7 +118,10 @@ public actor DatabaseManager {
 
     /// Applies pending migrations. Registered migrations are never modified
     /// after release; new schema versions append new identifiers.
-    public func migrate() throws {
+    public func migrate() async throws {
+        let lease = try await StorageOperationBudget.begin()
+        defer { lease.finish() }
+        try lease.check()
         if let queue {
             try migrator.migrate(queue)
             try queue.write { try Self.repairPrereleaseChatSchemaVersion($0) }
@@ -152,13 +156,32 @@ public actor DatabaseManager {
 
     /// Serialized write access (GRDB guarantees a single writer at a time).
     public func writer<T: Sendable>(_ block: @Sendable (Database) throws -> T) async throws -> T {
+        let lease = try await StorageOperationBudget.begin()
+        defer { lease.finish() }
+        try lease.check()
         if let queue {
-            return try await queue.write { db in try block(db) }
+            return try await queue.write { db in
+                try lease.check()
+                return try block(db)
+            }
         }
         guard let pool else {
             throw FloeError.internalError("DatabaseManager has no configured writer")
         }
-        return try await pool.write { db in try block(db) }
+        return try await pool.write { db in
+            try lease.check()
+            return try block(db)
+        }
+    }
+
+    /// GRDB interrupts unsafe transactions and prevents a suspended writer
+    /// acquiring a SQLite lock. WAL readers can continue without that lock.
+    public nonisolated static func suspendConnections() {
+        NotificationCenter.default.post(name: Database.suspendNotification, object: nil)
+    }
+
+    public nonisolated static func resumeConnections() {
+        NotificationCenter.default.post(name: Database.resumeNotification, object: nil)
     }
 
     /// The single underlying GRDB reader, exposed ONLY for read-only

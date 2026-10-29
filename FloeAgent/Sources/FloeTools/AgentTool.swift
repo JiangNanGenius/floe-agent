@@ -122,6 +122,17 @@ public extension AgentTool {
     static var supportsConcurrentBatchDispatch: Bool { false }
 }
 
+/// A transport lost the authoritative receipt after dispatch may have begun.
+public struct ToolExecutionOutcomeUnknownError: Error, Sendable, LocalizedError {
+    public let reference: String
+    public let message: String
+    public init(reference: String, message: String) {
+        self.reference = reference
+        self.message = message
+    }
+    public var errorDescription: String? { message }
+}
+
 /// Bounded execution output; the digest covers the full pre-truncation bytes.
 public struct ToolExecutionOutput: Sendable {
     public var summary: String
@@ -143,6 +154,9 @@ public struct ToolExecutionOutput: Sendable {
     /// The tool reached a stable boundary that requires the user to interact
     /// with a visible system surface before the same run can continue.
     public var requiresUserAction: Bool
+    /// A submitted mutation has no authoritative completion receipt. This
+    /// native signal fences replay; a textual error is not sufficient.
+    public var outcomeUnknown: Bool
 
     public init(
         summary: String,
@@ -153,7 +167,8 @@ public struct ToolExecutionOutput: Sendable {
         requiresUserAction: Bool = false,
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
-        capturedOutputTruncated: Bool = false
+        capturedOutputTruncated: Bool = false,
+        outcomeUnknown: Bool = false
     ) {
         self.summary = String(summary.prefix(min(262_144, max(0, maximumSummaryCharacters))))
         self.summaryTruncated = self.summary != summary
@@ -164,6 +179,7 @@ public struct ToolExecutionOutput: Sendable {
         self.artifacts = artifacts
         self.outputFiles = outputFiles
         self.requiresUserAction = requiresUserAction
+        self.outcomeUnknown = outcomeUnknown
     }
 
     /// Convenience factory for the common "digest the summary" case, so tools
@@ -176,7 +192,8 @@ public struct ToolExecutionOutput: Sendable {
         requiresUserAction: Bool = false,
         maximumSummaryCharacters: Int = 4096,
         capturedOutput: String? = nil,
-        capturedOutputTruncated: Bool = false
+        capturedOutputTruncated: Bool = false,
+        outcomeUnknown: Bool = false
     ) {
         self.init(
             summary: summary,
@@ -187,7 +204,8 @@ public struct ToolExecutionOutput: Sendable {
             requiresUserAction: requiresUserAction,
             maximumSummaryCharacters: maximumSummaryCharacters,
             capturedOutput: capturedOutput,
-            capturedOutputTruncated: capturedOutputTruncated
+            capturedOutputTruncated: capturedOutputTruncated,
+            outcomeUnknown: outcomeUnknown
         )
     }
 }

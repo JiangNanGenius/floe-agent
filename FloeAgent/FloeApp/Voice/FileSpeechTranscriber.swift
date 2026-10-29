@@ -14,6 +14,16 @@ struct TimedSpeechSegment: Sendable, Codable {
     let words: [Word]
 }
 
+enum FileSpeechEngine: String, Sendable, Equatable {
+    case enhanced
+    case apple
+}
+
+struct FileSpeechResult: Sendable {
+    let segments: [TimedSpeechSegment]
+    let engine: FileSpeechEngine
+}
+
 enum FileSpeechError: Error, LocalizedError {
     case invalidAudio, unavailable, timedOut, empty
     var errorDescription: String? {
@@ -34,6 +44,19 @@ actor FileSpeechTranscriber {
 
     func transcribe(url: URL, language: VoiceRecognitionLanguage,
                     progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> [TimedSpeechSegment] {
+        try await transcribeResult(url: url, language: language,
+            allowAppleFallback: true, progress: progress).segments
+    }
+
+    /// File path used by assistant tools. `engine` reports the recognizer that
+    /// actually produced the segments; a hidden Apple fallback is never
+    /// presented as the enhanced model. `allowAppleFallback` keeps the
+    /// historical automatic behavior when true and fails honestly when false.
+    func transcribeResult(url: URL, language: VoiceRecognitionLanguage,
+                          allowAppleFallback: Bool = true,
+                          preferApple: Bool = false,
+                          progress: @escaping @Sendable (Double) -> Void = { _ in })
+        async throws -> FileSpeechResult {
         guard !active else { throw WhisperModelStore.Failure.busy }
         active = true; defer { active = false }
         guard url.isFileURL else { throw FileSpeechError.invalidAudio }
@@ -43,20 +66,23 @@ actor FileSpeechTranscriber {
               let track = try await asset.loadTracks(withMediaType: .audio).first else { throw FileSpeechError.invalidAudio }
         var kit: WhisperKit?
         var lease: UUID?
-        do {
-            let acquired = try await WhisperModelStore.shared.acquire()
-            lease = acquired.0
-            kit = try await WhisperKit(WhisperKitConfig(modelFolder: acquired.1.appendingPathComponent("model").path,
-                tokenizerFolder: acquired.1.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
-        } catch {
-            if let lease { await WhisperModelStore.shared.release(lease) }
-            lease = nil
-            try Task.checkCancellation()
+        if !preferApple {
+            do {
+                let acquired = try await WhisperModelStore.shared.acquire()
+                lease = acquired.0
+                kit = try await WhisperKit(WhisperKitConfig(modelFolder: acquired.1.appendingPathComponent("model").path,
+                    tokenizerFolder: acquired.1.appendingPathComponent("tokenizer"), verbose: false, prewarm: false, load: true, download: false))
+            } catch {
+                if let lease { await WhisperModelStore.shared.release(lease) }
+                lease = nil
+                try Task.checkCancellation()
+            }
         }
         do {
             var output: [TimedSpeechSegment] = []
             var offset = 0.0
             var appleAuthorized = false
+            var usedEngine: FileSpeechEngine?
             while offset < duration {
                 try Task.checkCancellation()
                 let length = min(25, duration - offset)
@@ -83,6 +109,7 @@ actor FileSpeechTranscriber {
                             }
                             guard !decoded.isEmpty else { throw FileSpeechError.empty }
                             segments = decoded
+                            usedEngine = .enhanced
                         } catch {
                             try Task.checkCancellation()
                             // Keep the lease until the inference and unload have both returned.
@@ -92,12 +119,16 @@ actor FileSpeechTranscriber {
                         }
                     }
                     if segments == nil {
+                        guard allowAppleFallback else {
+                            throw FileSpeechError.unavailable
+                        }
                         if !appleAuthorized {
                             guard await SystemSpeechAuthorizationProvider.requestAppleAccess() else { throw FileSpeechError.unavailable }
                             appleAuthorized = true
                         }
                         let words = try await AppleSpeechChunk().recognize(audio: audio, locale: language.locale)
                         segments = Self.captionGroups(words: words, offset: offset, length: length)
+                        if usedEngine == nil { usedEngine = .apple }
                     }
                     output.append(contentsOf: segments ?? [])
                     // Text is bounded too; an enormous asset must be split explicitly.
@@ -110,7 +141,7 @@ actor FileSpeechTranscriber {
             guard !output.isEmpty else { throw FileSpeechError.empty }
             if let kit { await kit.unloadModels() }
             if let lease { await WhisperModelStore.shared.release(lease) }
-            return output
+            return FileSpeechResult(segments: output, engine: usedEngine ?? .apple)
         } catch {
             if let kit { await kit.unloadModels() }
             if let lease { await WhisperModelStore.shared.release(lease) }

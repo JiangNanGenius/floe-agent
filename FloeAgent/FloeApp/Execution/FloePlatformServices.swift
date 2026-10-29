@@ -886,6 +886,7 @@ final class FloePlatformServices: @unchecked Sendable {
     func prepareLinuxEnvironment(
         environmentID: String? = nil,
         cancellation: CancellationToken,
+        runID: UUID? = nil,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
     ) async throws -> String {
         guard await ensureLinuxImageService() else {
@@ -904,9 +905,21 @@ final class FloePlatformServices: @unchecked Sendable {
         } else {
             resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
         }
-        return try await prepareLinuxImage(
-            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+        let activityID = await TaskRuntimePreparationCenter.shared.begin(
+            runID: runID, imageID: resolvedImageID, environmentID: environmentID
         )
+        do {
+            let result = try await prepareLinuxImage(
+            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+            )
+            await TaskRuntimePreparationCenter.shared.end(activityID)
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            return result
+        } catch {
+            await TaskRuntimePreparationCenter.shared.end(activityID)
+            throw error
+        }
     }
 
     /// Mutable phase cell for one shared image job. The byte-progress callback

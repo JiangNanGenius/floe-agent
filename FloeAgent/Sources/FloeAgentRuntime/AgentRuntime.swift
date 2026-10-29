@@ -318,7 +318,17 @@ public struct CatalogToolExecutor: ToolExecutor {
                         (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
-                    ? output.summaryTruncated : output.capturedOutputTruncated
+                    ? output.summaryTruncated : output.capturedOutputTruncated,
+                outcomeUnknown: output.outcomeUnknown
+            )
+        } catch let error as ToolExecutionOutcomeUnknownError {
+            let summary = "status=outcomeUnknown reference=\(error.reference)\n\(SecretRedactor.redact(error.message))\nReconnect and inspect the existing operation. Do not submit it again."
+            return ToolResult(
+                callID: call.id,
+                status: context.cancellation.isCancelled ? .cancelled : .needsUser,
+                outputSummary: summary,
+                outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)),
+                outcomeUnknown: true
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -1595,8 +1605,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: isSideEffecting,
-                outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .interruptedDispatch
+                outcomeUnknown: outcomeUnknown || result.outcomeUnknown,
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .interruptedDispatch
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
@@ -4644,7 +4654,7 @@ public actor FloeAgentRuntime {
             // the real-world outcome is then unknown, not a known
             // non-execution: the durable ledger receipt below keeps it
             // query-first and non-replayable.
-            var outcomeUnknown = false
+            var outcomeUnknown = result.outcomeUnknown
             let preDispatch = dispatchAuthorityByCallID.removeValue(forKey: call.id)
             let settledDescriptor = executor.descriptor(named: call.toolName)
             if let authority = preDispatch {
@@ -4705,7 +4715,7 @@ public actor FloeAgentRuntime {
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
                 outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .capabilityRemoved
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .capabilityRemoved
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true

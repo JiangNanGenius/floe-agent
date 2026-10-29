@@ -368,8 +368,13 @@ final class SpeechService: NSObject, ObservableObject {
     }
 
     func speak(_ text: String, ownerID: UUID? = nil) {
-        if isSpeaking, activeOwnerID == ownerID, let speakingText, AnswerSpeechText.plainText(speakingText) == AnswerSpeechText.plainText(text) { stop(); return }
-        preview(text, settings: settings?.snapshot ?? .systemDefault, ownerID: ownerID)
+        let currentSettings = settings?.snapshot ?? .systemDefault
+        if isSpeaking, activeOwnerID == ownerID, let speakingText,
+           AnswerSpeechText.spokenText(speakingText, settings: currentSettings)
+            == AnswerSpeechText.spokenText(text, settings: currentSettings) {
+            stop(); return
+        }
+        preview(text, settings: currentSettings, ownerID: ownerID)
     }
 
     func preview(_ text: String, settings: TTSSettingsSnapshot, credential: String? = nil, ownerID: UUID? = nil) {
@@ -377,7 +382,7 @@ final class SpeechService: NSObject, ObservableObject {
         lastManualText = text
         manualMessageText = text
         speakingText = text
-        handle.append(AnswerSpeechText.plainText(text))
+        handle.append(AnswerSpeechText.spokenText(text, destination: AnswerSpeechText.destination(for: settings, text: text)))
         handle.finish()
     }
 
@@ -402,7 +407,7 @@ final class SpeechService: NSObject, ObservableObject {
         lastManualText = text
         manualMessageText = text
         speakingText = text
-        handle.append(AnswerSpeechText.plainText(text))
+        handle.append(AnswerSpeechText.spokenText(text, destination: AnswerSpeechText.destination(for: base, text: text)))
         handle.finish()
     }
 
@@ -422,6 +427,7 @@ final class SpeechService: NSObject, ObservableObject {
             speechPitchSemitones: base.speechPitchSemitones,
             autoReadEnabled: base.autoReadEnabled,
             allowBargeIn: base.allowBargeIn,
+            readLinksAloud: base.readLinksAloud,
             language: base.language)
     }
 
@@ -447,6 +453,9 @@ final class SpeechService: NSObject, ObservableObject {
             return TTSSpeechStreamHandle(append: { _ in }, finish: {}, cancel: {})
         }
         let frozen = override ?? settings.snapshot
+        let usesMossProsody = frozen.provider == .onDevice
+            && MossSpeechPreparation.isMossEngine(
+                settings.localModelDescriptor(frozen.modelID)?.engine)
         // Freeze the user's playback rate/intonation for the WHOLE utterance
         // before any audio is scheduled. The configured source generates the
         // provider request at rate 1.0, so this effect is the single
@@ -469,19 +478,32 @@ final class SpeechService: NSObject, ObservableObject {
                 // model. The trailing unpunctuated answer/title/table tail is
                 // emitted exactly once by `finish()`.
                 var segmenter = TTSTextSegmenter(policy: .completeSentences)
+                var prosody = usesMossProsody ? MossProsodyStreamPreparation() : nil
                 var index = 0
                 let playback = UtterancePlayback()
-                for await addition in texts {
+                func emit(_ segments: [String]) async throws {
                     try Task.checkCancellation()
-                    for segment in segmenter.append(addition) {
-                        try await self.play(segment, index: index, owner: id, source: source, playback: playback)
-                        index += 1
+                    if prosody != nil {
+                        for prepared in prosody!.accept(segments) {
+                            try await self.playProjected(prepared, index: &index, owner: id,
+                                source: source, playback: playback, settings: frozen)
+                        }
+                    } else {
+                        for segment in segments {
+                            try await self.playProjected(segment, index: &index, owner: id,
+                                source: source, playback: playback, settings: frozen)
+                        }
                     }
                 }
-                for segment in segmenter.finish() {
-                    try Task.checkCancellation()
-                    try await self.play(segment, index: index, owner: id, source: source, playback: playback)
-                    index += 1
+                for await addition in texts {
+                    try await emit(segmenter.append(addition))
+                }
+                try await emit(segmenter.finish())
+                if prosody != nil {
+                    for prepared in prosody!.finish() {
+                        try await self.playProjected(prepared, index: &index, owner: id,
+                            source: source, playback: playback, settings: frozen)
+                    }
                 }
                 // The answer is complete only when every scheduled buffer has
                 // actually been played, so progress and speaking state track
@@ -792,6 +814,20 @@ final class SpeechService: NSObject, ObservableObject {
         FloeLogger(category: .providers).warning("speechPlaybackStalled key=voice.error.playback phase=\(phase)")
     }
 
+    /// Apply the source-specific spoken projection after sentence
+    /// segmentation. Empty projections (a local voice skipping a bare URL)
+    /// consume no synthesis slot and no playback progress.
+    private func playProjected(_ text: String, index: inout Int, owner: UUID,
+                               source: ConfiguredTTSSpeechSource,
+                               playback: UtterancePlayback,
+                               settings: TTSSettingsSnapshot) async throws {
+        let spoken = AnswerSpeechText.spokenText(
+            text, destination: AnswerSpeechText.destination(for: settings, text: text))
+        guard !spoken.isEmpty else { return }
+        try await play(spoken, index: index, owner: owner, source: source, playback: playback)
+        index += 1
+    }
+
     /// Synthesize one ordered segment and feed the utterance supply. Returns
     /// as soon as the segment's audio is fully generated and scheduled, so the
     /// next segment starts generating while this one is still playing.
@@ -1076,18 +1112,81 @@ final class SpeechService: NSObject, ObservableObject {
     }
 }
 
-/// Never reads fenced code, raw URLs or Markdown punctuation aloud. Tool and
-/// reasoning exclusion happens at the typed answer projection, not by guessing
-/// whether arbitrary user-visible prose sounds like a tool call.
+/// Read-aloud projection. The final answer body (including Markdown links and
+/// URLs) stays untouched for display; only the text handed to a speech source
+/// is destination-specific:
+///
+/// * cloud voices receive the full final prose, including the literal URL;
+/// * local voices keep a Markdown link label and skip the URL by default;
+/// * local "Read links" maps the complete URL, including its port and final
+///   slash, to spoken text with explicit source/spoken UTF-16 spans. This is
+///   text preservation only; acoustic reading is not claimed.
+///
+/// Fenced code and tool/reasoning exclusion happen at the typed final-answer
+/// projection, not by guessing whether arbitrary prose sounds like a tool
+/// call. This type is the single seam external call sites should use.
 enum AnswerSpeechText {
     static func plainText(_ markdown: String) -> String {
-        var result = markdown.replacingOccurrences(of: "(?s)```.*?```", with: "", options: .regularExpression)
+        // Backward-compatible call shape: local, Read-links OFF.
+        spokenText(markdown, destination: .local(readLinks: false, language: .chinese))
+    }
+
+    static func spokenText(
+        _ markdown: String,
+        settings: TTSSettingsSnapshot
+    ) -> String {
+        spokenText(markdown, destination: destination(for: settings, text: markdown))
+    }
+
+    static func spokenText(
+        _ markdown: String,
+        destination: SpeechTextDestination
+    ) -> String {
+        let cleaned = cleanedMarkdown(markdown)
+        let spoken = SpeechAnswerProjection.project(cleaned, destination: destination).spokenText
+        // A URL-only local projection can leave just its sentence punctuation
+        // after the URL is skipped. That is not speech: return an empty
+        // projection so the caller completes the round/utterance silently
+        // instead of sending punctuation or a zero-PCM synthesis.
+        guard spoken.contains(where: { $0.isLetter || $0.isNumber }) else { return "" }
+        return spoken
+    }
+
+    /// Use this when the caller already has the final answer body and the
+    /// selected output settings (for example `ThreadDetailView` automatic
+    /// read before handing text to `beginStream`).
+    static func destination(
+        for settings: TTSSettingsSnapshot,
+        text: String?
+    ) -> SpeechTextDestination {
+        if settings.provider.requiresCloudCredential { return .cloud }
+        let language: SpeechLinkLanguage
+        if let code = settings.language?.lowercased(), code.hasPrefix("zh") {
+            language = .chinese
+        } else if let code = settings.language?.lowercased(), code.hasPrefix("en") {
+            language = .english
+        } else if let text {
+            language = text.unicodeScalars.contains(where: {
+                (0x3400...0x9FFF).contains($0.value)
+            }) ? .chinese : .english
+        } else {
+            language = .chinese
+        }
+        return .local(readLinks: settings.readLinksAloud, language: language)
+    }
+
+    /// Display-side cleanup only: fenced code, semantic tables, images,
+    /// headings and list markers. Inline emphasis and URL handling belong to
+    /// the projection so URL bytes are never mutated by generic cleanup.
+    static func cleanedMarkdown(_ markdown: String) -> String {
+        var result = markdown.replacingOccurrences(
+            of: "(?s)```.*?```", with: "", options: .regularExpression)
         result = AnswerSpeechTableText.expanding(result)
-        result = result.replacingOccurrences(of: "!\\[[^\\]]*\\]\\([^)]*\\)", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "\\[([^\\]]+)\\]\\([^)]*\\)", with: "$1", options: .regularExpression)
-        result = result.replacingOccurrences(of: "(?m)^\\s{0,3}(?:#{1,6}|>|[-*+] |[0-9]+\\. )\\s*", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "https?://[^\\s<>()]+", with: "", options: .regularExpression)
-        result = result.replacingOccurrences(of: "[*_`~]", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: "!\\[[^\\]]*\\]\\([^)]*\\)", with: "", options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: "(?m)^\\s{0,3}(?:#{1,6}|>|[-*+] |[0-9]+\\. )\\s*",
+            with: "", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

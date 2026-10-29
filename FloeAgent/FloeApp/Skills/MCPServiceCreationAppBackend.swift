@@ -59,10 +59,13 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
         // not boot a guest or choose a different project's environment.
         _ = try await environment.environmentRegistry.ensureProjectContainer(
             workspaceID: owner, workspaceRootPath: root.path)
+        if await MacBridgeClient.shared.isConnected() {
+            _ = try await environment.environmentRegistry.ensureMacBridgeProjectContainer(workspaceID: owner, workspaceRootPath: root.path)
+        }
         return await environment.environmentRegistry.all().filter {
             $0.kind == .project && $0.ownerID == owner && $0.state == .active
-                && !$0.requiresRebuild && $0.executionBackend == .linuxVM
-        }.map { MCPServiceCreationOption(id: $0.id, title: $0.name ?? FloeL10n.l("skills.mcp.creation.project_environment")) }
+                && !$0.requiresRebuild && ($0.executionBackend == .linuxVM || $0.executionBackend == .macBridge)
+        }.map { MCPServiceCreationOption(id: $0.id, title: ($0.name ?? FloeL10n.l("skills.mcp.creation.project_environment")) + ($0.executionBackend == .macBridge ? " · Mac" : " · Linux")) }
     }
 
     func resolve(_ record: MCPServiceCreationRecord) async throws -> MCPServiceCreationBinding {
@@ -89,7 +92,8 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
             frozenModels[record.id] = pair
             return MCPServiceCreationBinding(root: root,
                 projectRelativePath: "MCPServices/" + record.id.uuidString.lowercased(),
-                providerID: pair.0.id, modelID: pair.1.id, modelName: pair.1.displayName)
+                providerID: pair.0.id, modelID: pair.1.id, modelName: pair.1.displayName,
+                executionOS: await environment.environmentRegistry.record(id: record.request.environmentID)?.effectiveExecutionBackend == .macBridge ? "macos" : "linux")
         } catch { lease.release(); throw error }
     }
 
@@ -107,7 +111,7 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
                 limits: .init(maximumEntries: 32, maximumFileBytes: 262_144, maximumTotalBytes: 1_048_576),
                 allowedTopLevel: ["README.md", "contract.json", "node-http"])
             let launcher = destination.appendingPathComponent("node-http/floe-start.mjs")
-            try Data(Self.launcher.utf8).write(to: launcher, options: .atomic)
+            try Data(Self.launcher(for: binding.executionOS).utf8).write(to: launcher, options: .atomic)
         }
         try validateFixedInputs(record)
     }
@@ -484,7 +488,10 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
         guard let selected = await environment.environmentRegistry.record(id: id),
               selected.kind == .project, selected.ownerID == owner,
               selected.state == .active, !selected.requiresRebuild,
-              selected.executionBackend == .linuxVM else { throw ownershipError() }
+              selected.executionBackend == .linuxVM || selected.executionBackend == .macBridge else { throw ownershipError() }
+        if selected.executionBackend == .macBridge, !(await MacBridgeClient.shared.isConnected()) {
+            throw FloeError.invalidConfiguration(String(localized: "mac.bridge.disconnected"))
+        }
     }
 
     private func frozenPair(_ record: MCPServiceCreationRecord) async throws -> (ProviderProfile, ModelProfile) {
@@ -677,7 +684,7 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
             }
         }
         let launcher = try guardPaths.resolve(binding.projectRelativePath + "/node-http/floe-start.mjs")
-        guard try Data(contentsOf: launcher) == Data(Self.launcher.utf8) else {
+        guard try Data(contentsOf: launcher) == Data(Self.launcher(for: binding.executionOS).utf8) else {
             throw FloeError.validationFailed(FloeL10n.l("skills.mcp.creation.template_changed"))
         }
     }
@@ -687,6 +694,10 @@ final class MCPServiceCreationAppBackend: MCPServiceCreationBackend {
     private func unavailable() -> FloeError { .invalidConfiguration(FloeL10n.l("skills.mcp.creation.unavailable")) }
     private func buildIncomplete() -> FloeError { .validationFailed(FloeL10n.l("skills.mcp.creation.build_failed")) }
     private func smokeError() -> FloeError { .validationFailed(FloeL10n.l("skills.mcp.creation.check_failed")) }
+
+    static func launcher(for executionOS: String?) -> String {
+        executionOS == "macos" ? launcher.replacingOccurrences(of: "process.env.HOST = '0.0.0.0';", with: "process.env.HOST = '127.0.0.1';") : launcher
+    }
 
     static let launcher = """
     // Floe-owned guest entry. No public listener/host configuration is changed.

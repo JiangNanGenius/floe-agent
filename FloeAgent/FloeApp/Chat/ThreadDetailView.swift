@@ -127,6 +127,8 @@ struct ThreadDetailView: View {
                     Divider()
                 }
                 threadScroll
+                TaskMacBridgeAvailability(conversationID: viewModel.conversationID, runID: viewModel.selectedRunID)
+                TaskRuntimePreparationBanner(runID: viewModel.selectedRunID)
                 if let status = viewModel.compactionStatus {
                     HStack {
                         if viewModel.isCompacting { ProgressView().controlSize(.small) }
@@ -1238,7 +1240,8 @@ struct ThreadDetailView: View {
               let runID = viewModel.selectedRunID,
               let final = FinalAnswerSpeech.answer(runID: runID, events: viewModel.events, messages: viewModel.messages) else { return }
         automaticRead.observeFinalMessages(
-            [(id: final.id, runID: Optional(final.runID), text: AnswerSpeechText.plainText(final.text))],
+            [(id: final.id, runID: Optional(final.runID), text: AnswerSpeechText.spokenText(
+                final.text, settings: environment.ttsSettingsService.snapshot))],
             enabled: enabled, makeStream: makeAutomaticReadStream
         )
     }

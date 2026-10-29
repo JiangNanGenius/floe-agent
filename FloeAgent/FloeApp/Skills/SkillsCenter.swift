@@ -320,6 +320,15 @@ final class SkillsCenter: ObservableObject {
         return bytes
     }
 
+    func verifiedHubCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry] {
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            let originals = MacOriginalSkillsCenter.shared
+            await originals.refresh(using: environment)
+            return try originals.catalogEntries()
+        }
+        return try await verifiedHubCatalogEntries()
+    }
+
     func verifiedHubCatalogEntries() async throws -> [SkillHubCatalogEntry] {
         await refreshCuratedCatalog()
         guard let publication = curatedPublication else {
@@ -399,6 +408,9 @@ final class SkillsCenter: ObservableObject {
     }
 
     func verifiedHubCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            return try await MacOriginalSkillsCenter.shared.catalogDetail(id: id, using: environment)
+        }
         try SkillIdentifier.validate(id)
         guard let ownerID = context.conversationID, !context.temporaryReadOnly, !context.publicWebOnly else {
             throw SkillHubInstallError.userChoiceBlocked
@@ -478,6 +490,29 @@ final class SkillsCenter: ObservableObject {
             containsScripts: proof.containsScripts, fileCount: actual.files.count,
             totalBytes: actual.files.values.reduce(0) { $0 + $1.count },
             reviewedCapabilities: actual.package.manifest.capabilities, reviewedTools: actual.package.manifest.tools)
+    }
+
+    func installMacOriginalSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> MacOriginalSkillInstallReceipt {
+        try context.cancellation.throwIfCancelled()
+        guard !context.temporaryReadOnly, !context.publicWebOnly, context.approvalGrantID != nil,
+              let environmentID = context.environmentID ?? context.environment?.id,
+              await environment.environmentRegistry.record(id: environmentID)?.effectiveExecutionBackend == .macBridge else {
+            throw SkillHubInstallError.userChoiceBlocked
+        }
+        let originals = MacOriginalSkillsCenter.shared
+        await originals.refresh(using: environment, publication: request.publicationCommit)
+        guard let entry = originals.entries.first(where: { $0.id == request.id }),
+              let publication = originals.publicationCommit, let catalogDigest = originals.catalogDigest,
+              request.publicationCommit == nil || request.publicationCommit == publication else { throw SkillHubInstallError.notConfigured }
+        guard originals.isEnabled(entry.id) else { throw SkillHubInstallError.userChoiceBlocked }
+        try context.cancellation.throwIfCancelled()
+        try await originals.installAndWait(entry, using: environment, cancellation: context.cancellation)
+        guard let installed = originals.installed[entry.id], let path = installed["path"]?.string,
+              installed["digest"]?.string == entry.digest else { throw SkillHubValidationError.receiptIdentityMismatch }
+        return MacOriginalSkillInstallReceipt(skillID: entry.id, version: entry.version, contentDigest: entry.digest,
+            catalogDigest: catalogDigest, publicationCommit: publication, sourceCommit: entry.commit,
+            sourceRepository: entry.repository, fileCount: entry.files.count,
+            totalBytes: entry.files.reduce(0) { $0 + $1.bytes }, installedPath: path)
     }
 
     func installHubSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> SkillHubInstallReceipt {
@@ -2187,6 +2222,27 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    /// Mac execution retains the product's proven bundled/native guides, not
+    /// downloaded iOS adaptations or the Linux-only Python substrate guide.
+    func nativeBundledSkillsForMac() async throws -> [ManagedSkill] {
+        await seedBuiltinDomainSkills()
+        let rows = try await environment.skillStore.all()
+        return DomainSkillLibrary.all.filter { definition in
+            definition.id != "floe-python" && (!definition.exposed || rows.contains { $0.id == definition.id && $0.status == "enabled" })
+        }.map { definition in
+            ManagedSkill(id: definition.id, name: definition.name, version: definition.version, enabled: true,
+                digest: FloeDigest.sha256Hex(Data(definition.markdown.utf8)), markdown: definition.markdown,
+                requiredToolNames: definition.toolNames, description: definition.description)
+        }
+    }
+    func nativeBundledRuntimeSelectionForMac(excluding skillIDs: Set<String> = []) async -> RuntimeSelection {
+        guard let all = try? await nativeBundledSkillsForMac() else { return .none }
+        let rows = all.filter { !skillIDs.contains($0.id) }
+        return RuntimeSelection(skillIDs: Set(rows.map(\.id)), allowedToolNames: nil,
+            instructions: rows.map { "- \($0.id): \($0.description ?? $0.name) [bundled native guide]" }.joined(separator: "\n\n"),
+            preapprovedPythonScriptSHA256: [], preapprovedPythonPackages: [])
+    }
+
     /// Guides provide routing metadata; they never replace the conversation's
     /// tool universe. Only verified script bytes can reuse installation review.
     func runtimeSelection(runID: UUID? = nil) async -> RuntimeSelection {
@@ -2398,6 +2454,12 @@ final class SkillsCenter: ObservableObject {
     /// run's execution binding; staging never executes anything, never grants
     /// permission and fails closed with an honest `resources` status.
     func readSkills(id: String?, runID: UUID? = nil, resourceContext: SkillResourceContext? = nil) async throws -> [ManagedSkill] {
+        if let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
+            let originals = MacOriginalSkillsCenter.shared.read(id: id, runID: runID)
+            if id != nil, !originals.isEmpty { return originals }
+            let native = try await nativeBundledSkillsForMac().filter { id == nil || $0.id == id }
+            return originals + native.filter { row in !originals.contains { $0.id == row.id } }
+        }
         await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }

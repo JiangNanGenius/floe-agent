@@ -336,14 +336,17 @@ enum ToolDiscovery {
             let avoid = interpreterMentions.isEmpty
                 ? "a general-purpose script"
                 : interpreterMentions.joined(separator: " or ")
-            var line = "Native-first routing: \(examples) are app-native tools. They run on-device through Apple frameworks or through the app's configured model route — never through the emulated guest — and the guest has no GPU passthrough. Prefer them over re-implementing the operation with \(avoid); a video/image/audio/PDF task is not owned by the Linux interpreter just because it is installed. Use the guest interpreter for media only when no offered native tool covers the requested operation or the user explicitly asked for a script or command-line tool."
+            var line = "Native-first routing: \(examples) are app-native tools. They run on-device through Apple frameworks or through the app's configured model route — never through the emulated guest — and a Linux guest has no GPU passthrough. A paired Mac execution target uses its own native host capabilities, not the Linux guest. Prefer them over re-implementing the operation with \(avoid); a video/image/audio/PDF task is not owned by the Linux interpreter just because it is installed. Use the selected execution environment for media only when no offered native tool covers the requested operation or the user explicitly asked for a script or command-line tool."
             if names.contains("media.capabilities") {
                 line += " Before promising a media operation, read \(n("media.capabilities")) to confirm the offered tool's operation is actually configured: a native tool name alone does not prove the requested operation is available."
             }
             lines.append(line)
         } else if !interpreterNames.isEmpty {
             let offered = interpreterNames.prefix(3).map(n).joined(separator: ", ")
-            lines.append("Media rule: no native image/video/audio/PDF/OCR tool is offered, so media work uses the guest interpreter (\(offered)) only within its real capability and must be reported as not configured when the user expects a native one.")
+            lines.append("Media rule: no native image/video/audio/PDF/OCR tool is offered, so media work uses the selected execution environment (\(offered)) only within its real capability and must be reported as not configured when the user expects a native one.")
+        }
+        if names.contains("audio.synthesize") {
+            lines.append("For file transcription or generated speech, use the configured audio tools. Call \(n("audio.services")) to read available local/cloud services and the assistant-only preference; never guess an unavailable service or change the ordinary read-aloud voice. Return the generated audio artifact or file receipt in the final response so the user can play or save it.")
         }
         if names.contains("video.generate") {
             lines.append("Video generation can use any configured cloud video route: call \(n("video.models")) first to read the public candidate names (`model`/`modelName`) and their parameter limits, choose the candidate that fits the request yourself, then pass its public `model` value to \(n("video.generate")). Never ask the user for an internal UUID, and never resubmit a running job.")

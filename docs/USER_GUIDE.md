@@ -105,6 +105,8 @@ Catalog metadata is verified per model, not promised for a whole provider. A mod
 
 Models that support it also carry a reasoning/thinking effort setting. With **Automatic**, Floe asks your configured auxiliary text model once when a fresh round starts to choose an effort for that request; the decision is kept for the round, including guide/steer and continuation messages, and is not reclassified mid-round. A manual effort you choose is never changed. If no auxiliary model is configured, or the helper fails or times out, Floe falls back to the model's own supported default.
 
+Volcengine pay-as-you-go and Agent Plan, and Alibaba Cloud pay-as-you-go and Token Plan, are separate provider choices. Select the plan you purchased; each keeps its own endpoint, key and models. Saving or testing one does not switch to another billing channel.
+
 ### Web search providers
 
 Settings → Web Search lists only providers you have added. Use **Add Provider** to choose a service or a compatible custom interface, configure an account and test a search. Each saved account has its own switch and priority. Refresh the provider directory from the add screen or **Settings → Updates**; downloaded directory updates preserve saved accounts and keys. Preset provider names follow directory updates automatically; names you edit yourself are preserved. Review other available changes before applying them to an existing account.
@@ -268,6 +270,12 @@ One guest uses at most three cores. Three cores require a verified image; older 
 a successful launch saves its core/memory configuration for later resumption. Choose explicitly on first start. Changing an active guest may require a hard restart that interrupts commands/services. App upgrades prefer reusing valid local images; missing, damaged or incompatible images need appropriate repair. Do not delete environments as the first troubleshooting step. Stop unneeded services after work; closing a panel does not necessarily terminate its shell.
 
 <!-- doc-anchor: section-25 -->
+### Same-Mac companion
+
+On Apple silicon Macs, the optional **Floe Bridge** companion can provide this Mac’s terminal without downloading the Linux environment. Connect under **Settings → Execution Environment → Mac Connection**. New unbound tasks can use the connected Mac; existing Linux tasks keep their environment. If the bridge disconnects, reconnect to inspect the original job, or choose the backup environment for a new task. Commands are not replayed automatically.
+
+Mac original Skills and Linux-adapted Skills have separate files and versions. Workspaces, task output and managed dependencies live under **Application Support/Floe Bridge**; the companion’s storage page opens or cleans its owned categories. User-selected external folders are retained. Public companion downloads require a signed, notarized release; this source update does not publish one. [Companion details](FLOE_MAC_BRIDGE.md).
+
 ### Web services and full-screen terminals
 
 Open a workspace `.html` or `.htm` file and choose **Run** to preview the page and its nearby resources. For a `.py`, `.js` or `.sh` HTTP server, choose **Run as web service**. Confirm the owning task and port, or create a run task when asked. Server scripts should read `PORT` and listen on the guest network interface; static pages need no server code. **Preview** appears after the page responds. Check logs if startup fails. Closing the window keeps the service running; use **Stop** or the environment's local-service list to end it. Restart the service after the app is terminated.
@@ -451,6 +459,12 @@ Edit your user profile and SOUL.md under **Settings → Memories & Personalizati
 **Read aloud** reads the selected final answer. Automatic reading, when enabled, starts after the final answer is complete. Tool activity, reasoning and intermediate progress are excluded. You can pause, continue or stop playback. Table reading keeps column headings associated with each row. Long answers are synthesized and played sentence by sentence, preserving words and complete sentence boundaries. Adjust speed and pitch under Voice Output; saved online-service keys can be viewed after authentication.
 
 Under **Settings → General → Voice Output**, choose a **Playback Source**, then open **Voice** to choose a sound from that source. Sources include system speech, installed enhanced speech models and configured online services. The separate play button generates a fresh preview from your editable text without changing the selection. Chinese, English, Japanese and mixed-language preview text is available. The first successful enhanced speech model download selects its default voice unless you changed the selection while downloading. Later downloads preserve your choice. Downloads show percentage, size and speed; a successful replacement cleans up the retired voice model when it is no longer in use. Manage downloads under **Voice Packs**. Under **Online Speech Services**, tap a service name to use it or its details button to edit the configuration; saving a new service keeps the current playback source. Each source remembers its voice while global speed and pitch remain unchanged. The current spoken answer keeps its original configuration; the next turn uses your new choice. Each billing channel keeps separate credentials; failures never silently switch services. On-device speech synthesis does not make a cloud chat model offline. The enhanced recognition model stays loaded after its first foreground use. Stopping dictation releases the microphone; backgrounding or memory pressure releases the model.
+
+### Assistant audio files
+
+Ask the assistant to transcribe an existing audio file or create a playable audio file from text. **Voice Input → File transcription** and **Voice Output → Generate audio** each have a service order. Ready local models are preferred by default; configured cloud services may be chosen explicitly. A failed request does not switch to a paid channel. These choices do not change ordinary dictation or the current read-aloud voice.
+
+**Read links aloud** applies to local read-aloud and is off by default: link labels remain, while addresses are skipped. Cloud speech keeps the full final prose, including links. Local mixed-language preparation changes spoken punctuation only, leaving the answer and subtitles unchanged.
 
 [↑ Back to contents](#contents)
 

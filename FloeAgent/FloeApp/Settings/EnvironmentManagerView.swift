@@ -679,6 +679,9 @@ private struct EnvironmentDetailView: View {
                     } else {
                         ProgressView().controlSize(.small)
                     }
+                } else if backendSelection == .macBridge {
+                    LabeledContent("environment.backend.picker", value: "macOS")
+                    NavigationLink("mac.bridge.title") { MacBridgeConnectionView() }
                 } else {
                     Text(OfficeInkText.t("此环境尚未启用 Linux。现有文件会保留。", "Linux is not enabled for this environment. Your existing files are preserved."))
                         .font(.callout)

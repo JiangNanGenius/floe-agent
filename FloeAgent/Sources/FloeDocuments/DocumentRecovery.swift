@@ -83,7 +83,10 @@ struct DocumentRecoveryManifest: Codable, Sendable {
 final class DocumentRecoveryLease: @unchecked Sendable {
     static let fileName = ".floe-session-lock"
     private let descriptor: Int32
-    init(directory: URL) throws {
+    private let budget: StorageOperationLease?
+    init(directory: URL, budget: StorageOperationLease? = nil) throws {
+        try budget?.check()
+        self.budget = budget
         let path = directory.appendingPathComponent(Self.fileName).path
         descriptor = Darwin.open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
         guard descriptor >= 0 else { throw CocoaError(.fileReadNoPermission) }
@@ -92,5 +95,6 @@ final class DocumentRecoveryLease: @unchecked Sendable {
             throw FloeError.validationFailed("This document recovery session is already open")
         }
     }
-    deinit { Darwin.close(descriptor) }
+    func check() throws { try budget?.check() }
+    deinit { Darwin.close(descriptor); budget?.finish() }
 }

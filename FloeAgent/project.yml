@@ -21,6 +21,8 @@ options:
   generateEmptyDirectories: true
 
 packages:
+  FloeMacBridge:
+    path: ../FloeMacBridge
   SpeechSwiftTTS:
     path: ThirdParty/SpeechSwiftTTS
   WhisperKit:
@@ -263,6 +265,8 @@ targets:
         com.apple.security.application-groups:
           - group.org.floeagent.ios
     dependencies:
+      - package: FloeMacBridge
+        product: FloeMacBridgeProtocol
       - package: SpeechSwiftTTS
         product: Qwen3TTS
       - package: SpeechSwiftTTS
@@ -1161,8 +1165,21 @@ targets:
       # source delivered by this lane; explicit FloeAppTests membership so
       # gen_project.sh includes it. Regenerate after any change here.
       - path: Tests/FloeAppTests/BrowserStagedExportServiceTests.swift
+      # Same-Mac bridge, suspension ownership and assistant audio additions.
+      - path: Tests/FloeAppTests/AssistantAudioToolTests.swift
+      - path: Tests/FloeAppTests/LocalSpeechPreparationTests.swift
+      - path: Tests/FloeAppTests/StorageSuspensionTests.swift
+      - path: Tests/FloeProvidersTests/SpeechTextRoutingTests.swift
+      - path: Tests/FloeProvidersTests/SubscriptionProviderTests.swift
+      - path: Tests/FloeDocumentsTests/DocumentLeaseSuspensionTests.swift
+      - path: Tests/FloePersistenceTests/StorageSuspensionTests.swift
+      - path: Tests/FloeSkillsTests/MacOriginalSkillTests.swift
+      - path: Tests/FloeMacBridgeTests/MacBridgeCommandTransferTests.swift
+      - path: Tests/FloeAgentRuntimeTests/MacUnknownOutcomeTests.swift
     dependencies:
       - target: FloeAgent
+      - package: FloeMacBridge
+        product: FloeMacBridgeProtocol
       - package: FloeCADKit
         product: FloeCAD
       - package: ZIPFoundation
