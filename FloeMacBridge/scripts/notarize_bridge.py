@@ -120,6 +120,12 @@ def run_checked(args: list[str], what: str, *, timeout: int = 120) -> bytes:
 def parse_codesign_dv(text: str) -> dict[str, str]:
     values: dict[str, str] = {}
     for line in text.splitlines():
+        # codesign emits flags inside the CodeDirectory record, rather than
+        # as a separate key, on current macOS releases.
+        if line.startswith("CodeDirectory "):
+            flag_match = re.search(r"(?:^|\s)flags=(\S+)", line)
+            if flag_match:
+                values.setdefault("flags", flag_match.group(1))
         if "=" not in line:
             continue
         key, value = line.split("=", 1)
