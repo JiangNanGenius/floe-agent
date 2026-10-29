@@ -185,7 +185,8 @@ struct SkillHubFeaturedCover: View {
 /// The detail-page hero cover. Shows the verified natural aspect of the real
 /// cover when present; before/without it the bundled category artwork fills
 /// the same rounded band so the page never reserves a giant blank box. The
-/// whole band is decorative — the accessible facts live in the text below it.
+/// band exposes the authored alternative text, or the category for bundled
+/// artwork, as one image with the same bounds as the visible band.
 struct SkillHubDetailCover: View {
     let ref: SkillHubShowcase.MediaRef?
     let commit: String?
@@ -223,6 +224,9 @@ struct SkillHubDetailCover: View {
             .accessibilityHidden(true)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ref?.alt?.value() ?? category.title)
+        .accessibilityAddTraits(.isImage)
         .accessibilityIdentifier("skills.detail.cover.\(skillID)")
     }
 }

@@ -135,6 +135,7 @@ struct SkillHubDetailView: View {
                         FlowingTags(tags: tags)
                     }
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("skills.detail.\(item.id)")
             }
             .listRowBackground(Color(uiColor: .secondarySystemGroupedBackground))
