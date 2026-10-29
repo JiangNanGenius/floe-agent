@@ -68,16 +68,50 @@ final class ProviderCatalogPickerUITests: XCTestCase {
     }
 
     /// Dismisses the software keyboard so a following tap cannot land on it.
+    ///
+    /// The reused iPad Simulator can report a keyboard window parked entirely
+    /// below the app (hardware keyboard attached / software keyboard
+    /// minimized). Its keys are off-screen, so tapping one makes XCUITest fail
+    /// the whole test with `kAXErrorFailure` on the AX scroll-to-visible
+    /// action. Only a keyboard that really overlaps the app needs dismissing;
+    /// a live one is dismissed through its own public hide key (or the
+    /// visible Return key on iPhone), never through an off-screen key.
     private func dismissKeyboard(_ app: XCUIApplication) {
-        guard app.keyboards.count > 0 else { return }
-        let returnKey = app.keyboards.buttons["return"]
-        if returnKey.exists {
-            returnKey.tap()
-        } else {
-            // Fall back to a neutral tap on the navigation bar area.
-            app.navigationBars.firstMatch.tap()
+        let keyboard = app.keyboards.firstMatch
+        guard keyboard.exists else { return }
+        let overlap = keyboard.frame.intersection(app.frame)
+        let isOnScreen = keyboard.isHittable
+            || (!overlap.isNull && overlap.width > 0 && overlap.height > 0)
+        guard isOnScreen else { return }
+
+        let hideKeys = [
+            "UIKeyboardDismissButton",
+            "keyboard.dismiss",
+            "Hide keyboard",
+            "Hide Keyboard",
+            "隐藏键盘",
+        ]
+        for identifier in hideKeys {
+            let key = keyboard.buttons[identifier]
+            if key.exists && key.isHittable {
+                key.tap()
+                _ = keyboard.waitForNonExistence(timeout: 3)
+                return
+            }
         }
-        _ = app.keyboards.firstMatch.waitForNonExistence(timeout: 3)
+        let compactDown = app.buttons["keyboard.chevron.compact.down"]
+        if compactDown.exists && compactDown.isHittable {
+            compactDown.tap()
+            _ = keyboard.waitForNonExistence(timeout: 3)
+            return
+        }
+        // This form's fields are single-line: a *visible* Return key ends
+        // editing. Never reach this branch with an off-screen key.
+        let returnKey = keyboard.buttons["return"]
+        if returnKey.exists && returnKey.isHittable {
+            returnKey.tap()
+            _ = keyboard.waitForNonExistence(timeout: 3)
+        }
     }
 
     /// The unified selector's persistent search bar.
@@ -86,14 +120,54 @@ final class ProviderCatalogPickerUITests: XCTestCase {
         return identified.exists ? identified : app.searchFields.firstMatch
     }
 
+    /// The provider form's own scroll surface. `Form` renders as a
+    /// `UICollectionView`; scope it by the form's display-name field so the
+    /// settings/sidebar collection views behind the sheet are never
+    /// scrolled instead of the form.
+    private func formScrollContainer(in app: XCUIApplication) -> XCUIElement {
+        let collections = app.collectionViews.allElementsBoundByIndex
+        if let form = collections.first(where: {
+            $0.exists && $0.textFields["providers.display_name"].exists
+        }) {
+            return form
+        }
+        // The presented editor is the frontmost scrollable surface.
+        if let last = collections.last { return last }
+        return app
+    }
+
+    /// Scrolls the provider form until `element` exists and is hittable.
+    ///
+    /// SwiftUI `Form` virtualizes its rows: a row below the fold is not in
+    /// the accessibility tree until the form scrolls, so waiting for
+    /// existence *before* scrolling can never succeed. Move in small,
+    /// bounded steps (well under one viewport) so a 52-point row cannot jump
+    /// from uninstantiated to above the viewport in a single gesture.
+    @discardableResult
+    private func scrollForm(to element: XCUIElement, in app: XCUIApplication,
+                            maxSteps: Int = 12) -> Bool {
+        if element.exists && element.isHittable { return true }
+        let container = formScrollContainer(in: app)
+        guard container.exists else { return false }
+        let down = container.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.72))
+        let up = container.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.38))
+        for _ in 0..<maxSteps {
+            if element.exists && element.isHittable { return true }
+            if element.exists, element.frame.height > 0,
+               element.frame.maxY <= container.frame.minY {
+                // Overshot slightly: bring the row back into the viewport.
+                up.press(forDuration: 0.05, thenDragTo: down)
+            } else {
+                down.press(forDuration: 0.05, thenDragTo: up)
+            }
+        }
+        return element.exists && element.isHittable
+    }
+
     /// Scrolls the form until `element` is hittable, then taps it.
     private func tapWhenHittable(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 8), "element never appeared")
-        var attempts = 0
-        while !element.isHittable, attempts < 6 {
-            app.swipeUp()
-            attempts += 1
-        }
+        scrollForm(to: element, in: app)
+        XCTAssertTrue(element.exists, "element never appeared")
         XCTAssertTrue(element.isHittable, "element never became hittable")
         element.tap()
     }

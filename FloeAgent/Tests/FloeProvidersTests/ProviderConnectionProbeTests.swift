@@ -36,9 +36,33 @@ private final class ProbeURLProtocol: URLProtocol, @unchecked Sendable {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
+    /// URLSession hands a POST body to a `URLProtocol` as
+    /// `httpBodyStream`, not `httpBody` (observed on the iOS simulator).
+    /// Drain the actual stream so captured requests expose the bytes the
+    /// transport would send; return nil when no body was ever attached.
+    fileprivate static func bodyData(of request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 { return nil }
+            if count == 0 { break }
+            body.append(buffer, count: count)
+        }
+        return body
+    }
+
     override func startLoading() {
+        var recordedRequest = request
+        if let body = Self.bodyData(of: request) {
+            recordedRequest.httpBody = body
+        }
         Self.lock.lock()
-        Self.requests.append(request)
+        Self.requests.append(recordedRequest)
         let stub = Self.stubs.isEmpty
             ? Stub(statusCode: 500, body: Data(#"{"error":"missing stub"}"#.utf8))
             : Self.stubs.removeFirst()
@@ -158,7 +182,7 @@ struct ProviderConnectionProbeTests {
         #expect(request.httpMethod == "POST")
         #expect(request.url?.path == "/compatible-mode/v1/chat/completions")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
-        let body = try #require(request.httpBody)
+        let body = try #require(ProbeURLProtocol.bodyData(of: request))
         let json = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(json["model"] as? String == "qwen3.8-flash")
         #expect(json["stream"] as? Bool == false)
@@ -295,7 +319,8 @@ struct ProviderConnectionProbeTests {
         #expect(result == nil)
         let request = ProbeURLProtocol.snapshotRequests().first
         #expect(request?.url?.path == "/compatible-mode/v1/chat/completions")
-        if let body = request?.httpBody,
+        if let request,
+           let body = ProbeURLProtocol.bodyData(of: request),
            let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
             #expect(json["max_tokens"] as? Int == ProviderConnectionProbe.probeMaxOutputTokens)
         } else {

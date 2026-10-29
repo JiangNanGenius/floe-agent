@@ -12,6 +12,7 @@
 //  not compare lighting between renderers.
 //
 
+import Compression
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -149,61 +150,164 @@ final class CADGLBMaterialInteropTests: XCTestCase {
         return try XCTUnwrap(info["index"] as? Int)
     }
 
-    /// Decode straight RGBA from an encoded PNG. ImageIO exposes PNG pixels as
-    /// an 8-bit straight-alpha (`CGImageAlphaInfo.last`) image, so its provider
-    /// bytes are read directly; drawing into the premultiplied bitmap context
-    /// used below would quantise RGB against alpha and cannot recover a low-
-    /// alpha colour exactly (the property these tests inspect). Other layouts
-    /// fall back to the context draw + un-premultiply path.
+    /// Decode straight RGBA by reading the samples stored in the PNG's IDAT
+    /// chunks. ImageIO's decoded CGImage layout is platform-dependent: on the
+    /// Simulator the old direct `.last` provider branch did not apply and the
+    /// premultiplied-context fallback quantised RGB against the packed alpha
+    /// ((40,80,120,12) -> (43,85,128,12)), producing the observed 5/8 errors.
+    /// Parsing the PNG is lossless on every platform and also proves the
+    /// encoder really stored straight samples rather than compensating in the
+    /// reader.
     private func decodedRGBA(_ data: Data) throws
         -> (width: Int, height: Int, pixels: [UInt8]) {
-        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
-        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        let width = image.width
-        let height = image.height
-        if image.bitsPerComponent == 8, image.bitsPerPixel == 32,
-           image.alphaInfo == .last,
-           let raw = image.dataProvider?.data as Data?,
-           raw.count >= image.bytesPerRow * height {
-            var bytes = [UInt8](repeating: 0, count: width * height * 4)
-            for row in 0..<height {
-                let sourceStart = row * image.bytesPerRow
-                let targetStart = row * width * 4
-                bytes.replaceSubrange(
-                    targetStart..<(targetStart + width * 4),
-                    with: raw[sourceStart..<(sourceStart + width * 4)])
+        try decodeStoredPNG(data)
+    }
+
+    /// Lossless reader for the 8-bit, non-interlaced PNGs written by ImageIO
+    /// here: parse signature/IHDR/IDAT/IEND, inflate the RFC 1951 DEFLATE
+    /// stream inside the RFC 1950 zlib wrapper, undo the per-row PNG filters,
+    /// and expand grayscale/RGB samples to straight RGBA.
+    private func decodeStoredPNG(_ data: Data) throws
+        -> (width: Int, height: Int, pixels: [UInt8]) {
+        let bytes = [UInt8](data)
+        let signature: [UInt8] = [137, 80, 78, 71, 13, 10, 26, 10]
+        guard bytes.count >= 8, Array(bytes[0..<8]) == signature else {
+            throw PNGDecodeError("not a PNG")
+        }
+        var offset = 8
+        var width = 0, height = 0, bitDepth = 0, colorType = 0
+        var compressionMethod = 0, filterMethod = 0, interlace = 0
+        var sawHeader = false, sawEnd = false
+        var idat: [UInt8] = []
+        while offset + 12 <= bytes.count {
+            let length = Int(pngUInt32(bytes, offset))
+            guard offset + 12 + length <= bytes.count else {
+                throw PNGDecodeError("truncated PNG chunk")
             }
-            return (width, height, bytes)
+            let typeStart = offset + 4
+            let type = String(bytes: bytes[typeStart..<(typeStart + 4)],
+                              encoding: .ascii) ?? ""
+            let payload = typeStart + 4
+            let payloadEnd = payload + length
+            switch type {
+            case "IHDR":
+                guard length == 13 else { throw PNGDecodeError("bad IHDR") }
+                width = Int(pngUInt32(bytes, payload))
+                height = Int(pngUInt32(bytes, payload + 4))
+                bitDepth = Int(bytes[payload + 8])
+                colorType = Int(bytes[payload + 9])
+                compressionMethod = Int(bytes[payload + 10])
+                filterMethod = Int(bytes[payload + 11])
+                interlace = Int(bytes[payload + 12])
+                sawHeader = true
+            case "IDAT":
+                idat.append(contentsOf: bytes[payload..<payloadEnd])
+            case "IEND":
+                sawEnd = true
+            default:
+                break
+            }
+            offset = payloadEnd + 4
+            if sawEnd { break }
         }
-        var bytes = [UInt8](repeating: 0, count: width * height * 4)
-        var drew = false
-        bytes.withUnsafeMutableBytes { buffer in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: width, height: height,
-                bitsPerComponent: 8, bytesPerRow: width * 4,
-                space: CGColorSpaceCreateDeviceRGB(),
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return }
-            context.interpolationQuality = .none
-            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-            drew = true
+        guard sawHeader, sawEnd, !idat.isEmpty, width > 0, height > 0,
+              compressionMethod == 0, filterMethod == 0 else {
+            throw PNGDecodeError("missing or unsupported PNG chunks")
         }
-        XCTAssertTrue(drew)
-        var pixel = 0
-        while pixel < bytes.count {
-            let alpha = Int(bytes[pixel + 3])
-            if alpha == 0 {
-                bytes[pixel] = 0
-                bytes[pixel + 1] = 0
-                bytes[pixel + 2] = 0
-            } else if alpha < 255 {
-                for channel in 0..<3 {
-                    let value = Int(bytes[pixel + channel]) * 255
-                    bytes[pixel + channel] = UInt8(min(255, (value + alpha / 2) / alpha))
+        guard bitDepth == 8, interlace == 0 else {
+            throw PNGDecodeError("unsupported PNG bit depth or interlace")
+        }
+        let channels: Int
+        switch colorType {
+        case 0: channels = 1
+        case 2: channels = 3
+        case 4: channels = 2
+        case 6: channels = 4
+        default: throw PNGDecodeError("unsupported PNG colour type")
+        }
+        guard width <= 16_384, height <= 16_384 else {
+            throw PNGDecodeError("PNG is larger than the test bound")
+        }
+        let rowBytes = width * channels
+        let filteredBytes = height * (rowBytes + 1)
+        guard filteredBytes > 0, filteredBytes <= 64 << 20 else {
+            throw PNGDecodeError("PNG is larger than the test bound")
+        }
+        // PNG wraps raw DEFLATE (RFC 1951) in a zlib (RFC 1950) frame. The
+        // Compression framework's COMPRESSION_ZLIB consumes the raw stream, so
+        // drop the two-byte header and four-byte Adler-32 trailer. PNG forbids
+        // a preset dictionary, so the header is exactly CMF+FLG.
+        guard idat.count > 6, idat[0] & 0x0F == 8,
+              (Int(idat[0]) << 8 | Int(idat[1])) % 31 == 0,
+              idat[1] & 0x20 == 0 else {
+            throw PNGDecodeError("bad zlib wrapper")
+        }
+        let deflate = Array(idat[2..<(idat.count - 4)])
+        var raw = [UInt8](repeating: 0, count: filteredBytes)
+        let produced = raw.withUnsafeMutableBytes { destination -> Int in
+            deflate.withUnsafeBytes { source -> Int in
+                compression_decode_buffer(
+                    destination.bindMemory(to: UInt8.self).baseAddress!, filteredBytes,
+                    source.bindMemory(to: UInt8.self).baseAddress!, deflate.count,
+                    nil, COMPRESSION_ZLIB)
+            }
+        }
+        guard produced == filteredBytes else {
+            throw PNGDecodeError(
+                "PNG inflate produced \(produced), expected \(filteredBytes)")
+        }
+        var samples = [UInt8](repeating: 0, count: height * rowBytes)
+        for row in 0..<height {
+            let filterStart = row * (rowBytes + 1)
+            let filter = Int(raw[filterStart])
+            let source = filterStart + 1
+            let destination = row * rowBytes
+            for column in 0..<rowBytes {
+                let value = Int(raw[source + column])
+                let left = column >= channels
+                    ? Int(samples[destination + column - channels]) : 0
+                let up = row > 0
+                    ? Int(samples[destination - rowBytes + column]) : 0
+                let upLeft = (column >= channels && row > 0)
+                    ? Int(samples[destination - rowBytes + column - channels]) : 0
+                let predictor: Int
+                switch filter {
+                case 0: predictor = 0
+                case 1: predictor = left
+                case 2: predictor = up
+                case 3: predictor = (left + up) / 2
+                case 4: predictor = pngPaeth(left, up, upLeft)
+                default: throw PNGDecodeError("unsupported PNG filter \(filter)")
                 }
+                samples[destination + column] = UInt8((value + predictor) & 0xFF)
             }
-            pixel += 4
         }
-        return (width, height, bytes)
+        if colorType == 6 {
+            return (width, height, samples)
+        }
+        var rgba = [UInt8](repeating: 255, count: width * height * 4)
+        for pixel in 0..<(width * height) {
+            let source = pixel * channels
+            let target = pixel * 4
+            switch colorType {
+            case 2:
+                rgba[target] = samples[source]
+                rgba[target + 1] = samples[source + 1]
+                rgba[target + 2] = samples[source + 2]
+            case 4:
+                rgba[target] = samples[source]
+                rgba[target + 1] = samples[source]
+                rgba[target + 2] = samples[source]
+                rgba[target + 3] = samples[source + 1]
+            case 0:
+                rgba[target] = samples[source]
+                rgba[target + 1] = samples[source]
+                rgba[target + 2] = samples[source]
+            default:
+                throw PNGDecodeError("unsupported PNG colour type")
+            }
+        }
+        return (width, height, rgba)
     }
 
     private func luminance(_ pixels: [UInt8], _ pixel: Int) -> UInt8 {
@@ -622,4 +726,26 @@ final class CADGLBMaterialInteropTests: XCTestCase {
             XCTAssertEqual(decoded.pixels[pixel * 4 + 2], 255)
         }
     }
+}
+
+private struct PNGDecodeError: Error, CustomStringConvertible {
+    let message: String
+    init(_ message: String) { self.message = message }
+    var description: String { message }
+}
+
+private func pngUInt32(_ bytes: [UInt8], _ offset: Int) -> UInt32 {
+    UInt32(bytes[offset]) << 24 | UInt32(bytes[offset + 1]) << 16
+        | UInt32(bytes[offset + 2]) << 8 | UInt32(bytes[offset + 3])
+}
+
+private func pngPaeth(_ left: Int, _ up: Int, _ upLeft: Int) -> Int {
+    let estimate = left + up - upLeft
+    let leftDistance = abs(estimate - left)
+    let upDistance = abs(estimate - up)
+    let upLeftDistance = abs(estimate - upLeft)
+    if leftDistance <= upDistance, leftDistance <= upLeftDistance {
+        return left
+    }
+    return upDistance <= upLeftDistance ? up : upLeft
 }
