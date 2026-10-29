@@ -263,6 +263,105 @@ struct CuratedSkillHubTests {
         }
     }
 
+    @Test("optional authoringPath is preserved as signed provenance without changing authority or execution")
+    func authoringPathIsOptionalProvenance() throws {
+        enum AuthoringPath {
+            case absent
+            case null
+            case value(String)
+        }
+        let base = try curatedFixture("catalog.json")
+        let canonical = try CuratedSkillFeed.decode(bytes: base, expectedChannel: .ios)
+        let before = try #require(canonical.entry(id: "fixture-guide"))
+
+        func upstreamJSON(_ authoring: AuthoringPath) -> String {
+            var fields = [
+                "\"repository\":\"https://github.com/example/upstream\"",
+                "\"commit\":\"4fc2f83e1c8710dba772bfd4523d0efab57737b6\"",
+                "\"path\":\"plugin/skills/example\"",
+                "\"skillManifestPath\":\"plugin/skills/example/SKILL.md\"",
+                "\"retrievedAt\":\"2026-10-26\"",
+                "\"licenseStatus\":\"verified\"",
+                "\"licenseEvidencePath\":\"LICENSE\"",
+                "\"repositoryLicense\":\"Apache-2.0\"",
+                "\"licenseNote\":{\"en\":\"Fixture note.\",\"zh-Hans\":\"夹具说明。\"}",
+            ]
+            switch authoring {
+            case .absent: break
+            case .null: fields.append("\"authoringPath\":null")
+            case .value(let path): fields.append("\"authoringPath\":\"\(path)\"")
+            }
+            return "{" + fields.joined(separator: ",") + "}"
+        }
+
+        func catalog(_ authoring: AuthoringPath) throws -> Data {
+            try mutate(base, "\"upstream\":null", to: "\"upstream\":\(upstreamJSON(authoring))")
+        }
+
+        func feed(_ authoring: AuthoringPath) throws -> CuratedSkillFeed {
+            try CuratedSkillFeed.decode(bytes: catalog(authoring), expectedChannel: .ios)
+        }
+
+        // Legacy bytes without the field still decode, and the field absent
+        // from a present upstream pin is nil rather than invented.
+        let absentFeed = try feed(.absent)
+        let absentUpstream = try #require(absentFeed.entry(id: "fixture-guide")?.upstream)
+        #expect(absentUpstream.authoringPath == nil)
+        #expect(absentUpstream.commit == "4fc2f83e1c8710dba772bfd4523d0efab57737b6")
+        #expect(absentUpstream.path == "plugin/skills/example")
+        #expect(absentUpstream.licenseStatus == .verified)
+        #expect(absentUpstream.licenseNote == CuratedSkillLocalizedText(
+            en: "Fixture note.", zhHans: "夹具说明。"))
+
+        // An explicit JSON null is a present-but-null optional, not a string.
+        let nullFeed = try feed(.null)
+        let nullUpstream = try #require(nullFeed.entry(id: "fixture-guide")?.upstream)
+        #expect(nullUpstream.authoringPath == nil)
+
+        // The signed value is preserved exactly and every authority-bearing
+        // field stays identical to the same pin without the field.
+        let authored = try feed(.value("skill"))
+        let after = try #require(authored.entry(id: "fixture-guide"))
+        let afterUpstream = try #require(after.upstream)
+        #expect(afterUpstream.authoringPath == "skill")
+        #expect(afterUpstream.repository == absentUpstream.repository)
+        #expect(afterUpstream.commit == absentUpstream.commit)
+        #expect(afterUpstream.path == absentUpstream.path)
+        #expect(afterUpstream.skillManifestPath == absentUpstream.skillManifestPath)
+        #expect(afterUpstream.retrievedAt == absentUpstream.retrievedAt)
+        #expect(afterUpstream.licenseStatus == absentUpstream.licenseStatus)
+        #expect(afterUpstream.licenseEvidencePath == absentUpstream.licenseEvidencePath)
+        #expect(afterUpstream.repositoryLicense == absentUpstream.repositoryLicense)
+        #expect(afterUpstream.licenseNote == absentUpstream.licenseNote)
+
+        // Presentation/provenance only: no status, package, review, runtime,
+        // offer, source or feed-level policy/authority fact changes.
+        #expect(after.status == before.status)
+        #expect(after.package == before.package)
+        #expect(after.review == before.review)
+        #expect(after.runtime == before.runtime)
+        #expect(after.installOffer == before.installOffer)
+        #expect(after.source == before.source)
+        #expect(after.tags == before.tags)
+        #expect(after.planNumber == before.planNumber)
+        #expect(after.minimumAppVersion == before.minimumAppVersion)
+        #expect(authored.feedStatus == canonical.feedStatus)
+        #expect(authored.permissionPolicy == canonical.permissionPolicy)
+        #expect(authored.counts == canonical.counts)
+
+        // Unknown fields are still refused; this is not a permissive decoder.
+        let authoredCatalog = try catalog(.value("skill"))
+        let unknown = try mutate(authoredCatalog, "\"authoringPath\":\"skill\"",
+                                 to: "\"authoringPath\":\"skill\",\"unexpected\":true")
+        do {
+            _ = try CuratedSkillFeed.decode(bytes: unknown, expectedChannel: .ios)
+            Issue.record("an unknown upstream field must still fail closed")
+        } catch let failure as CuratedSkillHubFailure {
+            #expect(String(describing: failure).contains("unexpected"),
+                    "the failure should name the unknown field, got \(failure)")
+        }
+    }
+
     @Test("Compiled production trust is the official identity only; fixture bytes fail under it")
     func productionTrustBoundary() throws {
         #expect(CuratedSkillHub.productionTrustedKeys == OfficialSkillHub.trustedKeys)

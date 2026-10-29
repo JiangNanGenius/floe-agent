@@ -69,7 +69,6 @@ struct OnboardingView: View {
                     ForEach(SetupGuideSection.configurable) { section in
                         SetupGuideSectionRow(section: section, model: guide)
                             .tag(section)
-                            .accessibilityIdentifier("setup.section.\(section.rawValue)")
                     }
                 } header: {
                     Text("setup.guide.sections")
@@ -77,15 +76,13 @@ struct OnboardingView: View {
                 Section {
                     SetupGuideSectionRow(section: .summary, model: guide)
                         .tag(SetupGuideSection.summary)
-                        .accessibilityIdentifier("setup.section.summary")
                 }
             }
             .navigationTitle("more.setup_guide")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    exitButton
-                }
-            }
+            // Exiting is a single decision on the active section. The detail
+            // column owns the only Exit control so the sidebar and detail
+            // never present two identical dismiss buttons (and two identical
+            // accessibility identifiers) at the same time.
         } detail: {
             detailColumn
         }
@@ -180,7 +177,12 @@ struct SetupGuideSectionRow: View {
         }
         .frame(minHeight: FloeTheme.minimumTarget)
         .contentShape(Rectangle())
-        .accessibilityIdentifier("setup.nav.\(section.rawValue)")
+        // An explicit container keeps the row identity separate from the
+        // status chip's identifier. Without containment the row identifier
+        // replaces every child's identifier, so a deferred/defaulted status
+        // could never be observed independently.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("setup.section.\(section.rawValue)")
     }
 
     /// The mirrored live job lifts the badge only while work is running;
@@ -254,6 +256,9 @@ struct SetupGuideProgressHead: View {
         .padding(.horizontal, 20)
         .padding(.top, 10)
         .padding(.bottom, 4)
+        // Keep the head itself addressable without replacing the live
+        // position and active-preset identifiers on its children.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("setup.progress")
     }
 

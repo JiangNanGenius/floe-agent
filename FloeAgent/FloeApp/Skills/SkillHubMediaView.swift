@@ -132,6 +132,15 @@ struct SkillHubShowcaseThumbnail: View {
         }
         .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 11))
+        .contentShape(RoundedRectangle(cornerRadius: 11))
+        // The loaded cover is aspect-filled and clipped to the compact tile.
+        // Without one explicit element, the accessibility frame follows the
+        // unclipped image bounds (a 4:3 cover reports 59×44 for a 44×44 tile)
+        // and can overlap the row text for VoiceOver and hit testing. One
+        // element over the SAME square frame keeps the reported control
+        // proportional to the visible compact media.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(ref?.alt?.value() ?? "")
         .accessibilityIdentifier("skills.thumbnail.\(skillID)")
     }
 }

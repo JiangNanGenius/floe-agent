@@ -232,6 +232,10 @@ public struct CuratedSkillUpstreamPin: Sendable, Equatable, Hashable {
     public let licenseEvidencePath: String?
     public let repositoryLicense: String
     public let licenseNote: CuratedSkillLocalizedText
+    /// Optional signed-registry hint for where the upstream skill was
+    /// authored (for example `skill`). Provenance only; the reviewed pin and
+    /// package bindings above remain the authority.
+    public let authoringPath: String?
 }
 
 /// First-party (builtin) pin. Released and staged versions are recorded
@@ -749,7 +753,7 @@ enum CuratedSkillEntryDecoder {
         try CuratedSkillStrictJSON.exactKeys(object, required: [
             "repository", "commit", "path", "skillManifestPath", "retrievedAt",
             "licenseStatus", "licenseEvidencePath", "repositoryLicense", "licenseNote",
-        ], path: path)
+        ], optional: ["authoringPath"], path: path)
         let repository = try CuratedSkillStrictJSON.string(object["repository"], path: "\(path).repository")
         guard CuratedSkillStrictJSON.isGitHubRepositoryURL(repository) else {
             throw CuratedSkillHubFailure.feed("\(path).repository must be an https GitHub repository URL")
@@ -782,10 +786,17 @@ enum CuratedSkillEntryDecoder {
         }
         let repositoryLicense = try CuratedSkillStrictJSON.string(object["repositoryLicense"], path: "\(path).repositoryLicense")
         let licenseNote = try CuratedSkillStrictJSON.localizedText(object["licenseNote"], path: "\(path).licenseNote", nonEmpty: true)
+        let authoringPath: String?
+        if let value = object["authoringPath"], !(value is NSNull) {
+            authoringPath = try CuratedSkillStrictJSON.string(value, path: "\(path).authoringPath")
+        } else {
+            authoringPath = nil
+        }
         return CuratedSkillUpstreamPin(
             repository: repository, commit: commit, path: skillPath, skillManifestPath: manifestPath,
             retrievedAt: retrievedAt, licenseStatus: licenseStatus, licenseEvidencePath: evidencePath,
-            repositoryLicense: repositoryLicense, licenseNote: licenseNote
+            repositoryLicense: repositoryLicense, licenseNote: licenseNote,
+            authoringPath: authoringPath
         )
     }
 
