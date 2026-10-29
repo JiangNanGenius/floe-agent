@@ -652,10 +652,15 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
             output: String(decoding: collected, as: UTF8.self),
             alive: !engine.leaseReleased,
             exitCode: engine.reportedExit,
+            cancelled: engine.cancelled,
             terminalOutput: collected.isEmpty ? nil : collected,
             failure: failure,
             bytesRead: engine.bytesRead,
-            bytesWritten: engine.bytesWritten
+            bytesWritten: engine.bytesWritten,
+            // The engine publishes this ONLY with a released terminal, after
+            // its whole-UID stop proof and workspace export. Never synthesize
+            // a receipt for a still-live page.
+            workspaceStatus: engine.leaseReleased ? engine.workspaceStatus : nil
         )
     }
 
@@ -699,6 +704,25 @@ public actor AndroidLinuxShellBackend: LocalShellBackend {
                 // keep ownership for reconciliation
             }
             scheduleReconciliation(sessionKey: sessionID, engineSessionID: engine.engineSessionID)
+        }
+    }
+
+    /// Requests the SAME one owned engine stop as `.terminate` while the
+    /// caller keeps observing THIS session entry. The terminal (and the
+    /// runtime workspace export receipt that rides only on its released page)
+    /// is delivered through the caller's `exchangeSession`; NO detached
+    /// reconciliation consumes or drops it first. A transport failure keeps
+    /// the entry owned for the caller's own fault/retirement reconciliation
+    /// (`closeSession` still schedules one when that ownership is handed back).
+    public func requestStopForSettlement(sessionID: String) async {
+        guard let record = sessions[sessionID], !record.engine.leaseReleased else { return }
+        var engine = record.engine
+        engine.stopRequested = true
+        sessions[sessionID] = SessionRecord(engine: engine, reconcilingSince: Date())
+        do {
+            _ = try await transport.shellCancel(LinuxShellCancelRequest(sessionID: engine.engineSessionID))
+        } catch {
+            // Keep ownership; the caller's exchange/retirement reconciles.
         }
     }
 

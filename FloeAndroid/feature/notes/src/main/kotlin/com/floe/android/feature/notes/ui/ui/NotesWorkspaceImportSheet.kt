@@ -154,7 +154,8 @@ internal fun NotesWorkspaceImportSheet(
                     )
                 }
                 FloeText(
-                    text = scope?.title ?: stringResource(R.string.notes_import_workspace_title),
+                    text = scope?.title?.ifBlank { stringResource(R.string.notes_untitled) }
+                        ?: stringResource(R.string.notes_import_workspace_title),
                     style = Floe.typography.section,
                     modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
                     maxLines = 1,
@@ -373,7 +374,7 @@ private fun WorkspaceScopeRow(scope: NotesWorkspaceScope, onClick: () -> Unit) {
         IconGlyph(FloeIcons.Bubble, Floe.colors.secondaryLabel, 22.dp)
         Column(Modifier.weight(1f)) {
             FloeText(
-                scope.title,
+                scope.title.ifBlank { stringResource(R.string.notes_untitled) },
                 style = Floe.typography.body,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

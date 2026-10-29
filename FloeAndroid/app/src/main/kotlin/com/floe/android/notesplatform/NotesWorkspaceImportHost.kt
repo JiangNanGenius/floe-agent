@@ -120,7 +120,7 @@ internal class NotesWorkspaceImportHost(
                         if (id.isEmpty() || !canonicalTask(id)) return@mapNotNull null
                         NotesWorkspaceScope(
                             id = id,
-                            title = item.title.trim().ifBlank { id },
+                            title = item.title.trim().takeUnless { it.equals(id, ignoreCase = true) }.orEmpty(),
                             isArchived = item.isArchived,
                         )
                     }

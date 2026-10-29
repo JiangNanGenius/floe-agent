@@ -858,7 +858,7 @@ internal class NotesLibraryController(
         )
         val plan: NotesTextPlan = planTextInsertion(
             document = document,
-            pageID = null,
+            pageID = document.pages.firstOrNull()?.id,
             text = text,
             markdown = picked.fileName.substringAfterLast('.', "").lowercase() == "md",
         )

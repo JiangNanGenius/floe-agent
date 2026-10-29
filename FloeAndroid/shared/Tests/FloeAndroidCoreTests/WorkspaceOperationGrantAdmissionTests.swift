@@ -263,6 +263,19 @@ final class WorkspaceOperationGrantAdmissionTests: XCTestCase {
         _ = key.withCString { floe_linux_workspace_session_close($0) }
     }
 
+    private func callExportBegin(_ key: String) throws -> (code: Int32, body: Data) {
+        var out = [CChar](repeating: 0, count: 65_537)
+        let n = key.withCString { pointer in
+            out.withUnsafeMutableBufferPointer { buffer in
+                floe_linux_workspace_export_begin(pointer, buffer.baseAddress, Int32(buffer.count))
+            }
+        }
+        let body = out.withUnsafeBufferPointer { raw in
+            Data(bytes: raw.baseAddress!, count: Int(max(n, 0)))
+        }
+        return (n, n > 0 ? body : Data())
+    }
+
     // MARK: - Positive round trip
 
     func testLiveRegisteredOperationMintsOpensAndCloses() async throws {
@@ -296,6 +309,49 @@ final class WorkspaceOperationGrantAdmissionTests: XCTestCase {
         let afterReply = try object(after.body)
         XCTAssertEqual(afterReply["ok"] as? Bool, false)
         XCTAssertEqual(afterReply["code"] as? String, "bindingUnavailable")
+    }
+
+    /// THE manual-close disconfirmation (G06 workspace-sync31): the runtime's
+    /// workspace export runs on the engine's asynchronous stop lane, AFTER
+    /// `shell.cancel` was answered. If the UI operation lease is retired then,
+    /// Core's grant-currency gate refuses the export and the user's guest file
+    /// never reaches the native workspace. Pin that boundary with the REAL
+    /// C ABI: the same call passes the currency gate on a live lease (and only
+    /// refuses for the untouched session state), while a retired lease refuses
+    /// at `runCurrency` BEFORE any staging.
+    func testRetiredOperationLeaseRefusesTheWorkspaceExportCurrencyGate() async throws {
+        let boot = try await bootInstalledGenerationWithRunDomain()
+        let seeded = try await seedConversationOwnedWorkspace()
+        let prepared = try await beginAndRegisterOperation(conversationID: seeded.conversationID,
+                                                           epoch: boot.epoch)
+        let mint = try callBindingForOperation(epoch: boot.epoch,
+                                               operationID: prepared.operation.operationID.uuidString,
+                                               runID: prepared.uiRunID.uuidString,
+                                               grantID: prepared.grantID)
+        let open = try callOpen(mint.body)
+        let opened = try object(open.body)
+        let sessionKey = try XCTUnwrap(opened["sessionKey"] as? String)
+        defer { closeSession(sessionKey) }
+
+        // Live lease: the currency gate PASSES; only the fixture's untouched
+        // session state (no baseline) refuses, never a proof/runCurrency code.
+        let liveReply = try callExportBegin(sessionKey)
+        let live = try object(liveReply.body)
+        XCTAssertEqual(live["ok"] as? Bool, false)
+        XCTAssertEqual(live["code"] as? String, "workspaceMalformed",
+                       "a live operation lease must pass the export currency gate: \(live)")
+
+        // The buggy manual-close order: retire the operation lease while the
+        // engine stop lane may still be exporting. The very first export
+        // transaction is then refused at the real grant-currency gate.
+        LinuxWorkspaceAuthority.retireWorkspaceOperation(operationID: prepared.operation.operationID)
+        let (domain, _) = try XCTUnwrap(RunDomainFacade.current(epoch: boot.epoch))
+        await domain.endG04WorkspaceOperation(prepared.operation)
+        let refusedReply = try callExportBegin(sessionKey)
+        let refused = try object(refusedReply.body)
+        XCTAssertEqual(refused["ok"] as? Bool, false)
+        XCTAssertEqual(refused["code"] as? String, "workspaceProofRefused:runCurrency",
+                       "retiring the operation lease before export must refuse the export (the G06 loss): \(refused)")
     }
 
     // MARK: - Negative admissions (closed vocabulary, fail-closed)

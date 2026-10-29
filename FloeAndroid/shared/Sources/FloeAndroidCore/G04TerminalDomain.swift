@@ -190,6 +190,10 @@ private final class TerminalSessionRecord: @unchecked Sendable {
     var stopReason: String?
     var faultCode: String?
     var lastRunToolchain: String?
+    /// Set by ONE explicit user Close. It never settles the session by
+    /// itself: the pump still waits for the engine's REAL terminal (and its
+    /// workspace export receipt) and only then may report `.closed`.
+    var closeRequested = false
 
     init(sessionToken: String, ownerRunID: UUID, conversationID: UUID, workspaceID: UUID,
          purpose: G04TerminalSessionPurpose, requestID: String,
@@ -801,7 +805,20 @@ public actor G04TerminalStore {
                     if !result.alive {
                         record.exitCode = result.exitCode
                         if let failure = result.failure { record.faultCode = Self.faultToken(failure) }
-                        record.phase = result.exitCode != nil ? .exited : .stopped
+                        record.phase = Self.settledPhase(closeRequested: record.closeRequested,
+                                                         cancelled: result.cancelled,
+                                                         exitCode: result.exitCode,
+                                                         workspaceStatus: result.workspaceStatus)
+                        if record.closeRequested, record.phase == .fault {
+                            // The engine's real terminal landed, but its OWN
+                            // workspace export did not settle synced. Name the
+                            // receipt fact: never a fake closed/saved state.
+                            record.faultCode = Self.closeExportFaultToken(result.workspaceStatus)
+                        } else if record.phase == .closed {
+                            // An expected user-stop note is not a fault once
+                            // the release AND the export receipt are real.
+                            record.faultCode = nil
+                        }
                         status(record)
                         await finishSession(sessionToken: sessionToken, reason: "engine-terminal")
                         return
@@ -866,7 +883,9 @@ public actor G04TerminalStore {
         guard let record = sessions[sessionToken] else {
             reply(requestID, ok: false, code: .sessionUnknown); return
         }
-        guard record.alive else { reply(requestID, ok: false, code: .sessionUnknown); return }
+        guard record.alive && !record.closeRequested else {
+            reply(requestID, ok: false, code: .sessionUnknown); return
+        }
         guard record.pendingInput.count + bytes.count <= G04TerminalLimits.maximumPendingInputBytes else {
             reply(requestID, ok: false, code: .tooLarge, reason: "pendingInputOverflow"); return
         }
@@ -882,7 +901,7 @@ public actor G04TerminalStore {
     }
 
     func resize(sessionToken: String, columns: Int, rows: Int, requestID: String) async {
-        guard let record = sessions[sessionToken], record.alive else {
+        guard let record = sessions[sessionToken], record.alive, !record.closeRequested else {
             reply(requestID, ok: false, code: .sessionUnknown); return
         }
         let clampedColumns = max(20, min(columns, 500))
@@ -897,19 +916,41 @@ public actor G04TerminalStore {
         reply(requestID, ok: true)
     }
 
+    /// Accepts ONE manual Close as a stop REQUEST, never as a settlement.
+    ///
+    /// The session and its registered workspace-operation lease stay OWNED
+    /// until the store pump observes the engine's real terminal
+    /// (`leaseReleased`). That terminal is published only after the runtime's
+    /// whole-UID stop proof AND its workspace export, so the operation lease
+    /// must stay live through it: retiring the receipt here (the previous
+    /// behavior) revoked the grant currency while the runtime's asynchronous
+    /// stop lane was still exporting, `EXPORT_BEGIN` refused with
+    /// `runCurrency`, and the user's guest files never reached the native
+    /// workspace (G06 manual-close regression). A failed/absent export is
+    /// reported as a typed FAULT by the pump, never a fake CLOSED.
     func close(sessionToken: String, requestID: String) async {
         guard let record = sessions[sessionToken] else {
             reply(requestID, ok: false, code: .sessionUnknown); return
         }
+        guard !record.closeRequested else {
+            reply(requestID, ok: true); return
+        }
+        record.closeRequested = true
+        // The user ended the interaction: queued keystrokes must not be
+        // written into a stopping shell (the old immediate teardown dropped
+        // them with the pump task).
+        record.pendingInput.removeAll(keepingCapacity: true)
         reply(requestID, ok: true)
-        await finishSession(sessionToken: sessionToken, reason: "explicit-close")
-        // finishSession requests the engine close; the pump's own
-        // cancellation only ends the pump task, the record settles here.
-        pumpTasks[sessionToken]?.cancel()
-        pumpTasks[sessionToken] = nil
-        record.alive = false
-        record.phase = .closed
-        status(record)
+        guard let components else {
+            // No engine is bound any more: nothing can be requested and no
+            // export can be awaited. The typed fault releases the exact lease.
+            await settleFault(sessionToken, code: .engineUnqualified)
+            return
+        }
+        _ = await components.sessions.requestStopForSettlement(
+            sessionID: sessionToken, runID: record.ownerRunID, clientSessionID: nil)
+        // The service-owned pump's next REAL terminal (or a typed fault)
+        // settles this record through finishSession; nothing is fabricated.
     }
 
     func attach(sessionToken: String, requestID: String) {
@@ -1004,10 +1045,15 @@ public actor G04TerminalStore {
 
     // MARK: Settlement
 
-    /// Requests the ORIGINAL close path (engine stop REQUEST + lease
-    /// retention) and detaches the receipt only AFTER
-    /// `ShellSessionCenter.close` has run the backend teardown. A cancelled
-    /// deletion fence follows the same path; neither fabricates a stop.
+    /// Settlement: detaches the receipt and its operation mapping ONLY once
+    /// the terminal is real — an engine-proven exit/stop (the pump calls this
+    /// after `leaseReleased`, which the runtime publishes only after its
+    /// whole-UID stop proof and workspace export), a typed fault, or a
+    /// lifecycle cancellation/fence. The explicit manual Close never calls
+    /// this directly: it requests the owned stop and leaves the session and
+    /// its operation lease to the pump's real terminal. A cancelled deletion
+    /// fence keeps the ORIGINAL request-then-retire path; it fabricates no
+    /// stop and claims no export.
     private func finishSession(sessionToken: String, reason: String) async {
         guard let record = sessions[sessionToken] else { return }
         sessions.removeValue(forKey: sessionToken)
@@ -1086,6 +1132,34 @@ public actor G04TerminalStore {
         if error is CancellationError { return "cancelled" }
         let text = String(describing: error)
         return Self.token(text.count > 128 ? String(text.prefix(128)) : text)
+    }
+
+    /// Closed-set phase decision for a REAL engine terminal (never a timer).
+    /// A manual Close is `closed` ONLY when the engine proved a STOP and the
+    /// runtime's OWN workspace export receipt says `synced`; a refused,
+    /// conflicted, aborted or absent export is a typed fault, never a fake
+    /// closed/saved state. A real (non-cancelled) exit always keeps `exited`;
+    /// an engine-proven stop the user did not request keeps the historical
+    /// exit-code/stop mapping.
+    static func settledPhase(closeRequested: Bool, cancelled: Bool,
+                             exitCode: Int32?, workspaceStatus: String?) -> G04TerminalPhase {
+        if closeRequested, cancelled {
+            return workspaceStatus == "synced" ? .closed : .fault
+        }
+        return exitCode != nil ? .exited : .stopped
+    }
+
+    /// Bounded fault token for a manual close whose real workspace export did
+    /// not settle synced. Names the receipt fact only (no path, digest or
+    /// reply body) and stays inside the closed wire vocabulary.
+    static func closeExportFaultToken(_ workspaceStatus: String?) -> String {
+        switch workspaceStatus {
+        case "conflict": return "workspaceExportConflict"
+        case "aborted": return "workspaceExportAborted"
+        case "error": return "workspaceExportFailed"
+        case "unknown": return "workspaceExportUnknown"
+        default: return "workspaceExportUnconfirmed"
+        }
     }
 
     private static let tokenAllowed = CharacterSet(charactersIn:
