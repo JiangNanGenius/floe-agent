@@ -347,6 +347,9 @@ final class AppEnvironment: ObservableObject {
     private var speechMemoryWarningCancellable: AnyCancellable?
     private lazy var _localSpeechRuntime = LocalSpeechRuntime()
     private lazy var _ttsSpeechService = TTSSpeechService(localProvider: localSpeechRuntime)
+    private lazy var _assistantAudioService = AssistantAudioService(
+        settings: ttsSettingsService, speech: ttsSpeechService)
+    var assistantAudioService: AssistantAudioService { _assistantAudioService }
     private lazy var _speechService: SpeechService = {
         let service = SpeechService()
         service.configure(settings: ttsSettingsService, speech: ttsSpeechService, localRuntime: localSpeechRuntime)
@@ -690,6 +693,7 @@ final class AppEnvironment: ObservableObject {
         isEphemeral: Bool = false,
         seedBundledSkills: Bool = true
     ) {
+        StorageSuspensionCoordinator.shared.start()
         self.shouldSeedBundledSkills = seedBundledSkills
         self.database = database
         self.conversationStore = conversationStore
@@ -929,7 +933,8 @@ final class AppEnvironment: ObservableObject {
             }
             return try await FloePlatformServices.shared.prepareLinuxEnvironment(
                 environmentID: request.environmentID,
-                cancellation: request.cancellation
+                cancellation: request.cancellation,
+                runID: request.runID
             )
         }
         self.skillDependencyPrepareLinux = linuxPreparation
@@ -1032,7 +1037,7 @@ final class AppEnvironment: ObservableObject {
 
         // exec.shell requires the request's owned Linux environment;
         // an unavailable guest never falls back to the host substrate.
-        let shellBackend = RoutingLocalShellBackend(
+        let linuxShellBackend = RoutingLocalShellBackend(
             native: nativeShellBackend,
             guests: linuxGuests,
             prepareLinux: linuxPreparation,
@@ -1047,6 +1052,9 @@ final class AppEnvironment: ObservableObject {
                 )
             }
         )
+        // Only a trusted macBridge lease routes to the same-Mac shell; every
+        // other environment keeps the Linux guest backend.
+        let shellBackend = MacBridgeExecutionRouter(defaultBackend: linuxShellBackend)
         let advisoryRelay = DurationAdvisoryRelay()
         self.durationAdvisoryRelay = advisoryRelay
         self.durationReminder = LongRunDurationReminder { [relay = advisoryRelay] milestone, fence in
@@ -1768,7 +1776,11 @@ final class AppEnvironment: ObservableObject {
         }
         NotesToolRegistration.register()
         ToolCatalog.register(AudioTranscribeTool.self)
-        ToolRunnerRegistry.shared.register(AudioTranscribeTool())
+        ToolRunnerRegistry.shared.register(AudioTranscribeTool(assistant: assistantAudioService))
+        ToolCatalog.register(AudioSynthesizeTool.self)
+        ToolRunnerRegistry.shared.register(AudioSynthesizeTool(assistant: assistantAudioService))
+        ToolCatalog.register(AudioServicesTool.self)
+        ToolRunnerRegistry.shared.register(AudioServicesTool(assistant: assistantAudioService))
         // Real shared enhancement processor (VideoToolbox frame-rate
         // conversion/low-latency/super resolution, installed Core ML RIFE
         // and Real-ESRGAN bundles, MetalFX spatial scaler). There is
@@ -2239,6 +2251,7 @@ final class AppEnvironment: ObservableObject {
     /// attempt retires itself before completion, so a call made after a failed
     /// attempt starts a real retry instead of rejoining the finished failure.
     func bootstrap() async {
+        StorageSuspensionCoordinator.shared.start()
         if bootstrapDidCompleteSuccessfully { return }
         await bootstrapGate.run { [weak self] in
             guard let self else { return }
@@ -2530,6 +2543,12 @@ final class AppEnvironment: ObservableObject {
             if ProcessInfo.processInfo.arguments.contains("-ui-testing"),
                ProcessInfo.processInfo.arguments.contains("--ui-test-reset-onboarding") {
                 ConversationCenter.persistOnboardingSkippedMarker(false)
+                // The setup guide keeps its own resumable position record. A
+                // test that resets onboarding must start from the first
+                // section, so the record goes with the marker. It carries no
+                // configuration and no secret: section identity, the chosen
+                // preset and per-section status only.
+                SetupGuideProgressStore.clear()
             }
             // DESTRUCTIVE test-only reset for a THROWAWAY simulator/CI runner
             // only: wipes all provider/model configuration so a test can
@@ -2621,6 +2640,12 @@ final class AppEnvironment: ObservableObject {
                 )
                 documentIntakeCenter.markStoresReady()
                 sharedDocumentsCenter.start()
+                StorageSuspensionCoordinator.shared.configure(
+                    sharedDocuments: sharedDocumentsCenter,
+                    intake: documentIntakeCenter,
+                    shareIntake: shareIntakeCenter,
+                    destinations: importDestinationCenter
+                )
             }
             // Design freeze reconciliation: drop protections whose owning
             // conversation no longer exists (deleted task / crashed launch)

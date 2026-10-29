@@ -320,6 +320,15 @@ final class SkillsCenter: ObservableObject {
         return bytes
     }
 
+    func verifiedHubCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry] {
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            let originals = MacOriginalSkillsCenter.shared
+            await originals.refresh(using: environment)
+            return try originals.catalogEntries()
+        }
+        return try await verifiedHubCatalogEntries()
+    }
+
     func verifiedHubCatalogEntries() async throws -> [SkillHubCatalogEntry] {
         await refreshCuratedCatalog()
         guard let publication = curatedPublication else {
@@ -399,6 +408,9 @@ final class SkillsCenter: ObservableObject {
     }
 
     func verifiedHubCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            return try await MacOriginalSkillsCenter.shared.catalogDetail(id: id, using: environment)
+        }
         try SkillIdentifier.validate(id)
         guard let ownerID = context.conversationID, !context.temporaryReadOnly, !context.publicWebOnly else {
             throw SkillHubInstallError.userChoiceBlocked
@@ -480,6 +492,29 @@ final class SkillsCenter: ObservableObject {
             reviewedCapabilities: actual.package.manifest.capabilities, reviewedTools: actual.package.manifest.tools)
     }
 
+    func installMacOriginalSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> MacOriginalSkillInstallReceipt {
+        try context.cancellation.throwIfCancelled()
+        guard !context.temporaryReadOnly, !context.publicWebOnly, context.approvalGrantID != nil,
+              let environmentID = context.environmentID ?? context.environment?.id,
+              await environment.environmentRegistry.record(id: environmentID)?.effectiveExecutionBackend == .macBridge else {
+            throw SkillHubInstallError.userChoiceBlocked
+        }
+        let originals = MacOriginalSkillsCenter.shared
+        await originals.refresh(using: environment, publication: request.publicationCommit)
+        guard let entry = originals.entries.first(where: { $0.id == request.id }),
+              let publication = originals.publicationCommit, let catalogDigest = originals.catalogDigest,
+              request.publicationCommit == nil || request.publicationCommit == publication else { throw SkillHubInstallError.notConfigured }
+        guard originals.isEnabled(entry.id) else { throw SkillHubInstallError.userChoiceBlocked }
+        try context.cancellation.throwIfCancelled()
+        try await originals.installAndWait(entry, using: environment, cancellation: context.cancellation)
+        guard let installed = originals.installed[entry.id], let path = installed["path"]?.string,
+              installed["digest"]?.string == entry.digest else { throw SkillHubValidationError.receiptIdentityMismatch }
+        return MacOriginalSkillInstallReceipt(skillID: entry.id, version: entry.version, contentDigest: entry.digest,
+            catalogDigest: catalogDigest, publicationCommit: publication, sourceCommit: entry.commit,
+            sourceRepository: entry.repository, fileCount: entry.files.count,
+            totalBytes: entry.files.reduce(0) { $0 + $1.bytes }, installedPath: path)
+    }
+
     func installHubSkill(_ request: SkillHubInstallRequest, context: ToolContext) async throws -> SkillHubInstallReceipt {
         try context.cancellation.throwIfCancelled()
         guard !context.temporaryReadOnly, !context.publicWebOnly, let ownerID = context.conversationID,
@@ -504,8 +539,15 @@ final class SkillsCenter: ObservableObject {
         }
         let choiceKey = "skills.hub.reviewChoice." + ownerID.uuidString + "." + context.runID.uuidString + "." + request.id
         let choices = SQLiteSettingsStore(database: environment.database)
-        if try await choices.value(forKey: choiceKey) == "false" { throw SkillHubInstallError.reviewDeclined }
-        if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillHubInstallError.reviewRequired }
+        let persistedDecline = try await choices.value(forKey: choiceKey) == "false"
+        guard !persistedDecline else { throw SkillHubInstallError.reviewDeclined }
+        // A review the GLOBAL Skill Hub UI is presenting stays exclusive with
+        // a task install (single-writer store); that is a busy conflict the
+        // model may retry later — never a parking point for THIS call. The
+        // task path itself never writes `pendingInstallation`: an exact-delta
+        // decision is taken inline in the owning conversation and the same
+        // call resumes (build-303 deadlock repair).
+        if pendingInstallation != nil || pendingReviewChoiceKey != nil { throw SkillUpgradeError.localConflict }
         isWorking = true
         defer { isWorking = false }
         let publication = try await loadCuratedPublication(ref: request.publicationCommit ?? "main")
@@ -526,17 +568,73 @@ final class SkillsCenter: ObservableObject {
         guard let sourceURL = URL(string: "https://github.com/\(CuratedSkillHub.hubRepository)/blob/\(publication.publicationCommit)/\(CuratedSkillHub.catalogPath(for: .ios))") else {
             throw SkillUpgradeError.invalidSource
         }
-        if staged.permissionDelta.requiresCombinedApproval {
-            pendingReviewChoiceKey = choiceKey
-            pendingInstallation = PendingInstallation(sourceURL: sourceURL,
-                skillMarkdown: String(decoding: staged.content.files["SKILL.md"] ?? Data(), as: UTF8.self),
-                manifest: staged.content.package.manifest, files: [:],
-                capabilityNames: staged.permissionDelta.missingCapabilities,
-                toolNames: staged.permissionDelta.missingTools, containsScripts: staged.receipt.containsScripts,
-                sourceDigest: staged.content.package.canonicalSHA256, rewriteModelID: "hub-reviewed-" + publication.publicationCommit,
-                snapshot: staged.content, curatedReceipt: staged.receipt, curatedUpgrade: candidate,
-                reviewOwnerID: ownerID)
-            throw SkillHubInstallError.reviewRequired
+        // The single deterministic authorization decision for this call. All
+        // hard checks above (signed chain, compatibility, dependency
+        // declaration, pin, user states, temporary ceiling, cancellation)
+        // already ran and are not re-litigated here.
+        let standingPolicyAuthority: Bool = {
+            if let origin = context.approvalOrigin, case .policy = origin { return true }
+            return false
+        }()
+        let decision = SkillHubTaskInstallPolicy.decide(SkillHubTaskInstallFacts(
+            temporaryReadOnly: context.temporaryReadOnly,
+            hasApprovalGrant: context.approvalGrantID != nil,
+            persistedDecline: persistedDecline,
+            explicitUserChoiceBlocked: false,   // enforced above; a block already threw
+            existingRow: current != nil,
+            deltaRequiresApproval: staged.permissionDelta.requiresCombinedApproval,
+            addedCapabilities: staged.permissionDelta.missingCapabilities,
+            addedTools: staged.permissionDelta.missingTools,
+            addedPythonPackageSpecs: staged.permissionDelta.missingPythonPackageSpecs,
+            humanScopedApproval: !standingPolicyAuthority,
+            inlineApprovalSurfaceAvailable: context.nestedApproval != nil))
+        switch decision {
+        case .refused(let reason):
+            switch reason {
+            case .temporaryChat, .approvalRequired, .userChoice: throw SkillHubInstallError.userChoiceBlocked
+            case .reviewDeclined: throw SkillHubInstallError.reviewDeclined
+            case .approvalSurfaceUnavailable: throw SkillUpgradeError.localConflict
+            }
+        case .proceedUnderCallAuthorization:
+            break
+        case .requestInlineDeltaApproval(let addedCapabilities, let addedTools, let addedPackages):
+            // Adds-scope UPDATE under a one-off human card grant: exactly
+            // ONE nested inline card, presented through the runtime's
+            // canonical waitingApproval lifecycle in the OWNING conversation
+            // and anchored to this executing call. The same call waits here
+            // and commits exactly the staged bytes after an approve; a
+            // decline or cancellation is recorded for this run/package and
+            // terminates honestly before the commit.
+            guard let handle = context.nestedApproval else {
+                // No canonical surface (detached job / legacy context): fail
+                // honestly and retryably; nothing parks invisibly.
+                throw SkillUpgradeError.localConflict
+            }
+            let reason = SkillHubCopy.deltaApprovalReason + " "
+                + SkillHubDeltaApprovalCopy.factsLine(
+                    skillID: request.id,
+                    version: staged.content.package.manifest.version,
+                    contentDigest: staged.content.package.canonicalSHA256,
+                    addedCapabilities: addedCapabilities,
+                    addedTools: addedTools,
+                    addedPythonPackageSpecs: addedPackages)
+            try context.cancellation.throwIfCancelled()
+            let outcome = await handle.request(reason: reason)
+            // Cancellation outranks a raced approve: the run is stopping, so
+            // nothing may commit after this point.
+            try context.cancellation.throwIfCancelled()
+            switch outcome {
+            case .allowed:
+                break
+            case .denied:
+                try? await choices.setValue("false", forKey: choiceKey)
+                throw SkillHubInstallError.reviewDeclined
+            case .cancelled:
+                try? await choices.setValue("false", forKey: choiceKey)
+                throw CancellationError()
+            case .unavailable:
+                throw SkillUpgradeError.localConflict
+            }
         }
         // No await between the final cancellation check and entering the
         // existing commit flow. Once committed, report the read-back receipt.
@@ -2124,6 +2222,27 @@ final class SkillsCenter: ObservableObject {
         }
     }
 
+    /// Mac execution retains the product's proven bundled/native guides, not
+    /// downloaded iOS adaptations or the Linux-only Python substrate guide.
+    func nativeBundledSkillsForMac() async throws -> [ManagedSkill] {
+        await seedBuiltinDomainSkills()
+        let rows = try await environment.skillStore.all()
+        return DomainSkillLibrary.all.filter { definition in
+            definition.id != "floe-python" && (!definition.exposed || rows.contains { $0.id == definition.id && $0.status == "enabled" })
+        }.map { definition in
+            ManagedSkill(id: definition.id, name: definition.name, version: definition.version, enabled: true,
+                digest: FloeDigest.sha256Hex(Data(definition.markdown.utf8)), markdown: definition.markdown,
+                requiredToolNames: definition.toolNames, description: definition.description)
+        }
+    }
+    func nativeBundledRuntimeSelectionForMac(excluding skillIDs: Set<String> = []) async -> RuntimeSelection {
+        guard let all = try? await nativeBundledSkillsForMac() else { return .none }
+        let rows = all.filter { !skillIDs.contains($0.id) }
+        return RuntimeSelection(skillIDs: Set(rows.map(\.id)), allowedToolNames: nil,
+            instructions: rows.map { "- \($0.id): \($0.description ?? $0.name) [bundled native guide]" }.joined(separator: "\n\n"),
+            preapprovedPythonScriptSHA256: [], preapprovedPythonPackages: [])
+    }
+
     /// Guides provide routing metadata; they never replace the conversation's
     /// tool universe. Only verified script bytes can reuse installation review.
     func runtimeSelection(runID: UUID? = nil) async -> RuntimeSelection {
@@ -2335,6 +2454,12 @@ final class SkillsCenter: ObservableObject {
     /// run's execution binding; staging never executes anything, never grants
     /// permission and fails closed with an honest `resources` status.
     func readSkills(id: String?, runID: UUID? = nil, resourceContext: SkillResourceContext? = nil) async throws -> [ManagedSkill] {
+        if let runID, MacOriginalSkillsCenter.shared.isMacRun(runID) {
+            let originals = MacOriginalSkillsCenter.shared.read(id: id, runID: runID)
+            if id != nil, !originals.isEmpty { return originals }
+            let native = try await nativeBundledSkillsForMac().filter { id == nil || $0.id == id }
+            return originals + native.filter { row in !originals.contains { $0.id == row.id } }
+        }
         await seedBuiltinDomainSkills()
         if let id { try SkillManageTool.validateID(id) }
         let rows = try await environment.skillStore.all().filter { id == nil || $0.id == id }

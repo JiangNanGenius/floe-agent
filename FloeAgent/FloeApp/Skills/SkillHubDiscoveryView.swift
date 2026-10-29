@@ -1,5 +1,6 @@
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
+import FloeSkills
 
 /// Presentation only. Items and actions are supplied by the verified store;
 /// rendering a card never downloads a package or changes effective grants.
@@ -49,8 +50,22 @@ struct SkillHubDiscoveryView<Connections: View>: View {
     let onSelect: (String) -> Void
     let onGet: (String) -> Void
     @ViewBuilder let connections: () -> Connections
+    /// Injected publication media service (previews/tests). Production keeps
+    /// this nil and the body resolves the shared service from the AppEnvironment
+    /// the view tree already injects — never from an init default argument.
+    var media: SkillHubMediaCenter?
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var category: SkillHubCategory?
+    @State private var showcase: SkillHubShowcase?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    /// The immutable catalog publication the showcase artwork is pinned to.
+    private var publicationCommit: String? {
+        environment.skillsCenter.curatedPublication?.publicationCommit
+    }
+    private var mediaCenter: SkillHubMediaCenter {
+        media ?? SkillHubMediaCenter.shared(using: environment)
+    }
 
     private var normalizedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -87,6 +102,16 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                                                   isAccessibilityText: dynamicTypeSize.isAccessibilitySize)
     }
 
+    /// Same shelf-level rule for the compact per-skill thumbnail: decided
+    /// once from the effective column width and applied to every row, so a
+    /// shelf never mixes cover thumbnails with glyph tiles per item.
+    private func shelfThumbnail(width: CGFloat) -> Bool {
+        let count = width >= 700 && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
+        let columnWidth = SkillHubRowLayout.columnWidth(gridWidth: width, columns: count, gutter: 20)
+        return SkillHubMediaLayout.prefersThumbnail(columnWidth: columnWidth,
+                                                    isAccessibilityText: dynamicTypeSize.isAccessibilitySize)
+    }
+
     var body: some View {
         GeometryReader { geometry in
             ScrollView {
@@ -115,11 +140,15 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                             categoryShelf(group, width: min(geometry.size.width, 1100) - 32)
                         }
                     } else {
-                        LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
-                                  alignment: .leading, spacing: 12) {
-                            let inlineCTA = shelfInlineCTA(width: min(geometry.size.width, 1100) - 32)
-                            ForEach(matching) { item in directoryRow(item, inlineCTA: inlineCTA) }
+                    LazyVGrid(columns: columns(for: min(geometry.size.width, 1100) - 32),
+                              alignment: .leading, spacing: 12) {
+                        let width = min(geometry.size.width, 1100) - 32
+                        let inlineCTA = shelfInlineCTA(width: width)
+                        let thumbnail = shelfThumbnail(width: width)
+                        ForEach(matching) { item in
+                            directoryRow(item, inlineCTA: inlineCTA, thumbnail: thumbnail)
                         }
+                    }
                     }
                     if normalizedQuery.isEmpty { connections() }
                 }
@@ -131,6 +160,17 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .background(Color(uiColor: .systemGroupedBackground))
         .onChange(of: categories) { _, values in
             if let category, !values.contains(category) { self.category = nil }
+        }
+        // One demand per publication: the manifest load is shared and cached
+        // by the service; the cards only ever show what it actually declares.
+        .task(id: publicationCommit) {
+            let media = mediaCenter
+            media.bind(publicationCommit: publicationCommit)
+            if let commit = publicationCommit {
+                showcase = await media.showcase(commit: commit)
+            } else {
+                showcase = nil
+            }
         }
     }
 
@@ -151,13 +191,18 @@ struct SkillHubDiscoveryView<Connections: View>: View {
                                     Color(red: 0.055, green: 0.055, blue: 0.11)
                                         .aspectRatio(16.0 / 9.0, contentMode: .fit)
                                         .overlay {
-                                            GeometryReader { artwork in
-                                                Image(item.category.artworkName)
-                                                    .resizable()
-                                                    .scaledToFill()
-                                                    .frame(width: artwork.size.width, height: artwork.size.height)
-                                                    .clipped()
-                                            }
+                                            // Bundled category artwork stays the
+                                            // immediate base; the real per-skill
+                                            // cover overlays once the pinned
+                                            // publication has validated it. A
+                                            // failed image never leaves a blank
+                                            // band and never touches the CTA.
+                                            SkillHubFeaturedCover(
+                                                ref: showcase?.cover(for: item.id),
+                                                commit: publicationCommit,
+                                                media: mediaCenter,
+                                                artworkName: item.category.artworkName,
+                                                skillID: item.id)
                                         }
                                         .accessibilityHidden(true)
                                     VStack(alignment: .leading, spacing: 8) {
@@ -222,7 +267,10 @@ struct SkillHubDiscoveryView<Connections: View>: View {
             }
             LazyVGrid(columns: columns(for: width), alignment: .leading, spacing: 12) {
                 let inlineCTA = shelfInlineCTA(width: width)
-                ForEach(Array(groupItems.prefix(6))) { item in directoryRow(item, inlineCTA: inlineCTA) }
+                let thumbnail = shelfThumbnail(width: width)
+                ForEach(Array(groupItems.prefix(6))) { item in
+                    directoryRow(item, inlineCTA: inlineCTA, thumbnail: thumbnail)
+                }
             }
         }
     }
@@ -241,7 +289,7 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .accessibilityIdentifier("skills.category.\(value?.id ?? "all")")
     }
 
-    private func directoryRow(_ item: SkillHubDisplayItem, inlineCTA: Bool) -> some View {
+    private func directoryRow(_ item: SkillHubDisplayItem, inlineCTA: Bool, thumbnail: Bool) -> some View {
         // The composition comes from the shelf-level decision above, so every
         // row in a shelf aligns; buttons keep their natural intrinsic size.
         // The content frame FILLS the grid cell height (mirroring the
@@ -251,13 +299,13 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         Group {
             if inlineCTA {
                 HStack(alignment: .center, spacing: 10) {
-                    itemButton(item)
+                    itemButton(item, thumbnail: thumbnail)
                     getButton(item)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    itemButton(item)
+                    itemButton(item, thumbnail: thumbnail)
                     HStack { Spacer(); getButton(item) }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -271,15 +319,28 @@ struct SkillHubDiscoveryView<Connections: View>: View {
         .accessibilityIdentifier("skills.row.\(item.id)")
     }
 
-    private func itemButton(_ item: SkillHubDisplayItem) -> some View {
+    private func itemButton(_ item: SkillHubDisplayItem, thumbnail: Bool) -> some View {
         Button { onSelect(item.id) } label: {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: item.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(item.category.tint)
-                    .frame(width: 44, height: 44)
-                    .background(item.category.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
-                    .accessibilityHidden(true)
+                if thumbnail {
+                    // Compact per-skill cover from the pinned publication;
+                    // missing/unverified/error keeps the existing glyph tile,
+                    // same frame, so row heights never move.
+                    SkillHubShowcaseThumbnail(
+                        ref: showcase?.cover(for: item.id),
+                        commit: publicationCommit,
+                        media: mediaCenter,
+                        category: item.category,
+                        systemImage: item.systemImage,
+                        skillID: item.id)
+                } else {
+                    Image(systemName: item.systemImage)
+                        .font(.title2)
+                        .foregroundStyle(item.category.tint)
+                        .frame(width: 44, height: 44)
+                        .background(item.category.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                        .accessibilityHidden(true)
+                }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title).font(.headline).foregroundStyle(.primary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)

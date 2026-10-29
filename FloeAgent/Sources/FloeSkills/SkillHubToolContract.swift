@@ -211,6 +211,7 @@ public enum SkillHubContractLimits {
 public enum SkillHubChannel: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
     case ios
     case android
+    case macosOriginal = "macos-original"
 }
 
 /// Feed honesty marker: production feeds carry real signed review; fixture
@@ -225,6 +226,7 @@ public enum SkillHubFeedStatus: String, Codable, Sendable, Equatable, Hashable, 
 public enum SkillHubInstallOffer: String, Codable, Sendable, Equatable, Hashable, CaseIterable {
     case none
     case qualified
+    case upstreamOriginal
     case fixtureSimulated
 }
 
@@ -518,6 +520,7 @@ public protocol SkillHubCatalogProviding: Sendable {
     /// return entries with the pinned publication Y (and audited X) already
     /// resolved; the tool bounds and scores them.
     func verifiedCatalogEntries() async throws -> [SkillHubCatalogEntry]
+    func verifiedCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry]
     /// Verified exact-id detail (reviewed metadata, bundled reviewed
     /// instructions, package-relative inventory), or nil when the verified
     /// catalog has no such entry. Never registers, enables, activates or
@@ -528,6 +531,9 @@ public protocol SkillHubCatalogProviding: Sendable {
 }
 
 public extension SkillHubCatalogProviding {
+    func verifiedCatalogEntries(context: ToolContext) async throws -> [SkillHubCatalogEntry] {
+        try await verifiedCatalogEntries()
+    }
     func verifiedCatalogDetail(id: String, context: ToolContext) async throws -> SkillHubCatalogDetail? {
         try await verifiedCatalogDetail(id: id)
     }
@@ -725,20 +731,22 @@ public struct SkillHubInstallReceipt: Codable, Sendable, Equatable {
 /// the cases carry no associated values, so a bridge can never smuggle
 /// model-controlled text through them.
 /// - `notConfigured`: thrown honestly (never a workspace fallback).
-/// - `reviewRequired`: the existing combined approval flow still owes a real
-///   permission/review delta for this run. The tool answers with an honest
-///   PENDING-REVIEW result (`requiresUserAction = true`) — never a fake
-///   committed receipt — so Main can reuse the existing PendingInstallation
-///   review UI.
 /// - `reviewDeclined` / `userChoiceBlocked`: terminal for this run (the user
-///   declined the review, or an explicit user disabled/uninstalled/local-edit
-///   choice wins). The tool reports them as non-retryable failed results with
-///   no directory fallback. Cancellation of a pending review records the
-///   denial for this native run/package on the bridge side, so tool retries
-///   cannot re-prompt.
+///   declined the exact-delta approval, or an explicit user
+///   disabled/uninstalled/local-edit choice wins). The tool reports them as
+///   non-retryable failed results with no directory fallback. Cancellation of
+///   a pending delta approval records the denial for this native run/package
+///   on the bridge side, so tool retries cannot re-prompt.
+///
+/// There is deliberately NO "pending review" outcome: the task path never
+/// parks an install in a state the owning conversation cannot see (the
+/// build-303 deadlock). A genuine added-scope update waits INSIDE the same
+/// tool call on exactly one inline approval in the owning conversation
+/// (the runtime's nested `.waitingApproval` seam); once the human decides, the same call
+/// commits or terminates honestly. A fresh audited install proceeds under
+/// this call's existing runtime authorization.
 public enum SkillHubInstallError: Error, Equatable, Sendable, LocalizedError {
     case notConfigured
-    case reviewRequired
     case reviewDeclined
     case userChoiceBlocked
 
@@ -746,8 +754,6 @@ public enum SkillHubInstallError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .notConfigured:
             "skill.install(source:\"hub\") is not configured: the curated catalog installer is unavailable in this build. Nothing was installed and there is no workspace fallback."
-        case .reviewRequired:
-            "This Hub install still requires the existing combined approval flow to settle a permission/review delta."
         case .reviewDeclined:
             "The user declined the required review for this Hub skill."
         case .userChoiceBlocked:
@@ -756,14 +762,158 @@ public enum SkillHubInstallError: Error, Equatable, Sendable, LocalizedError {
     }
 }
 
+// MARK: - Task-path authorization decision (pure; the deadlock boundary)
+
+/// Facts the task install path knows at the authorization boundary. Every
+/// field is derived from the real runtime context and the verified staging
+/// result — never from model-supplied text. The run's EFFECTIVE authority is
+/// considered before any prompt: a grant minted by the user's standing
+/// approval policy (full-access, automatic, approval-model, full-control)
+/// already covers an added-scope update, so prompting again would request
+/// authority the user already gave ("installation grant and existing
+/// authorized capabilities must not be requested twice"). Only a one-off
+/// HUMAN inline card grant — which authorized exactly that call — needs one
+/// nested exact-delta card for a genuinely added scope.
+public struct SkillHubTaskInstallFacts: Equatable, Sendable {
+    public var temporaryReadOnly: Bool
+    public var hasApprovalGrant: Bool
+    /// A previous decline recorded for this exact owner/run/package; a retry
+    /// cannot re-prompt the human in the same run.
+    public var persistedDecline: Bool
+    /// An explicit user state (disabled, uninstalled, locally edited or
+    /// removed row) that wins over any install.
+    public var explicitUserChoiceBlocked: Bool
+    /// A live row already exists for this catalog id (UPDATE, not fresh).
+    public var existingRow: Bool
+    /// The verified delta computed against the skill's ACTUAL effective
+    /// grants requires approval (only ever true for adds-scope updates: a
+    /// brand-new skill has no grants yet and its declared ceiling is
+    /// consented by the authorizing action, per the approved official-Get
+    /// precedent).
+    public var deltaRequiresApproval: Bool
+    public var addedCapabilities: [String]
+    public var addedTools: [String]
+    public var addedPythonPackageSpecs: [String]
+    /// True when this call's grant came from a one-off HUMAN inline card (or
+    /// the origin is unknown — conservative). False when the user's standing
+    /// approval policy authorized the call, which is sufficient effective
+    /// authority for an added-scope update.
+    public var humanScopedApproval: Bool
+    /// True when the runtime issued its nested-approval seam for this exact
+    /// call, so a genuinely required prompt can join the canonical
+    /// `.waitingApproval` lifecycle and the same call resumes in place.
+    public var inlineApprovalSurfaceAvailable: Bool
+
+    public init(temporaryReadOnly: Bool, hasApprovalGrant: Bool, persistedDecline: Bool,
+                explicitUserChoiceBlocked: Bool, existingRow: Bool, deltaRequiresApproval: Bool,
+                addedCapabilities: [String], addedTools: [String], addedPythonPackageSpecs: [String],
+                humanScopedApproval: Bool = true, inlineApprovalSurfaceAvailable: Bool = false) {
+        self.temporaryReadOnly = temporaryReadOnly
+        self.hasApprovalGrant = hasApprovalGrant
+        self.persistedDecline = persistedDecline
+        self.explicitUserChoiceBlocked = explicitUserChoiceBlocked
+        self.existingRow = existingRow
+        self.deltaRequiresApproval = deltaRequiresApproval
+        self.addedCapabilities = addedCapabilities
+        self.addedTools = addedTools
+        self.addedPythonPackageSpecs = addedPythonPackageSpecs
+        self.humanScopedApproval = humanScopedApproval
+        self.inlineApprovalSurfaceAvailable = inlineApprovalSurfaceAvailable
+    }
+}
+
+public enum SkillHubTaskInstallRefusal: String, Equatable, Sendable {
+    case temporaryChat
+    case approvalRequired
+    case reviewDeclined
+    case userChoice
+    /// A prompt is genuinely required but this context has no runtime
+    /// surface to present it (detached job, legacy context). Nothing parks
+    /// invisibly; the caller fails honestly and retryably.
+    case approvalSurfaceUnavailable
+}
+
+public enum SkillHubTaskInstallDecision: Equatable, Sendable {
+    case refused(SkillHubTaskInstallRefusal)
+    /// Fresh audited install OR an update fully covered by the existing
+    /// grants: commit inside THIS call through the verified chain.
+    case proceedUnderCallAuthorization
+    /// Adds-scope UPDATE: park this same call on exactly one inline
+    /// exact-delta approval in the owning conversation, then resume.
+    case requestInlineDeltaApproval(addedCapabilities: [String], addedTools: [String],
+                                    addedPythonPackageSpecs: [String])
+}
+
+/// The single deterministic task-path authorization decision. Hard checks
+/// (signature/hash/review chain, compatibility, dependency declaration,
+/// publication pin, user states, temporary ceiling, catastrophic gates) run
+/// outside and BEFORE this function and are never relaxed by it.
+public enum SkillHubTaskInstallPolicy {
+    public static func decide(_ facts: SkillHubTaskInstallFacts) -> SkillHubTaskInstallDecision {
+        if facts.temporaryReadOnly { return .refused(.temporaryChat) }
+        guard facts.hasApprovalGrant else { return .refused(.approvalRequired) }
+        if facts.explicitUserChoiceBlocked { return .refused(.userChoice) }
+        if facts.persistedDecline { return .refused(.reviewDeclined) }
+        // A brand-new audited skill has NO grants yet, so its delta always
+        // lists everything declared. Parking that in a review the task can
+        // never present is the exact build-303 deadlock: under the call's
+        // real authorization it proceeds, and the commit registers only the
+        // declared internal ceiling (`installationGrants(declared:)`), which
+        // does not broaden later execution rights.
+        guard facts.existingRow, facts.deltaRequiresApproval else {
+            return .proceedUnderCallAuthorization
+        }
+        // Adds-scope UPDATE: consult the run's EFFECTIVE authority first.
+        // A standing-policy grant (full-access / automatic / approval-model
+        // / full-control) already authorizes actions beyond this delta, so
+        // prompting would request the same authority twice. A one-off human
+        // card authorized only the install action itself, so the exact added
+        // scope gets ONE nested inline card and the same call resumes.
+        if !facts.humanScopedApproval {
+            return .proceedUnderCallAuthorization
+        }
+        guard facts.inlineApprovalSurfaceAvailable else {
+            return .refused(.approvalSurfaceUnavailable)
+        }
+        return .requestInlineDeltaApproval(addedCapabilities: facts.addedCapabilities,
+                                           addedTools: facts.addedTools,
+                                           addedPythonPackageSpecs: facts.addedPythonPackageSpecs)
+    }
+}
+
+/// Bounded, deterministic card copy for the nested exact-delta approval.
+/// Only verified facts enter the reason: the identity, the exact staged
+/// digest and ONLY the added entries. Language-neutral identifiers keep the
+/// line portable; the App prefixes its localized prompt sentence.
+public enum SkillHubDeltaApprovalCopy {
+    /// "markitdown 2.0.0 · digest d41d…d41d · adds capabilities: a,b ·
+    ///  tools: c · packages: d==1" — every list bounded, total bounded.
+    public static func factsLine(skillID: String, version: String, contentDigest: String,
+                                 addedCapabilities: [String], addedTools: [String],
+                                 addedPythonPackageSpecs: [String]) -> String {
+        func boundedList(_ values: [String]) -> String {
+            let shown = values.prefix(16).map { String($0.prefix(64)) }
+            let omitted = values.count - shown.count
+            return shown.joined(separator: ",") + (omitted > 0 ? ",+\(omitted)" : "")
+        }
+        var parts: [String] = ["\(skillID.prefix(64)) \(version.prefix(64))",
+                               "digest \(contentDigest.prefix(12))"]
+        if !addedCapabilities.isEmpty { parts.append("adds capabilities: " + boundedList(addedCapabilities)) }
+        if !addedTools.isEmpty { parts.append("tools: " + boundedList(addedTools)) }
+        if !addedPythonPackageSpecs.isEmpty { parts.append("packages: " + boundedList(addedPythonPackageSpecs)) }
+        return String(parts.joined(separator: " · ").prefix(600))
+    }
+}
+
 /// Optional native-injected Hub installer for `skill.install(source:"hub")`.
 /// The App implements this on top of the EXISTING install transaction: it
 /// fetches every artifact path at the pinned publication Y, repeats the
 /// contract §6.3/§6.4 verifications (archive size/sha256, unpacked
 /// contentDigest, signed review joins against the actual bytes), applies the
-/// existing grant-delta approval policy, honors user disabled/uninstalled/
-/// locally-edited state without overriding it, and stages through the
-/// existing atomic promotion. It returns what persistence actually committed.
+/// task-path authorization decision (`SkillHubTaskInstallPolicy`), honors
+/// user disabled/uninstalled/locally-edited state without overriding it, and
+/// stages through the existing atomic promotion. It returns what persistence
+/// actually committed.
 ///
 /// The `context` is the ACTUAL runtime-issued `ToolContext` for this exact
 /// call (never model-minted): the bridge must bind its durable staging and
@@ -775,16 +925,20 @@ public enum SkillHubInstallError: Error, Equatable, Sendable, LocalizedError {
 /// method runs; the bridge must still treat `context.temporaryReadOnly` as
 /// authoritative if it consults it. Main checks the requested publication Y
 /// and the real signed review BEFORE any commit, then reads back the
-/// persisted typed receipt. Outcomes the tool classifies:
-/// `SkillHubInstallError.reviewRequired` when the existing combined approval
-/// flow still owes a real permission/review delta (the tool then returns an
-/// honest pending-review result with `requiresUserAction = true` for Main's
-/// existing PendingInstallation UI — never a fake success receipt);
-/// `reviewDeclined`/`userChoiceBlocked` for terminal user decisions (reported
-/// non-retryable, no directory fallback; cancelling a pending review records
-/// the denial for this native run/package on the bridge side so tool retries
+/// persisted typed receipt. For an adds-scope UPDATE under a one-off human
+/// card grant the bridge parks THIS same call on the runtime's nested
+/// approval seam — exactly one inline exact-delta card presented in the
+/// OWNING conversation through the canonical `.waitingApproval` lifecycle,
+/// settled by the human, after which the same call commits and returns the
+/// real receipt. Under a standing-policy grant (full-access/automatic) the
+/// effective authority already covers the delta and no prompt is added. Outcomes the tool classifies: `reviewDeclined`/`userChoiceBlocked`
+/// for terminal user decisions (reported non-retryable, no directory
+/// fallback; declining or cancelling a pending delta approval records the
+/// denial for this native run/package on the bridge side so tool retries
 /// cannot re-prompt). Any other thrown error is an ordinary honest failed
-/// result.
+/// result. A fresh audited install never parks: it commits inside this call
+/// under the existing authorization, and the commit registers only the
+/// declared internal ceiling without broadening later execution rights.
 ///
 /// Cancellation contract: an implementation that has NOT durably committed
 /// must throw a cancellation error; an implementation whose transaction

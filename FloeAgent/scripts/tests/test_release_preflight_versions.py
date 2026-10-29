@@ -78,6 +78,7 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                          "Package.resolved",
                          "scripts/bootstrap_office_host.py",
                          "scripts/office_compiled_lifecycle.py",
+                         "scripts/office_component_recovery.py",
                          "scripts/office_release_gates.py",
                          "scripts/pin_office_host_artifact.py",
                          "scripts/office_engine_repair.py",
@@ -167,6 +168,16 @@ class ReleaseVersionPreflightTests(unittest.TestCase):
                                notes_transform=notes_transform, whatsnew=whatsnew,
                                whatsnew_raw=whatsnew_raw, remove_notes=remove_notes,
                                remove_whatsnew=remove_whatsnew)
+            # project.yml declares the first-party FloeMacBridge sibling at
+            # ../FloeMacBridge. Stage the same repository layout (a tracked,
+            # clean package one level above the XcodeGen project) with the real
+            # reviewed manifest whose digest the pin policy pins, so the
+            # application pin gate runs against a faithful checkout instead of
+            # failing on a missing sibling before the gate under test.
+            sibling = root / "FloeMacBridge"
+            sibling.mkdir()
+            shutil.copy2(ROOT.parent / "FloeMacBridge" / "Package.swift",
+                         sibling / "Package.swift")
             env = dict(os.environ, GIT_AUTHOR_NAME="Floe Test", GIT_COMMITTER_NAME="Floe Test",
                        GIT_AUTHOR_EMAIL="test@example.invalid", GIT_COMMITTER_EMAIL="test@example.invalid")
             for args in (("init", "-q"), ("add", "."), ("commit", "-qm", "fixture"),

@@ -18,6 +18,12 @@ on:
           - start
           - enable-tag-and-start
           - update-and-start
+          - bridge-cert-probe
+          - bridge-cert-fetch
+          - bridge-notarize-app
+          - bridge-notarize-dmg
+          - bridge-notary-resume
+          - bridge-notary-status
       workflow_id:
         description: ciWorkflows ID required for start
         required: false
@@ -51,12 +57,48 @@ on:
         required: false
         default: ''
         type: string
+      bridge_confirm:
+        description: "Exact confirmation: notarize-source-bound-bridge; empty for read-only bridge operations"
+        required: false
+        default: ''
+        type: string
+      bridge_source_sha:
+        description: "40-hex source commit bound into the signed bridge (notarize only)"
+        required: false
+        default: ''
+        type: string
+      bridge_release_tag:
+        description: "Draft release tag bridge-notary-<source_sha> containing the signed artifact (notarize only)"
+        required: false
+        default: ''
+        type: string
+      bridge_artifact_name:
+        description: "Exact Floe-Bridge*.zip or Floe-Bridge*.dmg asset name in that draft release (notarize only)"
+        required: false
+        default: ''
+        type: string
+      bridge_artifact_sha256:
+        description: "Expected SHA-256 of the signed artifact (notarize only)"
+        required: false
+        default: ''
+        type: string
+      bridge_team_id:
+        description: "Apple Team ID expected in the Developer ID signature (notarize only)"
+        required: false
+        default: ''
+        type: string
+      bridge_submission_id:
+        description: "Existing notary submission UUID (bridge-notary-status or bridge-notary-resume)"
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   xcode-cloud:
+    if: ${{ !startsWith(inputs.operation, 'bridge-') }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out control scripts
@@ -530,3 +572,335 @@ jobs:
             echo
             echo "crash-log id=$submission_id end"
           done < <(jq -r '.data[].id' "$RUNNER_TEMP/crash-submissions.json")
+
+  bridge-certificate:
+    if: ${{ startsWith(inputs.operation, 'bridge-cert-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: floe-bridge-certificate
+      cancel-in-progress: false
+    steps:
+      - name: Check out the dispatched bridge ref
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate bridge certificate inputs
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM: ${{ inputs.bridge_confirm }}
+          SOURCE_SHA: ${{ inputs.bridge_source_sha }}
+          RELEASE_TAG: ${{ inputs.bridge_release_tag }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          ARTIFACT_SHA: ${{ inputs.bridge_artifact_sha256 }}
+          TEAM_ID: ${{ inputs.bridge_team_id }}
+          SUBMISSION_ID: ${{ inputs.bridge_submission_id }}
+        run: |
+          set -euo pipefail
+          test -z "$SOURCE_SHA$RELEASE_TAG$ARTIFACT_NAME$ARTIFACT_SHA$TEAM_ID$SUBMISSION_ID" || {
+            echo "Certificate operations do not accept artifact or notary inputs." >&2
+            exit 2
+          }
+          case "$OPERATION" in
+            bridge-cert-probe|bridge-cert-fetch)
+              test -z "$CONFIRM" || { echo "bridge_confirm must be empty for $OPERATION" >&2; exit 2; }
+              ;;
+            *)
+              echo "Unsupported certificate operation" >&2
+              exit 2
+              ;;
+          esac
+          test -f FloeMacBridge/signing/FloeBridge-DeveloperID-20261029.certSigningRequest
+          test -f FloeMacBridge/scripts/asc_certificate.py
+          mkdir -p "$RUNNER_TEMP/bridge-out"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          printf '%s' "$ASC_API_PRIVATE_KEY_BASE64" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Probe, fetch or explicitly create the Developer ID certificate
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM: ${{ inputs.bridge_confirm }}
+        run: |
+          set -euo pipefail
+          command="${OPERATION#bridge-}"
+          args=(--csr FloeMacBridge/signing/FloeBridge-DeveloperID-20261029.certSigningRequest --out-dir "$RUNNER_TEMP/bridge-out")
+          case "$command" in
+            cert-probe) args=(probe "${args[@]}") ;;
+            cert-fetch) args=(fetch "${args[@]}") ;;
+            *) echo "Unsupported certificate operation" >&2; exit 2 ;;
+          esac
+          set +e
+          python3 FloeMacBridge/scripts/asc_certificate.py "${args[@]}" > "$RUNNER_TEMP/bridge-out/console.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/bridge-out/console.log"
+          exit "$rc"
+
+      - name: Upload the public certificate result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: floe-bridge-certificate-${{ inputs.operation }}
+          path: ${{ runner.temp }}/bridge-out
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove the App Store Connect API key
+        if: always()
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: rm -f "$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"
+
+  bridge-notarize:
+    if: ${{ inputs.operation == 'bridge-notarize-app' || inputs.operation == 'bridge-notarize-dmg' || inputs.operation == 'bridge-notary-resume' || inputs.operation == 'bridge-notary-status' }}
+    runs-on: macos-15
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    concurrency:
+      group: floe-bridge-notarize
+      cancel-in-progress: false
+    timeout-minutes: 60
+    steps:
+      - name: Check out the dispatched bridge ref
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Validate bridge notarization inputs
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIRM: ${{ inputs.bridge_confirm }}
+          SOURCE_SHA: ${{ inputs.bridge_source_sha }}
+          RELEASE_TAG: ${{ inputs.bridge_release_tag }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          ARTIFACT_SHA: ${{ inputs.bridge_artifact_sha256 }}
+          TEAM_ID: ${{ inputs.bridge_team_id }}
+          SUBMISSION_ID: ${{ inputs.bridge_submission_id }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            bridge-notarize-app|bridge-notarize-dmg|bridge-notary-resume)
+              test "$CONFIRM" = "notarize-source-bound-bridge" || {
+                echo "bridge_confirm must be notarize-source-bound-bridge" >&2
+                exit 2
+              }
+              [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bridge_source_sha must be 40 lowercase hex" >&2; exit 2; }
+              [[ "$RELEASE_TAG" =~ ^bridge-notary-[0-9a-f]{40}(-[0-9a-f]{8})?$ ]] || { echo "invalid bridge_release_tag" >&2; exit 2; }
+              tag_sha="${RELEASE_TAG#bridge-notary-}"
+              tag_sha="${tag_sha%%-*}"
+              test "$tag_sha" = "$SOURCE_SHA" || { echo "bridge_release_tag does not bind the source SHA" >&2; exit 2; }
+              [[ "$ARTIFACT_SHA" =~ ^[0-9a-f]{64}$ ]] || { echo "bridge_artifact_sha256 must be 64 lowercase hex" >&2; exit 2; }
+              [[ "$TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "bridge_team_id must be 10 uppercase alphanumerics" >&2; exit 2; }
+              if test "$OPERATION" = bridge-notary-resume; then
+                [[ "$SUBMISSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || { echo "invalid bridge_submission_id" >&2; exit 2; }
+              else
+                test -z "$SUBMISSION_ID" || { echo "bridge_submission_id is only for resume or status" >&2; exit 2; }
+              fi
+              if test "$OPERATION" = bridge-notarize-app; then
+                [[ "$ARTIFACT_NAME" =~ ^Floe-Bridge(-[A-Za-z0-9._-]{1,80})?\.zip$ ]] || { echo "app notarization requires a Floe-Bridge*.zip asset name" >&2; exit 2; }
+              elif test "$OPERATION" = bridge-notarize-dmg; then
+                [[ "$ARTIFACT_NAME" =~ ^Floe-Bridge(-[A-Za-z0-9._-]{1,80})?\.dmg$ ]] || { echo "DMG notarization requires a Floe-Bridge*.dmg asset name" >&2; exit 2; }
+              elif [[ "$ARTIFACT_NAME" =~ ^Floe-Bridge(-[A-Za-z0-9._-]{1,80})?\.zip$ ]]; then
+                :
+              elif [[ "$ARTIFACT_NAME" =~ ^Floe-Bridge(-[A-Za-z0-9._-]{1,80})?\.dmg$ ]]; then
+                :
+              else
+                echo "resume requires a Floe-Bridge*.zip or Floe-Bridge*.dmg asset name" >&2
+                exit 2
+              fi
+              ;;
+            bridge-notary-status)
+              test -z "$CONFIRM$SOURCE_SHA$RELEASE_TAG$ARTIFACT_NAME$ARTIFACT_SHA$TEAM_ID" || {
+                echo "bridge-notary-status accepts only bridge_submission_id" >&2
+                exit 2
+              }
+              [[ "$SUBMISSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || { echo "invalid bridge_submission_id" >&2; exit 2; }
+              ;;
+            *)
+              echo "Unsupported notary operation" >&2
+              exit 2
+              ;;
+          esac
+          test -f FloeMacBridge/scripts/notarize_bridge.py
+          mkdir -p "$RUNNER_TEMP/bridge-in" "$RUNNER_TEMP/bridge-out"
+
+      - name: Install App Store Connect API key
+        env:
+          ASC_API_PRIVATE_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_PRIVATE_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$ASC_API_PRIVATE_KEY_BASE64"
+          test -n "$ASC_KEY_ID"
+          printf '%s' "$ASC_API_PRIVATE_KEY_BASE64" | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.buffer.read()))' > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+
+      - name: Verify the private draft release and signed artifact
+        if: inputs.operation == 'bridge-notarize-app' || inputs.operation == 'bridge-notarize-dmg' || inputs.operation == 'bridge-notary-resume'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.bridge_release_tag }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          ARTIFACT_SHA256: ${{ inputs.bridge_artifact_sha256 }}
+        run: |
+          set -euo pipefail
+          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          test "$is_draft" = "true" || { echo "Refusing a non-draft transport release" >&2; exit 2; }
+          asset_line="$(gh release view "$RELEASE_TAG" --json assets --jq ".assets[] | select(.name == \"$ARTIFACT_NAME\") | [.name, .size, (.digest // \"\")] | @tsv")"
+          test "$(printf '%s\n' "$asset_line" | sed '/^$/d' | wc -l | tr -d ' ')" = "1" || {
+            echo "Expected exactly one draft asset named $ARTIFACT_NAME" >&2
+            exit 2
+          }
+          IFS=$'\t' read -r asset_name asset_size asset_digest <<< "$asset_line"
+          test "$asset_name" = "$ARTIFACT_NAME" || { echo "Draft asset name mismatch" >&2; exit 2; }
+          [[ "$asset_size" =~ ^[0-9]+$ ]] || { echo "Draft asset size is invalid" >&2; exit 2; }
+          test "$asset_size" -ge 1 && test "$asset_size" -le 524288000 || { echo "Draft asset size is outside the accepted range" >&2; exit 2; }
+          if test -n "$asset_digest"; then
+            test "$asset_digest" = "sha256:$ARTIFACT_SHA256" || { echo "GitHub release asset digest does not match bridge_artifact_sha256" >&2; exit 2; }
+          fi
+          echo "draft-asset-ok name=$asset_name size=$asset_size digest=${asset_digest:-unavailable}"
+          gh release download "$RELEASE_TAG" --pattern "$ARTIFACT_NAME" --dir "$RUNNER_TEMP/bridge-in"
+          test "$(find "$RUNNER_TEMP/bridge-in" -maxdepth 1 -type f | wc -l | tr -d ' ')" = "1" || { echo "Expected one downloaded artifact" >&2; exit 2; }
+          actual_sha="$(shasum -a 256 "$RUNNER_TEMP/bridge-in/$ARTIFACT_NAME" | awk '{print $1}')"
+          test "$actual_sha" = "$ARTIFACT_SHA256" || { echo "Artifact SHA-256 mismatch" >&2; exit 2; }
+          echo "artifact-ok name=$ARTIFACT_NAME sha256=$actual_sha"
+
+      - name: Preflight the source-bound signed artifact
+        if: inputs.operation == 'bridge-notarize-app' || inputs.operation == 'bridge-notarize-dmg' || inputs.operation == 'bridge-notary-resume'
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          SOURCE_SHA: ${{ inputs.bridge_source_sha }}
+          TEAM_ID: ${{ inputs.bridge_team_id }}
+        run: |
+          set -euo pipefail
+          kind=app-zip
+          if test "$OPERATION" = bridge-notarize-dmg || [[ "$ARTIFACT_NAME" == *.dmg ]]; then kind=dmg; fi
+          set +e
+          python3 FloeMacBridge/scripts/notarize_bridge.py preflight \
+            --artifact "$RUNNER_TEMP/bridge-in/$ARTIFACT_NAME" \
+            --kind "$kind" \
+            --source-sha "$SOURCE_SHA" \
+            --team-id "$TEAM_ID" \
+            --out-dir "$RUNNER_TEMP/bridge-out" > "$RUNNER_TEMP/bridge-out/preflight-console.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/bridge-out/preflight-console.log"
+          exit "$rc"
+
+      - name: Submit for notarization and staple on acceptance
+        if: inputs.operation == 'bridge-notarize-app' || inputs.operation == 'bridge-notarize-dmg'
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          OPERATION: ${{ inputs.operation }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          SOURCE_SHA: ${{ inputs.bridge_source_sha }}
+          TEAM_ID: ${{ inputs.bridge_team_id }}
+        run: |
+          set -euo pipefail
+          kind=app-zip
+          if test "$OPERATION" = bridge-notarize-dmg; then kind=dmg; fi
+          set +e
+          python3 FloeMacBridge/scripts/notarize_bridge.py notarize \
+            --artifact "$RUNNER_TEMP/bridge-in/$ARTIFACT_NAME" \
+            --kind "$kind" \
+            --source-sha "$SOURCE_SHA" \
+            --team-id "$TEAM_ID" \
+            --key "$ASC_PRIVATE_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --timeout 30m \
+            --out-dir "$RUNNER_TEMP/bridge-out" > "$RUNNER_TEMP/bridge-out/notarize-console.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/bridge-out/notarize-console.log"
+          exit "$rc"
+
+      - name: Resume an accepted submission and staple the same artifact
+        if: inputs.operation == 'bridge-notary-resume'
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          SUBMISSION_ID: ${{ inputs.bridge_submission_id }}
+          ARTIFACT_NAME: ${{ inputs.bridge_artifact_name }}
+          SOURCE_SHA: ${{ inputs.bridge_source_sha }}
+          TEAM_ID: ${{ inputs.bridge_team_id }}
+        run: |
+          set -euo pipefail
+          kind=app-zip
+          if [[ "$ARTIFACT_NAME" == *.dmg ]]; then kind=dmg; fi
+          set +e
+          python3 FloeMacBridge/scripts/notarize_bridge.py resume \
+            --artifact "$RUNNER_TEMP/bridge-in/$ARTIFACT_NAME" \
+            --kind "$kind" \
+            --source-sha "$SOURCE_SHA" \
+            --team-id "$TEAM_ID" \
+            --submission-id "$SUBMISSION_ID" \
+            --key "$ASC_PRIVATE_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --out-dir "$RUNNER_TEMP/bridge-out" > "$RUNNER_TEMP/bridge-out/resume-console.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/bridge-out/resume-console.log"
+          exit "$rc"
+
+      - name: Read notary submission status
+        if: inputs.operation == 'bridge-notary-status'
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          ASC_PRIVATE_KEY_PATH: ${{ runner.temp }}/AuthKey_${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}.p8
+          SUBMISSION_ID: ${{ inputs.bridge_submission_id }}
+        run: |
+          set -euo pipefail
+          set +e
+          python3 FloeMacBridge/scripts/notarize_bridge.py status \
+            --submission-id "$SUBMISSION_ID" \
+            --key "$ASC_PRIVATE_KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --out-dir "$RUNNER_TEMP/bridge-out" --log > "$RUNNER_TEMP/bridge-out/status-console.log" 2>&1
+          rc=$?
+          set -e
+          cat "$RUNNER_TEMP/bridge-out/status-console.log"
+          exit "$rc"
+
+      - name: Upload notarization evidence and stapled artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: floe-bridge-notary-${{ inputs.operation }}
+          path: ${{ runner.temp }}/bridge-out
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Remove the App Store Connect API key
+        if: always()
+        env:
+          ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+        run: rm -f "$RUNNER_TEMP/AuthKey_${ASC_KEY_ID}.p8"

@@ -1,6 +1,7 @@
 // FloeApp — A single foreground voice owner with text and file continuity.
 #if canImport(UIKit)
 import SwiftUI
+import Foundation
 import Combine
 import PhotosUI
 import UniformTypeIdentifiers
@@ -39,6 +40,11 @@ final class ContinuousVoiceScreenSession: ObservableObject {
     private let request: ContinuousVoiceRequest
     private let presentation: ContinuousVoicePresentation
     private let environment: AppEnvironment
+    /// Frozen selected-output snapshot for the CURRENT turn. The coordinator's
+    /// whole-body normalizer and the first synthesis source both read this one
+    /// value, so a mid-turn settings edit cannot change URL policy or provider
+    /// under an already-split answer.
+    private let speechProjection: VoiceSpeechProjectionContext
     private var bridge: ContinuousVoiceSpeechBridge?
     private var subscriptions = Set<AnyCancellable>()
     private var sourceRound: UUID?
@@ -53,6 +59,12 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         self.request = request
         self.presentation = presentation
         self.environment = environment
+        let initialSnapshot = environment.ttsSettingsService.snapshot
+        let initialEngine = environment.ttsSettingsService.localModelDescriptor(initialSnapshot.modelID)?.engine
+        let projection = VoiceSpeechProjectionContext(
+            initialSnapshot,
+            mossEngine: MossSpeechPreparation.isMossEngine(initialEngine))
+        self.speechProjection = projection
         wasTemporary = request.conversationID.map(environment.conversationCenter.isTemporaryConversation) ?? false
         let selection = VoiceConversationModelSelection(request.modelID)
         self.selection = selection
@@ -78,7 +90,10 @@ final class ContinuousVoiceScreenSession: ObservableObject {
                 onConversationCreated: created)
         }
         let language = VoiceRecognitionLanguage(rawValue: UserDefaults.standard.string(forKey: VoiceRecognitionLanguage.defaultsKey) ?? "") ?? .automatic
-        coordinator = VoiceConversationCoordinator.live(driving: driver, language: language)
+        coordinator = VoiceConversationCoordinator.live(
+            driving: driver,
+            language: language,
+            speechNormalizer: { text in projection.normalize(text) })
         coordinator.allowBargeIn = environment.ttsSettingsService.snapshot.allowBargeIn
         driver.onAttachmentsConsumed = { [weak self] files in
             guard let self, self.isActive else { return }
@@ -94,13 +109,28 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         driver.onSpeechReceiptSaveIssue = { [weak self] _ in self?.failureKey = "voice.error.receipt" }
         coordinator.$state.removeDuplicates().sink { [weak self] state in
             guard let self else { return }
+            if state == .submitting || state == .waitingModel {
+                MainActor.assumeIsolated {
+                    let snapshot = self.environment.ttsSettingsService.snapshot
+                    let engine = self.environment.ttsSettingsService
+                        .localModelDescriptor(snapshot.modelID)?.engine
+                    self.speechProjection.update(
+                        snapshot,
+                        mossEngine: MossSpeechPreparation.isMossEngine(engine))
+                    self.source = nil
+                    self.sourceRound = nil
+                }
+            }
             self.state = state
             self.presentation.setRecording(state.hasSession && !self.muted, for: request.id)
             if state == .listening || state == .paused { self.refreshHistory() }
         }.store(in: &subscriptions)
         coordinator.$stagedTranscript.removeDuplicates().sink { [weak self] in self?.stagedText = $0 }.store(in: &subscriptions)
         coordinator.$answerText.removeDuplicates().sink { [weak self] in self?.answerText = $0 }.store(in: &subscriptions)
-        coordinator.$currentSpokenText.removeDuplicates().sink { [weak self] in self?.spokenText = $0 }.store(in: &subscriptions)
+        coordinator.$currentSpokenText.removeDuplicates().sink { [weak self] text in
+            guard let self else { return }
+            self.spokenText = self.speechProjection.caption(for: text)
+        }.store(in: &subscriptions)
         coordinator.$turnErrorMessage.sink { [weak self] message in
             guard let self else { return }
             if message != nil { self.failureKey = "voice.error.turn" }
@@ -123,12 +153,23 @@ final class ContinuousVoiceScreenSession: ObservableObject {
                 sender.finish(throwing: CancellationError())
                 return TTSConfiguredStream(stream: stream, close: { sender.finish() })
             }
+            let snapshot = self.speechProjection.current
             if self.sourceRound != unit.token.id {
                 self.sourceRound = unit.token.id
-                self.source = ConfiguredTTSSpeechSource(snapshot: environment.ttsSettingsService.snapshot,
+                self.source = ConfiguredTTSSpeechSource(snapshot: snapshot,
                     settings: environment.ttsSettingsService, service: environment.ttsSpeechService)
             }
-            return self.source!.synthesize(text: AnswerSpeechText.plainText(unit.text), sessionID: unit.token.id, segmentIndex: unit.index)
+            let spoken = AnswerSpeechText.spokenText(unit.text, settings: snapshot)
+            guard !spoken.isEmpty else {
+                // Defensive only: the coordinator normalizes with this same
+                // frozen snapshot, so an URL-only local Read-links-OFF body
+                // normally completes as zero units before reaching synthesis.
+                // If a stale/foreign unit does arrive, finish the unit with
+                // inaudible silence instead of a zero-byte empty audio error
+                // or a first-chunk timeout.
+                return Self.silentCompletion(for: unit)
+            }
+            return self.source!.synthesize(text: spoken, sessionID: unit.token.id, segmentIndex: unit.index)
         }, onFailure: { [weak self] error in
             guard let self else { return }
             self.failureKey = SpeechFailureCopy.key(for: error)
@@ -136,6 +177,29 @@ final class ContinuousVoiceScreenSession: ObservableObject {
         }, onRoundEnded: { id in
             Task { await environment.localSpeechRuntime.endSession(id) }
         })
+    }
+
+    @MainActor
+    private static func silentCompletion(for unit: VoiceConversationSpeechUnit) -> TTSConfiguredStream {
+        let (stream, sender) = TTSAudioChunkStream.make()
+        let task = Task {
+            do {
+                try await sender.send(TTSAudioChunk(
+                    sessionID: unit.token.id, segmentIndex: unit.index,
+                    sequence: 0, pcm: Data([0, 0]), sampleRate: 24_000))
+                try await sender.send(TTSAudioChunk(
+                    sessionID: unit.token.id, segmentIndex: unit.index,
+                    sequence: 1, pcm: Data(), sampleRate: 24_000, isFinal: true))
+                sender.finish()
+            } catch {
+                sender.finish(throwing: error)
+            }
+        }
+        sender.attach(task)
+        return TTSConfiguredStream(
+            stream: stream,
+            playbackControls: .neutral,
+            close: { sender.finish(throwing: TTSSynthesisError.cancelled) })
     }
 
     var temporary: Bool { wasTemporary }
@@ -656,4 +720,114 @@ struct VoiceComposerUITestHarness: View {
 }
 #endif
 
+
+/// Thread-safe selected-output snapshot used by the coordinator's synchronous
+/// whole-body normalizer. `VoiceConversationView` updates it only at a new turn
+/// boundary; the same frozen value creates the round's TTS source.
+final class VoiceSpeechProjectionContext: @unchecked Sendable {
+    private let lock = NSLock()
+    private var snapshot: TTSSettingsSnapshot
+    private var mossEngine: Bool
+    private var captionSource = ""
+    private var captionProjection: SpeechTextProjection?
+    private var captionProsodyEdits: [MossSpeechPreparation.CaptionEdit] = []
+
+    init(_ snapshot: TTSSettingsSnapshot, mossEngine: Bool = false) {
+        self.snapshot = snapshot
+        self.mossEngine = mossEngine
+    }
+
+    var current: TTSSettingsSnapshot {
+        lock.withLock { snapshot }
+    }
+
+    func update(_ value: TTSSettingsSnapshot, mossEngine: Bool = false) {
+        lock.withLock {
+            snapshot = value
+            self.mossEngine = mossEngine
+            captionSource = ""
+            captionProjection = nil
+            captionProsodyEdits = []
+        }
+    }
+
+    func normalize(_ text: String) -> String {
+        let (currentSnapshot, isMoss) = lock.withLock {
+            (snapshot, mossEngine)
+        }
+        // Keep a plain source coordinate system for captions. Local URL
+        // pronunciation and MOSS pause punctuation belong only to synthesis.
+        let source = AnswerSpeechText.spokenText(text, destination: .cloud)
+        let prosody = MossSpeechPreparation.paragraphProjection(
+            source, engine: isMoss ? MossSpeechPreparation.mossEngine : nil)
+        let prepared = prosody.spoken
+        let projection = SpeechAnswerProjection.project(
+            prepared, destination: AnswerSpeechText.destination(for: currentSnapshot, text: prepared))
+        lock.withLock {
+            captionSource = source
+            captionProjection = projection
+            captionProsodyEdits = prosody.edits
+        }
+        return AnswerSpeechText.spokenText(prepared, settings: currentSnapshot)
+    }
+
+    func caption(for spokenUnit: String) -> String {
+        guard !spokenUnit.isEmpty else { return "" }
+        let (source, projection, prosodyEdits) = lock.withLock {
+            (captionSource, captionProjection, captionProsodyEdits)
+        }
+        guard let projection else { return spokenUnit }
+        let spoken = projection.spokenText as NSString
+        let unit = spoken.range(of: spokenUnit)
+        guard unit.location != NSNotFound else { return spokenUnit }
+        let original = source as NSString
+        let prepared = projection.sourceText as NSString
+        let spans = projection.spans.sorted {
+            ($0.spokenUTF16Start, $0.sourceUTF16Start) < ($1.spokenUTF16Start, $1.sourceUTF16Start)
+        }
+        func boundary(_ offset: Int, upper: Bool) -> Int {
+            var sourceCursor = 0
+            var spokenCursor = 0
+            for span in spans {
+                let end = span.spokenUTF16Start + span.spokenUTF16Length
+                if offset < span.spokenUTF16Start {
+                    return literalBoundary(offset, sourceCursor, span.sourceUTF16Start,
+                                           spokenCursor, span.spokenUTF16Start)
+                }
+                if span.spokenUTF16Length > 0, offset == span.spokenUTF16Start {
+                    return span.sourceUTF16Start
+                }
+                if span.spokenUTF16Length > 0, offset < end || (upper && offset == end) {
+                    return span.sourceUTF16Start + (upper ? span.sourceUTF16Length : 0)
+                }
+                sourceCursor = span.sourceUTF16Start + span.sourceUTF16Length
+                spokenCursor = end
+            }
+            return literalBoundary(offset, sourceCursor, prepared.length, spokenCursor, spoken.length)
+        }
+        func literalBoundary(_ offset: Int, _ sourceStart: Int, _ sourceEnd: Int,
+                             _ spokenStart: Int, _ spokenEnd: Int) -> Int {
+            let sourceRun = prepared.substring(with: NSRange(location: sourceStart, length: max(0, sourceEnd - sourceStart)))
+            let spokenRun = spoken.substring(with: NSRange(location: spokenStart, length: max(0, spokenEnd - spokenStart)))
+            func leading(_ value: String) -> Int { value.prefix(while: { $0.isWhitespace }).utf16.count }
+            let trimmedPrefix = max(0, leading(sourceRun) - leading(spokenRun))
+            return min(sourceEnd, sourceStart + trimmedPrefix + max(0, offset - spokenStart))
+        }
+        func restoreProsody(_ offset: Int, upper: Bool) -> Int {
+            var delta = 0
+            for edit in prosodyEdits {
+                if offset <= edit.spoken.location { return offset + delta }
+                if offset < NSMaxRange(edit.spoken) {
+                    return upper ? NSMaxRange(edit.source) : edit.source.location
+                }
+                delta = NSMaxRange(edit.source) - NSMaxRange(edit.spoken)
+            }
+            return offset + delta
+        }
+        let start = min(original.length, max(0, restoreProsody(boundary(unit.location, upper: false), upper: false)))
+        let end = min(original.length, max(start, restoreProsody(boundary(NSMaxRange(unit), upper: true), upper: true)))
+        return original.substring(with: NSRange(location: start, length: end - start))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
 #endif

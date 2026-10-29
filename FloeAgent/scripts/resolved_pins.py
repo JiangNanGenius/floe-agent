@@ -9,8 +9,11 @@ package's own committed ``Package.resolved`` is an independent App-local pin
 source: it supplies the transitive closure the host Swift package does not
 resolve, without trusting arbitrary extras found only in an Xcode lock.
 """
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 from urllib.parse import urlsplit
 import re
 
@@ -83,6 +86,171 @@ def application_pins(project):
     return resolved_pins({"version": 1, "object": {"pins": pins}}) if pins else []
 
 
+# The one local package allowed to sit outside the XcodeGen project directory.
+# FloeMacBridge is first-party source in this repository: the App links only its
+# FloeMacBridgeProtocol target and the Mac companion app is built from the same
+# package. It lives one level above FloeAgent/, so the declaration necessarily
+# spells ../FloeMacBridge. This is an exact name-and-path allowlist, not
+# permission for ../ in general: another package, sibling directory, absolute
+# path, symlink, separate repository, submodule, untracked file or changed
+# manifest still fails.
+#
+# The reviewed Package.swift digest is the dependency guarantee. A missing
+# Package.resolved is NOT evidence that a manifest has no package dependencies,
+# so the manifest bytes are pinned to a reviewed hash instead: any change
+# (including a new dependency, target or resource) requires updating this policy
+# and its test, and new package dependencies must be promoted to the host lock
+# and the license inventory rather than silently resolved by Xcode. The package
+# stays lock-free.
+FIRST_PARTY_SIBLING_PACKAGES = {
+    "FloeMacBridge": {
+        "path": "../FloeMacBridge",
+        "manifestSHA256": "9e7d644c30cec24a1119f0fde370031b72c20c14f26345cf320ef2e1df34b9b0",
+    },
+}
+
+# SwiftPM build state is not source and is never trusted as an input: the walk
+# below prunes only these package-root cache directories. A nested directory
+# with the same name stays subject to the tracked-file rule.
+FIRST_PARTY_PACKAGE_CACHE_DIRS = frozenset({".build", ".swiftpm"})
+
+
+def _git_checkout_query(repository, *arguments):
+    """Run one read-only Git query, converting any failure into a pin error."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            capture_output=True,
+            text=True,
+        )
+    except OSError as error:
+        raise ValueError(
+            f"Xcode local package Git checkout unreadable: {repository}: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"git exited {completed.returncode}"
+        raise ValueError(
+            f"Xcode local package Git checkout unreadable: {repository}: {detail}"
+        )
+    return completed.stdout
+
+
+def _first_party_package_dir(root, name, raw_path):
+    """Resolve an allowlisted first-party sibling from the same Git checkout.
+
+    The declaration must be the exact fixed path; the directory must be a real
+    directory (never a symlink) and the direct child of the repository root
+    that contains the XcodeGen project; it must be part of that Git checkout
+    and have no staged, modified or submodule state. Every file the build can
+    read must be tracked: the package-root .build/.swiftpm caches are pruned,
+    every other untracked, ignored or symlinked entry fails. The manifest bytes
+    must equal the reviewed digest in the policy. The package must not carry
+    its own Package.resolved. This binds the linked source and its dependency
+    surface to the frozen Git revision instead of trusting a local path.
+    """
+    policy = FIRST_PARTY_SIBLING_PACKAGES[name]
+    expected = policy["path"]
+    if raw_path != expected:
+        raise ValueError(
+            "First-party Xcode package must keep its fixed source path: "
+            f"{name}: {raw_path} (expected {expected})"
+        )
+    repo_root = root.parent
+    package_dir = root / raw_path
+    if package_dir.is_symlink():
+        raise ValueError(
+            f"First-party Xcode package must not be a symlink: {name}: {raw_path}"
+        )
+    if not package_dir.is_dir():
+        raise ValueError(
+            f"First-party Xcode package is missing from the checkout: {name}: {raw_path}"
+        )
+    resolved = package_dir.resolve()
+    canonical_root = repo_root.resolve()
+    if resolved != canonical_root / name:
+        raise ValueError(
+            "First-party Xcode package path escapes the project directory: "
+            f"{name}: {raw_path}"
+        )
+    top_level = Path(
+        _git_checkout_query(package_dir, "rev-parse", "--show-toplevel").strip()
+    ).resolve()
+    if top_level != canonical_root:
+        raise ValueError(
+            "First-party Xcode package must belong to the project's Git checkout: "
+            f"{name}: {raw_path}"
+        )
+    entries = [
+        entry
+        for entry in _git_checkout_query(
+            repo_root, "ls-files", "-s", "-z", "--", name
+        ).split("\0")
+        if entry
+    ]
+    if not entries:
+        raise ValueError(f"First-party Xcode package has no tracked files: {name}")
+    if any(entry.split("\t", 1)[0].startswith("160000 ") for entry in entries):
+        raise ValueError(f"First-party Xcode package must not be a Git submodule: {name}")
+    if not any(entry.split("\t", 1)[-1] == f"{name}/Package.swift" for entry in entries):
+        raise ValueError(
+            f"First-party Xcode package manifest is not tracked: {name}/Package.swift"
+        )
+    status = _git_checkout_query(
+        repo_root, "status", "--porcelain", "--untracked-files=no", "--", name
+    )
+    changed = [line for line in status.splitlines() if line.strip()]
+    if changed:
+        raise ValueError(
+            "First-party Xcode package must be committed and clean: "
+            f"{name} ({len(changed)} changed path(s))"
+        )
+    tracked = {entry.split("\t", 1)[1] for entry in entries}
+    manifest_digest = None
+    for directory, dirnames, filenames in os.walk(resolved):
+        if Path(directory) == resolved:
+            dirnames[:] = [
+                dirname for dirname in dirnames
+                if dirname not in FIRST_PARTY_PACKAGE_CACHE_DIRS
+            ]
+        for dirname in dirnames:
+            if (Path(directory) / dirname).is_symlink():
+                raise ValueError(
+                    "First-party Xcode package must not contain symlinks: "
+                    f"{name}: {(Path(directory) / dirname).relative_to(resolved).as_posix()}"
+                )
+        for filename in filenames:
+            entry = Path(directory) / filename
+            relative = entry.relative_to(resolved).as_posix()
+            if entry.is_symlink():
+                raise ValueError(
+                    "First-party Xcode package must not contain symlinks: "
+                    f"{name}: {relative}"
+                )
+            if f"{name}/{relative}" not in tracked:
+                raise ValueError(
+                    "First-party Xcode package contains an untracked or ignored file "
+                    f"the build could read: {name}/{relative}"
+                )
+            if relative == "Package.swift":
+                manifest_digest = hashlib.sha256(entry.read_bytes()).hexdigest()
+    if manifest_digest is None:
+        raise ValueError(f"First-party Xcode package manifest is missing: {name}/Package.swift")
+    if manifest_digest != policy["manifestSHA256"]:
+        raise ValueError(
+            "First-party Xcode package manifest does not match the reviewed SHA-256; "
+            f"review the change, promote any new dependencies to the host lock and "
+            f"license inventory, then update the policy and its test: {name} "
+            f"({manifest_digest})"
+        )
+    lock_path = resolved / "Package.resolved"
+    if lock_path.is_symlink() or lock_path.exists():
+        raise ValueError(
+            "First-party Xcode package must not add an independent Package.resolved; "
+            f"declare its dependencies in the host lock: {name}"
+        )
+    return resolved
+
+
 def application_local_pins(project, project_dir):
     """Read the committed lock closure of explicitly declared local packages.
 
@@ -92,6 +260,15 @@ def application_local_pins(project, project_dir):
     nothing. Every lock must be a valid immutable resolution. Two local locks
     may agree on the exact same pin, but a conflicting identity is rejected
     instead of letting one lock silently replace another.
+
+    One first-party sibling is allowlisted by name and exact path:
+    ``FloeMacBridge`` at ``../FloeMacBridge``. It is accepted only as a real,
+    tracked and clean directory of the same Git checkout whose manifest matches
+    the reviewed digest, with every non-cache file tracked and no symlinks, and
+    must not carry its own ``Package.resolved``. It therefore contributes no
+    pins; a changed manifest, a new file or a dependency needs an explicit
+    policy/test review before it can build. Every other path outside
+    ``project_dir`` still fails.
     """
     root = Path(project_dir).resolve()
     pins = []
@@ -105,6 +282,9 @@ def application_local_pins(project, project_dir):
         raw_path = _yaml_path(path_match.group(1))
         if not raw_path:
             raise ValueError(f"Xcode local package has an empty path: {name}")
+        if name in FIRST_PARTY_SIBLING_PACKAGES:
+            _first_party_package_dir(root, name, raw_path)
+            continue
         package_dir = (root / raw_path).resolve()
         try:
             package_dir.relative_to(root)

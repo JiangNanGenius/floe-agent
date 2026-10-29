@@ -63,12 +63,69 @@ final class ContentUpdateCenter: ObservableObject {
         let plannedByID: [String: ContentUpdateDecision]
     }
 
+    /// The exact stage one service-owned content install transaction is at.
+    /// `fetching` covers the signed package downloads (cancellable network
+    /// stage); `committing` covers validation, staging and atomic promotion.
+    /// Cancellation remains available until the store starts its atomic write;
+    /// after promotion the receipt preserves the actual installed result.
+    enum ContentInstallPhase: String, Equatable, Sendable {
+        case fetching
+        case committing
+    }
+
+    /// Per-content-id truth for the newest install attempt this service owns.
+    /// Normal cancellation and a real error are distinct: `wasCancelled` is
+    /// set only for a cancelled job with no promotion. `promoted` is the
+    /// atomic receipt — recorded the moment the store transaction (install
+    /// promotion or rollback re-point) completes, BEFORE any mirroring or
+    /// refresh tail. It survives a later tail error (then `failure` carries
+    /// that real error while `promoted` stays true: the content really is
+    /// installed/re-pointed), and it wins over a cancellation request that
+    /// arrived too late to stop the transaction. Starting a new attempt for
+    /// the same id replaces this record, so a retry clears exactly that id's
+    /// old error and stale callbacks can never overwrite a newer attempt. The
+    /// dictionary is process memory only: after a restart the published
+    /// state mirrors the store's real installed/history records through
+    /// `installed`, and a job that died with the process is never shown as
+    /// still running.
+    struct ContentInstallState: Equatable, Sendable {
+        let attempt: UUID
+        var running = false
+        var cancelling = false
+        var phase: ContentInstallPhase?
+        var failure: String?
+        var wasCancelled = false
+        var promoted = false
+
+        init(
+            attempt: UUID,
+            running: Bool = false,
+            cancelling: Bool = false,
+            phase: ContentInstallPhase? = nil,
+            failure: String? = nil,
+            wasCancelled: Bool = false,
+            promoted: Bool = false
+        ) {
+            self.attempt = attempt
+            self.running = running
+            self.cancelling = cancelling
+            self.phase = phase
+            self.failure = failure
+            self.wasCancelled = wasCancelled
+            self.promoted = promoted
+        }
+    }
+
     // MARK: - Published UI state
 
     @Published private(set) var installed: [String: InstalledRecord] = [:]
     @Published private(set) var available: [String: AvailableContent] = [:]
     @Published private(set) var isChecking = false
     @Published private(set) var installingIDs: Set<String> = []
+    /// Newest attempt state per content id for every service-owned install
+    /// (explicit, guide, provider/search refresh and rollback). Views mirror
+    /// this; it never claims work the service does not own.
+    @Published private(set) var installStates: [String: ContentInstallState] = [:]
     @Published private(set) var lastCheck: Date?
     @Published var errorMessage: String?
     @Published private(set) var providerCatalogCommit: String?
@@ -158,6 +215,12 @@ final class ContentUpdateCenter: ObservableObject {
     private var state: ContentUpdateState?
     private var feedSnapshot: FeedSnapshot?
     private var installInFlight: Set<String> = []
+    /// One live service-owned transaction task per content id. The task, not
+    /// the presenting view, owns the install: navigation/teardown can never
+    /// cancel it, only `cancelInstall(_:)` does. A caller that arrives while
+    /// an attempt is live joins that exact task instead of starting a second
+    /// download for the same id.
+    private var installTasks: [String: Task<Void, Never>] = [:]
     private var providerCatalogCache: ProviderCatalogIndex?
     private var searchProviderCatalogCache: SearchProviderCatalogIndex?
     private var promptSectionCache: [ContentPackageCodec.PromptSection] = []
@@ -493,44 +556,236 @@ final class ContentUpdateCenter: ObservableObject {
 
     // MARK: - Install / rollback
 
+    /// Identity of one service-owned install attempt: the content id plus the
+    /// attempt token. Only a live attempt carries a token; every phase or
+    /// terminal write is fenced on it so a callback from a finished (or
+    /// cancelled) attempt can never touch a newer attempt's state.
+    struct ContentInstallAttempt: Equatable, Sendable {
+        let id: String
+        let token: UUID
+    }
+
+    /// Legacy entry point, signature and completion behaviour unchanged: the
+    /// caller waits until this id's install reaches its terminal transition.
+    /// While an attempt for the same id is live the caller JOINS it (a second
+    /// caller never starts a second download and never returns early while
+    /// bytes are still moving). The caller's own cancellation — for example
+    /// the presenting view being torn down — does not cancel the service task;
+    /// only `cancelInstall(_:)` does. Real errors keep populating the global
+    /// `errorMessage` for existing views; a normal cancellation does not.
     func install(_ id: String) async {
         await ensureLoaded()
         guard let store, let snapshot = feedSnapshot else {
             if errorMessage == nil { errorMessage = FloeL10n.l("content.update.error.feed") }
+            noteAttemptBlocked(id: id, message: FloeL10n.l("content.update.error.feed"))
             return
         }
-        await performInstall(id: id) {
-            try await self.commitEntries([id], snapshot: snapshot, store: store)
+        await performAttempt(id: id) { attempt in
+            try await self.commitEntries([id], snapshot: snapshot, store: store, attempt: attempt)
         }
     }
 
-    private func performInstall(id: String, operation: @escaping () async throws -> Void) async {
-        guard !installingIDs.contains(id) else { return }
+    /// Non-blocking entry for observing owners (the setup guide): start this
+    /// id's service-owned install, or join the live attempt if one exists, and
+    /// return immediately. Progress, cancellation and the per-id failure truth
+    /// arrive through `installStates[id]`; the job survives navigation because
+    /// the center, not the view, owns the task.
+    func beginInstall(_ id: String) async {
+        await ensureLoaded()
+        guard let store, let snapshot = feedSnapshot else {
+            if errorMessage == nil { errorMessage = FloeL10n.l("content.update.error.feed") }
+            noteAttemptBlocked(id: id, message: FloeL10n.l("content.update.error.feed"))
+            return
+        }
+        _ = startAttempt(id: id) { attempt in
+            try await self.commitEntries([id], snapshot: snapshot, store: store, attempt: attempt)
+        }
+    }
+
+    /// Cancels exactly one job: the live install/rollback transaction for this
+    /// content id. Nothing else — not another id's install, not installed
+    /// content, not unrelated files — is touched. The cancellation aborts the
+    /// remaining network/check stages at their next fence, and the store's own
+    /// validation/staging steps keep observing the same task cancellation
+    /// (removing only the directories that call staged, never the manifest).
+    /// The atomic manifest promotion itself can never be interrupted or rolled
+    /// back once entered; if it completes despite the cancel, the attempt
+    /// reports the real installed truth (`promoted == true`), not a fake
+    /// cancellation. No force-quit is promised or performed: a network read
+    /// already inside the transport unwinds when the transport itself observes
+    /// cancellation.
+    func cancelInstall(_ id: String) {
+        guard let task = installTasks[id], installStates[id]?.running == true else { return }
+        if var state = installStates[id] {
+            state.cancelling = true
+            installStates[id] = state
+        }
+        task.cancel()
+    }
+
+    /// Starts the attempt or joins the live one (never two per id). The
+    /// prologue runs synchronously on the main actor, so concurrent callers
+    /// cannot both pass the "no live task" check. Terminal transitions are
+    /// fenced on the attempt token: a late callback from an old task can never
+    /// replace a newer attempt's state.
+    @discardableResult
+    func performAttempt(
+        id: String,
+        operation: @escaping @MainActor @Sendable (ContentInstallAttempt) async throws -> Void
+    ) async -> ContentInstallState? {
+        let task = startAttempt(id: id, operation: operation)
+        await task.value
+        return installStates[id]
+    }
+
+    /// Creates and registers the service-owned task, or returns the live one.
+    /// A new attempt for an id replaces that id's previous record, which is
+    /// what clears the matching old error (nothing else loses state).
+    @discardableResult
+    func startAttempt(
+        id: String,
+        operation: @escaping @MainActor @Sendable (ContentInstallAttempt) async throws -> Void
+    ) -> Task<Void, Never> {
+        if let existing = installTasks[id] { return existing }
+        let attempt = ContentInstallAttempt(id: id, token: UUID())
+        installStates[id] = ContentInstallState(attempt: attempt.token, running: true)
         installingIDs.insert(id)
         errorMessage = nil
-        defer { installingIDs.remove(id) }
-        do {
-            try await operation()
-        } catch {
-            errorMessage = Self.describe(error)
+        let task = Task { @MainActor in
+            do {
+                try await operation(attempt)
+                // The transaction finished. Even if cancellation arrived on
+                // the way, everything before the atomic promotion that was
+                // still required ran: report the installed truth.
+                self.finishAttempt(attempt) { state in
+                    state.running = false
+                    state.cancelling = false
+                    state.phase = nil
+                    state.promoted = true
+                    state.wasCancelled = false
+                }
+            } catch {
+                self.finishAttempt(attempt) { state in
+                    state.running = false
+                    state.phase = nil
+                    if state.promoted {
+                        // The atomic transaction ALREADY completed (receipt
+                        // recorded when the store returned). A failure in the
+                        // mirroring/refresh tail afterwards keeps BOTH truths:
+                        // the content really is installed/re-pointed, and the
+                        // tail error is visible. Cancellation is moot now.
+                        state.cancelling = false
+                        state.wasCancelled = false
+                        state.failure = Self.describe(error)
+                        self.errorMessage = state.failure
+                    } else if error is CancellationError {
+                        state.cancelling = false
+                        state.wasCancelled = true
+                    } else if state.cancelling && Self.isCancellationFlavoured(error) {
+                        // A cancelled job that ended without promoting is a
+                        // normal cancellation, not a failure.
+                        state.cancelling = false
+                        state.wasCancelled = true
+                    } else {
+                        // Real error — also visible through the global
+                        // message for every existing consumer.
+                        state.failure = Self.describe(error)
+                        self.errorMessage = state.failure
+                    }
+                }
+            }
         }
+        installTasks[id] = task
+        return task
+    }
+
+    /// Records that this attempt's ATOMIC store transaction completed (an
+    /// install promotion or a rollback re-point). The receipt is written the
+    /// moment the store returns, before any mirroring/refresh tail, so a
+    /// later tail failure can never rewrite the installed truth: the attempt
+    /// then reports BOTH `promoted == true` and the real error. Owner-internal
+    /// (the commit paths call it; focused tests exercise the boundary).
+    func recordPromotion(_ attempt: ContentInstallAttempt?) {
+        guard let attempt, var state = installStates[attempt.id],
+              state.attempt == attempt.token, state.running else { return }
+        state.promoted = true
+        installStates[attempt.id] = state
+    }
+
+    /// Applies a terminal transition to the LATEST attempt only. A stale
+    /// callback (attempt token mismatch) is dropped untouched.
+    private func finishAttempt(
+        _ attempt: ContentInstallAttempt,
+        _ mutate: (inout ContentInstallState) -> Void
+    ) {
+        guard var state = installStates[attempt.id], state.attempt == attempt.token else { return }
+        mutate(&state)
+        installStates[attempt.id] = state
+        if !state.running {
+            if installTasks[attempt.id] != nil { installTasks[attempt.id] = nil }
+            installingIDs.remove(attempt.id)
+        }
+    }
+
+    /// Records the service's actual reason an install could not even start
+    /// (no frozen verified feed), as a real per-id failure — never as a
+    /// phantom running task. A live attempt for the same id wins.
+    private func noteAttemptBlocked(id: String, message: String) {
+        if let state = installStates[id], state.running { return }
+        installStates[id] = ContentInstallState(attempt: UUID(), running: false, failure: message)
+    }
+
+    /// Phase is only ever advanced by the live attempt it belongs to, and only
+    /// while that attempt is still running.
+    private func setInstallPhase(_ attempt: ContentInstallAttempt?, _ phase: ContentInstallPhase) {
+        guard let attempt, var state = installStates[attempt.id],
+              state.attempt == attempt.token, state.running else { return }
+        state.phase = phase
+        installStates[attempt.id] = state
+    }
+
+    /// Errors the transport raises because the caller's task was cancelled.
+    /// Only classified as a normal cancellation when this center actually
+    /// requested it (`cancelling`), so a network blip is never laundered into
+    /// "the user cancelled".
+    static func isCancellationFlavoured(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError { return urlError.code == .cancelled }
+        // Foundation's CocoaError cancellation code is `.userCancelled`;
+        // `.cancelled` exists only on URLError (verified against the real
+        // Foundation type by Main's review).
+        if let cocoaError = error as? CocoaError { return cocoaError.code == .userCancelled }
+        if let posix = error as? POSIXError { return posix.code == .ECANCELED }
+        return false
     }
 
     /// Authoritative, re-validated commit. The store re-checks version,
     /// immutability, pin and capability rules against its current state; the
     /// frozen feed commit is the only source of bytes. A failure never leaves
     /// a half-applied batch.
+    ///
+    /// Cancellation contract (`attempt` set when this runs as a service-owned
+    /// job): every network/check stage is fenced, and the final fence sits
+    /// immediately BEFORE the atomic manifest promotion is started, so a
+    /// cancel can only ever stop work that has not promoted anything. Once
+    /// `store.commit`/`commitAutomatically` is invoked it is never interrupted,
+    /// never rolled back and its result is reported as the installed truth —
+    /// including when cancellation arrived while it was running. No content,
+    /// history or unrelated file is deleted on the cancel path.
     private func commitEntries(
         _ ids: [String],
         snapshot: FeedSnapshot,
         store: ContentUpdateStore,
-        automatic: Bool = false
+        automatic: Bool = false,
+        attempt: ContentInstallAttempt? = nil
     ) async throws {
         for id in ids {
             guard !installInFlight.contains(id) else {
                 throw ContentUpdateStoreError.conflict("already installing \(id)")
             }
         }
+        // Fence 0: the job was cancelled before any of its stages started.
+        try Task.checkCancellation()
         _ = try await store.removeVersionPins()
         let plan = try await store.plan(feed: snapshot.feed, appVersion: appVersion)
         let planningState = await store.currentState()
@@ -560,8 +815,12 @@ final class ContentUpdateCenter: ObservableObject {
         for id in needed { installInFlight.insert(id) }
         defer { for id in needed { installInFlight.remove(id) } }
 
+        setInstallPhase(attempt, .fetching)
         var batch: [ContentUpdateStore.BatchItem] = []
         for id in needed {
+            // Fence per package: an abandoned job never fetches the next
+            // signed payload.
+            try Task.checkCancellation()
             guard let item = plan.items[id] else { continue }
             let zip = try await repositoryFetch(
                 OfficialContentHub.owner, OfficialContentHub.repository,
@@ -573,6 +832,11 @@ final class ContentUpdateCenter: ObservableObject {
             }
             batch.append(ContentUpdateStore.BatchItem(entry: item.entry, zip: zip))
         }
+        setInstallPhase(attempt, .committing)
+        // Final fence, AFTER the last await and BEFORE the atomic promotion:
+        // once the store transaction is invoked below it runs to completion
+        // and its result is the truth, cancellation or not.
+        try Task.checkCancellation()
         let next: ContentUpdateState
         if automatic {
             next = try await store.commitAutomatically(batch, appVersion: appVersion,
@@ -581,6 +845,10 @@ final class ContentUpdateCenter: ObservableObject {
             next = try await store.commit(batch, appVersion: appVersion,
                 allowedCapabilities: Self.allowedCapabilities, domainValidate: Self.domainValidator)
         }
+        // Promotion receipt FIRST, before any tail: everything below only
+        // mirrors/refreshes published state; a failure there keeps this
+        // attempt's `promoted == true` alongside the real error.
+        recordPromotion(attempt)
         await apply(next)
         let refreshed = try await store.plan(feed: snapshot.feed, appVersion: appVersion)
         feedSnapshot = FeedSnapshot(
@@ -589,20 +857,32 @@ final class ContentUpdateCenter: ObservableObject {
         available = refreshed.items.mapValues { AvailableContent(entry: $0.entry, decision: $0.decision) }
     }
 
+    /// Rollback shares the same service-owned attempt machinery as install:
+    /// per-id state, join-if-live, `cancelInstall(_:)` targets it, and the
+    /// manifest re-point is an atomic store transaction that a cancellation
+    /// can only refuse to START (fence below), never interrupt midway.
     func rollback(_ id: String) async {
         await ensureLoaded()
         guard let store else {
             errorMessage = storageError
+            noteAttemptBlocked(id: id, message: storageError ?? FloeL10n.l("content.update.error.storage_unavailable"))
             return
         }
-        await performInstall(id: id) {
+        await performAttempt(id: id) { attempt in
             let actions = await store.actionSnapshot(appVersion: self.appVersion,
                 builtInBaselines: Self.builtInBaselines, domainValidate: Self.domainValidator)
             guard let target = actions.rollbackTargets[id] else {
                 await self.apply(actions.state)
                 throw ContentUpdateStoreError.conflict("no usable retained version for \(id)")
             }
+            // Fence immediately before the atomic manifest re-point.
+            try Task.checkCancellation()
+            self.setInstallPhase(attempt, .committing)
             _ = try await store.rollback(id: id, appVersion: self.appVersion, toVersion: target.entry.version)
+            // Re-point receipt BEFORE the tail: if the pin retirement/refresh
+            // below fails, the rollback itself really happened and the
+            // attempt reports the rolled-back truth alongside the error.
+            self.recordPromotion(attempt)
             // The old store pins explicit restores. No hidden pin survives
             // this UI action now that the pin control has been retired.
             do {
@@ -647,11 +927,13 @@ final class ContentUpdateCenter: ObservableObject {
         await checkForUpdates(force: true)
         guard let decision = available[Self.providerPackageID]?.decision else { return }
         if decision.isUpdate {
-            await performInstall(id: Self.providerPackageID) {
+            await performAttempt(id: Self.providerPackageID) { attempt in
                 guard let snapshot = self.feedSnapshot, let store = self.store else {
                     throw ContentUpdateStoreError.conflict("no frozen feed")
                 }
-                try await self.commitEntries([Self.providerPackageID], snapshot: snapshot, store: store)
+                try await self.commitEntries(
+                    [Self.providerPackageID], snapshot: snapshot, store: store, attempt: attempt
+                )
             }
         }
     }
@@ -685,11 +967,13 @@ final class ContentUpdateCenter: ObservableObject {
         await checkForUpdates(force: true)
         guard let decision = available[Self.searchProviderPackageID]?.decision else { return }
         if decision.isUpdate {
-            await performInstall(id: Self.searchProviderPackageID) {
+            await performAttempt(id: Self.searchProviderPackageID) { attempt in
                 guard let snapshot = self.feedSnapshot, let store = self.store else {
                     throw ContentUpdateStoreError.conflict("no frozen feed")
                 }
-                try await self.commitEntries([Self.searchProviderPackageID], snapshot: snapshot, store: store)
+                try await self.commitEntries(
+                    [Self.searchProviderPackageID], snapshot: snapshot, store: store, attempt: attempt
+                )
             }
         }
     }

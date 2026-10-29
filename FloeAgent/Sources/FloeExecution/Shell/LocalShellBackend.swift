@@ -170,6 +170,9 @@ public enum ShellRunOutcome: Sendable, Equatable {
     /// owns the process-wide runtime gate. Distinct from `timedOut`: nothing
     /// of this command ran, and no partial output exists.
     case notStarted(reason: String)
+    /// The host may have accepted the command. Inspect this exact job after
+    /// reconnecting; a new submission would risk repeating side effects.
+    case outcomeUnknown(jobID: String, message: String)
     /// The backend could not start the command (missing engine, session
     /// bookkeeping failure). Distinct from a non-zero command exit.
     case failed(message: String)

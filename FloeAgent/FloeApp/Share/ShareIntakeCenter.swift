@@ -182,7 +182,7 @@ enum ShareIntakeDeferral: Equatable, Sendable {
     case unavailable
 }
 
-enum ShareIntakeOutcome: Equatable {
+enum ShareIntakeOutcome: Equatable, Sendable {
     case applied(envelopeID: UUID)
     case alreadyApplied(envelopeID: UUID)
     case discarded(envelopeID: UUID)
@@ -219,6 +219,8 @@ final class ShareIntakeCenter: ObservableObject {
     private let availabilityError: ShareInboxError?
     private var didStart = false
     private var foregroundObserver: NSObjectProtocol?
+    private var storageSuspended = false
+    private var activeApplication: Task<ShareIntakeOutcome, Never>?
     /// Injected once during App bootstrap. The card's durable destination
     /// actions only forward here; the ledger-backed executors live in
     /// `ImportDestinationCenter` (shared ledger, planned identities, ack).
@@ -372,6 +374,34 @@ final class ShareIntakeCenter: ObservableObject {
         _ envelope: ShareEnvelope,
         to destination: any ShareIntakeDestination
     ) async -> ShareIntakeOutcome {
+        guard !storageSuspended else { return .deferred(envelopeID: envelope.id, reason: .cancelled) }
+        guard activeApplication == nil else {
+            return .deferred(envelopeID: envelope.id, reason: .anotherShareInProgress)
+        }
+        let task = Task { @MainActor [self] in
+            do {
+                let budget = try await StorageOperationBudget.begin()
+                defer { budget.finish() }
+                try budget.check()
+                return await applyClaimedEnvelope(envelope, to: destination)
+            } catch {
+                return ShareIntakeOutcome.deferred(envelopeID: envelope.id, reason: .cancelled)
+            }
+        }
+        activeApplication = task
+        defer { activeApplication = nil }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+    }
+
+    private func applyClaimedEnvelope(
+        _ envelope: ShareEnvelope,
+        to destination: any ShareIntakeDestination
+    ) async -> ShareIntakeOutcome {
+        guard !storageSuspended, !Task.isCancelled else {
+            return .deferred(envelopeID: envelope.id, reason: .cancelled)
+        }
         guard let inbox else {
             let message = availabilityError?.localizedDescription
                 ?? FloeL10n.l("share.error.app_group_unavailable")
@@ -635,6 +665,12 @@ final class ShareIntakeCenter: ObservableObject {
     /// it. This is the only path that deletes the source without a draft.
     @discardableResult
     func discard(_ envelope: ShareEnvelope) async -> ShareIntakeOutcome {
+        guard !storageSuspended else { return .deferred(envelopeID: envelope.id, reason: .cancelled) }
+        let budget: StorageOperationLease
+        do { budget = try await StorageOperationBudget.begin() }
+        catch { return .deferred(envelopeID: envelope.id, reason: .cancelled) }
+        defer { budget.finish() }
+        guard !storageSuspended else { return .deferred(envelopeID: envelope.id, reason: .cancelled) }
         guard let inbox else {
             let message = availabilityError?.localizedDescription
                 ?? FloeL10n.l("share.error.app_group_unavailable")
@@ -685,6 +721,22 @@ final class ShareIntakeCenter: ObservableObject {
             lastOutcome = outcome
             return outcome
         }
+    }
+
+    func suspendForBackground() async {
+        beginStorageSuspension()
+        let task = activeApplication
+        await task?.value
+    }
+
+    func beginStorageSuspension() {
+        storageSuspended = true
+        activeApplication?.cancel()
+    }
+
+    func resumeAfterSuspension() async {
+        storageSuspended = false
+        await refresh()
     }
 }
 #endif

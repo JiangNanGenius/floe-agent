@@ -39,7 +39,9 @@
 //     speculative `.finalAnswerUpdated`/`.finalAnswerRetracted` live
 //     projection. `.completed(fullText:)` carries ONLY the canonical
 //     confirmed final body (durable event order, last tool boundary
-//     respected) normalized once through `AnswerSpeechText.plainText`;
+//     respected) projected once through the provider-independent
+//     `AnswerSpeechText` cloud projection (code/tables removed, URLs retained);
+//     the selected output source applies its own URL/local projection;
 //   - an unconfirmed or unreadable final means the completed speech body is
 //     EMPTY — live segments, joined round text and empty-event fallbacks are
 //     never substituted into speech.
@@ -64,6 +66,7 @@
 import Foundation
 import Combine
 import FloeCore
+import FloeProviders
 import FloeModels
 import FloePersistence
 import FloeAgentRuntime
@@ -633,7 +636,7 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
     ///
     /// Speech is driven exclusively by the CONFIRMED final body delivered at
     /// `.completed` (see `finalizeFromStore` → `FinalAnswerSpeech.answer` →
-    /// `AnswerSpeechText.plainText`). The driver deliberately never emits the
+    /// `AnswerSpeechText` whole-body projection). The driver deliberately never emits the
     /// speculative `.finalAnswerUpdated`/`.finalAnswerRetracted` projection:
     /// confirmed-final-body-only removes any possibility of speaking tool
     /// progress or intermediate commentary, and of retract/replay. The
@@ -654,11 +657,12 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
     /// cached snapshot is refreshed with a bounded wait when it lacks text.
     /// FINAL-ANSWER determination uses the primary's canonical
     /// `FinalAnswerSpeech.answer(runID:events:messages:)` (durable event
-    /// order, last tool boundary respected — never keyword guessing), then
-    /// `AnswerSpeechText.plainText` normalizes the WHOLE confirmed body
-    /// before any sentence splitting happens downstream (fenced code blocks
-    /// span units; per-unit stripping is unsafe). The raw round text stays
-    /// available to the UI via `.answerUpdated`.
+    /// order, last tool boundary respected — never keyword guessing). The
+    /// whole confirmed body is projected with URLs retained; the coordinator's
+    /// selected-source normalizer applies the local Read-links policy before
+    /// sentence splitting (fenced code blocks span units, so per-unit
+    /// stripping would be unsafe). The raw round text stays available to the
+    /// UI via `.answerUpdated`.
     private func finalizeFromStore(
         launch: Launch,
         runID: UUID,
@@ -739,9 +743,12 @@ final class VoiceConversationRunDriver: VoiceConversationTurnDriving, Observable
             // stays display-only (never spoken). A real confirmed body whose
             // speech projection is legitimately empty (for example code or
             // media-only content) still completes normally.
-            let speechText = AnswerSpeechText.plainText(finalAnswer ?? "")
-            // completed carries ONLY the final-answer body (normalized):
-            // the whole round is never replayed into speech.
+            let speechText = AnswerSpeechText.spokenText(
+                finalAnswer ?? "", destination: .cloud)
+            // completed carries ONLY the final-answer body. The coordinator's
+            // selected-source projection may legitimately turn a URL-only body
+            // into zero units; that completes silently, never as empty synth.
+            // The whole round is never replayed into speech.
             deliver(launch, .completed(fullText: speechText))
         default:
             deliver(launch, .cancelled)

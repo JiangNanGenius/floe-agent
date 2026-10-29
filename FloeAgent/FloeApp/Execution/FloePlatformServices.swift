@@ -886,6 +886,7 @@ final class FloePlatformServices: @unchecked Sendable {
     func prepareLinuxEnvironment(
         environmentID: String? = nil,
         cancellation: CancellationToken,
+        runID: UUID? = nil,
         onProgress: @escaping @Sendable (Int64, Int64) -> Void = { _, _ in }
     ) async throws -> String {
         guard await ensureLinuxImageService() else {
@@ -904,9 +905,21 @@ final class FloePlatformServices: @unchecked Sendable {
         } else {
             resolvedImageID = LinuxGuestImageDistributionCatalog.defaultImageID
         }
-        return try await prepareLinuxImage(
-            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+        let activityID = await TaskRuntimePreparationCenter.shared.begin(
+            runID: runID, imageID: resolvedImageID, environmentID: environmentID
         )
+        do {
+            let result = try await prepareLinuxImage(
+            imageID: resolvedImageID, cancellation: cancellation, onProgress: onProgress
+            )
+            await TaskRuntimePreparationCenter.shared.end(activityID)
+            try cancellation.throwIfCancelled()
+            try Task.checkCancellation()
+            return result
+        } catch {
+            await TaskRuntimePreparationCenter.shared.end(activityID)
+            throw error
+        }
     }
 
     /// Mutable phase cell for one shared image job. The byte-progress callback
@@ -997,6 +1010,13 @@ final class FloePlatformServices: @unchecked Sendable {
             id: jobID,
             title: String(format: String(localized: "environment.backend.image_download_title"), imageID)
         ) { epoch in
+            // Bind the job-store epoch to the live shared attempt NOW: a
+            // cancellation is reported to the jobs store against exactly this
+            // identity, and the late main-actor note re-checks it before
+            // writing. A cancel pressed BEFORE the operation body runs (in
+            // the registration window) has no byte truth to suppress — the
+            // first cancellation checkpoint ends that attempt anyway.
+            self.lock.withLock { self.linuxImageJobEpochs[jobID] = epoch }
             let phaseBox = LinuxImageJobPhaseBox()
             let reportPhase: @Sendable (LinuxGuestImageTransferPhase) -> Void = { phase in
                 let stamp = phaseBox.advance(phase)
@@ -1007,14 +1027,19 @@ final class FloePlatformServices: @unchecked Sendable {
                 }
             }
             let reportProgress: @Sendable (Int64, Int64) -> Void = { received, expected in
+                // Every real downloader sample rides one MainActor hop: the
+                // jobs store publishes the actual cumulative counter, the
+                // server's real total (or nil when the server sent none) and
+                // a rate measured only from real byte growth, and derives the
+                // fraction there exactly as before (only when the total is
+                // known). No separate observer or timer exists: this IS the
+                // progress channel, one hop per sample.
                 onProgress(received, expected)
-                guard expected > 0 else { return }
-                let fraction = min(1, Double(received) / Double(expected))
                 let stamp = phaseBox.snapshot()
                 Task { @MainActor in
-                    EnvironmentPackageJobs.shared.reportProgress(
+                    EnvironmentPackageJobs.shared.reportBytes(
                         id: jobID, epoch: epoch, sequence: stamp.sequence,
-                        phase: stamp.phase, fraction: fraction
+                        phase: stamp.phase, received: received, expected: expected
                     )
                 }
             }
@@ -1144,6 +1169,12 @@ final class FloePlatformServices: @unchecked Sendable {
     // caller cancelling its own context never cancels the shared transfer.
 
     private var linuxImageJobCancellations: [String: CancellationToken] = [:]
+    /// The job store epoch of the CURRENTLY running shared operation per
+    /// jobID, recorded synchronously when the operation body starts. A
+    /// cancellation note to the jobs store is bound to this identity so a
+    /// delayed main-actor hop can never suppress a NEWER attempt that started
+    /// after the cancel was pressed.
+    private var linuxImageJobEpochs: [String: UUID] = [:]
 
     /// Registers this caller's token as the owner of `jobID`'s shared
     /// operation; false when another caller already owns it.
@@ -1160,6 +1191,7 @@ final class FloePlatformServices: @unchecked Sendable {
         lock.withLock {
             if linuxImageJobCancellations[jobID] === token {
                 linuxImageJobCancellations[jobID] = nil
+                linuxImageJobEpochs[jobID] = nil
             }
         }
     }
@@ -1170,6 +1202,29 @@ final class FloePlatformServices: @unchecked Sendable {
     /// image with an unverified one.
     func cancelLinuxImagePreparation(imageID: String) {
         let jobID = "linux-image:" + imageID
+        // The byte/rate note is bound to the CURRENT attempt owner: capture
+        // the registered token identity and its recorded epoch synchronously,
+        // then on the main actor re-check that that EXACT owner is still
+        // registered before writing the note. If the old job already
+        // finished and a newer attempt started, the delayed note is dropped
+        // and the new attempt's byte truth is never suppressed (the jobs
+        // store additionally gates its own notes on the attempt epoch —
+        // double fencing, no lookup of an unbound newer job at hop time).
+        let bound: (token: CancellationToken, epoch: UUID)? = lock.withLock {
+            guard let token = linuxImageJobCancellations[jobID],
+                  let epoch = linuxImageJobEpochs[jobID] else { return nil }
+            return (token, epoch)
+        }
+        if let bound {
+            Task { @MainActor in
+                let stillCurrent = self.lock.withLock {
+                    self.linuxImageJobCancellations[jobID] === bound.token
+                        && self.linuxImageJobEpochs[jobID] == bound.epoch
+                }
+                guard stillCurrent else { return }
+                EnvironmentPackageJobs.shared.noteCancellation(id: jobID, epoch: bound.epoch)
+            }
+        }
         lock.withLock { linuxImageJobCancellations[jobID] }?.cancel()
         cancelLinuxImageInstall(imageID: imageID)
     }

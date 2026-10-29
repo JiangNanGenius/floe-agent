@@ -16,6 +16,15 @@
 // approval / cancellation gates are identical, and an absent Hub bridge fails
 // honestly as not-configured: there is never a fallback to the workspace
 // branch or a host interpreter. No new permission grant lives here.
+//
+// Hub branch resume contract (build-303 deadlock repair): this call NEVER
+// returns a "pending-review" action state. A fresh audited install commits
+// inside THIS call under its existing runtime authorization; an adds-scope
+// update under a one-off human card grant parks inside THIS call on exactly
+// one inline approval presented through the runtime's canonical
+// waitingApproval lifecycle in the owning conversation, and completes with
+// the real typed receipt after the human decides. Nothing is presented as
+// waiting on a card this conversation cannot show.
 
 import Foundation
 import FloeCore
@@ -75,7 +84,7 @@ public struct SkillWorkspaceInstallTool: AgentTool {
 
     public static let name = "skill.install"
     public static let toolDescription =
-        "Install a complete skill package from a directory in this task's workspace (the folder exported to the Linux task environment as /workspace). The directory must contain SKILL.md; floe.json is optional. Every byte of scripts/, references/, assets/, agents/ and license files is installed as-is: nothing is executed and no permission is granted beyond the package's declared capabilities, which follow the normal install review. mode=install refuses an existing skill. To replace a workspace-imported skill, use mode=replace with expectedDigest (currentDigest from skill.read or digest from skill.list); built-in, official and locally created skills cannot be replaced here. With source=\"hub\" plus the exact catalog id (optionally publicationCommit, the 40-hex pinned publication Y to fetch at), install one verified curated-catalog entry instead: the App fetches every artifact at Y, verifies the signed catalog, review record and package digests, applies the existing grant-delta approval, and returns a typed receipt with the actual installed version and the separate catalog/source digests. The two sources are exclusive: directory/mode/expectedDigest belong only to the workspace branch, id/publicationCommit only to the hub branch; a hub install still requires approval, is unavailable in a temporary chat, never overrides a user's disabled/uninstalled/locally-edited skill, and never runs a package script."
+        "Install a complete skill package from a directory in this task's workspace (the folder exported to the Linux task environment as /workspace). The directory must contain SKILL.md; floe.json is optional. Every byte of scripts/, references/, assets/, agents/ and license files is installed as-is: nothing is executed and no permission is granted beyond the package's declared capabilities, which follow the normal install review. mode=install refuses an existing skill. To replace a workspace-imported skill, use mode=replace with expectedDigest (currentDigest from skill.read or digest from skill.list); built-in, official and locally created skills cannot be replaced here. With source=\"hub\" plus the exact catalog id (optionally publicationCommit, the 40-hex pinned publication Y to fetch at), install one verified curated-catalog entry instead: the App fetches every artifact at Y, verifies the signed catalog, review record and package digests, commits a fresh audited entry in this same call under this call's approval, and returns a typed receipt with the actual installed version and the separate catalog/source digests. If an update would add new access to an already-installed skill, the App asks once in this conversation with the exact added access, and this same call completes after your decision — it never reports a hidden pending review. For a task explicitly bound to the paired Mac bridge, the same source=hub operation uses the separately signed macOS-original feed and returns a macos-original receipt with immutable upstream file identities; it never claims Linux guest qualification or falls back to an adapted package. The two sources are exclusive: directory/mode/expectedDigest belong only to the workspace branch, id/publicationCommit only to the hub branch; a hub install still requires approval, is unavailable in a temporary chat, never overrides a user's disabled/uninstalled/locally-edited skill, and never runs a package script."
     public static let parametersJSON = #"""
     {
       "type": "object",
@@ -174,6 +183,13 @@ public struct SkillWorkspaceInstallTool: AgentTool {
             throw SkillHubInstallError.notConfigured
         }
         let request = try Self.hubRequest(args)
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            guard let original = hub as? any SkillMacOriginalInstalling else { throw SkillHubInstallError.notConfigured }
+            let receipt = try await original.installMacOriginal(request, context: context)
+            try receipt.verify(against: request)
+            let bytes = try JSONEncoder().encode(receipt)
+            return ToolExecutionOutput(digesting: String(decoding: bytes, as: UTF8.self), exitStatus: 0)
+        }
         let receipt: SkillHubInstallReceipt
         do {
             receipt = try await hub.install(request, context: context)
@@ -181,25 +197,18 @@ public struct SkillWorkspaceInstallTool: AgentTool {
             // Fixed-vocabulary Hub install outcomes are classified BEFORE the
             // generic mapping, because they are not ordinary retryable
             // failures:
-            // - reviewRequired: the existing combined approval flow still owes
-            //   a delta. Answer honestly with a pending-review action state
-            //   (Main's existing PendingInstallation UI consumes it). NOTHING
-            //   was committed, so no receipt fields and no success exit status
-            //   may appear.
             // - reviewDeclined / userChoiceBlocked: terminal user decisions.
             //   Non-retryable messages; never a directory fallback.
             // - notConfigured: wiring absent; thrown, never disguised as a
             //   retryable package failure.
+            // There is no pending-review outcome: a real added-scope delta is
+            // settled by ONE inline approval inside the same executing call
+            // (the runtime's nested waitingApproval seam); this call either
+            // commits and returns the typed receipt or terminates honestly.
             if let hubError = error as? SkillHubInstallError {
                 switch hubError {
                 case .notConfigured:
                     throw hubError
-                case .reviewRequired:
-                    let text = """
-                    status=pending-review id=\(request.id)
-                    note=Installation is waiting on the existing combined approval flow for a real permission/review delta. Nothing was installed yet; the review card is being shown to the user. Do not retry this call from the tool and do not fall back to a workspace install.
-                    """
-                    return ToolExecutionOutput(digesting: text, exitStatus: nil, requiresUserAction: true)
                 case .reviewDeclined:
                     let text = """
                     status=review-declined id=\(request.id)

@@ -28,6 +28,18 @@ enum BrowserURLPolicy {
         previewLock.withLock { _ = previewPrefixes.remove(prefix) }
     }
 
+    /// Read-only query for the native staged-export gate (`browser.exportFile`):
+    /// true only when `url` is currently this conversation's OWN authorized
+    /// loopback endpoint — a registered localService origin bound to the
+    /// conversation, or a tokenized preview allocation in the registry. This
+    /// is the same authority `validate` consults for navigation; querying it
+    /// grants nothing, mutates nothing, and a plain 127.0.0.1/localhost URL
+    /// that was never authorized here is refused.
+    static func isOwnedLocalEndpoint(_ url: URL, conversationID: UUID) -> Bool {
+        guard url.scheme?.lowercased() == "http", url.host == "127.0.0.1" else { return false }
+        return isAuthorizedPreview(url, conversationID: conversationID)
+    }
+
     /// Argument syntax only. This does not authorize a navigation or a
     /// registered service; execution must call validate with the real owner.
     static func parseNavigationURL(_ value: String) throws -> URL {

@@ -13,10 +13,12 @@ import FloeTools
 public struct LinuxPreparationRequest: Sendable {
     public let environmentID: String?
     public let cancellation: CancellationToken
+    public let runID: UUID?
 
-    public init(environmentID: String?, cancellation: CancellationToken) {
+    public init(environmentID: String?, cancellation: CancellationToken, runID: UUID? = nil) {
         self.environmentID = environmentID
         self.cancellation = cancellation
+        self.runID = runID
     }
 }
 
@@ -47,11 +49,18 @@ public struct PrepareLinuxEnvironmentTool: AgentTool {
 
     public func execute(_ args: Arguments, context: ToolContext) async throws -> ToolExecutionOutput {
         try context.cancellation.throwIfCancelled()
+        if context.environment?.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            return ToolExecutionOutput(
+                digesting: "status=notRequired\nThis task uses the paired Mac terminal. No Linux download was started.",
+                exitStatus: 0
+            )
+        }
         do {
             let status = try await prepare(
                 LinuxPreparationRequest(
                     environmentID: context.environmentID ?? context.environment?.id,
-                    cancellation: context.cancellation
+                    cancellation: context.cancellation,
+                    runID: context.runID
                 )
             )
             return ToolExecutionOutput(digesting: "status=prepared\n\(status)", exitStatus: 0)

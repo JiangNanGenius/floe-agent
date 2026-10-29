@@ -36,6 +36,7 @@ public enum LayerKind: String, Codable, Sendable, CaseIterable {
 public enum EnvironmentExecutionBackend: String, Codable, Sendable, CaseIterable {
     case native
     case linuxVM
+    case macBridge
 }
 
 /// One container record. `ownerID` is the conversation (session) or workspace

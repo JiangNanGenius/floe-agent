@@ -377,6 +377,8 @@ final class OfficeFileSession: ObservableObject {
     private var expectedClose = false
     private var runtimeFailed = false
     private var runtimeFailureObservation: AnyCancellable?
+    private var storageOwnershipObservation: AnyCancellable?
+    private var pendingStorageOwnershipLoss: UUID?
     /// Build 233 R2: the owning surface installs this AppEnvironment-backed
     /// idle-model shed before the first intent. The implementation releases
     /// only a physically idle resident local model — never an active
@@ -560,6 +562,15 @@ final class OfficeFileSession: ObservableObject {
 
     init() {
         inkPreferences = OfficeInkPreferences.session(forDocument: "")
+        storageOwnershipObservation = NotificationCenter.default
+            .publisher(for: SecurityScopedDocumentWorkspace.ownershipDidChange)
+            .compactMap { $0.userInfo?["sessionID"] as? UUID }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] sessionID in
+                Task { @MainActor [weak self] in
+                    await self?.storageOwnershipChanged(sessionID: sessionID)
+                }
+            }
         #if canImport(FloeOfficeNative)
         runtimeFailureObservation = NotificationCenter.default.publisher(for: .FloeOfficeNativeRuntimeDidFail)
             .receive(on: DispatchQueue.main)
@@ -3258,6 +3269,11 @@ final class OfficeFileSession: ObservableObject {
             Task { await release() }
             return
         }
+        if let sessionID = pendingStorageOwnershipLoss {
+            pendingStorageOwnershipLoss = nil
+            Task { @MainActor in await self.storageOwnershipChanged(sessionID: sessionID) }
+            return
+        }
         guard let next = intentQueue.takePending() else { return }
         // Replay the queued intent now that the owning operation settled.
         // The task re-checks `operating` before running so a newer operation
@@ -4123,6 +4139,43 @@ final class OfficeFileSession: ObservableObject {
         explicitSaveBridge?.invalidate()
         explicitSaveBridge = nil
         self.controller = nil
+    }
+
+    /// The workspace could not reacquire its kernel lease or its recovery
+    /// fingerprint changed. Fence the native generation before closing it;
+    /// a normal native close requests no save and removes no working files.
+    private func storageOwnershipChanged(sessionID: UUID) async {
+        guard session?.id == sessionID else { return }
+        runtimeFailed = true
+        readOnly = true
+        openGeneration.advance()
+        controller?.viewIfLoaded?.isUserInteractionEnabled = false
+        autosaveCoordinator?.invalidate()
+        autosaveCoordinator = nil
+        explicitSaveBridge?.invalidate()
+        explicitSaveBridge = nil
+        invalidateInkApply()
+        cancelPDFExportPreparation()
+        if let token = intentQueue.cancelPending() {
+            intentWaiters.removeValue(forKey: token)?.resume(returning: false)
+        }
+        #if canImport(FloeOfficeNative)
+        (controller as? FloeOfficeNativeViewController)?.cancelPendingSave()
+        #endif
+        unregisterLiveDocument()
+        error = OfficeInkText.t(
+            "文档已在其他位置更改，编辑副本已保留。请重新打开后继续。",
+            "The document changed elsewhere. Your editing copy was retained. Reopen it to continue.")
+        phase = .failed
+        guard !operating else {
+            pendingStorageOwnershipLoss = sessionID
+            return
+        }
+        operating = true
+        defer { finishOperation() }
+        try? await closeController()
+        phase = .failed
+        recordStage("storage.ownershipChanged")
     }
 
     fileprivate enum OfficeCloseResult {

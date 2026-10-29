@@ -1439,7 +1439,10 @@ def load_pins() -> list[dict]:
     # its committed locks above, but it is declared by resolve_cad_packages()
     # with the reviewed linked-package rows and build-only exclusions. Keep
     # this host inventory limited to pins carried by the committed host lock so
-    # those reviewed CAD rows are neither duplicated nor broadened here.
+    # those reviewed CAD rows are neither duplicated nor broadened here. The
+    # first-party FloeMacBridge sibling is accepted only as tracked, lock-free
+    # source with a reviewed manifest digest, so it contributes no pin and no
+    # license row of its own.
     committed_by_identity = {pin["identity"]: pin for pin in committed_pins}
     pins = [
         committed_by_identity[pin["identity"]]

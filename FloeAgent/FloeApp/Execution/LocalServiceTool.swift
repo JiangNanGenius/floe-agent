@@ -234,6 +234,14 @@ struct LocalServiceTool: AgentTool {
         // layer (readable here through the same 9p share) and its port is
         // published with slirp host forwarding, so the preview/probe path
         // below is identical to the retired native one.
+        if environment.variables["FLOE_EXECUTION_BACKEND"] == "macBridge" {
+            return try await MacBridgeLocalServiceRunner.run(
+                args: args, jobID: jobID, conversationID: job.conversationID,
+                environment: environment, entry: entry, cwd: cwd, variables: variables,
+                endpoint: endpoint, probe: probe, context: context, store: store,
+                onServiceReady: onServiceReady
+            )
+        }
         guard await FloePlatformServices.shared.linuxEnvironmentOwned(id: environment.id),
               let controller = FloePlatformServices.shared.linuxLocalServiceController() else {
             throw FloeError.validationFailed(ManagedPythonInstallService.linuxRequiredMessage)

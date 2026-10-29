@@ -2692,7 +2692,8 @@ final class ConversationCenter: ObservableObject {
         let owned = await registry.containersOwned(by: conversationID.uuidString)
         for container in owned where container.kind == .session
             && container.state != .deleting
-            && container.effectiveExecutionBackend == .linuxVM {
+            && (container.effectiveExecutionBackend == .linuxVM
+                || container.effectiveExecutionBackend == .macBridge) {
             guard let recordedRoot = try? await registry.workspaceRoot(for: container.id),
                   recordedRoot.resolvingSymlinksInPath().standardizedFileURL == canonicalRoot
             else { continue }
@@ -2734,6 +2735,42 @@ final class ConversationCenter: ObservableObject {
             registry: registry,
             conversationID: conversationID,
             workspaceRoot: canonicalRoot
+        )
+    }
+
+    /// Selects a backend only for a new session. Failure to establish a
+    /// requested Mac binding is propagated before any tool can execute.
+    static func ensurePreferredRunEnvironmentBinding(
+        registry: EnvironmentRegistry,
+        conversationID: UUID,
+        taskRoot: URL?,
+        macBridgeConnected: Bool
+    ) async throws -> String? {
+        guard let taskRoot else { return nil }
+        try await registry.prepare()
+        let sessions = await registry.containersOwned(by: conversationID.uuidString)
+        let macSessions = sessions.filter { $0.kind == .session && $0.effectiveExecutionBackend == .macBridge }
+        if !macSessions.isEmpty {
+            let root = taskRoot.resolvingSymlinksInPath().standardizedFileURL
+            for record in macSessions where record.state != .deleting {
+                if let recorded = try await registry.workspaceRoot(for: record.id),
+                   recorded.resolvingSymlinksInPath().standardizedFileURL == root {
+                    return record.id
+                }
+            }
+            throw FloeError.invalidConfiguration(String(localized: "mac.bridge.workspace_changed"))
+        }
+        if macBridgeConnected, !sessions.contains(where: { $0.kind == .session }) {
+            let root = taskRoot.resolvingSymlinksInPath().standardizedFileURL
+            let record = try await registry.ensureMacBridgeSessionContainer(
+                conversationID: conversationID.uuidString,
+                workspaceID: FloeDigest.sha256Hex(Data(root.path.utf8)),
+                workspaceRootPath: root.path
+            )
+            return record.id
+        }
+        return await ensureRunEnvironmentBinding(
+            registry: registry, conversationID: conversationID, taskRoot: taskRoot
         )
     }
 
@@ -3454,6 +3491,46 @@ final class ConversationCenter: ObservableObject {
         // run. Standard remote MCP tools register through ToolRunnerRegistry;
         // using the static catalog here would silently hide them before the
         // provider request even though the executor can run them.
+        // Explicit environment identity for the run and every child it
+        // delegates to: this conversation's OWN session container for THIS
+        // task workspace root. For a fresh ordinary run the session metadata
+        // is created here (metadata only, no guest) so the run is explicitly
+        // bound from its first tool call; temporary chats, canvas runs and
+        // runs without a task root never bind (no first-project fallback) and
+        // nil keeps the execution layer's existing resolution.
+        let runExecutionEnvironmentID: String?
+        if let environmentBindingOverride {
+            // Explicit, TRUSTED binding from a scheduled task's frozen
+            // record: revalidated against the real registry (exists and is
+            // not deleting) and used as-is. It reaches the launched run and
+            // every child; it is never derived from model text and never
+            // falls back silently: a removed/stopped binding stops launch
+            // before a different environment can be resolved or downloaded.
+            guard let bound = await environment.environmentRegistry.record(id: environmentBindingOverride),
+                  bound.state == .active, !bound.requiresRebuild else {
+                throw FloeError.invalidConfiguration(String(localized: "environment.binding.unavailable"))
+            }
+            runExecutionEnvironmentID = environmentBindingOverride
+        } else if isTemporary {
+            runExecutionEnvironmentID = nil
+        } else if runSurface == .canvas {
+            runExecutionEnvironmentID = nil
+        } else {
+            let environmentRoot = taskRootLease?.url ?? notesScratchRoot
+            let bridgeConnected: Bool
+            if ProcessInfo.processInfo.isiOSAppOnMac, MacBridgeRoutingPreferences.preferMacForNewTasks {
+                bridgeConnected = await MacBridgeClient.shared.isConnected()
+            } else {
+                bridgeConnected = false
+            }
+            runExecutionEnvironmentID = try await Self.ensurePreferredRunEnvironmentBinding(
+                registry: environment.environmentRegistry,
+                conversationID: conversationID,
+                taskRoot: environmentRoot,
+                macBridgeConnected: bridgeConnected
+            )
+        }
+
         let catalogExecutor = CatalogToolExecutor()
         let availableDescriptors = catalogExecutor.allDescriptors
         let skills: SkillsCenter.RuntimeSelection
@@ -3474,7 +3551,24 @@ final class ConversationCenter: ObservableObject {
             activeGoal = nil
             contentOverlay = .empty
         } else {
-            skills = await environment.skillsCenter.runtimeSelection(runID: runID)
+            if let environmentID = runExecutionEnvironmentID,
+               let record = await environment.environmentRegistry.record(id: environmentID),
+               record.effectiveExecutionBackend == .macBridge {
+                let originals = try await MacOriginalSkillsCenter.shared.runtimeSelection(runID: runID)
+                let native = await environment.skillsCenter.nativeBundledRuntimeSelectionForMac(
+                    excluding: originals.skillIDs
+                )
+                skills = SkillsCenter.RuntimeSelection(
+                    skillIDs: native.skillIDs.union(originals.skillIDs),
+                    allowedToolNames: nil,
+                    instructions: [native.instructions, originals.instructions].compactMap { $0 }
+                        .filter { !$0.isEmpty }.joined(separator: "\n\n"),
+                    preapprovedPythonScriptSHA256: [], preapprovedPythonPackages: [],
+                    relatedSkillIDsByTool: native.relatedSkillIDsByTool
+                )
+            } else {
+                skills = await environment.skillsCenter.runtimeSelection(runID: runID)
+            }
             personalization = await runtimePersonalizationContext(
                 query: memoryQuery,
                 workspaceID: canonicalWorkspaceID,
@@ -3657,38 +3751,6 @@ final class ConversationCenter: ObservableObject {
             registry: environment.environmentRegistry,
             conversationID: conversationID
         )
-        // Explicit environment identity for the run and every child it
-        // delegates to: this conversation's OWN session container for THIS
-        // task workspace root. For a fresh ordinary run the session metadata
-        // is created here (metadata only, no guest) so the run is explicitly
-        // bound from its first tool call; temporary chats, canvas runs and
-        // runs without a task root never bind (no first-project fallback) and
-        // nil keeps the execution layer's existing resolution.
-        let runExecutionEnvironmentID: String?
-        if let environmentBindingOverride {
-            // Explicit, TRUSTED binding from a scheduled task's frozen
-            // record: revalidated against the real registry (exists and is
-            // not deleting) and used as-is. It reaches the launched run and
-            // every child; it is never derived from model text and never
-            // falls back silently — an unavailable override yields nil (the
-            // execution layer's own resolution) rather than a wrong guest.
-            if await environment.environmentRegistry.record(id: environmentBindingOverride) != nil {
-                runExecutionEnvironmentID = environmentBindingOverride
-            } else {
-                runExecutionEnvironmentID = nil
-            }
-        } else if isTemporary {
-            runExecutionEnvironmentID = nil
-        } else if runSurface == .canvas {
-            runExecutionEnvironmentID = nil
-        } else {
-            let environmentRoot = taskRootLease?.url ?? notesScratchRoot
-            runExecutionEnvironmentID = await Self.ensureRunEnvironmentBinding(
-                registry: environment.environmentRegistry,
-                conversationID: conversationID,
-                taskRoot: environmentRoot
-            )
-        }
         // Trusted guest binding for the local-command approval carve-out: the
         // same real environment record the guest backend routes by. This is a
         // backend classification only (shared/project guests included), never
@@ -6199,6 +6261,7 @@ final class ConversationCenter: ObservableObject {
             // be resumed into, so release it. Failed/checkpointed runs keep
             // theirs (Continue resumes them).
             await environment.contentUpdateCenter.releaseRunSnapshot(runID)
+            await MacOriginalSkillsCenter.shared.releaseRun(runID)
             // Design-run safe resolution: a COMPLETED bound design run with
             // no pending candidate is the legitimate end of the protected
             // lifecycle — lift the original-write freeze. A pending
@@ -6951,6 +7014,7 @@ final class ConversationCenter: ObservableObject {
         // content snapshot for the conversation's runs is released now.
         for runID in durableRunIDs {
             await environment.contentUpdateCenter.releaseRunSnapshot(runID)
+            await MacOriginalSkillsCenter.shared.releaseRun(runID)
         }
 
         // S3-D run-output cleanup ordering: writers were cancelled and joined
@@ -7465,6 +7529,7 @@ final class ConversationCenter: ObservableObject {
             // A completed run is final; its frozen content snapshot can
             // never be resumed into.
             await environment.contentUpdateCenter.releaseRunSnapshot(service.runID)
+            await MacOriginalSkillsCenter.shared.releaseRun(service.runID)
         }
         await environment.subagentRunnerRegistry.remove(runID: service.runID)
         publishSession(service.conversationID)
@@ -8219,16 +8284,11 @@ final class ConversationCenter: ObservableObject {
         try? await saveModelPreferences(preferences)
     }
 
-    /// On the first launch only, an already-synced text model completes the
-    /// wizard automatically. A skipped wizard is never shown again.
+    /// Refresh saved choices without treating model availability as guide
+    /// completion. Only the user's explicit Finish/Skip changes that status;
+    /// an existing model never skips the remaining setup sections.
     func reconcileOnboardingForLaunch() async {
         await reload()
-        guard modelPreferences.onboardingStatus == .unseen,
-              let first = availableAgentModels.first else { return }
-        var preferences = modelPreferences
-        preferences.defaultAgentModelID = first.id
-        preferences.onboardingStatus = .completed
-        try? await saveModelPreferences(preferences)
     }
 
     /// Deletes a provider (cascades to its models) and refreshes.

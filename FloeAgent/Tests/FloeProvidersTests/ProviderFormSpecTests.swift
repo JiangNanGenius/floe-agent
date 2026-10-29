@@ -22,11 +22,11 @@ struct ProviderFormSpecModuleTests {
 
     // MARK: - Supplier routes
 
-    @Test("Image role offers exactly the five suppliers with a shipped image adapter")
+    @Test("Image role offers only suppliers with a shipped image adapter, including Agent Plan")
     func eligibleImagePresets() {
         #expect(
             ProviderFormSpecResolver.eligiblePresets(for: .image).map(\.id)
-                == [.openAI, .volcengineArk, .alibabaStudio, .googleGemini, .kimiCode]
+                == [.openAI, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .googleGemini, .kimiCode]
         )
     }
 

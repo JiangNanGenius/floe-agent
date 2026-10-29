@@ -318,6 +318,12 @@ final class ImportDestinationCenter: ObservableObject {
     /// follow-up: one visible cancellation runs exactly once.
     private var handledCancellations: Set<UUID> = []
     private var didStart = false
+    private var storageSuspended = false
+    private struct StorageOperation {
+        let cancel: @Sendable () -> Void
+        let wait: @Sendable () async -> Void
+    }
+    private var storageOperations: [UUID: StorageOperation] = [:]
     private var shareCancellable: AnyCancellable?
     private var documentCancellable: AnyCancellable?
 
@@ -946,6 +952,12 @@ final class ImportDestinationCenter: ObservableObject {
     /// nil return means the App Group inbox or the durable ledger is
     /// unavailable.
     private func executeNotesImport(envelopeID: UUID) async -> ShareNotesImportResult? {
+        await withStorageOperation(fallback: Optional(ShareNotesImportResult.deferredBusy(envelopeID: envelopeID))) {
+            await self.executeNotesImportBody(envelopeID: envelopeID)
+        }
+    }
+
+    private func executeNotesImportBody(envelopeID: UUID) async -> ShareNotesImportResult? {
         guard let inbox, let store else { return nil }
         let origin = ImportDestinationOrigin.shareEnvelope(envelopeID)
 
@@ -1003,8 +1015,10 @@ final class ImportDestinationCenter: ObservableObject {
         }
 
         var current = decision
+        defer { try? inbox.release(claim) }
         do {
             for index in current.units.indices where current.units[index].committedAt == nil {
+                try Task.checkCancellation()
                 try await importUnit(
                     current.units[index],
                     claim: claim,
@@ -1070,6 +1084,7 @@ final class ImportDestinationCenter: ObservableObject {
         claim: ShareInboxClaim,
         markCommitted: @MainActor (Date) -> Void
     ) async throws {
+        try Task.checkCancellation()
         // The planned identity is the only proof used.
         guard let plannedDocumentID = unit.plannedDocumentID else {
             throw NotesImportUnitError(message: FloeL10n.l("share.intake.failed"))
@@ -1182,7 +1197,7 @@ final class ImportDestinationCenter: ObservableObject {
         return try inbox.pending(now: now())
     }
 
-    private enum CanvasRunOutcome: Equatable {
+    private enum CanvasRunOutcome: Equatable, Sendable {
         case committed(itemCount: Int)
         case settled
         case deferred
@@ -1190,6 +1205,16 @@ final class ImportDestinationCenter: ObservableObject {
     }
 
     private func runCanvasCommit(
+        envelopeID: UUID,
+        decision: ImportDestinationDecision,
+        envelopeHint: ShareEnvelope?
+    ) async -> CanvasRunOutcome {
+        await withStorageOperation(fallback: .deferred) {
+            await self.runCanvasCommitBody(envelopeID: envelopeID, decision: decision, envelopeHint: envelopeHint)
+        }
+    }
+
+    private func runCanvasCommitBody(
         envelopeID: UUID,
         decision: ImportDestinationDecision,
         envelopeHint: ShareEnvelope?
@@ -1216,6 +1241,7 @@ final class ImportDestinationCenter: ObservableObject {
         }
 
         let plans: [CanvasImportUnitPlan]
+        defer { try? inbox.release(claim) }
         var tempDirectories: [URL] = []
         defer {
             // Registered at function scope so the staged text file outlives
@@ -1225,6 +1251,7 @@ final class ImportDestinationCenter: ObservableObject {
             }
         }
         do {
+            try Task.checkCancellation()
             let built = try await canvasUnitPlans(for: claim.envelope, decision: decision)
             plans = built.plans
             tempDirectories = built.tempDirectories
@@ -1253,6 +1280,7 @@ final class ImportDestinationCenter: ObservableObject {
             case .unavailable: return .failed(message: ledgerMessage)
             }
         }
+        guard !Task.isCancelled else { return .deferred }
         let operation = CanvasImportOperation(
             operationID: decision.canvasOperationID ?? UUID(),
             originID: envelopeID,
@@ -1738,5 +1766,44 @@ private struct NotesImportUnitError: Error {
     let message: String?
 }
 
-extension ImportDestinationCenter: ShareEnvelopeDestinationImporting {}
+extension ImportDestinationCenter: ShareEnvelopeDestinationImporting {
+    /// The chooser owns no lease while waiting for a user decision. Only an
+    /// actual import enters this registry, with its own cancellation handle.
+    private func withStorageOperation<T: Sendable>(
+        fallback: T,
+        operation: @escaping @MainActor @Sendable () async -> T
+    ) async -> T {
+        guard !storageSuspended, !Task.isCancelled else { return fallback }
+        let id = UUID()
+        let task = Task { @MainActor in
+            do {
+                let budget = try await StorageOperationBudget.begin()
+                defer { budget.finish() }
+                try budget.check()
+                return await operation()
+            } catch { return fallback }
+        }
+        storageOperations[id] = StorageOperation(cancel: { task.cancel() }, wait: { _ = await task.value })
+        defer { storageOperations[id] = nil }
+        return await withTaskCancellationHandler {
+            await task.value
+        } onCancel: { task.cancel() }
+    }
+
+    func suspendForBackground() async {
+        beginStorageSuspension()
+        let operations = Array(storageOperations.values)
+        for operation in operations { await operation.wait() }
+    }
+
+    func beginStorageSuspension() {
+        storageSuspended = true
+        for operation in storageOperations.values { operation.cancel() }
+    }
+
+    func resumeAfterSuspension() async {
+        storageSuspended = false
+        await observeArrivals()
+    }
+}
 #endif

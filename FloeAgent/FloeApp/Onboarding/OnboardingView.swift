@@ -1,489 +1,344 @@
-// FloeApp — Optional first-run provider and model setup wizard.
+// FloeApp — Native setup guide shell.
+//
+// SPDX-License-Identifier: MPL-2.0
+//
+// One guide, two native shapes: iPad gets the group navigation a wide window
+// expects (section list plus detail), iPhone gets the same sections as a
+// sequential stack. Every path — each preset and Custom — reaches all ten
+// product sections in order and then the summary. Back, Later and the
+// per-section Next are available everywhere; leaving the guide keeps the
+// position and never needs a working provider.
+//
+// The guide reuses the app's real editors inside its own stack, so an
+// advanced choice opens the SAME form the user would find in Settings and
+// returns to the same section. It is deliberately not a list of ten Settings
+// links, and not a copy of the Settings dump either.
 
 #if canImport(SwiftUI) && canImport(UIKit)
 import SwiftUI
 import FloeCore
-import FloeProviders
 
 struct OnboardingView: View {
-    private enum Step: Int, CaseIterable {
-        case welcome, features, provider, connection, discovery, capabilities, summary
-
-        var title: LocalizedStringKey {
-            switch self {
-            case .welcome: "setup.step.welcome"
-            case .features: "setup.step.features"
-            case .provider: "setup.step.provider"
-            case .connection: "setup.step.connection"
-            case .discovery: "setup.step.models"
-            case .capabilities: "setup.step.capabilities"
-            case .summary: "setup.step.summary"
-            }
-        }
-    }
-
-    @StateObject private var viewModel: OnboardingViewModel
-    @StateObject private var editor: ProviderEditorViewModel
+    @StateObject private var guide: SetupGuideModel
     @Environment(\.dismiss) private var dismiss
-    @State private var step: Step = .welcome
-    @State private var editingModel: ModelProfile?
-    @State private var manualRemoteID = ""
-    @State private var manualDisplayName = ""
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(center: ConversationCenter) {
-        _viewModel = StateObject(wrappedValue: OnboardingViewModel(center: center))
-        _editor = StateObject(wrappedValue: ProviderEditorViewModel(
-            center: center,
-            existing: center.providers.first
-        ))
+        _guide = StateObject(wrappedValue: SetupGuideModel(center: center))
     }
 
     var body: some View {
+        Group {
+            if horizontalSizeClass == .regular {
+                groupedShell
+            } else {
+                sequentialShell
+            }
+        }
+        // Reused native editors resolve their own dependencies from the
+        // environment, so the guide supplies them explicitly instead of
+        // asking for a new app-root injection.
+        .environmentObject(guide.center.environment)
+        .environmentObject(guide.center.environment.ttsSettingsService)
+        .environmentObject(guide.center.environment.speechService)
+        .environmentObject(guide.center.environment.voiceInput)
+        .task { await guide.load() }
+        .onDisappear {
+            // Unsubscribe only. Service-owned jobs keep running and are
+            // visible again on return. A finished guide has nothing to resume,
+            // so the teardown never writes a fresh progress record.
+            guide.stopObserving()
+            guide.exitAndKeepProgress()
+        }
+        .alert("setup.guide.save_failed", isPresented: Binding(
+            get: { guide.saveMessage != nil },
+            set: { if !$0 { guide.saveMessage = nil } }
+        )) {
+            Button("action.done", role: .cancel) { guide.saveMessage = nil }
+        } message: {
+            Text(guide.saveMessage ?? "")
+        }
+    }
+
+    // MARK: - iPad: native group navigation
+
+    private var groupedShell: some View {
+        NavigationSplitView {
+            List(selection: sectionSelection) {
+                Section {
+                    ForEach(SetupGuideSection.configurable) { section in
+                        SetupGuideSectionRow(section: section, model: guide)
+                            .tag(section)
+                    }
+                } header: {
+                    Text("setup.guide.sections")
+                }
+                Section {
+                    SetupGuideSectionRow(section: .summary, model: guide)
+                        .tag(SetupGuideSection.summary)
+                }
+            }
+            .navigationTitle("more.setup_guide")
+            // Exiting is a single decision on the active section. The detail
+            // column owns the only Exit control so the sidebar and detail
+            // never present two identical dismiss buttons (and two identical
+            // accessibility identifiers) at the same time.
+        } detail: {
+            detailColumn
+        }
+    }
+
+    private var sectionSelection: Binding<SetupGuideSection?> {
+        Binding(
+            get: { guide.state.section },
+            set: { if let value = $0 { guide.jump(to: value) } }
+        )
+    }
+
+    private var detailColumn: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                progress
-                stepContent
+                SetupGuideProgressHead(model: guide)
+                SetupGuideSectionView(section: guide.state.section, model: guide)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("setup.content.\(guide.state.section.rawValue)")
                 Divider()
-                navigationBar
+                SetupGuideActionBar(section: guide.state.section, model: guide, dismiss: dismiss)
             }
             .background(FloeTheme.groupedSurface)
-            .navigationTitle(step.title)
+            .navigationTitle(Text(LocalizedStringKey(guide.state.section.titleKey)))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("setup.skip") { skip() }
-                        .accessibilityIdentifier("setup.skip")
+                    exitButton
                 }
-            }
-            .task {
-                await viewModel.load()
-                await editor.load()
-            }
-            .sheet(item: $editingModel) { model in
-                ModelEditorView(
-                    model: model,
-                    isDefault: editor.defaultModelID == model.id,
-                    onMakeDefault: { editor.setDefaultModel(model.id) }
-                ) { editor.updateModel($0) }
             }
         }
     }
 
-    private var progress: some View {
-        ProgressView(value: Double(step.rawValue + 1), total: Double(Step.allCases.count))
-            .tint(FloeTheme.primary)
-            .padding(.horizontal, 24)
-            .padding(.vertical, 12)
-            .accessibilityLabel("setup.progress")
-            .accessibilityValue("\(step.rawValue + 1)/\(Step.allCases.count)")
-    }
+    // MARK: - iPhone: sequential navigation
 
-    @ViewBuilder
-    private var stepContent: some View {
-        switch step {
-        case .welcome: welcomeStep
-        case .features: featuresStep
-        case .provider: providerStep
-        case .connection: connectionStep
-        case .discovery: discoveryStep
-        case .capabilities: capabilitiesStep
-        case .summary: summaryStep
-        }
-    }
-
-    private var welcomeStep: some View {
-        ScrollView {
-            VStack(spacing: 24) {
-                ZStack {
-                    Circle().fill(FloeTheme.brandGradient).frame(width: 82, height: 82)
-                    Image(systemName: "wave.3.right.circle.fill")
-                        .font(.system(size: 42, weight: .medium)).foregroundStyle(.white)
-                }
-                VStack(spacing: 8) {
-                    Text("onboarding.title").font(.largeTitle.bold())
-                    Text("onboarding.subtitle")
-                        .font(FloeTheme.Typography.body).foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                VStack(alignment: .leading, spacing: 16) {
-                    onboardingPoint("cloud.sun", "setup.point.cloud_or_local")
-                    Divider()
-                    onboardingPoint("switch.2", "setup.point.progressive")
-                    Divider()
-                    onboardingPoint("gearshape.2", "setup.point.change_anytime")
-                }
-                .padding(20)
-                .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 22))
+    private var sequentialShell: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                SetupGuideProgressHead(model: guide)
+                SetupGuideSectionView(section: guide.state.section, model: guide)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityIdentifier("setup.content.\(guide.state.section.rawValue)")
+                Divider()
+                SetupGuideActionBar(section: guide.state.section, model: guide, dismiss: dismiss)
             }
-            .frame(maxWidth: 560)
-            .padding(28)
-            .frame(maxWidth: .infinity)
+            .background(FloeTheme.groupedSurface)
+            .navigationTitle(Text(LocalizedStringKey(guide.state.section.titleKey)))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    exitButton
+                }
+            }
         }
     }
 
-    private func onboardingPoint(_ icon: String, _ title: LocalizedStringKey) -> some View {
-        Label(title, systemImage: icon).font(.headline).foregroundStyle(.primary)
+    /// Exiting is not failing: the position is already persisted, and the
+    /// provider state is untouched.
+    private var exitButton: some View {
+        Button("setup.exit") {
+            guide.exitAndKeepProgress()
+            dismiss()
+        }
+        .accessibilityIdentifier("setup.skip")
+    }
+}
+
+/// Section row with the honest status chip. A preparing resource never reads
+/// as a problem, and an unvisited section never reads as complete.
+struct SetupGuideSectionRow: View {
+    let section: SetupGuideSection
+    @ObservedObject var model: SetupGuideModel
+
+    var body: some View {
+        let status = displayedStatus
+        HStack(spacing: 10) {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(LocalizedStringKey(section.titleKey))
+                    if status == .needsAttention {
+                        Text("setup.section.attention.hint")
+                            .font(FloeTheme.Typography.metadata)
+                            .foregroundStyle(FloeTheme.pending)
+                    }
+                }
+            } icon: {
+                Image(systemName: section.systemImage)
+                    .foregroundStyle(FloeTheme.primary)
+            }
+            Spacer(minLength: 8)
+            SetupGuideStatusChip(status: status)
+        }
+        .frame(minHeight: FloeTheme.minimumTarget)
+        .contentShape(Rectangle())
+        // An explicit container keeps the row identity separate from the
+        // status chip's identifier. Without containment the row identifier
+        // replaces every child's identifier, so a deferred/defaulted status
+        // could never be observed independently.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("setup.section.\(section.rawValue)")
     }
 
-    private var featuresStep: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("setup.features.intro")
-                    .font(FloeTheme.Typography.body)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
+    /// The mirrored live job lifts the badge only while work is running;
+    /// finishing the job never claims the user configured the section.
+    private var displayedStatus: SetupSectionStatus {
+        let stored = model.state.status(for: section)
+        if section == .summary {
+            return model.resources.isAnyPreparing ? .preparing : stored
+        }
+        return stored
+    }
+}
 
-                setupFeature(
-                    "cloud.sun",
-                    title: "setup.features.models.title",
-                    detail: "setup.features.models.detail"
-                )
-                setupFeature(
-                    "eye.trianglebadge.exclamationmark",
-                    title: "setup.features.auxiliary.title",
-                    detail: "setup.features.auxiliary.detail"
-                )
-                setupFeature(
-                    "network",
-                    title: "setup.features.connections.title",
-                    detail: "setup.features.connections.detail"
-                )
-                setupFeature(
-                    "externaldrive.connected.to.line.below",
-                    title: "setup.features.workspaces.title",
-                    detail: "setup.features.workspaces.detail"
-                )
-                setupFeature(
-                    "square.and.pencil",
-                    title: "setup.features.canvas.title",
-                    detail: "setup.features.canvas.detail"
-                )
-                setupFeature(
-                    "checkmark.shield",
-                    title: "setup.features.safety.title",
-                    detail: "setup.features.safety.detail"
-                )
-                setupFeature(
-                    "pip",
-                    title: "setup.features.background.title",
-                    detail: "setup.features.background.detail"
-                )
-                setupFeature(
-                    "chart.bar.doc.horizontal",
-                    title: "setup.features.operations.title",
-                    detail: "setup.features.operations.detail"
-                )
+struct SetupGuideStatusChip: View {
+    let status: SetupSectionStatus
 
-                Label("setup.features.local_hint", systemImage: "info.circle")
+    var body: some View {
+        Text(titleKey)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.14), in: Capsule())
+            .accessibilityIdentifier("setup.status.\(status.rawValue)")
+    }
+
+    private var titleKey: LocalizedStringKey {
+        switch status {
+        case .unset: "setup.status.unset"
+        case .defaulted: "setup.status.defaulted"
+        case .configured: "setup.status.configured"
+        case .deferred: "setup.status.deferred"
+        case .preparing: "setup.status.preparing"
+        case .needsAttention: "setup.status.needs_attention"
+        }
+    }
+
+    private var color: Color {
+        switch status {
+        case .configured: FloeTheme.success
+        case .defaulted: FloeTheme.primary
+        case .preparing: FloeTheme.pending
+        case .needsAttention: FloeTheme.destructive
+        case .deferred, .unset: Color.secondary
+        }
+    }
+}
+
+/// Compact position head. It never claims the guide is finished just because
+/// a provider exists.
+struct SetupGuideProgressHead: View {
+    @ObservedObject var model: SetupGuideModel
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ProgressView(value: progress, total: 1)
+                .tint(FloeTheme.primary)
+            HStack {
+                Text("setup.progress.position \(positionText)")
                     .font(FloeTheme.Typography.metadata)
                     .foregroundStyle(.secondary)
-                    .padding(.top, 4)
-            }
-            .frame(maxWidth: 620, alignment: .leading)
-            .padding(24)
-            .frame(maxWidth: .infinity)
-        }
-        .accessibilityIdentifier("setup.features")
-    }
-
-    private func setupFeature(
-        _ icon: String,
-        title: LocalizedStringKey,
-        detail: LocalizedStringKey
-    ) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundStyle(FloeTheme.primary)
-                .frame(width: 34, height: 34)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.headline)
-                Text(detail)
-                    .font(FloeTheme.Typography.metadata)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(16)
-        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 16))
-    }
-
-    private var providerStep: some View {
-        ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 220), spacing: 14)], spacing: 14) {
-                ForEach(ProviderPreset.chatPresets) { preset in
-                    Button { editor.applyPreset(preset) } label: {
-                        HStack(spacing: 14) {
-                            Image(systemName: providerIcon(preset.kind))
-                                .font(.title2).foregroundStyle(FloeTheme.primary)
-                                .frame(width: 38, height: 38)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(preset.displayName).font(.headline)
-                                Text(protocolSummary(preset.supportedProtocols))
-                                    .font(FloeTheme.Typography.metadata)
-                                    .foregroundStyle(.secondary).lineLimit(2)
-                            }
-                            Spacer()
-                            Image(systemName: editor.selectedPreset.id == preset.id
-                                  ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(editor.selectedPreset.id == preset.id
-                                                 ? FloeTheme.primary : .secondary)
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, minHeight: 76)
-                        .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 16))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 16)
-                                .stroke(editor.selectedPreset.id == preset.id
-                                        ? FloeTheme.primary.opacity(0.7) : Color.primary.opacity(0.08))
-                        }
-                    }
-                    .buttonStyle(.plain)
+                Spacer()
+                if let preset = model.state.preset {
+                    Text(LocalizedStringKey(preset.titleKey))
+                        .font(FloeTheme.Typography.metadata)
+                        .foregroundStyle(FloeTheme.primary)
+                        .accessibilityIdentifier("setup.preset.active")
                 }
             }
-            .frame(maxWidth: 620)
-            .padding(24)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var connectionStep: some View {
-        Form {
-            Section("providers.protocol") {
-                Picker("providers.protocol", selection: $editor.selectedProtocol) {
-                    ForEach(editor.availableProtocols, id: \.self) {
-                        Text(protocolName($0)).tag($0)
-                    }
-                }
-                .disabled(editor.availableProtocols.count == 1)
-            }
-            Section("providers.endpoint") {
-                TextField("providers.base_url", text: $editor.baseURLString)
-                    .textInputAutocapitalization(.never).keyboardType(.URL)
-                TextField("providers.headers_placeholder", text: $editor.nonSecretHeadersText, axis: .vertical)
-                    .lineLimit(2...4).textInputAutocapitalization(.never)
-                if URL(string: editor.baseURLString)?.scheme == "http" {
-                    Toggle("providers.allow_plain_http", isOn: $editor.allowsPlainHTTP)
-                }
-            }
-            Section("providers.credentials") {
-                SecureField("providers.api_key", text: $editor.apiKey)
-                    .textInputAutocapitalization(.never)
-                Toggle("providers.sync_keychain", isOn: $editor.syncEnabled)
-            }
-            if case .failed(let message) = editor.testState {
-                Section { Text(message).foregroundStyle(FloeTheme.destructive) }
-            }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var discoveryStep: some View {
-        List {
-            if editor.candidateModels.isEmpty {
-                ContentUnavailableView(
-                    "setup.models.none",
-                    systemImage: "magnifyingglass",
-                    description: Text("setup.models.none.hint")
-                )
-            } else {
-                Section("setup.models.available") {
-                    ForEach(editor.candidateModels) { model in
-                        Button { editor.toggleSelection(model.id) } label: {
-                            HStack {
-                                VStack(alignment: .leading) {
-                                    Text(model.displayName)
-                                    Text(model.remoteModelID)
-                                        .font(FloeTheme.Typography.evidence).foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: editor.selectedModelIDs.contains(model.id)
-                                      ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(editor.selectedModelIDs.contains(model.id)
-                                                     ? FloeTheme.primary : .secondary)
-                            }
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }
-            Section("setup.models.manual") {
-                TextField("model.remote_id", text: $manualRemoteID).textInputAutocapitalization(.never)
-                TextField("setup.models.display_name_optional", text: $manualDisplayName)
-                Button("providers.add_model") {
-                    editor.addManualModel(remoteID: manualRemoteID, displayName: manualDisplayName)
-                    manualRemoteID = ""
-                    manualDisplayName = ""
-                }
-                .disabled(manualRemoteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-    }
-
-    private var capabilitiesStep: some View {
-        List {
-            Section {
-                Text("setup.capabilities.hint")
-                    .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
-            }
-            Section("setup.models.selected") {
-                ForEach(editor.selectedModels) { model in
-                    HStack {
-                        Button { editingModel = model } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(model.displayName)
-                                Text(capabilitySummary(model.capabilities))
-                                    .font(FloeTheme.Typography.metadata).foregroundStyle(.secondary)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        Spacer()
-                        Button { editor.setDefaultModel(model.id) } label: {
-                            Image(systemName: editor.defaultModelID == model.id
-                                  ? "checkmark.circle.fill" : "circle")
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(editor.defaultModelID == model.id
-                                            ? "model.default" : "model.set_default")
-                    }
-                }
-            }
-        }
-    }
-
-    private var summaryStep: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 64)).foregroundStyle(FloeTheme.success)
-                Text("setup.summary.ready").font(.title.bold())
-                VStack(alignment: .leading, spacing: 12) {
-                    Label(editor.selectedPreset.displayName, systemImage: "network")
-                    Label(protocolName(editor.selectedProtocol), systemImage: "point.3.connected.trianglepath.dotted")
-                    Label {
-                        HStack(spacing: 4) {
-                            Text(editor.selectedModels.count.formatted())
-                            Text("setup.summary.models_selected")
-                        }
-                    } icon: {
-                        Image(systemName: "cpu")
-                    }
-                    if let id = editor.defaultModelID,
-                       let model = editor.selectedModels.first(where: { $0.id == id }) {
-                        Label {
-                            HStack(spacing: 4) {
-                                Text("model.default")
-                                Text("· \(model.displayName)")
-                            }
-                        } icon: {
-                            Image(systemName: "checkmark.circle")
-                        }
-                    }
-                }
-                .padding(20)
-                .frame(maxWidth: 520, alignment: .leading)
-                .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 20))
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("setup.summary.next_steps")
-                        .font(.headline)
-                    Label("setup.summary.auxiliary", systemImage: "eye")
-                    Label("setup.summary.apple_search", systemImage: "apple.logo")
-                    Label("setup.summary.remote_background", systemImage: "server.rack")
-                    Label("setup.summary.canvas_mcp", systemImage: "square.and.pencil")
-                    Label("setup.summary.sync_diagnostics", systemImage: "stethoscope")
-                }
-                .font(FloeTheme.Typography.metadata)
-                .foregroundStyle(.secondary)
-                .padding(20)
-                .frame(maxWidth: 520, alignment: .leading)
-                .background(FloeTheme.readingSurface, in: RoundedRectangle(cornerRadius: 20))
-            }
-            .padding(28)
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var navigationBar: some View {
-        HStack {
-            if step != .welcome {
-                Button("action.back") { step = Step(rawValue: step.rawValue - 1) ?? .welcome }
-            }
-            Spacer()
-            Button(step == .summary ? "setup.finish" : step == .connection ? "setup.test_continue" : "setup.continue") {
-                advance()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(!canContinue || editor.testState == .testing || editor.isSaving)
         }
         .padding(.horizontal, 20)
-        .padding(.vertical, 14)
+        .padding(.top, 10)
+        .padding(.bottom, 4)
+        // Keep the head itself addressable without replacing the live
+        // position and active-preset identifiers on its children.
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("setup.progress")
+    }
+
+    private var progress: Double {
+        let index = SetupGuideSection.allCases.firstIndex(of: model.state.section) ?? 0
+        return Double(index + 1) / Double(SetupGuideSection.allCases.count)
+    }
+
+    private var positionText: String {
+        let index = SetupGuideSection.allCases.firstIndex(of: model.state.section) ?? 0
+        return "\(index + 1)/\(SetupGuideSection.allCases.count)"
+    }
+}
+
+/// Back, Later and Next always coexist. The main action is never disabled by
+/// a running download, a failed resource or a missing provider.
+struct SetupGuideActionBar: View {
+    let section: SetupGuideSection
+    @ObservedObject var model: SetupGuideModel
+    let dismiss: DismissAction
+    @State private var isFinishing = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button {
+                model.back()
+            } label: {
+                Text("action.back")
+            }
+            .disabled(!canGoBack)
+            .accessibilityIdentifier("setup.back")
+            Spacer()
+            if section != .summary {
+                Button {
+                    model.later()
+                } label: {
+                    Text("setup.later")
+                }
+                .accessibilityIdentifier("setup.later")
+                Button {
+                    model.next()
+                } label: {
+                    Text("setup.next")
+                        .frame(minWidth: 72)
+                }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("setup.next")
+            } else {
+                Button {
+                    finish()
+                } label: {
+                    if isFinishing {
+                        ProgressView()
+                    } else {
+                        Text("setup.finish").frame(minWidth: 72)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isFinishing)
+                .accessibilityIdentifier("setup.finish")
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
         .background(FloeTheme.chromeMaterial)
     }
 
-    private var canContinue: Bool {
-        switch step {
-        case .discovery: !editor.selectedModels.isEmpty
-        case .capabilities: editor.defaultModelID != nil
-        default: true
-        }
-    }
+    private var canGoBack: Bool { model.state.section.previous != nil }
 
-    private func advance() {
+    private func finish() {
+        isFinishing = true
         Task {
-            if step == .connection {
-                await editor.testConnection()
-                guard case .succeeded = editor.testState else { return }
-            }
-            if step == .discovery, editor.defaultModelID == nil {
-                editor.defaultModelID = editor.selectedModels.first?.id
-            }
-            if step == .summary {
-                if await editor.save() { dismiss() }
-            } else {
-                step = Step(rawValue: step.rawValue + 1) ?? .summary
-            }
+            // Writing the guide outcome is all Finish waits for. Preparation
+            // keeps running in its own services afterwards.
+            await model.finish()
+            isFinishing = false
+            // A failed completion write stays actionable: the guide remains
+            // open with the honest message instead of pretending it finished.
+            if model.didFinish { dismiss() }
         }
-    }
-
-    private func skip() {
-        Task {
-            await viewModel.markSkipped()
-            dismiss()
-        }
-    }
-
-    private func providerIcon(_ kind: ProviderKind) -> String {
-        switch kind {
-        case .openAI: "sparkles"
-        case .anthropic: "a.circle"
-        case .volcengineArk: "flame"
-        case .alibabaStudio: "cloud"
-        case .googleGemini: "photo.on.rectangle.angled"
-        case .local: "iphone"
-        case .custom: "slider.horizontal.3"
-        }
-    }
-
-    private func protocolName(_ value: ModelProtocol) -> String {
-        switch value {
-        case .openAIResponses: "OpenAI Responses"
-        case .openAIChatCompletions: "OpenAI Chat Completions"
-        case .anthropicMessages: "Anthropic Messages"
-        }
-    }
-
-    private func protocolSummary(_ values: [ModelProtocol]) -> String {
-        values.map(protocolName).joined(separator: " · ")
-    }
-
-    private func capabilitySummary(_ value: ModelCapabilities) -> String {
-        var items = ["Text"]
-        if value.contains(.vision) { items.append("Vision") }
-        if value.contains(.tools) { items.append("Tools") }
-        if value.contains(.approval) { items.append("Approval") }
-        return items.joined(separator: " · ")
     }
 }
 #endif

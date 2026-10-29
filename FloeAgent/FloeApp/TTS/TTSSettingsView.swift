@@ -7,6 +7,7 @@ import FloeProviders
 
 struct TTSSettingsView: View {
     @EnvironmentObject private var settings: TTSSettingsService
+    @EnvironmentObject private var environment: AppEnvironment
     var body: some View {
         Form {
             // The flow is source first, then the voices of that source, so a
@@ -39,10 +40,17 @@ struct TTSSettingsView: View {
             Section {
                 Toggle("voice.settings.autoread", isOn: Binding(get: { settings.snapshot.autoReadEnabled }, set: { n in settings.update { $0.autoReadEnabled = n } }))
                 Toggle("voice.settings.barge_in", isOn: Binding(get: { settings.snapshot.allowBargeIn }, set: { n in settings.update { $0.allowBargeIn = n } }))
+                Toggle("voice.assistant.read_links", isOn: Binding(get: { settings.snapshot.readLinksAloud }, set: { n in settings.update { $0.readLinksAloud = n } }))
+                Text("voice.assistant.read_links.footer").font(.footnote).foregroundStyle(.secondary)
             }
             Section {
                 NavigationLink("voice.local.title") { LocalSpeechSettingsView() }
                 NavigationLink("voice.online.title") { OnlineSpeechServicesView() }
+                NavigationLink("voice.assistant.synthesis") {
+                    AssistantAudioSettingsView(
+                        mode: .synthesis,
+                        assistant: environment.assistantAudioService)
+                }
             }
         }.navigationTitle("settings.voice.title")
     }

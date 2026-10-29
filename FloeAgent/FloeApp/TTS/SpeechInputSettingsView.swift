@@ -12,6 +12,7 @@ enum VoiceRecognitionPreferences {
 }
 
 struct SpeechInputSettingsView: View {
+    @EnvironmentObject private var environment: AppEnvironment
     @AppStorage(VoiceRecognitionLanguage.defaultsKey) private var language = VoiceRecognitionLanguage.automatic.rawValue
     @AppStorage(VoiceRecognitionPreferences.methodKey) private var method = VoiceRecognitionPreferences.Method.automatic.rawValue
     var body: some View {
@@ -27,6 +28,15 @@ struct SpeechInputSettingsView: View {
                 }
             }
             Section { NavigationLink("voice.input.model") { EnhancedRecognitionModelView() } }
+            Section {
+                NavigationLink("voice.assistant.transcription") {
+                    AssistantAudioSettingsView(
+                        mode: .transcription,
+                        assistant: environment.assistantAudioService)
+                }
+            } footer: {
+                Text("voice.assistant.transcription.footer")
+            }
         }.navigationTitle("voice.input.title")
     }
 }

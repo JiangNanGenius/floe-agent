@@ -95,10 +95,14 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         app = root / 'FloeAgent'
         for name in ('project.yml', 'scripts/release_preflight.sh',
                      'scripts/validate_localization_catalog.py',
+                     'scripts/verify_apple_upload_metadata.py',
                      'scripts/check_application_pins.py',
                      'scripts/resolved_pins.py',
                      'Package.resolved',
                      'FloeAgent.xcodeproj/project.pbxproj', 'FloeScreenShare/Info.plist',
+                     'FloeApp/Entitlements/Floe.entitlements',
+                     'FloeApp/Resources/Info.plist',
+                     'FloeApp/Resources/InfoPlist.xcstrings',
                      'FloeApp/Resources/Localizable.xcstrings'):
             target = app / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +145,14 @@ class PortablePreflightFixtureTests(unittest.TestCase):
         (docs / 'testflight' / f'TESTFLIGHT_{series}_WHATS_NEW_BUILD_{build}.json').write_text(
             json.dumps({'en-US': 'Internal beta fixture notes.', 'zh-Hans': '内测夹具说明。'},
                        ensure_ascii=False), encoding='utf-8')
+        # project.yml declares the first-party FloeMacBridge sibling at
+        # ../FloeMacBridge; stage the same tracked, clean layout with the real
+        # reviewed manifest (the pin policy pins its digest) so the application
+        # pin gate exercises a faithful checkout.
+        sibling = root / 'FloeMacBridge'
+        sibling.mkdir()
+        shutil.copy2(REPO / 'FloeMacBridge' / 'Package.swift',
+                     sibling / 'Package.swift')
         git_env = dict(os.environ, GIT_AUTHOR_NAME='Floe Review', GIT_COMMITTER_NAME='Floe Review',
                        GIT_AUTHOR_EMAIL='review@example.invalid',
                        GIT_COMMITTER_EMAIL='review@example.invalid')

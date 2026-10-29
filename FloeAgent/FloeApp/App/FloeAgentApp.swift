@@ -468,6 +468,7 @@ struct RootView: View {
         // need no provider.
         .environment(\.foldableDisplay, foldableSupport.snapshot)
         .modifier(FoldableCapabilityProbeModifier(state: foldableSupport))
+        .modifier(MacBridgeRecommendationModifier())
         .background(alignment: .bottomTrailing) {
             BackgroundPiPSceneSource(videoService: environment.backgroundVideoService)
         }

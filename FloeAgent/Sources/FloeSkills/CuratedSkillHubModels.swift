@@ -90,6 +90,34 @@ public struct CuratedSkillLocalizedText: Codable, Sendable, Equatable, Hashable 
         self.zhHans = zhHans
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case en
+        case zhHans = "zh-Hans"
+        case legacyZhHans = "zhHans"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        en = try values.decode(String.self, forKey: .en)
+        let current = try values.decodeIfPresent(String.self, forKey: .zhHans)
+        let legacy = try values.decodeIfPresent(String.self, forKey: .legacyZhHans)
+        if let current, let legacy, current != legacy {
+            throw DecodingError.dataCorruptedError(forKey: .zhHans, in: values,
+                debugDescription: "Conflicting Simplified Chinese text fields.")
+        }
+        guard let text = current ?? legacy else {
+            throw DecodingError.keyNotFound(CodingKeys.zhHans,
+                .init(codingPath: decoder.codingPath, debugDescription: "Missing Simplified Chinese text."))
+        }
+        zhHans = text
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(en, forKey: .en)
+        try values.encode(zhHans, forKey: .zhHans)
+    }
+
     /// Picks the value for the user's preferred localizations, falling back to
     /// English. Simplified Chinese (`zh*`) selects `zh-Hans`.
     public func value(preferredLanguages: [String]) -> String {
@@ -204,6 +232,10 @@ public struct CuratedSkillUpstreamPin: Sendable, Equatable, Hashable {
     public let licenseEvidencePath: String?
     public let repositoryLicense: String
     public let licenseNote: CuratedSkillLocalizedText
+    /// Optional signed-registry hint for where the upstream skill was
+    /// authored (for example `skill`). Provenance only; the reviewed pin and
+    /// package bindings above remain the authority.
+    public let authoringPath: String?
 }
 
 /// First-party (builtin) pin. Released and staged versions are recorded
@@ -721,7 +753,7 @@ enum CuratedSkillEntryDecoder {
         try CuratedSkillStrictJSON.exactKeys(object, required: [
             "repository", "commit", "path", "skillManifestPath", "retrievedAt",
             "licenseStatus", "licenseEvidencePath", "repositoryLicense", "licenseNote",
-        ], path: path)
+        ], optional: ["authoringPath"], path: path)
         let repository = try CuratedSkillStrictJSON.string(object["repository"], path: "\(path).repository")
         guard CuratedSkillStrictJSON.isGitHubRepositoryURL(repository) else {
             throw CuratedSkillHubFailure.feed("\(path).repository must be an https GitHub repository URL")
@@ -754,10 +786,17 @@ enum CuratedSkillEntryDecoder {
         }
         let repositoryLicense = try CuratedSkillStrictJSON.string(object["repositoryLicense"], path: "\(path).repositoryLicense")
         let licenseNote = try CuratedSkillStrictJSON.localizedText(object["licenseNote"], path: "\(path).licenseNote", nonEmpty: true)
+        let authoringPath: String?
+        if let value = object["authoringPath"], !(value is NSNull) {
+            authoringPath = try CuratedSkillStrictJSON.string(value, path: "\(path).authoringPath")
+        } else {
+            authoringPath = nil
+        }
         return CuratedSkillUpstreamPin(
             repository: repository, commit: commit, path: skillPath, skillManifestPath: manifestPath,
             retrievedAt: retrievedAt, licenseStatus: licenseStatus, licenseEvidencePath: evidencePath,
-            repositoryLicense: repositoryLicense, licenseNote: licenseNote
+            repositoryLicense: repositoryLicense, licenseNote: licenseNote,
+            authoringPath: authoringPath
         )
     }
 

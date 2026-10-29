@@ -170,6 +170,10 @@ public struct ImageProviderAdapterFactory: Sendable {
     public init() {}
 
     public func adapter(for provider: ProviderProfile) -> (any ImageProviderAdapter)? {
+        if provider.kind == .custom,
+           ProviderBillingEndpoint.resolve(provider.baseURL) == .volcengineAgentPlan {
+            return VolcengineImageAdapter()
+        }
         switch provider.kind {
         case .openAI:
             return OpenAIImageAdapter()

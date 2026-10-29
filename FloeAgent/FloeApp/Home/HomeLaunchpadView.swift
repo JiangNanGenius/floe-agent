@@ -177,7 +177,7 @@ struct HomeLaunchpadView: View {
                 .shadow(color: FloeTheme.primary.opacity(0.18), radius: 18, y: 8)
                 .accessibilityHidden(true)
 
-            Text(LocalizedStringKey(launchPromptKey))
+            HomeWelcomeText(key: launchPromptKey)
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
                 .accessibilityAddTraits(.isHeader)
@@ -397,6 +397,70 @@ struct HomeLaunchpadView: View {
                     router.openThreadFromHome(conversationID)
                 }
             }
+        }
+    }
+}
+
+/// Animate glyph drawing rather than splitting the sentence into views, so
+/// native wrapping, Dynamic Type, and VoiceOver keep one stable text layout.
+private struct HomeWelcomeText: View {
+    let key: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var revealed = false
+    @State private var forceStatic = false
+
+    var body: some View {
+        Text(LocalizedStringKey(key))
+            .textRenderer(HomeWelcomeRenderer(progress: reduceMotion || revealed ? 1 : 0,
+                                               isStatic: reduceMotion || forceStatic))
+            .onAppear {
+                guard !revealed else { return }
+                if reduceMotion { finish() }
+                else { withAnimation(.linear(duration: 0.8)) { revealed = true } }
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { finish() }
+            }
+            .onChange(of: reduceMotion) { _, reduced in
+                if reduced { finish() }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+                finish()
+            }
+    }
+
+    private func finish() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { revealed = true; forceStatic = true }
+    }
+}
+
+private struct HomeWelcomeRenderer: TextRenderer {
+    var progress: Double
+    var isStatic = false
+    var displayPadding: EdgeInsets { EdgeInsets(top: 0, leading: 0, bottom: 6, trailing: 0) }
+    var animatableData: Double {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        if isStatic {
+            for line in layout { context.draw(line) }
+            return
+        }
+        let slices = layout.flatMap { $0 }.flatMap { $0 }
+        let count = max(slices.count - 1, 1)
+        for (index, slice) in slices.enumerated() {
+            let start = Double(index) / Double(count) * 0.55
+            let phase = min(max((progress - start) / 0.45, 0), 1)
+            let eased = 1 - pow(1 - phase, 3)
+            var glyphContext = context
+            glyphContext.opacity *= eased
+            glyphContext.translateBy(x: 0, y: 5 * (1 - eased))
+            glyphContext.draw(slice)
         }
     }
 }

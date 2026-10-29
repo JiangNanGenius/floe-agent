@@ -59,7 +59,11 @@ final class DocumentIntakeCenter: ObservableObject {
     private var foregroundObserver: NSObjectProtocol?
     private var maintenanceTask: Task<Void, Never>?
     private var processing: Task<Void, Never>?
+    private var processingEpoch = UUID()
     private var currentClaimID: UUID?
+    private var storageSuspended = false
+    private var activeRecoveries = 0
+    private var recoveryDrainWaiters: [CheckedContinuation<Void, Never>] = []
     private var stagingTasks: [UUID: Task<Void, Never>] = [:]
     private var cancelledEvents: Set<UUID> = []
     private var recentSubmissions: [String: (id: UUID, at: Date)] = [:]
@@ -236,13 +240,19 @@ final class DocumentIntakeCenter: ObservableObject {
         let lease = DocumentIntakeProviderLease(url: url)
         let task = Task { [weak self] in
             guard let self else { return }
-            defer { self.stagingTasks[eventID] = nil }
+            defer { self.stagingTasks[eventID] = nil; lease.release() }
             if Task.isCancelled {
                 lease.release()
                 self.activity = nil
                 return
             }
             do {
+                let budget = try await StorageOperationBudget.begin()
+                defer { budget.finish() }
+                budget.whenExpired { [weak self] in
+                    Task { @MainActor in self?.stagingTasks[eventID]?.cancel() }
+                }
+                try budget.check()
                 let staged = try await DocumentIntakeStager.stage(
                     url,
                     root: stagingRoot,
@@ -254,7 +264,7 @@ final class DocumentIntakeCenter: ObservableObject {
                 // a recoverable cancelled entry; it never fakes success.
                 if Task.isCancelled {
                     _ = try? await self.enqueue(staged)
-                    _ = try? await self.queue?.cancel(id: eventID)
+                    if !self.storageSuspended { _ = try? await self.queue?.cancel(id: eventID) }
                     self.activity = nil
                     await self.refresh()
                     return
@@ -265,7 +275,7 @@ final class DocumentIntakeCenter: ObservableObject {
                 if Task.isCancelled {
                     // The user cancelled while the entry was being published;
                     // keep it recoverable but do not start an import.
-                    _ = try? await self.queue?.cancel(id: eventID)
+                    if !self.storageSuspended { _ = try? await self.queue?.cancel(id: eventID) }
                     return
                 }
                 self.drainIfPossible()
@@ -294,7 +304,8 @@ final class DocumentIntakeCenter: ObservableObject {
     // MARK: Processing
 
     private func drainIfPossible() {
-        guard isReady, queue != nil, processing == nil else { return }
+        guard isReady, !storageSuspended, queue != nil, processing == nil else { return }
+        processingEpoch = UUID()
         processing = Task { [weak self] in
             guard let self else { return }
             await self.processPending()
@@ -307,6 +318,19 @@ final class DocumentIntakeCenter: ObservableObject {
             return
         }
         while !Task.isCancelled {
+            guard !storageSuspended else { break }
+            let budget: StorageOperationLease
+            do { budget = try await StorageOperationBudget.begin() }
+            catch { break }
+            defer { budget.finish() }
+            let epoch = processingEpoch
+            budget.whenExpired { [weak self] in
+                Task { @MainActor in
+                    guard self?.processingEpoch == epoch else { return }
+                    self?.processing?.cancel()
+                }
+            }
+            guard !storageSuspended, !Task.isCancelled else { break }
             let claim: DocumentIntakeClaim?
             do {
                 claim = try await queue.claimNext(where: destinationGate)
@@ -314,6 +338,10 @@ final class DocumentIntakeCenter: ObservableObject {
                 break
             }
             guard let claim else { break }
+            // Close the claim before this iteration's execution budget ends,
+            // including a queue-state write failure. Its journal remains
+            // recoverable; normal commit/requeue close is idempotent.
+            defer { claim.lock.close() }
             currentClaimID = claim.record.id
             isWorking = true
             activity = DocumentIntakeActivity(
@@ -334,6 +362,34 @@ final class DocumentIntakeCenter: ObservableObject {
         }
         processing = nil
         await refresh()
+    }
+
+    /// Process lifecycle only. Cancel before waiting; the existing import
+    /// cancellation path records a proven commit or requeues the same planned
+    /// identity, then closes its own claim. Never unlock another live writer.
+    func suspendForBackground() async {
+        beginStorageSuspension()
+        let stages = Array(stagingTasks.values)
+        let importer = processing
+        for task in stages { await task.value }
+        await importer?.value
+        if activeRecoveries > 0 {
+            await withCheckedContinuation { recoveryDrainWaiters.append($0) }
+        }
+    }
+
+    func beginStorageSuspension() {
+        storageSuspended = true
+        maintenanceTask?.cancel()
+        for task in stagingTasks.values { task.cancel() }
+        processing?.cancel()
+    }
+
+    func resumeAfterSuspension() async {
+        storageSuspended = false
+        await recoverInterrupted()
+        await refresh()
+        drainIfPossible()
     }
 
     private func importClaim(_ claim: DocumentIntakeClaim) async {
@@ -762,9 +818,15 @@ final class DocumentIntakeCenter: ObservableObject {
     }
 
     private func runMaintenance() async {
-        guard let queue else { return }
+        guard !storageSuspended, let queue else { return }
         do {
+            let budget = try await StorageOperationBudget.begin()
+            defer { budget.finish() }
+            try budget.check()
+            guard !storageSuspended else { return }
             _ = try await queue.maintain(now: now())
+        } catch is CancellationError {
+            return
         } catch {
             // Maintenance is required for recovery and expiry; a storage
             // failure here means durable inputs were NOT processed.
@@ -777,11 +839,27 @@ final class DocumentIntakeCenter: ObservableObject {
     }
 
     private func recoverInterrupted() async {
-        guard let queue else { return }
+        guard !storageSuspended, let queue else { return }
+        let budget: StorageOperationLease
+        do { budget = try await StorageOperationBudget.begin() }
+        catch { return }
+        defer { budget.finish() }
+        guard !storageSuspended else { return }
+        activeRecoveries += 1
+        defer {
+            activeRecoveries -= 1
+            if activeRecoveries == 0 {
+                let waiters = recoveryDrainWaiters
+                recoveryDrainWaiters.removeAll()
+                for waiter in waiters { waiter.resume() }
+            }
+        }
         let records: [DocumentIntakeRecord]
         do { records = try await queue.interrupted() }
         catch { return }
         for record in records {
+            guard !storageSuspended else { break }
+            do { try budget.check() } catch { break }
             let claim: DocumentIntakeClaim?
             do {
                 claim = try await queue.takeRecoveryClaim(id: record.id)
@@ -792,6 +870,8 @@ final class DocumentIntakeCenter: ObservableObject {
                 continue
             }
             guard let claim else { continue }
+            defer { claim.lock.close() }
+            guard !storageSuspended else { break }
             if record.kind.importsIntoNotes {
                 do {
                     if let existing = try await notes.existingDocument(id: record.plannedRootDocumentID) {

@@ -759,12 +759,18 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     nonisolated let blobRoot: URL
     nonisolated let stagingRoot: URL
     private var openStages: [UUID: OpenStage] = [:]
+    private(set) var storageSuspended = false
+    private var suspensionGeneration: UInt64 = 0
+    private var suspendedStageIDs: Set<UUID> = []
+    private var activeItemLeases = 0
+    private var leaseDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
     private struct OpenStage {
         let directoryURL: URL
         let contentURL: URL
         let contentHandle: FileHandle
         let lockHandle: FileHandle
+        let budget: StorageOperationLease
         var bytesWritten: Int64
     }
 
@@ -780,6 +786,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         try fileIO.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
 
         var configuration = Configuration()
+        configuration.observesSuspensionNotifications = true
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
             try db.execute(sql: "PRAGMA journal_mode = WAL")
@@ -982,6 +989,13 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     public func beginContentStage(
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> UUID {
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
+        let generation = suspensionGeneration
+        let budget = try await StorageOperationBudget.begin()
+        var adoptedBudget = false
+        defer { if !adoptedBudget { budget.finish() } }
+        guard !storageSuspended, generation == suspensionGeneration else { throw SharedDocumentsError.cancelled }
+        try budget.check()
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
         let operationID = UUID()
         let dir = stagingRoot.appendingPathComponent(operationID.uuidString, isDirectory: true)
@@ -1010,8 +1024,10 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             contentURL: contentURL,
             contentHandle: contentHandle,
             lockHandle: lockHandle,
+            budget: budget,
             bytesWritten: 0
         )
+        adoptedBudget = true
         return operationID
     }
 
@@ -1020,9 +1036,12 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         operationID: UUID,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws {
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
         guard var stage = openStages[operationID] else {
+            if suspendedStageIDs.contains(operationID) { throw SharedDocumentsError.cancelled }
             throw SharedDocumentsError.storageCorrupted("unknown staging operation \(operationID.uuidString)")
         }
+        try stage.budget.check()
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
         let newTotal = stage.bytesWritten + Int64(data.count)
         guard newTotal <= SharedDocumentsStoreLayout.maxItemBytes else {
@@ -1037,9 +1056,12 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         operationID: UUID,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> SharedDocumentsContentStage {
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
         guard let stage = openStages[operationID] else {
+            if suspendedStageIDs.contains(operationID) { throw SharedDocumentsError.cancelled }
             throw SharedDocumentsError.storageCorrupted("unknown staging operation \(operationID.uuidString)")
         }
+        try stage.budget.check()
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
         try stage.contentHandle.synchronize()
         // FloeDigest throws raw CancellationError when `isCancelled` fires;
@@ -1064,6 +1086,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     }
 
     public func discardContentStage(operationID: UUID) async throws {
+        suspendedStageIDs.remove(operationID)
         guard let stage = openStages.removeValue(forKey: operationID) else { return }
         closeStage(stage)
         try? fileManager.removeItem(at: stage.directoryURL)
@@ -1109,6 +1132,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         stage: SharedDocumentsContentStage?,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> SharedDocumentsItem {
+        if let stage { try requireCurrentStage(stage) }
         try Self.validateItemID(parentID)
         try Self.validateName(name)
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
@@ -1125,6 +1149,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
             let sha: String?
             let bytes: Int64
             if let stage {
+                try await self.requireCurrentStage(stage)
                 let target = self.committedBlobURL(itemID: id, contentVersion: 1)
                 try self.prepareCommittedBlobTarget(target)
                 try self.fileManager.moveItem(at: stage.stagedFileURL, to: target)
@@ -1193,11 +1218,13 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         expected: SharedDocumentsExpectedVersions,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> SharedDocumentsItem {
+        try requireCurrentStage(stage)
         try Self.validateItemID(id)
         guard id != SharedDocumentsIdentity.rootItemID else { throw SharedDocumentsError.invalidItemID(id) }
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
         return try await publishUnderItemLease(id: id) {
             // Probe the next version number, rename the staged bytes, then
+            try await self.requireCurrentStage(stage)
             // re-verify inside the committing transaction: another writer may
             // have committed in between. A failed re-verify leaves only an
             // unreferenced orphan (recovery reclaims it); the prior committed
@@ -1333,6 +1360,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         expected: SharedDocumentsExpectedVersions,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> SharedDocumentsItem {
+        try requireCurrentStage(stage)
         try Self.validateItemID(id)
         guard id != SharedDocumentsIdentity.rootItemID else { throw SharedDocumentsError.invalidItemID(id) }
         if let newName { try Self.validateName(newName) }
@@ -1340,6 +1368,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
         return try await publishUnderItemLease(id: id) {
             // Admission probe: validates the CAS base, resolves the target
+            try await self.requireCurrentStage(stage)
             // name/parent (collision + cycle checks) and computes the exact
             // next versions. The staged rename happens only after this
             // passes; the committing transaction below re-verifies the CAS
@@ -1460,6 +1489,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         recursive: Bool,
         cancellation: (any SharedDocumentsOperationCancellation)? = nil
     ) async throws -> (deletedIDs: [String], byteCount: Int64) {
+        let budget = try await beginOwnedFileOperation()
+        defer { endOwnedFileOperation(budget) }
         try Self.validateItemID(id)
         guard id != SharedDocumentsIdentity.rootItemID else { throw SharedDocumentsError.invalidItemID(id) }
         if cancellation?.isCancelled() == true { throw SharedDocumentsError.cancelled }
@@ -1511,6 +1542,9 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         // Content bytes are removed only after the delete commits; a failure
         // here leaves an orphan that recoverInterruptedOperations() reclaims.
         for victimID in summary.deletedIDs {
+            // Metadata already committed: retain cleanup orphans on expiry
+            // and return the real deletion receipt, never fake rollback.
+            do { try budget.check() } catch { break }
             let dir = blobRoot.appendingPathComponent(victimID, isDirectory: true)
             guard let names = try? fileManager.contentsOfDirectory(atPath: dir.path), !names.isEmpty else { continue }
             let lock = dir.appendingPathComponent("lock")
@@ -1749,6 +1783,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     // MARK: Recovery
 
     public func recoverInterruptedOperations() async throws -> SharedDocumentsRecoveryReport {
+        let budget = try await beginOwnedFileOperation()
+        defer { endOwnedFileOperation(budget) }
         var reclaimedStages = 0
         var reclaimedOrphans = 0
         var missingContent: [String] = []
@@ -1760,6 +1796,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         //    instead of permanently losing track of live staged bytes.
         if let stageNames = try? fileManager.contentsOfDirectory(atPath: stagingRoot.path) {
             for name in stageNames {
+                try budget.check()
                 let dir = stagingRoot.appendingPathComponent(name, isDirectory: true)
                 let lock = dir.appendingPathComponent("lock")
                 guard fileManager.fileExists(atPath: lock.path) else {
@@ -1787,6 +1824,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         //    could otherwise mistake a just-published blob for an orphan.
         if let itemNames = try? fileManager.contentsOfDirectory(atPath: blobRoot.path) {
             for itemName in itemNames where Self.isValidStoredItemName(itemName) {
+                try budget.check()
                 let dir = blobRoot.appendingPathComponent(itemName, isDirectory: true)
                 let lock = dir.appendingPathComponent("lock")
                 if !fileManager.fileExists(atPath: lock.path) {
@@ -1807,6 +1845,7 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
                 }
                 let names = try fileManager.contentsOfDirectory(atPath: dir.path)
                 for fileName in names where fileName != "lock" {
+                    try budget.check()
                     if !referenced.contains(fileName), !fileName.hasPrefix(".restore-") {
                         try fileManager.removeItem(at: dir.appendingPathComponent(fileName))
                         reclaimedOrphans += 1
@@ -1841,7 +1880,37 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
     }
 
     private func write<T: Sendable>(_ block: @Sendable (Database) throws -> T) async throws -> T {
-        try await pool.write { db in try block(db) }
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
+        let generation = suspensionGeneration
+        let budget = try await StorageOperationBudget.begin()
+        defer { budget.finish() }
+        guard !storageSuspended, generation == suspensionGeneration else { throw SharedDocumentsError.cancelled }
+        return try await pool.write { db in
+            try budget.check()
+            return try block(db)
+        }
+    }
+
+    /// Stop stage admission first; await any item-level publish/copy lease
+    /// before releasing its stage handles. Partial stage files remain on disk
+    /// for the existing recovery policy, never presented as committed bytes.
+    public func suspendForBackground() async {
+        suspensionGeneration &+= 1
+        let generation = suspensionGeneration
+        storageSuspended = true
+        if activeItemLeases > 0 {
+            await withCheckedContinuation { leaseDrainWaiters.append($0) }
+        }
+        guard storageSuspended, generation == suspensionGeneration else { return }
+        let stages = openStages
+        openStages.removeAll()
+        suspendedStageIDs.formUnion(stages.keys)
+        for stage in stages.values { closeStage(stage) }
+    }
+
+    public func resumeAfterSuspension() {
+        suspensionGeneration &+= 1
+        storageSuspended = false
     }
 
     private nonisolated func committedBlobURL(itemID: String, contentVersion: Int) -> URL {
@@ -1888,6 +1957,8 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         id: String,
         _ body: @Sendable () async throws -> T
     ) async throws -> T {
+        let budget = try await beginOwnedFileOperation()
+        defer { endOwnedFileOperation(budget) }
         let dir = blobRoot.appendingPathComponent(id, isDirectory: true)
         try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         let lock = dir.appendingPathComponent("lock")
@@ -1902,15 +1973,48 @@ public actor SQLiteSharedDocumentsStore: SharedDocumentsStore {
         return try await body()
     }
 
+    private func beginOwnedFileOperation() async throws -> StorageOperationLease {
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
+        let generation = suspensionGeneration
+        let budget = try await StorageOperationBudget.begin()
+        do {
+            guard !storageSuspended, generation == suspensionGeneration else { throw SharedDocumentsError.cancelled }
+            try budget.check()
+        } catch { budget.finish(); throw error }
+        activeItemLeases += 1
+        return budget
+    }
+
+    private func endOwnedFileOperation(_ budget: StorageOperationLease) {
+        budget.finish()
+        activeItemLeases -= 1
+        if activeItemLeases == 0 {
+            let waiters = leaseDrainWaiters
+            leaseDrainWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+        }
+    }
+
     private func closeStage(operationID: UUID) {
         guard let stage = openStages.removeValue(forKey: operationID) else { return }
         closeStage(stage)
+    }
+
+    private func requireCurrentStage(_ stage: SharedDocumentsContentStage) throws {
+        guard !storageSuspended else { throw SharedDocumentsError.cancelled }
+        guard let current = openStages[stage.operationID],
+              current.contentURL == stage.stagedFileURL else {
+            if suspendedStageIDs.contains(stage.operationID) { throw SharedDocumentsError.cancelled }
+            throw SharedDocumentsError.storageCorrupted("staging operation is no longer owned")
+        }
+        try current.budget.check()
     }
 
     private nonisolated func closeStage(_ stage: OpenStage) {
         try? stage.contentHandle.close()
         // Closing the lock handle releases the flock held since begin.
         try? stage.lockHandle.close()
+        stage.budget.finish()
     }
 
     private nonisolated static func removeCommittedBlobIfUnreferenced(_ dir: URL, name: String) {

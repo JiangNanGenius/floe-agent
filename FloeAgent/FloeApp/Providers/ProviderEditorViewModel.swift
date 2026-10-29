@@ -221,6 +221,9 @@ final class ProviderEditorViewModel: ObservableObject {
     /// for a NEW media-role add. Rows the user edited are removed from the
     /// set, so a later supplier change only replaces untouched staged rows.
     private var stagedOfficialSeedIDs: Set<UUID> = []
+    private var stagedSubscriptionModelIDs: Set<UUID> = []
+    private var appliedSubscriptionPresetID: ProviderTemplateID?
+    private static let bundledSubscriptionCatalog = ProviderCatalogIndex.loadBundled()
     /// The verified media table last applied, compared on supplier changes.
     private var appliedMediaSeedIDs: [String] = []
     /// Verified catalog identifiers staged for a distinct-connection offer
@@ -301,7 +304,8 @@ final class ProviderEditorViewModel: ObservableObject {
         selectedPreset = preset
         // Native suppliers do not inherit a catalog row's metadata or older
         // availability policy. Saved Kimi Code profiles resolve by endpoint.
-        catalogPresetID = nil
+        catalogPresetID = [.volcengineAgentPlan, .alibabaTokenPlan].contains(preset.id)
+            ? preset.id.rawValue : nil
         // Only auto-fill the name when the user hasn't customized it, so a
         // typed "DeepSeek" survives switching protocols/presets.
         if shouldReplaceDisplayName {
@@ -318,6 +322,7 @@ final class ProviderEditorViewModel: ObservableObject {
         refreshConnectionCredentialState()
         refreshServiceOffers()
         restageMediaSeeds()
+        stageSubscriptionModels()
     }
 
     /// Pre-fills the editor from one official-catalog entry. The entry's
@@ -352,6 +357,7 @@ final class ProviderEditorViewModel: ObservableObject {
         // preset identity) turns the compatibility rewrite on.
         toolNameCompatibility = entry.toolNameCompatibility || entry.presetID == "deepseek"
         catalogPresetID = entry.presetID
+        stageSubscriptionModels()
         refreshConnectionCredentialState()
         refreshServiceOffers()
         restageMediaSeeds()
@@ -667,8 +673,13 @@ final class ProviderEditorViewModel: ObservableObject {
     private func resolvedCatalogEntry() -> ProviderCatalogEntry? {
         // catalogPresetID is seeded from the stored presetID and updated by
         // catalog selection, so it is the current catalog identity.
-        guard let presetID = catalogPresetID, let catalog else { return nil }
-        return catalog.entry(presetID: presetID)
+        guard let presetID = catalogPresetID else { return nil }
+        if let entry = catalog?.entry(presetID: presetID) { return entry }
+        // An older downloaded catalog must not erase newly shipped Plan
+        // defaults. This fallback only supplies declared public model data.
+        guard [ProviderTemplateID.volcengineAgentPlan.rawValue,
+               ProviderTemplateID.alibabaTokenPlan.rawValue].contains(presetID) else { return nil }
+        return Self.bundledSubscriptionCatalog?.entry(presetID: presetID)
     }
 
     /// Verified catalog metadata for one remote model identifier, when the
@@ -848,6 +859,7 @@ final class ProviderEditorViewModel: ObservableObject {
             // verified catalog identifiers into this editor so the new
             // settings row is immediately usable without local guessing.
             if serviceRole == .conversation {
+                stageSubscriptionModels()
                 for remoteID in serviceOfferSeedModels {
                     addManualModel(remoteID: remoteID, displayName: remoteID)
                 }
@@ -1208,6 +1220,7 @@ final class ProviderEditorViewModel: ObservableObject {
     }
 
     func toggleSelection(_ id: UUID) {
+        stagedSubscriptionModelIDs.remove(id)
         if selectedModelIDs.contains(id) {
             selectedModelIDs.remove(id)
             if defaultModelID == id { defaultModelID = nil }
@@ -1221,6 +1234,7 @@ final class ProviderEditorViewModel: ObservableObject {
     /// update the same source of truth without relying on a nested List
     /// button gesture.
     func setSelection(_ id: UUID, isSelected: Bool) {
+        stagedSubscriptionModelIDs.remove(id)
         if isSelected {
             selectedModelIDs.insert(id)
         } else {
@@ -1235,6 +1249,7 @@ final class ProviderEditorViewModel: ObservableObject {
         // A user-edited auto-staged row is now user content: a later
         // supplier change must never replace it.
         stagedOfficialSeedIDs.remove(model.id)
+        stagedSubscriptionModelIDs.remove(model.id)
         var normalized = model
         if serviceRole == .conversation {
             normalized.capabilities.insert(.text)
@@ -1276,6 +1291,7 @@ final class ProviderEditorViewModel: ObservableObject {
 
     func setDefaultModel(_ id: UUID) {
         guard selectedModelIDs.contains(id) else { return }
+        stagedSubscriptionModelIDs.remove(id)
         defaultModelID = id
     }
 
@@ -1325,6 +1341,28 @@ final class ProviderEditorViewModel: ObservableObject {
         candidateModels.append(model)
         nativeToolStatusByModelID[model.id] = NativeToolCapabilityProbe.initialStatus(for: model)
         selectedModelIDs.insert(model.id)
+    }
+
+    /// Public Plan model IDs are candidates, not a paid availability probe.
+    /// Only untouched seeds may be replaced when selecting another supplier.
+    private func stageSubscriptionModels() {
+        guard existing == nil, serviceRole == .conversation else { return }
+        guard appliedSubscriptionPresetID != selectedPreset.id else { return }
+        appliedSubscriptionPresetID = selectedPreset.id
+        let removed = stagedSubscriptionModelIDs
+        candidateModels.removeAll { removed.contains($0.id) }
+        selectedModelIDs.subtract(removed)
+        for id in removed { nativeToolStatusByModelID[id] = nil }
+        stagedSubscriptionModelIDs.removeAll()
+        guard [.volcengineAgentPlan, .alibabaTokenPlan].contains(selectedPreset.id),
+              let entry = resolvedCatalogEntry() else { return }
+        for remoteID in entry.models where !candidateModels.contains(where: { $0.remoteModelID == remoteID }) {
+            let hadSelection = !selectedModelIDs.isEmpty
+            addManualModel(remoteID: remoteID, displayName: remoteID)
+            guard let row = candidateModels.last else { continue }
+            stagedSubscriptionModelIDs.insert(row.id)
+            if hadSelection { selectedModelIDs.remove(row.id) }
+        }
     }
 
     func addOfficialMediaPreset(_ descriptor: MediaModelDescriptor) {

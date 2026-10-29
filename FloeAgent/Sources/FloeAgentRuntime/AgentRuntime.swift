@@ -318,7 +318,17 @@ public struct CatalogToolExecutor: ToolExecutor {
                         (["conversation.search", "conversation.read"].contains(call.toolName) ? 98_304 : 4096)),
                 capturedOutput: output.capturedOutput ?? output.summary,
                 capturedOutputTruncated: output.capturedOutput == nil
-                    ? output.summaryTruncated : output.capturedOutputTruncated
+                    ? output.summaryTruncated : output.capturedOutputTruncated,
+                outcomeUnknown: output.outcomeUnknown
+            )
+        } catch let error as ToolExecutionOutcomeUnknownError {
+            let summary = "status=outcomeUnknown reference=\(error.reference)\n\(SecretRedactor.redact(error.message))\nReconnect and inspect the existing operation. Do not submit it again."
+            return ToolResult(
+                callID: call.id,
+                status: context.cancellation.isCancelled ? .cancelled : .needsUser,
+                outputSummary: summary,
+                outputDigest: FloeDigest.sha256Hex(Data(summary.utf8)),
+                outcomeUnknown: true
             )
         } catch let error as FloeError where error == .cancelled {
             return ToolResult(callID: call.id, status: .cancelled, outputSummary: "Cancelled", outputDigest: "")
@@ -1070,6 +1080,7 @@ public actor FloeAgentRuntime {
              ("streamingModel", "completed"),
              ("streamingModel", "failed"),
              ("executingTool", "streamingModel"),
+             ("executingTool", "waitingApproval"),
              ("executingTool", "cancelling"),
              ("executingTool", "completed"),
              ("executingTool", "failed"),
@@ -1257,7 +1268,13 @@ public actor FloeAgentRuntime {
             approvalContinuation = nil
             continuation.resume(returning: .deny(reason: "cancelled"))
         }
-        if case .waitingApproval(let waiting) = prior {
+        if case .waitingApproval(let waiting) = prior,
+           nestedApprovalCallID != waiting.toolCall.id {
+            // A PRE-DISPATCH approval expired: the call never ran, so this
+            // audit is its only result. A NESTED mid-execution wait is
+            // skipped here: that call is really executing and publishes its
+            // own honest cancelled result — a second durable result for the
+            // same call would corrupt the provider pairing.
             let expired = ToolResult(
                 callID: waiting.toolCall.id,
                 status: .expired,
@@ -1588,8 +1605,8 @@ public actor FloeAgentRuntime {
                 call: call,
                 result: result,
                 isSideEffecting: isSideEffecting,
-                outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .interruptedDispatch
+                outcomeUnknown: outcomeUnknown || result.outcomeUnknown,
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .interruptedDispatch
             )
             setToolLifecycle(call: call, phase: .resultCommitted)
         }
@@ -3479,40 +3496,12 @@ public actor FloeAgentRuntime {
         case .deny(let reason):
             return .denied(reason: reason, decision: "deny:\(reason)")
         case .escalateToHuman(let reason):
-            // Concurrent children can reach the policy at the same time; the
-            // parent itself resolves serially. Serialize the escalation so a
-            // second card can never re-target the parked continuation.
+            // Preserve the original slot lifetime through grant/receipt
+            // handling, not only through the human wait itself.
             await acquireEscalationSlot()
             defer { releaseEscalationSlot() }
-            // Arm the gate before publishing so a decision racing the
-            // publish is attributed to this exact escalation.
-            approvalGate = .publishing(callID: call.id)
-            await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
-            // Consume a decision that raced the publish above, or an
-            // interruption installed by `cancel()` while the publish was in
-            // flight, before parking on the continuation. The checks, the
-            // buffered consume and the install below run in one uninterrupted
-            // actor turn, so a decision can never fall between them, and only
-            // a decision tagged with this call's id is consumed.
-            let humanDecision: ApprovalDecision
-            if approvalWaitInterrupted {
-                approvalWaitInterrupted = false
-                humanDecision = .deny(reason: "cancelled")
-            } else if let buffered = bufferedApprovalDecision, buffered.callID == call.id {
-                humanDecision = buffered.decision
-            } else {
-                humanDecision = await withCheckedContinuation {
-                    (continuation: CheckedContinuation<ApprovalDecision, Never>) in
-                    approvalContinuation = continuation
-                    approvalGate = .waiting(callID: call.id)
-                }
-            }
-            // The escalation lifecycle is over: any later decision — double
-            // tap or a card that outlived this escalation — finds the gate
-            // closed and can never reach a different tool.
-            bufferedApprovalDecision = nil
-            approvalGate = .idle
-            guard case .waitingApproval = state else {
+            let wait = await humanDecisionForCall(call, reason: reason)
+            guard case .decision(let humanDecision) = wait else {
                 return .denied(reason: "Cancelled while waiting for approval", decision: "deny:cancelled")
             }
             switch humanDecision {
@@ -3529,6 +3518,129 @@ public actor FloeAgentRuntime {
             }
         case .stopped(let gateReason):
             return .stopped(reason: gateReason)
+        }
+    }
+
+    /// One canonical human-decision wait for a concrete call. Shared by the
+    /// pre-dispatch policy escalation and the mid-execution nested approval
+    /// seam (`escalateNestedApproval`) so a SINGLE lifecycle — serialized
+    /// escalation slot, gate armed before publish, raced/buffered decision
+    /// consume, `cancel()` interruption, `.waitingApproval` state — serves
+    /// every human wait with identical snapshot, card, `resolveApproval`
+    /// and liveness semantics.
+    private enum HumanWaitOutcome {
+        case decision(ApprovalDecision)
+        /// `cancel()` (or another terminal transition) moved the run off
+        /// `.waitingApproval` while the decision was parked.
+        case cancelledWhileWaiting
+    }
+
+    private func humanDecisionForCall(_ call: ToolCall, reason: String) async -> HumanWaitOutcome {
+        // The caller holds the escalation slot through its complete
+        // decision handling, including grant and receipt publication.
+        // Arm the gate before publishing so a decision racing the
+        // publish is attributed to this exact escalation.
+        approvalGate = .publishing(callID: call.id)
+        await transition(to: .waitingApproval(AgentState.WaitingApproval(toolCall: call, reason: reason)))
+        // Consume a decision that raced the publish above, or an
+        // interruption installed by `cancel()` while the publish was in
+        // flight, before parking on the continuation. The checks, the
+        // buffered consume and the install below run in one uninterrupted
+        // actor turn, so a decision can never fall between them, and only
+        // a decision tagged with this call's id is consumed.
+        let humanDecision: ApprovalDecision
+        if approvalWaitInterrupted {
+            approvalWaitInterrupted = false
+            humanDecision = .deny(reason: "cancelled")
+        } else if let buffered = bufferedApprovalDecision, buffered.callID == call.id {
+            humanDecision = buffered.decision
+        } else {
+            humanDecision = await withCheckedContinuation {
+                (continuation: CheckedContinuation<ApprovalDecision, Never>) in
+                approvalContinuation = continuation
+                approvalGate = .waiting(callID: call.id)
+            }
+        }
+        // The escalation lifecycle is over: any later decision — double
+        // tap or a card that outlived this escalation — finds the gate
+        // closed and can never reach a different tool.
+        bufferedApprovalDecision = nil
+        approvalGate = .idle
+        guard case .waitingApproval = state else {
+            return .cancelledWhileWaiting
+        }
+        return .decision(humanDecision)
+    }
+
+    /// The call currently parked in a MID-EXECUTION nested approval wait, if
+    /// any. `cancel()` uses it to skip the pre-dispatch "approval expired"
+    /// audit for a call that is actually executing and will publish its own
+    /// honest cancelled/denied tool result — a second durable result for the
+    /// same call would corrupt the provider pairing.
+    private var nestedApprovalCallID: String?
+
+    /// Mid-execution human decision for an already-dispatched, executing
+    /// tool call — the nested exact-delta Skill install approval. Reuses the
+    /// canonical escalation lifecycle verbatim: the run transitions to
+    /// `.waitingApproval`, the snapshot drives the SAME inline card in the
+    /// owning conversation, the SAME `resolveApproval` entry settles it,
+    /// liveness and background-ownership accounting ride the existing
+    /// waitingApproval path, and the SAME tool call then continues with the
+    /// outcome — no second approval store, no wait parked outside the run
+    /// lifecycle. An allow joins the run's grant ledger exactly like a
+    /// pre-dispatch card decision, so the user's scope choice keeps its
+    /// ordinary meaning and nothing broadens authority beyond the decision.
+    func escalateNestedApproval(call: ToolCall, reason: String) async -> NestedApprovalOutcome {
+        // Only the run that is REALLY executing this exact call may park it:
+        // a stale handle from a superseded activation finds no match and
+        // fails honestly instead of presenting a card nothing owns.
+        guard case .executingTool(let info) = state, info.toolCall.id == call.id else {
+            return .unavailable
+        }
+        let authorizationIdentity = executor.descriptor(named: call.toolName)?.authorizationIdentity ?? ""
+        let startedAt = info.startedAt
+        await acquireEscalationSlot()
+        defer { releaseEscalationSlot() }
+        // Acquiring the shared slot suspends. A cancelled or replaced call
+        // must not publish a new waiting state after that actor hop.
+        guard case .executingTool(let current) = state,
+              current.toolCall.id == call.id else { return .unavailable }
+        nestedApprovalCallID = call.id
+        let wait = await humanDecisionForCall(call, reason: reason)
+        nestedApprovalCallID = nil
+        switch wait {
+        case .cancelledWhileWaiting:
+            return .cancelled
+        case .decision(let decision):
+            // Restore the honest executing state for the still-running call
+            // before the outcome crosses back into the tool. A cancel that
+            // raced the decision already moved the state; the tool's own
+            // cancellation check then reports the truth.
+            if case .waitingApproval = state {
+                await transition(to: .executingTool(AgentState.ExecutingInfo(
+                    toolCall: call, startedAt: startedAt
+                )))
+            }
+            switch decision {
+            case .allow(let scope, let expiresAt):
+                let grant = ApprovalGrant(
+                    scope: Self.bind(scope, to: authorizationIdentity),
+                    expiresAt: expiresAt,
+                    policyName: "human"
+                )
+                grants.append(grant)
+                // The UI may retire the nested card on this receipt, exactly
+                // like the pre-dispatch decision receipt.
+                await sink?.agentRuntime(
+                    self,
+                    didRecordApprovalDecision: ApprovalDecisionReceipt(callID: call.id)
+                )
+                return .allowed
+            case .deny(let denyReason):
+                return denyReason == "cancelled" ? .cancelled : .denied(reason: denyReason)
+            case .escalateToHuman, .stopped:
+                return .denied(reason: "Approval not granted")
+            }
         }
     }
 
@@ -3807,7 +3919,19 @@ public actor FloeAgentRuntime {
             callOrigin: makeCallOrigin(for: call, handoff: handoff),
             temporaryReadOnly: configuration.temporaryReadOnly,
             clientSessionID: effectiveClientSessionID,
-            frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet()
+            frozenEffectiveCatalogNames: runtimeVisibleCatalogNameSet(),
+            // Canonical approval facts for this exact dispatch, issued from
+            // the runtime's own grant — never model-minted, never Codable.
+            // `approvalOrigin` tells an executing service whether the run's
+            // EFFECTIVE authority is a standing policy choice or a one-off
+            // human card; `nestedApproval` lets that same executing call
+            // re-enter the canonical waitingApproval lifecycle for a real
+            // added-scope decision and resume in place.
+            approvalOrigin: grant.policyName == "human" ? .humanCard : .policy(grant.policyName),
+            nestedApproval: RuntimeNestedApprovalHandle { [weak self] nestedReason in
+                guard let self else { return .unavailable }
+                return await self.escalateNestedApproval(call: call, reason: nestedReason)
+            }
         )
         // Parent + children on one workspace: a MAIN-run mutation takes the
         // same canonical target lease a child call takes, so concurrent
@@ -4530,7 +4654,7 @@ public actor FloeAgentRuntime {
             // the real-world outcome is then unknown, not a known
             // non-execution: the durable ledger receipt below keeps it
             // query-first and non-replayable.
-            var outcomeUnknown = false
+            var outcomeUnknown = result.outcomeUnknown
             let preDispatch = dispatchAuthorityByCallID.removeValue(forKey: call.id)
             let settledDescriptor = executor.descriptor(named: call.toolName)
             if let authority = preDispatch {
@@ -4591,7 +4715,7 @@ public actor FloeAgentRuntime {
                 result: result,
                 isSideEffecting: executedIsSideEffecting,
                 outcomeUnknown: outcomeUnknown,
-                outcomeUnknownReason: .capabilityRemoved
+                outcomeUnknownReason: result.outcomeUnknown ? .unattributed : .capabilityRemoved
             )
             if result.status == .ok, Self.isConversationHistoryTool(call.toolName) {
                 historyLookupSucceededInRun = true

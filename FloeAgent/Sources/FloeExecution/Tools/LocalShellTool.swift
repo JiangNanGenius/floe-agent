@@ -410,6 +410,13 @@ public struct LocalShellTool: AgentTool {
             return Self.output(prefix() + "exit=75 status=notStarted cwd=\(cwd)\n\(reason)", exitStatus: 75)
         case .failed(let message):
             return Self.output(prefix() + "exit=125 status=engineUnavailable\n\(message)", exitStatus: 125)
+        case .outcomeUnknown(let jobID, let message):
+            return ToolExecutionOutput(
+                digesting: prefix() + "status=outcomeUnknown jobID=\(jobID)\n\(SecretRedactor.redact(message))\nReconnect and inspect this existing job. Do not submit the command again.",
+                requiresUserAction: true,
+                capturedOutputTruncated: true,
+                outcomeUnknown: true
+            )
         }
     }
 

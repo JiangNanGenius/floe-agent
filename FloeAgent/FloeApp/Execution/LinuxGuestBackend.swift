@@ -680,7 +680,7 @@ struct RoutingLocalShellBackend: LocalShellBackend {
             guard let prepareLinux else { throw error }
             let token = cancellation ?? CancellationToken()
             _ = try await prepareLinux(
-                LinuxPreparationRequest(environmentID: environmentID, cancellation: token)
+                LinuxPreparationRequest(environmentID: environmentID, cancellation: token, runID: guestRunID)
             )
             try await FloePlatformServices.shared.activateLinuxGuest(
                 id: environmentID, taskID: taskID, runID: guestRunID

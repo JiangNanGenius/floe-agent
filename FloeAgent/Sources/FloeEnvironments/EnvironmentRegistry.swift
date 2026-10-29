@@ -55,7 +55,7 @@ public actor EnvironmentRegistry {
             }
             records = Dictionary(uniqueKeysWithValues: snapshot.containers.map { ($0.id, $0) })
             quota = snapshot.quota
-            for (id, var record) in records where record.baseRevision != baseRevision {
+            for (id, var record) in records where record.baseRevision != baseRevision && record.effectiveExecutionBackend != .macBridge {
                 if compatibleBaseRevisions.contains(record.baseRevision), record.state != .deleting,
                    record.layerFormat == ContainerRecord.currentLayerFormat {
                     do {
@@ -203,6 +203,40 @@ public actor EnvironmentRegistry {
         records.values.filter { $0.ownerID == ownerID }
     }
 
+    public func ensureMacBridgeProjectContainer(workspaceID: String, workspaceRootPath: String) throws -> ContainerRecord {
+        try prepare()
+        if let existing = records.values.first(where: {
+            $0.kind == .project && $0.ownerID == workspaceID && $0.effectiveExecutionBackend == .macBridge
+        }) { return existing }
+        let record = ContainerRecord(kind: .project, ownerID: workspaceID,
+            name: URL(fileURLWithPath: workspaceRootPath).lastPathComponent,
+            baseRevision: baseRevision, executionBackend: .macBridge)
+        try materialize(record); try saveRecord(record)
+        rememberWorkspaceRoot(workspaceID: workspaceID, path: workspaceRootPath, containerID: record.id)
+        return record
+    }
+
+    /// A distinct host-backed record. Never mutates a previously selected
+    /// Linux project/session merely because a bridge became available.
+    public func ensureMacBridgeSessionContainer(
+        conversationID: String, workspaceID: String, workspaceRootPath: String
+    ) throws -> ContainerRecord {
+        try prepare()
+        if let existing = records.values.first(where: {
+            $0.kind == .session && $0.ownerID == conversationID
+                && $0.effectiveExecutionBackend == .macBridge
+        }) {
+            guard existing.state == .active else { throw FloeError.validationFailed("The Mac environment is stopped") }
+            return existing
+        }
+        let project = try ensureMacBridgeProjectContainer(workspaceID: workspaceID, workspaceRootPath: workspaceRootPath)
+        let session = ContainerRecord(kind: .session, ownerID: conversationID,
+            baseRevision: baseRevision, parentID: project.id, executionBackend: .macBridge)
+        try materialize(session)
+        try saveRecord(session)
+        return session
+    }
+
     /// Finds or creates the project container for a workspace.
     /// `executionBackend` explicitly selects the backend; leaving it nil gives
     /// a **new** record the registry's `defaultExecutionBackend` (Linux since
@@ -217,7 +251,7 @@ public actor EnvironmentRegistry {
         executionBackend: EnvironmentExecutionBackend? = nil
     ) throws -> ContainerRecord {
         try prepare()
-        if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID }) {
+        if let existing = records.values.first(where: { $0.kind == .project && $0.ownerID == workspaceID && ($0.effectiveExecutionBackend != .macBridge || executionBackend == .macBridge) }) {
             if let executionBackend, existing.executionBackend != executionBackend {
                 var updated = existing
                 updated.executionBackend = executionBackend
@@ -782,6 +816,10 @@ public actor EnvironmentRegistry {
 
     private func materialize(_ record: ContainerRecord, seedFrom sourceID: String? = nil) throws {
         let url = roots.layerURL(id: record.id, kind: record.kind)
+        if record.effectiveExecutionBackend == .macBridge {
+            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+            return
+        }
         try roots.materializeContainerLayout(at: url)
         if let sourceID,
            let source = records[sourceID],

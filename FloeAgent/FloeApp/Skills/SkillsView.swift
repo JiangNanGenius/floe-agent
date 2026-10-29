@@ -15,6 +15,8 @@ struct SkillsView: View {
     @ObservedObject private var updates: SkillUpdateCoordinator
     @ObservedObject private var mcpCenter: MCPSettingsCenter
     @State private var showingInstalled = false
+    @State private var useMacOriginals = true
+    @ObservedObject private var macBridge = MacBridgeConnectionCenter.shared
     @State private var searchText = ""
     /// Inline batch selection state. Only the intent lives here; every
     /// mutation runs service-owned through `SkillsCenter.runSkillBatch`.
@@ -173,7 +175,15 @@ struct SkillsView: View {
                 VStack(spacing: 12) { SkillAuthoringRows(coordinator: authoring) }
                     .padding(.horizontal, 20).padding(.vertical, 10)
             }
-            if !showingInstalled {
+            if MacBridgeConnectionCenter.isMac && macBridge.hasPairing {
+                Picker("mac.skills.target", selection: $useMacOriginals) {
+                    Text("mac.skills.original").tag(true)
+                    Text("mac.skills.on_device").tag(false)
+                }.pickerStyle(.segmented).padding(.horizontal, 20).padding(.bottom, 8)
+            }
+            if MacBridgeConnectionCenter.isMac && macBridge.hasPairing && useMacOriginals {
+                MacOriginalSkillDirectory(installedOnly: showingInstalled, query: searchText)
+            } else if !showingInstalled {
                 SkillHubDiscoveryView(
                     items: discoveryItems, query: searchText,
                     onSelect: { discoveryDetailID = $0 }, onGet: performStoreAction,

@@ -41,7 +41,9 @@ public enum ProviderTemplateID: String, Sendable, Codable, CaseIterable, Hashabl
     case openAI
     case anthropic
     case volcengineArk
+    case volcengineAgentPlan = "volcengine-agent-plan"
     case alibabaStudio
+    case alibabaTokenPlan = "alibaba-token-plan"
     case googleGemini
     case kimiCode = "kimi-code"
     case local
@@ -122,7 +124,7 @@ public extension ProviderPreset {
     static let volcengineArk = ProviderPreset(
         id: .volcengineArk,
         kind: .volcengineArk,
-        displayName: "Volcengine Ark",
+        displayName: FloeL10n.l("providers.payg.volcengine"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://ark.cn-beijing.volces.com/api/v3")!,
@@ -137,10 +139,35 @@ public extension ProviderPreset {
         // keys and reading the image API documentation. Keep the persisted
         // enum case for database compatibility, but use the recognizable API
         // product name in the UI.
-        displayName: FloeL10n.l("providers.provider_adapter_factory.dashscope_alibaba_cloud_bailian"),
+        displayName: FloeL10n.l("providers.payg.alibaba"),
         defaultProtocol: .openAIChatCompletions,
         supportedProtocols: [.openAIChatCompletions],
         defaultBaseURL: URL(string: "https://dashscope.aliyuncs.com/compatible-mode/v1")!,
+        supportsModelDiscovery: true,
+        authStyle: .bearer
+    )
+
+    /// Subscription connections have their own identity and credential.
+    /// A custom kind prevents inheriting the PAYG model list. Media routes
+    /// are enabled only by the concrete endpoint-aware factories.
+    static let volcengineAgentPlan = ProviderPreset(
+        id: .volcengineAgentPlan,
+        kind: .custom,
+        displayName: FloeL10n.l("providers.plan.volcengine"),
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
+        defaultBaseURL: URL(string: "https://ark.cn-beijing.volces.com/api/plan/v3")!,
+        supportsModelDiscovery: true,
+        authStyle: .bearer
+    )
+
+    static let alibabaTokenPlan = ProviderPreset(
+        id: .alibabaTokenPlan,
+        kind: .custom,
+        displayName: FloeL10n.l("providers.plan.alibaba"),
+        defaultProtocol: .openAIChatCompletions,
+        supportedProtocols: [.openAIChatCompletions],
+        defaultBaseURL: URL(string: "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1")!,
         supportsModelDiscovery: true,
         authStyle: .bearer
     )
@@ -204,7 +231,9 @@ public extension ProviderPreset {
         .openAIResponses,
         .anthropic,
         .volcengineArk,
+        .volcengineAgentPlan,
         .alibabaStudio,
+        .alibabaTokenPlan,
         .googleGemini,
         .kimiCode,
         .local,
@@ -221,12 +250,19 @@ public extension ProviderPreset {
     /// Native image suppliers remain available with an older downloaded
     /// catalog. Individual models still require discovery or explicit entry.
     static let imagePresets: [ProviderPreset] = [
-        .openAIResponses, .volcengineArk, .alibabaStudio, .googleGemini, .kimiCode, .custom
+        .openAIResponses, .volcengineArk, .volcengineAgentPlan, .alibabaStudio, .googleGemini, .kimiCode, .custom
     ]
 
     /// Endpoint-specific templates share the persisted custom kind. A kind
     /// alone must continue to resolve to the generic compatible endpoint.
     static func preset(for kind: ProviderKind, baseURL: URL? = nil) -> ProviderPreset {
+        if kind == .custom || kind == .volcengineArk || kind == .alibabaStudio,
+           let baseURL, let route = ProviderBillingEndpoint.resolve(baseURL) {
+            switch route {
+            case .volcengineAgentPlan: return .volcengineAgentPlan
+            case .alibabaTokenPlan: return .alibabaTokenPlan
+            }
+        }
         if kind == .custom {
             if let baseURL, KimiCodeEndpointIdentity.apiRoot(for: baseURL) != nil {
                 return .kimiCode

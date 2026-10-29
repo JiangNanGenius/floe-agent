@@ -82,6 +82,14 @@ final class SharedDocumentsCenter: ObservableObject {
 
     @Published private(set) var domainState: SharedDocumentsDomainState = .unknown
 
+    func suspendStorageForBackground() async {
+        await (store as? SQLiteSharedDocumentsStore)?.suspendForBackground()
+    }
+
+    func resumeStorageAfterSuspension() async {
+        await (store as? SQLiteSharedDocumentsStore)?.resumeAfterSuspension()
+    }
+
     private let store: (any SharedDocumentsStore)?
     private let storeError: SharedDocumentsCenterError?
     private var registrationTask: Task<Void, Never>?

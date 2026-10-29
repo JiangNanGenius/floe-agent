@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import subprocess
 import tempfile
@@ -8,6 +10,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from resolved_pins import (
+    FIRST_PARTY_SIBLING_PACKAGES,
     resolved_pins,
     application_local_pins,
     application_pins,
@@ -15,6 +18,11 @@ from resolved_pins import (
     verify_resolution,
     same_pin,
 )
+
+# The reviewed first-party manifest is real source, not fixture text: the
+# policy pins its digest, so fixtures copy the tracked bytes.
+REVIEWED_MANIFEST = (Path(__file__).resolve().parents[3]
+                     / "FloeMacBridge" / "Package.swift")
 
 
 def pin(identity, location, *, revision="a" * 40, version=None, branch=None):
@@ -317,6 +325,220 @@ class ApplicationLocalPinTests(unittest.TestCase):
                                       "version": "2.0.0"}}
         with self.assertRaises(ValueError):
             verify_resolution([host, changed], [host], [], [local])
+
+
+class FirstPartySiblingPackageTests(unittest.TestCase):
+    """The one allowlisted sibling must stay Git-bound and dependency-free.
+
+    project.yml declares FloeMacBridge at ../FloeMacBridge: first-party source
+    in this repository, one level above the XcodeGen project. The policy may
+    not become a general ../ allowance, so every alternative path, a symlink,
+    an untracked file, a separate repository or an independent lock must still
+    fail closed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name).resolve()
+        self.root = self.repo / "FloeAgent"
+        self.root.mkdir()
+        self.package = self.repo / "FloeMacBridge"
+        self.package.mkdir()
+        shutil.copy2(REVIEWED_MANIFEST, self.package / "Package.swift")
+        (self.package / "Sources").mkdir()
+        (self.package / "Sources" / "Bridge.swift").write_text(
+            "public struct Bridge {}\n", encoding="utf-8")
+        self.env = dict(
+            os.environ,
+            GIT_AUTHOR_NAME="Floe Test",
+            GIT_COMMITTER_NAME="Floe Test",
+            GIT_AUTHOR_EMAIL="test@example.invalid",
+            GIT_COMMITTER_EMAIL="test@example.invalid",
+        )
+        self.git("init", "-q")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def git(self, *arguments):
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *arguments],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    def project(self, name="FloeMacBridge", path="../FloeMacBridge"):
+        return (
+            "packages:\n"
+            f"  {name}:\n    path: {path}\n"
+            "  FloeAgentPackages:\n    path: .\n"
+            "targets:\n  App:\n    type: application\n"
+        )
+
+    def test_allowlisted_sibling_contributes_no_pins(self):
+        self.assertEqual(application_local_pins(self.project(), self.root), [])
+
+    def test_independent_lock_is_rejected(self):
+        # The sibling may not add a dependency and license surface that the
+        # host lock and license inventory do not already cover.
+        (self.package / "Package.resolved").write_text(
+            lock_v3([pin("hidden", "https://example.org/hidden.git")]),
+            encoding="utf-8",
+        )
+        self.git("add", ".")
+        self.git("commit", "-qm", "lock")
+        with self.assertRaisesRegex(ValueError, "must not add an independent"):
+            application_local_pins(self.project(), self.root)
+
+    def test_other_paths_are_still_rejected(self):
+        (self.repo / "Other").mkdir()
+        cases = (
+            ("../Other", "fixed source path"),
+            ("FloeMacBridge", "fixed source path"),
+            (str(self.package), "fixed source path"),
+            ("../FloeMacBridge/", "fixed source path"),
+            ("./../FloeMacBridge", "fixed source path"),
+        )
+        for path, reason in cases:
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, reason):
+                application_local_pins(self.project("FloeMacBridge", path), self.root)
+        # Another declaration cannot borrow the allowlisted directory.
+        with self.assertRaisesRegex(ValueError, "escapes the project directory"):
+            application_local_pins(self.project("Other", "../FloeMacBridge"), self.root)
+
+    def test_symlinked_sibling_is_rejected(self):
+        outside = Path(tempfile.mkdtemp(prefix="floe-sibling-", dir=self.repo.parent))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        shutil.rmtree(self.package)
+        try:
+            self.package.symlink_to(outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+            application_local_pins(self.project(), self.root)
+
+    def test_untracked_source_is_rejected(self):
+        (self.package / "Sources" / "Untracked.swift").write_text(
+            "public struct Extra {}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "untracked or ignored file"):
+            application_local_pins(self.project(), self.root)
+        self.git("add", ".")
+        self.git("commit", "-qm", "track")
+        self.assertEqual(application_local_pins(self.project(), self.root), [])
+
+    def test_modified_tracked_file_is_rejected(self):
+        (self.package / "Sources" / "Bridge.swift").write_text(
+            "public struct Bridge { let changed = true }\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "committed and clean"):
+            application_local_pins(self.project(), self.root)
+
+    def test_ignored_source_file_is_rejected_even_when_git_status_is_clean(self):
+        # The review gap: .gitignore can hide a new Swift source from
+        # `git status --untracked-files=all` while SwiftPM still compiles it.
+        (self.repo / ".gitignore").write_text(
+            "FloeMacBridge/Sources/Ignored.swift\n", encoding="utf-8")
+        self.git("add", ".gitignore")
+        self.git("commit", "-qm", "ignore")
+        (self.package / "Sources" / "Ignored.swift").write_text(
+            "public struct Ignored {}\n", encoding="utf-8")
+        self.assertEqual(
+            self.git("status", "--porcelain", "--untracked-files=all",
+                     "--", "FloeMacBridge").stdout,
+            "")
+        with self.assertRaisesRegex(ValueError, "untracked or ignored file"):
+            application_local_pins(self.project(), self.root)
+
+    def test_interior_file_symlink_is_rejected(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        outside = Path(tempfile.mkdtemp(prefix="floe-escape-", dir=self.repo.parent))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (outside / "Escape.swift").write_text(
+            "public struct Escaped {}\n", encoding="utf-8")
+        try:
+            (self.package / "Sources" / "Escape.swift").symlink_to(
+                outside / "Escape.swift")
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.git("add", "FloeMacBridge/Sources/Escape.swift")
+        self.git("commit", "-qm", "tracked symlink")
+        with self.assertRaisesRegex(ValueError, "must not contain symlinks"):
+            application_local_pins(self.project(), self.root)
+
+    def test_interior_directory_symlink_is_rejected(self):
+        if not hasattr(os, "symlink"):
+            self.skipTest("symlinks unavailable")
+        outside = Path(tempfile.mkdtemp(prefix="floe-escape-", dir=self.repo.parent))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (outside / "Hidden.swift").write_text(
+            "public struct Hidden {}\n", encoding="utf-8")
+        try:
+            (self.package / "Sources" / "Linked").symlink_to(
+                outside, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"symlinks unavailable: {error}")
+        self.git("add", "FloeMacBridge/Sources/Linked")
+        self.git("commit", "-qm", "directory symlink")
+        with self.assertRaisesRegex(ValueError, "must not contain symlinks"):
+            application_local_pins(self.project(), self.root)
+
+    def test_package_root_caches_are_not_source(self):
+        (self.package / ".build").mkdir()
+        (self.package / ".build" / "artifact.bin").write_bytes(b"cache")
+        (self.package / ".swiftpm").mkdir()
+        (self.package / ".swiftpm" / "config.json").write_text(
+            "{}", encoding="utf-8")
+        self.assertEqual(application_local_pins(self.project(), self.root), [])
+
+    def test_nested_cache_named_directory_is_not_exempt(self):
+        # Only the package-root caches are allowed; a nested directory with the
+        # same name could still be a target source path.
+        (self.package / "Sources" / ".build").mkdir()
+        (self.package / "Sources" / ".build" / "Hidden.swift").write_text(
+            "public struct Hidden {}\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "untracked or ignored file"):
+            application_local_pins(self.project(), self.root)
+
+    def test_changed_manifest_requires_policy_review(self):
+        manifest = self.package / "Package.swift"
+        manifest.write_text(
+            manifest.read_text(encoding="utf-8") + "\n// changed\n",
+            encoding="utf-8")
+        self.git("add", ".")
+        self.git("commit", "-qm", "manifest")
+        with self.assertRaisesRegex(ValueError, "does not match the reviewed SHA-256"):
+            application_local_pins(self.project(), self.root)
+
+    def test_reviewed_digest_matches_the_tracked_manifest(self):
+        self.assertEqual(
+            FIRST_PARTY_SIBLING_PACKAGES["FloeMacBridge"]["manifestSHA256"],
+            hashlib.sha256(REVIEWED_MANIFEST.read_bytes()).hexdigest(),
+        )
+
+    def test_missing_or_separate_repository_is_rejected(self):
+        shutil.rmtree(self.package)
+        with self.assertRaisesRegex(ValueError, "missing from the checkout"):
+            application_local_pins(self.project(), self.root)
+        # A nested repository is not source in the frozen release commit.
+        self.package.mkdir()
+        (self.package / "Package.swift").write_text(
+            "// separate checkout\n", encoding="utf-8")
+        for arguments in (("init", "-q"), ("add", "."), ("commit", "-qm", "nested")):
+            subprocess.run(
+                ["git", *arguments],
+                cwd=self.package,
+                env=self.env,
+                capture_output=True,
+                check=True,
+            )
+        self.git("add", "-A")
+        self.git("commit", "-qm", "gitlink")
+        with self.assertRaisesRegex(ValueError, "must belong to the project's Git checkout"):
+            application_local_pins(self.project(), self.root)
 
 
 class DirectRevisionMetadataTests(unittest.TestCase):

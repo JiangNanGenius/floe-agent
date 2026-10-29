@@ -40,6 +40,34 @@ public protocol DocumentWorkspace: Sendable {
 /// mutate a private working copy; save coordinates replacement and leaves a
 /// recovery copy if replacement fails.
 public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
+    public nonisolated static let ownershipDidChange = Notification.Name("org.floeagent.document.ownershipChanged")
+    private final class LifecycleRegistry: @unchecked Sendable {
+        private final class Entry {
+            weak var value: SecurityScopedDocumentWorkspace?
+            init(_ value: SecurityScopedDocumentWorkspace) { self.value = value }
+        }
+        private let lock = NSLock()
+        private var entries: [Entry] = []
+        private var suspended = false
+        func register(_ workspace: SecurityScopedDocumentWorkspace) {
+            lock.lock(); defer { lock.unlock() }
+            entries.removeAll { $0.value == nil }
+            entries.append(Entry(workspace))
+        }
+        var isSuspended: Bool {
+            lock.lock(); defer { lock.unlock() }; return suspended
+        }
+        func snapshot(suspended: Bool) -> [SecurityScopedDocumentWorkspace] {
+            lock.lock(); defer { lock.unlock() }
+            self.suspended = suspended
+            entries.removeAll { $0.value == nil }
+            return entries.compactMap(\.value)
+        }
+        func requestSuspension() {
+            lock.lock(); suspended = true; lock.unlock()
+        }
+    }
+    private static let lifecycleRegistry = LifecycleRegistry()
     private let fileManager: FileManager
     private let root: URL
     private var scopedSessions: Set<UUID> = []
@@ -50,12 +78,16 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     private var recoveryLeases: [UUID: DocumentRecoveryLease] = [:]
     private var exports: [UUID: DocumentExportSnapshot] = [:]
     private var recoveryVersionsBySession: [UUID: [String: DocumentRecoveryVersion]] = [:]
+    private var storageSuspended = false
+    private var suspensionGeneration: UInt64 = 0
+    private var suspendedManifests: [UUID: String] = [:]
 
     public init(root: URL? = nil, fileManager: FileManager = .default) throws {
         self.fileManager = fileManager
         let base = root ?? fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FloeDocuments", isDirectory: true)
         self.root = base
         try fileManager.createDirectory(at: base, withIntermediateDirectories: true)
+        Self.lifecycleRegistry.register(self)
     }
 
     deinit {
@@ -63,6 +95,14 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     }
 
     public func open(securityScopedURL url: URL) async throws -> DocumentSession {
+        guard !storageSuspended, !Self.lifecycleRegistry.isSuspended else { throw CancellationError() }
+        let generation = suspensionGeneration
+        let budget = try await StorageOperationBudget.begin()
+        guard !storageSuspended, generation == suspensionGeneration else {
+            budget.finish(); throw CancellationError()
+        }
+        var adoptedBudget = false
+        defer { if !adoptedBudget { budget.finish() } }
         guard url.isFileURL else {
             throw FloeError.validationFailed("Document URL must be a file URL")
         }
@@ -73,7 +113,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         let recovery = directory.appendingPathComponent("recovery").appendingPathExtension(url.pathExtension)
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            let lease = try DocumentRecoveryLease(directory: directory)
+            let lease = try DocumentRecoveryLease(directory: directory, budget: budget)
             var coordinationError: NSError?
             var copyError: Error?
             NSFileCoordinator().coordinate(readingItemAt: url, options: [], error: &coordinationError) { source in
@@ -93,6 +133,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             try manifest.write(to: directory)
             manifests[id] = manifest
             recoveryLeases[id] = lease
+            adoptedBudget = true
             savedDigests[id] = manifest.committedDigest
             savedWorkingDigests[id] = manifest.workingSavedDigest ?? manifest.committedDigest
             sessions[id] = session
@@ -106,6 +147,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     }
 
     public func save(_ session: DocumentSession) async throws {
+        try requireActiveLease(session)
         guard sessions[session.id] == session, let expectedDigest = savedDigests[session.id] else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -136,6 +178,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             let staging = destination.deletingLastPathComponent().appendingPathComponent(".floe-save-\(UUID().uuidString)")
             defer { try? fileManager.removeItem(at: staging) }
             do {
+                try Self.checkStorageAdmission()
                 // Compare while holding the coordinated write. Metadata alone
                 // misses same-size or timestamp-preserving external changes.
                 guard try Self.digest(destination) == expectedDigest else {
@@ -147,6 +190,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
                 guard try Self.digest(staging) == newDigest else {
                     throw FloeError.validationFailed("Editor is still writing; finish the edit before saving")
                 }
+                try Self.checkStorageAdmission()
                 _ = try fileManager.replaceItemAt(destination, withItemAt: staging)
             } catch { replacementError = error }
         }
@@ -178,6 +222,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// against the same baseline. Working-copy cleanliness is the caller's
     /// separate check and is deliberately not claimed here.
     public func verifyCommittedOriginal(_ session: DocumentSession) throws {
+        try requireActiveLease(session)
         guard sessions[session.id] == session, let expectedDigest = savedDigests[session.id] else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -205,6 +250,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// Call only after the native editor acknowledges persistence to workingURL.
     /// Copy and verify before exposing the URL; later autosaves cannot mutate it.
     public func prepareExport(_ session: DocumentSession) throws -> DocumentExportSnapshot {
+        try requireActiveLease(session)
         guard sessions[session.id] == session else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -234,6 +280,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// Snapshot the *current original* for comparison without rebasing the
     /// editor or replacing its recoverable working copy.
     public func prepareCurrentExport(_ session: DocumentSession) throws -> DocumentExportSnapshot {
+        try requireActiveLease(session)
         guard sessions[session.id] == session else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -282,6 +329,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     }
 
     public func hasUncommittedWorkingCopy(_ session: DocumentSession) throws -> Bool {
+        try requireActiveLease(session)
         guard sessions[session.id] == session, let saved = savedWorkingDigests[session.id] ?? savedDigests[session.id] else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -291,6 +339,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// List only recognized regular copies inside the registered session. The
     /// digest also prevents restoring changed bytes from a stale version row.
     public func recoveryVersions(_ session: DocumentSession) throws -> [DocumentRecoveryVersion] {
+        try requireActiveLease(session)
         guard sessions[session.id] == session else {
             throw FloeError.validationFailed("Document session is closed or belongs to another workspace")
         }
@@ -335,6 +384,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// The host must close its editor first. Preserve the prior working bytes
     /// as a selectable version; this never writes or rebases the original.
     public func restoreRecoveryVersion(_ version: DocumentRecoveryVersion, in session: DocumentSession) throws {
+        try requireActiveLease(session)
         guard sessions[session.id] == session,
               recoveryVersionsBySession[session.id]?[version.id] == version else {
             throw FloeError.validationFailed("Document recovery version is no longer available")
@@ -374,7 +424,12 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
 
     /// Retained sessions only. An active editor in any workspace instance keeps
     /// its lease and is omitted; malformed records and all their files survive.
-    public func recoveryRecords() throws -> [DocumentRecoveryRecord] {
+    public func recoveryRecords() async throws -> [DocumentRecoveryRecord] {
+        guard !storageSuspended, !Self.lifecycleRegistry.isSuspended else { throw CancellationError() }
+        let budget = try await StorageOperationBudget.begin()
+        defer { budget.finish() }
+        guard !storageSuspended else { throw CancellationError() }
+        try budget.check()
         let directories = try fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey])
         var records: [DocumentRecoveryRecord] = []
         for directory in directories {
@@ -394,11 +449,19 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         return records.sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    public func resumeRecovery(id: UUID) throws -> DocumentSession {
+    public func resumeRecovery(id: UUID) async throws -> DocumentSession {
+        guard !storageSuspended, !Self.lifecycleRegistry.isSuspended else { throw CancellationError() }
+        let generation = suspensionGeneration
+        let budget = try await StorageOperationBudget.begin()
+        guard !storageSuspended, generation == suspensionGeneration else {
+            budget.finish(); throw CancellationError()
+        }
+        var adoptedBudget = false
+        defer { if !adoptedBudget { budget.finish() } }
         guard sessions[id] == nil else {
             throw FloeError.validationFailed("This document recovery session is already open")
         }
-        var (manifest, lease) = try loadRecovery(id)
+        var (manifest, lease) = try loadRecovery(id, budget: budget)
         let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
         var stale = false
         let original = try URL(resolvingBookmarkData: manifest.originalBookmark,
@@ -429,6 +492,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             savedWorkingDigests[id] = manifest.workingSavedDigest ?? manifest.committedDigest
             manifests[id] = manifest
             recoveryLeases[id] = lease
+            adoptedBudget = true
             if scoped { scopedSessions.insert(id) }
             return session
         } catch {
@@ -437,7 +501,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         }
     }
 
-    private func loadRecovery(_ id: UUID) throws -> (DocumentRecoveryManifest, DocumentRecoveryLease) {
+    private func loadRecovery(_ id: UUID, budget: StorageOperationLease? = nil) throws -> (DocumentRecoveryManifest, DocumentRecoveryLease) {
         let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
         let values = try directory.resourceValues(forKeys: [.isSymbolicLinkKey, .isDirectoryKey])
         guard values.isDirectory == true, values.isSymbolicLink != true,
@@ -445,7 +509,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
             throw FloeError.validationFailed("Recovery directory is outside its document workspace")
         }
         _ = try DocumentRecoveryManifest.read(from: directory)
-        let lease = try DocumentRecoveryLease(directory: directory)
+        let lease = try DocumentRecoveryLease(directory: directory, budget: budget)
         return (try DocumentRecoveryManifest.read(from: directory), lease)
     }
 
@@ -473,6 +537,11 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// generations may be newer than workingURL when engine persistence failed.
     public func close(_ session: DocumentSession) async {
         guard sessions[session.id] == session else { return }
+        // A suspended/conflicted session no longer owns its directory. Keep
+        // recovery bytes; never retire a directory another process may own.
+        guard !storageSuspended, recoveryLeases[session.id] != nil else {
+            release(session); return
+        }
         let clean = (try? Self.digest(session.workingURL)).map { $0 == (savedWorkingDigests[session.id] ?? savedDigests[session.id]) } ?? false
         let directory = session.workingURL.deletingLastPathComponent()
         let entries = try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -486,6 +555,9 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
 
     public func discardChangesAndClose(_ session: DocumentSession) async {
         guard sessions[session.id] == session else { return }
+        guard !storageSuspended, recoveryLeases[session.id] != nil else {
+            release(session); return
+        }
         retire(session.workingURL.deletingLastPathComponent())
         release(session)
     }
@@ -498,6 +570,94 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         manifests[session.id] = nil
         recoveryLeases[session.id] = nil
         recoveryVersionsBySession[session.id] = nil
+        suspendedManifests[session.id] = nil
+    }
+
+    /// Called on real process backgrounding, after the current synchronous
+    /// actor operation finishes. Keep working/recovery files, release only
+    /// kernel ownership; foreground must reacquire and validate before use.
+    public func suspendForBackground() {
+        suspensionGeneration &+= 1
+        storageSuspended = true
+        for (id, session) in sessions where recoveryLeases[id] != nil {
+            suspendedManifests[id] = try? recoveryFingerprint(session)
+        }
+        recoveryLeases.removeAll()
+    }
+
+    public nonisolated static func suspendAllForBackground() async {
+        for workspace in lifecycleRegistry.snapshot(suspended: true) {
+            await workspace.suspendForBackground()
+        }
+    }
+
+    /// A synchronous admission fence for the App's expiration callback. A
+    /// coordinated write that resumes later must re-check before replacement.
+    public nonisolated static func requestBackgroundSuspension() {
+        lifecycleRegistry.requestSuspension()
+    }
+
+    public nonisolated static func resumeAllAfterSuspension() async -> Int {
+        var conflicts = 0
+        for workspace in lifecycleRegistry.snapshot(suspended: false) {
+            conflicts += await workspace.resumeAfterSuspension().count
+        }
+        return conflicts
+    }
+
+    @discardableResult
+    public func resumeAfterSuspension() async -> [UUID] {
+        guard storageSuspended else { return [] }
+        let generation = suspensionGeneration
+        var conflicts: [UUID] = []
+        for (id, session) in sessions {
+            do {
+                let budget = try await StorageOperationBudget.begin()
+                var adoptedBudget = false
+                defer { if !adoptedBudget { budget.finish() } }
+                guard generation == suspensionGeneration, storageSuspended else {
+                    budget.finish(); return conflicts
+                }
+                guard sessions[id] == session else { budget.finish(); continue }
+                let lease = try DocumentRecoveryLease(
+                    directory: session.workingURL.deletingLastPathComponent(), budget: budget)
+                guard let expected = suspendedManifests[id],
+                      try recoveryFingerprint(session) == expected else {
+                    throw OfficeDocumentError.revisionConflict
+                }
+                recoveryLeases[id] = lease
+                adoptedBudget = true
+                suspendedManifests[id] = nil
+            } catch {
+                conflicts.append(id)
+                NotificationCenter.default.post(name: Self.ownershipDidChange, object: nil,
+                                                userInfo: ["sessionID": id])
+            }
+        }
+        guard generation == suspensionGeneration else { return conflicts }
+        storageSuspended = false
+        return conflicts
+    }
+
+    private func requireActiveLease(_ session: DocumentSession) throws {
+        guard !storageSuspended, !Self.lifecycleRegistry.isSuspended else { throw CancellationError() }
+        guard let lease = recoveryLeases[session.id] else {
+            throw OfficeDocumentError.revisionConflict
+        }
+        try lease.check()
+    }
+
+    private nonisolated static func checkStorageAdmission() throws {
+        guard !lifecycleRegistry.isSuspended else { throw CancellationError() }
+        try Task.checkCancellation()
+    }
+
+    private func recoveryFingerprint(_ session: DocumentSession) throws -> String {
+        let manifestURL = session.workingURL.deletingLastPathComponent()
+            .appendingPathComponent(DocumentRecoveryManifest.fileName)
+        try requireRegularCopy(manifestURL)
+        try requireRegularCopy(session.workingURL)
+        return try Self.digest(manifestURL) + ":" + Self.digest(session.workingURL)
     }
 
     private func retire(_ directory: URL) {
@@ -514,6 +674,7 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
     /// engine-owned workingURL. Used by native PPTX export as well as save and
     /// prepareExport; the immutable baseline survives external source changes.
     public func preserveChartWorkbookFormatting(in exportedURL: URL, for session: DocumentSession) throws {
+        try requireActiveLease(session)
         guard sessions[session.id] == session else { throw FloeError.validationFailed("Document session is closed or belongs to another workspace") }
         guard exportedURL.pathExtension.lowercased() == "pptx", session.workingURL.pathExtension.lowercased() == "pptx" else { return }
         guard exportedURL.standardizedFileURL != session.workingURL.standardizedFileURL else { throw FloeError.validationFailed("Chart formatting requires a stable export or recovery snapshot") }
@@ -572,7 +733,10 @@ public actor SecurityScopedDocumentWorkspace: DocumentWorkspace {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hash = SHA256()
-        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty { hash.update(data: chunk) }
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+            try Task.checkCancellation()
+            hash.update(data: chunk)
+        }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

@@ -8,8 +8,13 @@ archive starts, so a mutable or drifted declaration fails in seconds instead of
 after the build. The committed `Package.resolved` of each explicitly declared
 local package (for example FloeCADKit) supplies the App-local dependency closure;
 the host lock may omit those pins, but the Xcode graph must contain them. The
-full license inventory needs resolved package checkouts and normally runs later,
-after packaging.
+first-party FloeMacBridge sibling is allowed at its fixed `../FloeMacBridge`
+path only when it is a tracked, clean directory of the same Git checkout whose
+manifest matches the reviewed SHA-256, with every non-cache file tracked and no
+symlinks, and with no lock of its own. The reviewed manifest, not a missing
+lock, is its dependency guarantee: a changed manifest or new file needs an
+explicit policy/test review. The full license inventory needs resolved package
+checkouts and normally runs later, after packaging.
 
 Read-only: no package checkouts, no lock or project writes. Standard library
 only.
@@ -88,7 +93,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"application pins OK: {len(app)} immutable Xcode package revision(s) match "
         f"HEAD:FloeAgent/Package.resolved and declared local package locks "
-        f"({len(combined)} distribution pins)"
+        f"({len(combined)} distribution pins; first-party sibling FloeMacBridge is "
+        f"tracked at its fixed source path with a reviewed manifest and no lock of its own)"
     )
     return 0
 
