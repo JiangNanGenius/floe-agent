@@ -149,6 +149,7 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        FloeMacBridgeDownloadURL: https://www.floe-agent.com/bridge
         CFBundleURLTypes:
           - CFBundleURLName: org.floeagent.ios.routes
             CFBundleURLSchemes:
