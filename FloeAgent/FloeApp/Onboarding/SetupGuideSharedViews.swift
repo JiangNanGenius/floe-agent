@@ -30,7 +30,7 @@ struct SetupResourceRowView: View {
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(LocalizedStringKey(row.titleKey))
-                    Text(statusLine)
+                    statusLine
                         .font(FloeTheme.Typography.metadata)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

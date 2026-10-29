@@ -189,7 +189,8 @@ struct SetupChatModelsSection: View {
     }
 
     private var resolvedProviderID: UUID? {
-        center.defaultProviderAndModel()?.provider.id
+        guard let (provider, _) = center.defaultProviderAndModel() else { return nil }
+        return provider.id
     }
 
     private func providerName(_ provider: ProviderProfile) -> String {

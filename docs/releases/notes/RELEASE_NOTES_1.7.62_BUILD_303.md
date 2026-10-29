@@ -9,6 +9,13 @@
 - 完善 Skill Hub 列表图片、技能封面与详情展示。
 - 完善网页创作结果导出和文件交付。
 
+- 新增同一台 Mac 的终端桥接，可选安装 Floe Bridge，支持终端作业、文件同步与存储管理。
+- Mac 桥接支持安装原版技能，并为运行中的任务保留所用版本。
+- 助手可转写音频文件、生成可播放音频，分别设置服务优先顺序。
+- 改进本地中英混合朗读，新增本地朗读链接开关，保持正文与字幕内容。
+- 火山引擎 Agent Plan、阿里云 Token Plan 与按量服务分别配置。
+- 补充任务首次准备运行环境时的下载与安装反馈，改进文档后台保存和恢复。
+
 ## English
 
 - Added a complete setup guide with four recommendations for models, search, voice, workspaces, memory and sync.
@@ -17,3 +24,9 @@
 - Fixed skill installation approvals within tasks, keeping required approvals and installation in the current conversation.
 - Improved Skill Hub list artwork, covers and detail pages.
 - Improved file export and delivery for web-based creative work.
+- Added optional same-Mac terminal access through Floe Bridge, with terminal jobs, file sync and storage management.
+- Mac connections can install original skills and retain the version used by running tasks.
+- The assistant can transcribe audio files and generate playable audio, with separate service priorities.
+- Improved local Chinese–English speech and added a local Read Links option while preserving answer and caption content.
+- Volcengine Agent Plan and Alibaba Cloud Token Plan are configured separately from pay-as-you-go services.
+- Added download and installation feedback when a task first prepares its runtime, and improved background document saving and recovery.

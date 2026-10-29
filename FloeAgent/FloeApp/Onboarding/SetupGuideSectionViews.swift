@@ -123,7 +123,7 @@ struct SetupCreationSection: View {
         .listStyle(.insetGrouped)
     }
 
-    private func modelLabel(_ id: UUID?, fallbackKey: LocalizedStringKey) -> String {
+    private func modelLabel(_ id: UUID?, fallbackKey: String) -> String {
         guard let id else { return FloeL10n.l(fallbackKey) }
         let all = center.configuredModelsByProvider.values.flatMap { $0 }
         return all.first(where: { $0.id == id })?.displayName
@@ -1112,8 +1112,7 @@ struct SetupSkillsSection: View {
                     SetupResourceRowView(
                         row: row,
                         prepare: {
-                            let id = String(row.jobSubjectID ?? row.id.dropFirst("setup.resource.content_updates.".count))
-                            model.resources.prepareContent(id)
+                            if let id = row.jobSubjectID { model.resources.prepareContent(id) }
                         },
                         retry: {
                             if let id = row.jobSubjectID { model.resources.prepareContent(id) }
@@ -1273,7 +1272,7 @@ struct SetupSummarySection: View {
 
     private func outcomeDetail(_ entry: SetupSummaryEntry) -> LocalizedStringKey {
         switch entry.outcome {
-        case .saved: entry.section.detailKey
+        case .saved: LocalizedStringKey(entry.section.detailKey)
         case .defaulted: "setup.summary.defaulted_hint"
         case .preparing: "setup.summary.preparing_hint"
         case .later: "setup.summary.later_hint"

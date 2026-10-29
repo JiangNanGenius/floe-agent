@@ -1168,7 +1168,7 @@ targets:
       # Same-Mac bridge, suspension ownership and assistant audio additions.
       - path: Tests/FloeAppTests/AssistantAudioToolTests.swift
       - path: Tests/FloeAppTests/LocalSpeechPreparationTests.swift
-      - path: Tests/FloeAppTests/StorageSuspensionTests.swift
+      - path: Tests/FloeAppTests/StorageOperationBudgetTests.swift
       - path: Tests/FloeProvidersTests/SpeechTextRoutingTests.swift
       - path: Tests/FloeProvidersTests/SubscriptionProviderTests.swift
       - path: Tests/FloeDocumentsTests/DocumentLeaseSuspensionTests.swift
