@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import FloeCore
+import FloeTools
 import FloeMacBridgeProtocol
 
 /// Paired same-Mac transport. Requests are signed, responses are pinned, and
