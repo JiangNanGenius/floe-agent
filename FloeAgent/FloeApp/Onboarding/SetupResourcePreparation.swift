@@ -363,6 +363,15 @@ final class SetupResourcePreparation: ObservableObject {
         -> (rows: [SetupResourceReport], selection: SetupSelectionState) {
         let installation = service.localInstallation
         let installedIDs = service.localInstalledModelIDs
+        let validatingModelID = service.localProgressOperation.flatMap {
+            $0.key == "voice.local.progress.checking" ? $0.modelID : nil
+        }
+        let validationFailed = service.localMigrationNote == "voice.local.error.verify"
+        var usableIDs = installedIDs
+        if let validatingModelID { usableIDs.remove(validatingModelID) }
+        if validationFailed, let failedID = service.pendingVoice?.modelID ?? installation.modelID {
+            usableIDs.remove(failedID)
+        }
         var reports: [SetupResourceReport] = []
         if let active = installation.modelID {
             let phase: SetupResourcePhase
@@ -403,7 +412,7 @@ final class SetupResourcePreparation: ObservableObject {
         return (reports, SetupResourceStageRules.selection(
             kind: .voicePack,
             selectedSubjectID: selectedID,
-            installedSubjectIDs: installedIDs,
+            installedSubjectIDs: usableIDs,
             activeJobSubjectID: installation.running ? installation.modelID : nil,
             pendingSubjectID: service.pendingVoice?.modelID
         ))

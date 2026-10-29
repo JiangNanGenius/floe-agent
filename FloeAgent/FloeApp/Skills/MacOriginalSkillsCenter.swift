@@ -2,6 +2,7 @@
 import Foundation
 import SwiftUI
 import FloeCore
+import FloeTools
 import FloeSkills
 import FloeExecution
 import FloeMacBridgeProtocol
