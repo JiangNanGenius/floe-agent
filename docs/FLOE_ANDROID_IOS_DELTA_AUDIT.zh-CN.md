@@ -202,3 +202,17 @@ G05-R3 当前仍在修复后的统一编译及 App 验收阶段，实际大目�
 G06尚未关闭或发布。文本保存与重开状态已修复，并通过三星实际保存及强制停止后重开；Office准备、PDF背景、手机操作层级和完整工作区导入仍需闭合。下一批集中编译/设备复核这些改动，已通过的定向证据复用。上述新增系统差异登记为后续输入，不预排工作队列。
 
 下次大目标收尾从`90da89dbc1ee9c6e38bc0bb313547ecb192b6ba6`之后的实际iOS源码增量继续核对。以上差异审计是源码/元数据证据，不代表审计任务运行过iOS编译、Apple处理或设备安装。
+
+### 2026-10-30：G06 收尾前的公共主线增量（`b469c25b` → `ac11bdf0`）
+
+- 读回：`origin/main` = `ac11bdf05f7c829dd712c6c0c7a8ad198996c73d`（2026-10-30T07:46:26+11:00，tree `0c61c75c09f5e6b3d2895a0e5ac85a8f003ca8b3`）；基线 `b469c25bf11bd88bfb551ef346d7c31a1b82134d`（tree `35790e2d9c7302e0469070d5e6d7af9981ea4a24`）。`90da89db` 至 `b469` 的 `FloeAgent` 差异为零（仅 Android/Feather 提交），`b469` 是 `ac11` 的祖先；区间 11 个提交，其中 4 个触及 `FloeAgent/FloeApp|Sources`。
+- 范围：仅 `FloeAgent/FloeApp` 与 `FloeAgent/Sources`，32 文件 +24700/−19592；逐文件变更行数与预计算 `SOURCE_DELTA.stat` 一致（stat 只给增删合计；路径缩写宽度不同）。`FloeAgent/ThirdParty/FloeCADKit` 另有 54 文件 +14156/−241，属 vendor 输入，未计入本 32 文件，也不据此声称已进入安卓共享源。
+- **G06 结论：当面无功能变化、无新增阻断。**`Sources/FloeNotes`、`FloeApp/Notes`、`FloeApp/Canvas`、Office/PDF/笔迹产品文件均为 0；`Localizable.xcstrings` 仅新增 162 个键（153 个 `cad.*`、9 个 provider 连接/发现键），既有键与值零改动、零删除。手记参照、PDF/笔迹合同和 Office 保存/重开路径不漂移；待验证项仍是最终 APK 的连续笔迹/保存/导出、终端关闭文件导出与手机头部几何。
+- 分类：provider/content 正确性 17 文件 +921/−87（端点身份、订阅连接探针、发现闸、图像/视频 wire family、catalog 限额、服务角色语义、provider 内容包基线 1.1.1→1.1.2）按 D18/D24 既有行补强，归 G02 后续/G11/G14，不进入 G07；原生 CAD 编辑 4 文件 +863/−13（material/parameters/capture、共享材质库、canvas-cad 所有权）新增 D34，归 G10；本地模型 CAD 暴露 2 文件 +180/−28 因安卓不做本地大模型排除；共享管线 6 文件 +95/−8 的新行为限定于 `cad.document`、canvas-cad 键或 CAD 视口 artifact 前缀，`document.*`/`office.*`/`notes.*`/`canvas.*` 的 typed target、mutation lease 与普通文档审批不变；CAD 测试夹具 1 文件 +13，资源 2 文件为 catalog/字符串。
+- 新编号（接续 D33）：
+
+| ID | 新增实际源码差异 | 安卓安排 |
+| --- | --- | --- |
+| IOS-D34 | `cad.document` 新增 `material`/`parameters`/`capture`：共享材质库合并写、特征参数与既有圆半径更新、真实视口 PNG（revision/change_count/图像与内容摘要分离）、canvas-cad 冻结映射、修订钉与临时会话只读拒绝；同批 `FloeCADKit` vendor 为输入 | G10（G07–G09 之后）；复用统一几何内核、typed mutation 与审批，不把 RealityKit 捕获当安卓等价；canvas-cad 只接受冻结的 conversation→canvas→package 映射；不扩 G06 或当前发布 |
+
+- 既有 IOS-D01..D33 身份与归属保持不变；D34 不改变 G06 收尾顺序或 Android 当前批次。下次收尾继续比较 `ac11bdf0` 之后的实际 `FloeAgent/FloeApp|Sources` 增量。以上仅为源码/元数据静态比对，未运行 iOS 编译、测试、设备或发布。
