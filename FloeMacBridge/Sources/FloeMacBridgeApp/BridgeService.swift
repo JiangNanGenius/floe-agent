@@ -47,14 +47,19 @@ actor BridgeService {
     }
     func respond(_ request: BridgeRequest) async throws -> Data {
         try request.verify()
+        // Native approval can complete while the consent callback is suspended.
+        // One shared result keeps both admission paths identical.
+        func approvedPair(nonce: String) -> [String: BridgeValue] {
+            ["paired": .bool(true), "host": .string(Host.current().localizedName ?? "Mac"),
+             "protocolVersion": .integer(Int64(BridgeWire.version)), "nonce": .string(nonce)]
+        }
         let body = request.body; let clientID = BridgeWire.digest(body.clientKey)
         let result: [String: BridgeValue]
         do {
             if body.method == "pair" || body.method == "pairStatus" {
                 guard let nonce = body.payload["nonce"]?.string, nonce.count >= 32, nonce.count <= 160 else { throw BridgeFailure.authentication }
                 if let pair = pairs[clientID], pair.key == body.clientKey, pair.nonce == nonce {
-                    result = ["paired": .bool(true), "host": .string(Host.current().localizedName ?? "Mac"),
-                              "protocolVersion": .integer(Int64(BridgeWire.version)), "nonce": .string(nonce)]
+                    result = approvedPair(nonce: nonce)
                 } else if rejected.contains(clientID) { throw BridgeFailure.remote("The Mac connection was declined.") }
                 else {
                     guard pending.count < 4 || pending[clientID] != nil else { throw BridgeFailure.remote("Another connection request is waiting.") }
@@ -64,8 +69,16 @@ actor BridgeService {
                         pending[clientID] = (name, body.clientKey, nonce, verification)
                         if let consent { await consent(clientID, name, verification) }
                     }
-                    guard pending[clientID]?.nonce == nonce else { throw BridgeFailure.authentication }
-                    result = ["paired": .bool(false), "nonce": .string(nonce)]
+                    // Re-read admission after the consent await: native approval
+                    // removes `pending`, and a decline inserts `rejected`.
+                    if let pair = pairs[clientID], pair.key == body.clientKey, pair.nonce == nonce {
+                        result = approvedPair(nonce: nonce)
+                    } else if rejected.contains(clientID) {
+                        throw BridgeFailure.remote("The Mac connection was declined.")
+                    } else {
+                        guard pending[clientID]?.nonce == nonce else { throw BridgeFailure.authentication }
+                        result = ["paired": .bool(false), "nonce": .string(nonce)]
+                    }
                 }
             } else {
                 guard pairs[clientID]?.key == body.clientKey else { throw BridgeFailure.authentication }
